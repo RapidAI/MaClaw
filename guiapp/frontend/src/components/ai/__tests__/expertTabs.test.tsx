@@ -754,7 +754,11 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
             });
         });
         act(() => {
-            result.current.setPending({ expert: latexExpert, initialMessage: "生成一份演示用学术论文" });
+            result.current.setPending({
+                expert: latexExpert,
+                initialMessage: "生成一份演示用学术论文",
+                projectPath: "D:/tasks/new-paper",
+            });
         });
         await waitFor(() => {
             expect(sendExpertMessage).toHaveBeenCalledWith("生成一份演示用学术论文", LATEX_EXPERT_ID);
@@ -763,6 +767,64 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
         expect(result.current.manager.getTabState(expertTabId(LATEX_EXPERT_ID))?.history).toEqual([]);
         const stashed = (SaveProjectTabConversation as unknown as ReturnType<typeof vi.fn>).mock.calls;
         expect(stashed.some(call => String(call[0]).startsWith("proj-") && Array.isArray(call[1]) && call[1].length === 2)).toBe(true);
+    });
+
+    it("a new wizard launch on any expert clears the previous conversation before sending", async () => {
+        const order: string[] = [];
+        const sendExpertMessage = vi.fn(() => { order.push("send"); });
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            const [pending, setPending] = useState<PendingExpertOpen | null>(null);
+            const resetExpertConversation = async (_expertId: string, previousProjectPath?: string) => {
+                order.push("reset");
+                order.push(previousProjectPath || "");
+                const tabId = expertTabId(expertA.id);
+                await manager.stashProjectTabHistory(previousProjectPath || "", manager.getTabState(tabId)?.history || []);
+                manager.clearTabConversation(tabId);
+            };
+            usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: () => setPending(null),
+                sendExpertMessage,
+                resetExpertConversation,
+                onEnsureExpertTask: async () => {
+                    manager.createExpertTab(expertA, { projectPath: "D:/tasks/new-deck" });
+                    return { projectPath: "D:/tasks/new-deck" };
+                },
+            });
+            return { manager, setPending };
+        });
+        act(() => {
+            result.current.manager.createExpertTab(expertA, { projectPath: "D:/tasks/old-deck" });
+            result.current.manager.saveTabState(expertTabId(expertA.id), {
+                history: [
+                    { id: "u1", role: "user", content: "old deck", timestamp: 1 },
+                    { id: "a1", role: "assistant", content: "compiled", timestamp: 2 },
+                ],
+            });
+        });
+        act(() => {
+            result.current.setPending({
+                expert: expertA,
+                initialMessage: "make a new deck",
+                projectPath: "D:/tasks/new-deck",
+            });
+        });
+        await waitFor(() => {
+            expect(sendExpertMessage).toHaveBeenCalledWith("make a new deck", expertA.id);
+        });
+        expect(order).toEqual(["reset", "D:/tasks/old-deck", "send"]);
+        expect(result.current.manager.getTabState(expertTabId(expertA.id))?.history).toEqual([]);
+        expect(result.current.manager.tabState.tabs.find(tab => tab.id === expertTabId(expertA.id))?.projectPath).toBe("D:/tasks/new-deck");
     });
 
     it("a failed LaTeX open drops the paper that was never shown", async () => {

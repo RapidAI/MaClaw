@@ -114,6 +114,9 @@ func TestCreateTaskUnifiedValidation(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expert + workflow template should fail")
 	}
+	if _, err := app.CreateTaskUnified(TaskCreateOptions{Name: "x", ExpertID: "bad id!"}); err == nil {
+		t.Fatal("invalid expert id should fail")
+	}
 	if _, err := app.CreateTaskUnified(TaskCreateOptions{Name: "x", Mode: "remote_coding_dev"}); err == nil {
 		t.Fatal("remote mode without Remote should fail")
 	}
@@ -149,6 +152,11 @@ func TestCreateTaskUnifiedExpertBranch(t *testing.T) {
 	if !projectRecordHasTagLike(rec.Tags, taskSourceExpertPrefix+"expert-paper") {
 		t.Fatalf("expert task tags = %#v, want source tag", rec.Tags)
 	}
+	// The wizard title is the first instruction, so several tasks of one expert
+	// do not render as identical sidebar rows.
+	if rec.Name != "review my paper" {
+		t.Fatalf("expert task name = %q, want the instruction title", rec.Name)
+	}
 }
 
 func TestCreateTaskUnifiedExpertBranchStoresWorkingDir(t *testing.T) {
@@ -178,11 +186,77 @@ func TestCreateTaskUnifiedExpertBranchStoresWorkingDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second CreateTaskUnified: %v", err)
 	}
-	if again.ProjectPath != path.ProjectPath {
-		t.Fatalf("expert task path = %q, want the existing record %q", again.ProjectPath, path.ProjectPath)
+	// A second wizard launch is a new task with its own conversation.
+	if again.ProjectPath == path.ProjectPath || strings.TrimSpace(again.ProjectPath) == "" {
+		t.Fatalf("second expert task path = %q, want a new record (first %q)", again.ProjectPath, path.ProjectPath)
 	}
-	if got := app.recentTaskWorkingDir(path.ProjectPath); got != normalizeRecentTaskWorkingDir(other) {
-		t.Fatalf("updated working dir = %q, want %q", got, normalizeRecentTaskWorkingDir(other))
+	if got := app.recentTaskWorkingDir(path.ProjectPath); got != normalizeRecentTaskWorkingDir(dir) {
+		t.Fatalf("first task working dir = %q, want %q", got, normalizeRecentTaskWorkingDir(dir))
+	}
+	if got := app.recentTaskWorkingDir(again.ProjectPath); got != normalizeRecentTaskWorkingDir(other) {
+		t.Fatalf("second task working dir = %q, want %q", got, normalizeRecentTaskWorkingDir(other))
+	}
+}
+
+func TestCreateTaskUnifiedExpertStartsAFreshTask(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	first, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "make the first deck",
+		ExpertID:   "expert-paper",
+		ExpertName: "Paper reviewer",
+	})
+	if err != nil {
+		t.Fatalf("first CreateTaskUnified: %v", err)
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTabSessionID("expert-paper"),
+		ProjectPath:  first.ProjectPath,
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "first deck context"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed expert transcript: %v", err)
+	}
+
+	second, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "make another deck",
+		ExpertID:   "expert-paper",
+		ExpertName: "Paper reviewer",
+	})
+	if err != nil {
+		t.Fatalf("second CreateTaskUnified: %v", err)
+	}
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("second expert task = %q, want a new directory (first %q)", second.ProjectPath, first.ProjectPath)
+	}
+	pi := app.memoryStore.ProjectIndex()
+	if rec := pi.Get(first.ProjectPath); rec == nil || rec.Name != "make the first deck" {
+		t.Fatalf("first expert task name = %#v, want its instruction title", rec)
+	}
+	if rec := pi.Get(second.ProjectPath); rec == nil || rec.Name != "make another deck" {
+		t.Fatalf("second expert task name = %#v, want its instruction title", rec)
+	}
+	session, err := persist.LoadSession(expertTabSessionID("expert-paper"))
+	if err != nil {
+		t.Fatalf("load expert transcript: %v", err)
+	}
+	if session == nil || len(session.Conversation) != 0 || session.ConversationClearedAt == 0 {
+		t.Fatalf("expert transcript was not cleared: %+v", session)
+	}
+	if strings.TrimSpace(session.ProjectPath) != "" {
+		t.Fatalf("cleared expert session still claims project %q", session.ProjectPath)
+	}
+	archived, err := persist.LoadLatestSessionForProject(first.ProjectPath)
+	if err != nil {
+		t.Fatalf("load archived task transcript: %v", err)
+	}
+	if archived == nil || !sessionSnapshotHasUserTurn(archived.Conversation) {
+		t.Fatalf("previous expert task lost its transcript: %+v", archived)
+	}
+	resumed := app.CreateExpertTask("expert-paper", "Paper reviewer")
+	if resumed.ProjectPath != second.ProjectPath {
+		t.Fatalf("resume path = %q, want newest task %q", resumed.ProjectPath, second.ProjectPath)
 	}
 }
 
@@ -235,7 +309,7 @@ func TestCreateTaskUnifiedLatexExpertStartsAFreshPaper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load archived paper transcript: %v", err)
 	}
-	if archived == nil || !latexSessionHasUserTurn(archived.Conversation) {
+	if archived == nil || !sessionSnapshotHasUserTurn(archived.Conversation) {
 		t.Fatalf("previous paper lost its transcript: %+v", archived)
 	}
 	resumed := app.CreateExpertTask(builtinLatexExpertID, "LaTeX")
@@ -297,7 +371,7 @@ func TestCreateTaskUnifiedLatexKeepExpertSessionLeavesTheOpenTurn(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session == nil || !latexSessionHasUserTurn(session.Conversation) || normalizeProjectSessionPath(session.ProjectPath) != normalizeProjectSessionPath(first.ProjectPath) {
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) || normalizeProjectSessionPath(session.ProjectPath) != normalizeProjectSessionPath(first.ProjectPath) {
 		t.Fatalf("live expert transcript was cut over: %+v", session)
 	}
 	if err := app.AbandonUnopenedFreshLatexTask(second.ProjectPath); err != nil {
@@ -307,7 +381,7 @@ func TestCreateTaskUnifiedLatexKeepExpertSessionLeavesTheOpenTurn(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session == nil || !latexSessionHasUserTurn(session.Conversation) || normalizeProjectSessionPath(session.ProjectPath) != normalizeProjectSessionPath(first.ProjectPath) {
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) || normalizeProjectSessionPath(session.ProjectPath) != normalizeProjectSessionPath(first.ProjectPath) {
 		t.Fatalf("abandon changed the live transcript: %+v", session)
 	}
 	if _, err := os.Stat(second.ProjectPath); !os.IsNotExist(err) {
@@ -356,7 +430,7 @@ func TestAbandonUnopenedFreshLatexTaskRestoresThePreviousPaper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session == nil || !latexSessionHasUserTurn(session.Conversation) || strings.TrimSpace(session.ProjectPath) != "" {
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) || strings.TrimSpace(session.ProjectPath) != "" {
 		t.Fatalf("expert transcript was not restored: %+v", session)
 	}
 	resumed := app.CreateExpertTask(builtinLatexExpertID, "LaTeX")

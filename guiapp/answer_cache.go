@@ -872,6 +872,10 @@ func answerCacheResponseEligible(resp *IMAgentResponse) bool {
 		strings.TrimSpace(resp.FileName) != "" || strings.TrimSpace(resp.FileMimeType) != "" || strings.TrimSpace(resp.VoiceData) != "" ||
 		strings.TrimSpace(resp.VoiceFileName) != "" || strings.TrimSpace(resp.VoiceMimeType) != "" ||
 		len(resp.VoiceParts) != 0 || strings.TrimSpace(resp.LocalFilePath) != "" || len(resp.LocalFilePaths) != 0 ||
+		// A reply that carries a produced file points at a file on this disk.
+		// Handing that reply to another user later would offer them a path
+		// that is not theirs.
+		len(resp.FileCompanionFiles) != 0 ||
 		strings.TrimSpace(resp.ThumbnailBase64) != "" {
 		return false
 	}

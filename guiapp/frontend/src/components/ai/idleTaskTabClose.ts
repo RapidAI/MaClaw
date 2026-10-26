@@ -1,6 +1,7 @@
 import type { AITab, AITabState } from "./AITabTypes";
 import { expertIDFromTaskTags, expertSessionKey, isACPAssistantSessionKey, normalizeProjectSessionPath, projectSessionKey } from "./aiAssistantPanelSessionUtils";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy } from "./codingTaskMode";
+import { expertTaskIsLive } from "../../utils/latexTemplates";
 import { taskStatusBucketFor, workflowStatusForTaskRow, type TaskManagementItem } from "../layout/SidebarTaskManagement";
 
 /**
@@ -57,8 +58,12 @@ function taskForAssistantTab(tab: AITab, tasks: TaskManagementItem[]): TaskManag
     if (tab.type === "expert") {
         const expertId = String(tab.expertId || "").trim();
         if (!expertId) return undefined;
-        return tasks.find(task => expertIDFromTaskTags(task.tags) === expertId && !isExplicitTaskCopy(task.tags))
-            || tasks.find(task => expertIDFromTaskTags(task.tags) === expertId);
+        const matching = tasks.filter(task => expertIDFromTaskTags(task.tags) === expertId);
+        const canonical = matching.filter(task => !isExplicitTaskCopy(task.tags));
+        const pool = canonical.length > 0 ? canonical : matching;
+        // The expert tab belongs to the newest task; older rows only keep
+        // their own archived transcript.
+        return pool.find(task => expertTaskIsLive(task, tasks)) || pool[0];
     }
     if (tab.type !== "project") return undefined;
     const path = normalizeProjectSessionPath(tab.projectPath);

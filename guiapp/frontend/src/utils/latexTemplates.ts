@@ -113,30 +113,75 @@ function normalizedTaskPath(projectPath?: string): string {
     return String(projectPath || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
+type ExpertTaskLike = { project_path?: string; tags?: string[] | null; created_at?: string };
+
 /**
- * The live LaTeX paper is the newest wizard launch. Older rows keep their own
- * transcript and must not reopen the shared expert conversation.
- * Non-LaTeX tasks are always "live" so callers can use this as a gate.
+ * Precompute the live task path per expert. The sidebar classifies every row
+ * on every render, so it must not rescan the whole list once per expert row.
+ * A copy is a new empty task and never replaces a canonical task; it becomes
+ * live only when no canonical row remains.
  */
-export function latexExpertTaskIsLive(
-    task: { project_path?: string; tags?: string[] | null; created_at?: string } | null | undefined,
-    tasks: Array<{ project_path?: string; tags?: string[] | null; created_at?: string }>,
+export function liveExpertTaskPaths(tasks: ExpertTaskLike[]): Map<string, string> {
+    const groups = new Map<string, ExpertTaskLike[]>();
+    for (const task of tasks || []) {
+        const expertId = expertIdFromTaskTags(task?.tags);
+        if (!expertId || !String(task?.project_path || '').trim()) continue;
+        const group = groups.get(expertId);
+        if (group) group.push(task);
+        else groups.set(expertId, [task]);
+    }
+    const live = new Map<string, string>();
+    for (const [expertId, peers] of groups) {
+        const canonical = peers.filter(item => !isExplicitTaskCopy(item.tags));
+        const pool = canonical.length > 0 ? canonical : peers;
+        let newest = pool[0];
+        for (const item of pool.slice(1)) {
+            if (latexTaskRecencyKey(item) > latexTaskRecencyKey(newest)) newest = item;
+        }
+        const path = normalizedTaskPath(newest?.project_path);
+        if (path) live.set(expertId, path);
+    }
+    return live;
+}
+
+/**
+ * True when this row is the live task of its expert. Non-expert rows and rows
+ * without a path are always "live" so callers can use this as an expert gate.
+ */
+export function expertTaskIsLiveInMap(
+    task: ExpertTaskLike | null | undefined,
+    livePaths: Map<string, string>,
 ): boolean {
-    if (!isLatexExpertId(expertIdFromTaskTags(task?.tags))) return true;
+    const expertId = expertIdFromTaskTags(task?.tags);
+    if (!expertId) return true;
     const path = normalizedTaskPath(task?.project_path);
     if (!path) return true;
-    const peers = (tasks || []).filter(item => isLatexExpertId(expertIdFromTaskTags(item?.tags)) && String(item?.project_path || '').trim());
-    // A copied paper is a new empty task. It must not become the live expert
-    // session while the paper it was copied from is still in the list.
-    const canonical = peers.filter(item => !isExplicitTaskCopy(item.tags));
-    if (isExplicitTaskCopy(task?.tags) && canonical.length > 0) return false;
-    const pool = canonical.length > 0 ? canonical : peers;
-    if (pool.length <= 1) return true;
-    let newest = pool[0];
-    for (const item of pool.slice(1)) {
-        if (latexTaskRecencyKey(item) > latexTaskRecencyKey(newest)) newest = item;
-    }
-    return normalizedTaskPath(newest.project_path) === path;
+    const livePath = livePaths.get(expertId) || "";
+    return !livePath || livePath === path;
+}
+
+/**
+ * The live task of an expert is the newest wizard launch. It owns the shared
+ * expert tab conversation; older rows keep their own archived transcript and
+ * must not reopen that conversation.
+ */
+export function expertTaskIsLive(
+    task: ExpertTaskLike | null | undefined,
+    tasks: ExpertTaskLike[],
+): boolean {
+    return expertTaskIsLiveInMap(task, liveExpertTaskPaths(tasks));
+}
+
+/**
+ * LaTeX-specific wrapper: rows of other experts (and non-expert rows) are
+ * always "live" so callers can use this as a LaTeX-only gate.
+ */
+export function latexExpertTaskIsLive(
+    task: ExpertTaskLike | null | undefined,
+    tasks: ExpertTaskLike[],
+): boolean {
+    if (!isLatexExpertId(expertIdFromTaskTags(task?.tags))) return true;
+    return expertTaskIsLive(task, tasks);
 }
 
 /** The built-in LaTeX paper expert card, used whenever the definition is not

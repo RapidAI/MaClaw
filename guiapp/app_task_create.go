@@ -35,8 +35,8 @@ type TaskCreateOptions struct {
 	WorkflowTemplateID string `json:"workflowTemplateId"`
 	// Params fills the pinned template's first-phase parameter slots.
 	Params map[string]string `json:"params,omitempty"`
-	// KeepExpertSession allocates a new LaTeX paper without archiving or
-	// cancelling the shared expert turn. A scheduled paper sets this so the
+	// KeepExpertSession allocates a new expert task without archiving or
+	// cancelling the shared expert turn. A scheduled launch sets this so the
 	// open path can wait until that turn is idle. The wizard leaves it unset
 	// and still cuts the session over at creation time.
 	KeepExpertSession bool `json:"keepExpertSession,omitempty"`
@@ -140,31 +140,26 @@ func (a *App) createTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 		return zero, fmt.Errorf("unknown task mode: %s", opts.Mode)
 	}
 
-	// Expert branch: one durable, resumable task record per expert. The task
-	// title follows the existing expert launcher convention (expert name, not
-	// the user's prompt text), so Name is intentionally not used here.
+	// Expert branch: one durable, resumable task record per launch. A wizard
+	// launch is a new task, not another turn in the expert's lifelong chat, so
+	// the previous task keeps its transcript and the new task starts empty.
 	//
-	// The built-in LaTeX paper expert is a paper, not a lifelong chat. Each
-	// wizard launch allocates a new task directory and clears the shared
-	// expert transcript so the new template does not continue the previous
-	// paper. Reopening an existing row still uses createExpertTask, which
-	// returns the newest LaTeX task without creating another one.
+	// The built-in LaTeX paper expert additionally allocates a paper document;
+	// the frontend materializes it after this call. Reopening an existing row
+	// still uses createExpertTask, which returns the newest expert task without
+	// creating another one.
 	//
 	// Contract with the wizard frontend: after this call returns, open the
-	// expert tab for ExpertID and send Name as the first user message through
-	// the existing expert chat channel (same as ensureExpertTask +
-	// setPendingExpertOpen in App.tsx). The backend routes expert messages by
-	// expert session id (expert_session_policy.go). WorkingDir, when set, is
-	// stored on the record and becomes the execution directory.
+	// expert tab for ExpertID, bind it to this task, and send Name as the first
+	// user message through the existing expert chat channel (same as
+	// ensureExpertTask + setPendingExpertOpen in App.tsx). The backend routes
+	// expert messages by expert session id (expert_session_policy.go).
+	// WorkingDir, when set, is stored on the record and becomes the execution
+	// directory. The record title uses Name, so several tasks of the same
+	// expert stay distinguishable; the expert launcher still names the first
+	// entry after the expert.
 	if opts.ExpertID != "" {
-		if opts.ExpertID == builtinLatexExpertID {
-			result, err := a.createFreshLatexExpertTask(opts.ExpertName, opts.WorkingDir, opts.KeepExpertSession)
-			if err != nil {
-				return zero, err
-			}
-			return UnifiedTaskCreateResult{ProjectPath: result.ProjectPath}, nil
-		}
-		result, err := a.createExpertTask(opts.ExpertID, opts.ExpertName, opts.WorkingDir)
+		result, err := a.createFreshExpertTask(opts.ExpertID, opts.ExpertName, opts.WorkingDir, opts.Name, opts.KeepExpertSession)
 		if err != nil {
 			return zero, err
 		}

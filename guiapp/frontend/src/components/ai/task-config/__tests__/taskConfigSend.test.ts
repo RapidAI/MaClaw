@@ -238,6 +238,8 @@ describe('runTaskConfigSend interception', () => {
             id: 'exp-1',
             name: '法务专家',
             initialMessage: '审一下这份合同',
+            // Every expert launch is bound to its own task conversation.
+            projectPath: 'D:/tasks/unified-task',
         }));
     });
 

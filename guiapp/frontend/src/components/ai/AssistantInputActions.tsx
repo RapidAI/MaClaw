@@ -13,7 +13,7 @@ import {
     type PlusMenuItemDef,
 } from "./composeAction";
 import type { UseVoiceInputResult } from "./useVoiceInput";
-import { AssistantInputIcon, getInputActionButtonStyle, type Theme } from "./aiAssistantPanelTheme";
+import { AssistantInputIcon, COMPOSER_CONTROL_HEIGHT_PX, getInputActionButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { VoiceLevelVisualizer } from "./aiAssistantControls";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { AssistantPermissionModeMenu } from "./AssistantPermissionModeMenu";
@@ -406,8 +406,9 @@ export function AssistantInputActionsLeft({
                         display: "inline-flex",
                         alignItems: "center",
                         gap: "4px",
-                        height: "22px",
-                        padding: "0 7px",
+                        height: `${COMPOSER_CONTROL_HEIGHT_PX}px`,
+                        minHeight: `${COMPOSER_CONTROL_HEIGHT_PX}px`,
+                        padding: "0 8px",
                         borderRadius: "999px",
                         border: `1px solid ${t.btnBorder}`,
                         background: `color-mix(in srgb, ${t.btnColor} ${dark ? "14%" : "8%"}, ${t.fieldBg})`,
@@ -416,6 +417,7 @@ export function AssistantInputActionsLeft({
                         lineHeight: 1,
                         cursor: "pointer",
                         flexShrink: 0,
+                        boxSizing: "border-box",
                     }}
                 >
                     <AssistantInputIcon name={getComposeActionIcon(composeAction)} size={12} />

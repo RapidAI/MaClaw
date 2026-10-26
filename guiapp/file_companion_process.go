@@ -78,6 +78,10 @@ type fileCompanionRuntime struct {
 	// turn reseeds the numbering list. Append-only and bounded per session;
 	// /clear forgets it along with the transcript.
 	figureLedger map[string][]string
+	// turnFiles is one live turn's produced files: the PDFs pdf_generate
+	// wrote this turn. Keyed by user id ("file-companion:<session>"); a new
+	// turn starts empty and the finished list rides on the reply.
+	turnFiles map[string][]FileCompanionFile
 
 	// recordEvents keeps the final companion reply for tests. Production
 	// leaves it false, so the slice stays empty.
@@ -150,6 +154,9 @@ func (a *App) companionRuntime() *fileCompanionRuntime {
 	}
 	if a.fileCompanion.turnFigures == nil {
 		a.fileCompanion.turnFigures = map[string][]companionFigure{}
+	}
+	if a.fileCompanion.turnFiles == nil {
+		a.fileCompanion.turnFiles = map[string][]FileCompanionFile{}
 	}
 	return a.fileCompanion
 }

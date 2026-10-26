@@ -968,10 +968,26 @@ func codingWorkbenchPermissionModeFromMemory(mem stickyCodingWorkbenchMemory, gl
 	return "request"
 }
 
-// stickyCodingEffectiveFullAccess is true when pure-coding should skip all
-// path and high-risk prompts (input-box "完全控制" / full mode).
+// stickyCodingEffectiveFullAccess is true when pure-coding should skip
+// interactive confirmation (input-box "完全控制" / full mode): path scope,
+// high-risk commands, and human-call shapes.
 func (h *IMMessageHandler) stickyCodingEffectiveFullAccess(userID string, globalFullAccess bool) bool {
 	return h.codingWorkbenchPermissionMode(userID, globalFullAccess) == "full"
+}
+
+// codingTaskFullControlGranted reports whether this task tab is in 完全控制
+// (input-box choice or the global switch). An empty owner has no tab to read,
+// so callers keep today's prompts. The commit gate still honors a stored deny.
+func codingTaskFullControlGranted(handler *IMMessageHandler, ownerID string) bool {
+	if handler == nil {
+		return false
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return false
+	}
+	global := handler.app != nil && handler.app.isSubAgentFullAccessGranted()
+	return handler.stickyCodingEffectiveFullAccess(ownerID, global)
 }
 
 func stickyCodingPermissionIsRequest(mode string) bool {

@@ -444,13 +444,13 @@ func (s *Service) PostBotReportFromInstance(ctx context.Context, tenantID, userI
 }
 
 // ListBotCrossNotes returns this user's notes that are still inside the
-// seven-day window. It does not consume them.
+// seven-day window. It does not consume them. The store read and the grant
+// walk run without the service lock, like Enabled: this poll path must not
+// queue behind another tenant's writes.
 func (s *Service) ListBotCrossNotes(ctx context.Context, tenantID, userID string) ([]BotCrossNote, error) {
 	if s == nil {
 		return nil, ErrSettingsUnavailable
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	rec, err := s.loadForUser(ctx, tenantID, userID)
 	if err != nil {
 		return nil, err

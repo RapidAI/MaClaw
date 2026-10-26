@@ -422,7 +422,7 @@ func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, sty
 			sb.WriteString(imageHTML)
 			continue
 		}
-		if tableHTML, nextIdx, ok := markdownTableToHTML(lines, i, style); ok {
+		if tableHTML, nextIdx, ok := markdownTableToHTML(lines, i, style, colorful); ok {
 			if listType != "" {
 				closeList()
 			}
@@ -1129,7 +1129,7 @@ func isRemoteURL(path string) bool {
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
-func markdownTableToHTML(lines []string, start int, style Style) (string, int, bool) {
+func markdownTableToHTML(lines []string, start int, style Style, colorful bool) (string, int, bool) {
 	if start+1 >= len(lines) {
 		return "", start, false
 	}
@@ -1146,10 +1146,10 @@ func markdownTableToHTML(lines []string, start int, style Style) (string, int, b
 	sb.WriteString(`<table><thead><tr>`)
 	for _, header := range headers {
 		if style.ID != "" {
-			sb.WriteString(fmt.Sprintf(`<td style="color:%s; text-align:center"><b>%s</b></td>`, cssHex(style.Colors.Navy), inlineMD(escapeHTML(header))))
+			sb.WriteString(fmt.Sprintf(`<td style="color:%s; text-align:center"><b>%s</b></td>`, cssHex(style.Colors.Navy), tableCellHTML(header, colorful)))
 			continue
 		}
-		sb.WriteString(fmt.Sprintf(`<th>%s</th>`, inlineMD(escapeHTML(header))))
+		sb.WriteString(fmt.Sprintf(`<th>%s</th>`, tableCellHTML(header, colorful)))
 	}
 	sb.WriteString(`</tr></thead><tbody>`)
 	next := start + 2
@@ -1171,9 +1171,9 @@ func markdownTableToHTML(lines []string, start int, style Style) (string, int, b
 				value = cells[i]
 			}
 			if style.ID != "" {
-				sb.WriteString(fmt.Sprintf(`<td style="color:%s">%s</td>`, cssHex(style.Colors.Ink), inlineMD(escapeHTML(value))))
+				sb.WriteString(fmt.Sprintf(`<td style="color:%s">%s</td>`, cssHex(style.Colors.Ink), tableCellHTML(value, colorful)))
 			} else {
-				sb.WriteString(fmt.Sprintf(`<td>%s</td>`, inlineMD(escapeHTML(value))))
+				sb.WriteString(fmt.Sprintf(`<td>%s</td>`, tableCellHTML(value, colorful)))
 			}
 		}
 		sb.WriteString(`</tr>`)
@@ -1948,6 +1948,32 @@ func restoreMathHTML(text string) string {
 		{"&lt;span style=&#34;white-space:nowrap&#34;&gt;", `<span style="white-space:nowrap">`}, {"&lt;/span&gt;", "</span>"},
 	} {
 		text = strings.ReplaceAll(text, pair.old, pair.new)
+	}
+	return text
+}
+
+// tableCellHTML renders one table cell.
+//
+// A cell is the body's inline pipeline without the parts a cell cannot hold:
+// a cell is one color, so a link inside it does not take the link color. Math
+// is the exception — a table of formulas is a table of formulas, not a table
+// of dollar signs.
+//
+// The order matches the body: code first, then math, then escaping, then
+// emphasis. A formula inside a code span stays code.
+func tableCellHTML(value string, colorful bool) string {
+	var codes []string
+	text := inlineCodeRe.ReplaceAllStringFunc(value, func(match string) string {
+		inner := match[1 : len(match)-1]
+		codes = append(codes, fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, escapeHTML(inner)))
+		return fmt.Sprintf("\x1aC%d\x1a", len(codes)-1)
+	})
+	text = renderMathSegments(text, colorful)
+	text = escapeHTML(text)
+	text = restoreMathHTML(text)
+	text = applyInlineEmphasis(text, Style{})
+	for i, rendered := range codes {
+		text = strings.Replace(text, fmt.Sprintf("\x1aC%d\x1a", i), rendered, 1)
 	}
 	return text
 }

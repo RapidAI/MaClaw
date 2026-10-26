@@ -636,6 +636,26 @@ func TestMarkdownToHTML_Bold(t *testing.T) {
 	}
 }
 
+func TestMarkdownToHTML_MathInTableCellIsMath(t *testing.T) {
+	md := "| 名称 | 符号 |\n|---|---|\n| 最大公约数 | $\\gcd(a,b)$ |"
+	html := markdownToHTML(md)
+	if strings.Contains(html, "$") {
+		t.Fatalf("a formula in a cell stayed a dollar sign: %s", html)
+	}
+	if !strings.Contains(html, "gcd") {
+		t.Fatalf("the formula is missing: %s", html)
+	}
+}
+
+// A formula inside a code span is code, in a cell just as in a paragraph.
+func TestMarkdownToHTML_CodeInTableKeepsMath(t *testing.T) {
+	md := "| 列 | 值 |\n|---|---|\n| `$x$` | 1 |"
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "$x$") {
+		t.Fatalf("code text lost its dollars: %s", html)
+	}
+}
+
 func TestMarkdownToHTML_CodeInTableKeepsStars(t *testing.T) {
 	md := "| 列 | 值 |\n|---|---|\n| `**x**` | 1 |"
 	html := markdownToHTML(md)

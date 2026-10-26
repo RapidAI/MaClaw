@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { localizeText } from "./aiAssistantI18n";
-import { AssistantInputIcon, type Theme } from "./aiAssistantPanelTheme";
+import { AssistantInputIcon, COMPOSER_CONTROL_HEIGHT_PX, type Theme } from "./aiAssistantPanelTheme";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 
 interface AssistantPermissionModeMenuProps {
@@ -246,7 +246,12 @@ export function AssistantPermissionModeMenu({ active: panelActive = true, lang, 
             value: "full" as const,
             icon: "alertTriangle" as const,
             label: localizeText(lang, "Full control", "完全控制", "完全控制"),
-            hint: localizeText(lang, "Skip path and high-risk prompts (persisted)", "跳过路径与高危确认（全局持久）", "跳過路徑與高危確認（全域持久）"),
+            // Only the coding workspace skips commit-gate call confirmations.
+            // Ordinary chats keep their outbound send approval under the global
+            // switch, so their menu must not promise otherwise.
+            hint: showWorkspaceOption
+                ? localizeText(lang, "Skip path, high-risk, and call-confirmation prompts (persisted)", "跳过路径、高危命令与调用确认（全局持久）", "跳過路徑、高危命令與調用確認（全域持久）")
+                : localizeText(lang, "Skip path and high-risk prompts (persisted)", "跳过路径与高危确认（全局持久）", "跳過路徑與高危確認（全域持久）"),
         },
     ];
     // If workspace mode is active but option is hidden, fall back to request label.
@@ -266,7 +271,7 @@ export function AssistantPermissionModeMenu({ active: panelActive = true, lang, 
         <div className="apmm-root" ref={rootRef}>
             <button ref={triggerRef} className="ai-permission-mode-trigger" type="button" aria-label={localizeText(lang, "Permission mode", "权限模式", "權限模式")} aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="menu" data-testid="ai-permission-mode" data-permission-mode={mode} onClick={() => setMenuOpen(!open)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }} title={showWorkspaceOption
                 ? localizeText(lang, "Permission: Ask / Workspace trust / Full control", "权限：请求授权 / 工作区信任 / 完全控制", "權限：請求授權 / 工作區信任 / 完全控制")
-                : localizeText(lang, "Permission mode", "权限模式", "權限模式")} style={{ height: "24px", display: "inline-flex", alignItems: "center", gap: "4px", padding: "0 5px", border: `1px solid ${theme.fieldBorder}`, borderRadius: 4, background: theme.fieldBg, color: triggerColor, fontSize: "11px", cursor: "pointer" }}>
+                : localizeText(lang, "Permission mode", "权限模式", "權限模式")} style={{ height: COMPOSER_CONTROL_HEIGHT_PX, minHeight: COMPOSER_CONTROL_HEIGHT_PX, boxSizing: "border-box", display: "inline-flex", alignItems: "center", gap: "4px", padding: "0 7px", border: `1px solid ${theme.fieldBorder}`, borderRadius: 4, background: theme.fieldBg, color: triggerColor, fontSize: "11px", cursor: "pointer" }}>
                 <AssistantInputIcon name={active.icon} size={13} />
                 <span>{active.label}</span>
             </button>

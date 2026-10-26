@@ -7597,6 +7597,68 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').not.toContain('对齐现有实现');
     });
 
+    it('retires the coding plan checklist once every step is done', async () => {
+        const projectPath = 'D:/tasks/finished-coding-plan';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 7,
+            step_statuses: [
+                { index: 1, title: '冻结参考状态', status: 'running' },
+                { index: 2, title: '采集基线', status: 'pending' },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '推理性能提升',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-checklist')).toBeTruthy());
+        expect(getByTestId('coding-agent-plan-step-1').textContent || '').toMatch(/T1/);
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                step_statuses: [
+                    { index: 1, title: '冻结参考状态', status: 'passed' },
+                    { index: 2, title: '采集基线', status: 'passed' },
+                ],
+            });
+        });
+
+        expect(queryByTestId('coding-agent-plan-checklist')).toBeNull();
+        expect(document.body.textContent || '').not.toContain('冻结参考状态');
+
+        // A failure is not a successful close: the card must come back so the
+        // failing row stays readable.
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                step_statuses: [
+                    { index: 1, title: '冻结参考状态', status: 'failed' },
+                    { index: 2, title: '采集基线', status: 'skipped' },
+                ],
+            });
+        });
+        expect(getByTestId('coding-agent-plan-checklist')).toBeTruthy();
+        expect(getByTestId('coding-agent-plan-step-1').getAttribute('data-status')).toBe('failed');
+    });
+
     it('live steps snapshot replaces and clears the continue paraphrase', async () => {
         const projectPath = 'D:/tasks/continue-plan-snapshot';
         const generic = '在已有工作（开发一个图形界面版的贪吃蛇）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。';

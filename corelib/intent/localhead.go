@@ -25,11 +25,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 // Local head decisions under τ / τ_s.
@@ -78,13 +83,73 @@ type LocalHead struct {
 	temp      float64
 	mean      []float64
 	invScale  []float64
-	w1        []float64 // [hidden*dim] row-major
-	b1        []float64
-	w2        []float64 // [C*in] row-major, in = last hidden width or dim
-	extra     []denseLayer
-	srcDim    int // >0: Matryoshka truncation from srcDim to dim
-	tauLabel  map[string]float64
-	b2        []float64
+	// Weights are float32: forward() runs them through tensor.Dot (AVX-512 /
+	// AVX2 / NEON), which measured ~8x faster than the float64 scalar loop for
+	// the shipped r13 head (5.9M MACs: 4.27ms -> 0.51ms) and halves the
+	// resident footprint. Probabilities shift by ~1e-6, far below any
+	// calibrated threshold.
+	w1       []float32 // [hidden*dim] row-major
+	b1       []float32
+	w2       []float32 // [C*in] row-major, in = last hidden width or dim
+	extra    []denseLayer
+	srcDim   int // >0: Matryoshka truncation from srcDim to dim
+	tauLabel map[string]float64
+	b2       []float32
+
+	// Q8P fast path for the hidden layer. The 2783x2048 mat-vec is memory-bound
+	// in float32 (22.8 MB streamed per prediction), so once the matrix no longer
+	// fits in L3 the weights are quantised to int8 at load and multiplied with
+	// the VNNI GEMM kernel: 4x less traffic, 1.44x end-to-end on the shipped r13
+	// head over a 16 MB L3 (380us -> 264us). w1 is dropped once packed; b1 stays
+	// float32 and is applied after the GEMM. MACLAW_HEAD_Q8P=0/1/2 forces off /
+	// single / two-pass; the default is decided by headQ8PPolicy and then
+	// verified against the float32 path at load (finishQ8PSetup), which falls
+	// back to float32 when the deviation is too large.
+	w1q       *tensor.Q8Packed
+	padHidden int
+	headQ8P2  bool
+	// q8pPending marks an auto-selected int8 path whose numeric agreement with
+	// float32 has not been checked yet. LoadLocalHead verifies it after w2/b2
+	// are loaded (forward needs the whole network) and falls back to float32
+	// when the deviation is too large.
+	q8pPending bool
+
+	// scratch reuses the forward-pass temporaries (~52 KB for the shipped r13
+	// head) instead of allocating them per prediction. The probability
+	// vector is NOT pooled: it is returned to the caller.
+	scratch sync.Pool
+}
+
+// headScratch holds the reusable forward-pass temporaries.
+type headScratch struct {
+	xf     []float32 // input vector, float32
+	hid    []float64 // hidden activations
+	hf     []float32 // hidden activations, float32
+	hidRaw []float32 // Q8P GEMM output (padded hidden width)
+	resid  []float32 // Q8P two-pass residual
+	act    tensor.Q8Act
+	act2   tensor.Q8Act
+}
+
+func (h *LocalHead) getScratch(n int) *headScratch {
+	pad := h.hidden
+	if h.w1q != nil {
+		pad = h.padHidden
+	}
+	if v := h.scratch.Get(); v != nil {
+		s := v.(*headScratch)
+		if cap(s.xf) >= n && cap(s.hid) >= h.hidden && cap(s.hf) >= h.hidden &&
+			cap(s.hidRaw) >= pad && cap(s.resid) >= n {
+			return s
+		}
+	}
+	return &headScratch{
+		xf:     make([]float32, n),
+		hid:    make([]float64, h.hidden),
+		hf:     make([]float32, h.hidden),
+		hidRaw: make([]float32, pad),
+		resid:  make([]float32, n),
+	}
 }
 
 type localHeadFile struct {
@@ -128,7 +193,7 @@ type localHeadFile struct {
 	// AnchorFeatures (optional): labels whose raw L2 max anchor cosines are
 	// appended to the query vector, in this order. Standardisation is folded
 	// into w1/b1 at export time.
-	InputBlocks []string `json:"input_blocks,omitempty"`
+	InputBlocks    []string `json:"input_blocks,omitempty"`
 	AnchorFeatures *struct {
 		Labels []string `json:"labels"`
 	} `json:"anchor_features,omitempty"`
@@ -198,7 +263,7 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		sensitive:          map[string]bool{},
 		l2norm:             f.L2Norm,
 		temp:               f.Temperature,
-		b2:                 append([]float64(nil), f.B2...),
+		b2:                 appendF32(nil, f.B2),
 	}
 	if h.temp <= 0 || math.IsNaN(h.temp) {
 		h.temp = 1
@@ -249,26 +314,35 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		if len(f.B1) != h.hidden || in != last {
 			return nil, fmt.Errorf("hidden layer shape mismatch (w1 %d, b1 %d, last hidden %d, w2 in %d)", h.hidden, len(f.B1), last, in)
 		}
-		h.w1 = make([]float64, 0, h.hidden*h.dim)
+		h.w1 = make([]float32, 0, h.hidden*h.dim)
 		for j, row := range f.W1 {
 			if len(row) != h.dim {
 				return nil, fmt.Errorf("w1 row %d has %d cols, want %d", j, len(row), h.dim)
 			}
-			h.w1 = append(h.w1, row...)
+			for _, v := range row {
+				if math.IsNaN(v) || math.IsInf(v, 0) {
+					return nil, fmt.Errorf("non-finite weight in w1")
+				}
+			}
+			h.w1 = appendF32(h.w1, row)
 		}
-		h.b1 = append([]float64(nil), f.B1...)
+		h.b1 = appendF32(nil, f.B1)
+		h.setupHeadQ8P()
 	} else {
 		if len(f.Hidden) > 0 {
 			return nil, errors.New("hidden layers need w1/b1")
 		}
 		h.dim = in
 	}
-	h.w2 = make([]float64, 0, c*in)
+	h.w2 = make([]float32, 0, c*in)
 	for k, row := range f.W2 {
 		if len(row) != in {
 			return nil, fmt.Errorf("w2 row %d has %d cols, want %d", k, len(row), in)
 		}
-		h.w2 = append(h.w2, row...)
+		if err := checkFinite(row); err != nil {
+			return nil, fmt.Errorf("w2 row %d: %w", k, err)
+		}
+		h.w2 = appendF32(h.w2, row)
 	}
 	if len(f.Mean) > 0 || len(f.Scale) > 0 {
 		if len(f.Mean) != h.dim || len(f.Scale) != h.dim {
@@ -281,11 +355,6 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 				s = 1
 			}
 			h.invScale[i] = 1 / s
-		}
-	}
-	for _, v := range h.w2 {
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			return nil, errors.New("non-finite weight in w2")
 		}
 	}
 	if f.SourceDim > 0 && f.SourceDim != h.dim {
@@ -316,6 +385,7 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		}
 		h.InputBlocks = append([]string(nil), f.InputBlocks...)
 	}
+	h.finishQ8PSetup()
 	return h, nil
 }
 
@@ -436,22 +506,275 @@ func (h *LocalHead) Predict(v []float32) ([]float64, error) {
 }
 
 // forward runs the network on the prepared input x (len h.dim).
-func (h *LocalHead) forward(x []float64) []float64 {
-	if h.hidden > 0 {
-		hid := make([]float64, h.hidden)
-		for j := 0; j < h.hidden; j++ {
-			row := h.w1[j*h.dim : (j+1)*h.dim]
-			s := h.b1[j]
-			for i, w := range row {
-				s += w * x[i]
-			}
-			if s > 0 {
-				hid[j] = s
+// appendF32 appends src as float32 to dst.
+func appendF32(dst []float32, src []float64) []float32 {
+	for _, v := range src {
+		dst = append(dst, float32(v))
+	}
+	return dst
+}
+
+// checkFinite rejects NaN/Inf weights, so a corrupt head fails at load instead
+// of poisoning every later prediction.
+func checkFinite(row []float64) error {
+	for _, v := range row {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return errors.New("non-finite weight")
+		}
+	}
+	return nil
+}
+
+// float32s converts a vector for the SIMD kernels.
+func float32s(x []float64) []float32 {
+	out := make([]float32, len(x))
+	for i, v := range x {
+		out[i] = float32(v)
+	}
+	return out
+}
+
+// headQ8PPolicy decides whether the hidden layer uses the int8 VNNI path and
+// whether to spend the second activation pass.
+//
+// MACLAW_HEAD_Q8P forces a mode; "auto" (the default) decides from the weight
+// footprint against the last-level cache:
+//
+//	w1 bytes > L3  -> int8, two-pass
+//
+// The float32 hidden matrix is streamed once per prediction, so its size
+// relative to L3 is what decides. While it fits, the float32 AVX2 dot runs at
+// cache speed and int8 only buys ~1.1x while costing probability accuracy. Once
+// it does not fit, every prediction re-reads the matrix from DRAM and the 4x
+// smaller footprint dominates: measured on a 16 MB L3 desktop with the 21.7 MB
+// r13 head, single head, block-timed across processes, float32 380us vs int8
+// two-pass 264us (1.44x, max probability delta 2.8e-3). An unknown cache size
+// keeps float32: never trade accuracy without knowing the hardware.
+func headQ8PPolicy(w1Bytes int64) (use, twoPass, forced bool) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_HEAD_Q8P"))) {
+	case "0", "off", "false":
+		return false, false, true
+	case "1", "onepass", "single":
+		return true, false, true
+	case "2", "twopass", "two":
+		return true, true, true
+	}
+	l3 := l3CacheBytes()
+	if l3 <= 0 {
+		return false, false, false
+	}
+	return w1Bytes > l3, true, false
+}
+
+// Accuracy gates for the load-time int8 self-check (max absolute probability
+// shift against the float32 path over a fixed probe set). Single-pass must be
+// all but indistinguishable to be preferred; two-pass may drift slightly more,
+// which is still far below the calibrated τ margins.
+const (
+	headQ8PProbes          = 12
+	headQ8PSingleMaxDelta  = 1e-3
+	headQ8PTwoPassMaxDelta = 1e-2
+)
+
+// chooseQ8PMode picks the cheapest int8 mode whose probe deviation passes its
+// gate. ok=false means neither mode is trustworthy and float32 must be kept.
+func chooseQ8PMode(single, twoPass float64) (useTwo, ok bool) {
+	switch {
+	case single >= 0 && single <= headQ8PSingleMaxDelta:
+		return false, true
+	case twoPass >= 0 && twoPass <= headQ8PTwoPassMaxDelta:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// q8pProbeInputs builds the fixed probe set: unit-norm pseudo-random vectors
+// with the magnitude of a normalised embedding. Deterministic, so every
+// process reaches the same verdict.
+func (h *LocalHead) q8pProbeInputs() [][]float64 {
+	r := rand.New(rand.NewSource(0x5eed))
+	probes := make([][]float64, headQ8PProbes)
+	for p := range probes {
+		x := make([]float64, h.dim)
+		var ss float64
+		for i := range x {
+			v := r.NormFloat64()
+			x[i] = v
+			ss += v * v
+		}
+		if ss > 0 {
+			inv := 1 / math.Sqrt(ss)
+			for i := range x {
+				x[i] *= inv
 			}
 		}
-		x = hid
+		probes[p] = x
+	}
+	return probes
+}
+
+// q8pProbeDeltas computes the float32 reference once and compares both int8
+// modes against it. When skipTwo is set the two-pass delta is +Inf (not run).
+func (h *LocalHead) q8pProbeDeltas(probes [][]float64, skipTwo bool) (single, two float64) {
+	if h.hidden <= 0 || len(h.w1) < h.hidden*h.dim {
+		// No float32 reference left to compare against. +Inf makes the caller
+		// keep float32 rather than trust int8 unverified.
+		return math.Inf(1), math.Inf(1)
+	}
+	q, prevTwo := h.w1q, h.headQ8P2
+	defer func() { h.w1q, h.headQ8P2 = q, prevTwo }()
+	refs := make([][]float64, len(probes))
+	for i, x := range probes {
+		h.w1q = nil
+		refs[i] = h.forward(x)
+	}
+	measure := func(twoPass bool) float64 {
+		worst := 0.0
+		for i, x := range probes {
+			h.w1q, h.headQ8P2 = q, twoPass
+			got := h.forward(x)
+			for j := range refs[i] {
+				d := math.Abs(refs[i][j] - got[j])
+				if math.IsNaN(d) || math.IsInf(d, 0) {
+					return math.Inf(1)
+				}
+				if d > worst {
+					worst = d
+				}
+			}
+		}
+		return worst
+	}
+	single = measure(false)
+	two = math.Inf(1)
+	if !skipTwo {
+		two = measure(true)
+	}
+	return single, two
+}
+
+// finishQ8PSetup verifies the auto-selected int8 path and then drops the
+// float32 weights. An explicit MACLAW_HEAD_Q8P skips the check: the operator
+// already chose, and tests pin exact modes.
+func (h *LocalHead) finishQ8PSetup() {
+	if h.w1q == nil {
+		return
+	}
+	mode := "single-pass"
+	if h.headQ8P2 {
+		mode = "two-pass"
+	}
+	detail := "forced"
+	if h.q8pPending {
+		h.q8pPending = false
+		// One pass over the probe set: the float32 reference is computed once
+		// and shared by both int8 modes.
+		single, two := h.q8pProbeDeltas(h.q8pProbeInputs(), false)
+		useTwo, ok := chooseQ8PMode(single, two)
+		if !ok {
+			log.Printf("[local-head] int8 hidden layer rejected (probe delta single %.2g / two-pass %.2g, limit %.0e); keeping float32",
+				single, two, headQ8PTwoPassMaxDelta)
+			h.w1q, h.padHidden, h.headQ8P2 = nil, 0, false
+			return
+		}
+		h.headQ8P2 = useTwo
+		if useTwo {
+			mode = "two-pass"
+			detail = fmt.Sprintf("probe delta %.2g", two)
+		} else {
+			detail = fmt.Sprintf("probe delta %.2g", single)
+		}
+	}
+	log.Printf("[local-head] int8 hidden layer %s (%.1f MB, L3 %.1f MB, %s)",
+		mode, float64(h.padHidden*h.dim*4)/1e6, float64(l3CacheBytes())/1e6, detail)
+	h.w1 = nil // packed weights replace the float32 copy
+}
+
+// setupHeadQ8P packs w1 for the VNNI GEMM when the policy and shape allow it.
+// Weights are padded with zero rows to a multiple of 32 (the kernel's tile);
+// the extra outputs are discarded, so results are unchanged.
+func (h *LocalHead) setupHeadQ8P() {
+	if h.hidden <= 0 || h.dim%32 != 0 || len(h.w1) < h.hidden*h.dim {
+		return
+	}
+	use, two, forced := headQ8PPolicy(int64(h.hidden) * int64(h.dim) * 4)
+	if !use {
+		return
+	}
+	if tensor.Q8PFusedTwoTerm() {
+		// The activation quantiser already carries two int8 terms there, so a
+		// separate residual pass would only multiply zeros.
+		two = false
+	}
+	if !tensor.Q8PAvailable() {
+		return
+	}
+	pad := (h.hidden + 31) / 32 * 32
+	wp := h.w1
+	if pad != h.hidden {
+		wp = make([]float32, pad*h.dim)
+		copy(wp, h.w1)
+	}
+	q8 := tensor.QuantizeToQ8(wp, pad, h.dim)
+	if q8 == nil {
+		return
+	}
+	packed := tensor.PackQ8P(q8)
+	if packed == nil {
+		return
+	}
+	h.w1q, h.padHidden, h.headQ8P2 = packed, pad, two
+	h.q8pPending = !forced
+}
+
+func (h *LocalHead) forward(x []float64) []float64 {
+	sp := h.getScratch(len(x))
+	defer h.scratch.Put(sp)
+	xf := sp.xf[:len(x)]
+	for i, v := range x {
+		xf[i] = float32(v)
+	}
+	if h.hidden > 0 {
+		hid := sp.hid[:h.hidden]
+		hidf := sp.hf[:h.hidden]
+		var raw []float32
+		if h.w1q != nil {
+			raw = sp.hidRaw[:h.padHidden]
+			tensor.QuantizeQ8Act(&sp.act, xf, 1, h.dim)
+			tensor.MatMulQ8P(raw, &sp.act, h.w1q, false, 1)
+			if h.headQ8P2 {
+				// Second pass over the quantisation residual: brings the
+				// activation error down to ~float accuracy for 2x the GEMM.
+				if cap(sp.resid) < h.dim {
+					sp.resid = make([]float32, h.dim)
+				}
+				r := sp.resid[:h.dim]
+				tensor.Q8ActResidual(r, xf, &sp.act)
+				tensor.QuantizeQ8Act(&sp.act2, r, 1, h.dim)
+				tensor.MatMulQ8P(raw, &sp.act2, h.w1q, true, 1)
+			}
+		}
+		for j := 0; j < h.hidden; j++ {
+			var s float64
+			if raw != nil {
+				s = float64(raw[j]) + float64(h.b1[j])
+			} else {
+				// Accumulate the bias in float64 around a float32 SIMD dot.
+				s = float64(h.b1[j]) + float64(tensor.Dot(h.w1[j*h.dim:(j+1)*h.dim], xf))
+			}
+			if s > 0 {
+				hid[j], hidf[j] = s, float32(s)
+			} else {
+				// Pooled buffers keep last call's values; a ReLU'd zero must be
+				// explicit here.
+				hid[j], hidf[j] = 0, 0
+			}
+		}
+		x, xf = hid, hidf
 		for _, d := range h.extra {
 			x = d.relu(x)
+			xf = float32s(x)
 		}
 	}
 	in := len(x)
@@ -459,11 +782,7 @@ func (h *LocalHead) forward(x []float64) []float64 {
 	p := make([]float64, c)
 	mx := math.Inf(-1)
 	for k := 0; k < c; k++ {
-		row := h.w2[k*in : (k+1)*in]
-		s := h.b2[k]
-		for i, w := range row {
-			s += w * x[i]
-		}
+		s := float64(h.b2[k]) + float64(tensor.Dot(h.w2[k*in:(k+1)*in], xf))
 		s /= h.temp
 		p[k] = s
 		if s > mx {

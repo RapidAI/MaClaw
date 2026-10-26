@@ -227,10 +227,11 @@ describe('SessionWorkingDirChip', () => {
         const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../App.css'), 'utf8');
         expect(css).toContain('button.mc-working-dir-chip[aria-expanded="true"]');
         expect(css).toMatch(/button\.mc-working-dir-chip\[aria-expanded="true"\][^{]*\{[^}]*border-color:\s*var\(--mc-accent\)/);
-        // The 34px utility lock must not stretch this text chip. The expert mark
-        // uses that same 24px row and the lock's surface tokens.
-        expect(css).toMatch(/button\.mc-working-dir-chip,\s*#App \.mc-input-stack button\.mc-working-dir-chip\s*\{[^}]*min-height:\s*24px/);
-        expect(css).toMatch(/\.swdc-expert\s*\{[^}]*height:\s*24px[^}]*border-radius:\s*var\(--radius-md\)[^}]*var\(--mc-muted-surface,\s*var\(--theme-surface\)\)/);
+        // The utility lock must not stretch this text chip, and the chip, the
+        // expert mark and the icon buttons must all share one control height.
+        expect(css).toMatch(/button\.mc-working-dir-chip,\s*#App \.mc-input-stack button\.mc-working-dir-chip\s*\{[^}]*min-height:\s*var\(--mc-composer-control-height/);
+        expect(css).toMatch(/\.swdc-expert\s*\{[^}]*height:\s*var\(--mc-composer-control-height[^}]*border-radius:\s*var\(--radius-md\)[^}]*var\(--mc-muted-surface,\s*var\(--theme-surface\)\)/);
+        expect(css).toMatch(/--mc-composer-control-height:\s*28px/);
         expect(css).toMatch(/\.swdc-bar\s*\{[^}]*flex:\s*0 0 auto/);
     });
 });

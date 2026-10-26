@@ -19,6 +19,7 @@ package intent
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -82,7 +83,7 @@ func (qe QueryEmbedding) matches(emb embedding.Embedder, text string, role embed
 	if emb.Dim() > 0 && len(qe.Vec) != emb.Dim() {
 		return false
 	}
-	if qe.emb != nil && qe.emb == emb {
+	if sameEmbedderInstance(qe.emb, emb) {
 		return true
 	}
 	id := embedderModelID(emb)
@@ -138,7 +139,7 @@ func (qe QueryEmbedding) sameEmbedder(emb embedding.Embedder, text string, role 
 	if qe.Text != text || qe.Role != role || emb == nil {
 		return false
 	}
-	if qe.emb != nil && qe.emb == emb {
+	if sameEmbedderInstance(qe.emb, emb) {
 		return true
 	}
 	id := embedderModelID(emb)
@@ -148,38 +149,118 @@ func (qe QueryEmbedding) sameEmbedder(emb embedding.Embedder, text string, role 
 // HeadQueryInput returns the input vector for head h: the Layer 2 query
 // vector (reused from ctx, plus its anchor scores) for ordinary heads, or —
 // for heads with InputBlocks (r13 F1 last+mean) — the concatenated pooled
-// views of one classification-role pass (embedding.EmbedPooledAs; the Layer
-// 2 vector itself is not used or changed).
+// views of the classification-role pass. Layer 2 already ran that pass for the
+// same text, so its last+mean views are reused instead of embedding again.
 func HeadQueryInput(ctx context.Context, emb embedding.Embedder, h *LocalHead, text string) (vec []float32, scores map[string]float64, err error) {
 	if h == nil || len(h.InputBlocks) == 0 {
 		return IntentQueryEmbeddingScores(ctx, emb, text)
 	}
 	key := pooledKey{emb: emb, text: text, blocks: strings.Join(h.InputBlocks, ",")}
 	pooledMemo.Lock()
-	if pooledMemo.key == key && pooledMemo.vec != nil {
+	if sameEmbedderInstance(pooledMemo.key.emb, key.emb) &&
+		pooledMemo.key.text == key.text &&
+		pooledMemo.key.blocks == key.blocks &&
+		pooledMemo.vec != nil {
 		vec = append([]float32(nil), pooledMemo.vec...)
 		pooledMemo.Unlock()
 		return vec, nil, nil
 	}
 	pooledMemo.Unlock()
-	last, mean, err := embedding.EmbedPooledAs(emb, text, intentEmbeddingRole)
-	if err != nil {
-		return nil, nil, err
+	last, mean, reused := lookupPooledPair(emb, text, intentEmbeddingRole)
+	if !reused {
+		last, mean, err = embedding.EmbedPooledAs(emb, text, intentEmbeddingRole)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Publish the pair as well: a Layer 2 pass later in the same turn then
+		// reuses this forward instead of embedding again.
+		storePooledPair(emb, text, intentEmbeddingRole, last, mean)
 	}
-	defer func() {
-		pooledMemo.Lock()
-		pooledMemo.key, pooledMemo.vec = key, append([]float32(nil), vec...)
-		pooledMemo.Unlock()
-	}()
-	vec = make([]float32, 0, len(h.InputBlocks)*len(last))
-	for _, b := range h.InputBlocks {
+	vec = assembleBlockVector(h.InputBlocks, last, mean)
+	pooledMemo.Lock()
+	pooledMemo.key, pooledMemo.vec = key, append([]float32(nil), vec...)
+	pooledMemo.Unlock()
+	return vec, nil, nil
+}
+
+// assembleBlockVector concatenates the requested pooled views in block order.
+// Per-block normalisation stays with the caller (Predict's blockNormalize); the
+// pooled vectors are already L2-normalised, so the pass is idempotent.
+func assembleBlockVector(blocks []string, last, mean []float32) []float32 {
+	vec := make([]float32, 0, len(blocks)*len(last))
+	for _, b := range blocks {
 		if b == "mean" {
 			vec = append(vec, mean...)
 		} else {
 			vec = append(vec, last...)
 		}
 	}
-	return vec, nil, nil
+	return vec
+}
+
+// pooledPair is the last-token and mean view of one classification-role pass.
+// Layer 2 performs that pass anyway, so keeping both here saves a whole forward
+// for heads with InputBlocks (the shipped r13 head).
+type pooledPair struct {
+	emb  embedding.Embedder
+	text string
+	role embedding.Role
+	last []float32
+	mean []float32
+}
+
+var pooledPairMemo struct {
+	sync.Mutex
+	entry pooledPair
+}
+
+// storePooledPair keeps copies: embedIntentQuery hands the caller the original
+// last view, which must stay independent of the cached one.
+func storePooledPair(emb embedding.Embedder, text string, role embedding.Role, last, mean []float32) {
+	if len(last) == 0 || len(mean) == 0 {
+		return
+	}
+	pooledPairMemo.Lock()
+	pooledPairMemo.entry = pooledPair{
+		emb:  emb,
+		text: text,
+		role: role,
+		last: append([]float32(nil), last...),
+		mean: append([]float32(nil), mean...),
+	}
+	pooledPairMemo.Unlock()
+}
+
+// SameEmbedder reports whether a and b are the same embedder instance.
+// Interface equality panics when the dynamic type is not comparable (a
+// value-type embedder holding a slice or map); this compares pointer identity
+// instead. Exported for the local-L3 runtime, which caches one head per
+// embedder.
+func SameEmbedder(a, b embedding.Embedder) bool { return sameEmbedderInstance(a, b) }
+
+// sameEmbedderInstance reports whether a and b are the same embedder object.
+// Interface equality would panic when a dynamic type is not comparable (a
+// value-type embedder holding a slice or map), so pointer identity is compared
+// instead; non-pointer embedders never compare equal and simply re-embed.
+func sameEmbedderInstance(a, b embedding.Embedder) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	if va.Kind() != reflect.Ptr || vb.Kind() != reflect.Ptr || va.Type() != vb.Type() {
+		return false
+	}
+	return va.Pointer() == vb.Pointer()
+}
+
+func lookupPooledPair(emb embedding.Embedder, text string, role embedding.Role) (last, mean []float32, ok bool) {
+	pooledPairMemo.Lock()
+	defer pooledPairMemo.Unlock()
+	e := pooledPairMemo.entry
+	if !sameEmbedderInstance(e.emb, emb) || e.text != text || e.role != role {
+		return nil, nil, false
+	}
+	return e.last, e.mean, true
 }
 
 // pooledMemo keeps the last pooled head input so the composite-override

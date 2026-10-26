@@ -379,7 +379,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                     onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }}
                     style={{
                         display: "inline-flex", alignItems: "center", gap: 5,
-                        maxWidth: "100%", height: 24, padding: "0 8px",
+                        maxWidth: "100%", height: 28, padding: "0 8px",
                         border: `1px solid ${t.fieldBorder}`, borderRadius: 4,
                         background: menuOpen ? `color-mix(in srgb, ${t.btnColor} 10%, ${t.fieldBg})` : t.fieldBg,
                         color: menuOpen ? t.btnColor : t.textMuted,

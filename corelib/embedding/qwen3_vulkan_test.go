@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,14 +15,29 @@ import (
 // vkTestModel returns the Qwen3 GGUF path when it exists on this machine.
 func vkTestModel(t *testing.T) string {
 	t.Helper()
+	// The backend refuses its host-visible weight upload when system free memory
+	// is low. On a busy machine that would turn a Vulkan correctness test into an
+	// unrelated skip (or a wrong rejection reason) — the guard is exercised by
+	// its own tests, so disable it here.
+	t.Setenv(EmbedMemGuardEnv, "0")
 	if p := os.Getenv("MACLAW_EMBED_MODEL_PATH"); p != "" {
 		return p
 	}
-	p, _ := ResolveQwen3ModelPath("")
-	if p == "" {
-		t.Skip("no Qwen3 GGUF available")
+	if p, _ := ResolveQwen3ModelPath(""); p != "" {
+		return p
 	}
-	return p
+	// BaseDirFunc is installed by the GUI, so a plain `go test` never resolves
+	// the per-user model slot and every backend test silently skipped. Look
+	// there directly so the Vulkan path is actually exercised on a developer
+	// machine; CI without a model still skips.
+	if home, err := os.UserHomeDir(); err == nil {
+		p := filepath.Join(home, ".maclaw", "models", Qwen3ModelFilename)
+		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+			return p
+		}
+	}
+	t.Skip("no Qwen3 GGUF available")
+	return ""
 }
 
 // TestVulkanSelfCheck verifies the Vulkan backend produces the same embedding

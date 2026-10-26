@@ -170,3 +170,150 @@ func TestIntentQueryEmbeddingRejectsMismatches(t *testing.T) {
 		t.Fatal("QueryEmbeddingFromContext must return a copy")
 	}
 }
+
+// pooledCallEmbedder counts how many classification-role pool passes a turn
+// performs. Layer 2 and an InputBlocks head share one pass, so the count must
+// not grow between the two calls.
+type pooledCallEmbedder struct {
+	last, mean  []float32
+	pooledCalls int
+}
+
+func (e *pooledCallEmbedder) Embed(string) ([]float32, error) { return e.last, nil }
+func (e *pooledCallEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = e.last
+	}
+	return out, nil
+}
+func (e *pooledCallEmbedder) Dim() int { return len(e.last) }
+func (e *pooledCallEmbedder) Close()   {}
+func (e *pooledCallEmbedder) EmbedPooledWithRole(string, embedding.Role) ([]float32, []float32, error) {
+	e.pooledCalls++
+	return e.last, e.mean, nil
+}
+
+// TestHeadQueryInputReusesLayer2Pass pins the forward-sharing contract: the
+// Layer 2 query embed also yields the mean view, so an InputBlocks head must
+// assemble its input from that pass instead of embedding the text again.
+func TestHeadQueryInputReusesLayer2Pass(t *testing.T) {
+	last := []float32{0.6, 0.8}
+	mean := []float32{0.8, 0.6}
+	emb := &pooledCallEmbedder{last: last, mean: mean}
+	h := &LocalHead{
+		dim:         4,
+		InputBlocks: []string{"last", "mean"},
+		l2norm:      true,
+	}
+
+	if _, err := embedIntentQuery(emb, "send this file"); err != nil {
+		t.Fatalf("layer 2 embed: %v", err)
+	}
+	if emb.pooledCalls != 1 {
+		t.Fatalf("layer 2 performed %d pool passes, want 1", emb.pooledCalls)
+	}
+
+	vec, scores, err := HeadQueryInput(context.Background(), emb, h, "send this file")
+	if err != nil {
+		t.Fatalf("HeadQueryInput: %v", err)
+	}
+	if emb.pooledCalls != 1 {
+		t.Fatalf("head performed a second pool pass (%d total); Layer 2 views were not reused", emb.pooledCalls)
+	}
+	if len(scores) != 0 {
+		t.Fatalf("pooled head should carry no anchor scores, got %v", scores)
+	}
+	want := append(append([]float32{}, last...), mean...)
+	if len(vec) != len(want) {
+		t.Fatalf("vector len %d, want %d", len(vec), len(want))
+	}
+	for i := range want {
+		if vec[i] != want[i] {
+			t.Fatalf("vec[%d] = %v, want %v", i, vec[i], want[i])
+		}
+	}
+
+	// A different text must not reuse the stale pair.
+	if _, err := embedIntentQuery(emb, "another message"); err != nil {
+		t.Fatalf("second layer 2 embed: %v", err)
+	}
+	if emb.pooledCalls != 2 {
+		t.Fatalf("pool passes = %d after new text, want 2", emb.pooledCalls)
+	}
+}
+
+// TestLayer2QueryReusesHeadProbePass covers the opposite ordering: when the
+// composite-override probe builds the head input first, the Layer 2 query must
+// take the last-token view from that pass instead of embedding again.
+func TestLayer2QueryReusesHeadProbePass(t *testing.T) {
+	last := []float32{0.0, 1.0}
+	mean := []float32{1.0, 0.0}
+	emb := &pooledCallEmbedder{last: last, mean: mean}
+	h := &LocalHead{dim: 4, InputBlocks: []string{"last", "mean"}, l2norm: true}
+
+	if _, _, err := HeadQueryInput(context.Background(), emb, h, "probe first"); err != nil {
+		t.Fatalf("HeadQueryInput: %v", err)
+	}
+	if emb.pooledCalls != 1 {
+		t.Fatalf("head input performed %d pool passes, want 1", emb.pooledCalls)
+	}
+	vec, err := embedIntentQuery(emb, "probe first")
+	if err != nil {
+		t.Fatalf("layer 2 embed: %v", err)
+	}
+	if emb.pooledCalls != 1 {
+		t.Fatalf("layer 2 re-embedded (%d pool passes); the head probe pass was not reused", emb.pooledCalls)
+	}
+	for i := range last {
+		if vec[i] != last[i] {
+			t.Fatalf("vec[%d] = %v, want %v", i, vec[i], last[i])
+		}
+	}
+}
+
+// nonComparablePooledEmbedder is a value type holding slices: comparing two
+// interface values of this type panics, which is what the identity helper must
+// survive (a value-type embedder must simply never hit the shared caches).
+type nonComparablePooledEmbedder struct {
+	last []float32
+	mean []float32
+}
+
+func (e nonComparablePooledEmbedder) Embed(string) ([]float32, error) { return e.last, nil }
+func (e nonComparablePooledEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = e.last
+	}
+	return out, nil
+}
+func (e nonComparablePooledEmbedder) Dim() int { return len(e.last) }
+func (e nonComparablePooledEmbedder) Close()   {}
+func (e nonComparablePooledEmbedder) EmbedPooledWithRole(string, embedding.Role) ([]float32, []float32, error) {
+	return e.last, e.mean, nil
+}
+
+// TestEmbedderIdentityHandlesNonComparableTypes guards the shared caches
+// against a value-type embedder: no panic, and no false cache hit.
+func TestEmbedderIdentityHandlesNonComparableTypes(t *testing.T) {
+	emb := nonComparablePooledEmbedder{
+		last: []float32{1, 0},
+		mean: []float32{0, 1},
+	}
+	for i := 0; i < 2; i++ {
+		vec, err := embedIntentQuery(emb, "hello")
+		if err != nil {
+			t.Fatalf("embedIntentQuery: %v", err)
+		}
+		if len(vec) != 2 || vec[0] != 1 {
+			t.Fatalf("vec = %v", vec)
+		}
+	}
+	if sameEmbedderInstance(emb, emb) {
+		t.Fatal("non-pointer embedders must not compare equal")
+	}
+	if !sameEmbedderInstance((*pooledCallEmbedder)(nil), (*pooledCallEmbedder)(nil)) {
+		t.Fatal("two typed nil pointers should compare equal")
+	}
+}

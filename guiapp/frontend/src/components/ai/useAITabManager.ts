@@ -242,7 +242,9 @@ export interface UseAITabManagerResult {
     /** Remove a deleted project's tabs without persisting an archived session. */
     discardDeletedProjectTabs: (projectPath: string) => void;
     /** Remove a deleted expert's tab and history without re-persisting conversation. */
-    discardDeletedExpertTabs: (expertId: string) => void;
+    discardDeletedExpertTabs: (expertId: string, options?: { keepBackendSession?: boolean }) => void;
+    /** Seed a closed expert tab's cache from the backend session file. */
+    hydrateClosedExpertTabHistory: (expertId: string) => void;
     /** Discard open project tabs that no visible task row claims (after a grace window). */
     discardOrphanProjectTabs: (tasks: TaskManagementItem[]) => void;
     /** Clear a VE/group conversation explicitly, resetting cached and visible state. */
@@ -1715,7 +1717,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             orphanProjectTabTimerRef.current = 0;
         }
     }, []);
-    const discardDeletedExpertTabs = useCallback((expertId: string) => {
+    const discardDeletedExpertTabs = useCallback((expertId: string, options?: { keepBackendSession?: boolean }) => {
         const id = String(expertId || "").trim();
         if (!id) return;
         const tabId = expertTabId(id);
@@ -1752,6 +1754,13 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         purgeDeletedExpertTabLocalCache(id);
         // Always rewrite history storage so a closed-tab orphan cannot resurrect.
         persistProjectTabHistories(tabStatesRef.current, next.tabs);
+        if (options?.keepBackendSession) {
+            // The backend retired this conversation to another task of the
+            // same expert and promoted that task's transcript into this
+            // session key. Reopening the expert must load it, so do not clear
+            // the session file or agent memory here.
+            return;
+        }
         // Expert sessions use the same backend session-file API as project tabs.
         SaveProjectTabConversation(tabId, []).catch(() => {});
         // Wipe agent conversation memory too. Task deletion already does this
@@ -1759,6 +1768,33 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         const sessionKey = expertSessionKey(id);
         if (sessionKey) ClearAIAssistantHistoryForSession(sessionKey).catch(() => {});
     }, [updateTabState]);
+
+    /**
+     * Seed a closed expert tab's cache from the backend session file. Used
+     * after the backend retires a task but promotes another task's transcript
+     * into the same session: the open tab must close, but reopening the expert
+     * should show the promoted conversation instead of an empty page.
+     */
+    const hydrateClosedExpertTabHistory = useCallback((expertId: string) => {
+        const id = String(expertId || "").trim();
+        if (!id) return;
+        const tabId = expertTabId(id);
+        LoadProjectTabConversation(tabId).then((conversation) => {
+            if (!Array.isArray(conversation) || conversation.length === 0) return;
+            const existing = tabStatesRef.current.get(tabId);
+            const existingHistory = Array.isArray(existing?.history) ? existing.history : [];
+            // A tab the user already reopened and used wins over this snapshot.
+            if (existingHistory.length > 0) return;
+            const history = persistableProjectHistory(conversation);
+            if (history.length === 0) return;
+            tabStatesRef.current.set(tabId, {
+                ...(existing || { scrollTop: 0, inputText: "" }),
+                history,
+                lastActiveAt: Date.now(),
+            });
+            persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+        }).catch(() => {});
+    }, []);
 
     // Sync open expert tabs with expert definition changes from the utilities page:
     // "maclaw:expert-deleted" discards tab + history; "maclaw:expert-updated" patches
@@ -2031,6 +2067,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         closeTab,
         discardDeletedProjectTabs,
         discardDeletedExpertTabs,
+        hydrateClosedExpertTabHistory,
         discardOrphanProjectTabs,
         clearTabConversation,
         stashProjectTabHistory,

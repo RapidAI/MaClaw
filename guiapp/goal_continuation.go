@@ -1895,7 +1895,17 @@ func (e *GoalContinuationEngine) emitGoalNotice(userID, text string, asError boo
 
 // emitGoalStateChanged notifies the frontend of goal state changes.
 func (e *GoalContinuationEngine) emitGoalStateChanged(userID string, g *goal.Goal) {
-	if e == nil || e.app == nil || e.app.ctx == nil || g == nil {
+	if e == nil || e.app == nil || g == nil {
+		return
+	}
+	// A completed goal no longer owns the live step checklist. Clear it before
+	// the state event so the panel and the goal bar retire together. If the
+	// closing turn writes one last todo, the post-turn terminal emit clears it
+	// again.
+	if g.Status == goal.StatusComplete && e.app.imHandler != nil {
+		e.app.imHandler.clearGoalFinishedCodingChecklist(userID)
+	}
+	if e.app.ctx == nil {
 		return
 	}
 	awaiting := false

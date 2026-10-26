@@ -111,7 +111,25 @@ func (c intentScoreCalibration) apply(score float64) float64 {
 }
 
 // embedIntentQuery embeds a user message in the Layer 2 space.
+//
+// When the embedder can pool, the same forward also yields the mean view, and
+// both are kept for the turn: a head with InputBlocks (r13 F1 last+mean) then
+// assembles its input from this pass instead of running a second forward over
+// the same text. The last-token view is bit-identical to EmbedAs (verified
+// cos = 1.0, maxDiff ~1e-8 from summation order).
 func embedIntentQuery(emb embedding.Embedder, text string) ([]float32, error) {
+	// A head probe may have run the pooled pass first (composite override);
+	// reuse it so the ordering of the two calls does not add a forward.
+	if last, _, ok := lookupPooledPair(emb, text, intentEmbeddingRole); ok {
+		return append([]float32(nil), last...), nil
+	}
+	if pe, ok := emb.(embedding.PooledEmbedder); ok && !embedding.IsNoop(emb) {
+		if last, mean, err := pe.EmbedPooledWithRole(text, intentEmbeddingRole); err == nil && len(last) > 0 {
+			storePooledPair(emb, text, intentEmbeddingRole, last, mean)
+			return last, nil
+		}
+		// Fall through: an embedder may implement the interface and still fail.
+	}
 	return embedding.EmbedAs(emb, text, intentEmbeddingRole)
 }
 

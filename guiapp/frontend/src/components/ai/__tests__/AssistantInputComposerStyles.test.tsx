@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { ASSISTANT_COMPOSER_RADIUS, getAssistantInputComposerStyles } from "../AssistantInputComposerStyles";
-import { overlayTheme } from "../aiAssistantPanelTheme";
+import { COMPOSER_CONTROL_HEIGHT_PX, overlayTheme } from "../aiAssistantPanelTheme";
 
 const base = {
     cancelPending: false,
@@ -58,5 +58,16 @@ describe("getAssistantInputComposerStyles", () => {
         expect(inputBarStyle.border).toContain("1.5px solid");
         // Mid-page welcome field must not inherit the window safe-area inset.
         expect(inputBarStyle.paddingBottom).toBe("6px");
+    });
+
+    it("sizes the toolbar row to the shared composer control height", () => {
+        const { toolbarStyle } = getAssistantInputComposerStyles({
+            ...base,
+            inline: false,
+            flushBottom: true,
+        });
+        // The row's tallest child is a control of exactly this height; a smaller
+        // floor would let the toolbar collapse under it during layout.
+        expect(toolbarStyle.minHeight).toBe(`${COMPOSER_CONTROL_HEIGHT_PX}px`);
     });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+    codingChecklistAllDone,
     codingStepIsActive,
     codingStepIsDone,
     codingStepIsFailed,
@@ -129,5 +130,41 @@ describe("codingStepIsSettled", () => {
         expect(codingStepIsSettled("skipped")).toBe(true);
         expect(codingStepIsSettled("running")).toBe(false);
         expect(codingStepIsSettled("pending")).toBe(false);
+    });
+});
+
+describe("codingChecklistAllDone", () => {
+    it("retires a checklist whose rows all closed successfully", () => {
+        expect(codingChecklistAllDone([
+            { index: 1, status: "passed" },
+            { index: 2, status: "done" },
+            { index: 3, status: "skipped" },
+        ])).toBe(true);
+        expect(codingChecklistAllDone([{ index: 1, status: "passed" }])).toBe(true);
+    });
+
+    it("keeps a checklist with live, open, or failed rows", () => {
+        expect(codingChecklistAllDone([
+            { index: 1, status: "passed" },
+            { index: 2, status: "running" },
+        ])).toBe(false);
+        expect(codingChecklistAllDone([
+            { index: 1, status: "passed" },
+            { index: 2, status: "pending" },
+        ])).toBe(false);
+        expect(codingChecklistAllDone([
+            { index: 1, status: "failed" },
+            { index: 2, status: "skipped" },
+        ])).toBe(false);
+        expect(codingChecklistAllDone([
+            { index: 1, status: "verify_failed" },
+            { index: 2, status: "passed" },
+        ])).toBe(false);
+    });
+
+    it("does not treat an empty list as finished", () => {
+        // An empty checklist still renders the requirement-understanding card.
+        expect(codingChecklistAllDone([])).toBe(false);
+        expect(codingChecklistAllDone(undefined)).toBe(false);
     });
 });

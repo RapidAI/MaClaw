@@ -258,7 +258,7 @@ func TestSaveProjectTabConversationMergesUnflushedArchiveTurns(t *testing.T) {
 	}
 	persist := app.ensureProjectTabSessionPersist()
 	if err := persist.SaveSession(&TabSessionData{
-		TabID:       latexPaperArchiveTabID(saved.ProjectPath),
+		TabID:       expertTaskArchiveTabID(saved.ProjectPath),
 		ProjectPath: saved.ProjectPath,
 		Conversation: []interface{}{
 			map[string]interface{}{"id": "m1", "role": "user", "content": "already on disk"},

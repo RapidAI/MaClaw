@@ -73,7 +73,7 @@ func (s *Service) ReadFile(ctx context.Context, tenantID, userID, filePath strin
 	}
 	var output string
 	var exitCode int
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind: ExecFile,
 			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "read", filePath, desktop.FileReadMax+1),
@@ -112,7 +112,7 @@ func (s *Service) ReadBytes(ctx context.Context, tenantID, userID, filePath stri
 	}
 	var output string
 	var exitCode int
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind: ExecFile,
 			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "bytes", filePath, desktop.FileBytesMax+1),
@@ -242,7 +242,7 @@ func (s *Service) ListFile(ctx context.Context, tenantID, userID, filePath strin
 	}
 	var output string
 	var exitCode int
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind: ExecFile,
 			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "list", filePath, 0),
@@ -300,7 +300,7 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	defer release()
 	var output string
 	var exitCode int
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{Kind: ExecShell, Args: commandArgs})
 		output, exitCode = result.Out, result.Exit
 		return runErr
@@ -329,7 +329,7 @@ func (s *Service) HTTPGet(ctx context.Context, tenantID, userID, rawURL string) 
 	}
 	var output string
 	var exitCode int
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
 		var runErr error
 		output, exitCode, runErr = s.runCommand(ctx, nil, args...)
 		return runErr

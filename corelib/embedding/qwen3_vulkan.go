@@ -533,22 +533,25 @@ var qwen3VKMaxRows = func() int {
 
 // qwen3VKMaxSeqTokens is the longest single sequence the GPU handles.
 //
-// Beyond ~130 tokens the GPU loses to the CPU: the 32-row matmul tile makes
-// every 32 extra rows re-read the whole 495 MB weight blob, and attention grows
-// quadratically. Measured on the reference hardware (p50):
+// Past roughly 200 tokens the GPU falls behind the CPU: the 32-row matmul tile
+// makes every 32 extra rows re-read the whole weight blob, and attention grows
+// quadratically. Measured on the reference hardware (p50, 4 embed threads):
 //
-//	 33 tok: cpu  83 ms / gpu  84 ms
-//	 45 tok: cpu 104 ms / gpu  97 ms
-//	131 tok: cpu 360 ms / gpu 345 ms
-//	380 tok: cpu 1045 ms / gpu 1754 ms
+//	 33 tok: cpu  96 ms / gpu  36 ms (2.67x)
+//	 65 tok: cpu 207 ms / gpu 169 ms (1.22x)
+//	131 tok: cpu 481 ms / gpu 452 ms (1.06x)
+//	200 tok: cpu 730 ms / gpu 756 ms (0.97x)
+//	380 tok: cpu 1045 ms / gpu 1754 ms (0.60x)
 //
-// So longer texts are left to the CPU: the GPU is here to save CPU cycles, not
-// to make latency worse. MACLAW_QWEN3_VULKAN_MAX_TOKENS overrides the cap.
+// The cap sits at 192, just before the crossover: up to there the GPU is at
+// least as fast and burns a fraction of the CPU, which is the point of the
+// backend. Longer texts stay on the CPU so latency does not get worse.
+// MACLAW_QWEN3_VULKAN_MAX_TOKENS overrides the cap.
 var qwen3VKMaxSeqTokens = func() int {
 	if v, err := strconv.Atoi(os.Getenv("MACLAW_QWEN3_VULKAN_MAX_TOKENS")); err == nil && v > 0 {
 		return v
 	}
-	return 128
+	return 192
 }()
 
 // ensureRows reserves the activation arena. It never reallocates: see

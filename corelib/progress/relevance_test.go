@@ -42,9 +42,9 @@ func TestRelevanceModelCosineCalibration(t *testing.T) {
 
 func TestRelevanceModelLogisticMatchesReference(t *testing.T) {
 	d := 3
-	w := make([]float64, 4*d+1)
+	w := make([]float32, 4*d+1)
 	for i := range w {
-		w[i] = 0.1 * float64(i%5-2)
+		w[i] = 0.1 * float32(i%5-2)
 	}
 	m := &RelevanceModel{Format: RelevanceModelFormat, Kind: "logistic", Dims: d, W: w, B: 0.3, High: 0.8, Low: 0.4}
 	b, _ := json.Marshal(m)
@@ -59,9 +59,10 @@ func TestRelevanceModelLogisticMatchesReference(t *testing.T) {
 	}
 	a := []float64{0.6, 0, 0.8}
 	c := []float64{0, 1, 0}
-	z := 0.3 + w[4*d]*0 // cos = 0
+	z := 0.3 + float64(w[4*d])*0 // cos = 0
 	for i := 0; i < d; i++ {
-		z += w[i]*a[i] + w[d+i]*c[i] + w[2*d+i]*math.Abs(a[i]-c[i]) + w[3*d+i]*a[i]*c[i]
+		z += float64(w[i])*a[i] + float64(w[d+i])*c[i] +
+			float64(w[2*d+i])*math.Abs(a[i]-c[i]) + float64(w[3*d+i])*a[i]*c[i]
 	}
 	if want := 1 / (1 + math.Exp(-z)); math.Abs(got-want) > 1e-12 {
 		t.Fatalf("RawScore=%v want %v", got, want)

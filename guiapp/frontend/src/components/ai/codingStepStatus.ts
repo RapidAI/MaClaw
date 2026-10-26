@@ -54,6 +54,25 @@ export function codingStepIsSettled(status: string): boolean {
 }
 
 /**
+ * True when every row reached a successful close (done or skipped).
+ *
+ * This is the checklist retirement condition: once no step is open, live, or
+ * failed, the card above the composer has nothing left to report and would
+ * otherwise pin a finished list over a session that is no longer working on
+ * it. A failed row is deliberately not "closed" — that state stays visible so
+ * the failure can be read. An empty list is not closed either; the
+ * requirement-understanding card still uses it.
+ */
+export function codingChecklistAllDone<T extends { status?: string }>(steps: T[] | undefined): boolean {
+    const list = steps || [];
+    if (list.length === 0) return false;
+    return list.every((step) => {
+        const status = String(step?.status || "");
+        return codingStepIsDone(status) || codingStepIsSkipped(status);
+    });
+}
+
+/**
  * Checklist rows the plan UI should draw.
  *
  * todo_write never writes "failed". With no orchestrator plan, a failed row

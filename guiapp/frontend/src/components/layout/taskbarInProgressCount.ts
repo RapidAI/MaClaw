@@ -1,5 +1,6 @@
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy, visibleTaskRows } from '../ai/codingTaskMode';
 import { normalizeProjectSessionPath } from '../ai/aiAssistantPanelSessionUtils';
+import { expertTaskIsLiveInMap, liveExpertTaskPaths } from '../../utils/latexTemplates';
 import { isLiveAISession } from './backgroundTaskCount';
 import {
     isLiveRunningTaskRow,
@@ -50,7 +51,11 @@ function pathCovered(path: string, coverage: RunningCoverage): boolean {
 
 /** One walk: the 进行中 rows, plus the paths those rows already stand for. */
 function collectRunningRows(tasks: readonly TaskManagementItem[], signals?: LiveRunningRowSignals | null): { count: number; coverage: RunningCoverage } {
-    const ctx = liveRunningRowContext(signals);
+    const livePaths = liveExpertTaskPaths(tasks as TaskManagementItem[]);
+    const ctx = {
+        ...liveRunningRowContext(signals),
+        isLiveExpertTask: (task: TaskManagementItem) => expertTaskIsLiveInMap(task, livePaths),
+    };
     const coverage: RunningCoverage = { paths: new Set(), workspaceIds: new Set() };
     let count = 0;
     for (const task of visibleTaskRows(tasks as TaskManagementItem[])) {

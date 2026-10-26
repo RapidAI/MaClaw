@@ -1,6 +1,8 @@
 package guiapp
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -230,5 +232,59 @@ func TestStripHistoryAttachments_AutoExtractBodyRemoved(t *testing.T) {
 	}
 	if !strings.Contains(text, "之前已自动解析文档") {
 		t.Fatalf("expected short summary placeholder:\n%s", text)
+	}
+}
+
+func TestHistoryContentForPersistence_StripsImages(t *testing.T) {
+	userContent := []interface{}{
+		map[string]interface{}{
+			"type": "text",
+			"text": "图中有什么？\n\n[用户选择的本地文件路径]\nC:\\Users\\test\\logo.png\n请直接使用这些路径。",
+		},
+		map[string]interface{}{
+			"type":      "image_url",
+			"image_url": map[string]interface{}{"url": "data:image/png;base64,iVBORw0KGgo..."},
+		},
+	}
+
+	stored := historyContentForPersistence(userContent)
+	blocks, ok := stored.([]interface{})
+	if !ok {
+		t.Fatalf("expected block content, got %T", stored)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks (text + placeholder), got %d", len(blocks))
+	}
+	if strings.Contains(fmt.Sprintf("%v", blocks), "base64") {
+		t.Fatalf("base64 leaked into persisted history: %v", blocks)
+	}
+	if blocks[1].(map[string]interface{})["text"] != "[之前上传了 1 张图片]" {
+		t.Errorf("unexpected placeholder: %v", blocks[1])
+	}
+
+	// Round-trip: the next prompt build strips historical entries again. The
+	// persisted placeholder form must be a fixed point of stripHistoryAttachments
+	// so the model sees exactly what it sees today (when the strip consumed the
+	// original base64 blocks instead).
+	entry := agent.ConversationEntry{Role: "user", Content: stored}
+	stripped := stripHistoryAttachments(entry.ToMessage())
+	if !reflect.DeepEqual(stripped, entry.ToMessage()) {
+		t.Fatalf("persisted history entry is not a strip fixed point:\nbefore=%#v\nafter=%#v", entry.ToMessage(), stripped)
+	}
+}
+
+func TestHistoryContentForPersistence_PlainTextUnchanged(t *testing.T) {
+	if got := historyContentForPersistence("你好"); got != "你好" {
+		t.Errorf("plain text should round-trip unchanged, got %v", got)
+	}
+	marked := "看看\n\n[附件: report.pdf → 已保存到 /tmp/report.pdf]"
+	got := historyContentForPersistence(marked).(string)
+	if strings.Contains(got, "[附件:") || !strings.Contains(got, "[之前的附件:") {
+		t.Errorf("attachment markers should be annotated at persistence time, got %q", got)
+	}
+	// Already-annotated text must be a fixed point on the next prompt build.
+	entry := agent.ConversationEntry{Role: "user", Content: got}
+	if stripped := stripHistoryAttachments(entry.ToMessage()); !reflect.DeepEqual(stripped, entry.ToMessage()) {
+		t.Fatalf("annotated text is not a strip fixed point: %#v", stripped)
 	}
 }

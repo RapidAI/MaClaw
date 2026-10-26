@@ -50,7 +50,7 @@ func TestLocalHeadInputBlocks(t *testing.T) {
 		z[k] = s / 0.7
 	}
 	p0 := 1 / (1 + math.Exp(z[1]-z[0]))
-	if math.Abs(p[0]-p0) > 1e-12 {
+	if math.Abs(p[0]-p0) > headProbEps {
 		t.Fatalf("p0 %v want %v", p[0], p0)
 	}
 	if _, err := h.Predict(v[:4]); err == nil {

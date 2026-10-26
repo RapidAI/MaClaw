@@ -1192,12 +1192,12 @@ func (a *App) lookupOrCreateExpertTask(expertID, expertName, workingDir string) 
 	}
 
 	sourceTag := taskSourceExpertPrefix + expertID
-	// An expert has one active resumable task entry. A hidden entry represents a
+	// Every expert can own several task records: each wizard launch allocates a
+	// new one with its own conversation, so resuming the expert (without a new
+	// launch) must open the newest visible task. A hidden entry represents a
 	// user-removed task and must not be resurrected; opening the expert again
 	// starts a fresh visible task just like other task launchers do.
-	// The LaTeX paper expert is the exception: each wizard launch is a new paper,
-	// so several visible records can exist and resume must open the newest one.
-	if rec, ok := a.newestVisibleExpertTask(pi, sourceTag, expertID == builtinLatexExpertID); ok {
+	if rec, ok := a.newestVisibleExpertTask(pi, sourceTag); ok {
 		retarget := ""
 		if workingDir != "" && a.recentTaskWorkingDir(rec.ProjectPath) != workingDir {
 			retarget = rec.ProjectPath
@@ -1208,59 +1208,99 @@ func (a *App) lookupOrCreateExpertTask(expertID, expertName, workingDir string) 
 	return a.insertExpertTaskRecord(expertID, expertName, workingDir), ""
 }
 
-// createFreshLatexExpertTask always allocates a new paper task. The wizard
-// uses it so a second LaTeX template does not continue the previous paper's
-// workspace. Unless keepExpertSession is set, the shared expert transcript is
-// cleared afterwards. A scheduled paper sets the flag so the turn still
-// running on this session is not cancelled; the open path clears it later.
-func (a *App) createFreshLatexExpertTask(expertName, workingDir string, keepExpertSession bool) (ProjectSearchResult, error) {
+// createFreshExpertTask always allocates a new task for an expert launch. The
+// expert tab is one shared session, so the wizard uses this to give every launch
+// its own conversation: the transcript of the task being left is archived onto
+// that task, then the shared session is cleared for the new task. Unless
+// keepExpertSession is set, the cutover happens here. A scheduled launch sets
+// the flag so the turn still running on this session is not cancelled; the open
+// path clears it later.
+//
+// taskName is the wizard's short instruction title. It keeps several tasks of
+// the same expert distinguishable; an empty value keeps the expert name.
+func (a *App) createFreshExpertTask(expertID, expertName, workingDir, taskName string, keepExpertSession bool) (ProjectSearchResult, error) {
+	expertID = strings.TrimSpace(expertID)
+	if expertID == "" || !expertIDPattern.MatchString(expertID) {
+		return ProjectSearchResult{}, fmt.Errorf("invalid expert id")
+	}
 	expertTaskMu.Lock()
 	previous := ""
 	if a.memoryStore != nil {
 		if pi := a.memoryStore.ProjectIndex(); pi != nil {
-			if rec, ok := a.newestVisibleExpertTask(pi, taskSourceExpertPrefix+builtinLatexExpertID, true); ok {
+			if rec, ok := a.newestVisibleExpertTask(pi, taskSourceExpertPrefix+expertID); ok {
 				previous = rec.ProjectPath
 			}
 		}
 	}
-	result := a.insertExpertTaskRecord(builtinLatexExpertID, expertName, workingDir)
+	result := a.insertExpertTaskRecordWithTitle(expertID, expertName, workingDir, taskName)
 	expertTaskMu.Unlock()
 	if strings.TrimSpace(result.ProjectPath) == "" {
-		return ProjectSearchResult{}, fmt.Errorf("latex expert task creation failed")
+		return ProjectSearchResult{}, fmt.Errorf("expert task creation failed")
 	}
-	// A scheduled paper must not cancel the turn that is still using this
+	// A scheduled launch must not cancel the turn that is still using this
 	// session. The open path archives and clears once that turn is idle.
 	if keepExpertSession {
 		return result, nil
 	}
-	// The expert tab is one shared session. Copy its transcript onto the paper
-	// being left, then clear the shared session. The copy is saved after the
-	// clear so an empty expert file with the same project path cannot outrank it.
-	conversation, createdAt := a.readBuiltinLatexExpertConversation()
-	a.resetBuiltinLatexExpertConversation()
-	a.saveLatexPaperArchive(previous, conversation, createdAt)
+	// Copy the shared transcript and the agent memory onto the task being left,
+	// then clear the shared session. The archive is saved after the clear so an
+	// empty expert file with the same project path cannot outrank it.
+	conversation, createdAt := a.readExpertConversation(expertID)
+	a.archiveExpertSessionMemory(expertID, previous)
+	a.resetExpertConversation(expertID)
+	a.saveExpertTaskArchive(previous, conversation, createdAt)
 	return result, nil
 }
 
-func (a *App) readBuiltinLatexExpertConversation() ([]interface{}, string) {
+// createFreshLatexExpertTask is the LaTeX paper entry point. Each wizard
+// launch is a new paper, so it uses the same fresh-task contract as every
+// other expert.
+func (a *App) createFreshLatexExpertTask(expertName, workingDir string, keepExpertSession bool) (ProjectSearchResult, error) {
+	return a.createFreshExpertTask(builtinLatexExpertID, expertName, workingDir, "", keepExpertSession)
+}
+
+func (a *App) readExpertConversation(expertID string) ([]interface{}, string) {
 	if a == nil {
 		return nil, ""
 	}
-	session, err := a.ensureProjectTabSessionPersist().LoadSession(expertTabSessionID(builtinLatexExpertID))
+	session, err := a.ensureProjectTabSessionPersist().LoadSession(expertTabSessionID(expertID))
 	if err != nil {
-		log.Printf("[latex] read expert transcript for archive: %v", err)
+		log.Printf("[expert] read transcript for archive expert=%q: %v", expertID, err)
 		return nil, ""
 	}
-	if session == nil || !latexSessionHasUserTurn(session.Conversation) {
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) {
 		return nil, ""
 	}
 	return append([]interface{}(nil), session.Conversation...), session.CreatedAt
 }
 
-// saveLatexPaperArchive stores a LaTeX expert transcript on the paper it
-// belongs to. LoadProjectConversationHistory recovers it by project path.
-func (a *App) saveLatexPaperArchive(projectPath string, conversation []interface{}, createdAt string) {
-	if a == nil || !latexSessionHasUserTurn(conversation) {
+// archiveExpertSessionMemory copies the live expert conversation into the task
+// session that owned it. The old task then opens with its prior context intact
+// even though the shared expert session moves on to the new task.
+func (a *App) archiveExpertSessionMemory(expertID, projectPath string) {
+	if a == nil || strings.TrimSpace(projectPath) == "" {
+		return
+	}
+	handler := a.imHandler
+	if hub := a.hubClient(); hub != nil {
+		if live := hub.currentIMHandler(); live != nil {
+			handler = live
+		}
+	}
+	if handler == nil || handler.memory == nil {
+		return
+	}
+	entries := handler.memory.Load(expertSessionUserID(expertID))
+	if len(entries) == 0 {
+		return
+	}
+	handler.memory.Save(projectSessionOwnerID(normalizeProjectSessionPath(projectPath)), append([]agent.ConversationEntry(nil), entries...))
+}
+
+// saveExpertTaskArchive stores an expert transcript on the task it belongs to.
+// LoadProjectConversationHistory recovers it by project path.
+func (a *App) saveExpertTaskArchive(projectPath string, conversation []interface{}, createdAt string) {
+	if a == nil || !sessionSnapshotHasUserTurn(conversation) {
 		return
 	}
 	projectPath = normalizeProjectSessionPath(projectPath)
@@ -1271,16 +1311,27 @@ func (a *App) saveLatexPaperArchive(projectPath string, conversation []interface
 		createdAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	if err := a.ensureProjectTabSessionPersist().SaveSession(&TabSessionData{
-		TabID:        latexPaperArchiveTabID(projectPath),
+		TabID:        expertTaskArchiveTabID(projectPath),
 		ProjectPath:  projectPath,
 		Conversation: conversation,
 		CreatedAt:    createdAt,
 	}); err != nil {
-		log.Printf("[latex] archive expert transcript project=%q err=%v", projectPath, err)
+		log.Printf("[expert] archive transcript project=%q err=%v", projectPath, err)
 	}
 }
 
-func latexPaperArchiveTabID(projectPath string) string {
+func expertTaskArchiveTabID(projectPath string) string {
+	return expertTaskArchiveTabIDWithPrefix(projectPath, "expert-task-")
+}
+
+// legacyLatexPaperArchiveTabID is the archive id written before expert task
+// archiving was generalized. Existing LaTeX papers keep their transcripts, and
+// the merge below still has to recognize that tab as the archive itself.
+func legacyLatexPaperArchiveTabID(projectPath string) string {
+	return expertTaskArchiveTabIDWithPrefix(projectPath, "latex-paper-")
+}
+
+func expertTaskArchiveTabIDWithPrefix(projectPath, prefix string) string {
 	base := filepath.Base(normalizeProjectSessionPath(projectPath))
 	base = strings.Map(func(r rune) rune {
 		switch r {
@@ -1291,12 +1342,12 @@ func latexPaperArchiveTabID(projectPath string) string {
 		}
 	}, base)
 	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = "paper"
+		base = "task"
 	}
-	return "latex-paper-" + base
+	return prefix + base
 }
 
-func latexSessionHasUserTurn(conversation []interface{}) bool {
+func sessionSnapshotHasUserTurn(conversation []interface{}) bool {
 	for _, raw := range conversation {
 		data, err := json.Marshal(raw)
 		if err != nil {
@@ -1315,29 +1366,47 @@ func latexSessionHasUserTurn(conversation []interface{}) bool {
 	return false
 }
 
-// resetBuiltinLatexExpertConversation drops the shared LaTeX expert transcript
-// and the directory the previous paper's tools were bound to. A new paper
-// then starts empty and gets pinned to its own workspace.
-func (a *App) resetBuiltinLatexExpertConversation() {
+// resetExpertConversation drops the shared expert transcript and the
+// directory the previous task's tools were bound to. A new task then starts
+// empty and gets pinned to its own workspace.
+func (a *App) resetExpertConversation(expertID string) {
 	if a == nil {
 		return
 	}
-	tabID := expertTabSessionID(builtinLatexExpertID)
+	expertID = strings.TrimSpace(expertID)
+	if expertID == "" {
+		return
+	}
+	tabID := expertTabSessionID(expertID)
 	persist := a.ensureProjectTabSessionPersist()
 	if err := persist.ClearSessionConversation(tabID); err != nil {
-		log.Printf("[latex] clear expert transcript: %v", err)
+		log.Printf("[expert] clear transcript expert=%q: %v", expertID, err)
 	}
-	// The shared expert file must not keep the previous paper's path. An empty
-	// snapshot with that path would outrank the archived transcript.
-	if session, err := persist.LoadSession(tabID); err == nil && session != nil && strings.TrimSpace(session.ProjectPath) != "" {
-		session.ProjectPath = ""
-		if err := persist.SaveSession(session); err != nil {
-			log.Printf("[latex] detach expert session path: %v", err)
+	// The shared expert file must not keep the previous task's path. An empty
+	// snapshot with that path would outrank the archived transcript. Its
+	// working directory must not survive either: the next send would restore
+	// it through bindAssistantTabWorkingDir and run the new task's tools in
+	// the previous task's workspace.
+	if session, err := persist.LoadSession(tabID); err == nil && session != nil {
+		changed := false
+		if strings.TrimSpace(session.ProjectPath) != "" {
+			session.ProjectPath = ""
+			changed = true
+		}
+		if strings.TrimSpace(session.WorkingDir) != "" {
+			session.WorkingDir = ""
+			changed = true
+		}
+		if changed {
+			if err := persist.SaveSession(session); err != nil {
+				log.Printf("[expert] detach session path expert=%q: %v", expertID, err)
+			}
 		}
 	}
-	owner := expertSessionUserID(builtinLatexExpertID)
+	owner := expertSessionUserID(expertID)
 	a.assistantSessionWorkingDirs.Delete(owner)
 	a.tabWorkingDirOverrides.Delete(tabID)
+	a.expertSessionTaskPaths.Delete(owner)
 	var handler *IMMessageHandler
 	if hub := a.hubClient(); hub != nil {
 		handler = hub.currentIMHandler()
@@ -1373,11 +1442,14 @@ func (a *App) AbandonUnopenedFreshLatexTask(projectPath string) error {
 	if keepLiveSession {
 		return a.removeFreshLatexTaskRecord(projectPath)
 	}
-	a.restoreBuiltinLatexExpertConversationFrom(previous)
+	a.restoreExpertConversationFrom(builtinLatexExpertID, previous)
 	owner := expertSessionUserID(builtinLatexExpertID)
 	tabID := expertTabSessionID(builtinLatexExpertID)
 	a.assistantSessionWorkingDirs.Delete(owner)
 	a.tabWorkingDirOverrides.Delete(tabID)
+	// The abandoned paper's workspace must not survive on the reused tab.
+	a.clearPersistedTabWorkingDir(tabID)
+	a.expertSessionTaskPaths.Delete(owner)
 	if previous != "" {
 		a.bindExpertTaskWorkspace(owner, tabID, previous)
 	}
@@ -1390,7 +1462,7 @@ func (a *App) AbandonUnopenedFreshLatexTask(projectPath string) error {
 func (a *App) claimUnopenedFreshLatexTask(projectPath string) (string, bool, error) {
 	expertTaskMu.Lock()
 	defer expertTaskMu.Unlock()
-	tasks := a.orderedVisibleLatexExpertTasks()
+	tasks := a.orderedVisibleExpertTasks(builtinLatexExpertID)
 	if len(tasks) == 0 || normalizeProjectSessionPath(tasks[0].ProjectPath) != projectPath {
 		return "", false, fmt.Errorf("latex task is no longer the unopened paper")
 	}
@@ -1398,7 +1470,7 @@ func (a *App) claimUnopenedFreshLatexTask(projectPath string) (string, bool, err
 	// Only the just-created row, whose open never finished, has an empty one.
 	// A scheduled row can also be newest while the previous paper's transcript
 	// is still the live session. That row does not own the turn.
-	if session, err := a.ensureProjectTabSessionPersist().LoadSession(expertTabSessionID(builtinLatexExpertID)); err == nil && session != nil && latexSessionHasUserTurn(session.Conversation) {
+	if session, err := a.ensureProjectTabSessionPersist().LoadSession(expertTabSessionID(builtinLatexExpertID)); err == nil && session != nil && sessionSnapshotHasUserTurn(session.Conversation) {
 		pinned := normalizeProjectSessionPath(session.ProjectPath)
 		if pinned != "" && pinned != projectPath {
 			return "", true, nil
@@ -1411,15 +1483,19 @@ func (a *App) claimUnopenedFreshLatexTask(projectPath string) (string, bool, err
 	return normalizeProjectSessionPath(tasks[1].ProjectPath), false, nil
 }
 
-func (a *App) orderedVisibleLatexExpertTasks() []memory.ProjectRecord {
+func (a *App) orderedVisibleExpertTasks(expertID string) []memory.ProjectRecord {
 	if a == nil || a.memoryStore == nil {
+		return nil
+	}
+	expertID = strings.TrimSpace(expertID)
+	if expertID == "" {
 		return nil
 	}
 	pi := a.memoryStore.ProjectIndex()
 	if pi == nil {
 		return nil
 	}
-	sourceTag := taskSourceExpertPrefix + builtinLatexExpertID
+	sourceTag := taskSourceExpertPrefix + expertID
 	var found []memory.ProjectRecord
 	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
 		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, sourceTag)
@@ -1435,23 +1511,27 @@ func (a *App) orderedVisibleLatexExpertTasks() []memory.ProjectRecord {
 	return found
 }
 
-func (a *App) restoreBuiltinLatexExpertConversationFrom(projectPath string) {
+// restoreExpertConversationFrom promotes an archived task transcript back onto
+// the shared expert session. It is used when the task that owned the live
+// session is removed and another task of the same expert takes over.
+func (a *App) restoreExpertConversationFrom(expertID, projectPath string) {
 	projectPath = normalizeProjectSessionPath(projectPath)
-	if a == nil || projectPath == "" {
+	expertID = strings.TrimSpace(expertID)
+	if a == nil || projectPath == "" || expertID == "" {
 		return
 	}
 	persist := a.ensureProjectTabSessionPersist()
 	archived, err := persist.LoadLatestSessionForProject(projectPath)
-	if err != nil || archived == nil || !latexSessionHasUserTurn(archived.Conversation) {
+	if err != nil || archived == nil || !sessionSnapshotHasUserTurn(archived.Conversation) {
 		return
 	}
-	tabID := expertTabSessionID(builtinLatexExpertID)
+	tabID := expertTabSessionID(expertID)
 	current, err := persist.LoadSession(tabID)
 	if err != nil {
-		log.Printf("[latex] restore expert transcript: %v", err)
+		log.Printf("[expert] restore transcript expert=%q: %v", expertID, err)
 		return
 	}
-	if current != nil && latexSessionHasUserTurn(current.Conversation) {
+	if current != nil && sessionSnapshotHasUserTurn(current.Conversation) {
 		return
 	}
 	createdAt := archived.CreatedAt
@@ -1465,18 +1545,14 @@ func (a *App) restoreBuiltinLatexExpertConversationFrom(projectPath string) {
 		Conversation: conversation,
 		CreatedAt:    createdAt,
 	}); err != nil {
-		log.Printf("[latex] restore expert transcript project=%q err=%v", projectPath, err)
+		log.Printf("[expert] restore transcript expert=%q project=%q err=%v", expertID, projectPath, err)
 		return
 	}
-	a.restoreBuiltinLatexExpertMemory(conversation)
+	a.restoreExpertMemory(expertID, projectPath, conversation)
 }
 
-func (a *App) restoreBuiltinLatexExpertMemory(conversation []interface{}) {
+func (a *App) restoreExpertMemory(expertID, projectPath string, conversation []interface{}) {
 	if a == nil {
-		return
-	}
-	entries := conversationEntriesFromTabSnapshot(conversation)
-	if len(entries) == 0 {
 		return
 	}
 	var handler *IMMessageHandler
@@ -1489,7 +1565,17 @@ func (a *App) restoreBuiltinLatexExpertMemory(conversation []interface{}) {
 	if handler == nil || handler.memory == nil {
 		return
 	}
-	owner := expertSessionUserID(builtinLatexExpertID)
+	// The task's project memory is the authoritative agent context: it keeps
+	// tool calls and may be newer than the UI snapshot. Fall back to the tab
+	// snapshot when the task never stored its own project session.
+	entries := handler.memory.Load(projectSessionOwnerID(normalizeProjectSessionPath(projectPath)))
+	if len(entries) == 0 {
+		entries = conversationEntriesFromTabSnapshot(conversation)
+	}
+	if len(entries) == 0 {
+		return
+	}
+	owner := expertSessionUserID(expertID)
 	handler.memory.Save(owner, entries)
 }
 
@@ -1528,7 +1614,7 @@ func (a *App) removeFreshLatexTaskRecord(projectPath string) error {
 	// then delete and flush again so a late write cannot resurrect it.
 	taskAsyncFlushWG.Wait()
 	expertTaskMu.Lock()
-	tasks := a.orderedVisibleLatexExpertTasks()
+	tasks := a.orderedVisibleExpertTasks(builtinLatexExpertID)
 	if len(tasks) == 0 || normalizeProjectSessionPath(tasks[0].ProjectPath) != projectPath {
 		expertTaskMu.Unlock()
 		return fmt.Errorf("latex task is no longer the unopened paper")
@@ -1556,10 +1642,10 @@ func (a *App) removeFreshLatexTaskRecord(projectPath string) error {
 	return nil
 }
 
-// newestVisibleExpertTask returns the resumable expert row. Non-LaTeX experts
-// keep the historical first match (there is only one). LaTeX returns the
-// newest paper so a later wizard launch stays the live session.
-func (a *App) newestVisibleExpertTask(pi *memory.ProjectIndex, sourceTag string, pickNewest bool) (memory.ProjectRecord, bool) {
+// newestVisibleExpertTask returns the resumable expert row: the newest visible
+// task, so a later wizard launch stays the live session. A copy is used only
+// when no canonical row remains.
+func (a *App) newestVisibleExpertTask(pi *memory.ProjectIndex, sourceTag string) (memory.ProjectRecord, bool) {
 	if a == nil || pi == nil {
 		return memory.ProjectRecord{}, false
 	}
@@ -1574,16 +1660,13 @@ func (a *App) newestVisibleExpertTask(pi *memory.ProjectIndex, sourceTag string,
 			continue
 		}
 		// A copy must not replace the expert row the launcher resumes.
-		// Fall back to it only when the original row is gone.
+		// Fall back to it only when no canonical row remains.
 		if projectRecordHasTag(rec, taskCopyTag) {
-			if !haveCopy || (pickNewest && latexExpertRecordIsNewer(rec, copyFallback)) {
+			if !haveCopy || latexExpertRecordIsNewer(rec, copyFallback) {
 				copyFallback = rec
 				haveCopy = true
 			}
 			continue
-		}
-		if !pickNewest {
-			return rec, true
 		}
 		if !found || latexExpertRecordIsNewer(rec, best) {
 			best = rec
@@ -1597,6 +1680,45 @@ func (a *App) newestVisibleExpertTask(pi *memory.ProjectIndex, sourceTag string,
 		return copyFallback, true
 	}
 	return memory.ProjectRecord{}, false
+}
+
+// isLiveExpertTaskPath reports whether projectPath is the newest visible task
+// of expertID. That row owns the shared expert session; older rows keep their
+// own archived transcript.
+func (a *App) isLiveExpertTaskPath(projectPath, expertID string) bool {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	expertID = strings.TrimSpace(expertID)
+	if a == nil || projectPath == "" || expertID == "" || a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	rec, ok := a.newestVisibleExpertTask(pi, taskSourceExpertPrefix+expertID)
+	return ok && normalizeProjectSessionPath(rec.ProjectPath) == projectPath
+}
+
+// nextVisibleExpertTaskPath returns the newest visible task of expertID other
+// than exclude. Canonical rows win; a copy is only used when no canonical row
+// remains, mirroring newestVisibleExpertTask.
+func (a *App) nextVisibleExpertTaskPath(exclude, expertID string) string {
+	exclude = normalizeProjectSessionPath(exclude)
+	copyFallback := ""
+	for _, rec := range a.orderedVisibleExpertTasks(expertID) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || path == exclude {
+			continue
+		}
+		if projectRecordHasTag(rec, taskCopyTag) {
+			if copyFallback == "" {
+				copyFallback = path
+			}
+			continue
+		}
+		return path
+	}
+	return copyFallback
 }
 
 func latexExpertRecordIsNewer(candidate, current memory.ProjectRecord) bool {
@@ -1623,7 +1745,18 @@ func expertTaskPathSeq(path string) int64 {
 }
 
 func (a *App) insertExpertTaskRecord(expertID, expertName, workingDir string) ProjectSearchResult {
-	title := strings.TrimSpace(expertName)
+	return a.insertExpertTaskRecordWithTitle(expertID, expertName, workingDir, "")
+}
+
+// insertExpertTaskRecordWithTitle is insertExpertTaskRecord with an explicit
+// task title. The wizard passes the first instruction so several tasks of the
+// same expert stay distinguishable in the sidebar; the expert launcher leaves
+// it empty and keeps the expert name.
+func (a *App) insertExpertTaskRecordWithTitle(expertID, expertName, workingDir, taskName string) ProjectSearchResult {
+	title := strings.TrimSpace(taskName)
+	if title == "" {
+		title = strings.TrimSpace(expertName)
+	}
 	if title == "" {
 		if def := loadExpertDefByID(expertID); def != nil {
 			title = strings.TrimSpace(def.Name)
@@ -5832,6 +5965,14 @@ func (a *App) emitExpertTaskDeleted(expertID string) {
 	a.emitEvent(EventExpertTaskDeleted, expertID)
 }
 
+func (a *App) emitExpertTaskRetired(expertID string) {
+	expertID = strings.TrimSpace(expertID)
+	if a.ctx == nil || expertID == "" {
+		return
+	}
+	a.emitEvent(EventExpertTaskRetired, expertID)
+}
+
 func (a *App) cancelProjectTaskLoop(projectPath string) {
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" {
@@ -6216,6 +6357,9 @@ func (a *App) HideTask(projectPath string) {
 		log.Printf("[project_search] HideTask skipped path=%q reason=project_index_unavailable", projectPath)
 		return
 	}
+	// A hidden expert task must not keep owning the shared expert session.
+	// Resolve the plan before the row becomes invisible.
+	expertID, nextExpertTaskPath, liveExpertTask := a.expertTaskRetirement(projectPath)
 	// A copy shares the workspace with its source. Tombstone and release the
 	// lease only when this row is the last visible one, so hiding the copy
 	// cannot unmount the original.
@@ -6226,6 +6370,12 @@ func (a *App) HideTask(projectPath string) {
 	forgetCloudWorkspaceTaskByPath(projectPath)
 	log.Printf("[project_search] HideTask hidden path=%q", projectPath)
 	a.cancelProjectTaskLoop(projectPath)
+	if liveExpertTask {
+		// The hidden task is no longer reachable; keep its conversation on its
+		// own project session, then hand the shared session to the next task.
+		a.archiveExpertSessionMemory(expertID, projectPath)
+		a.retireExpertTaskSession(expertID, nextExpertTaskPath)
+	}
 	a.emitProjectIndexChanged(projectPath)
 	// The deleted signal must precede the close signal: it tells the frontend
 	// to remove transient tab/history state without recreating an archived
@@ -6244,9 +6394,6 @@ func (a *App) DeleteTask(projectPath string) error {
 		return fmt.Errorf("project path is required")
 	}
 	log.Printf("[project_search] DeleteTask requested path=%q", projectPath)
-	// Captured before the record is removed. A copy shares the expert tag and
-	// the cloud workspace, but its chat is a separate project session.
-	taskCopy := a.projectHasTaskCopyTag(projectPath)
 	// A copy of an unconfigured task executes in the source workspace/, which
 	// lives outside the copy's own task directory. Remember it so the last
 	// remaining user can remove that leftover folder.
@@ -6266,12 +6413,12 @@ func (a *App) DeleteTask(projectPath string) error {
 	a.cancelProjectTaskLoop(projectPath)
 	ownerID := projectSessionOwnerID(projectPath)
 	// Expert tasks keep their agent session under "desktop-user:expert:<id>"
-	// rather than the task's project path. Resolve the expert id BEFORE the
-	// record is deleted below, so the expert session can be purged too.
-	expertID := ""
-	if !taskCopy {
-		expertID = a.expertIDForTaskPath(projectPath)
-	}
+	// rather than the task's project path. Resolve the retirement plan BEFORE
+	// the record is deleted below, so the expert session can be purged too.
+	// Several tasks of one expert share the expert tab, but only the newest
+	// visible row owns its conversation; deleting an older task leaves the
+	// live session alone.
+	expertID, nextExpertTaskPath, liveExpertTask := a.expertTaskRetirement(projectPath)
 	assistantTabType := a.assistantTabTypeForTaskPath(projectPath)
 	// Dismiss before dropping the record so a concurrent EnsureAssistantTabTask
 	// cannot mint a replacement VS Code / ACP row in the gap.
@@ -6324,7 +6471,7 @@ func (a *App) DeleteTask(projectPath string) error {
 	// conversation memory is keyed by the expert owner id and the tab session
 	// file carries no project path. Without this, recreating the expert would
 	// resurrect the deleted task's memory.
-	if expertID != "" {
+	if liveExpertTask {
 		expertOwner := expertSessionUserID(expertID)
 		if handler != nil {
 			_, _ = handler.CancelSessionForUser(expertOwner)
@@ -6348,11 +6495,17 @@ func (a *App) DeleteTask(projectPath string) error {
 			errs = append(errs, fmt.Errorf("delete expert tab session: %w", err))
 		}
 		// The expert owner and its tab id are unrelated to the task path. Clear
-		// both runtime directory maps here so recreating an expert never inherits
-		// a deleted expert's private workdir in this process.
+		// every runtime directory binding here so recreating an expert never
+		// inherits a deleted expert's private workdir in this process.
 		a.sessionEventScopeIDs.Delete(expertOwner)
 		a.assistantSessionWorkingDirs.Delete(expertOwner)
 		a.tabWorkingDirOverrides.Delete(expertTabSessionID(expertID))
+		a.expertSessionTaskPaths.Delete(expertOwner)
+		// The next task of this expert becomes the live one. Put its archived
+		// transcript back on the shared session so opening it is not blank.
+		if nextExpertTaskPath != "" {
+			a.restoreExpertConversationFrom(expertID, nextExpertTaskPath)
+		}
 	}
 	a.sessionEventScopeIDs.Delete(ownerID)
 	a.assistantSessionWorkingDirs.Delete(ownerID)
@@ -6406,8 +6559,18 @@ func (a *App) DeleteTask(projectPath string) error {
 	// signal so AI panel listeners discard the project's tabs and local caches
 	// instead of persisting an archived session for a permanently removed task.
 	a.emitProjectTaskDeleted(projectPath)
-	// Expert history is not path-keyed; tell the UI to drop expert tab caches too.
-	a.emitExpertTaskDeleted(expertID)
+	// Expert history is not path-keyed; tell the UI to drop expert tab caches
+	// too. Only the task that owned the live session may close that tab: an
+	// older task is just its own project transcript. When another task took
+	// over the shared session, use the retire signal so the frontend does not
+	// clear the promoted conversation from the backend session.
+	if liveExpertTask {
+		if nextExpertTaskPath != "" {
+			a.emitExpertTaskRetired(expertID)
+		} else {
+			a.emitExpertTaskDeleted(expertID)
+		}
+	}
 	a.emitProjectTaskClosed(projectPath)
 	return errors.Join(errs...)
 }
@@ -6606,6 +6769,17 @@ func (a *App) ArchiveProject(projectPath string) (*ArchiveResult, error) {
 
 	pi := a.memoryStore.ProjectIndex()
 
+	// Several tasks of one expert share one expert tab. Archiving the task
+	// that owns the live session must retire that session, exactly like
+	// deleting it; an older task is just a project row. Resolve this before
+	// ArchiveService marks the row archived.
+	expertID, nextExpertTaskPath, liveExpertTask := a.expertTaskRetirement(projectPath)
+	if liveExpertTask {
+		// Keep the archived task's conversation on its own project session
+		// before the shared expert session moves on to the next task.
+		a.archiveExpertSessionMemory(expertID, projectPath)
+	}
+
 	// Get the LLM caller from the IMMessageHandler (may be nil if not ready).
 	var llmCaller archiveLLMCaller
 	handler := a.ensureLocalIMHandler()
@@ -6633,9 +6807,65 @@ func (a *App) ArchiveProject(projectPath string) (*ArchiveResult, error) {
 		a.cancelProjectTaskLoop(projectPath)
 		a.emitProjectTaskClosed(projectPath)
 		log.Printf("[ArchiveProject] emitted task close path=%q", projectPath)
+		if liveExpertTask {
+			a.retireExpertTaskSession(expertID, nextExpertTaskPath)
+		}
 	}
 
 	return result, nil
+}
+
+// retireExpertTaskSession closes the shared expert session that belonged to a
+// task the user removed, archived or hid, and promotes the next task of the
+// same expert, if any. The task's own transcript was archived before this
+// call, so the shared session must not keep pointing at a row that can no
+// longer be continued.
+//
+// resetExpertConversation cancels the running turn and waits for it to unwind
+// (up to 30s). That wait must never happen while tabWorkingDirMu is held: a
+// stuck turn would block every tab's directory read/write for the whole
+// timeout. Only the short session-file and map updates below hold the lock.
+func (a *App) retireExpertTaskSession(expertID, nextProjectPath string) {
+	if a == nil {
+		return
+	}
+	expertID = strings.TrimSpace(expertID)
+	if expertID == "" {
+		return
+	}
+	// Cancels the turn and clears the transcript outside the directory lock.
+	a.resetExpertConversation(expertID)
+	a.tabWorkingDirMu.Lock()
+	if nextProjectPath != "" {
+		a.restoreExpertConversationFrom(expertID, nextProjectPath)
+	}
+	a.sessionEventScopeIDs.Delete(expertSessionUserID(expertID))
+	a.tabWorkingDirMu.Unlock()
+	if nextProjectPath == "" {
+		// No task takes over. The session is genuinely empty, so the frontend
+		// may drop its caches and the backend files stay cleared.
+		a.emitExpertTaskDeleted(expertID)
+		return
+	}
+	// The removed task no longer owns the expert tab. Drop the open tab and
+	// its UI cache without clearing the backend session: the promoted task's
+	// conversation now lives there.
+	a.emitExpertTaskRetired(expertID)
+}
+
+// expertTaskRetirement resolves how a task leaving the list must affect the
+// shared expert session. A copy never owns it, and an older task of an expert
+// needs no session work. Only the live (newest visible) task returns live=true,
+// together with the task that should take over the session.
+func (a *App) expertTaskRetirement(projectPath string) (expertID, nextProjectPath string, live bool) {
+	if a == nil || a.projectHasTaskCopyTag(projectPath) {
+		return "", "", false
+	}
+	expertID = a.expertIDForTaskPath(projectPath)
+	if expertID == "" || !a.isLiveExpertTaskPath(projectPath, expertID) {
+		return "", "", false
+	}
+	return expertID, a.nextVisibleExpertTaskPath(projectPath, expertID), true
 }
 
 // GetArchivedExperience retrieves the archived experience summary for a project.
@@ -7480,6 +7710,7 @@ func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
 		return
 	}
 	if a.BoundWorkingDirForOwner(userID) != "" {
+		a.expertSessionTaskPaths.Store(userID, projectPath)
 		return
 	}
 	dir := normalizeProjectSessionPath(a.recentTaskExecutionProjectPath(projectPath))
@@ -7494,6 +7725,7 @@ func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
 	a.tabWorkingDirMu.Lock()
 	defer a.tabWorkingDirMu.Unlock()
 	if a.BoundWorkingDirForOwner(userID) != "" {
+		a.expertSessionTaskPaths.Store(userID, projectPath)
 		return
 	}
 	if tabID != "" {
@@ -7504,6 +7736,70 @@ func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
 		}
 	}
 	a.assistantSessionWorkingDirs.Store(userID, dir)
+	a.expertSessionTaskPaths.Store(userID, projectPath)
+}
+
+// releaseStaleExpertTaskWorkspace drops a working-directory binding that
+// belongs to another task of the same expert. It is needed when a scheduled
+// launch allocates a new task while the previous turn still owns the shared
+// session (KeepExpertSession): no creation-time reset runs, so the persisted
+// tab directory and the runtime owner cache would otherwise follow the new
+// task. An explicitly chosen directory that is not the old task's own
+// workspace is kept.
+func (a *App) releaseStaleExpertTaskWorkspace(userID, projectPath, tabID string) {
+	if a == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if userID == "" || projectPath == "" || expertIDFromUserID(userID) == "" {
+		return
+	}
+	value, ok := a.expertSessionTaskPaths.Load(userID)
+	if !ok {
+		return
+	}
+	boundPath, _ := value.(string)
+	boundPath = normalizeProjectSessionPath(boundPath)
+	if boundPath == "" || boundPath == projectPath {
+		return
+	}
+	currentDir := normalizeProjectSessionPath(a.BoundWorkingDirForOwner(userID))
+	oldTaskDir := normalizeProjectSessionPath(a.recentTaskExecutionProjectPath(boundPath))
+	if currentDir != "" && oldTaskDir != "" && currentDir != oldTaskDir {
+		// The session was pointed somewhere other than the old task's own
+		// workspace, which is a user choice. Keep it and record the new task.
+		a.expertSessionTaskPaths.Store(userID, projectPath)
+		return
+	}
+	tabID = strings.TrimSpace(tabID)
+	a.tabWorkingDirMu.Lock()
+	a.assistantSessionWorkingDirs.Delete(userID)
+	if tabID != "" {
+		a.tabWorkingDirOverrides.Delete(tabID)
+		a.clearPersistedTabWorkingDir(tabID)
+	}
+	a.expertSessionTaskPaths.Delete(userID)
+	a.tabWorkingDirMu.Unlock()
+	log.Printf("[expert] released stale task workspace owner=%q from=%q to=%q", userID, boundPath, projectPath)
+}
+
+// clearPersistedTabWorkingDir removes a tab session's saved working directory
+// so the next bindAssistantTabWorkingDir cannot restore it.
+func (a *App) clearPersistedTabWorkingDir(tabID string) {
+	tabID = strings.TrimSpace(tabID)
+	if a == nil || tabID == "" {
+		return
+	}
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil || strings.TrimSpace(session.WorkingDir) == "" {
+		return
+	}
+	session.WorkingDir = ""
+	if err := persist.SaveSession(session); err != nil {
+		log.Printf("[expert] clear tab working dir tab=%s: %v", tabID, err)
+	}
 }
 
 // bindAssistantTabWorkingDir restores the tab override before a turn starts.
@@ -7970,7 +8266,7 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 	// The UI stash is saved after the expert-file snapshot and is therefore
 	// newer, but the snapshot can still hold turns the UI had not flushed.
 	// Keep both, or reopening the paper drops whichever side lost the race.
-	session.Conversation = mergeConversationWithLatexArchive(persist, tabID, session.ProjectPath, session.Conversation, session.ConversationClearedAt)
+	session.Conversation = mergeConversationWithExpertArchive(persist, tabID, session.ProjectPath, session.Conversation, session.ConversationClearedAt)
 	session.Conversation = foldProjectTabConversationWindow(persist, tabID, session.Conversation)
 	if err := persist.SaveSession(session); err != nil {
 		log.Printf("[SaveProjectTabConversation] tab=%s err=%v", tabID, err)
@@ -7997,7 +8293,7 @@ func projectPathFromConversation(conversation []interface{}) string {
 	return ""
 }
 
-func mergeConversationWithLatexArchive(persist *ProjectTabSessionPersist, tabID, projectPath string, conversation []interface{}, clearedAt int64) []interface{} {
+func mergeConversationWithExpertArchive(persist *ProjectTabSessionPersist, tabID, projectPath string, conversation []interface{}, clearedAt int64) []interface{} {
 	if persist == nil || strings.HasPrefix(strings.TrimSpace(tabID), "expert-") {
 		return conversation
 	}
@@ -8005,11 +8301,16 @@ func mergeConversationWithLatexArchive(persist *ProjectTabSessionPersist, tabID,
 	if projectPath == "" {
 		return conversation
 	}
-	archiveID := latexPaperArchiveTabID(projectPath)
-	if strings.TrimSpace(tabID) == archiveID {
+	archiveID := expertTaskArchiveTabID(projectPath)
+	legacyID := legacyLatexPaperArchiveTabID(projectPath)
+	if strings.TrimSpace(tabID) == archiveID || strings.TrimSpace(tabID) == legacyID {
 		return conversation
 	}
 	archived, err := persist.LoadSession(archiveID)
+	if (err != nil || archived == nil || normalizeProjectSessionPath(archived.ProjectPath) != projectPath) && legacyID != archiveID {
+		archived, err = persist.LoadSession(legacyID)
+		archiveID = legacyID
+	}
 	if err != nil || archived == nil || normalizeProjectSessionPath(archived.ProjectPath) != projectPath {
 		return conversation
 	}
@@ -8018,7 +8319,7 @@ func mergeConversationWithLatexArchive(persist *ProjectTabSessionPersist, tabID,
 		olderArchive = nil
 	}
 	older := mergeConversationSnapshots(olderArchive, archived.Conversation)
-	if !latexSessionHasUserTurn(older) {
+	if !sessionSnapshotHasUserTurn(older) {
 		return conversation
 	}
 	if clearedAt > 0 && !tabConversationPassesClearFence(&TabSessionData{ConversationClearedAt: clearedAt}, older) {

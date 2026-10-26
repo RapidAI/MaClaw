@@ -69,6 +69,7 @@ import { FileCompanionComposer } from "./FileCompanionComposer";
 import { CompanionFigureStrip, type CompanionFigure } from "./CompanionFigureStrip";
 import { companionVisibleText, finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
 import { PaperResultCard } from "./PaperResultCard";
+import { CompanionFileCard, type CompanionFile } from "./CompanionFileCard";
 import { NoteResultCard } from "./NoteResultCard";
 import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps } from "../../utils/windowDrag";
@@ -263,7 +264,7 @@ type CompanionDoc = {
     Imported?: boolean;
 };
 
-type CompanionMessageDoc = { role?: string; Role?: string; text?: string; Text?: string; reasoning?: string; Reasoning?: string; resultPath?: string; ResultPath?: string; noteCardPath?: string; NoteCardPath?: string; webNote?: boolean; WebNote?: boolean; figures?: unknown[]; Figures?: unknown[] };
+type CompanionMessageDoc = { role?: string; Role?: string; text?: string; Text?: string; reasoning?: string; Reasoning?: string; resultPath?: string; ResultPath?: string; noteCardPath?: string; NoteCardPath?: string; webNote?: boolean; WebNote?: boolean; figures?: unknown[]; Figures?: unknown[]; files?: unknown[]; Files?: unknown[] };
 
 type SaveResult = {
     saved?: boolean;
@@ -281,7 +282,7 @@ type SaveResult = {
 // the Markdown body, nothing else.
 type CompanionChatTurn = { role: "user" | "assistant"; content: string };
 
-type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reasoning?: string; resultPath?: string; noteCardPath?: string; webNote?: boolean; figures?: CompanionFigure[] };
+type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reasoning?: string; resultPath?: string; noteCardPath?: string; webNote?: boolean; figures?: CompanionFigure[]; files?: CompanionFile[] };
 // Stable identity keeps the scroll-follow effect from re-planning on every
 // render while no file is open.
 const NO_COMPANION_MESSAGES: ChatMessage[] = [];
@@ -307,6 +308,28 @@ function figuresFromValue(raw: unknown): CompanionFigure[] {
     list.forEach((entry) => {
         const figure = figureFromValue(entry);
         if (figure) out.push(figure);
+    });
+    return out;
+}
+
+// Produced files come from Go with lower-case JSON tags and from restored
+// history as plain objects, so both spellings of each field are read.
+function fileFromValue(value: unknown): CompanionFile | null {
+    if (!value || typeof value !== "object") return null;
+    const item = value as { label?: unknown; Label?: unknown; path?: unknown; Path?: unknown; size?: unknown; Size?: unknown };
+    const path = String(item.path ?? item.Path ?? "").trim();
+    if (!path) return null;
+    const label = String(item.label ?? item.Label ?? "").trim();
+    const size = Number(item.size ?? item.Size ?? 0);
+    return { label, path, size: Number.isFinite(size) && size > 0 ? size : undefined };
+}
+
+function filesFromValue(raw: unknown): CompanionFile[] {
+    const list = Array.isArray(raw) ? raw : [];
+    const out: CompanionFile[] = [];
+    list.forEach((entry) => {
+        const file = fileFromValue(entry);
+        if (file) out.push(file);
     });
     return out;
 }
@@ -536,8 +559,9 @@ function messagesFromDoc(doc: CompanionDoc): ChatMessage[] {
         const noteCardPath = role === "assistant" ? String(item.noteCardPath ?? item.NoteCardPath ?? "").trim() : "";
         const webNote = role === "assistant" && (item.webNote === true || item.WebNote === true);
         const figures = role === "assistant" ? figuresFromValue(item.figures ?? item.Figures) : [];
+        const files = role === "assistant" ? filesFromValue(item.files ?? item.Files) : [];
         if (!text.trim() && !reasoning.trim() && !resultPath && !noteCardPath) return;
-        out.push({ id: `restored:${index}`, role, text, reasoning, resultPath: resultPath || undefined, noteCardPath: noteCardPath || undefined, webNote, figures: figures.length > 0 ? figures : undefined });
+        out.push({ id: `restored:${index}`, role, text, reasoning, resultPath: resultPath || undefined, noteCardPath: noteCardPath || undefined, webNote, figures: figures.length > 0 ? figures : undefined, files: files.length > 0 ? files : undefined });
     });
     return out;
 }
@@ -1672,14 +1696,17 @@ function companionArxivSearchStatus(error: string, query: string, submitted: str
     // box still holds the goal that produced that list; a keystroke must
     // not leave "约 N 篇" attached to a different sentence.
     const current = searched && query.trim() === submitted;
+    // A fallback searched only the words arXiv can match, which are usually
+    // the English terms inside a Chinese goal — not the goal itself. Saying
+    // "已按原文检索" would describe a query that was never sent.
+    const head = fallback ? "未能扩展关键词，已用原文中的英文词检索。" : "";
     if (current && count === 0 && page <= 1) {
-        return fallback ? "未能扩展关键词，已按原文检索。检索完成，没有结果" : "检索完成，没有结果";
+        return fallback ? `${head}检索完成，没有结果` : "检索完成，没有结果";
     }
     // A later page can come back empty when the previous total was only a
     // lower bound. Saying "第 1 页" here would hide that the reader is stuck
     // past the last paper; the pager stays so they can go back.
     if (current && count === 0 && page > 1) {
-        const head = fallback ? "未能扩展关键词，已按原文检索。" : "";
         return `${head}这一页没有论文`;
     }
     if (current) {
@@ -1687,7 +1714,6 @@ function companionArxivSearchStatus(error: string, query: string, submitted: str
         const safeTotal = Math.max(total, (Math.max(page, 1) - 1) * size + count);
         const pages = Math.max(1, Math.ceil(safeTotal / size));
         const shown = Math.min(Math.max(page, 1), pages);
-        const head = fallback ? "未能扩展关键词，已按原文检索。" : "";
         return `${head}约 ${safeTotal} 篇，第 ${shown} / ${pages} 页`;
     }
     // A later page with no rows is still a result. Changing the box must say
@@ -2317,6 +2343,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             // Drawings from the open file travel with the reply, not inside its
             // text, so a cited chart is shown instead of only described.
             const figures = errText ? [] : figuresFromValue(parsed.body.file_companion_figures ?? parsed.body.FileCompanionFigures);
+            // A file the model wrote this turn rides on the reply, so the
+            // answer can offer it instead of leaving a bare path in the prose.
+            const files = errText ? [] : filesFromValue(parsed.body.file_companion_files ?? parsed.body.FileCompanionFiles);
             const noteCardPath = eventString(parsed.body, "note_card_path", "NoteCardPath");
             const webNote = parsed.body.web_note === true || parsed.body.WebNote === true;
             const paper = paperRequestIds.current.has(parsed.requestID);
@@ -2369,6 +2398,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         noteCardPath: ownedCard || undefined,
                         webNote: webNote || streamed?.webNote || matched?.kind === "web",
                         figures: figures.length > 0 ? figures : streamed?.figures,
+                        files: files.length > 0 ? files : streamed?.files,
                     };
                     if (index >= 0) messages[index] = { ...messages[index], ...next };
                     else messages.push(next);
@@ -4900,6 +4930,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 )}
                                                 {message.resultPath ? <PaperResultCard filePath={message.resultPath} messageId={message.id} /> : null}
                                                 {message.noteCardPath ? <NoteResultCard filePath={message.noteCardPath} messageId={message.id} /> : null}
+                                                {message.files && message.files.length > 0 ? <CompanionFileCard files={message.files} messageId={message.id} /> : null}
                                                 {!mine && message.figures && message.figures.length > 0 ? (
                                                     <CompanionFigureStrip figures={message.figures} messageId={message.id} />
                                                 ) : null}

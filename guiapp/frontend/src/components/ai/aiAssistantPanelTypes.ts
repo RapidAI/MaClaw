@@ -147,7 +147,7 @@ export interface AIAssistantPanelProps {
     onPendingProjectTabOpenHandled?: (result: PendingProjectTabOpenResult) => void;
     pendingExpertOpen?: PendingExpertOpen | null;
     onPendingExpertOpenHandled?: () => void;
-    onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
+    onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string; projectPath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
     /** Persist every non-main assistant tab before it is opened. */
     onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
     appUpdateAvailable?: AssistantUpdatePayload | null;

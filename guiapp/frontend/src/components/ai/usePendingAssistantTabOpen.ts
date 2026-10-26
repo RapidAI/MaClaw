@@ -192,7 +192,7 @@ interface PendingAssistantTabOpenOptions {
     /** Send the wizard's first message through the freshly opened expert tab. */
     sendExpertMessage?: (text: string, expertId: string) => void | Promise<unknown>;
     /** Persist the expert in task management before its tab is opened. */
-    onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
+    onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string; projectPath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
     /** Persist a non-main assistant tab before it is opened. */
     onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
     /** Write the task's LaTeX entry onto its tab without focusing that tab. */
@@ -640,9 +640,10 @@ export function usePendingAssistantTabOpen({
         .filter(tab => tab.type === "expert" && isLatexExpertId(tab.expertId) && !String(tab.projectPath || "").trim())
         .map(tab => `${tab.id}\0${tab.latexRelativePath || ""}`)
         .join("\n");
-    // A tab restored from before the task path was persisted still has an expert
-    // id and no projectPath. Sends then omit project_path, so tools write on the
-    // desktop while the editor reads the task workspace. Reattach the durable task.
+    // A LaTeX tab restored from before the task path was persisted still has an
+    // expert id and no projectPath. Sends then omit project_path, so tools write
+    // on the desktop while the editor reads the task workspace. Reattach the
+    // durable task.
     useEffect(() => {
         if (!latexTabsMissingPath) return;
         const ensure = ensureExpertTaskRef.current;
@@ -781,14 +782,13 @@ export function usePendingAssistantTabOpen({
         };
         const queued = pendingExpertOpen;
         // Accepting a send returns while that expert's turn is still running.
-        // The next scheduled paper of the same expert must wait, whether it
+        // The next scheduled task of the same expert must wait, whether it
         // was parked under the cover or arrives after the slot was released.
         // Resetting now would cancel the turn on the shared session.
-        const latexTurnBusy = (candidate: PendingExpertOpen | null | undefined) => {
+        const backgroundExpertTurnBusy = (candidate: PendingExpertOpen | null | undefined) => {
             if (candidate?.backgroundLaunch !== true) return false;
             const id = String(candidate.expert?.id || "").trim();
             return !!id
-                && isLatexExpertId(id)
                 && !!String(candidate.initialMessage || "").trim()
                 && expertSessionIdleRef.current?.(id) === false;
         };
@@ -813,7 +813,7 @@ export function usePendingAssistantTabOpen({
             onExpertHandledRef.current?.();
             return;
         }
-        if (queued && latexTurnBusy(queued)) {
+        if (queued && backgroundExpertTurnBusy(queued)) {
             if (!parked.includes(queued)) parked.push(queued);
             if (armExpertIdleWake(queued)) {
                 onExpertHandledRef.current?.();
@@ -835,7 +835,7 @@ export function usePendingAssistantTabOpen({
             if (expertOpenInFlightRef.current) return;
             const next = parked[0];
             if (!next || waitsForCover(next) || startedExpertLaunchesRef.current.has(next)) return;
-            if (latexTurnBusy(next) && armExpertIdleWake(next)) return;
+            if (backgroundExpertTurnBusy(next) && armExpertIdleWake(next)) return;
             parked.shift();
             launch = next;
         } else {
@@ -918,7 +918,10 @@ export function usePendingAssistantTabOpen({
             if (!keepCover && !quiet) beforeUserExpertOpenRef.current?.(expertId);
             const suppressFocus = keepCover || quiet;
 
-            const projectPath = String(prepared?.projectPath || "").trim();
+            // The launch already carries the task created for this wizard
+            // request. Use it when task registration has no path to report, so
+            // the tab still binds the conversation to its own task.
+            const projectPath = String(prepared?.projectPath || launch.projectPath || "").trim();
             const relativePath = String(prepared?.relativePath || "").trim();
             const expertTask = (projectPath || relativePath) ? { projectPath, relativePath } : undefined;
             // Call with a single argument when no task path exists: callers
@@ -931,7 +934,9 @@ export function usePendingAssistantTabOpen({
                 finishExpertOpen();
                 return;
             }
-            if (isLatexExpertId(expertId) && initialMessage) {
+            // A wizard launch binds the tab to its own task and replaces the
+            // shared transcript. Filter turns older than the reset floor.
+            if (initialMessage && projectPath) {
                 markExpertSessionFloorRef.current?.(expertId);
             }
             if (projectPath && relativePath && !suppressFocus) {
@@ -966,10 +971,11 @@ export function usePendingAssistantTabOpen({
             finishAfterSend();
         };
         const ensureTask = ensureExpertTaskRef.current;
-        const startFreshLatex = isLatexExpertId(expertId) && !!initialMessage;
-        // Snapshot before ensureTask. That await can attach the new paper's
+        // Every wizard expert launch is a new task with its own conversation.
+        const startFreshExpertTask = !!initialMessage && !!String(launch.projectPath || "").trim();
+        // Snapshot before ensureTask. That await can attach the new task's
         // path to this same tab, and the old transcript must not follow it.
-        const previousLatexPath = startFreshLatex
+        const previousExpertPath = startFreshExpertTask
             ? String((getTabListForExpertRef.current?.() || []).find(tab => tab.type === "expert" && tab.expertId === expertId)?.projectPath || "").trim()
             : "";
         const openAfterReset = (prepared?: EnsuredExpertTask | void) => {
@@ -985,12 +991,12 @@ export function usePendingAssistantTabOpen({
                 }
                 openExpertTab(prepared);
             };
-            if (!startFreshLatex || waitsForCover(launch)) {
+            if (!startFreshExpertTask || waitsForCover(launch)) {
                 run();
                 return;
             }
-            void Promise.resolve(resetExpertConversationRef.current?.(expertId, previousLatexPath, () => waitsForCover(launch))).then(run, (error) => {
-                console.warn("[task_management] latex fresh session reset failed:", error);
+            void Promise.resolve(resetExpertConversationRef.current?.(expertId, previousExpertPath, () => waitsForCover(launch))).then(run, (error) => {
+                console.warn("[task_management] fresh expert session reset failed:", error);
                 run();
             });
         };
@@ -1004,10 +1010,15 @@ export function usePendingAssistantTabOpen({
             return;
         }
         const existingDocument = launch.latexDocument;
-        // Same arity discipline as create: omit the second argument when there
-        // is no LaTeX document so single-argument observers stay consistent.
-        const freshLatexPath = startFreshLatex ? String(launch.projectPath || "").trim() : "";
-        void Promise.resolve(existingDocument ? ensureTask(expert, existingDocument) : ensureTask(expert)).then((prepared) => {
+        // A wizard launch already created its task. Hand the path to the
+        // registration step so a concurrent launch cannot make the "newest
+        // expert task" lookup bind this tab to a different conversation.
+        // Keep the single-argument arity when there is nothing to attach.
+        const launchTask = launch.projectPath
+            ? { ...(existingDocument || {}), projectPath: String(launch.projectPath) }
+            : existingDocument;
+        const freshLatexPath = startFreshExpertTask && isLatexExpertId(expertId) ? String(launch.projectPath || "").trim() : "";
+        void Promise.resolve(launchTask ? ensureTask(expert, launchTask) : ensureTask(expert)).then((prepared) => {
             preparedExpertLaunchRef.current.set(launch, { prepared });
             openAfterReset(prepared);
         }).catch((error) => {

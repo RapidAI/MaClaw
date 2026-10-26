@@ -21,6 +21,10 @@
     --radius-lg: 12px;
     --radius-xl: 16px;
     --radius-pill: 999px;
+    /* One height for every control on the composer toolbar row, so the icon
+       buttons, permission chip, working-directory chip and model chip sit on
+       the same baseline. Keep in sync with COMPOSER_CONTROL_HEIGHT_PX. */
+    --mc-composer-control-height: 28px;
     --space-1: 4px;
     --space-2: 8px;
     --space-3: 12px;

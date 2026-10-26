@@ -1,8 +1,10 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -120,5 +122,57 @@ func TestProjectTabConversationArchivesThePrefix(t *testing.T) {
 	app.SaveProjectTabConversation("tab-window", nil)
 	if leftover := app.LoadProjectTabConversationArchive("tab-window"); len(leftover) != 0 {
 		t.Fatalf("clear left %d", len(leftover))
+	}
+}
+
+func TestConversationViewArchiveCountReadsStampedCountAndFallsBack(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	rows := []interface{}{
+		map[string]interface{}{"id": "a", "role": "user", "content": "x", "sessionKey": "desktop-user"},
+		map[string]interface{}{"id": "b", "role": "user", "content": "y", "sessionKey": "tab-1"},
+	}
+	// A desktop archive written before the count metadata existed must still
+	// report the local rows, not 0.
+	legacy, err := json.Marshal(conversationViewArchiveDocument{Messages: rows})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(app.aiAssistantUIArchivePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(app.aiAssistantUIArchivePath(), legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if count := app.ConversationViewArchiveCount("desktop"); count != 1 {
+		t.Fatalf("legacy desktop count=%d", count)
+	}
+	// A current write stamps the count; the endpoint reports it as before.
+	if err := app.writeAIAssistantUIArchiveLocked(rows); err != nil {
+		t.Fatal(err)
+	}
+	if count := app.ConversationViewArchiveCount("desktop"); count != 1 {
+		t.Fatalf("stamped desktop count=%d", count)
+	}
+
+	// Tab archives fall back the same way, then report the stamped count.
+	persist := app.ensureProjectTabSessionPersist()
+	path, err := persist.conversationViewArchivePath("tab-count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if count := app.ConversationViewArchiveCount("tab:tab-count"); count != 2 {
+		t.Fatalf("legacy tab count=%d", count)
+	}
+	if err := persist.SaveConversationViewArchive("tab-count", rows); err != nil {
+		t.Fatal(err)
+	}
+	if count := app.ConversationViewArchiveCount("tab:tab-count"); count != 2 {
+		t.Fatalf("stamped tab count=%d", count)
 	}
 }

@@ -35,6 +35,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 // ToolHeadFormat is the only head JSON format this loader accepts.
@@ -225,10 +227,9 @@ func (h *ToolHead) Predict(v []float32) ([]float64, error) {
 			continue
 		}
 		row := h.w[k*h.dim : (k+1)*h.dim]
-		var s float32
-		for i, w := range row {
-			s += w * v[i]
-		}
+		// SIMD dot: the head is one row per tool, so this runs C times per
+		// query. Same kernel the intent heads use.
+		s := tensor.Dot(row, v)
 		z := float64(s*inv) + float64(h.b[k])
 		p[k] = 1 / (1 + math.Exp(-z))
 	}

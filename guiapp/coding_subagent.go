@@ -5729,6 +5729,13 @@ func (c *codingSubAgentCallbacks) guardCodingShellCommand(command, workingDir st
 	// second command by the time the process starts. Judge that command.
 	// Remote bash keeps the original text; it honors single quotes.
 	command = codingCommandJudgedForHost(command)
+	// The coding SubAgent owns the builtin ssh tool. A shell ssh bypasses its
+	// session, credential, and timeout handling and fails with the local
+	// machine's key config instead (the server only has a stored password),
+	// so this is a hard block rather than something the user can approve.
+	if rejection, rejected := tool.RejectRawSSHCommand(command); rejected {
+		return rejection
+	}
 	// A repository inquiry stays a hard block. Its run report states
 	// "只读检查：未修改任何文件" purely from the request kind, so approving a command
 	// past this guardrail would make the report claim something untrue.
@@ -17719,6 +17726,7 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 	return `## 全功能编程环境（Full Coding Workbench）
 你运行在与 Claude Code / Codex 同级目标的完整编程工作台中（同一模型下追求同等工程能力）：
 - 可使用文件读写、搜索、shell、git_diff、ssh（连接远程主机并执行命令或传文件）、web_search/web_fetch、current_datetime、goal（长时目标 plan/step/complete/fail/get），以及本轮工具列表中实际出现的受管扩展函数。
+- 远程主机操作一律调用 ssh 工具（connect/exec/exec_background/upload/download）；禁止通过 shell/bash 调用 ssh/scp/rsync，也不要用脚本包装。shell ssh 用的是本机密钥，绕开会话与凭据管理，认证通常直接失败。
 - 不得猜测或调用 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。若未出现扩展函数，继续使用静态工具或说明需要重新规划。
 - 工作区根目录已绑定；下方「工作区概览」是宿主 os.ReadDir 的权威顶层清单，请先消化再深入探索。
 - 禁止仅用 python/python3/os.listdir/ls/dir 复核顶层是否为空；失败的列目录命令不能当成「目录为空」。深入文件用 list_directory / read_file / glob。
@@ -17744,6 +17752,7 @@ func buildNestedFullCodingEnvironmentPromptPreamble() string {
 	return `## 嵌套实现子代理（Nested Worker）
 你是全功能编程工作台派发的实现子代理（干净上下文）：
 - 可使用文件读写、搜索、shell、git_diff、ssh、web_search/web_fetch、current_datetime，以及本轮工具列表中实际出现的受管扩展函数；不得猜测旧 Skill/MCP 入口。
+- 远程主机操作一律调用 ssh 工具；禁止通过 shell/bash 调用 ssh/scp/rsync，也不要用脚本包装。
 - 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。没有 .codegraph/ 时，可修改的任务里该工具会安装并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。
 - 禁止再派生子代理；请在本上下文中直接完成指派任务并验证。
 - 最小必要改动；工具失败时换策略；完成后用工程师短文说明改了什么以及实际跑过的验证，不要写审计标题。
@@ -18349,7 +18358,7 @@ func buildCodingLocalSSHToolDefinition() map[string]interface{} {
 			"tail_lines":      map[string]interface{}{"type": "integer", "description": "Tail lines for task output"},
 			"local_path":      map[string]interface{}{"type": "string", "description": "Local path for upload or download. A relative path is resolved inside the coding project."},
 			"remote_path":     map[string]interface{}{"type": "string", "description": "Remote path for upload or download"},
-			"initial_command": map[string]interface{}{"type": "string", "description": "Command to run immediately after connect"},
+			"initial_command": map[string]interface{}{"type": "string", "description": "Optional first command typed into the interactive shell after connect; the session remains usable for exec afterwards"},
 		},
 		[]string{"action"},
 	)
@@ -18445,6 +18454,11 @@ func (c *codingSubAgentCallbacks) requireCodingSSHLocalPath(path string) string 
 func (c *codingSubAgentCallbacks) guardCodingRemoteShellCommand(command string) string {
 	if c == nil {
 		return "coding subagent is unavailable"
+	}
+	// A nested ssh hop through the managed session has the same problem as a
+	// local one: it escapes the builtin tool's credentials and lifecycle.
+	if rejection, rejected := tool.RejectRawSSHCommand(command); rejected {
+		return rejection
 	}
 	c.refreshTaskCommandAllowance()
 	msg := rejectDisallowedRemoteCodingCommand(command)

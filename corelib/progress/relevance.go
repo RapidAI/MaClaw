@@ -31,6 +31,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 // RelevanceModelFormat is the only accepted file format.
@@ -44,20 +46,22 @@ const (
 
 // RelevanceModel scores task ↔ message relevance for one embedder family.
 type RelevanceModel struct {
-	Format             string    `json:"format"`
-	Kind               string    `json:"kind"`
-	EmbedderModelID    string    `json:"embedder_model_id"`
-	Dims               int       `json:"dims"`
-	TaskInstruction    string    `json:"task_instruction"`
-	MessageInstruction string    `json:"message_instruction"`
-	W                  []float64 `json:"w,omitempty"`
-	B                  float64   `json:"b,omitempty"`
-	Hidden             int       `json:"hidden,omitempty"`
-	B1                 []float64 `json:"b1,omitempty"`
-	W2                 []float64 `json:"w2,omitempty"`
-	High               float64   `json:"high"`
-	Low                float64   `json:"low"`
-	Note               string    `json:"note,omitempty"`
+	Format             string `json:"format"`
+	Kind               string `json:"kind"`
+	EmbedderModelID    string `json:"embedder_model_id"`
+	Dims               int    `json:"dims"`
+	TaskInstruction    string `json:"task_instruction"`
+	MessageInstruction string `json:"message_instruction"`
+	// Weights are float32 so RawScore can run its 64x4097 mat-vec through the
+	// SIMD dot kernel (~8x faster than the float64 scalar loop).
+	W      []float32 `json:"w,omitempty"`
+	B      float64   `json:"b,omitempty"`
+	Hidden int       `json:"hidden,omitempty"`
+	B1     []float32 `json:"b1,omitempty"`
+	W2     []float32 `json:"w2,omitempty"`
+	High   float64   `json:"high"`
+	Low    float64   `json:"low"`
+	Note   string    `json:"note,omitempty"`
 }
 
 // ErrRelevanceDim reports vectors that do not match the model width.
@@ -106,19 +110,22 @@ func (m *RelevanceModel) Validate() error {
 		if m.Dims <= 0 || m.Hidden <= 0 || len(m.W) != m.Hidden*f || len(m.B1) != m.Hidden || len(m.W2) != m.Hidden {
 			return fmt.Errorf("mlp: shape mismatch (dims=%d hidden=%d len(w)=%d len(b1)=%d len(w2)=%d)", m.Dims, m.Hidden, len(m.W), len(m.B1), len(m.W2))
 		}
-		for _, ws := range [][]float64{m.W, m.B1, m.W2, {m.B}} {
+		for _, ws := range [][]float32{m.W, m.B1, m.W2} {
 			for _, w := range ws {
-				if math.IsNaN(w) || math.IsInf(w, 0) {
+				if math.IsNaN(float64(w)) || math.IsInf(float64(w), 0) {
 					return errors.New("mlp: non-finite weight")
 				}
 			}
+		}
+		if math.IsNaN(m.B) || math.IsInf(m.B, 0) {
+			return errors.New("mlp: non-finite weight")
 		}
 	case "logistic":
 		if m.Dims <= 0 || len(m.W) != 4*m.Dims+1 {
 			return fmt.Errorf("logistic: len(w)=%d, want 4*dims+1=%d", len(m.W), 4*m.Dims+1)
 		}
 		for _, w := range m.W {
-			if math.IsNaN(w) || math.IsInf(w, 0) {
+			if math.IsNaN(float64(w)) || math.IsInf(float64(w), 0) {
 				return errors.New("logistic: non-finite weight")
 			}
 		}
@@ -168,29 +175,34 @@ func (m *RelevanceModel) RawScore(u, v []float32) (float64, error) {
 	d := len(u)
 	if m.Kind == "mlp" {
 		f := 4*d + 1
-		x := make([]float64, f)
+		// Build the feature vector once per call: normalised u, normalised v,
+		// |u-v|, u*v, plus the cosine. One allocation, then one SIMD dot per
+		// hidden unit.
+		x := make([]float32, f)
 		for i := 0; i < d; i++ {
-			a, b := float64(u[i])*iu, float64(v[i])*iv
-			x[i], x[d+i], x[2*d+i], x[3*d+i] = a, b, math.Abs(a-b), a*b
+			a, b := u[i]*float32(iu), v[i]*float32(iv)
+			x[i], x[d+i], x[3*d+i] = a, b, a*b
+			if diff := a - b; diff < 0 {
+				x[2*d+i] = -diff
+			} else {
+				x[2*d+i] = diff
+			}
 		}
-		x[4*d] = cos
+		x[4*d] = float32(cos)
 		z := m.B
 		for h := 0; h < m.Hidden; h++ {
-			row := m.W[h*f : (h+1)*f]
-			a := m.B1[h]
-			for i, xi := range x {
-				a += row[i] * xi
-			}
+			a := float64(m.B1[h]) + float64(tensor.Dot(m.W[h*f:(h+1)*f], x))
 			if a > 0 {
-				z += m.W2[h] * a
+				z += float64(m.W2[h]) * a
 			}
 		}
 		return 1 / (1 + math.Exp(-z)), nil
 	}
-	z := m.B + m.W[4*d]*cos
+	z := m.B + float64(m.W[4*d])*cos
 	for i := 0; i < d; i++ {
 		a, b := float64(u[i])*iu, float64(v[i])*iv
-		z += m.W[i]*a + m.W[d+i]*b + m.W[2*d+i]*math.Abs(a-b) + m.W[3*d+i]*a*b
+		z += float64(m.W[i])*a + float64(m.W[d+i])*b +
+			float64(m.W[2*d+i])*math.Abs(a-b) + float64(m.W[3*d+i])*a*b
 	}
 	return 1 / (1 + math.Exp(-z)), nil
 }

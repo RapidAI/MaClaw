@@ -1449,6 +1449,257 @@ func TestDeleteTaskClearsExpertSessionState(t *testing.T) {
 	}
 }
 
+func TestDeleteOlderExpertTaskKeepsTheLiveConversation(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	older := app.CreateExpertTask("expert-paper", "Paper reviewer")
+	if older.ProjectPath == "" {
+		t.Fatal("CreateExpertTask failed")
+	}
+	newer, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "another deck",
+		ExpertID:   "expert-paper",
+		ExpertName: "Paper reviewer",
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskUnified: %v", err)
+	}
+	if newer.ProjectPath == "" || newer.ProjectPath == older.ProjectPath {
+		t.Fatalf("newer task = %q, want a new record (older %q)", newer.ProjectPath, older.ProjectPath)
+	}
+
+	mem := agent.NewConversationMemory()
+	t.Cleanup(mem.Stop)
+	app.imHandler = &IMMessageHandler{memory: mem}
+	app.ensureRemoteInfra()
+	hub := NewRemoteHubClient(app, app.remoteSessions)
+	hub.imHandler = app.imHandler
+	app.remoteSessions.SetHubClient(hub)
+	expertOwner := expertSessionUserID("expert-paper")
+	mem.Save(expertOwner, []agent.ConversationEntry{{Role: "user", Content: "live conversation"}})
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTabSessionID("expert-paper"),
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "live conversation"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed live expert session: %v", err)
+	}
+
+	// Removing an older task is a project-row operation. The newest task still
+	// owns the expert tab, its session file, and its agent memory.
+	if err := app.DeleteTask(older.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask older: %v", err)
+	}
+	if entries := mem.Load(expertOwner); len(entries) != 1 {
+		t.Fatalf("live expert memory was cleared by deleting an older task: %+v", entries)
+	}
+	session, err := persist.LoadSession(expertTabSessionID("expert-paper"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) {
+		t.Fatalf("live expert transcript was cleared by deleting an older task: %+v", session)
+	}
+}
+
+func TestArchiveLiveExpertTaskPromotesTheNextConversation(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.insertExpertTaskRecord("expert-paper", "Paper reviewer", "")
+	if first.ProjectPath == "" {
+		t.Fatal("first expert task was not created")
+	}
+	second, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "another deck",
+		ExpertID:   "expert-paper",
+		ExpertName: "Paper reviewer",
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskUnified: %v", err)
+	}
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("second task = %q, want a new record (first %q)", second.ProjectPath, first.ProjectPath)
+	}
+
+	persist := app.ensureProjectTabSessionPersist()
+	// The older task keeps its own archived transcript; the live session is
+	// still the second task's conversation.
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTaskArchiveTabID(first.ProjectPath),
+		ProjectPath:  first.ProjectPath,
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "first deck"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed older task archive: %v", err)
+	}
+	mem := agent.NewConversationMemory()
+	t.Cleanup(mem.Stop)
+	app.imHandler = &IMMessageHandler{memory: mem}
+	expertOwner := expertSessionUserID("expert-paper")
+	firstOwner := projectSessionOwnerID(first.ProjectPath)
+	mem.Save(firstOwner, []agent.ConversationEntry{{Role: "user", Content: "first deck"}})
+	mem.Save(expertOwner, []agent.ConversationEntry{{Role: "user", Content: "second deck"}})
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTabSessionID("expert-paper"),
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "second deck"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed live expert session: %v", err)
+	}
+
+	// Archiving the live task retires its session and promotes the next task.
+	app.retireExpertTaskSession("expert-paper", first.ProjectPath)
+
+	session, err := persist.LoadSession(expertTabSessionID("expert-paper"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) {
+		t.Fatalf("expert session was not promoted: %+v", session)
+	}
+	if got := strings.Join(conversationContentList(session.Conversation), "|"); got != "first deck" {
+		t.Fatalf("promoted transcript = %q, want the older task's conversation", got)
+	}
+	entries := mem.Load(expertOwner)
+	if len(entries) != 1 || stringifyProjectConversationContent(entries[0].Content) != "first deck" {
+		t.Fatalf("promoted expert memory = %+v, want the older task's context", entries)
+	}
+}
+
+func TestHideLiveExpertTaskRetiresTheSession(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.insertExpertTaskRecord("expert-paper", "Paper reviewer", "")
+	second := app.insertExpertTaskRecord("expert-paper", "Paper reviewer", "")
+	if first.ProjectPath == "" || second.ProjectPath == "" {
+		t.Fatal("expert task creation failed")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTaskArchiveTabID(first.ProjectPath),
+		ProjectPath:  first.ProjectPath,
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "first deck"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed older task archive: %v", err)
+	}
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTabSessionID("expert-paper"),
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "second deck"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed live expert session: %v", err)
+	}
+
+	app.HideTask(second.ProjectPath)
+
+	pi := app.memoryStore.ProjectIndex()
+	if !pi.IsHidden(second.ProjectPath) {
+		t.Fatal("hidden expert task is still visible")
+	}
+	session, err := persist.LoadSession(expertTabSessionID("expert-paper"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(conversationContentList(session.Conversation), "|"); got != "first deck" {
+		t.Fatalf("expert session = %q, want the promoted older task", got)
+	}
+}
+
+func TestResetExpertConversationClearsThePreviousTaskWorkspace(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	owner := expertSessionUserID("expert-paper")
+	tabID := expertTabSessionID("expert-paper")
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        tabID,
+		ProjectPath:  "D:/tasks/old-deck",
+		WorkingDir:   "D:/tasks/old-deck/workspace",
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "old deck"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.assistantSessionWorkingDirs.Store(owner, "D:/tasks/old-deck/workspace")
+	app.tabWorkingDirOverrides.Store(tabID, "D:/tasks/old-deck/workspace")
+	app.expertSessionTaskPaths.Store(owner, "D:/tasks/old-deck")
+
+	app.resetExpertConversation("expert-paper")
+
+	session, err := persist.LoadSession(tabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || len(session.Conversation) != 0 || session.ProjectPath != "" || session.WorkingDir != "" {
+		t.Fatalf("expert session was not fully reset: %+v", session)
+	}
+	if _, ok := app.assistantSessionWorkingDirs.Load(owner); ok {
+		t.Fatal("expert owner kept the previous task's working directory")
+	}
+	if _, ok := app.tabWorkingDirOverrides.Load(tabID); ok {
+		t.Fatal("expert tab kept the previous task's working-directory override")
+	}
+	if _, ok := app.expertSessionTaskPaths.Load(owner); ok {
+		t.Fatal("expert session kept the previous task binding")
+	}
+}
+
+func TestReleaseStaleExpertTaskWorkspaceForScheduledSwitch(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	older := app.insertExpertTaskRecord("expert-paper", "Paper reviewer", "")
+	newer := app.insertExpertTaskRecord("expert-paper", "Paper reviewer", "")
+	if older.ProjectPath == "" || newer.ProjectPath == "" {
+		t.Fatal("expert task creation failed")
+	}
+	owner := expertSessionUserID("expert-paper")
+	tabID := expertTabSessionID("expert-paper")
+	oldDir := app.recentTaskExecutionProjectPath(older.ProjectPath)
+	if oldDir == "" {
+		t.Fatal("older task has no execution directory")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:      tabID,
+		WorkingDir: oldDir,
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.assistantSessionWorkingDirs.Store(owner, oldDir)
+	app.tabWorkingDirOverrides.Store(tabID, oldDir)
+	app.expertSessionTaskPaths.Store(owner, older.ProjectPath)
+
+	app.releaseStaleExpertTaskWorkspace(owner, newer.ProjectPath, tabID)
+
+	if got := app.BoundWorkingDirForOwner(owner); got != "" {
+		t.Fatalf("stale task workspace survived the switch: %q", got)
+	}
+	if _, ok := app.tabWorkingDirOverrides.Load(tabID); ok {
+		t.Fatal("stale tab working-directory override survived the switch")
+	}
+	session, err := persist.LoadSession(tabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session != nil && session.WorkingDir != "" {
+		t.Fatalf("stale persisted working directory survived the switch: %q", session.WorkingDir)
+	}
+	if _, ok := app.expertSessionTaskPaths.Load(owner); ok {
+		t.Fatal("stale task binding survived the switch")
+	}
+
+	// A directory the user explicitly chose is not the old task's own
+	// workspace, so it follows the expert into the new task.
+	userDir := filepath.Join(t.TempDir(), "user-chosen")
+	app.assistantSessionWorkingDirs.Store(owner, userDir)
+	app.expertSessionTaskPaths.Store(owner, older.ProjectPath)
+	app.releaseStaleExpertTaskWorkspace(owner, newer.ProjectPath, tabID)
+	if got := app.BoundWorkingDirForOwner(owner); got != userDir {
+		t.Fatalf("user-chosen directory was dropped: %q, want %q", got, userDir)
+	}
+	if prev, _ := app.expertSessionTaskPaths.Load(owner); prev != normalizeProjectSessionPath(newer.ProjectPath) {
+		t.Fatalf("expert task binding = %v, want %q", prev, newer.ProjectPath)
+	}
+}
+
 func TestCreateRemoteCodingTaskReusesCanonicalPOSIXWorkDir(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	first := app.CreateRemoteCodingTask("first", "10.0.0.12", "deploy", "/srv/app", 22)

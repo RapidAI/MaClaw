@@ -58,6 +58,13 @@ const (
 	// signal to drop orphaned tab/history caches.
 	EventExpertTaskDeleted = "expert-task:deleted"
 
+	// EventExpertTaskRetired is emitted with the expert id when the task that
+	// owned the shared expert session was removed, archived or hidden and the
+	// session was handed to another task of the same expert. The frontend must
+	// drop the open tab and its local caches, but must NOT clear the backend
+	// session file or memory: the promoted conversation now lives there.
+	EventExpertTaskRetired = "expert-task:retired"
+
 	// EventExpertsChanged is a pure signal (no payload) emitted after any
 	// expert-list mutation: local expert save/delete, expert market
 	// install/uninstall, and managed industry expert install. Frontend

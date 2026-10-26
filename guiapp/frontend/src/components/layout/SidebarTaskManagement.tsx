@@ -21,10 +21,12 @@ import { extractErrorMessage } from '../ai/participantAddError';
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON, type ExpertDefinition } from '../ai/expertTypes';
 import {
     LATEX_BLANK_TEMPLATE_ID,
+    expertTaskIsLiveInMap,
     isBlankLatexTemplate,
     isLatexExpertId,
     latexBlankTemplateName,
     latexTemplateText,
+    liveExpertTaskPaths,
     parseLatexTemplateLibrary,
     type LatexExpertTaskOptions,
     type LatexTemplate,
@@ -657,10 +659,14 @@ export function taskOrderKey(task: {
     }
     const cloud = cloudWorkspaceIdFromTaskFields(task);
     if (cloud) return `cloud:${cloud}`;
-    const expert = expertIDFromTaskTags(task.tags);
-    if (expert) return `expert:${expert}`;
+    // An expert owns several tasks now, each with its own durable path. The
+    // path is the only identity that keeps their order, archive and drag
+    // positions from colliding; the expert id is only a fallback for legacy
+    // rows that lost their path.
     const path = normalizeProjectSessionPath(task.project_path || '');
     if (path) return `path:${path}`;
+    const expert = expertIDFromTaskTags(task.tags);
+    if (expert) return `expert:${expert}`;
     return `id:${task.id || task.name || ''}`;
 }
 
@@ -890,7 +896,9 @@ function matchesActiveTaskRowContext(
     const expertID = expertIDFromTaskTags(proj.tags);
     if (!copied && ctx.expertId) {
         if (expertID !== ctx.expertId) return false;
-        if (ctx.activePath && isLatexExpertId(ctx.expertId)) {
+        // An expert tab is bound to one task. Older tasks of the same expert
+        // keep their own project tabs and must not light up with it.
+        if (ctx.activePath) {
             return normalizeProjectSessionPath(proj.project_path) === ctx.activePath;
         }
         return true;
@@ -939,6 +947,11 @@ export type LiveRunningRowContext = {
     busyWorkspaceIdSet: Set<string>;
     activeRowContext: ActiveTaskRowMatchContext | null;
     activeAssistantTaskRunning: boolean;
+    /**
+     * Several rows can carry the same expert id. Only the newest one owns the
+     * live expert session, so it is the row a busy expert id refers to.
+     */
+    isLiveExpertTask?: (task: TaskManagementItem) => boolean;
 };
 
 export function liveRunningRowContext(signals?: LiveRunningRowSignals | null): LiveRunningRowContext {
@@ -965,7 +978,7 @@ export function isLiveRunningTaskRow(task: TaskManagementItem, ctx: LiveRunningR
     const copied = isExplicitTaskCopy(task.tags);
     if (!copied && ctx.busyExpertSet.size > 0) {
         const expertID = expertIDFromTaskTags(task.tags);
-        if (expertID && ctx.busyExpertSet.has(expertID)) return true;
+        if (expertID && ctx.busyExpertSet.has(expertID) && (ctx.isLiveExpertTask?.(task) ?? true)) return true;
     }
     if (ctx.busyPathSet.size > 0) {
         const target = normalizeProjectSessionPath(task.project_path);
@@ -987,7 +1000,11 @@ export function isLiveRunningTaskRow(task: TaskManagementItem, ctx: LiveRunningR
  * over the same visible rows the task list renders. The Windows taskbar
  * overlay includes this count. */
 export function countRunningTaskRows(tasks: TaskManagementItem[], signals?: LiveRunningRowSignals | null): number {
-    const ctx = liveRunningRowContext(signals);
+    const livePaths = liveExpertTaskPaths(tasks);
+    const ctx: LiveRunningRowContext = {
+        ...liveRunningRowContext(signals),
+        isLiveExpertTask: (task) => expertTaskIsLiveInMap(task, livePaths),
+    };
     return visibleTaskRows(tasks).filter(task => isLiveRunningTaskRow(task, ctx) || taskStatusBucketFor(task) === 'running').length;
 }
 
@@ -2780,13 +2797,22 @@ export const SidebarTaskManagement = ({
     // Built once per identity change; the hot loops below match rows against
     // this context instead of re-coercing the identity per row per pass.
     const activeRowContext = useMemo(() => activeTaskRowMatchContext(activeAssistantTask), [activeAssistantTask]);
+    // The live task of each expert, precomputed once per task-list change.
+    // Row predicates must not rescan the list per row.
+    const liveExpertPaths = useMemo(() => liveExpertTaskPaths(tasks), [tasks]);
+    const isLiveExpertRow = useCallback(
+        (task: Pick<TaskManagementItem, 'project_path' | 'tags'>) => expertTaskIsLiveInMap(task, liveExpertPaths),
+        [liveExpertPaths],
+    );
     const matchesLiveRunningRow = useCallback((task: TaskManagementItem): boolean => isLiveRunningTaskRow(task, {
         busyPathSet,
         busyExpertSet,
         busyWorkspaceIdSet,
         activeRowContext,
         activeAssistantTaskRunning,
-    }), [activeAssistantTaskRunning, activeRowContext, busyPathSet, busyExpertSet, busyWorkspaceIdSet]);
+        // A busy expert id belongs to the newest task of that expert only.
+        isLiveExpertTask: (row) => isLiveExpertRow(row),
+    }), [activeAssistantTaskRunning, activeRowContext, busyPathSet, busyExpertSet, busyWorkspaceIdSet, isLiveExpertRow]);
     // One classification pass over the visible rows: chip counts, filters,
     // the row pill and the current-task card all consult this key set
     // instead of re-running the matcher for every row on each render.
@@ -4416,13 +4442,23 @@ export const SidebarTaskManagement = ({
         if (isExplicitTaskCopy(task.tags)) {
             return isProjectTabOpen(task.project_path, openProjectTabPaths);
         }
-        if (expertID && isLatexExpertId(expertID)) {
-            const livePath = activeAssistantTask?.expertId === expertID
+        // Only the newest task of an expert owns the expert tab; older tasks
+        // open as their own project tabs.
+        if (expertID && !isLiveExpertRow(task)) {
+            return isProjectTabOpen(
+                task.project_path,
+                openProjectTabPaths,
+                cloudWorkspaceIdFromTaskFields({ tags: task.tags, project_path: task.project_path, working_dir: task.working_dir }),
+                openProjectTabIdentities,
+            );
+        }
+        if (expertID) {
+            const activePath = activeAssistantTask?.expertId === expertID
                 ? normalizeProjectSessionPath(activeAssistantTask.projectPath)
                 : "";
-            if (livePath) return livePath === normalizeProjectSessionPath(task.project_path);
+            if (activePath) return activePath === normalizeProjectSessionPath(task.project_path);
+            return (openExpertTabIDs || []).includes(expertID);
         }
-        if (expertID) return (openExpertTabIDs || []).includes(expertID);
         return isProjectTabOpen(
             task.project_path,
             openProjectTabPaths,
@@ -4564,8 +4600,9 @@ export const SidebarTaskManagement = ({
         // A copy's open tab is its own project path. The source expert or cloud
         // tab must not make the delete dialog say this copy is in use.
         const cloudWorkspaceId = copied ? '' : cloudWorkspaceIdFromTaskFields({ tags: menu.tags, project_path: projectPath, working_dir: menu.workingDir });
+        const liveExpertTask = !!expertID && isLiveExpertRow({ project_path: projectPath, tags: menu.tags });
         const tabOpen = isProjectTabOpen(projectPath, openProjectTabPaths, cloudWorkspaceId, openProjectTabIdentities)
-            || (!!expertID && (openExpertTabIDs || []).includes(expertID));
+            || (liveExpertTask && (openExpertTabIDs || []).includes(expertID));
         const name = String(menu.name || '').trim();
         // Close the menu first so the confirm dialog owns the overlay layer.
         setTaskContextMenu(null);

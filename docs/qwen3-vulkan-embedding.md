@@ -83,15 +83,23 @@ every message) also runs on the GPU. The extra dispatch normalises every row
 with the output-norm weight and the mean is summed on the CPU, which is the same
 value the CPU path builds from a cached prefix sum plus the suffix.
 
-Measured on the reference hardware, per pooled embed (process CPU time):
+Measured on the reference hardware (Ryzen 7 8745HS / Radeon 780M, `embdoctor`,
+median of 12):
 
-| backend | CPU per embed |
-|---|---|
-| CPU (Q8P, 4 threads) | ~109 ms |
-| Vulkan | ~7 ms |
+| backend | wall per pooled embed | CPU work |
+|---|---|---|
+| CPU (Q8P, 4 threads, prefix sum cached) | 67 ms | full forward over 4 cores |
+| Vulkan (recomputes the instruction prefix) | 100 ms | row sum + normalisation only |
 
-That makes the intent path — the most frequent embedding call in the product —
-cheap enough to run on every message.
+The GPU path is kept despite being slower in wall time: this runs on every
+message, and the point of the backend is to stop pegging four cores for 67 ms
+each time. A machine where latency matters more than CPU load can set
+`MACLAW_VULKAN=0`.
+
+The asymmetry behind the numbers: the CPU path reuses a cached prefix sum and
+only forwards the suffix rows, while the Vulkan forward recomputes the whole
+sequence every call. Caching per-layer prefix K/V on the device would close the
+gap (roughly 100 → 40 ms at this prefix length) but is not implemented.
 
 ## Startup gates: correctness first, then speed
 
@@ -143,7 +151,7 @@ the CPU-side guard.
 | `MACLAW_QWEN3_VULKAN=0` | disable the Vulkan backend entirely |
 | `MACLAW_QWEN3_VULKAN_MIN_RATIO` | speed gate threshold (default `0.5`; `0` accepts any GPU that passed the numeric check) |
 | `MACLAW_QWEN3_VULKAN_MAX_ROWS` | activation arena / batch row cap (default `512`, min `32`) |
-| `MACLAW_QWEN3_VULKAN_MAX_TOKENS` | longest single sequence kept on the GPU (default `128`) |
+| `MACLAW_QWEN3_VULKAN_MAX_TOKENS` | longest single sequence kept on the GPU (default `192`) |
 
 The hardware-acceleration toggle (`embedding.SetHWAccelPreferred`) governs both
 GPU backends: off releases the device (waiting for in-flight forwards, and
@@ -212,17 +220,21 @@ destroy-before-free ordering in place. A forward that would need more rows is
 rejected and the CPU path serves it, which is why batch packing is capped at
 the same row count.
 
-Single sequences above `MACLAW_QWEN3_VULKAN_MAX_TOKENS` (default 128) also run
+Single sequences above `MACLAW_QWEN3_VULKAN_MAX_TOKENS` (default 192) also run
 on the CPU. The GPU loses on long text because the 32-row matmul tile makes
 every extra 32 rows re-read the whole weight blob, and attention grows
-quadratically. Measured p50 on the reference hardware:
+quadratically. Measured p50 on the reference hardware (4 embed threads):
 
-| tokens | CPU | Vulkan |
-|---|---|---|
-| 33 | 83 ms | 84 ms |
-| 45 | 104 ms | 97 ms |
-| 131 | 360 ms | 345 ms |
-| 380 | 1045 ms | 1754 ms |
+| tokens | CPU | Vulkan | CPU/GPU |
+|---|---|---|---|
+| 33 | 96 ms | 36 ms | 2.67x |
+| 65 | 207 ms | 169 ms | 1.22x |
+| 131 | 481 ms | 452 ms | 1.06x |
+| 200 | 730 ms | 756 ms | 0.97x |
+| 380 | 1045 ms | 1754 ms | 0.60x |
+
+The cap is the crossover: up to ~190 tokens the GPU is at least as fast and
+uses a fraction of the CPU, further out it only costs latency.
 
 In a bulk batch, only the long texts are routed to the CPU; the rest still use
 the GPU.
@@ -251,3 +263,6 @@ dominate once the grid is large enough to fill the GPU.
 - Head dim is fixed at 128 and the model must be Qwen3-Embedding; anything else
   falls back to the CPU.
 - Windows and Linux only; macOS uses Metal (which has no pooled path yet).
+- No GPU prefix KV cache: the pooled intent path recomputes the fixed
+  instruction prefix on every call, so it trades wall-clock latency for CPU
+  (see Pooling).

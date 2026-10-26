@@ -278,7 +278,7 @@ func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userT
 
 	userContent := buildUserContentWithPreparedLocalAttachments(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, onProgress, allowLocalAttachmentStaging, true, cfg.EffectiveContextTokens())
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
-	history = append(history, agent.ConversationEntry{Role: "user", Content: userContent})
+	history = append(history, agent.ConversationEntry{Role: "user", Content: historyContentForPersistence(userContent)})
 	consentNote := shortConsentContinuesHere(semantic, history[:len(history)-1], planClosed)
 	if consentNote != "" {
 		conversation = append(conversation, map[string]string{"role": "system", "content": consentNote})

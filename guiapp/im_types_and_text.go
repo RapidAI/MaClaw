@@ -93,6 +93,10 @@ type IMAgentResponse struct {
 	// this answer. Only the desktop file-companion window reads it; ordinary
 	// replies leave it empty, so it never reaches another client.
 	FileCompanionFigures []FileCompanionFigure `json:"file_companion_figures,omitempty"`
+	// FileCompanionFiles are the files this answer produced. Only the desktop
+	// file-companion window reads it; ordinary replies leave it empty, so it
+	// never reaches another client.
+	FileCompanionFiles []FileCompanionFile `json:"file_companion_files,omitempty"`
 	// NoteCardPath is the note PDF. It is not a paper resultPath.
 	NoteCardPath string `json:"note_card_path,omitempty"`
 	// WebNote marks a fullscreen web note whose timestamps do not seek.

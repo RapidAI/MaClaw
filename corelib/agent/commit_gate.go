@@ -100,6 +100,22 @@ type CommitChatBoundHost interface {
 	CommitCallBoundToChat(name, argsJSON string) bool
 }
 
+// CommitFullControlHost is optional. True means this task tab is in
+// 完全控制: the person already authorized it to run without another card.
+// The gate reads it live, so flipping the tier mid-task takes effect on the
+// next call. A stored deny and an open checklist still refuse the call.
+type CommitFullControlHost interface {
+	CommitFullControlGranted() bool
+}
+
+// CommitFullControlAuditor is optional. The gate calls it when the full-control
+// grant waived a human-class card, so the host can record the allow the same
+// way a person's answer is recorded. Keeping it separate leaves the predicate
+// above read-only.
+type CommitFullControlAuditor interface {
+	CommitNoteFullControl(toolName, fingerprint string)
+}
+
 // CommitLedger is the in-memory approval record for one task. Hosts keep it
 // on the task they already own. It is not a new state file.
 type CommitLedger struct {
@@ -205,7 +221,20 @@ func ApplyCommitGate(cb LoopCallbacks, name, argsJSON string) (ToolExecutionResu
 		return ToolExecutionResult{}, false
 	}
 	toolName := strings.TrimSpace(name)
+	fullControl := false
+	if full, ok := cb.(CommitFullControlHost); ok && full != nil {
+		fullControl = full.CommitFullControlGranted()
+	}
 	if host.CommitChecklistOpen() {
+		// Under 完全控制 there is no person to ask, and naming an approval here
+		// would send the model looking for one. The open checklist is the whole
+		// reason the call waits.
+		if fullControl {
+			return ToolExecutionResult{
+				Result:  "步骤清单还有未关闭项，执行 " + toolName + " 先不执行。",
+				Outcome: ToolExecutionOutcomeError,
+			}, true
+		}
 		return ToolExecutionResult{
 			Result:  "步骤清单还有未关闭项，执行 " + toolName + " 缺少人的批准，先不执行。",
 			Outcome: ToolExecutionOutcomeError,
@@ -214,6 +243,15 @@ func ApplyCommitGate(cb LoopCallbacks, name, argsJSON string) (ToolExecutionResu
 	decision, found := host.CommitLookup(fingerprint)
 	if found && decision == CommitDeny {
 		return commitDeniedResult(toolName), true
+	}
+	if fullControl {
+		// 完全控制 already authorized this call shape. Check it before a stored
+		// once/task allow so a stale one-call grant is not consumed and no
+		// decision is written. Leaving the tier puts the card back.
+		if auditor, ok := cb.(CommitFullControlAuditor); ok && auditor != nil {
+			auditor.CommitNoteFullControl(toolName, fingerprint)
+		}
+		return ToolExecutionResult{}, false
 	}
 	if found && decision == CommitAllowTask {
 		return ToolExecutionResult{}, false

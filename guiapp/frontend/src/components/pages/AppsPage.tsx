@@ -11269,6 +11269,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
     useEffect(() => {
         if (!runID || runState !== 'running') return;
         let disposed = false;
+        let timer: number | null = null;
         const poll = async () => {
             try {
                 const status = await GetNLSkillRunStatus(runID) as SkillRunStatusView;
@@ -11379,13 +11380,19 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 forgetActiveRun(runID);
                 recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
                 await finalizeApprovalRunFromStatus({ run_id: runID, status: 'error', error: message }, 'error');
+            } finally {
+                // Reschedule only after this tick settles. The status read can
+                // outlast the 1.5s cadence, and fixed-cadence intervals would
+                // let overlapping ticks stack requests against the backend.
+                if (!disposed) {
+                    timer = window.setTimeout(() => { void poll(); }, 1500);
+                }
             }
         };
         void poll();
-        const timer = window.setInterval(poll, 1500);
         return () => {
             disposed = true;
-            window.clearInterval(timer);
+            if (timer !== null) window.clearTimeout(timer);
         };
     }, [runID, runState, text.activeRunLost, text.skillRunCancelled, text.skillRunCompleted, text.skillRunFailed, currentRunContext, finalizeApprovalRunFromStatus, updateApprovalRunProgressFromStatus, runtimeDependencyPlan]);
     if (!app) return <div className="apps-empty">{text.noApps}</div>;

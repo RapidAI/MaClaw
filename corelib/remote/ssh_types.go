@@ -133,7 +133,8 @@ func (c *SSHHostConfig) Defaults() {
 type SSHSessionSpec struct {
 	// HostConfig 目标主机配置。
 	HostConfig SSHHostConfig `json:"host_config"`
-	// InitialCommand 连接后立即执行的命令（可选，如 "cd /app && bash"）。
+	// InitialCommand 是写入交互 shell 的第一行（如 "cd /app && bash"），
+	// 不是替代 shell 的一次性进程；命令结束后会话仍然可 exec。
 	InitialCommand string `json:"initial_command,omitempty"`
 	// Env 额外环境变量。
 	Env map[string]string `json:"env,omitempty"`

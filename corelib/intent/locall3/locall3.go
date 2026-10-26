@@ -92,7 +92,7 @@ func (r *Runtime) Attach(emb embedding.Embedder) (*intent.LocalHead, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cur := r.st.Load(); cur != nil && cur.emb == emb {
+	if cur := r.st.Load(); cur != nil && intent.SameEmbedder(cur.emb, emb) {
 		return cur.head, nil
 	}
 	fam := embedding.EmbedderFamily(emb)

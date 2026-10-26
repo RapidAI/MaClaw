@@ -724,11 +724,51 @@ func (p *ProjectTabSessionPersist) SaveConversationViewArchive(tabID string, mes
 		}
 		return nil
 	}
-	payload, err := json.MarshalIndent(conversationViewArchiveDocument{Messages: messages}, "", "  ")
+	count := len(messages)
+	payload, err := json.MarshalIndent(conversationViewArchiveDocument{Messages: messages, Count: &count}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal conversation archive %s: %w", tabID, err)
 	}
 	return atomicWriteFile(path, payload)
+}
+
+// ConversationViewArchiveCount reports how many messages a tab archive
+// holds. It reads the count metadata stamped with the archive and only
+// falls back to deserializing the whole file for archives written before
+// the metadata existed, so legacy files keep reporting the same number
+// instead of 0.
+func (p *ProjectTabSessionPersist) ConversationViewArchiveCount(tabID string) (int, error) {
+	if p == nil {
+		return 0, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	path, err := p.conversationViewArchivePath(tabID)
+	if err != nil {
+		return 0, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read conversation archive %s: %w", tabID, err)
+	}
+	var header struct {
+		Count    *int            `json:"count"`
+		Messages json.RawMessage `json:"messages"`
+	}
+	if json.Unmarshal(data, &header) != nil || len(header.Messages) == 0 {
+		return 0, nil
+	}
+	if header.Count != nil {
+		return *header.Count, nil
+	}
+	var document conversationViewArchiveDocument
+	if json.Unmarshal(data, &document) != nil {
+		return 0, nil
+	}
+	return len(document.Messages), nil
 }
 
 // atomicWriteFile writes data to a temporary file then renames it to the

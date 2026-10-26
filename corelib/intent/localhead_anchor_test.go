@@ -34,7 +34,7 @@ func TestLocalHeadAnchorFeatures(t *testing.T) {
 	z0, z1 := (h1-h2)/2, (-h1+h2+0.3)/2
 	m := math.Max(z0, z1)
 	want0 := math.Exp(z0-m) / (math.Exp(z0-m) + math.Exp(z1-m))
-	if math.Abs(p[0]-want0) > 1e-12 || math.Abs(p[0]+p[1]-1) > 1e-12 {
+	if math.Abs(p[0]-want0) > headProbEps || math.Abs(p[0]+p[1]-1) > headProbEps {
 		t.Fatalf("p=%v want p0=%v", p, want0)
 	}
 	// heads without anchor_features: PredictWithAnchors == Predict, Dim unchanged

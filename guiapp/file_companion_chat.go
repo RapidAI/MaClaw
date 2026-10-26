@@ -138,6 +138,9 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 	// Companion tools append to the same list, so a rendered page continues
 	// the numbering instead of starting its own.
 	a.seedFileCompanionTurnFigures(userID, turnFigures)
+	// The produced-file list starts empty: a file an earlier turn made belongs
+	// to that turn's reply, not to this one.
+	a.seedFileCompanionTurnFiles(userID)
 	if agent.IsImageFilePath(path) {
 		msg = a.attachFileCompanionImage(msg, path)
 	}
@@ -179,6 +182,12 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 		// while answering.
 		if figures := a.fileCompanionTurnFigures(userID); len(figures) > 0 {
 			resp.FileCompanionFigures = fileCompanionFiguresForReply(figures, text, resp.Text)
+		}
+		// A file the model wrote this turn rides on the reply, so the window
+		// can offer it as a 产出物 card instead of leaving a bare path in the
+		// prose.
+		if files := a.fileCompanionTurnFiles(userID); len(files) > 0 {
+			resp.FileCompanionFiles = files
 		}
 	}
 	if paper {
@@ -282,7 +291,7 @@ func fileCompanionPrompt(name, ext string) string {
 	base := "你是文件伴读。只讨论当前打开的这一个文件：" + name + "。不要引用其他文件。用户没有要求生成新文件时，不要声称已经生成或发送了 PDF。"
 	switch strings.ToLower(ext) {
 	case ".pdf":
-		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 裁出某一页上的插图（Figure / 图）和图注，不包含同页正文和表格；pdf_extract_images 提取文档内嵌位图。要看某一张图时传 figure（图号，如 1）。不传 figure 时，该页有图注就只返回裁好的图。只有用户明确要看整页版式时才传 full=true。不要为了展示一张图去要整页。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。扫描页没有文字层时，pdf_read_pages 会先用本机 PP-OCRv6 识别再返回文字。不要安装其他识别引擎。用户要把扫描版转成按原版式重新生成的 PDF 时，调用 pdf_restore。它用本机版面分析、PP-OCRv6 和已经接入的公式模型重做每一页：正文每一行按识别到的原位置写回，公式还原到公式框里，插图从扫描图里裁出来放回原处，有线表格恢复成表格。不覆盖当前打开的文件。单次最多 16 页，没做完就再调用一次。只有 pdf_restore 返回了结果，才可以说已经生成。不要安装其他识别引擎。"
+		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 裁出某一页上的插图（Figure / 图）和图注，不包含同页正文和表格；pdf_extract_images 提取文档内嵌位图。要看某一张图时传 figure（图号，如 1）。不传 figure 时，该页有图注就只返回裁好的图。只有用户明确要看整页版式时才传 full=true。不要为了展示一张图去要整页。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。扫描页没有文字层时，pdf_read_pages 会先用本机 PP-OCRv6 识别再返回文字。不要安装其他识别引擎。用户要把扫描版转成按原版式重新生成的 PDF 时，调用 pdf_restore。它用本机版面分析、PP-OCRv6 和已经接入的公式模型重做每一页：正文每一行按识别到的原位置写回，公式还原到公式框里，插图从扫描图里裁出来放回原处，有线表格恢复成表格。不覆盖当前打开的文件。单次最多 16 页，没做完就再调用一次。只有 pdf_restore 返回了结果，才可以说已经生成。不要安装其他识别引擎。用户要成品文件（笔记、讲义、总结、复习提纲、复习 PDF）时，调用 pdf_generate，把完整的成品正文放进 markdown，标题放进 title；正文里可以写「图N」指代这一轮的原图，宿主会把这些图附在 PDF 末尾。回答里只写一句说明并让用户点产出物卡片的「保存」，不要把正文再抄一遍，也不要贴出文件的完整路径（只有用户明确问文件在哪时才给）。文件由宿主写进它自己的结果目录，宿主会把它作为「产出物」放在回答下面，用户可以点「保存」自己选目录；你不能指定保存路径，也不要声称已经保存到了某个目录。只有 pdf_generate 返回了结果，才可以说文件已经生成。如果用户只是明确要把这段回答原样存成 PDF，告诉他点回答下面的「导出为 PDF」，不要调用 pdf_generate。"
 	case ".xlsx":
 		return base + "不要使用工具。如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
 	case ".pptx":
@@ -530,8 +539,19 @@ func (a *App) fileCompanionDropChat(userID, side string) error {
 	if st.figureLedger != nil {
 		delete(st.figureLedger, userID)
 	}
+	if st.turnFiles != nil {
+		delete(st.turnFiles, userID)
+	}
 	st.mu.Unlock()
 	st.chatMu.Unlock()
+	// The files this session produced are dropped with the transcript: the
+	// cards that showed them are gone, so the manifest must not put them
+	// back on a later answer.
+	if sessionID := fileCompanionSessionOf(userID); sessionID != "" {
+		if path := a.fileCompanionGeneratedManifestPathBySession(sessionID); path != "" {
+			_ = os.Remove(path)
+		}
+	}
 	if a.imHandler != nil && a.imHandler.memory != nil {
 		a.imHandler.memory.Clear(userID)
 		_ = a.imHandler.memory.FlushNow()
@@ -715,7 +735,8 @@ func (a *App) fileCompanionHistory(sessionID string) []FileCompanionMessage {
 	inventory := append([]companionFigure(nil), a.fileCompanionFiguresBounded(a.fileCompanionSessionPath(sessionID), true)...)
 	inventory = append(inventory, a.fileCompanionTurnFigures(userID)...)
 	restore := func(entries []agent.ConversationEntry) []FileCompanionMessage {
-		return a.fileCompanionAttachVideoNoteBody(sessionID, a.fileCompanionAttachPaperResult(sessionID, fileCompanionDisplayMessages(entries, inventory)))
+		messages := a.fileCompanionAttachVideoNoteBody(sessionID, a.fileCompanionAttachPaperResult(sessionID, fileCompanionDisplayMessages(entries, inventory)))
+		return a.fileCompanionAttachGeneratedFiles(sessionID, messages)
 	}
 	if a.imHandler != nil && a.imHandler.memory != nil {
 		if entries := a.imHandler.memory.Load(userID); len(entries) > 0 {

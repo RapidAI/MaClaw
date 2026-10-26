@@ -121,7 +121,7 @@ func TestExecuteCodingBashWindowsRewritesUnixFileInspect(t *testing.T) {
 		t.Fatalf("rewritten inspect should describe the file, got %q", result.Text)
 	}
 	shell, args := windowsCodingBashInvocation(`ls -lh "` + target + `" && file "` + target + `"`)
-	if !strings.Contains(shell, "powershell") || len(args) < 4 || !strings.Contains(args[len(args)-1], "Get-Item") {
+	if !strings.Contains(shell, "powershell") || len(args) < 4 || !strings.Contains(codingPowerShellWrappedCommand(t, args), "Get-Item") {
 		t.Fatalf("windows invocation should run adapted Get-Item, shell=%q args=%q", shell, args)
 	}
 
@@ -338,7 +338,7 @@ func TestExecuteCodingBashWindowsRewritesPythonListDir(t *testing.T) {
 		t.Fatalf("rewritten python listdir should list children, got %q", result.Text)
 	}
 	shell, args := windowsCodingBashInvocation(`python3 -c "import os; print(os.listdir(r'` + strings.ReplaceAll(dir, `\`, `\\`) + `'))"`)
-	if !strings.Contains(shell, "powershell") || len(args) < 4 || !strings.Contains(args[len(args)-1], "Get-Item") {
+	if !strings.Contains(shell, "powershell") || len(args) < 4 || !strings.Contains(codingPowerShellWrappedCommand(t, args), "Get-Item") {
 		t.Fatalf("windows invocation should run adapted Get-Item, shell=%q args=%q", shell, args)
 	}
 }

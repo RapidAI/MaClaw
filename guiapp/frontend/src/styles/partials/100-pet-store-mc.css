@@ -1526,7 +1526,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-welcome button[type='submit']:hover,
 .mc-input-stack .btn-primary:hover { background: var(--theme-primary-strong) !important; transform: translateY(-1px); }
 
-/* Reference composer utility buttons */
+/* Reference composer utility buttons. This 34px floor is for square icon
+   buttons; the row's text chips (permission, working dir, model, compose)
+   pin their own height inline so they line up at the shared control height. */
 .mc-input-stack button:not(.btn-primary) { min-width: 34px; min-height: 34px; border: 1px solid var(--theme-border) !important; border-radius: var(--radius-md) !important; background: var(--theme-surface) !important; color: var(--theme-text-muted) !important; }
 .mc-input-stack button:not(.btn-primary):hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important; background: var(--theme-primary-soft) !important; color: var(--mc-accent, #2e75cb) !important; }
 .aiti-avatar-wrap { position: relative; width: 14px; height: 14px; flex-shrink: 0; display: inline-flex; }

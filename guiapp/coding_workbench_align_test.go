@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,8 +150,8 @@ func TestWindowsCodingBashFindsPowerShellWithoutPATH(t *testing.T) {
 	if base != "powershell.exe" && base != "pwsh.exe" {
 		t.Fatalf("shell %q", shell)
 	}
-	if len(args) == 0 || !strings.Contains(args[len(args)-1], "cmake --build build") {
-		t.Fatalf("args %q", args)
+	if wrapped := codingPowerShellWrappedCommand(t, args); !strings.Contains(wrapped, "cmake --build build") {
+		t.Fatalf("wrapped command %q", wrapped)
 	}
 	if got := passthroughRuntimeProgram("powershell"); !filepath.IsAbs(got) {
 		t.Fatalf("passthrough powershell %q", got)
@@ -232,8 +233,8 @@ func TestSelectCMakeVerifyCommandProbesThenFallsBack(t *testing.T) {
 	}
 	if runtime.GOOS == "windows" {
 		_, args := windowsCodingBashInvocation(quoted)
-		if len(args) == 0 || !strings.Contains(args[len(args)-1], "& \"") {
-			t.Fatalf("powershell launch = %#v", args)
+		if wrapped := codingPowerShellWrappedCommand(t, args); !strings.Contains(wrapped, "& \"") {
+			t.Fatalf("powershell launch = %q", wrapped)
 		}
 	}
 
@@ -538,5 +539,71 @@ func TestMarkRemainingCodingStepsSkippedRewritesPrematurePassed(t *testing.T) {
 	}
 	if byIdx[5].Status != codingStepSkipped {
 		t.Fatalf("already-skipped T5 should remain skipped: %+v", byIdx[5])
+	}
+}
+
+func TestCodingWorkbenchStepsSnapshotMarshalsEmptyAsArray(t *testing.T) {
+	payload, err := json.Marshal(map[string]interface{}{
+		"step_statuses": codingWorkbenchStepsSnapshot(nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The frontend applies an array directly. A null snapshot is treated as an
+	// unexpected payload and forces a GetCodingWorkbenchStatus re-poll.
+	if !strings.Contains(string(payload), `"step_statuses":[]`) {
+		t.Fatalf("empty snapshot must marshal as []: %s", payload)
+	}
+	steps := []codingWorkbenchStepStatus{{Index: 1, Status: codingStepPassed}}
+	copied := codingWorkbenchStepsSnapshot(steps)
+	if len(copied) != 1 || copied[0].Index != 1 {
+		t.Fatalf("snapshot = %+v", copied)
+	}
+	copied[0].Status = codingStepFailed
+	if steps[0].Status != codingStepPassed {
+		t.Fatal("snapshot must copy, not alias the sticky list")
+	}
+}
+
+func TestClearGoalFinishedCodingChecklist(t *testing.T) {
+	h := &IMMessageHandler{}
+	// No "desktop-user:" prefix: this owner is not a project path, so sticky
+	// state hashes under the app data dir instead of writing a repo directory.
+	userID := "goal-finished-checklist"
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:                   "local",
+		ExecutionPlan:          "### T1: freeze baseline",
+		RequirementRestatement: "raise inference throughput",
+		PlanRunStarted:         true,
+		SessionPlan:            "raise inference throughput by 10%",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "freeze baseline", Status: codingStepPassed},
+			{Index: 2, Title: "collect baseline", Status: codingStepPassed},
+		},
+	})
+	h.clearGoalFinishedCodingChecklist(userID)
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if len(mem.StepStatuses) != 0 || mem.PlanRunStarted {
+		t.Fatalf("checklist not cleared: %+v", mem)
+	}
+	if mem.ExecutionPlan != "" || mem.RequirementRestatement != "" {
+		t.Fatalf("plan copy not cleared: %+v", mem)
+	}
+	if !strings.Contains(mem.SessionPlan, "10%") {
+		t.Fatalf("durable session plan must stay: %+v", mem)
+	}
+}
+
+func TestClearGoalFinishedCodingChecklistLeavesPlainChatAlone(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "desktop-user"
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		StepStatuses: []codingWorkbenchStepStatus{{Index: 1, Title: "send email", Status: codingStepPassed}},
+	})
+	h.clearGoalFinishedCodingChecklist(userID)
+	if mem := h.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 1 {
+		t.Fatalf("plain chat checklist changed: %+v", mem)
 	}
 }

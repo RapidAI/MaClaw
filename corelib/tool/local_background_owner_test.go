@@ -68,6 +68,16 @@ func TestLocalBackgroundTaskManagerOwnerAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitWithOwner legacy task: %v", err)
 	}
+	// Both shells must exit before t.TempDir cleanup: the manager closes each
+	// task log only after the process exits, and Windows refuses to unlink a
+	// file that is still open (flaky RemoveAll cleanup otherwise).
+	t.Cleanup(func() {
+		for _, id := range []string{task.TaskID, legacy.TaskID} {
+			if _, err := mgr.Wait(context.Background(), id, 30*time.Second, 0); err != nil {
+				t.Logf("wait %s: %v", id, err)
+			}
+		}
+	})
 	if err := mgr.AuthorizeTaskOwner(legacy.TaskID, "owner-a"); err == nil {
 		t.Fatal("owner-scoped caller must not access an ownerless task")
 	}

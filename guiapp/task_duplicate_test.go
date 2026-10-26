@@ -313,7 +313,7 @@ func TestDuplicateExpertTaskDoesNotStealResumeTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	pi := app.memoryStore.ProjectIndex()
-	got, ok := app.newestVisibleExpertTask(pi, taskSourceExpertPrefix+"paper-review", false)
+	got, ok := app.newestVisibleExpertTask(pi, taskSourceExpertPrefix+"paper-review")
 	if !ok || got.ProjectPath != source.ProjectPath {
 		t.Fatalf("resume target = %q, want source %q (copy %q)", got.ProjectPath, source.ProjectPath, copied.ProjectPath)
 	}

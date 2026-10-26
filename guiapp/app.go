@@ -531,6 +531,12 @@ type App struct {
 	// assistantSessionWorkingDirs bridges a UI tab's private directory to its
 	// runtime session owner, which is the identity used by tools and prompts.
 	assistantSessionWorkingDirs sync.Map
+	// expertSessionTaskPaths records the task whose execution directory is
+	// bound to an expert session. When the same expert moves to a new task
+	// without its creation path resetting the binding (a scheduled launch
+	// created with KeepExpertSession), the old directory must not follow the
+	// new task. Keyed by expert owner userID.
+	expertSessionTaskPaths sync.Map
 
 	// ACP conversations need a private owner even when they use one workspace.
 	acpSessionWorkingDirs sync.Map // ACP ownerID -> normalized working directory

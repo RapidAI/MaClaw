@@ -853,6 +853,79 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         expect((reopened as AITab | null)?.id).toBe(tabId);
         expect(result.current.getTabState(tabId)?.history || []).toEqual([]);
     });
+
+    it("retiring an expert task keeps the promoted backend session", () => {
+        const { result } = renderHook(() => useAITabManager());
+        const expert = {
+            id: "code-reviewer",
+            name: "Code Reviewer",
+            description: "reviews PRs",
+            icon: "🧐",
+            system_prompt: "review",
+            tools: [] as string[],
+            skills: [] as string[],
+            builtin: true,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+        };
+        let tabId = "";
+        act(() => {
+            const tab = result.current.createExpertTab(expert);
+            tabId = tab?.id || "";
+            result.current.saveTabState(tabId, {
+                history: [{ id: "m1", role: "user", content: "old expert chat" }],
+            });
+        });
+        vi.mocked(SaveProjectTabConversation).mockClear();
+        vi.mocked(ClearAIAssistantHistoryForSession).mockClear();
+
+        act(() => {
+            result.current.discardDeletedExpertTabs(expert.id, { keepBackendSession: true });
+        });
+
+        expect(result.current.getTabState(tabId)).toBeUndefined();
+        // The backend promoted the next task's transcript into this session
+        // key; the UI must not clear it.
+        expect(SaveProjectTabConversation).not.toHaveBeenCalled();
+        expect(ClearAIAssistantHistoryForSession).not.toHaveBeenCalled();
+    });
+
+    it("reopening a retired expert shows the promoted backend conversation", async () => {
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue([
+            { id: "u1", role: "user", content: "promoted", timestamp: 1 },
+            { id: "a1", role: "assistant", content: "continued", timestamp: 2 },
+        ] as any);
+        const { result } = renderHook(() => useAITabManager());
+        const expert = {
+            id: "code-reviewer",
+            name: "Code Reviewer",
+            description: "reviews PRs",
+            icon: "🧐",
+            system_prompt: "review",
+            tools: [] as string[],
+            skills: [] as string[],
+            builtin: true,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+        };
+
+        act(() => {
+            result.current.hydrateClosedExpertTabHistory(expert.id);
+        });
+        await waitFor(() => {
+            expect(result.current.getTabState("expert-code-reviewer")?.history).toHaveLength(2);
+        });
+
+        let tab: AITab | null = null;
+        act(() => {
+            tab = result.current.createExpertTab(expert);
+        });
+        expect((tab as AITab | null)?.id).toBe("expert-code-reviewer");
+        expect(result.current.getTabState("expert-code-reviewer")?.history).toEqual([
+            expect.objectContaining({ id: "u1", content: "promoted" }),
+            expect.objectContaining({ id: "a1", content: "continued" }),
+        ]);
+    });
 });
 
 describe("useAITabManager - orphan project tab reconcile", () => {

@@ -1357,7 +1357,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
         await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
         const status = screen.getByTestId("file-companion-arxiv-search-status").textContent ?? "";
-        expect(status).toContain("未能扩展关键词，已按原文检索");
+        expect(status).toContain("未能扩展关键词，已用原文中的英文词检索");
         expect(status).toContain("约 1 篇");
         expect(screen.getByTestId("file-companion-arxiv-search-groups").textContent).toContain("注意力");
     });
@@ -3647,8 +3647,76 @@ describe("FileCompanionWindow", () => {
         expect(figureDataURL).toHaveBeenCalledWith("C:/notes/img/trained.png");
     });
 
-    it("shows no drawings when the reply names none", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/plain.md"] });
+    it("shows the file the answer produced", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/generated.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        fireEvent.change(await screen.findByTestId("file-companion-input"), { target: { value: "整理成笔记 PDF" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:generated.md",
+                text: "笔记 PDF 已经生成。",
+                request_id: "gen",
+                file_companion_files: [{ label: "复习笔记.pdf", path: "C:/maclaw/data/file-companion/results/x/复习笔记.pdf", size: 2048 }],
+            }));
+        });
+        await screen.findByText("笔记 PDF 已经生成。");
+        await waitFor(() => expect(screen.getByTestId("companion-file-card-gen:assistant")).toBeTruthy());
+        expect(screen.getByText("复习笔记.pdf")).toBeTruthy();
+    });
+
+    it("saves the produced file where the reader wants it", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/generated.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "assistant", text: "笔记 PDF 已经生成。", files: [{ label: "复习笔记.pdf", path: "C:/maclaw/data/file-companion/results/x/复习笔记.pdf" }] },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("笔记 PDF 已经生成。");
+        await waitFor(() => expect(screen.getByTestId("companion-file-card-restored:0")).toBeTruthy());
+        fireEvent.click(screen.getByTestId("companion-file-save"));
+        await waitFor(() => {
+            expect(saveResult).toHaveBeenCalledWith("C:/maclaw/data/file-companion/results/x/复习笔记.pdf");
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId("companion-file-save").textContent).toBe("已保存");
+        });
+    });
+
+    it("offers every file a turn produced on its own row", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/generated.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "两份笔记都生成了。",
+                    files: [
+                        { label: "复习笔记.pdf", path: "C:/out/复习笔记.pdf" },
+                        { label: "讲义.pdf", path: "C:/out/讲义.pdf" },
+                    ],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("两份笔记都生成了。");
+        await waitFor(() => expect(screen.getByTestId("companion-file-card-restored:0")).toBeTruthy());
+        expect(screen.getByText("复习笔记.pdf")).toBeTruthy();
+        expect(screen.getByText("讲义.pdf")).toBeTruthy();
+        const saves = screen.getAllByTestId("companion-file-save");
+        expect(saves.length).toBe(2);
+        fireEvent.click(saves[1]);
+        await waitFor(() => {
+            expect(saveResult).toHaveBeenCalledWith("C:/out/讲义.pdf");
+        });
+    });
+
+    it("shows no drawings when the reply names none", async () => {        boot.mockResolvedValue({ paths: ["C:/notes/plain.md"] });
         open.mockImplementation(async (path: string) => doc(path, {
             messages: [
                 { role: "assistant", text: "这段文字没有问题。" },

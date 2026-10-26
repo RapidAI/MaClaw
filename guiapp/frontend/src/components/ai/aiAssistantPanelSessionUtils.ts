@@ -117,6 +117,8 @@ export type GoalChecklistRecord = {
     user_id?: string;
     objective?: string;
     phase?: string;
+    status?: string;
+    summary?: string;
     steps?: Array<{ index?: number; title?: string; status?: string } | null> | null;
     turns_used?: number;
     max_turns?: number;
@@ -125,6 +127,25 @@ export type GoalChecklistRecord = {
 };
 
 type GoalStepMark = "done" | "progress" | "failed" | "pending" | "other";
+
+/** Closing line for a goal that is no longer advancing, empty while active. */
+function goalChecklistStatusLine(input: GoalChecklistRecord): string {
+    const status = String(input.status || "").trim().toLowerCase();
+    if (!status || status === "active") return "";
+    const reason = String(input.summary || "").trim().split(/\r?\n/).map((part) => part.trim()).find(Boolean) || "";
+    switch (status) {
+        case "complete":
+            return "已完成";
+        case "failed":
+            return reason ? `目标失败：${reason}` : "目标失败";
+        case "paused":
+            return reason ? `目标已暂停：${reason}` : "目标已暂停";
+        case "budget_limited":
+            return reason ? `目标已停止：${reason}` : "目标已停止";
+        default:
+            return "";
+    }
+}
 
 function goalRecordCount(value: unknown): number {
     const parsed = typeof value === "number" ? value : Number(String(value ?? "").trim());
@@ -150,6 +171,7 @@ export function formatGoalChecklistFromRecord(input: GoalChecklistRecord | null 
     if (stepsMissing && phase !== "plan") return "";
     const steps = Array.isArray(input.steps) ? input.steps.filter((step): step is NonNullable<typeof step> => !!step && typeof step === "object") : [];
     const lines = ["目标清单"];
+    const statusLine = goalChecklistStatusLine(input);
     if (phase === "plan" || steps.length === 0) {
         const objective = String(input.objective || "").trim() || "当前目标";
         lines.push(`正在分解：${objective}`);
@@ -174,8 +196,9 @@ export function formatGoalChecklistFromRecord(input: GoalChecklistRecord | null 
             else if (mark === "progress" || stepIndex === current) glyph = "→";
             lines.push(`${glyph} ${stepIndex}. ${title}`);
         });
-        if (current <= 0) lines.push("正在核对验收");
+        if (current <= 0 && !statusLine) lines.push("正在核对验收");
     }
+    if (statusLine) lines.push(statusLine);
     const maxTurns = goalRecordCount(input.max_turns);
     if (maxTurns > 0) lines.push(`进度：第 ${goalRecordCount(input.turns_used) + 1}/${maxTurns} 轮`);
     const tokenBudget = goalRecordCount(input.token_budget);

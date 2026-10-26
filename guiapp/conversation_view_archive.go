@@ -12,6 +12,12 @@ import (
 
 type conversationViewArchiveDocument struct {
 	Messages []interface{} `json:"messages"`
+	// Count is the number of messages the archive-scope count endpoint
+	// reports for this file (local-session rows for the desktop archive,
+	// all rows for tab archives). Writers stamp it atomically with the
+	// archive; readers fall back to a full count when it is absent, which
+	// covers archives written before the field existed.
+	Count *int `json:"count,omitempty"`
 }
 
 func (a *App) readAIAssistantUIArchiveLocked() []interface{} {
@@ -52,7 +58,41 @@ func (a *App) writeAIAssistantUIArchiveLocked(messages []interface{}) error {
 		}
 		return nil
 	}
-	return configfile.AtomicWriteJSON(path, conversationViewArchiveDocument{Messages: messages})
+	count := conversationViewLocalCount(messages)
+	return configfile.AtomicWriteJSON(path, conversationViewArchiveDocument{Messages: messages, Count: &count})
+}
+
+// readAIAssistantUIArchiveCountLocked reports the archived local-message
+// count without deserializing every message when the file carries the count
+// metadata stamped at write time. Archives written before the metadata
+// existed fall back to the old full read + count, so legacy files keep
+// reporting the same number instead of 0.
+func (a *App) readAIAssistantUIArchiveCountLocked() int {
+	if a == nil {
+		return 0
+	}
+	data, err := os.ReadFile(a.aiAssistantUIArchivePath())
+	if err != nil {
+		return 0
+	}
+	// RawMessage skips per-message decoding: one contiguous copy instead of
+	// hundreds of map allocations, which is where the full unmarshal spent
+	// its time.
+	var header struct {
+		Count    *int            `json:"count"`
+		Messages json.RawMessage `json:"messages"`
+	}
+	if json.Unmarshal(data, &header) != nil || len(header.Messages) == 0 {
+		return 0
+	}
+	if header.Count != nil {
+		return *header.Count
+	}
+	var document conversationViewArchiveDocument
+	if json.Unmarshal(data, &document) != nil {
+		return 0
+	}
+	return conversationViewLocalCount(document.Messages)
 }
 
 // windowAIAssistantUIStateLocked keeps the hot tail in the UI state and the
@@ -121,17 +161,17 @@ func (a *App) ConversationViewArchiveCount(scope string) int {
 	case scope == "desktop":
 		aiAssistantUIStateMu.Lock()
 		defer aiAssistantUIStateMu.Unlock()
-		return conversationViewLocalCount(a.readAIAssistantUIArchiveLocked())
+		return a.readAIAssistantUIArchiveCountLocked()
 	case strings.HasPrefix(scope, "tab:"):
 		tabID := strings.TrimSpace(strings.TrimPrefix(scope, "tab:"))
 		if a == nil || tabID == "" {
 			return 0
 		}
-		messages, err := a.ensureProjectTabSessionPersist().LoadConversationViewArchive(tabID)
+		count, err := a.ensureProjectTabSessionPersist().ConversationViewArchiveCount(tabID)
 		if err != nil {
 			return 0
 		}
-		return len(messages)
+		return count
 	default:
 		return 0
 	}

@@ -5663,36 +5663,45 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
     useEffect(() => {
         let cancelled = false;
+        let timer: number | null = null;
         const pull = async () => {
-            let notes: Array<Record<string, unknown>> = [];
             try {
-                notes = (await PullDesktopBotCrossNotes()) as Array<Record<string, unknown>>;
-            } catch {
-                return;
-            }
-            if (cancelled || userIdRef.current !== userId) return;
-            // Hub's display feed: notes a server-side wake already delivered
-            // to an agent are still here until a GUI marks them shown.
-            try {
-                const feed = (await PullDesktopBotFeed([], false)) as Array<Record<string, unknown>>;
-                const have = new Set((notes || []).map(n => String(n.id || '')));
-                for (const item of feed || []) if (!have.has(String(item.id || ''))) notes.push(item);
-            } catch { /* older Hub: the cross-notes list is all there is */ }
-            if (cancelled || userIdRef.current !== userId) return;
-            landCrossRef.current(notes || []);
-            const shown = [...shownRef.current].filter(id => !markedRef.current.has(id));
-            if (shown.length > 0) {
+                let notes: Array<Record<string, unknown>> = [];
                 try {
-                    await PullDesktopBotFeed(shown, false);
-                    for (const id of shown) markedRef.current.add(id);
-                } catch { /* try again next poll */ }
+                    notes = (await PullDesktopBotCrossNotes()) as Array<Record<string, unknown>>;
+                } catch {
+                    return;
+                }
+                if (cancelled || userIdRef.current !== userId) return;
+                // Hub's display feed: notes a server-side wake already delivered
+                // to an agent are still here until a GUI marks them shown.
+                try {
+                    const feed = (await PullDesktopBotFeed([], false)) as Array<Record<string, unknown>>;
+                    const have = new Set((notes || []).map(n => String(n.id || '')));
+                    for (const item of feed || []) if (!have.has(String(item.id || ''))) notes.push(item);
+                } catch { /* older Hub: the cross-notes list is all there is */ }
+                if (cancelled || userIdRef.current !== userId) return;
+                landCrossRef.current(notes || []);
+                const shown = [...shownRef.current].filter(id => !markedRef.current.has(id));
+                if (shown.length > 0) {
+                    try {
+                        await PullDesktopBotFeed(shown, false);
+                        for (const id of shown) markedRef.current.add(id);
+                    } catch { /* try again next poll */ }
+                }
+            } finally {
+                // Reschedule only after this pull settles. Each pull can spend
+                // up to the 20s feed timeout, and fixed-cadence intervals would
+                // let overlapping ticks stack requests against the Hub.
+                if (!cancelled) {
+                    timer = window.setTimeout(() => { void pull(); }, 4000);
+                }
             }
         };
         void pull();
-        const timer = window.setInterval(() => { void pull(); }, 4000);
         return () => {
             cancelled = true;
-            window.clearInterval(timer);
+            if (timer !== null) window.clearTimeout(timer);
         };
     }, [userId]);
     useEffect(() => {

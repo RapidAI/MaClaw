@@ -92,10 +92,10 @@ type record struct {
 	Principals     []ownerPrincipal      `json:"principals,omitempty"`
 	Bots           []Bot                 `json:"bots"`
 	// LocalBots are GUI-hosted bots on the owners' machines (bot_local.go).
-	LocalBots []LocalBot `json:"local_bots,omitempty"`
-	Grants         []Grant               `json:"grants,omitempty"`
-	Desktop        *desktopStateRecord   `json:"desktop,omitempty"`
-	LLM            llmSettings           `json:"llm,omitempty"`
+	LocalBots []LocalBot          `json:"local_bots,omitempty"`
+	Grants    []Grant             `json:"grants,omitempty"`
+	Desktop   *desktopStateRecord `json:"desktop,omitempty"`
+	LLM       llmSettings         `json:"llm,omitempty"`
 	// SystemFreeCreditsUsed is the credits each bot owner has spent on
 	// system-free, keyed by hub user id. It is independent of new-user benefits.
 	SystemFreeCreditsUsed map[string]float64 `json:"system_free_credits_used,omitempty"`
@@ -137,8 +137,8 @@ type Service struct {
 	MaterialStageDir string
 	// MailFileDir keeps files shared in bot messages; empty is a temp dir.
 	MailFileDir string
-	HTTP             *http.Client
-	Now              func() time.Time
+	HTTP        *http.Client
+	Now         func() time.Time
 	// messageTimeout overrides the wait for one bot command. Tests use it.
 	// A timed-out command must not stop the desktop: the instance may already
 	// have handed that browser to the person.
@@ -147,7 +147,7 @@ type Service struct {
 	// Nil keeps older tests on the MaClawSrv connection alone.
 	OwnerLLM OwnerLLMIssuer
 
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	bearerMu sync.Mutex
 	// ownerBearers keeps a MaClaw access token for an owner API key. Issuing
 	// one verifies the API secret with scrypt and is rate-limited, so a bot

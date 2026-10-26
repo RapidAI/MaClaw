@@ -1457,3 +1457,262 @@ func TestPauseAndCancelDropASteerForTheStoppedTurn(t *testing.T) {
 		t.Fatal("cancel must not fence the next chat message")
 	}
 }
+
+func TestGoalCompleteRetiresCodingChecklist(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	g, err := store.Set(userID, "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "freeze the baseline", []goal.Step{{Index: 1, Title: "freeze baseline"}}, []string{"baseline frozen"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateStep(userID, g.GoalID, 1, goal.StepDone, "baseline frozen"); err != nil {
+		t.Fatal(err)
+	}
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:                   "local",
+		ExecutionPlan:          "### T1: freeze baseline",
+		RequirementRestatement: "ship it",
+		PlanRunStarted:         true,
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "freeze baseline", Status: codingStepPassed},
+		},
+	})
+
+	if got := h.goalCompleteForUser(userID, map[string]interface{}{"summary": "baseline frozen"}); strings.Contains(got, "错误") {
+		t.Fatalf("complete refused: %s", got)
+	}
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if len(mem.StepStatuses) != 0 || mem.PlanRunStarted || mem.ExecutionPlan != "" || mem.RequirementRestatement != "" {
+		t.Fatalf("completed goal left a live checklist: %+v", mem)
+	}
+}
+
+func TestGoalCompleteClearsTheCallingHandlerChecklist(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	// Hub reconnect can leave the app pointing at another handler instance.
+	// The tool call still owns the checklist on the handler that ran it.
+	caller := &IMMessageHandler{app: app, goalStore: store}
+	t.Cleanup(func() {
+		caller.clearStickyCodingWorkbenchMemory(userID)
+		app.imHandler.clearStickyCodingWorkbenchMemory(userID)
+	})
+	g, err := store.Set(userID, "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "freeze the baseline", []goal.Step{{Index: 1, Title: "freeze baseline"}}, []string{"baseline frozen"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateStep(userID, g.GoalID, 1, goal.StepDone, "baseline frozen"); err != nil {
+		t.Fatal(err)
+	}
+	caller.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind: "local",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "freeze baseline", Status: codingStepPassed},
+		},
+	})
+
+	if got := caller.goalCompleteForUser(userID, map[string]interface{}{"summary": "baseline frozen"}); strings.Contains(got, "错误") {
+		t.Fatalf("complete refused: %s", got)
+	}
+	if mem := caller.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 0 {
+		t.Fatalf("the handler that completed the goal kept its checklist: %+v", mem)
+	}
+}
+
+func TestGoalStepEventKeepsCodingChecklist(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	g, err := store.Set(userID, "work in progress")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind: "local",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "running", Status: codingStepRunning},
+		},
+	})
+
+	engine.emitGoalStateChanged(userID, g)
+	if mem := h.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 1 {
+		t.Fatalf("an active goal event retired the live checklist: %+v", mem)
+	}
+}
+
+func TestGoalCancelRetiresCodingChecklist(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	if _, err := store.Set(userID, "work in progress"); err != nil {
+		t.Fatal(err)
+	}
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind: "local",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "still running", Status: codingStepRunning},
+		},
+	})
+
+	if got := h.goalClearForUser(userID); !strings.Contains(got, "目标已清除") {
+		t.Fatalf("clear=%q", got)
+	}
+	if mem := h.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 0 {
+		t.Fatalf("cancelled goal left its checklist: %+v", mem)
+	}
+}
+
+func TestGoalClearKeepsLivePlanWhenRowAlreadyComplete(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	g, err := store.Set(userID, "done work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusComplete, "done") {
+		t.Fatal("complete the history row")
+	}
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind: "local",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "new plan", Status: codingStepPending},
+		},
+	})
+
+	if got := h.goalClearForUser(userID); !strings.Contains(got, "目标已清除") {
+		t.Fatalf("clear=%q", got)
+	}
+	if mem := h.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 1 || mem.StepStatuses[0].Title != "new plan" {
+		t.Fatalf("cleaning a completed row wiped a live plan: %+v", mem)
+	}
+}
+
+func TestGoalClearKeepsLivePlanWhenRowPaused(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	g, err := store.Set(userID, "paused work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusPaused, "用户已暂停") {
+		t.Fatal("pause the history row")
+	}
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind: "local",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "new plan", Status: codingStepPending},
+		},
+	})
+
+	if got := h.goalClearForUser(userID); !strings.Contains(got, "目标已清除") {
+		t.Fatalf("clear=%q", got)
+	}
+	if mem := h.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 1 || mem.StepStatuses[0].Title != "new plan" {
+		t.Fatalf("cleaning a paused row wiped a live plan: %+v", mem)
+	}
+}
+
+func TestCancelCompletedGoalKeepsLivePlan(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	g, err := store.Set(userID, "done work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusComplete, "done") {
+		t.Fatal("complete the history row")
+	}
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind: "local",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "new plan", Status: codingStepPending},
+		},
+	})
+
+	if app.CancelSessionGoal(userID)["visible"] != false {
+		t.Fatal("cancel did not hide the bar")
+	}
+	if mem := h.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 1 || mem.StepStatuses[0].Title != "new plan" {
+		t.Fatalf("deleting a completed row wiped a live plan: %+v", mem)
+	}
+}
+
+func TestGoalClearRetiresChecklistWhenOtherStoreWasLive(t *testing.T) {
+	app, engineStore, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	other := goal.NewStore("")
+	h.goalStore = other
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	done, err := other.Set(userID, "done in the handler store")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !other.UpdateStatus(userID, done.GoalID, goal.StatusComplete, "done") {
+		t.Fatal("complete the history row")
+	}
+	if _, err := engineStore.Set(userID, "still running in the engine store"); err != nil {
+		t.Fatal(err)
+	}
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind: "local",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "live", Status: codingStepRunning},
+		},
+	})
+
+	if got := h.goalClearForUser(userID); !strings.Contains(got, "目标已清除") {
+		t.Fatalf("clear=%q", got)
+	}
+	if mem := h.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 0 {
+		t.Fatalf("a live row in the engine store kept its checklist: %+v", mem)
+	}
+}
+
+func TestCancelGoalRetiresChecklistWhenOtherStoreWasLive(t *testing.T) {
+	app, engineStore, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	other := goal.NewStore("")
+	h.goalStore = other
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	done, err := engineStore.Set(userID, "done in the engine store")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !engineStore.UpdateStatus(userID, done.GoalID, goal.StatusComplete, "done") {
+		t.Fatal("complete the history row")
+	}
+	if _, err := other.Set(userID, "still running in the handler store"); err != nil {
+		t.Fatal(err)
+	}
+	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind: "local",
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "live", Status: codingStepRunning},
+		},
+	})
+
+	if app.CancelSessionGoal(userID)["visible"] != false {
+		t.Fatal("cancel did not hide the bar")
+	}
+	if mem := h.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 0 {
+		t.Fatalf("a live row in the handler store kept its checklist: %+v", mem)
+	}
+}

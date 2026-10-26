@@ -1,8 +1,7 @@
 import { ArchiveProject, DeleteTask, PinTask } from "../../../wailsjs/go/main/App";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
-import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
-import { isExplicitTaskCopy } from "./codingTaskMode";
+import { purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { useDialog } from "../CustomDialog";
 import type { ProjectSearchItem } from "./projectSearchTypes";
 
@@ -15,8 +14,9 @@ export function ProjectSearchContextMenu({ ctxMenu, lang, theme: t, refreshResul
         try {
             await DeleteTask(ctxMenu.item.project_path);
             purgeDeletedProjectTabLocalCache(ctxMenu.item.project_path);
-            const expertID = isExplicitTaskCopy(ctxMenu.item.tags) ? "" : expertIDFromTaskTags(ctxMenu.item.tags);
-            if (expertID) purgeDeletedExpertTabLocalCache(expertID);
+            // Expert caches are purged by the backend's expert-task:deleted
+            // event, which is emitted only for the task that owns the live
+            // expert conversation. An older task's removal must not close it.
             // The backend emits project-task:closed after deletion. Keep this
             // direct close for hosts where runtime events are unavailable.
             onCloseProjectTab?.(ctxMenu.item.project_path);

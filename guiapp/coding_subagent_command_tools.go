@@ -3,12 +3,14 @@ package guiapp
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -183,8 +185,6 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	if err := parent.Err(); err != nil {
 		return codingCommandExecutionResult{Text: fmt.Sprintf("command cancelled before start: %v", err), Kind: codingCommandResultCancelled, ExitCode: -1}
 	}
-	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
-	defer cancel()
 
 	var shellName string
 	var shellArgs []string
@@ -197,12 +197,21 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 
 	cmd := exec.Command(shellName, shellArgs...)
 	cmd.Dir = workDir
+	// codingCommandEnv's first call probes vcvars/MSVC and can take tens of
+	// seconds. Resolve it before starting the command timer, otherwise that
+	// one-time probe is charged to a short command and the first bash call of
+	// a task times out without ever running.
 	cmd.Env = codingCommandEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
 	coretool.PrepareCommandForTreeKill(cmd)
+	if err := parent.Err(); err != nil {
+		return codingCommandExecutionResult{Text: fmt.Sprintf("command cancelled before start: %v", err), Kind: codingCommandResultCancelled, ExitCode: -1}
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
+	defer cancel()
 
 	if err := cmd.Start(); err != nil {
 		return codingCommandExecutionResult{
@@ -530,34 +539,76 @@ func quotedPowerShellExecutable(command string) bool {
 }
 
 func wrapCodingPowerShellCommand(psCommand string) string {
+	// `-ErrorAction SilentlyContinue/Ignore` is the model saying "not finding
+	// this is not a failure". The wrapper runs with ErrorActionPreference
+	// Continue, so those errors still land in $Error; without this flag a
+	// probe like Get-Process -ErrorAction SilentlyContinue exits 1 and the
+	// turn records a false failure the model then has to chase.
+	silenced := codingPowerShellErrorsAreSilenced(psCommand)
+	// Embedding the command as source text lets its own quotes/backticks
+	// close our strings: a model that wrote bash-style \" inside a PowerShell
+	// string turned the wrapper into a ParserError that pointed at wrapper
+	// lines, hiding the real problem. Decode and run the command as a script
+	// block instead, so its syntax errors stay inside our try/catch.
+	encoded := base64.StdEncoding.EncodeToString([]byte(psCommand))
 	return fmt.Sprintf(`$Error.Clear()
 $ErrorActionPreference='Continue'
 $global:LASTEXITCODE = 0
+$psSucceeded = $true
+$nativeExit = 0
+$exitCode = 0
+$maclawSilencedErrors = $%t
+$global:__maclawCodingPsSucceeded = $true
 try {
-	%s
-	$psSucceeded = $?
+	$maclawCommand = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%s'))
+	# Ask the block itself for the last statement's status: the invocation
+	# reports its own success, which hides a failed cmdlet.
+	$maclawScript = $maclawCommand + [char]10 + '$global:__maclawCodingPsSucceeded = $?'
+	& ([ScriptBlock]::Create($maclawScript))
+	$psSucceeded = $global:__maclawCodingPsSucceeded
 	$nativeExit = $LASTEXITCODE
 } catch {
 	[Console]::Error.WriteLine("PowerShell exception: " + $_.Exception.Message)
-	exit 1
+	$exitCode = 1
 }
-if ($null -ne $nativeExit -and $nativeExit -ne 0) {
-	if ($Error.Count -gt 0) {
-		[Console]::Error.WriteLine("Last error: " + $Error[0].ToString())
-	} else {
-		[Console]::Error.WriteLine("Process exited with code $nativeExit - output was likely consumed by a pipeline filter. Run the command without pipe operators to see the actual error.")
+if ($exitCode -eq 0 -and $null -ne $nativeExit -and $nativeExit -ne 0) {
+	# Only a native error explains this exit status. An older cmdlet error in
+	# $Error would otherwise be printed as the cause of an unrelated failure.
+	$nativeErrors = @($Error | Where-Object { $_.FullyQualifiedErrorId -like 'NativeCommandError*' })
+	if ($nativeErrors.Count -gt 0) {
+		[Console]::Error.WriteLine("Last error: " + $nativeErrors[0].ToString())
 	}
-	exit $nativeExit
+	$exitCode = $nativeExit
 }
-if (-not $psSucceeded -and $Error.Count -gt 0) {
-	$nonNativeErrors = @($Error | Where-Object { $_.FullyQualifiedErrorId -ne 'NativeCommandError' })
+if ($exitCode -eq 0 -and -not $maclawSilencedErrors -and -not $psSucceeded -and $Error.Count -gt 0) {
+	# PowerShell tags redirected native stderr as NativeCommandError for the
+	# first line and NativeCommandErrorMessage for the rest; both are the
+	# program's own output, not a cmdlet failure.
+	$nonNativeErrors = @($Error | Where-Object { $_.FullyQualifiedErrorId -notlike 'NativeCommandError*' })
 	if ($nonNativeErrors.Count -gt 0) {
 		[Console]::Error.WriteLine("PowerShell error: " + $nonNativeErrors[0].ToString())
-		exit 1
+		$exitCode = 1
 	}
 }
-exit 0`, psCommand)
+# exit here would drop pending formatting for object output (Select-Object
+# results), which is why the wrapper reported empty output for commands that
+# printed a table. SetShouldExit carries the status without truncating output.
+$host.SetShouldExit($exitCode)`, silenced, encoded)
 }
+
+// codingPowerShellErrorsAreSilenced reports whether the command explicitly
+// asked PowerShell not to treat missing objects as errors.
+func codingPowerShellErrorsAreSilenced(command string) bool {
+	if codingPowerShellSilencedFlagPattern.MatchString(command) {
+		return true
+	}
+	return codingPowerShellSilencedPreferencePattern.MatchString(command)
+}
+
+var (
+	codingPowerShellSilencedFlagPattern       = regexp.MustCompile(`(?i)-e(?:rroraction|a)\s*[:=]?\s*['"]?(?:silentlycontinue|ignore|0)['"]?\b`)
+	codingPowerShellSilencedPreferencePattern = regexp.MustCompile(`(?i)\$erroractionpreference\s*=\s*['"]?(?:silentlycontinue|ignore)['"]?`)
+)
 
 func resolveCodingCommandTimeout(args map[string]interface{}, command string) int {
 	timeout := corelib.DefaultAgentTimeoutSec
@@ -738,9 +789,9 @@ func appendCodingCommandExitStatus(output string, exitCode int) string {
 	output = strings.TrimRight(output, "\r\n")
 	if output == "" {
 		if runtime.GOOS == "windows" {
-			return fmt.Sprintf("%s (no stdout/stderr captured). This typically happens when pipeline filters (Select-String, Select-Object) consume all output, or when a cmdlet handles errors internally. Try running the base command without pipe filters to see the actual output or error.", status)
+			return fmt.Sprintf("%s (no stdout/stderr captured)", status)
 		}
-		return fmt.Sprintf("%s (no stdout/stderr). Re-run the command without output filters or with broader diagnostics to capture the real error.", status)
+		return fmt.Sprintf("%s (no stdout/stderr)", status)
 	}
 	return output + "\n" + status
 }

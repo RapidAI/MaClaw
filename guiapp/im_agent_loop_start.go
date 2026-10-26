@@ -144,6 +144,12 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		// legacy router and the semantic planner never run for this owner.
 		semanticHandled = true
 		tools = h.fileCompanionClosedSurfaceTools(opts.UserID)
+		// A paper turn already gets its PDF from the host, which writes the
+		// model's own answer. The writer is not offered there: one click must
+		// not leave two PDFs behind.
+		if fileCompanionPaperTurnText(opts.UserText) {
+			tools = fileCompanionWithoutGenerateTool(tools)
+		}
 		baseTools = tools
 		log.Printf("[file-companion] closed tool surface tools=%d user=%q", len(tools), opts.UserID)
 	} else if loopContextTurnAnswerOnly(ctx) {

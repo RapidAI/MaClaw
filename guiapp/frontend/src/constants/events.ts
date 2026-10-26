@@ -53,6 +53,15 @@ export const EVENT_PROJECT_TASK_RENAMED = "project-task:renamed";
 export const EVENT_EXPERT_TASK_DELETED = "expert-task:deleted";
 
 /**
+ * Emitted when the task that owned the shared expert session was removed,
+ * archived or hidden and the session was handed to another task of the same
+ * expert. Payload is the expert id string. Unlike the deleted event, the
+ * backend session file now holds the promoted conversation, so callers must
+ * drop the tab and local caches without clearing that session.
+ */
+export const EVENT_EXPERT_TASK_RETIRED = "expert-task:retired";
+
+/**
  * Pure signal (no payload) emitted after any expert-list mutation: local
  * expert save/delete, expert market install/uninstall, and managed industry
  * expert install. Frontend listeners re-fetch their expert lists.

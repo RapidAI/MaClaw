@@ -14,22 +14,32 @@ import (
 
 type commitHost struct {
 	mockCallbacks
-	root      string
-	temp      string
-	checklist bool
-	chatBound bool
-	taskKey   string
-	ledger    *CommitLedger
-	prepared  string
-	failStore bool
-	noPause   bool
-	resolve   func(toolName, fingerprint, subject string) (CommitDecision, bool)
+	root        string
+	temp        string
+	checklist   bool
+	chatBound   bool
+	fullControl bool
+	fullNotes   int
+	taskKey     string
+	ledger      *CommitLedger
+	prepared    string
+	failStore   bool
+	noPause     bool
+	resolve     func(toolName, fingerprint, subject string) (CommitDecision, bool)
 }
 
 func (h *commitHost) CommitWorkspaceRoot() string { return h.root }
 func (h *commitHost) CommitTaskTempDir() string   { return h.temp }
 func (h *commitHost) CommitChecklistOpen() bool   { return h.checklist }
 func (h *commitHost) CommitTaskKey() string       { return h.taskKey }
+func (h *commitHost) CommitFullControlGranted() bool {
+	return h != nil && h.fullControl
+}
+func (h *commitHost) CommitNoteFullControl(string, string) {
+	if h != nil {
+		h.fullNotes++
+	}
+}
 func (h *commitHost) CommitLookup(fingerprint string) (CommitDecision, bool) {
 	if h.ledger == nil {
 		return "", false
@@ -596,6 +606,91 @@ func TestApplyCommitGateHostThatCannotPauseDoesNotAsk(t *testing.T) {
 	got := executeAuthorizedLoopToolCall(host, "send_file", `{"path":"report.pdf"}`, "call-1")
 	if len(host.toolCalls) != 0 || IsAskUserResult(got.Result) || !strings.Contains(got.Result, "先不执行") || host.prepared != "" {
 		t.Fatalf("result=%+v prepared=%q calls=%#v", got, host.prepared, host.toolCalls)
+	}
+}
+
+func TestApplyCommitGateFullControlSkipsHumanCall(t *testing.T) {
+	host := newCommitHost(t)
+	host.fullControl = true
+	asks := 0
+	host.resolve = func(string, string, string) (CommitDecision, bool) {
+		asks++
+		return "", false
+	}
+	_, fp := classifyCommitCall("mailbox_send", `{"to":"a@b.c","body":"secret"}`, host.root, host.temp)
+	got := executeAuthorizedLoopToolCall(host, "mailbox_send", `{"to":"a@b.c","body":"secret"}`, "call-1")
+	if got.Result != "ran" || len(host.toolCalls) != 1 || asks != 0 || host.prepared != "" {
+		t.Fatalf("full control result=%+v asks=%d prepared=%q calls=%#v", got, asks, host.prepared, host.toolCalls)
+	}
+	if host.fullNotes != 1 {
+		t.Fatalf("full control audit notes=%d, want 1", host.fullNotes)
+	}
+	if _, ok := host.ledger.Lookup(fp); ok {
+		t.Fatal("full control stored a task decision")
+	}
+	// Leaving 完全控制 puts the card back.
+	host.fullControl = false
+	asked := executeAuthorizedLoopToolCall(host, "mailbox_send", `{"to":"z@y.x","body":"again"}`, "call-2")
+	if !IsAskUserResult(asked.Result) || len(host.toolCalls) != 1 || asks != 1 || host.prepared != fp {
+		t.Fatalf("request tier result=%+v asks=%d prepared=%q calls=%#v", asked, asks, host.prepared, host.toolCalls)
+	}
+	if host.fullNotes != 1 {
+		t.Fatalf("request tier wrote a full-control note: %d", host.fullNotes)
+	}
+
+	// A one-call grant is not consumed while 完全控制 is on; it stays for the
+	// next call after the tier drops back to a prompting mode.
+	onceHost := newCommitHost(t)
+	_, onceFP := classifyCommitCall("im_message", `{"text":"hi"}`, onceHost.root, onceHost.temp)
+	onceHost.ledger.Store(onceFP, CommitAllowOnce)
+	onceHost.fullControl = true
+	if got := executeAuthorizedLoopToolCall(onceHost, "im_message", `{"text":"hi"}`, "call-1"); got.Result != "ran" || len(onceHost.toolCalls) != 1 {
+		t.Fatalf("full control once result=%+v calls=%#v", got, onceHost.toolCalls)
+	}
+	if onceHost.fullNotes != 1 {
+		t.Fatalf("full control once notes=%d, want 1", onceHost.fullNotes)
+	}
+	if decision, ok := onceHost.ledger.Lookup(onceFP); !ok || decision != CommitAllowOnce {
+		t.Fatalf("full control consumed the once grant: %q ok=%v", decision, ok)
+	}
+	onceHost.fullControl = false
+	if got := executeAuthorizedLoopToolCall(onceHost, "im_message", `{"text":"hi"}`, "call-2"); got.Result != "ran" || len(onceHost.toolCalls) != 2 {
+		t.Fatalf("leftover once result=%+v calls=%#v", got, onceHost.toolCalls)
+	}
+	if onceHost.fullNotes != 1 {
+		t.Fatalf("leftover once wrote another full-control note: %d", onceHost.fullNotes)
+	}
+
+	if _, ok := onceHost.ledger.Lookup(onceFP); ok {
+		t.Fatal("leftover once grant stayed after use")
+	}
+
+	// A stored deny still refuses the call under full control.
+	deniedHost := newCommitHost(t)
+	deniedHost.fullControl = true
+	_, deniedFP := classifyCommitCall("bash", `{"command":"git push"}`, deniedHost.root, deniedHost.temp)
+	deniedHost.ledger.Store(deniedFP, CommitDeny)
+	denied := executeAuthorizedLoopToolCall(deniedHost, "bash", `{"command":"git push"}`, "call-1")
+	if IsAskUserResult(denied.Result) || len(deniedHost.toolCalls) != 0 || !strings.Contains(denied.Result, "已拒绝") {
+		t.Fatalf("full control deny result=%+v calls=%#v", denied, deniedHost.toolCalls)
+	}
+	if deniedHost.fullNotes != 0 {
+		t.Fatalf("deny wrote a full-control note: %d", deniedHost.fullNotes)
+	}
+
+	// An open checklist stays a hard refusal; it is not an approval card.
+	checklistHost := newCommitHost(t)
+	checklistHost.fullControl = true
+	checklistHost.checklist = true
+	blocked := executeAuthorizedLoopToolCall(checklistHost, "mailbox_send", `{"to":"a@b.c"}`, "call-1")
+	if IsAskUserResult(blocked.Result) || len(checklistHost.toolCalls) != 0 || !strings.Contains(blocked.Result, "步骤清单") {
+		t.Fatalf("full control checklist result=%+v calls=%#v", blocked, checklistHost.toolCalls)
+	}
+	if strings.Contains(blocked.Result, "人的批准") {
+		t.Fatalf("full control checklist asked for a person: %s", blocked.Result)
+	}
+	if checklistHost.fullNotes != 0 {
+		t.Fatalf("checklist wrote a full-control note: %d", checklistHost.fullNotes)
 	}
 }
 

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
     LATEX_BLANK_TEMPLATE_ID,
     LATEX_EXPERT_ID,
+    expertTaskIsLive,
+    expertTaskIsLiveInMap,
+    liveExpertTaskPaths,
     latexExpertTaskIsLive,
     groupLatexTemplatesByCategory,
     isBlankLatexTemplate,
@@ -214,5 +217,30 @@ describe('latexExpertTaskIsLive', () => {
         const copy = { project_path: 'D:/tasks/latex-b', tags: [tag, 'task_copy'], created_at: '2026-09-30T13:00:00Z' };
         expect(latexExpertTaskIsLive(copy, [source, copy])).toBe(false);
         expect(latexExpertTaskIsLive(source, [source, copy])).toBe(true);
+    });
+});
+
+describe('expertTaskIsLive', () => {
+    const tag = 'source:expert:builtin-pptx-maker';
+    it('treats the newest task of any expert as the live one', () => {
+        const older = { project_path: 'D:/tasks/deck-a', tags: [tag], created_at: '2026-09-30T04:50:00Z' };
+        const newer = { project_path: 'D:/tasks/deck-b', tags: [tag], created_at: '2026-09-30T13:00:00Z' };
+        expect(expertTaskIsLive(newer, [older, newer])).toBe(true);
+        expect(expertTaskIsLive(older, [older, newer])).toBe(false);
+        expect(expertTaskIsLive(older, [older])).toBe(true);
+        // Other experts and non-expert rows are not compared against this one.
+        expect(expertTaskIsLive({ project_path: 'D:/tasks/other', tags: ['source:expert:other'] }, [older, newer])).toBe(true);
+        expect(expertTaskIsLive({ project_path: 'D:/tasks/chat' }, [older, newer])).toBe(true);
+    });
+
+    it('precomputes one live path per expert for the sidebar', () => {
+        const older = { project_path: 'D:/tasks/deck-a', tags: [tag], created_at: '2026-09-30T04:50:00Z' };
+        const newer = { project_path: 'D:/tasks/deck-b', tags: [tag], created_at: '2026-09-30T13:00:00Z' };
+        const copy = { project_path: 'D:/tasks/deck-c', tags: [tag, 'task_copy'], created_at: '2026-09-30T14:00:00Z' };
+        const livePaths = liveExpertTaskPaths([older, newer, copy]);
+        expect(livePaths.get('builtin-pptx-maker')).toBe('d:/tasks/deck-b');
+        expect(expertTaskIsLiveInMap(newer, livePaths)).toBe(true);
+        expect(expertTaskIsLiveInMap(older, livePaths)).toBe(false);
+        expect(expertTaskIsLiveInMap(copy, livePaths)).toBe(false);
     });
 });

@@ -91,6 +91,13 @@ func (q *Qwen3Embedder) EmbedPooledWithRole(text string, role Role) (last, mean 
 	// The GPU computes the whole sequence and pools all rows, which is the same
 	// mean the CPU split (cached prefix sum + suffix) produces. Long sequences
 	// stay on the CPU, like every other GPU call.
+	//
+	// Wall time here is worse than the CPU path (embdoctor on the reference
+	// machine: 100 ms vs 67 ms) because the CPU caches the prefix sum and only
+	// forwards the suffix while the GPU redoes the whole sequence. It still runs
+	// on the GPU on purpose: the Layer 2 intent path fires on every message and
+	// the CPU path occupies four cores for 67 ms each time. MACLAW_VULKAN=0 is
+	// the escape hatch when latency matters more than CPU load.
 	if g := q.vkGPU.Load(); g != nil && len(ids) <= qwen3VKMaxSeqTokens {
 		if last, mean, ok := q.pooledGPU(g, ids); ok {
 			return last, mean, nil

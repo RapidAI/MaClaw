@@ -241,7 +241,6 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 
 	// Score remaining dynamic tools using BM25 (reuses cached index).
 	docs := make([]bm25.Doc, len(dynamic))
-	dynamicTexts := make(map[string]string, len(dynamic))
 	embeddingTexts := make(map[string]string, len(dynamic))
 	for i, t := range dynamic {
 		var text string
@@ -254,7 +253,6 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 			}
 		}
 		docs[i] = bm25.Doc{ID: t.Name, Text: text}
-		dynamicTexts[t.Name] = text
 		embeddingTexts[t.Name] = b.buildEmbeddingText(t.Name, t.Description)
 	}
 	b.bm25Index.RebuildIfChanged(docs)
@@ -266,7 +264,11 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	}
 
 	// Multi-signal scoring: retrieval + contextual experience + outcome + priority + skill_match.
-	queryTokens := bm25.Tokenize(userMessage)
+	// Tokenisation (~60 us for a Chinese message) only feeds the tracker signals.
+	var queryTokens []string
+	if b.tracker != nil {
+		queryTokens = bm25.Tokenize(userMessage)
+	}
 	normScores := normalizeRetrievalScores(bm25Scores)
 
 	type scored struct {
@@ -291,9 +293,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		priorityBonus := clampFloat(float64(t.Priority)*0.1, 0, 1)
 
 		var s float64
-		if b.skillProvider != nil && b.tracker != nil {
-			s = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
-		} else if b.tracker != nil {
+		if b.tracker != nil {
 			s = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
 		} else {
 			s = 0.9*retrievalScore + 0.1*priorityBonus

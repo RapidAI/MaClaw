@@ -3,6 +3,7 @@ package remote
 import (
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,15 +97,20 @@ func (s *SSHPTYSession) Start(spec SSHSessionSpec) error {
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	// 启动 shell
-	if spec.InitialCommand != "" {
-		err = session.Start(spec.InitialCommand)
-	} else {
-		err = session.Shell()
-	}
-	if err != nil {
+	// 一律启动交互式 shell。InitialCommand 是写给这个 shell 的第一行，
+	// 不能用 session.Start(cmd) 代替 shell：那只跑一个一次性进程，命令结束
+	// 时 SSH channel 随之关闭，下一次 exec 只会得到 "ssh session not running"。
+	if err = session.Shell(); err != nil {
 		_ = session.Close()
 		return fmt.Errorf("start shell: %w", err)
+	}
+	if strings.TrimSpace(spec.InitialCommand) != "" {
+		// Keep the script text intact; only the line terminator is ours.
+		cmd := strings.TrimRight(spec.InitialCommand, " \t\r\n")
+		if _, err := stdin.Write([]byte(cmd + "\n")); err != nil {
+			_ = session.Close()
+			return fmt.Errorf("write initial command: %w", err)
+		}
 	}
 
 	s.session = session

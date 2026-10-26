@@ -58,9 +58,25 @@ type UsageTracker struct {
 	saveMu        sync.Mutex
 	records       []UsageRecord
 	invalidations map[string]ToolInvalidationState
-	path          string
-	maxItems      int
-	eventSink     lifecycle.EventSink
+	// byTool and byRecovery index records by tool name / recovery slot. The
+	// router asks for three signals per candidate tool; without the index each
+	// question rescanned the whole history (100 tools × 2000 records × 3).
+	byTool     map[string][]int
+	byRecovery map[string][]int
+	// indexLen is the record count the indexes were built from. A mismatch
+	// means the records were mutated outside the tracker's own paths (tests do
+	// this), and the readers fall back to a full scan rather than trust it.
+	indexLen  int
+	path      string
+	maxItems  int
+	eventSink lifecycle.EventSink
+
+	// Recording a tool outcome rewrites the whole history file, which at the
+	// 2000-record cap cost ~2.2 ms and 825 KB per call. Writes are coalesced by
+	// saveTimer (guarded by timerMu) to at most one per usageSaveDebounce;
+	// saveMu serializes the snapshot+write itself. Save() writes synchronously.
+	saveTimer *time.Timer
+	timerMu   sync.Mutex
 
 	// FingerprintProviders is a registry of providers that compute fingerprints
 	// for tool configuration state. Used by checkFingerprint to detect config changes.
@@ -72,8 +88,16 @@ func NewUsageTracker(path string) (*UsageTracker, error) {
 	t := &UsageTracker{
 		records:       make([]UsageRecord, 0, 256),
 		invalidations: make(map[string]ToolInvalidationState),
+		byTool:        make(map[string][]int),
+		byRecovery:    make(map[string][]int),
 		path:          path,
 		maxItems:      2000,
+	}
+	if path != "" {
+		// Create the store directory once, here. The writers do not create it:
+		// the debounced flush runs on a timer and would otherwise resurrect a
+		// directory that has since been removed (t.TempDir cleanup in tests).
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	}
 	if err := t.load(); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("usage_tracker: load: %w", err)
@@ -150,6 +174,12 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 	if len(t.records) > t.maxItems {
 		excess := len(t.records) - t.maxItems
 		t.records = t.records[excess:]
+		// Shift the index in place; rebuilding it on every write at the cap cost
+		// ~187us and 447KB of allocations on the routing write path.
+		t.trimToolIndexLocked(excess)
+		t.indexRecordLocked(len(t.records) - 1)
+	} else {
+		t.indexRecordLocked(len(t.records) - 1)
 	}
 
 	// Track consecutive failures for suppression (inside the lock so that the
@@ -170,9 +200,6 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 	// This prevents unbounded growth of the suppressions slice.
 	t.cleanupStaleSuppressionsLocked(r.ToolName)
 
-	snapshot := make([]UsageRecord, len(t.records))
-	copy(snapshot, t.records)
-	invalidations := copyInvalidations(t.invalidations)
 	sink := t.eventSink
 	t.mu.Unlock()
 	if sink != nil {
@@ -205,7 +232,7 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 		}
 	}
 
-	_ = t.saveSnapshot(snapshot, invalidations)
+	t.scheduleSave()
 }
 
 func usageRecordOutcome(r UsageRecord) string {
@@ -400,18 +427,19 @@ func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[strin
 	cutoff := time.Now().AddDate(0, 0, -7)
 	var total, successes, retries, abandons float64
 
-	for _, r := range t.records {
-		if r.ToolName != toolName || r.Timestamp.Before(cutoff) {
-			continue
+	process := func(i int) {
+		r := t.records[i]
+		if r.Timestamp.Before(cutoff) {
+			return
 		}
 		if querySet != nil {
 			sim := jaccardTokens(querySet, r.QueryTokens)
 			if sim < contextOutcomeMinJaccard {
-				continue
+				return
 			}
 		}
 		if !usageRecordDecisive(r) {
-			continue
+			return
 		}
 		decay := t.decayMultiplier(r.Timestamp, toolName, r.QueryTokens)
 		total += decay
@@ -423,6 +451,17 @@ func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[strin
 			retries += decay
 		case "abandon":
 			abandons += decay
+		}
+	}
+	if idx, ok := t.indexedRecords(toolName, false); ok {
+		for _, i := range idx {
+			process(i)
+		}
+	} else {
+		for i := range t.records {
+			if t.records[i].ToolName == toolName {
+				process(i)
+			}
 		}
 	}
 
@@ -475,21 +514,18 @@ func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) fl
 		querySet[tok] = true
 	}
 
-	for i := len(t.records) - 1; i >= 0; i-- {
+	process := func(i int) bool {
 		r := t.records[i]
-		if r.ToolName != toolName {
-			continue
-		}
 		scanned++
-		// Stop scanning after 200 matches to bound computation.
+		// Stop scanning after 200 records of this tool to bound computation.
 		if scanned > 200 {
-			break
+			return false
 		}
 
 		// Jaccard similarity between query tokens and record tokens.
 		overlap := jaccardTokens(querySet, r.QueryTokens)
 		if overlap == 0 {
-			continue
+			return true
 		}
 		matched++
 
@@ -504,6 +540,23 @@ func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) fl
 		evidence := overlap * recency * decay
 		evidenceWeight += evidence
 		utilitySum += evidence * usageOutcomeWeight(r)
+		return true
+	}
+	if idx, ok := t.indexedRecords(toolName, false); ok {
+		for k := len(idx) - 1; k >= 0; k-- {
+			if !process(idx[k]) {
+				break
+			}
+		}
+	} else {
+		for i := len(t.records) - 1; i >= 0; i-- {
+			if t.records[i].ToolName != toolName {
+				continue
+			}
+			if !process(i) {
+				break
+			}
+		}
 	}
 
 	if matched == 0 || evidenceWeight == 0 {
@@ -546,25 +599,110 @@ func usageOutcomeWeight(r UsageRecord) float64 {
 	}
 }
 
+// indexedRecords returns the record indices naming toolName as their tool (or,
+// with recovery set, as their recovery tool) and reports whether the index is
+// available. A zero-value tracker built without NewUsageTracker has no index;
+// callers then fall back to scanning t.records, which is what the code did
+// before the index existed. Caller must hold t.mu.RLock.
+func (t *UsageTracker) indexedRecords(toolName string, recovery bool) ([]int, bool) {
+	m := t.byTool
+	if recovery {
+		m = t.byRecovery
+	}
+	if m == nil || t.indexLen != len(t.records) {
+		return nil, false
+	}
+	return m[toolName], true
+}
+
+// indexRecordLocked adds records[i] to the per-tool indexes.
+func (t *UsageTracker) indexRecordLocked(i int) {
+	if t.byTool == nil || t.byRecovery == nil {
+		t.rebuildToolIndexLocked()
+		return
+	}
+	name := t.records[i].ToolName
+	if name != "" {
+		t.byTool[name] = append(t.byTool[name], i)
+	}
+	if rt := t.records[i].RecoveryTool; rt != "" && rt != name {
+		t.byRecovery[rt] = append(t.byRecovery[rt], i)
+	}
+	t.indexLen = len(t.records)
+}
+
+// trimToolIndexLocked drops the first excess entries of every tool index and
+// shifts the rest down, matching a front trim of t.records. The backing arrays
+// are reused, so no allocation happens on the write path.
+func (t *UsageTracker) trimToolIndexLocked(excess int) {
+	shift := func(m map[string][]int) {
+		for name, idx := range m {
+			kept := idx[:0]
+			for _, i := range idx {
+				if i >= excess {
+					kept = append(kept, i-excess)
+				}
+			}
+			if len(kept) == 0 {
+				delete(m, name)
+			} else {
+				m[name] = kept
+			}
+		}
+	}
+	shift(t.byTool)
+	shift(t.byRecovery)
+	t.indexLen = len(t.records)
+}
+
+// rebuildToolIndexLocked recreates the per-tool indexes after a load or reset.
+// Records are appended in order, so each slice is chronological.
+func (t *UsageTracker) rebuildToolIndexLocked() {
+	t.byTool = make(map[string][]int, 32)
+	t.byRecovery = make(map[string][]int, 16)
+	for i := range t.records {
+		name := t.records[i].ToolName
+		if name != "" {
+			t.byTool[name] = append(t.byTool[name], i)
+		}
+		if rt := t.records[i].RecoveryTool; rt != "" && rt != name {
+			t.byRecovery[rt] = append(t.byRecovery[rt], i)
+		}
+	}
+	t.indexLen = len(t.records)
+}
+
 // jaccardTokens computes Jaccard similarity between a set and a token slice.
+// Records carry at most 5 tokens (normalizeUsageQueryTokens), so the record
+// side is deduplicated with a nested loop instead of allocating a map: the
+// router calls this for every record of every candidate tool, and that map was
+// the routing path's dominant cost (~35 ms per decision with 100 tools and
+// 2000 records).
 func jaccardTokens(querySet map[string]bool, recordTokens []string) float64 {
 	if len(querySet) == 0 || len(recordTokens) == 0 {
 		return 0
 	}
-	recSet := make(map[string]bool, len(recordTokens))
-	for _, tok := range recordTokens {
-		recSet[tok] = true
-	}
-	var intersection int
-	for tok := range querySet {
-		if recSet[tok] {
+	var intersection, distinct int
+	for i, tok := range recordTokens {
+		dup := false
+		for j := 0; j < i; j++ {
+			if recordTokens[j] == tok {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		distinct++
+		if querySet[tok] {
 			intersection++
 		}
 	}
 	if intersection == 0 {
 		return 0
 	}
-	union := len(querySet) + len(recSet) - intersection
+	union := len(querySet) + distinct - intersection
 	return float64(intersection) / float64(union)
 }
 
@@ -591,6 +729,7 @@ func (t *UsageTracker) load() error {
 		if t.invalidations == nil {
 			t.invalidations = make(map[string]ToolInvalidationState)
 		}
+		t.rebuildToolIndexLocked()
 		t.mu.Unlock()
 		return nil
 	}
@@ -606,6 +745,7 @@ func (t *UsageTracker) load() error {
 		t.mu.Lock()
 		t.records = records
 		t.invalidations = make(map[string]ToolInvalidationState)
+		t.rebuildToolIndexLocked()
 		t.mu.Unlock()
 		return nil
 	}
@@ -615,50 +755,81 @@ func (t *UsageTracker) load() error {
 	t.mu.Lock()
 	t.records = make([]UsageRecord, 0)
 	t.invalidations = make(map[string]ToolInvalidationState)
+	t.rebuildToolIndexLocked()
 	t.mu.Unlock()
 	return nil
 }
 
 func (t *UsageTracker) save() {
-	t.mu.RLock()
-	snapshot := make([]UsageRecord, len(t.records))
-	copy(snapshot, t.records)
-	invalidations := copyInvalidations(t.invalidations)
-	t.mu.RUnlock()
-	_ = t.saveSnapshot(snapshot, invalidations)
+	_ = t.Save()
 }
 
-// Save persists the current usage records to disk. Safe for concurrent use.
+// Save persists the current usage records to disk immediately. Safe for
+// concurrent use.
 func (t *UsageTracker) Save() error {
-	t.mu.RLock()
-	snapshot := make([]UsageRecord, len(t.records))
-	copy(snapshot, t.records)
-	invalidations := copyInvalidations(t.invalidations)
-	t.mu.RUnlock()
-	return t.saveSnapshot(snapshot, invalidations)
+	// saveMu serializes the whole snapshot+write: a later writer must not
+	// overwrite the file with a snapshot older than one already written.
+	t.saveMu.Lock()
+	defer t.saveMu.Unlock()
+	t.timerMu.Lock()
+	if t.saveTimer != nil {
+		t.saveTimer.Stop()
+		t.saveTimer = nil
+	}
+	t.timerMu.Unlock()
+	return t.writeSnapshotLocked()
 }
 
-func (t *UsageTracker) saveSnapshot(records []UsageRecord, invalidations map[string]ToolInvalidationState) error {
+// usageSaveDebounce bounds how often a recording rewrites the history file.
+const usageSaveDebounce = 400 * time.Millisecond
+
+// scheduleSave marks the history dirty and arms the coalescing timer. The
+// snapshot is taken when the timer fires, so recording never copies the
+// history and always persists the newest state.
+func (t *UsageTracker) scheduleSave() {
+	if t.path == "" {
+		return
+	}
+	t.timerMu.Lock()
+	if t.saveTimer == nil {
+		t.saveTimer = time.AfterFunc(usageSaveDebounce, t.flushPending)
+	}
+	t.timerMu.Unlock()
+}
+
+// flushPending writes the current history.
+func (t *UsageTracker) flushPending() {
+	t.saveMu.Lock()
+	defer t.saveMu.Unlock()
+	t.timerMu.Lock()
+	t.saveTimer = nil
+	t.timerMu.Unlock()
+	_ = t.writeSnapshotLocked()
+}
+
+// writeSnapshotLocked marshals and atomically replaces the history file. The
+// caller holds saveMu and this takes the state snapshot itself, so writes land
+// in the order their snapshots were taken.
+func (t *UsageTracker) writeSnapshotLocked() error {
 	if t.path == "" {
 		return nil
 	}
+	t.mu.RLock()
+	records := make([]UsageRecord, len(t.records))
+	copy(records, t.records)
+	invalidations := copyInvalidations(t.invalidations)
+	t.mu.RUnlock()
 
 	ud := UsageData{
 		Records:       records,
 		Invalidations: invalidations,
 	}
-
 	data, err := json.Marshal(ud)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(t.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	t.saveMu.Lock()
-	defer t.saveMu.Unlock()
+	// No MkdirAll here: if the store directory is gone, the write fails instead
+	// of recreating it (see NewUsageTracker).
 
 	// Atomic write: temp file + rename.
 	tmp := t.path + ".tmp"
@@ -1183,17 +1354,18 @@ func (t *UsageTracker) ExplainRoutingHintAdjustment(toolName string, queryTokens
 	var recoveryEvidence int
 
 	t.mu.RLock()
-	for _, record := range t.records {
+	process := func(i int) {
+		record := t.records[i]
 		if record.Timestamp.Before(cutoff) {
-			continue
+			return
 		}
 		sim := jaccardTokens(querySet, record.QueryTokens)
 		if sim < contextOutcomeMinJaccard {
-			continue
+			return
 		}
 		if record.ToolName == toolName {
 			if !usageRecordDecisive(record) {
-				continue
+				return
 			}
 			total++
 			if usageRecordSucceeded(record) {
@@ -1204,6 +1376,28 @@ func (t *UsageTracker) ExplainRoutingHintAdjustment(toolName string, queryTokens
 		}
 		if record.RecoveryTool == toolName {
 			recoveryEvidence++
+		}
+	}
+	toolIdx, indexed := t.indexedRecords(toolName, false)
+	if indexed {
+		for _, i := range toolIdx {
+			process(i)
+		}
+		// byRecovery excludes records whose tool is toolName, so nothing is
+		// counted twice.
+		if recIdx, ok := t.indexedRecords(toolName, true); ok {
+			for _, i := range recIdx {
+				process(i)
+			}
+		}
+	} else {
+		for i := range t.records {
+			// A record matching neither the tool nor its recovery slot cannot
+			// affect the result; skip it before the similarity computation.
+			if t.records[i].ToolName != toolName && t.records[i].RecoveryTool != toolName {
+				continue
+			}
+			process(i)
 		}
 	}
 	t.mu.RUnlock()

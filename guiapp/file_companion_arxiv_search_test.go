@@ -711,7 +711,11 @@ func TestFileCompanionSearchArxivFallsBackWhenExpansionFails(t *testing.T) {
 		calls++
 		return arxivExpansion{}, errors.New("bad json")
 	}
-	const goal = "我想找注意力机制，以及它怎么用在长文档上"
+	// The goal carries an English term. A failed expansion must search that
+	// term, never the Chinese sentence: arXiv indexes English, so all:"<the
+	// whole sentence>" is a query that cannot hit and would be reported as
+	// "no results" for a model failure.
+	const goal = "agent 自进化 的论文"
 	page, err := app.FileCompanionSearchArxiv(goal, 1, false)
 	if err != nil {
 		t.Fatal(err)
@@ -723,10 +727,10 @@ func TestFileCompanionSearchArxivFallsBackWhenExpansionFails(t *testing.T) {
 	if calls != 1 || !page.Fallback || !again.Fallback {
 		t.Fatalf("calls=%d page=%#v again=%#v", calls, page, again)
 	}
-	if gotQuery != `all:"我想找注意力机制，以及它怎么用在长文档上"` {
+	if gotQuery != `all:"agent"` {
 		t.Fatalf("query=%q", gotQuery)
 	}
-	if len(page.Groups) != 1 || strings.Join(page.Groups[0].Terms, ",") != goal {
+	if len(page.Groups) != 1 || strings.Join(page.Groups[0].Terms, ",") != "agent" {
 		t.Fatalf("groups=%#v", page.Groups)
 	}
 	// 上一页 back to page 1 is a page turn. It must keep the failed plan.
@@ -742,6 +746,234 @@ func TestFileCompanionSearchArxivFallsBackWhenExpansionFails(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("expand calls=%d", calls)
+	}
+}
+
+// A goal with no Latin word left after a failed expansion has no query arXiv
+// can answer. Reporting the empty list as "no results" would blame the query
+// for a model failure, so the search returns an error instead of dialing.
+func TestFileCompanionSearchArxivReportsAnUntranslatableGoal(t *testing.T) {
+	dialed := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialed++
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		return arxivExpansion{}, errors.New("timeout")
+	}
+	const goal = "需要一些自进化相关的论文"
+	_, err := app.FileCompanionSearchArxiv(goal, 1, false)
+	if !errors.Is(err, errArxivExpandNoTerms) {
+		t.Fatalf("err=%v", err)
+	}
+	if dialed != 0 {
+		t.Fatalf("dialed arXiv with an unanswerable query: dials=%d", dialed)
+	}
+	// The failure is not cached: the reader retrying the button asks the
+	// model again rather than reusing a plan that has no query.
+	if _, ok := app.arxivCachedPlan(goal); ok {
+		t.Fatal("an untranslatable goal must not be remembered as a plan")
+	}
+}
+
+// With no model configured the goal can never be translated, so telling the
+// reader to retry would send them in a circle. The two failures say different
+// things: one is a transient call failure, the other a missing capability.
+func TestArxivPlanTellsAnUnavailableModelApartFromAFailedCall(t *testing.T) {
+	const goal = "需要一些自进化相关的论文"
+
+	_, err := (&App{}).arxivPlan(context.Background(), goal)
+	if !errors.Is(err, errArxivExpandUnavailable) {
+		t.Fatalf("no model: err=%v", err)
+	}
+
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		return arxivExpansion{}, errors.New("timeout")
+	}
+	_, err = app.arxivPlan(context.Background(), goal)
+	if !errors.Is(err, errArxivExpandNoTerms) {
+		t.Fatalf("failed call: err=%v", err)
+	}
+
+	// A Latin term in the goal still yields a query when the call fails.
+	plan, err := app.arxivPlan(context.Background(), "需要一些agent自进化相关的论文")
+	if err != nil || plan.searchQuery != `all:"agent"` {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+// A provider that is present but has no URL or model answers "LLM not
+// configured", which is as permanent as having no handler at all. A timeout
+// or an endpoint ban heals, so those keep the retry wording.
+func TestArxivExpandPermanentSeparatesMissingConfigFromATransientFailure(t *testing.T) {
+	permanent := []error{
+		errArxivExpandUnavailable,
+		errors.New("arxiv-expand LLM call failed: LLM not configured"),
+		errors.New("arxiv-expand hub model unavailable: no key"),
+	}
+	for _, err := range permanent {
+		if !arxivExpandPermanent(err) {
+			t.Fatalf("%v should be permanent", err)
+		}
+	}
+	transient := []error{
+		nil,
+		errors.New("arxiv-expand LLM call failed: context deadline exceeded"),
+		errors.New("arxiv-expand LLM endpoint temporarily unavailable after recent network failure: x"),
+		errors.New("arxiv-expand LLM call failed: no json"),
+	}
+	for _, err := range transient {
+		if arxivExpandPermanent(err) {
+			t.Fatalf("%v should be retryable", err)
+		}
+	}
+
+	// The whole path: an unconfigured provider reports the non-retry message.
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		return arxivExpansion{}, errors.New("arxiv-expand LLM call failed: LLM not configured")
+	}
+	_, err := app.arxivPlan(context.Background(), "需要一些自进化相关的论文")
+	if !errors.Is(err, errArxivExpandUnavailable) {
+		t.Fatalf("unconfigured provider: err=%v", err)
+	}
+}
+
+// A Chinese goal usually has no spaces, so the whole sentence is one token.
+// The Latin term inside it is still a query, and lifting it out is what keeps
+// the fallback useful instead of guaranteed empty.
+func TestArxivFallbackPlanLiftsTheLatinTermOutOfAChineseGoal(t *testing.T) {
+	plan := arxivFallbackPlan("需要一些agent自进化相关的论文")
+	if !plan.fallback {
+		t.Fatalf("plan=%#v", plan)
+	}
+	if got := strings.Join(plan.groups[0].Terms, ","); got != "agent" {
+		t.Fatalf("terms=%q", got)
+	}
+	if plan.searchQuery != `all:"agent"` {
+		t.Fatalf("query=%q", plan.searchQuery)
+	}
+	// A hyphenated compound survives the split as one term.
+	plan = arxivFallbackPlan("介绍self-evolving agent的进展")
+	if got := strings.Join(plan.groups[0].Terms, ","); got != "self-evolving,agent" {
+		t.Fatalf("terms=%q", got)
+	}
+	// Punctuation that happens to sit beside a real term is not a term.
+	plan = arxivFallbackPlan("-- agent")
+	if got := strings.Join(plan.groups[0].Terms, ","); got != "agent" {
+		t.Fatalf("terms=%q", got)
+	}
+	// A single letter is a list marker in Chinese prose, not a query term.
+	if plan := arxivFallbackPlan("R语言"); plan.searchQuery != "" {
+		t.Fatalf("a one-letter run has no query: %#v", plan)
+	}
+	// C++ and C# are terms. Trimming the trailing plus or hash would leave a
+	// one-letter word, so the edge trim deliberately spares them.
+	if got := arxivFallbackPlan("C++编译器").searchQuery; got != `all:"C++"` {
+		t.Fatalf("C++ query=%q", got)
+	}
+	if got := arxivFallbackPlan("C# 和 Java").searchQuery; got != `all:"C#" AND all:"Java"` {
+		t.Fatalf("C# query=%q", got)
+	}
+}
+
+// The token cap must not be spent on CJK words that are about to be dropped.
+// A spaced-out Chinese sentence would otherwise lose the English term that
+// sits past the cap, which is the only part of it arXiv can match.
+func TestArxivSearchableTokensCountsOnlySurvivors(t *testing.T) {
+	const spaced = "这 是 一 个 很 长 的 中 文 句 子 关 于 agent 自 进 化"
+	if got := arxivFallbackPlan(spaced).searchQuery; got != `all:"agent"` {
+		t.Fatalf("spaced goal query=%q", got)
+	}
+	// The unspaced form reaches the same query, so spacing alone must not
+	// decide whether a goal is searchable.
+	const glued = "这是一个很长的中文句子关于agent自进化"
+	if got := arxivFallbackPlan(glued).searchQuery; got != `all:"agent"` {
+		t.Fatalf("glued goal query=%q", got)
+	}
+}
+
+func TestArxivFallbackPlanDropsTermsTheIndexCannotMatch(t *testing.T) {
+	plan := arxivFallbackPlan("agent RAG 自进化 论文")
+	if !plan.fallback {
+		t.Fatalf("plan=%#v", plan)
+	}
+	if got := strings.Join(plan.groups[0].Terms, ","); got != "agent,RAG" {
+		t.Fatalf("terms=%q", got)
+	}
+	if plan.searchQuery != `all:"agent" AND all:"RAG"` {
+		t.Fatalf("query=%q", plan.searchQuery)
+	}
+	// Punctuation-only leftovers are not terms either.
+	if plan := arxivFallbackPlan("，。、 agent"); strings.Join(plan.groups[0].Terms, ",") != "agent" {
+		t.Fatalf("plan=%#v", plan)
+	}
+	if plan := arxivFallbackPlan("注意力 机制"); plan.searchQuery != "" {
+		t.Fatalf("a CJK-only goal has no query: %#v", plan)
+	}
+}
+
+func TestArxivPlanFromExpansionDropsEchoedChineseTerms(t *testing.T) {
+	plan, ok := arxivPlanFromExpansion(arxivExpansion{
+		Interpreted: "agent 自进化",
+		Groups: []FileCompanionArxivGroup{
+			{Terms: []string{"自进化", "智能体"}, Category: "cs.AI"},
+			{Terms: []string{"self-evolving agent", "autonomous agent", "自进化"}, Category: "cs.AI"},
+		},
+	})
+	if !ok {
+		t.Fatal("a group with English terms is a query")
+	}
+	// The first group lost every term to the filter; the second keeps its
+	// English terms and drops the echoed Chinese one.
+	if len(plan.groups) != 1 || strings.Join(plan.groups[0].Terms, ",") != "self-evolving agent,autonomous agent" {
+		t.Fatalf("groups=%#v", plan.groups)
+	}
+	if plan.searchQuery != `(all:"self-evolving agent" AND all:"autonomous agent" AND cat:cs.AI)` {
+		t.Fatalf("query=%q", plan.searchQuery)
+	}
+	// An echo that leaves a group below the two-term floor drops the group
+	// rather than searching a single word, which is the same rule a short
+	// group already followed.
+	if _, ok := arxivPlanFromExpansion(arxivExpansion{Groups: []FileCompanionArxivGroup{
+		{Terms: []string{"self-evolving agent", "自进化"}, Category: "cs.AI"},
+	}}); ok {
+		t.Fatal("one usable term is still a short group")
+	}
+}
+
+func TestParseArxivExpansionSalvagesATruncatedAnswer(t *testing.T) {
+	// A model that narrates before answering hits the output cap mid-string.
+	const cut = `{"interpreted":"agent 自进化","groups":[{"terms":["self-evolving agent","autonomous agent"],"category":"cs.AI"},{"terms":["continual learning","model evolution"],"category":"cs.LG"},{"terms":["open-ended"`
+	got, err := parseArxivExpansion(cut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Interpreted != "agent 自进化" {
+		t.Fatalf("interpreted=%q", got.Interpreted)
+	}
+	if len(got.Groups) != 2 {
+		t.Fatalf("groups=%#v", got.Groups)
+	}
+	plan, ok := arxivPlanFromExpansion(got)
+	if !ok || plan.fallback || len(plan.groups) != 2 {
+		t.Fatalf("plan=%#v ok=%v", plan, ok)
+	}
+	// A cut before any complete group still yields nothing usable.
+	if _, err := parseArxivExpansion(`{"interpreted":"agent 自进化","groups":[{"terms":["self-evolving`); err == nil {
+		t.Fatal("a half-written term must not become a query")
+	}
+	// A complete object still parses the ordinary way.
+	if _, err := parseArxivExpansion(`{"interpreted":"x","groups":[{"terms":["a","b"]}]}`); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1046,6 +1278,29 @@ func TestFileCompanionSearchArxivSkipsExpansionForShortKeywords(t *testing.T) {
 	}
 	if page.Fallback || len(page.Groups) != 0 || gotQuery != `all:"attention" AND all:"mechanism"` {
 		t.Fatalf("page=%#v query=%q", page, gotQuery)
+	}
+}
+
+// A short ASCII box never reaches the fallback path, so its punctuation has
+// to be dropped here as well. all:"--" matches nothing, and beside a real
+// term in an AND it makes the whole query unanswerable.
+func TestArxivDirectPlanDropsPunctuationOnlyWords(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"-- agent", `all:"agent"`},
+		{"agent --", `all:"agent"`},
+		{"***", ""},
+		// Real terms keep their internal punctuation.
+		{"N,N-dimethyl", `all:"N,N-dimethyl"`},
+		{"GPT-4", `all:"GPT-4"`},
+		{"transformer attention", `all:"transformer" AND all:"attention"`},
+	}
+	for _, c := range cases {
+		if got := arxivDirectPlan(c.in).searchQuery; got != c.want {
+			t.Fatalf("arxivDirectPlan(%q)=%q want %q", c.in, got, c.want)
+		}
 	}
 }
 

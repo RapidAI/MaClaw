@@ -115,7 +115,7 @@ import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
 import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTab, cloudWorkspaceRevealMatchesTab, ensureCloudWorkspaceLeaseBeforeSend, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, resolveRemoteWorkspaceDisplay, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
-import { EVENT_EXPERT_TASK_DELETED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED } from "../../constants/events";
+import { EVENT_EXPERT_TASK_DELETED, EVENT_EXPERT_TASK_RETIRED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED } from "../../constants/events";
 import { useProjectTaskActivateEvent } from "./useProjectTaskActivateEvent";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
@@ -150,6 +150,15 @@ import { ScopeApprovalDialog, type ScopeApprovalDecision } from "./ScopeApproval
 import { SaveTaskDialog } from "./SaveTaskDialog";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 const EMPTY_PROGRESS_MESSAGES: ChatMessage[] = [];
+
+// Length + a short tail sample of a streaming text field: O(1) to build and
+// changes on every append (the length grows). Used for the live streaming
+// tail's render-cache key, where copying the whole text every 33ms flush
+// dominated the frame budget on long replies.
+function liveTextFingerprint(text: string | undefined): string {
+    return text ? `${text.length}:${text.slice(-48)}` : '';
+}
+
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayNameCN } = props;
     const state = props.state || props;
@@ -696,7 +705,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
         if (pending && typeof pending.catch === "function") pending.catch(() => {});
     }, []);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, hydrateClosedExpertTabHistory, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
     const { requested: workbenchHomeRequested, dismiss: dismissWorkbenchHome } = useWorkbenchLandingMode(startOnWorkbenchHome, activeTab.id, activeTab.type);
     cloudTreeRefreshTabIdRef.current = activeTab.id;
     visibleCodingProjectRef.current = visibleCodingProject(activeTab);
@@ -2225,9 +2234,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [closeRenameGroupDialog, lang, renameGroupSaving, renameGroupTab, renameGroupTargetTab, renameGroupValue]);
     const clearedProjectTabIdsRef = useRef<Set<string>>(new Set());
-    /** Turns older than this floor belong to a previous LaTeX paper. */
+    /** Turns older than this floor belong to a previous task of the same expert. */
     const sessionFloorByTabIdRef = useRef<Map<string, number>>(new Map());
-    const latexFreshFloorRef = useRef(0);
+    /** Reset floor per expert, recorded before the new task's tab is created. */
+    const freshExpertFloorRef = useRef<Map<string, number>>(new Map());
     const sessionFloorFor = (tabId: string, tabFloor?: number) => {
         const stored = Number(tabFloor || 0);
         const live = sessionFloorByTabIdRef.current.get(tabId) || 0;
@@ -3754,13 +3764,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 discardDeletedExpertTabs(expertId);
             }
         });
+        const offExpertRetired = EventsOn(EVENT_EXPERT_TASK_RETIRED, (expertId: string) => {
+            if (typeof expertId === "string" && expertId.trim()) {
+                purgeDeletedExpertTabLocalCache(expertId);
+                // The backend already promoted the next task's transcript into
+                // this session; clearing it here would discard that handoff.
+                discardDeletedExpertTabs(expertId, { keepBackendSession: true });
+                // Seed the closed-tab cache so reopening the expert shows the
+                // promoted conversation instead of an empty page.
+                hydrateClosedExpertTabHistory(expertId);
+            }
+        });
         return () => {
             if (typeof offDeleted === "function") offDeleted();
             else EventsOff(EVENT_PROJECT_TASK_DELETED);
             if (typeof offExpertDeleted === "function") offExpertDeleted();
             else EventsOff(EVENT_EXPERT_TASK_DELETED);
+            if (typeof offExpertRetired === "function") offExpertRetired();
+            else EventsOff(EVENT_EXPERT_TASK_RETIRED);
         };
-    }, [discardDeletedExpertTabs, discardDeletedProjectTabs, getTabs]);
+    }, [discardDeletedExpertTabs, discardDeletedProjectTabs, getTabs, hydrateClosedExpertTabHistory]);
     // Keep the AI panel task switcher consistent with the sidebar task list:
     // any open project tab that NO task-list row claims (e.g. its delete/hide
     // event fired while the GUI was not listening) is reaped by the tab
@@ -3803,18 +3826,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pendingExpertOpen: props.pendingExpertOpen,
         onPendingExpertOpenHandled: props.onPendingExpertOpenHandled,
         resetExpertConversation: async (expertId, archivedProjectPath, keepConversation) => {
-            if (!isLatexExpertId(expertId)) return;
             const tabId = expertTabId(expertId);
             const tab = getTabs().find(item => item.type === "expert" && item.expertId === expertId);
             const history = ((tab ? getTabState(tab.id)?.history : getTabState(tabId)?.history) || []) as ChatMessage[];
-            // The caller snapshots the path before the new paper is attached.
-            // Reading the tab again here can archive the old chat onto the new paper.
+            // The caller snapshots the path before the new task is attached.
+            // Reading the tab again here can archive the old chat onto the new task.
             const previousPath = archivedProjectPath !== undefined ? String(archivedProjectPath || "").trim() : String(tab?.projectPath || "").trim();
             if (previousPath && history.length > 0) await stashProjectTabHistory(previousPath, history);
             // Cover may rise during the archive save. Do not clear the held conversation.
             if (keepConversation?.()) return;
             const floor = Date.now();
-            latexFreshFloorRef.current = floor;
+            freshExpertFloorRef.current.set(expertId, floor);
             sessionFloorByTabIdRef.current.set(tabId, floor);
             if (tab) {
                 clearTabConversation(tab.id);
@@ -3831,8 +3853,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
         },
         markExpertSessionFloor: (expertId) => {
-            const floor = latexFreshFloorRef.current;
-            if (!floor || !isLatexExpertId(expertId)) return;
+            const floor = freshExpertFloorRef.current.get(expertId) || 0;
+            if (!floor) return;
             const tabId = expertTabId(expertId);
             sessionFloorByTabIdRef.current.set(tabId, floor);
             markSessionFloor(tabId, floor);
@@ -5954,6 +5976,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const settled = cache.get(msg.id);
             if (!isLast && settled?.message === msg) return settled.node;
             const messageOwnsLive = isLast && lastAssistantOwnsLiveActivity;
+            // The actively-streaming tail gets an O(1) cache key. Its content,
+            // reasoning, and result text are fingerprinted as length + a short
+            // tail sample instead of being copied whole into the key string on
+            // every 33ms flush: an append grows the length, a retry or in-place
+            // correction clears the prose first, and a rejected-round restore
+            // shrinks back to the earlier baseline, so whenever the text
+            // actually changes the sample changes with it. The settled rows
+            // below keep the full-text key.
+            const liveStreamingTail = messageOwnsLive && activeSessionIsStreaming && msg.role === 'assistant';
             const shownLiveLabel = isPureCodingEnvironment ? codingShownLiveLabel(messageOwnsLive, liveReasoningLabel, liveReasoningKind, msg) : (messageOwnsLive ? liveReasoningLabel : undefined);
             const codingTimeline = isPureCodingEnvironment && msg.role === "assistant" ? codingTimelineForDisplay(msg) : undefined;
             const fieldKey = msg.fields?.length
@@ -5967,7 +5998,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     ? codingTimelineLastThoughtIndex(codingTimeline)
                     : -1;
                 const replyCacheId = `${msg.id}\0reply`;
-                const replyKey = `${msg.content ?? ""}|${fieldKey}|${shownLiveLabel ?? ""}|${messageOwnsLive ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}`;
+                // The live tail key fingerprints the content instead of copying it.
+                const replyKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? "")}|${fieldKey}|${shownLiveLabel ?? ""}|${messageOwnsLive ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}`;
                 const replyCached = cache.get(replyCacheId);
                 const reply = replyCached?.contentKey === replyKey ? replyCached.node : renderMessage(
                     suppressWorkflowReviewActions(msg),
@@ -6011,6 +6043,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // isBusy is included only for the last assistant (Working... placeholder).
             // Include the actual text, not just its length. Tool retries and stream
             // corrections can replace content in place without changing the length.
+            // That full-text guard stays for every settled row; the live streaming
+            // tail fingerprints its text instead (see liveStreamingTail above),
+            // so its key drops the full copies here.
             const liveObjectForMessage = shownLiveLabel ? liveReasoningObject : undefined;
             // The cache key must change when reasoning changes, but it must not
             // copy the whole trail into a string on every render: a single
@@ -6021,7 +6056,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const reasoningFingerprint = msg.reasoning
                 ? `${msg.reasoning.length}:${msg.reasoning.slice(-48)}`
                 : '';
-            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${msg.resultText ?? ''}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && activeSessionIsStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
+            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && activeSessionIsStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;

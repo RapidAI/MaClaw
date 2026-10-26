@@ -68,6 +68,9 @@ type ScopeApprovalRequest struct {
 	// Maintenance preserves the user-facing operations intent when the shared
 	// remote-coding engine asks for an approval.
 	Maintenance bool
+	// Fingerprint is the commit-gate call shape when 完全控制 waived a
+	// human-call card. It has no argument values, bodies, or command text.
+	Fingerprint string
 }
 
 // ScopeApprovalCallback is the function type for requesting user approval.
@@ -562,6 +565,13 @@ func stickyDecisionUser(loopCtx *LoopContext, stickyOwner string) (userID string
 	return owner, true
 }
 
+// scopeApprovalOwner picks the tab whose permission tier decides a prompt.
+// A nested step records 以后允许 on the task tab, not on its own loop user.
+func scopeApprovalOwner(loopCtx *LoopContext, stickyOwner string) string {
+	userID, _ := stickyDecisionUser(loopCtx, stickyOwner)
+	return userID
+}
+
 func rememberLocalScopeStickyDecision(handler *IMMessageHandler, loopCtx *LoopContext, stickyOwner string, req ScopeApprovalRequest, decision ScopeApprovalDecision) {
 	if handler == nil {
 		return
@@ -640,6 +650,12 @@ func buildSubAgentScopeApprovalCallbackOwned(handler *IMMessageHandler, loopCtx 
 		if loopCtx != nil && loopCtx.IsCancelled() {
 			recordScopeApprovalAudit(handler, "", req, ScopeApprovalDeny, "cancelled")
 			return ScopeApprovalDeny
+		}
+		// The tier is read live: a task started while the tab was 请求授权 must
+		// stop asking as soon as the user switches to 完全控制.
+		if codingTaskFullControlGranted(handler, scopeApprovalOwner(loopCtx, stickyOwner)) {
+			recordScopeApprovalAudit(handler, "", req, ScopeApprovalFullAccess, "full_control")
+			return ScopeApprovalAllowOnce
 		}
 
 		// Send progress update so user knows what's happening.
@@ -727,18 +743,22 @@ func recordScopeApprovalAudit(handler *IMMessageHandler, approvalID string, req 
 	if decision == ScopeApprovalDeny {
 		policy = security.PolicyDeny
 	}
+	arguments := map[string]interface{}{
+		"path":         req.Path,
+		"directory":    req.Directory,
+		"project_path": req.ProjectPath,
+		"kind":         req.Kind,
+		"decision":     string(decision),
+		"source":       source,
+	}
+	if fingerprint := strings.TrimSpace(req.Fingerprint); fingerprint != "" {
+		arguments["fingerprint"] = fingerprint
+	}
 	_ = handler.app.auditLog.Log(security.AuditEntry{
-		Timestamp: time.Now(),
-		SessionID: approvalID,
-		ToolName:  req.ToolName,
-		Arguments: map[string]interface{}{
-			"path":         req.Path,
-			"directory":    req.Directory,
-			"project_path": req.ProjectPath,
-			"kind":         req.Kind,
-			"decision":     string(decision),
-			"source":       source,
-		},
+		Timestamp:    time.Now(),
+		SessionID:    approvalID,
+		ToolName:     req.ToolName,
+		Arguments:    arguments,
 		RiskLevel:    risk,
 		PolicyAction: policy,
 		Result:       fmt.Sprintf("scope_approval_%s (%s)", decision, source),

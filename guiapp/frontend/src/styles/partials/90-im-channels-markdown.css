@@ -3709,7 +3709,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .acb-brand-gen { font-size: 21px; font-weight: 650; color: #7a2330; letter-spacing: 0.04em; }
 
 /* SessionWorkingDirChip.tsx */
-.swdc-placeholder { display: inline-flex; align-items: center; min-height: 24px; box-sizing: border-box; flex-shrink: 0; }
+.swdc-placeholder { display: inline-flex; align-items: center; min-height: var(--mc-composer-control-height, 28px); box-sizing: border-box; flex-shrink: 0; }
 .swdc-placeholder-icon { opacity: 0.35; display: inline-flex; color: var(--theme-text-muted); }
 /* Folder plus expert mark. flex-shrink 0 makes the wrapping toolbar move the
    whole pair to the next line. max-width 100% still ellipsizes a long expert
@@ -3718,7 +3718,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .swdc-root { flex-shrink: 0; min-width: 0; max-width: 100%; }
 .swdc-chip-icon { display: inline-flex; flex-shrink: 0; opacity: 0.8; }
 .swdc-chip-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.swdc-expert { display: inline-flex; align-items: center; gap: 4px; height: 24px; max-width: 11rem; min-width: 0; padding: 0 8px; border: 1px solid var(--mc-line, var(--theme-border)); border-radius: var(--radius-md); box-sizing: border-box; flex: 0 1 auto; overflow: hidden; background: var(--mc-muted-surface, var(--theme-surface)); color: var(--mc-copy, var(--theme-text-secondary)); font-size: 11px; line-height: 1.4; cursor: default; user-select: none; }
+.swdc-expert { display: inline-flex; align-items: center; gap: 4px; height: var(--mc-composer-control-height, 28px); max-width: 11rem; min-width: 0; padding: 0 8px; border: 1px solid var(--mc-line, var(--theme-border)); border-radius: var(--radius-md); box-sizing: border-box; flex: 0 1 auto; overflow: hidden; background: var(--mc-muted-surface, var(--theme-surface)); color: var(--mc-copy, var(--theme-text-secondary)); font-size: 11px; line-height: 1.4; cursor: default; user-select: none; }
 .swdc-expert-icon { flex-shrink: 0; font-size: 13px; line-height: 1; }
 .swdc-expert-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 

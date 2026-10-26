@@ -24,8 +24,9 @@ import (
 // The companion's closed tool surface: PDF helpers bound to the one open
 // document. Tool arguments carry no path on purpose — the open file is the
 // entire reach of these tools. pdf_restore writes a new selectable PDF under
-// the session results directory and does not modify the open file. Figure
-// tools write only into the session figure directory. Every tool-produced
+// the session results directory and does not modify the open file. pdf_generate
+// writes a new PDF of the model's own answer under the same directory.
+// Figure tools write only into the session figure directory. Every tool-produced
 // image joins the turn's 图N list, so the reply displays it by reference
 // instead of restating a path.
 const (
@@ -33,6 +34,10 @@ const (
 	fileCompanionToolRenderPage  = "pdf_render_page"
 	fileCompanionToolExtractImgs = "pdf_extract_images"
 	fileCompanionToolRestore     = "pdf_restore"
+	// fileCompanionToolGenerate writes one PDF from the model's own answer.
+	// It is the only tool here that writes, and it writes into the session's
+	// own results directory.
+	fileCompanionToolGenerate = "pdf_generate"
 
 	// A turn's displayable 图N list is bounded: the model cannot flood the
 	// reply with renders, and numbering stays deterministic.
@@ -170,15 +175,61 @@ func fileCompanionToolDefinitions() []map[string]interface{} {
 				},
 			},
 		},
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        fileCompanionToolGenerate,
+				"description": "把 Markdown 正文写成一份新的 PDF 文件。用户要笔记、讲义、总结、复习提纲这类成品文件时使用。markdown 放正文（支持标题、列表、表格、代码块和 $$ 公式 $$），正文只写进 markdown 一遍，回答里简短说明并指向产出物卡片，不要再抄一遍正文。正文里写「图N」时，宿主会把这一轮的第 N 张原图附在 PDF 末尾。title 可选，是文件首页的标题；filename 可选，是文件名的前半段，不要带路径、不要带扩展名。文件写在宿主自己的结果目录里，不会覆盖当前打开的文档；宿主会把它作为「产出物」放在回答下面，用户可以点「查看文档」，也可以点「保存」存到任意目录。",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"markdown": map[string]interface{}{
+							"type":        "string",
+							"description": "要写进 PDF 的正文，Markdown 文本。",
+						},
+						"title": map[string]interface{}{
+							"type":        "string",
+							"description": "可选。文件首页的标题，例如「信息安全数学基础 复习笔记」。",
+						},
+						"filename": map[string]interface{}{
+							"type":        "string",
+							"description": "可选。文件名的前半段，例如「复习笔记」。不要带路径和 .pdf 扩展名。",
+						},
+					},
+					"required": []string{"markdown"},
+				},
+			},
+		},
 	}
 }
 
 func isFileCompanionHostTool(name string) bool {
 	switch strings.TrimSpace(name) {
-	case fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore:
+	case fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore, fileCompanionToolGenerate:
 		return true
 	}
 	return false
+}
+
+// fileCompanionPaperTurnText reports whether this turn is the paper
+// interpretation. The button turn carries the marker; a person typing the
+// same label does not.
+func fileCompanionPaperTurnText(text string) bool {
+	return strings.Contains(text, fileCompanionPaperMarker)
+}
+
+// fileCompanionWithoutGenerateTool drops the writer from a tool list.
+func fileCompanionWithoutGenerateTool(tools []map[string]interface{}) []map[string]interface{} {
+	kept := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if strings.TrimSpace(name) == fileCompanionToolGenerate {
+			continue
+		}
+		kept = append(kept, tool)
+	}
+	return kept
 }
 
 // fileCompanionClosedSurfaceTools is the whole executable surface a companion
@@ -259,6 +310,8 @@ func (h *IMMessageHandler) runFileCompanionHostTool(userID, name, argsJSON strin
 		return h.app.fileCompanionToolExtractImages(userID, canonical, args)
 	case fileCompanionToolRestore:
 		return h.app.fileCompanionToolRestore(canonical, args)
+	case fileCompanionToolGenerate:
+		return h.app.fileCompanionToolGenerate(userID, canonical, args)
 	}
 	return "未知工具 " + name, false
 }
@@ -288,6 +341,8 @@ func fileCompanionToolProgressText(name, argsJSON string) string {
 		return "正在提取文档内嵌图片…"
 	case fileCompanionToolRestore:
 		return "正在把扫描页恢复成可选中的 PDF…"
+	case fileCompanionToolGenerate:
+		return "正在把正文写成 PDF…"
 	}
 	return "正在处理文档…"
 }

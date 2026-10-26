@@ -61,6 +61,8 @@ type FileCompanionMessage struct {
 	Paper bool `json:"paper,omitempty"`
 	// Figures are drawings from the open file that this answer refers to.
 	Figures []FileCompanionFigure `json:"figures,omitempty"`
+	// Files are the files this answer produced, shown as 产出物 cards.
+	Files []FileCompanionFile `json:"files,omitempty"`
 	// NoteCardPath is the PDF for a video or audio note. The bubble text stays
 	// Markdown. ResultPath stays empty so the bubble is not replaced by the
 	// paper sentence.

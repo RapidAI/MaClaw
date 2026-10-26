@@ -6253,9 +6253,14 @@ func TestExecuteCodingBashReturnsStructuredOutcome(t *testing.T) {
 	if failed.Kind != codingCommandResultExitError || failed.ExitCode == 0 {
 		t.Fatalf("failed result = %#v", failed)
 	}
-	if !strings.Contains(failed.Text, "no stdout/stderr") ||
-		(!strings.Contains(failed.Text, "without output filters") && !strings.Contains(failed.Text, "without pipe filters")) {
-		t.Fatalf("empty failure should include diagnostic hint, got %q", failed.Text)
+	if !strings.Contains(failed.Text, "no stdout/stderr") || !strings.Contains(failed.Text, "code 7") {
+		t.Fatalf("empty failure should keep its exit status, got %q", failed.Text)
+	}
+	// The old text told the model that a pipeline filter had consumed output
+	// even for commands with no pipe at all, and the model then rewrote
+	// successful commands. Keep the statement factual.
+	if strings.Contains(failed.Text, "pipe filters") || strings.Contains(failed.Text, "output filters") {
+		t.Fatalf("empty failure must not blame a filter that may not exist, got %q", failed.Text)
 	}
 	timedOut := executeCodingBash(map[string]interface{}{
 		"command": timeoutCmd,

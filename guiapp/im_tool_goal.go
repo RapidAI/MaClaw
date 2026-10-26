@@ -168,8 +168,17 @@ func (h *IMMessageHandler) goalCompleteForUser(userID string, args map[string]in
 		return refusal
 	}
 
-	store.UpdateStatus(userID, g.GoalID, goal.StatusComplete, summary)
+	// A concurrent cancel/clear can remove the row between the read above and
+	// this write. Do not retire the checklist or report completion for a goal
+	// that no longer exists.
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusComplete, summary) {
+		return "错误: 目标已被取消或替换，无法完成。"
+	}
 	h.cancelGoalContinuation(userID)
+	// Clear the checklist on the handler that owns this tool call. The
+	// continuation engine's emit below also clears, but it reaches the app's
+	// current handler; a hub reconnect can leave those instances different.
+	h.clearGoalFinishedCodingChecklist(userID)
 
 	// Notify frontend of terminal state
 	if h.app != nil && h.app.goalContinuation != nil {
@@ -450,8 +459,18 @@ func (h *IMMessageHandler) goalClearForUser(userID string) string {
 		h.app.goalContinuation.CancelPending(userID)
 	}
 	store := h.getGoalStore()
+	// Only a running goal still owns live work. A paused, failed, or completed
+	// row is history; clearing it must not retire a plan the user started after
+	// that goal stopped. A second store may hold the live row, so both are read.
+	activeRow := false
+	if g := store.Get(userID); g != nil && g.Status == goal.StatusActive {
+		activeRow = true
+	}
 	cleared := store.Clear(userID)
 	if h.app != nil && h.app.goalContinuation != nil && h.app.goalContinuation.store != nil && h.app.goalContinuation.store != store {
+		if g := h.app.goalContinuation.store.Get(userID); g != nil && g.Status == goal.StatusActive {
+			activeRow = true
+		}
 		if h.app.goalContinuation.store.Clear(userID) {
 			cleared = true
 		}
@@ -460,6 +479,11 @@ func (h *IMMessageHandler) goalClearForUser(userID string) string {
 		h.app.goalContinuation.emitGoalCleared(userID)
 	}
 	if cleared {
+		if activeRow {
+			// A goal that was still running is gone; its checklist has nothing
+			// left to describe.
+			h.clearGoalFinishedCodingChecklist(userID)
+		}
 		return "目标已清除。"
 	}
 	return "当前没有目标。"

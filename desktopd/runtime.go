@@ -184,7 +184,7 @@ func (s *Service) MachineStatus(ctx context.Context, spec Spec) (RuntimeStatus, 
 		return RuntimeStatus{}, err
 	}
 	var status RuntimeStatus
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
 		var statusErr error
 		status, statusErr = s.runtime().Status(ctx, spec)
 		return statusErr

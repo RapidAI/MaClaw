@@ -48,8 +48,8 @@ func semanticTrustedGoalInvocationSchema() map[string]interface{} {
 			// how the browser adapter started refusing "open" (2026-10-10). The
 			// canonicalizer does not read enum, so the check in the update path
 			// stays the boundary and this is documentation for the model.
-			"status":    map[string]interface{}{"type": "string", "enum": goal.StatusOptions()},
-			"note":      map[string]interface{}{"type": "string"},
+			"status": map[string]interface{}{"type": "string", "enum": goal.StatusOptions()},
+			"note":   map[string]interface{}{"type": "string"},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -170,6 +170,12 @@ func (h *IMMessageHandler) administerTrustedGoal(principalID, objective, status,
 		updated := store.Get(principalID)
 		if updated == nil {
 			return "", fmt.Errorf("trusted_goal_update_failed")
+		}
+		// This path writes the goal row without a goal-state event. Retire the
+		// coding checklist explicitly so a completed goal cannot leave its
+		// passed steps pinned over the composer.
+		if parsed == goal.StatusComplete {
+			h.clearGoalFinishedCodingChecklist(principalID)
 		}
 		return semanticTrustedGoalProjection("updated", updated), nil
 	default:

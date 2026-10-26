@@ -664,7 +664,12 @@ func (h *IMMessageHandler) codingExecCheckpointUsable(userID string, cp codingEx
 // the narrow crash window after the Ledger committed a successful coding run
 // but before Workflow V2 saved its phase output. It deliberately knows
 // nothing about subagents, tools, SSH sessions, or executor callbacks.
-func (a *App) repairCompletedCodingWorkflowProjections(wf *workflowV2State) {
+//
+// snap is normally the shared startup snapshot (see recoverWorkflowsOnStartup):
+// each user's state comes from the single startup load instead of a second
+// per-user store read. Users whose projection repair succeeds are marked in
+// snap.repaired so the later suspension pass re-reads their (rewritten) state.
+func (a *App) repairCompletedCodingWorkflowProjections(wf *workflowV2State, snap *workflowStartupSnapshot) {
 	if a == nil || wf == nil || wf.machine == nil {
 		return
 	}
@@ -673,14 +678,17 @@ func (a *App) repairCompletedCodingWorkflowProjections(wf *workflowV2State) {
 		log.Printf("[coding-runtime] skip completed workflow projection repair: ledger unavailable")
 		return
 	}
-	userIDs, err := wf.machine.ListAllStoredUserIDs()
-	if err != nil {
-		log.Printf("[coding-runtime] list workflows for completed projection repair failed: %v", err)
+	if snap == nil || snap.listErr {
+		// Listing failure: no state to repair (the suspension pass still uses
+		// its fallback list, so nothing is lost by skipping here).
 		return
 	}
-	for _, userID := range userIDs {
-		state, err := wf.store.Load(userID)
-		if err != nil || state == nil {
+	if snap.repaired == nil {
+		snap.repaired = map[string]bool{}
+	}
+	for _, userID := range snap.userIDs {
+		state := snap.states[userID]
+		if state == nil {
 			continue
 		}
 		cp, ok := loadCodingExecCheckpointFromDisk(userID, state.ProjectPath)
@@ -692,6 +700,7 @@ func (a *App) repairCompletedCodingWorkflowProjections(wf *workflowV2State) {
 			log.Printf("[coding-runtime] completed workflow projection still pending: user=%s workflow=%s err=%v", userID, state.ID, err)
 			continue
 		}
+		snap.repaired[userID] = true
 		deleteCodingExecCheckpointFromDisk(userID, cp.ProjectPath)
 		log.Printf("[coding-runtime] repaired completed workflow projection without executor replay: user=%s workflow=%s", userID, state.ID)
 	}

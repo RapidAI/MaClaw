@@ -705,8 +705,9 @@ func (a *App) ContinueSessionGoal(sessionKey string) map[string]interface{} {
 	return a.goalBarSnapshotIn(store, userID, updated)
 }
 
-// CancelSessionGoal deletes the goal. The bar hides. The checklist card
-// already in the transcript is left in place.
+// CancelSessionGoal deletes the goal. The bar hides; a running goal's live
+// step checklist retires. The checklist card already in the transcript is
+// left in place.
 func (a *App) CancelSessionGoal(sessionKey string) map[string]interface{} {
 	hit := a.goalBarHit(sessionKey)
 	userID := hit.id
@@ -714,6 +715,22 @@ func (a *App) CancelSessionGoal(sessionKey string) map[string]interface{} {
 		userID = strings.TrimSpace(sessionKey)
 	}
 	ids := goalBarCandidateIDs(userID)
+	// Only a running goal still owns live work. Deleting a paused, failed, or
+	// completed row is cleanup and must not retire a plan the user started
+	// after that goal stopped. Any active row in either store still owns the
+	// checklist the user is dismissing. Decide before the rows are gone.
+	activeRow := false
+	for _, store := range a.goalBarStores() {
+		for _, id := range ids {
+			if g := store.Get(id); g != nil && g.Status == goal.StatusActive {
+				activeRow = true
+				break
+			}
+		}
+		if activeRow {
+			break
+		}
+	}
 	if a.goalContinuation != nil {
 		a.goalContinuation.clearContinueRearmed(userID)
 	}
@@ -728,6 +745,9 @@ func (a *App) CancelSessionGoal(sessionKey string) map[string]interface{} {
 	a.cancelGoalBarTimers(ids...)
 	if a.goalContinuation != nil {
 		a.goalContinuation.emitGoalCleared(userID)
+	}
+	if activeRow && a.imHandler != nil {
+		a.imHandler.clearGoalFinishedCodingChecklist(userID)
 	}
 	return goalBarHidden(userID)
 }

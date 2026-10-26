@@ -384,6 +384,22 @@ func stripHostAttachmentSections(text string) string {
 	return strings.TrimSpace(text)
 }
 
+// historyContentForPersistence strips a freshly built user turn down to the
+// exact historical form stripHistoryAttachments produces for a past turn:
+// base64 image blocks become the "[之前上传了 N 张图片]" placeholder and
+// attachment markers are annotated as historical. The live turn keeps the
+// original payload (it is the current model input); the copy written into
+// conversation history / ConversationMemory carries the placeholder form, so
+// memory and disk no longer retain base64 while the next prompt build still
+// round-trips the same messages stripHistoryAttachments would have produced.
+func historyContentForPersistence(userContent interface{}) interface{} {
+	msg, ok := stripHistoryAttachments(map[string]interface{}{"role": "user", "content": userContent}).(map[string]interface{})
+	if !ok {
+		return userContent
+	}
+	return msg["content"]
+}
+
 // stripHistoryAttachments processes a conversation message from history and
 // removes base64 image data from multimodal content blocks, replacing them
 // with a lightweight text placeholder. It also annotates the

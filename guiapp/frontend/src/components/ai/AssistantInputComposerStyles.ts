@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { COMPOSER_CONTROL_HEIGHT_PX, type Theme } from "./aiAssistantPanelTheme";
 
 /** Shared with the floating chat card and the welcome workbench field. */
 export const ASSISTANT_COMPOSER_RADIUS = "14px";
@@ -112,7 +112,7 @@ export function getAssistantInputComposerStyles({
             justifyContent: "space-between",
             gap: "4px",
             padding: "2px 0 0 0",
-            minHeight: "24px",
+            minHeight: `${COMPOSER_CONTROL_HEIGHT_PX}px`,
             flexShrink: 0,
         },
         toolbarLeftStyle: {

@@ -143,6 +143,13 @@ export const dotBase: React.CSSProperties = {
     cursor: "pointer",
 };
 
+/**
+ * One height for every control on the composer toolbar row: icon buttons, the
+ * permission-mode chip, the working-directory chip and the model chip. CSS
+ * keeps the same number in --mc-composer-control-height.
+ */
+export const COMPOSER_CONTROL_HEIGHT_PX = 28;
+
 export const baseInputBtnStyle: React.CSSProperties = {
     background: "transparent",
     border: "1px solid",
@@ -152,10 +159,10 @@ export const baseInputBtnStyle: React.CSSProperties = {
     fontFamily: "'Segoe UI Symbol', 'Segoe UI', sans-serif",
     cursor: "pointer",
     lineHeight: 1,
-    minHeight: "28px",
+    minHeight: `${COMPOSER_CONTROL_HEIGHT_PX}px`,
     minWidth: "30px",
     width: "30px",
-    height: "28px",
+    height: `${COMPOSER_CONTROL_HEIGHT_PX}px`,
     flexShrink: 0,
     display: "inline-flex",
     alignItems: "center",
@@ -489,7 +496,7 @@ export function getInputActionButtonStyle(
         send: { color: sendInk, border: t.sendBtnBorder || sendFill, bg: sendFill, shadow: dark ? `0 4px 10px color-mix(in srgb, ${sendFill} 24%, transparent), inset 0 1px 0 rgba(255,255,255,0.10)` : `0 3px 8px color-mix(in srgb, ${sendFill} 22%, transparent), inset 0 1px 0 rgba(255,255,255,0.16)` },
         cancel: { color: accent, border: t.btnBorder, bg: dark ? wash("10%") : wash("6%"), shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : `0 1px 2px color-mix(in srgb, ${accent} 12%, transparent), inset 0 1px 0 rgba(255,255,255,0.9)` },
     }[tone];
-    return { ...baseInputBtnStyle, color: palette.color, borderColor: palette.border, background: palette.bg, boxShadow: palette.shadow, opacity: disabled ? 0.45 : 1, cursor: disabled ? "default" : "pointer" };
+    return { ...baseInputBtnStyle, boxSizing: "border-box", color: palette.color, borderColor: palette.border, background: palette.bg, boxShadow: palette.shadow, opacity: disabled ? 0.45 : 1, cursor: disabled ? "default" : "pointer" };
 }
 
 export const baseWindowControlBtnStyle: React.CSSProperties = {

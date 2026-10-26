@@ -387,7 +387,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"key_path":        map[string]string{"type": "string", "description": "Private key path"},
 			"password":        map[string]string{"type": "string", "description": "SSH password"},
 			"label":           map[string]string{"type": "string", "description": "Optional host label"},
-			"initial_command": map[string]string{"type": "string", "description": "Command to run immediately after connect"},
+			"initial_command": map[string]string{"type": "string", "description": "Optional first command typed into the interactive shell after connect; the session remains usable for exec afterwards"},
 			"session_id":      map[string]string{"type": "string", "description": "SSH session ID"},
 			"command":         map[string]string{"type": "string", "description": "Remote command"},
 			"wait_seconds":    map[string]string{"type": "integer", "description": "Wait time for output, default 5"},

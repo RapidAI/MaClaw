@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-var rawSSHCommandPattern = regexp.MustCompile(`(?i)(^|[;&|()\r\n])\s*(?:(?:sudo|command|exec|nohup|setsid)\s+|env(?:\s+(?:-[^\s;&|()]+|[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()]+))*\s+|timeout\s+[^\s;&|()]+\s+|stdbuf(?:\s+[^\s;&|()]+)+\s+)*(?:\./|[\w]:[\\/][^\s;&|()]+[\\/])?(?:ssh|ssh\.exe|scp|scp\.exe|sftp|sftp\.exe)(?:\s|$)`)
+// rawSSHCommandPattern finds an unquoted ssh/scp/sftp command position on one
+// line or across newlines. Quoted executable names are handled by the token
+// pass; callers mask quoted text first so a search pattern cannot match here.
+var rawSSHCommandPattern = regexp.MustCompile(`(?i)(^|[;&|()\r\n])\s*(?:(?:sudo|command|exec|nohup|setsid)\s+|env(?:\s+(?:-[^\s;&|()]+|[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()]+))*\s+|timeout\s+[^\s;&|()]+\s+|stdbuf(?:\s+[^\s;&|()]+)+\s+)*(?:\./|[\w]:[\\/][^\s;&|()]+[\\/])?(?:ssh|ssh\.exe|scp|scp\.exe|sftp|sftp\.exe)(?:\s|$|[;&|()])`)
 var rawRsyncCommandPattern = regexp.MustCompile(`(?i)(^|[;&|()\r\n])\s*(?:(?:sudo|command|exec|nohup|setsid)\s+|env(?:\s+(?:-[^\s;&|()]+|[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()]+))*\s+|timeout\s+[^\s;&|()]+\s+|stdbuf(?:\s+[^\s;&|()]+)+\s+)*(?:\./|[\w]:[\\/][^\s;&|()]+[\\/])?(?:rsync|rsync\.exe)(?:\s|$)`)
 var broadBrowserKillPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(^|[;&|()\r\n])\s*taskkill(?:\.exe)?\b[^\r\n;&|]*/im\s+(?:chrome|chromium|msedge)(?:\.exe)?\b`),
@@ -461,7 +464,197 @@ func hasNestedBroadBrowserKillCommand(command string) bool {
 }
 
 func hasRawRemoteCommand(command string) bool {
-	return rawSSHCommandPattern.MatchString(command) || hasRawRemoteRsyncCommand(command)
+	lower := strings.ToLower(command)
+	if !strings.Contains(lower, "ssh") && !strings.Contains(lower, "scp") &&
+		!strings.Contains(lower, "sftp") && !strings.Contains(lower, "rsync") {
+		// No remote executable name can be present; skip masking and regexes
+		// for the many commands that never involve a remote host.
+		return false
+	}
+	// Separators inside quotes are text, not command boundaries: a search for
+	// -Pattern "ssh|scp" is not an ssh invocation. Mask quoted spans for the
+	// line regexes; the token pass below still decodes a quoted executable.
+	unquoted := commandOutsideQuotes(command)
+	if rawSSHCommandPattern.MatchString(unquoted) || hasRawRemoteRsyncCommand(unquoted) {
+		return true
+	}
+	return hasRawRemoteExecutableToken(command)
+}
+
+// commandOutsideQuotes replaces every quoted span with spaces. Escapes are
+// honored only inside double quotes, where both bash (\\) and PowerShell (`)
+// use them; single quotes stay literal in both shells.
+func commandOutsideQuotes(command string) string {
+	if !strings.ContainsAny(command, "'\"") {
+		return command
+	}
+	var b strings.Builder
+	b.Grow(len(command))
+	var quote rune
+	escaped := false
+	for _, r := range command {
+		if quote != 0 {
+			if quote == '"' && escaped {
+				escaped = false
+				b.WriteByte(' ')
+				continue
+			}
+			if quote == '"' && (r == '\\' || r == '`') {
+				escaped = true
+				b.WriteByte(' ')
+				continue
+			}
+			if r == quote {
+				quote = 0
+			}
+			b.WriteByte(' ')
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+			b.WriteByte(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// hasRawRemoteExecutableToken catches executable spellings the line regex
+// cannot see: a quoted bare name (& "ssh" host), a quoted path with spaces
+// ("C:\Program Files\OpenSSH\ssh.exe"), and variable paths
+// ($env:WINDIR\System32\OpenSSH\ssh.exe). shellSegments already strips quotes,
+// so the command-position token carries the real executable name. Callers
+// have already checked that a remote executable name appears in the command.
+func hasRawRemoteExecutableToken(command string) bool {
+	for _, seg := range shellSegments(command) {
+		rest := stripRawRemoteWrapperPrefix(seg)
+		if len(rest) == 0 {
+			continue
+		}
+		// A PowerShell call-operator script block is still command position:
+		// & { ssh host } runs ssh. The opening brace is a wrapper token, and
+		// &{ssh host} keeps it glued to the executable name.
+		rest[0] = strings.TrimLeft(rest[0], "{")
+		switch strings.ToLower(strings.TrimSuffix(commandBaseName(rest[0]), ".exe")) {
+		case "ssh", "scp", "sftp":
+			return true
+		case "rsync":
+			// Local rsync is a normal copy; only a remote operand executes it
+			// as a remote transport.
+			if rsyncSegmentHasRemoteOperand(rest) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stripRawRemoteWrapperPrefix(seg []string) []string {
+	for i := 0; i < len(seg); {
+		switch strings.ToLower(strings.TrimSuffix(commandBaseName(seg[i]), ".exe")) {
+		case "sudo":
+			i = skipSudoOptions(seg, i+1)
+		case "command":
+			// `command -v ssh` asks where ssh is; it never runs it.
+			if rawRemoteCommandQueryOption(seg[i+1:]) {
+				return nil
+			}
+			i = skipDashTokens(seg, i+1)
+		case "builtin", "nohup", "setsid":
+			i = skipDashTokens(seg, i+1)
+		case "exec":
+			i = skipExecOptions(seg, i+1)
+		case "timeout":
+			i = skipRawRemoteTimeout(seg, i+1)
+		case "nice":
+			i = skipRawRemoteNice(seg, i+1)
+		case "env":
+			i++
+			for i < len(seg) && envPrefixArg(seg[i]) {
+				i++
+			}
+		case "stdbuf":
+			i = skipStdbufOptions(seg, i+1)
+		case "{":
+			// PowerShell call-operator script block: & { ssh host }
+			i++
+		case "if", "then", "else", "elif", "while", "until", "do", "!":
+			// Shell keywords put the command after the keyword: if ssh ...
+			i++
+		case "time":
+			// time -p ssh ... ; the flag is not the command.
+			i = skipDashTokens(seg, i+1)
+		default:
+			return seg[i:]
+		}
+	}
+	return nil
+}
+
+// skipRawRemoteTimeout models GNU timeout: options (some take a value), then
+// the duration, then the command. The generic skipTimeoutLead only steps over
+// flag tokens, so `timeout -k 5 10 ssh ...` left 10 in command position.
+func skipRawRemoteTimeout(seg []string, i int) int {
+	for i < len(seg) && strings.HasPrefix(seg[i], "-") {
+		tok := seg[i]
+		if tok == "--" {
+			i++
+			break
+		}
+		i++
+		if rawRemoteTimeoutOptionTakesArg(tok) && i < len(seg) {
+			i++
+		}
+	}
+	if i < len(seg) {
+		i++ // duration
+	}
+	return i
+}
+
+func rawRemoteTimeoutOptionTakesArg(tok string) bool {
+	if strings.Contains(tok, "=") {
+		return false
+	}
+	switch strings.ToLower(tok) {
+	case "-s", "--signal", "-k", "--kill-after":
+		return true
+	}
+	return false
+}
+
+func skipRawRemoteNice(seg []string, i int) int {
+	for i < len(seg) && strings.HasPrefix(seg[i], "-") {
+		tok := seg[i]
+		if tok == "--" {
+			return i + 1
+		}
+		i++
+		if (tok == "-n" || strings.EqualFold(tok, "--adjustment")) && i < len(seg) {
+			i++
+		}
+	}
+	return i
+}
+
+func rawRemoteCommandQueryOption(seg []string) bool {
+	for _, tok := range seg {
+		if tok == "--" {
+			return false
+		}
+		if !strings.HasPrefix(tok, "-") {
+			return false
+		}
+		if tok == "--describe" {
+			return true
+		}
+		if !strings.HasPrefix(tok, "--") && strings.ContainsAny(tok[1:], "vV") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasNestedRawSSHCommand(command string) bool {

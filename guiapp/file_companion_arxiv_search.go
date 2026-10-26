@@ -20,10 +20,14 @@ import (
 // comes back as titles and abstracts. Opening one result reuses
 // FileCompanionOpenArxiv, so a paper is downloaded once and then read locally.
 const (
-	arxivSearchPageSize         = 20
-	arxivSearchMaxStart         = 2000
-	arxivSearchTimeoutS         = 30
-	arxivExpandTimeoutS         = 30
+	arxivSearchPageSize = 20
+	arxivSearchMaxStart = 2000
+	arxivSearchTimeoutS = 30
+	// The expansion is one small JSON object, but the hub's auto model has
+	// been seen to run the full 30s and come back with an empty body. A
+	// budget that matches the observed tail turns every slow call into a
+	// failure, so it gets room to finish.
+	arxivExpandTimeoutS         = 45
 	arxivSearchMaxQueryRunes    = 800
 	arxivSearchMaxTerms         = 12
 	arxivSearchMaxTermRunes     = 80
@@ -42,7 +46,20 @@ const (
 	// entries routinely list four or five cross-lists, and printing them all
 	// turns the citation line into a paragraph.
 	arxivSearchMaxCategories = 3
+	// arxivMinTermRunes is the shortest Latin run lifted out of Chinese
+	// prose. A single letter is a list marker, not a term.
+	arxivMinTermRunes = 2
 )
+
+// arxivTermConnectors stay inside a Latin run lifted out of Chinese text, so
+// "GPT-4" and "self-evolving" survive as one term instead of two fragments.
+// "+" and "#" are here for the same reason: C++ and C# are terms.
+const arxivTermConnectors = "-_.+/#"
+
+// arxivTermEdgeTrim is what comes off the ends of such a run. "+" and "#"
+// are deliberately absent: trimming them would reduce "C++" to "C" and lose
+// the only thing that made it a searchable term.
+const arxivTermEdgeTrim = "-_./"
 
 // arxivExpandSystemPrompt asks for terms only. The model must not emit an
 // arXiv search_query: a colon or the word AND in that string would change
@@ -57,7 +74,31 @@ const arxivExpandSystemPrompt = `你是 arXiv 检索扩展器。用户会描述�
 // put a boolean or a second field into the category.
 var arxivCategoryPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)?$`)
 
-var errArxivExpandUnavailable = errors.New("arxiv expand unavailable")
+var errArxivExpandUnavailable = errors.New("没能调用模型把研究目标转成英文检索词，请直接输入英文关键字，或在主窗口确认模型配置")
+
+// errArxivExpandNoTerms is a goal the model could not expand and whose words
+// hold nothing arXiv can match. Reporting it as an empty result set would
+// blame the query for a failed model call, so the dialog says what happened
+// and the reader can retry.
+var errArxivExpandNoTerms = errors.New("没能把研究目标转成英文检索词，请重试，或直接输入英文关键字")
+
+// arxivExpandPermanent reports whether retrying the expansion can help. A
+// missing model configuration never fixes itself, so the dialog must not tell
+// the reader to press the button again; a timeout or a parse failure can.
+func arxivExpandPermanent(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errArxivExpandUnavailable) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	// "LLM not configured" is what the lightweight path returns when the
+	// provider has no URL or model. An endpoint ban is temporary and heals
+	// on its own, so it stays retryable.
+	return strings.Contains(msg, "llm not configured") ||
+		strings.Contains(msg, "hub model unavailable")
+}
 
 // errArxivAPIEntry is a feed whose entries are arXiv API errors, not papers.
 // An empty feed is a real miss. An errors entry with a 200 is a rejected query.
@@ -210,7 +251,11 @@ func (a *App) FileCompanionSearchArxiv(query string, page int, refresh bool) (Fi
 	defer cancel()
 	if !reuse {
 		if expand {
-			plan = a.arxivPlan(ctx, raw)
+			planned, err := a.arxivPlan(ctx, raw)
+			if err != nil {
+				return blank, err
+			}
+			plan = planned
 		} else {
 			plan = arxivDirectPlan(raw)
 		}
@@ -833,22 +878,44 @@ func (a *App) arxivForgetTotal(raw string) {
 	a.arxivSearchSlot.totalKnown = false
 }
 
-func (a *App) arxivPlan(ctx context.Context, raw string) arxivQueryPlan {
+// arxivPlan expands a goal into English terms. When the model cannot be
+// reached or answers with something unparseable, the typed words are used —
+// but only the ones arXiv can match. arXiv indexes English titles, abstracts,
+// and authors; a Chinese sentence sent to all: is a query that cannot hit, so
+// falling back to it would report "no results" for a model failure. A goal
+// whose remaining terms are all unsearchable returns errArxivExpandNoTerms
+// instead of an empty page.
+func (a *App) arxivPlan(ctx context.Context, raw string) (arxivQueryPlan, error) {
 	expanded, err := a.arxivExpandGoal(ctx, raw)
 	if err == nil {
 		if plan, ok := arxivPlanFromExpansion(expanded); ok {
-			return plan
+			return plan, nil
 		}
 	}
 	tried := a != nil && (a.arxivExpand != nil || a.imHandler != nil)
 	if tried {
 		logFileCompanion("arxiv expand failed, using typed words")
 	}
-	return arxivFallbackPlan(raw)
+	plan := arxivFallbackPlan(raw)
+	if plan.searchQuery == "" {
+		// Without a usable model the goal can never be translated, so
+		// "retry" would send the reader in a circle. Say what actually
+		// works instead.
+		if !tried || arxivExpandPermanent(err) {
+			return arxivQueryPlan{}, errArxivExpandUnavailable
+		}
+		return arxivQueryPlan{}, errArxivExpandNoTerms
+	}
+	return plan, nil
 }
 
+// arxivFallbackPlan searches the typed words that arXiv can match. A CJK
+// term is dropped: the index is English, so keeping it turns the whole query
+// into an AND that no paper can satisfy. Words that survive are usually the
+// technical terms a Chinese goal already contains ("agent", "RAG"), which is
+// a usable query rather than a guaranteed miss.
 func arxivFallbackPlan(raw string) arxivQueryPlan {
-	tokens := arxivSearchTokens(raw)
+	tokens := arxivSearchableTokens(raw)
 	if len(tokens) == 0 {
 		return arxivQueryPlan{}
 	}
@@ -858,6 +925,110 @@ func arxivFallbackPlan(raw string) arxivQueryPlan {
 		groups:      groups,
 		fallback:    true,
 	}
+}
+
+// arxivSearchableTokens drops the terms arXiv cannot index and splits the
+// ones that mix scripts.
+//
+// It does not reuse arxivSearchTokens: that helper stops at
+// arxivSearchMaxTerms, and a spaced-out Chinese sentence can spend the whole
+// budget on CJK words that are then discarded. "这 是 一 个 很 长 的 中 文 句
+// 子 关 于 agent" would lose "agent" to the cap before the filter ever saw
+// it. Fields are split first, each is reduced to its searchable parts, and
+// only the survivors are counted against the cap.
+func arxivSearchableTokens(raw string) []string {
+	fields := strings.Fields(raw)
+	if pieces, ok := arxivCommaSeparatedIDs(fields); ok {
+		return pieces
+	}
+	out := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		token := arxivSearchToken(field)
+		if token == "" {
+			continue
+		}
+		for _, usable := range arxivTermsFromToken(token) {
+			if _, ok := seen[usable]; ok {
+				continue
+			}
+			seen[usable] = struct{}{}
+			out = append(out, usable)
+			if len(out) >= arxivSearchMaxTerms {
+				return out
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// arxivTermsFromToken returns the parts of one typed token arXiv can match.
+//
+// A Chinese goal usually carries its technical term inside the sentence and
+// has no spaces at all, so the whole goal arrives as a single token:
+// "需要一些agent自进化相关的论文". Sending that token to all: cannot hit — the
+// index is English. The Latin run inside it, "agent", is a real query, so it
+// is lifted out. A token with no Latin letters has nothing to search and
+// yields nothing.
+//
+// A token without CJK is returned unchanged. Its internal spaces are a
+// phrase the model chose ("retrieval augmented generation"), and splitting
+// on them would turn one phrase into an AND of unrelated words. A token of
+// pure punctuation ("--", "***") is not a term: all:"--" matches nothing and
+// only makes the AND impossible.
+func arxivTermsFromToken(token string) []string {
+	if !arxivContainsCJK(token) {
+		if !arxivHasLetterOrDigit(token) {
+			return nil
+		}
+		return []string{token}
+	}
+	var out []string
+	var run strings.Builder
+	flush := func() {
+		term := strings.Trim(run.String(), arxivTermEdgeTrim)
+		run.Reset()
+		// A single stray Latin letter in Chinese prose ("a", "R") is not a
+		// term; requiring two runes keeps the fallback query meaningful.
+		// "C++" is two runes and survives, which is why the edge trim above
+		// leaves "+" alone.
+		if len([]rune(term)) >= arxivMinTermRunes && arxivHasLetterOrDigit(term) {
+			out = append(out, term)
+		}
+	}
+	for _, r := range token {
+		switch {
+		case arxivIsCJK(r):
+			flush()
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune(arxivTermConnectors, r):
+			run.WriteRune(r)
+		default:
+			flush()
+		}
+	}
+	flush()
+	return out
+}
+
+func arxivContainsCJK(s string) bool {
+	for _, r := range s {
+		if arxivIsCJK(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func arxivHasLetterOrDigit(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // arxivGoalNeedsExpansion is true when the box is a research goal rather than
@@ -887,8 +1058,13 @@ func arxivIsCJK(r rune) bool {
 // arxivDirectPlan searches the typed words. Groups stay empty so the dialog
 // does not chip a copy of the box, and fallback stays false because the
 // model was not asked.
+//
+// It runs the same reduction as the fallback path so the two cannot drift.
+// A short ASCII box never reaches the fallback, so without it all:"--" would
+// ride along beside a real term and make the AND impossible, and "C++" would
+// be dropped as a one-letter word once its plus signs were trimmed.
 func arxivDirectPlan(raw string) arxivQueryPlan {
-	tokens := arxivSearchTokens(raw)
+	tokens := arxivSearchableTokens(raw)
 	if len(tokens) == 0 {
 		return arxivQueryPlan{}
 	}
@@ -909,8 +1085,11 @@ func (a *App) arxivExpandGoal(ctx context.Context, goal string) (arxivExpansion,
 		Tag:               "arxiv-expand",
 		PreferLightweight: true,
 		NoThinking:        true,
-		MaxOutputTokens:   700,
-		Role:              maclawLLMRoleBackground,
+		// The object is small, but a model that narrates before answering
+		// runs past 700 and the JSON is cut mid-string. A cap that only fits
+		// the JSON turns any verbose answer into a parse failure.
+		MaxOutputTokens: 1400,
+		Role:            maclawLLMRoleBackground,
 	})
 	if err != nil {
 		return arxivExpansion{}, err
@@ -921,6 +1100,11 @@ func (a *App) arxivExpandGoal(ctx context.Context, goal string) (arxivExpansion,
 	return parseArxivExpansion(res.Text)
 }
 
+// parseArxivExpansion reads the one JSON object the model was asked for.
+// A model that hit the output cap answers with a truncated object, which is
+// still usable: the groups before the cut are complete, and one complete
+// group is a valid query. So a failed whole-object parse falls back to
+// salvaging every finished group rather than throwing the answer away.
 func parseArxivExpansion(text string) (arxivExpansion, error) {
 	text = strings.TrimSpace(text)
 	text = strings.TrimPrefix(text, "```json")
@@ -929,15 +1113,136 @@ func parseArxivExpansion(text string) (arxivExpansion, error) {
 	text = strings.TrimSuffix(text, "```")
 	text = strings.TrimSpace(text)
 	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end < start {
+	if start < 0 {
 		return arxivExpansion{}, errors.New("no json")
 	}
-	var expanded arxivExpansion
-	if err := json.Unmarshal([]byte(text[start:end+1]), &expanded); err != nil {
-		return arxivExpansion{}, err
+	if end := strings.LastIndex(text, "}"); end >= start {
+		var expanded arxivExpansion
+		if err := json.Unmarshal([]byte(text[start:end+1]), &expanded); err == nil {
+			return expanded, nil
+		}
 	}
-	return expanded, nil
+	if salvaged, ok := arxivSalvageExpansion(text[start:]); ok {
+		return salvaged, nil
+	}
+	return arxivExpansion{}, errors.New("no json")
+}
+
+// arxivSalvageExpansion rebuilds the answer from a truncated object. It keeps
+// the interpreted line when that string closed, then every group whose terms
+// array closed. Anything still being written is dropped: a half-written term
+// would become a query term that matches nothing.
+func arxivSalvageExpansion(text string) (arxivExpansion, bool) {
+	var expanded arxivExpansion
+	if interpreted, ok := arxivClosedStringField(text, "interpreted"); ok {
+		expanded.Interpreted = interpreted
+	}
+	for _, raw := range arxivClosedGroupObjects(text) {
+		var group FileCompanionArxivGroup
+		if err := json.Unmarshal([]byte(raw), &group); err != nil {
+			continue
+		}
+		if len(group.Terms) == 0 {
+			continue
+		}
+		expanded.Groups = append(expanded.Groups, group)
+	}
+	if len(expanded.Groups) == 0 {
+		// The interpreted line alone is not a query. Reporting it as a
+		// usable answer would hide that nothing searchable came back.
+		return arxivExpansion{}, false
+	}
+	return expanded, true
+}
+
+// arxivClosedStringField reads one top-level string field whose closing quote
+// arrived. It decodes just that value so an escape sequence still parses.
+func arxivClosedStringField(text, name string) (string, bool) {
+	key := `"` + name + `"`
+	i := strings.Index(text, key)
+	if i < 0 {
+		return "", false
+	}
+	rest := text[i+len(key):]
+	colon := strings.Index(rest, ":")
+	if colon < 0 {
+		return "", false
+	}
+	rest = strings.TrimSpace(rest[colon+1:])
+	if !strings.HasPrefix(rest, `"`) {
+		return "", false
+	}
+	// Walk to the closing quote, honouring backslash escapes.
+	for j := 1; j < len(rest); j++ {
+		switch rest[j] {
+		case '\\':
+			j++
+		case '"':
+			var value string
+			if err := json.Unmarshal([]byte(rest[:j+1]), &value); err != nil {
+				return "", false
+			}
+			return value, true
+		}
+	}
+	return "", false
+}
+
+// arxivClosedGroupObjects returns every {...} inside the groups array that
+// closed before the cut. Nested arrays and objects are counted so a category
+// or a term cannot be mistaken for the end of a group.
+func arxivClosedGroupObjects(text string) []string {
+	key := `"groups"`
+	i := strings.Index(text, key)
+	if i < 0 {
+		return nil
+	}
+	rest := text[i+len(key):]
+	open := strings.Index(rest, "[")
+	if open < 0 {
+		return nil
+	}
+	rest = rest[open+1:]
+	var out []string
+	depth := 0
+	start := -1
+	inString := false
+	for j := 0; j < len(rest); j++ {
+		c := rest[j]
+		if inString {
+			if c == '\\' {
+				j++
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			if depth == 0 {
+				start = j
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && start >= 0 {
+				out = append(out, rest[start:j+1])
+				start = -1
+			}
+		case ']':
+			if depth == 0 {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func arxivPlanFromExpansion(expanded arxivExpansion) (arxivQueryPlan, bool) {
@@ -953,21 +1258,29 @@ func arxivPlanFromExpansion(expanded arxivExpansion) (arxivQueryPlan, bool) {
 			if token == "" {
 				continue
 			}
-			if _, ok := seen[token]; ok {
-				continue
+			// A model asked for English terms sometimes echoes the Chinese
+			// goal instead. Sending that to all: is a guaranteed miss, so
+			// only the Latin run inside it is kept.
+			for _, usable := range arxivTermsFromToken(token) {
+				if _, ok := seen[usable]; ok {
+					continue
+				}
+				seen[usable] = struct{}{}
+				terms = append(terms, usable)
+				if len(terms) >= arxivSearchMaxTermsPerGroup {
+					break
+				}
 			}
-			seen[token] = struct{}{}
-			terms = append(terms, token)
 			if len(terms) >= arxivSearchMaxTermsPerGroup {
 				break
 			}
 		}
-		if len(terms) < arxivSearchMinTermsPerGroup {
-			continue
-		}
 		category := ""
 		if arxivCategoryPattern.MatchString(strings.TrimSpace(group.Category)) {
 			category = strings.TrimSpace(group.Category)
+		}
+		if len(terms) < arxivSearchMinTermsPerGroup {
+			continue
 		}
 		groups = append(groups, FileCompanionArxivGroup{Terms: terms, Category: category})
 	}

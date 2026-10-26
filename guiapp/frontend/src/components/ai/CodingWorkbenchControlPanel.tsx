@@ -14,6 +14,7 @@ export { isFormFieldTarget } from "./codingUiGuards";
 // (e.g. assistantTaskExecutionChrome) can share the vocabulary without
 // importing this component. Re-exported to keep existing imports working.
 export {
+    codingChecklistAllDone,
     codingStepIsActive,
     codingStepIsDone,
     codingStepIsFailed,

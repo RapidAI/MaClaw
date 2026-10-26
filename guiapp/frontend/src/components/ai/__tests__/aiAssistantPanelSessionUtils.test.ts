@@ -155,6 +155,35 @@ describe("aiAssistantPanelSessionUtils", () => {
             "正在核对验收",
             "进度：第 5/50 轮",
         ].join("\n"));
+        // A completed goal is not still checking acceptance.
+        expect(formatGoalChecklistFromRecord({
+            phase: "execute",
+            status: "complete",
+            steps: [
+                { index: 1, title: "环境", status: "done" },
+                { index: 2, title: "渲染", status: "done" },
+            ],
+            turns_used: 4,
+        })).toBe([
+            "目标清单",
+            "✓ 1. 环境",
+            "✓ 2. 渲染",
+            "已完成",
+        ].join("\n"));
+        expect(formatGoalChecklistFromRecord({
+            phase: "execute",
+            status: "failed",
+            summary: "依赖安装失败\n换镜像再试",
+            steps: [
+                { index: 1, title: "环境", status: "done" },
+                { index: 2, title: "渲染", status: "failed" },
+            ],
+        })).toBe([
+            "目标清单",
+            "✓ 1. 环境",
+            "× 2. 渲染",
+            "目标失败：依赖安装失败",
+        ].join("\n"));
         expect(formatGoalChecklistFromRecord({
             phase: "plan",
             objective: "实现登录",

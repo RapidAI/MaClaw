@@ -4032,6 +4032,12 @@ func buildRemoteHighRiskApprovalCallbackOwned(handler *IMMessageHandler, loopCtx
 			recordScopeApprovalAudit(handler, "", req, ScopeApprovalDeny, "cancelled")
 			return ScopeApprovalDeny
 		}
+		// The tier is read live: a task started while the tab was 请求授权 must
+		// stop asking as soon as the user switches to 完全控制.
+		if codingTaskFullControlGranted(handler, scopeApprovalOwner(loopCtx, stickyOwner)) {
+			recordScopeApprovalAudit(handler, "", req, ScopeApprovalFullAccess, "full_control")
+			return ScopeApprovalAllowOnce
+		}
 		if onProgress != nil {
 			onProgress(remoteScopeApprovalProgressMessage(req))
 		}

@@ -2,7 +2,10 @@ package botmgmt
 
 import (
 	"context"
+	"io"
+	"sync"
 	"testing"
+	"time"
 )
 
 // A server-side wake acks the main bot's mail, but the GUI that opens later
@@ -61,5 +64,87 @@ func TestServerWakeDoesNotHideMessagesFromTheGUI(t *testing.T) {
 	}
 	if hist, _ := svc.BotFeed(ctx, "tenant-a", "alice", nil, true); len(hist) != len(feed) {
 		t.Fatalf("history = %d, want %d", len(hist), len(feed))
+	}
+}
+
+// stallSettings blocks every Set behind a gate once armed, with the caller
+// still holding the service lock — the shape of a slow write mid-save.
+type stallSettings struct {
+	mu      sync.Mutex
+	m       map[string]string
+	gate    chan struct{}
+	armed   bool
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (s *stallSettings) Get(_ context.Context, key string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.m[key]
+	if !ok {
+		return "", io.EOF
+	}
+	return value, nil
+}
+
+func (s *stallSettings) Set(_ context.Context, key, valueJSON string) error {
+	s.mu.Lock()
+	if s.m == nil {
+		s.m = map[string]string{}
+	}
+	s.m[key] = valueJSON
+	armed := s.armed
+	s.mu.Unlock()
+	if armed {
+		s.once.Do(func() { close(s.entered) })
+		<-s.gate
+	}
+	return nil
+}
+
+// A feed poll must not queue behind a writer holding the service lock: the
+// store read, the decode, and the grant walk all run without it. (The shown
+// marks are a write and still wait their turn, which this test leaves
+// unexercised: shown is empty.)
+func TestBotFeedDoesNotWaitForWriter(t *testing.T) {
+	settings := &stallSettings{gate: make(chan struct{}), entered: make(chan struct{})}
+	svc := NewService(settings)
+	ctx := context.Background()
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeGlobal}); err != nil {
+		t.Fatal(err)
+	}
+
+	settings.mu.Lock()
+	settings.armed = true
+	settings.mu.Unlock()
+	writerDone := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "bob"})
+		writerDone <- err
+	}()
+	select {
+	case <-settings.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer did not reach the store")
+	}
+
+	feedDone := make(chan error, 1)
+	go func() {
+		_, err := svc.BotFeed(ctx, "tenant-a", "alice", nil, false)
+		feedDone <- err
+	}()
+	select {
+	case err := <-feedDone:
+		if err != nil {
+			t.Fatalf("feed behind a slow writer: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("feed poll queued behind a slow writer")
+	}
+
+	close(settings.gate)
+	if err := <-writerDone; err != nil {
+		t.Fatal(err)
 	}
 }

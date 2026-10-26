@@ -16,14 +16,12 @@ func (t *UsageTracker) ApplyInvalidation(event InvalidationEvent) {
 	state := t.invalidations[event.ToolName]
 	state.LastInvalidation = &event
 	t.invalidations[event.ToolName] = state
-
-	snapshot := make([]UsageRecord, len(t.records))
-	copy(snapshot, t.records)
-	invalidations := copyInvalidations(t.invalidations)
 	t.mu.Unlock()
 
 	log.Printf("[usage-tracker] ApplyInvalidation: tool=%s reason=%s", event.ToolName, event.Reason)
-	_ = t.saveSnapshot(snapshot, invalidations)
+	// Invalidations change routing behaviour, so they are persisted
+	// synchronously rather than through the debounced recorder writer.
+	_ = t.Save()
 }
 
 // InvalidateOutcomes immediately generates an InvalidationEvent with nil ScopeTokens

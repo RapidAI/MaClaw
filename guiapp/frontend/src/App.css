@@ -27,6 +27,10 @@
     --radius-lg: 12px;
     --radius-xl: 16px;
     --radius-pill: 999px;
+    /* One height for every control on the composer toolbar row, so the icon
+       buttons, permission chip, working-directory chip and model chip sit on
+       the same baseline. Keep in sync with COMPOSER_CONTROL_HEIGHT_PX. */
+    --mc-composer-control-height: 28px;
     --space-1: 4px;
     --space-2: 8px;
     --space-3: 12px;
@@ -26268,7 +26272,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .acb-brand-gen { font-size: 21px; font-weight: 650; color: #7a2330; letter-spacing: 0.04em; }
 
 /* SessionWorkingDirChip.tsx */
-.swdc-placeholder { display: inline-flex; align-items: center; min-height: 24px; box-sizing: border-box; flex-shrink: 0; }
+.swdc-placeholder { display: inline-flex; align-items: center; min-height: var(--mc-composer-control-height, 28px); box-sizing: border-box; flex-shrink: 0; }
 .swdc-placeholder-icon { opacity: 0.35; display: inline-flex; color: var(--theme-text-muted); }
 /* Folder plus expert mark. flex-shrink 0 makes the wrapping toolbar move the
    whole pair to the next line. max-width 100% still ellipsizes a long expert
@@ -26277,7 +26281,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .swdc-root { flex-shrink: 0; min-width: 0; max-width: 100%; }
 .swdc-chip-icon { display: inline-flex; flex-shrink: 0; opacity: 0.8; }
 .swdc-chip-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.swdc-expert { display: inline-flex; align-items: center; gap: 4px; height: 24px; max-width: 11rem; min-width: 0; padding: 0 8px; border: 1px solid var(--mc-line, var(--theme-border)); border-radius: var(--radius-md); box-sizing: border-box; flex: 0 1 auto; overflow: hidden; background: var(--mc-muted-surface, var(--theme-surface)); color: var(--mc-copy, var(--theme-text-secondary)); font-size: 11px; line-height: 1.4; cursor: default; user-select: none; }
+.swdc-expert { display: inline-flex; align-items: center; gap: 4px; height: var(--mc-composer-control-height, 28px); max-width: 11rem; min-width: 0; padding: 0 8px; border: 1px solid var(--mc-line, var(--theme-border)); border-radius: var(--radius-md); box-sizing: border-box; flex: 0 1 auto; overflow: hidden; background: var(--mc-muted-surface, var(--theme-surface)); color: var(--mc-copy, var(--theme-text-secondary)); font-size: 11px; line-height: 1.4; cursor: default; user-select: none; }
 .swdc-expert-icon { flex-shrink: 0; font-size: 13px; line-height: 1; }
 .swdc-expert-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
@@ -28556,7 +28560,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-welcome button[type='submit']:hover,
 .mc-input-stack .btn-primary:hover { background: var(--theme-primary-strong) !important; transform: translateY(-1px); }
 
-/* Reference composer utility buttons */
+/* Reference composer utility buttons. This 34px floor is for square icon
+   buttons; the row's text chips (permission, working dir, model, compose)
+   pin their own height inline so they line up at the shared control height. */
 .mc-input-stack button:not(.btn-primary) { min-width: 34px; min-height: 34px; border: 1px solid var(--theme-border) !important; border-radius: var(--radius-md) !important; background: var(--theme-surface) !important; color: var(--theme-text-muted) !important; }
 .mc-input-stack button:not(.btn-primary):hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important; background: var(--theme-primary-soft) !important; color: var(--mc-accent, #2e75cb) !important; }
 .aiti-avatar-wrap { position: relative; width: 14px; height: 14px; flex-shrink: 0; display: inline-flex; }
@@ -37413,8 +37419,8 @@ body.companion-pdf-translation-dragging * {
   min-width: 0 !important;
   width: auto !important;
   max-width: 220px !important;
-  min-height: 24px !important;
-  height: 24px !important;
+  min-height: var(--mc-composer-control-height, 28px) !important;
+  height: var(--mc-composer-control-height, 28px) !important;
   padding: 0 8px !important;
   border-radius: var(--radius-pill) !important;
   display: inline-flex !important;
@@ -37432,7 +37438,7 @@ body.companion-pdf-translation-dragging * {
   color: var(--mc-accent-strong) !important;
 }
 /* The 34px utility-button lock is for square icon buttons. This chip is a
-   text label on the same 24px row as the model chip and the expert mark.
+   text label on the same row as the model chip and the expert mark.
    min-height is not !important on the lock, so this more specific rule
    restores the authored height without a new !important. */
 .mc-input-stack button.mc-working-dir-chip,
@@ -37440,8 +37446,8 @@ body.companion-pdf-translation-dragging * {
   min-width: 0;
   width: auto;
   max-width: 100%;
-  min-height: 24px;
-  height: 24px;
+  min-height: var(--mc-composer-control-height, 28px);
+  height: var(--mc-composer-control-height, 28px);
   padding: 0 8px;
   display: inline-flex;
   align-items: center;
@@ -37538,6 +37544,23 @@ body.companion-pdf-translation-dragging * {
   background: transparent !important;
   border-radius: var(--radius-xs) !important;
   box-shadow: none !important;
+}
+/* The 34px utility-button lock is for square toolbar buttons. The attachment
+   chip's remove mark is a 22px affordance inside a 1-line row. The lock is not
+   force-flagged, so this more specific rule restores the authored size.
+   Touch pointers keep the injected 36px tap target from the panel's static
+   stylesheet, so this must not apply there. */
+@media (pointer: fine) {
+  #App .mc-input-stack button.ai-attachment-remove {
+    min-width: 22px;
+    width: 22px;
+    min-height: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+  }
 }
 /* Full control is the dangerous permission: keep the trigger visibly red
    (warning icon inherits currentColor) despite the neutral composer button

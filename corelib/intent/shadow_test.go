@@ -192,7 +192,7 @@ func TestShadowRecordsAndIdenticalResult(t *testing.T) {
 	vec, _ := embedIntentQuery(&roleSpyEmbedder{}, texts[0])
 	probs, _ := head.Predict(vec)
 	label, p, dec, _ := head.Decide(probs)
-	if get(r, "local", "label") != label || math.Abs(get(r, "local", "p").(float64)-p) > 1e-12 || get(r, "local", "decision") != dec {
+	if get(r, "local", "label") != label || math.Abs(get(r, "local", "p").(float64)-p) > headProbEps || get(r, "local", "decision") != dec {
 		t.Fatalf("local %v, direct %s %.6f %s", r["local"], label, p, dec)
 	}
 	// float16 embedding round-trips within f16 precision.
@@ -386,7 +386,7 @@ func TestShadowDropsWhenQueueFull(t *testing.T) {
 func TestShadowHeadPanicDoesNotAffectClassifier(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "s.jsonl")
 	head := shadowTestHead(t)
-	head.w2 = []float64{0} // corrupt: Predict indexes out of range
+	head.w2 = []float32{0} // corrupt: Predict indexes out of range
 	on := newShadowSpyClassifier(t, okOfficeLLM, &ShadowConfig{Enabled: true, Head: head, LogPath: p})
 	off := newShadowSpyClassifier(t, okOfficeLLM, nil)
 	const text = "please help me sort out the quarterly numbers for the team"

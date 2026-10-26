@@ -121,7 +121,11 @@ export interface ExpertNavigation {
     initialMessage: string;
     /** Set when a LaTeX document was already written, so the tab reopens that file. */
     latexDocument?: { relativePath: string };
-    /** LaTeX task directory. Used to roll the paper back if the tab never opens. */
+    /**
+     * Task directory allocated for this launch. The expert tab binds to it and
+     * starts a conversation of its own; LaTeX also rolls the paper back with it
+     * if the tab never opens.
+     */
     projectPath?: string;
 }
 
@@ -248,7 +252,7 @@ export async function runTaskConfigSend(args: {
             id: opts.expertId,
             name: opts.expertName || opts.expertId,
             initialMessage: expertMessage,
-            ...(isLatexExpertId(opts.expertId) ? { projectPath } : {}),
+            projectPath,
             ...(latexDocument ? { latexDocument } : {}),
         });
     } else {

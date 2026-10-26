@@ -605,6 +605,45 @@ func (h *IMMessageHandler) clearStickyCodingStepStatuses(userID string) {
 	h.emitCodingWorkbenchStepsUpdate(userID)
 }
 
+// clearGoalFinishedCodingChecklist retires the live plan UI once the goal
+// that drove it completes or is deleted. The checklist is progress for that
+// goal: leaving every row passed beside a finished goal made the session look
+// like it was still executing. The durable session plan stays — it is the
+// goal line, not step progress; the pending-approval plan stays too, because
+// that would be a different request waiting on the user.
+func (h *IMMessageHandler) clearGoalFinishedCodingChecklist(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" || !h.isPureCodingWorkbenchSession(userID) {
+		return
+	}
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if len(mem.StepStatuses) == 0 && !mem.PlanRunStarted &&
+		strings.TrimSpace(mem.ExecutionPlan) == "" &&
+		strings.TrimSpace(mem.RequirementRestatement) == "" {
+		return
+	}
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.StepStatuses = nil
+		mem.PlanRunStarted = false
+		mem.ExecutionPlan = ""
+		mem.RequirementRestatement = ""
+	})
+	h.emitCodingWorkbenchStepsUpdate(userID)
+}
+
+// codingWorkbenchStepsSnapshot copies steps for the GUI event. An empty
+// snapshot stays non-nil so it marshals as [] rather than null; the frontend
+// applies an array directly and treats null as an unexpected payload that
+// forces a status re-poll just to learn the list is empty.
+func codingWorkbenchStepsSnapshot(steps []codingWorkbenchStepStatus) []codingWorkbenchStepStatus {
+	out := make([]codingWorkbenchStepStatus, len(steps))
+	copy(out, steps)
+	return out
+}
+
 // emitCodingWorkbenchStepsUpdate pushes live Todo checklist state to the GUI
 // (Codex / Claude Code style: pending ○ → running … → passed ☑).
 // Safe no-op without Wails event bus (tests / headless).
@@ -621,7 +660,7 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	if projectPath == "" {
 		projectPath = strings.TrimSpace(mem.ProjectPath)
 	}
-	steps := append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
+	steps := codingWorkbenchStepsSnapshot(mem.StepStatuses)
 	payload := map[string]interface{}{
 		"user_id":                 userID,
 		"project_path":            projectPath,

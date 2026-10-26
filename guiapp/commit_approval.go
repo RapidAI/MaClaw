@@ -504,7 +504,26 @@ func (c *codingSubAgentCallbacks) ResolveCommitAsk(toolName, fingerprint, subjec
 	if c.subagent.commitAsk != nil {
 		return c.subagent.commitAsk(toolName, fingerprint, subject)
 	}
-	return waitCommitShapeApproval(c.subagent.handler, c.subagent.executionCtx, c.subagent.loopCtx, c.subagent.onProgress, toolName, c.projectPath(), subject)
+	return waitCommitShapeApproval(c.subagent.handler, c.subagent.executionCtx, c.subagent.loopCtx, c.subagent.onProgress, toolName, c.projectPath(), subject, fingerprint)
+}
+
+// CommitFullControlGranted lets the gate skip the human-call card while the
+// task tab stays on 完全控制. It reads the tier live so a mid-task switch
+// applies to the next call.
+func (c *codingSubAgentCallbacks) CommitFullControlGranted() bool {
+	if c == nil || c.subagent == nil {
+		return false
+	}
+	return codingTaskFullControlGranted(c.subagent.handler, c.subagent.taskPermissionOwnerID())
+}
+
+// CommitNoteFullControl records a human-class call the full-control tier let
+// through, matching the audit a person's allow answer writes.
+func (c *codingSubAgentCallbacks) CommitNoteFullControl(toolName, fingerprint string) {
+	if c == nil || c.subagent == nil {
+		return
+	}
+	noteCommitFullControlAudit(c.subagent.handler, toolName, fingerprint, c.projectPath())
 }
 
 func (c *codingSubAgentCallbacks) IterationContract() (string, []string, []string) {
@@ -599,13 +618,43 @@ func (c *remoteCodingCallbacks) ResolveCommitAsk(toolName, fingerprint, subject 
 	if c.agent.commitAsk != nil {
 		return c.agent.commitAsk(toolName, fingerprint, subject)
 	}
-	return waitCommitShapeApproval(c.agent.handler, c.agent.executionCtx, c.agent.loopCtx, c.agent.onProgress, toolName, c.CommitWorkspaceRoot(), subject)
+	return waitCommitShapeApproval(c.agent.handler, c.agent.executionCtx, c.agent.loopCtx, c.agent.onProgress, toolName, c.CommitWorkspaceRoot(), subject, fingerprint)
+}
+
+// CommitFullControlGranted mirrors the local coding host: 完全控制 on the
+// task tab runs human-class calls without a card.
+func (c *remoteCodingCallbacks) CommitFullControlGranted() bool {
+	if c == nil || c.agent == nil {
+		return false
+	}
+	return codingTaskFullControlGranted(c.agent.handler, c.agent.taskPermissionOwnerID())
+}
+
+// CommitNoteFullControl mirrors the local coding host's audit entry.
+func (c *remoteCodingCallbacks) CommitNoteFullControl(toolName, fingerprint string) {
+	if c == nil || c.agent == nil {
+		return
+	}
+	noteCommitFullControlAudit(c.agent.handler, toolName, fingerprint, c.CommitWorkspaceRoot())
+}
+
+// noteCommitFullControlAudit records a full-control skip on the same audit
+// trail a person's approval answer writes. The call subject stays off the
+// entry; the tool name, shape fingerprint, and project scope explain the allow.
+func noteCommitFullControlAudit(handler *IMMessageHandler, toolName, fingerprint, projectPath string) {
+	recordScopeApprovalAudit(handler, "", ScopeApprovalRequest{
+		ToolName:    strings.TrimSpace(toolName),
+		ProjectPath: strings.TrimSpace(projectPath),
+		Kind:        commitShapeApprovalKind,
+		Fingerprint: strings.TrimSpace(fingerprint),
+	}, ScopeApprovalFullAccess, "full_control")
 }
 
 // waitCommitShapeApproval blocks on the existing coding approval dialog.
 // It does not time out and it does not grant path or command trust. No UI
-// returns false so the gate keeps today's ask and stores nothing.
-func waitCommitShapeApproval(handler *IMMessageHandler, execution context.Context, loopCtx *LoopContext, onProgress func(string), toolName, projectPath, subject string) (agent.CommitDecision, bool) {
+// returns false so the gate keeps today's ask and stores nothing. The gate
+// reaches it only when the task tab is not in 完全控制.
+func waitCommitShapeApproval(handler *IMMessageHandler, execution context.Context, loopCtx *LoopContext, onProgress func(string), toolName, projectPath, subject, fingerprint string) (agent.CommitDecision, bool) {
 	if handler == nil || handler.app == nil {
 		return "", false
 	}
@@ -640,6 +689,7 @@ func waitCommitShapeApproval(handler *IMMessageHandler, execution context.Contex
 		Kind:        commitShapeApprovalKind,
 		Message:     question,
 		AutoAllow:   false,
+		Fingerprint: strings.TrimSpace(fingerprint),
 	}
 	responseCh := make(chan ScopeApprovalDecision, 1)
 	approvalID := storePendingScopeApproval(handler, req, responseCh)

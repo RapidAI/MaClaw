@@ -2590,6 +2590,13 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 			}
 		}
 	}
+	// A scheduled expert launch can allocate a new task while the previous
+	// turn still owns the shared session (KeepExpertSession). No creation-time
+	// reset runs in that case, so release the previous task's directory
+	// binding before this tab restores it for the new task.
+	if expertID := expertIDFromUserID(userID); expertID != "" {
+		a.releaseStaleExpertTaskWorkspace(userID, projectPath, req.EventScopeID)
+	}
 	// event_scope_id is the concrete UI tab. Restore its optional private
 	// directory before any downstream tool/prompt/workflow resolution.
 	if tabID := strings.TrimSpace(req.EventScopeID); tabID != "" {

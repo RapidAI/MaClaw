@@ -304,6 +304,15 @@ describe('isActiveTaskRow', () => {
         expect(isActiveTaskRow(older, { expertId: 'builtin-latex-paper' })).toBe(true);
     });
 
+    it('keys each task of the same expert by its own path', () => {
+        const first = { ...baseProject, project_path: 'D:/tasks/expert-a', tags: ['task_management', 'source:expert:paper-review'] };
+        const second = { ...baseProject, project_path: 'D:/tasks/expert-b', tags: ['task_management', 'source:expert:paper-review'] };
+        expect(taskOrderKey(first)).toBe('path:D:/tasks/expert-a');
+        expect(taskOrderKey(second)).toBe('path:D:/tasks/expert-b');
+        // A legacy expert row without a path still has a stable identity.
+        expect(taskOrderKey({ ...baseProject, project_path: '', tags: ['task_management', 'source:expert:paper-review'] })).toBe('expert:paper-review');
+    });
+
     it('does not treat a copied task as the open source row', () => {
         const expert = { ...baseProject, tags: ['task_management', 'source:expert:paper-review'] };
         const expertCopy = { ...baseProject, project_path: 'D:/tasks/expert-copy', tags: ['task_management', 'source:expert:paper-review', 'task_copy'] };

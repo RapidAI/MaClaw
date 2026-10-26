@@ -220,7 +220,10 @@ func TestRepairCompletedCodingWorkflowProjectionDoesNotReplayExecutor(t *testing
 	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test-owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	app.repairCompletedCodingWorkflowProjections(wf)
+	app.repairCompletedCodingWorkflowProjections(wf, &workflowStartupSnapshot{
+		userIDs: []string{userID},
+		states:  map[string]*v2.WorkflowState{userID: state},
+	})
 	app.closeCodingRuntimeStore()
 	// The finish report is i18n'd (English per-task paragraphs); assert the
 	// repaired projection carries the ledger-backed task evidence rather than
@@ -253,7 +256,10 @@ func TestRepairCompletedCodingWorkflowProjectionFailsClosedWithoutCompletedLedge
 	}
 	persistCodingExecCheckpointToDisk(userID, cp)
 	app := &App{testHomeDir: t.TempDir()}
-	app.repairCompletedCodingWorkflowProjections(wf)
+	app.repairCompletedCodingWorkflowProjections(wf, &workflowStartupSnapshot{
+		userIDs: []string{userID},
+		states:  map[string]*v2.WorkflowState{userID: state},
+	})
 	app.closeCodingRuntimeStore()
 	updated, err := wf.store.Load(userID)
 	if err != nil || updated == nil || updated.Phases[0].Status != v2.PhaseExecuting || updated.Phases[0].Output != "" {
@@ -298,7 +304,10 @@ func TestRepairCompletedCodingWorkflowProjectionFailsClosedOnBindingMismatch(t *
 	if _, err := ledger.FinishAttempt(attempt.AttemptID, "owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	app.repairCompletedCodingWorkflowProjections(wf)
+	app.repairCompletedCodingWorkflowProjections(wf, &workflowStartupSnapshot{
+		userIDs: []string{userID},
+		states:  map[string]*v2.WorkflowState{userID: state},
+	})
 	app.closeCodingRuntimeStore()
 	updated, err := wf.store.Load(userID)
 	if err != nil || updated == nil || updated.Phases[0].Status != v2.PhaseExecuting || updated.Phases[0].Output != "" {

@@ -56,6 +56,17 @@ function renderLeft(overrides: Partial<Parameters<typeof AssistantInputActionsLe
 }
 
 describe("AssistantInputActionsLeft plus menu", () => {
+    it("mentions call-confirmation skipping only when the coding workspace option is offered", () => {
+        const coding = renderLeft({ permissionMode: "request", showWorkspacePermissionOption: true });
+        fireEvent.click(screen.getByTestId("ai-permission-mode"));
+        expect(screen.getByTestId("ai-permission-mode-full").getAttribute("title")).toContain("调用确认");
+        coding.unmount();
+
+        renderLeft({ permissionMode: "request", showWorkspacePermissionOption: false });
+        fireEvent.click(screen.getByTestId("ai-permission-mode"));
+        expect(screen.getByTestId("ai-permission-mode-full").getAttribute("title")).not.toContain("调用确认");
+    });
+
     it("shows iconed permission modes and reports changes", () => {
         const onPermissionModeChange = vi.fn();
         renderLeft({ permissionMode: "request", onPermissionModeChange });

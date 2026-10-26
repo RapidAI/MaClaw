@@ -49,16 +49,17 @@ func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2Sta
 	if strings.TrimSpace(a.testHomeDir) != "" {
 		st.machine.SetAllowTempTestPaths(true)
 	}
-	// Repair only the completed Ledger -> Workflow metadata handoff before the
-	// regular startup suspension pass. This never starts a coding loop: the
-	// checkpoint contains completed result references and the report only.
-	a.repairCompletedCodingWorkflowProjections(st)
+	// Startup recovery over a single shared snapshot of the stored workflow
+	// state: repair only the completed Ledger -> Workflow metadata handoff
+	// (never starts a coding loop — the checkpoint holds completed result
+	// references and the report only), then self-heal by suspending stale
+	// active workflows left over from a previous session (e.g. app crash,
+	// forced quit, or update restart). Without the suspension pass, the stale
+	// active state causes routing conflicts when the user starts a new workflow.
+	// Both passes run synchronously here — a stale workflow must be suspended
+	// before the first user message is routed.
+	staleCancelled := a.recoverWorkflowsOnStartup(st)
 	log.Printf("[workflow-v2] engine ready: router=%v machine=%v store=%v", st.router != nil, st.machine != nil, st.store != nil)
-
-	// Self-heal: cancel stale active workflows that were left over from a previous
-	// session (e.g. app crash, forced quit, or update restart). Without this, the
-	// stale active state causes routing conflicts when the user starts a new workflow.
-	staleCancelled := a.cancelStaleWorkflowsOnStartup(st.machine)
 
 	// On startup, dismiss any stale frontend workflow board state.
 	// The frontend persists board state to ai_assistant_ui_state.json and restores it
@@ -81,6 +82,63 @@ func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2Sta
 	return st
 }
 
+// workflowStartupSnapshot is the single shared read of stored workflow state
+// that the startup recovery passes consume. Listing every user and loading
+// each state once (instead of once per pass) avoids a second full-store scan
+// during startup; both passes keep their original per-user order and still
+// perform their writes synchronously, before the first user message.
+type workflowStartupSnapshot struct {
+	// userIDs is the ordered result of one ListAllStoredUserIDs call. On a
+	// listing error it holds the suspension pass's original fallback list.
+	userIDs []string
+	// states maps userID -> loaded state from a single store.Load per user.
+	// A nil state means the user has no loadable state (or the load failed),
+	// which both passes treat the same way they treated a failed Load before.
+	states map[string]*v2.WorkflowState
+	// listErr reports that listing failed. The projection repair pass skips
+	// entirely (its original behavior), while the suspension pass falls back
+	// to userIDs and re-reads state per user.
+	listErr bool
+	// repaired marks users whose state the projection repair rewrote after the
+	// snapshot was taken (a successful RecordOutput can complete the last
+	// phase). The suspension pass re-reads those users instead of acting on
+	// the stale snapshot copy.
+	repaired map[string]bool
+}
+
+// loadWorkflowStartupSnapshot lists every stored user once and loads each
+// workflow state once, for shared use by the startup recovery passes.
+func (a *App) loadWorkflowStartupSnapshot(st *workflowV2State) *workflowStartupSnapshot {
+	snap := &workflowStartupSnapshot{states: map[string]*v2.WorkflowState{}}
+	userIDs, err := st.machine.ListAllStoredUserIDs()
+	if err != nil {
+		log.Printf("[workflow-v2] startup: failed to list stored workflows: %v", err)
+		log.Printf("[coding-runtime] list workflows for completed projection repair failed: %v", err)
+		snap.listErr = true
+		snap.userIDs = []string{"desktop-user"}
+		return snap
+	}
+	snap.userIDs = userIDs
+	for _, userID := range userIDs {
+		state, _ := st.store.Load(userID)
+		snap.states[userID] = state
+	}
+	return snap
+}
+
+// recoverWorkflowsOnStartup runs the two startup recovery passes over one
+// shared snapshot: first the completed coding projection repair, then stale
+// active workflow suspension. It returns true if a stale workflow was
+// suspended (see cancelStaleWorkflowsOnStartup).
+func (a *App) recoverWorkflowsOnStartup(st *workflowV2State) bool {
+	if st == nil || st.machine == nil {
+		return false
+	}
+	snap := a.loadWorkflowStartupSnapshot(st)
+	a.repairCompletedCodingWorkflowProjections(st, snap)
+	return a.cancelStaleWorkflowsOnStartup(st.machine, snap)
+}
+
 // suspendStaleWorkflowsOnStartup marks any active workflow from a previous session
 // as suspended. Returns true if a workflow was suspended.
 //
@@ -95,21 +153,36 @@ func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2Sta
 // recognizes), or send an unrelated message which passes through to the agent loop.
 // This preserves the user's work (requirements, design docs, etc.) while preventing
 // automatic execution hijacking.
-func (a *App) cancelStaleWorkflowsOnStartup(machine *v2.StateMachine) bool {
+//
+// snap is normally the shared startup snapshot (see recoverWorkflowsOnStartup);
+// a nil snap falls back to listing users and loading state per user.
+func (a *App) cancelStaleWorkflowsOnStartup(machine *v2.StateMachine, snap *workflowStartupSnapshot) bool {
 	if machine == nil {
 		return false
 	}
-
-	// List all user IDs with stored workflow state (desktop-user + project tabs).
-	userIDs, err := machine.ListAllStoredUserIDs()
-	if err != nil {
-		log.Printf("[workflow-v2] startup: failed to list stored workflows: %v", err)
-		userIDs = []string{"desktop-user"}
+	if snap == nil {
+		snap = &workflowStartupSnapshot{}
+		ids, err := machine.ListAllStoredUserIDs()
+		if err != nil {
+			log.Printf("[workflow-v2] startup: failed to list stored workflows: %v", err)
+			ids = []string{"desktop-user"}
+		}
+		snap.userIDs = ids
 	}
 
 	suspended := false
-	for _, userID := range userIDs {
-		state := machine.GetActive(userID)
+	for _, userID := range snap.userIDs {
+		// GetActive equivalent over the snapshot: no loadable state or a
+		// non-active workflow is skipped. Users the repair pass rewrote after
+		// the snapshot (and users never snapshotted, e.g. the listing-error
+		// fallback) get a fresh GetActive read so suspension sees post-repair
+		// state exactly as the pre-merge code did.
+		state, ok := snap.states[userID]
+		if !ok || snap.repaired[userID] {
+			state = machine.GetActive(userID)
+		} else if state != nil && state.Status != v2.StatusActive {
+			state = nil
+		}
 		if state == nil {
 			continue
 		}

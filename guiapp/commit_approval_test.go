@@ -2,13 +2,16 @@ package guiapp
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 func TestCommitApprovalAnswerSticksForTheTask(t *testing.T) {
@@ -327,6 +330,158 @@ func TestCommitShapeDialogContinuesOrDeniesTheSameCall(t *testing.T) {
 	follow, blocked := agent.ApplyCommitGate(remote, "bash", `{"command":"git push"}`)
 	if !blocked || agent.IsAskUserResult(follow.Result) || strings.Contains(follow.Result, "已拒绝") {
 		t.Fatalf("cancel stuck a denial: %+v blocked=%v", follow, blocked)
+	}
+}
+
+func TestCommitGateSkipsApprovalCardUnderFullControl(t *testing.T) {
+	userID := stickyTestUserID(t)
+	handler := &IMMessageHandler{}
+	handler.setStickyCodingSessionPermissionMode(userID, "full", "local", "")
+	root := t.TempDir()
+	loopCtx := &LoopContext{UserID: userID, CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(loopCtx) })
+	t.Cleanup(func() {
+		pendingScopeApprovals.Range(func(key, value any) bool {
+			pending, ok := value.(*pendingScopeApproval)
+			if ok && pending.Request.ProjectPath == root {
+				pendingScopeApprovals.Delete(key)
+			}
+			return true
+		})
+	})
+	local := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: handler, loopCtx: loopCtx, projectPath: root},
+		task:     &TaskItem{Title: t.Name()},
+	}
+	t.Cleanup(func() { forgetCommitLedger(local.CommitTaskKey()) })
+	localCh := make(chan commitGateResult, 1)
+	go func() {
+		res, blocked := agent.ApplyCommitGate(local, "bash", `{"command":"git push origin main"}`)
+		localCh <- commitGateResult{res, blocked}
+	}()
+	select {
+	case got := <-localCh:
+		if got.blocked || got.res.Result != "" {
+			t.Fatalf("local full control result=%+v blocked=%v", got.res, got.blocked)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("local full control still opened the approval card")
+	}
+
+	remoteCtx := &LoopContext{UserID: userID, CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(remoteCtx) })
+	remote := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{handler: handler, loopCtx: remoteCtx, projectDir: root},
+		task:  t.Name() + "-remote",
+	}
+	t.Cleanup(func() { forgetCommitLedger(remote.CommitTaskKey()) })
+	remoteCh := make(chan commitGateResult, 1)
+	go func() {
+		res, blocked := agent.ApplyCommitGate(remote, "mailbox_send", `{"to":"a@b.c","body":"secret"}`)
+		remoteCh <- commitGateResult{res, blocked}
+	}()
+	select {
+	case got := <-remoteCh:
+		if got.blocked || got.res.Result != "" {
+			t.Fatalf("remote full control result=%+v blocked=%v", got.res, got.blocked)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("remote full control still opened the approval card")
+	}
+
+	// 请求授权 on another tab keeps the gate: the same call asks again.
+	requestUser := stickyTestUserID(t)
+	handler.setStickyCodingSessionPermissionMode(requestUser, "request", "local", "")
+	requestCtx := &LoopContext{UserID: requestUser, CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(requestCtx) })
+	ask := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: handler, loopCtx: requestCtx, projectPath: root},
+		task:     &TaskItem{Title: t.Name() + "-ask"},
+	}
+	t.Cleanup(func() {
+		forgetCommitLedger(ask.CommitTaskKey())
+		commitAskNotes.Delete(ask.CommitTaskKey())
+	})
+	asked, blocked := agent.ApplyCommitGate(ask, "im_message", `{"text":"hi"}`)
+	if !blocked || !agent.IsAskUserResult(asked.Result) {
+		t.Fatalf("request tier result=%+v blocked=%v", asked, blocked)
+	}
+
+	// 工作区信任 is not 完全控制: high-risk shapes still stop for a person.
+	workspaceUser := stickyTestUserID(t)
+	handler.setStickyCodingSessionPermissionMode(workspaceUser, "workspace", "local", "")
+	workspaceCtx := &LoopContext{UserID: workspaceUser, CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(workspaceCtx) })
+	workspace := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: handler, loopCtx: workspaceCtx, projectPath: root},
+		task:     &TaskItem{Title: t.Name() + "-workspace"},
+	}
+	t.Cleanup(func() {
+		forgetCommitLedger(workspace.CommitTaskKey())
+		commitAskNotes.Delete(workspace.CommitTaskKey())
+	})
+	guarded, blocked := agent.ApplyCommitGate(workspace, "bash", `{"command":"git push"}`)
+	if !blocked || !agent.IsAskUserResult(guarded.Result) {
+		t.Fatalf("workspace tier result=%+v blocked=%v", guarded, blocked)
+	}
+}
+
+func TestScopeApprovalCallbacksSkipUnderFullControl(t *testing.T) {
+	userID := stickyTestUserID(t)
+	handler := &IMMessageHandler{}
+	handler.setStickyCodingSessionPermissionMode(userID, "full", "local", "")
+	loopCtx := &LoopContext{UserID: userID, CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(loopCtx) })
+
+	before := atomic.LoadUint64(&scopeApprovalIDCounter)
+	local := buildSubAgentScopeApprovalCallback(handler, loopCtx, nil)
+	if got := local(ScopeApprovalRequest{
+		ToolName:    "read_file",
+		Path:        filepath.Join(t.TempDir(), "outside.txt"),
+		ProjectPath: "D:/proj",
+	}); got != ScopeApprovalAllowOnce {
+		t.Fatalf("local full control decision=%q", got)
+	}
+	remote := buildRemoteHighRiskApprovalCallback(handler, loopCtx, nil, false)
+	if got := remote(ScopeApprovalRequest{
+		ToolName:    "ssh_bash",
+		Path:        "rm -rf build",
+		ProjectPath: "/srv/app",
+		Kind:        remoteHighRiskApprovalKind,
+	}); got != ScopeApprovalAllowOnce {
+		t.Fatalf("remote full control decision=%q", got)
+	}
+	if after := atomic.LoadUint64(&scopeApprovalIDCounter); after != before {
+		t.Fatalf("full control emitted %d approval cards", after-before)
+	}
+}
+
+func TestCommitFullControlSkipWritesAuditEntry(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	handler := &IMMessageHandler{app: app}
+	t.Cleanup(func() {
+		if app.auditLog != nil {
+			_ = app.auditLog.Close()
+		}
+	})
+	noteCommitFullControlAudit(handler, "bash", "bash\ncommand\noutside", `D:\repo`)
+
+	app.ensureAuditLog()
+	entries, err := app.auditLog.Query(security.AuditFilter{})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("audit entries = %d, err = %v", len(entries), err)
+	}
+	entry := entries[0]
+	if entry.ToolName != "bash" ||
+		entry.Arguments["source"] != "full_control" ||
+		entry.Arguments["decision"] != string(ScopeApprovalFullAccess) ||
+		entry.Arguments["kind"] != commitShapeApprovalKind ||
+		entry.Arguments["fingerprint"] != "bash\ncommand\noutside" {
+		t.Fatalf("full-control audit = %#v", entry)
+	}
+	if entry.PolicyAction != security.PolicyUserOverride {
+		t.Fatalf("policy action = %q", entry.PolicyAction)
 	}
 }
 

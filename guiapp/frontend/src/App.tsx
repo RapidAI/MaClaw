@@ -163,7 +163,7 @@ import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNaviga
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen, type TaskContextMenu } from './components/layout/SidebarTaskManagement';
-import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
+import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
 import { taskbarInProgressCount } from './components/layout/taskbarInProgressCount';
@@ -210,9 +210,9 @@ import {
     LATEX_EXPERT_ID,
     LATEX_TEMPLATES_NAV_TAB,
     createLatexDocumentForTask,
+    expertTaskIsLive,
     isLatexExpertId,
     latexExpertStub,
-    latexExpertTaskIsLive,
     type LatexExpertTaskOptions,
     type LatexTemplate,
 } from './utils/latexTemplates';
@@ -552,13 +552,21 @@ function App() {
         // A copy keeps the expert tag for its icon. The shared expert transcript
         // belongs to the original row, so removing the copy must not purge it.
         const expertID = copied ? '' : expertIDFromTaskTags(tags);
-        if (!force && expertID && openExpertTabIDs.includes(expertID)) {
+        // Only the newest task of an expert owns the expert tab and its history.
+        // Deleting an older task must not close that tab or drop its cache.
+        const row = taskItemsRef.current.find(item => normalizeProjectSessionPath(item.project_path) === normalizeProjectSessionPath(projectPath));
+        const rowTags = row?.tags && row.tags.length > 0 ? row.tags : tags;
+        const liveExpertTask = !!expertID && expertTaskIsLive(
+            row ? { project_path: row.project_path, tags: rowTags, created_at: row.created_at } : { project_path: projectPath, tags },
+            taskItemsRef.current,
+        );
+        if (!force && liveExpertTask && openExpertTabIDs.includes(expertID)) {
             return false;
         }
         await DeleteTask(projectPath);
         purgeDeletedProjectTabLocalCache(projectPath);
         // Expert history is keyed by expert id, not the task workspace path.
-        if (expertID) purgeDeletedExpertTabLocalCache(expertID);
+        if (liveExpertTask) purgeDeletedExpertTabLocalCache(expertID);
         return true;
     }, [openExpertTabIDs, openProjectTabIdentities, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
@@ -2897,15 +2905,21 @@ function App() {
     // Single-click on a task whose tab is already open: focus-only activation.
     // The assistant panel resolves the tab (project by path/cloud id, expert by
     // id) and selects it; no recovery, transcript hydration, or remount runs.
+    // An older expert task owns a project tab, so its expert id must not focus
+    // the live expert tab instead.
     const activateTaskInstance = (projectPath: string, task?: { tags?: string[]; working_dir?: string }) => {
         const copied = isExplicitTaskCopy(task?.tags);
         const expertID = copied ? '' : expertIDFromTaskTags(task?.tags);
+        const liveExpertTask = !copied && expertTaskIsLive(
+            task ? { project_path: projectPath, tags: task.tags } : { project_path: projectPath, tags: [] },
+            taskItemsRef.current,
+        );
         const cloudWorkspaceId = copied ? '' : cloudWorkspaceIdFromTaskFields({ tags: task?.tags, project_path: projectPath, working_dir: task?.working_dir });
         try {
             EventsEmit(EVENT_PROJECT_TASK_ACTIVATE, {
                 projectPath,
                 cloudWorkspaceId: cloudWorkspaceId || undefined,
-                expertId: expertID || undefined,
+                expertId: liveExpertTask && expertID ? expertID : undefined,
             });
         } catch (error) {
             console.warn('[task_management] activate event emit failed:', error);
@@ -3393,22 +3407,29 @@ function App() {
         setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, limit));
     }, []);
     /** Single registration gateway for every route that opens an AI expert. */
-    const ensureExpertTask = useCallback(async (expert: ExpertDefinition, existing?: { relativePath?: string }) => {
+    const ensureExpertTask = useCallback(async (expert: ExpertDefinition, existing?: { relativePath?: string; projectPath?: string }) => {
         try {
+            const expectedPath = String(existing?.projectPath || '').trim();
             const created = await CreateExpertTask(expert.id, expert.name);
-            if (!created?.project_path) {
+            const createdPath = String(created?.project_path || '').trim();
+            // The wizard already created this task. Prefer its path: a
+            // concurrent launch can make the backend's "newest task" lookup
+            // return a different row, but this tab must keep its own
+            // conversation.
+            const projectPath = expectedPath || createdPath;
+            if (!projectPath) {
                 throw new Error('task record was not created');
             }
-            upsertTaskItem(created);
+            upsertTaskItem(expectedPath ? { ...created, project_path: expectedPath } : created);
             if (!isLatexExpertId(expert.id)) {
-                return { projectPath: created.project_path };
+                return { projectPath };
             }
             const existingRelativePath = String(existing?.relativePath || '').trim();
             if (existingRelativePath) {
-                return { projectPath: created.project_path, relativePath: existingRelativePath };
+                return { projectPath, relativePath: existingRelativePath };
             }
             const document = await createLatexDocumentForTask(
-                created.project_path,
+                projectPath,
                 LATEX_BLANK_TEMPLATE_ID,
                 '',
                 lang,
@@ -3421,7 +3442,7 @@ function App() {
                 },
             );
             return {
-                projectPath: created.project_path,
+                projectPath,
                 relativePath: document?.relative_path || '',
             };
         } catch (error) {
@@ -3642,9 +3663,11 @@ function App() {
             // A copy keeps the expert tag for display, but its chat is a new
             // project session. Opening it must not enter the shared expert transcript.
             const copiedTask = isExplicitTaskCopy(proj?.tags);
-            // A new LaTeX paper owns the expert conversation. An older paper
-            // keeps the transcript archived on its project tab.
-            if (!copiedTask && expertID && !(isLatexExpertId(expertID) && proj && !latexExpertTaskIsLive(proj, taskItemsRef.current))) {
+            // Only the newest task of an expert owns the shared expert tab. Every
+            // older task keeps its transcript archived on its own project tab,
+            // so opening it must not reopen (and overwrite) the live conversation.
+            const liveExpertTask = !!proj && expertTaskIsLive(proj, taskItemsRef.current);
+            if (!copiedTask && expertID && liveExpertTask) {
                 const app = await getWailsAppModule();
                 const rawExperts = typeof app.ListExperts === 'function' ? await app.ListExperts() : '';
                 const expert = parseExpertListJSON(rawExperts).find(item => item.id === expertID);
@@ -3656,7 +3679,10 @@ function App() {
                             : 'This AI expert is no longer available. Choose another expert from AI Experts or remove this task.');
                     return false;
                 }
-                enqueueExpertOpen({ expert });
+                // Bind the tab to the exact row the user clicked. The backend
+                // "newest task" lookup is only the fallback for launches that
+                // do not know their task yet.
+                enqueueExpertOpen({ expert, projectPath: proj?.project_path || projectPath });
                 switchTool('ai');
                 refreshTasks();
                 return true;

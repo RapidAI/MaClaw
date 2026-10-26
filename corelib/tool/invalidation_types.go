@@ -33,7 +33,7 @@ type UsageData struct {
 }
 
 // copyInvalidations returns a deep copy of the invalidations map that is safe
-// to pass to saveSnapshot outside the lock. Both the map and all slice/pointer
+// to pass to writeSnapshot outside the lock. Both the map and all slice/pointer
 // fields within values are copied to prevent data races with concurrent writers.
 func copyInvalidations(src map[string]ToolInvalidationState) map[string]ToolInvalidationState {
 	if src == nil {
