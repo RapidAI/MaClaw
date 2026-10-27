@@ -231,6 +231,10 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		site.published = append(site.published, m)
 		site.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("images") != "" {
+			fmt.Fprint(w, `{"code":0,"data":{"article_id":"888001","images":["https:\/\/cdn.example.test\/a\/1.png"]}}`)
+			return
+		}
 		fmt.Fprint(w, `{"code":0,"data":{"article_id":"777001","url":"/p/123"}}`)
 	})
 	mux.HandleFunc("/refuse", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "content rejected", 422) })

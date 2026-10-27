@@ -36,6 +36,9 @@ type SiteProfile struct {
 	// VerifyAPI is a JSON endpoint listing the account's posts, read with
 	// the page's session; the post's title found in it is publish evidence.
 	VerifyAPI string `json:"verify_api,omitempty"`
+	// LazyUpload: verified that the site keeps picked pictures local and
+	// sends them with the post (see PublishSpec.LazyUpload).
+	LazyUpload bool `json:"lazy_upload,omitempty"`
 	// Tags and Category fill a publish settings panel's required fields
 	// when the request names none.
 	Tags     []string `json:"tags,omitempty"`
@@ -249,6 +252,9 @@ func (p *SiteProfile) Apply(s *PublishSpec) {
 	str(&s.EditorURL, p.EditorURL)
 	str(&s.VerifyURL, p.VerifyURL)
 	str(&s.VerifyAPI, p.VerifyAPI)
+	if p.LazyUpload {
+		s.LazyUpload = true
+	}
 	str(&s.Category, p.Category)
 	list(&s.Tags, p.Tags)
 	str(&s.EditURL, p.EditURL)

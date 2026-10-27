@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset="utf-8"><title>写文章 (decoy preview fixture)</title>
+<!-- The editor lives in a same-origin iframe. Inside it, a decoy file
+     input (accept + multiple, so it ranks first) only makes blob: previews
+     in the body and sends no request: BILI-cv53625427. The real input
+     (?nogood=1 removes it; ?lazy implies it) uploads to /upload and inserts the stored
+     picture. ?lazy=1 / ?lazy=2: the publish answer names remote pictures
+     (2: it does not). -->
+<style>iframe{width:760px;height:460px;border:0}</style></head><body>
+<input id="title" placeholder="请输入标题">
+<iframe id="ed"></iframe>
+<button id="pub">发布</button>
+<script>
+const q = new URLSearchParams(location.search);
+const d = document.getElementById('ed').contentDocument;
+d.open(); d.write('<!doctype html><meta charset="utf-8"><style>#body{min-height:300px;width:690px;border:1px solid #ccc} img{width:200px}</style><div id="body" contenteditable="true"></div><div id="gallery"></div><input type="file" id="decoy" accept="image/*" multiple>' + (q.get('nogood') || q.get('lazy') ? '' : '<input type="file" id="real">')); d.close();
+const body = d.getElementById('body');
+d.getElementById('decoy').addEventListener('change', e => { for (const f of e.target.files) { const i = d.createElement('img'); i.src = URL.createObjectURL(f); d.getElementById('gallery').appendChild(i); } });
+const real = d.getElementById('real');
+if (real) real.addEventListener('change', e => { let n = 0; for (const f of e.target.files) { n++; fetch('/upload?n=' + n, {method: 'POST', body: f}).then(r => r.text()).then(u => { const i = d.createElement('img'); i.src = u; d.getElementById('gallery').appendChild(i); }); } });
+document.getElementById('pub').addEventListener('click', async ev => {
+  if (!ev.isTrusted) return;
+  const msg = {title: document.getElementById('title').value, body: body.innerText, html: body.innerHTML + d.getElementById('gallery').innerHTML};
+  if (q.get('lazy')) {
+    const r = await fetch('/api/publish' + (q.get('lazy') === '1' ? '?images=1' : ''), {method: 'POST', body: JSON.stringify(msg)});
+    await r.json(); const t = document.createElement('div'); t.textContent = '发布成功'; document.body.appendChild(t); return;
+  }
+  const r = await fetch('/publish', {method: 'POST', body: JSON.stringify(msg)});
+  location.href = await r.text();
+});
+</script></body></html>

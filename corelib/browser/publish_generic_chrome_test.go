@@ -117,3 +117,64 @@ func TestBlockingNoticeInFrameAndNoClassOnlyCaptcha(t *testing.T) {
 		t.Fatalf("err=%v state=%s notice=%q", err, rep.State, rep.Notice)
 	}
 }
+
+// A3 / BILI-cv53625427: a decoy input in the editor frame that only makes
+// local previews is a failed upload; the real input is tried next and the
+// post carries only stored pictures.
+func TestPublishFlowDecoyPreviewIsNotAnUpload(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "decoy_preview_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "诱饵 上传", Body: "正文在 iframe 里。", MinImages: 1, StepBudget: 15 * time.Second})
+	t.Log(rep.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rep.String(), "not an upload") || !strings.Contains(rep.String(), "the site stored them") {
+		t.Fatalf("decoy not rejected or real upload not confirmed: %s", rep.String())
+	}
+	site.mu.Lock()
+	defer site.mu.Unlock()
+	if len(site.published) != 1 || !strings.Contains(site.published[0]["html"], "/img/") || strings.Contains(site.published[0]["html"], "blob:") {
+		t.Fatalf("published %+v", site.published)
+	}
+}
+
+// With only the preview-only input the image step fails and nothing is
+// published.
+func TestPublishFlowPreviewOnlyFailsTheImageStep(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "decoy_preview_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?nogood=1")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "诱饵 上传", Body: "正文。", MinImages: 1, StepBudget: 10 * time.Second})
+	t.Log(rep.String())
+	if err == nil || rep.State == PublishLive || rep.State == PublishSubmitted {
+		t.Fatalf("published with missing pictures: %v %s", err, rep.State)
+	}
+	site.mu.Lock()
+	defer site.mu.Unlock()
+	if len(site.published) != 0 {
+		t.Fatalf("published %+v", site.published)
+	}
+}
+
+// A site verified to upload at submit (lazy_upload) may keep previews
+// local, but the submit answer must then name remote pictures.
+func TestPublishFlowLazyUploadNeedsRemotePictures(t *testing.T) {
+	addr := startFixtureChrome(t)
+	for _, c := range []struct {
+		q  string
+		ok bool
+	}{{"lazy=1", true}, {"lazy=2", false}} {
+		srv, _ := fixtureServer(t, "decoy_preview_like.html")
+		d := fixtureTab(t, addr, srv.URL+"/edit?"+c.q)
+		rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "懒 上传", Body: "正文。", MinImages: 1, LazyUpload: true, StepBudget: 10 * time.Second})
+		t.Log(c.q, rep.String(), rep.NetLog)
+		if c.ok && (err != nil || rep.State != PublishLive) {
+			t.Fatalf("%s: %v %s", c.q, err, rep.State)
+		}
+		if !c.ok && (err == nil || rep.State == PublishLive) {
+			t.Fatalf("%s: unconfirmed lazy pictures passed: %s", c.q, rep.State)
+		}
+	}
+}

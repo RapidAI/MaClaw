@@ -1,7 +1,7 @@
 <!doctype html><html><head><meta charset="utf-8"><title>chooser fixture</title></head><body>
 <!-- No file input exists until the upload button is clicked (common pattern);
      only file-chooser interception can answer it. -->
-<button id="u" onclick="const i=document.createElement('input');i.type='file';i.accept='image/*';i.onchange=()=>{const im=document.createElement('img');im.src=window.URL.createObjectURL(i.files[0]);document.body.appendChild(im);document.getElementById('t').style.display='block'};i.click()">添加图片</button>
+<button id="u" onclick="const i=document.createElement('input');i.type='file';i.accept='image/*';i.onchange=()=>{fetch('/upload?n=1',{method:'POST',body:i.files[0]});const im=document.createElement('img');im.src=window.URL.createObjectURL(i.files[0]);document.body.appendChild(im);document.getElementById('t').style.display='block'};i.click()">添加图片</button>
 <div id="t" style="display:none"><input type="text" placeholder="Title"><div contenteditable="true" style="width:500px;height:200px"></div><button disabled>Post</button><button id="p">Post</button></div>
 <script>document.getElementById('p').onclick=async e=>{if(!e.isTrusted)return;await fetch('/publish',{method:'POST',body:JSON.stringify({title:document.querySelector('[placeholder=Title]').value,body:document.querySelector('[contenteditable]').innerText})});location.href='/success'};</script>
 </body></html>

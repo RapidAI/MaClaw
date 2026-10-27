@@ -31,13 +31,18 @@ type PublishSpec struct {
 	Files          []string
 	UploadSelector string
 	UploadTrigger  string // visible text of the upload button when no file input exists yet
-	Title          string
-	TitleSelector  string
-	Body           string
-	BodySelector   string
-	SubmitTexts    []string // exact button texts; default 发布/Publish/Post/提交
-	ConfirmTexts   []string // a second confirm button, if the site asks
-	VerifyURL      string   // page to open after submit where the post must be listed
+	// LazyUpload: the site's verified experience or profile says it keeps
+	// picked pictures local and sends them with the post. Only then is a
+	// local preview without an upload request accepted, and the submit
+	// answer or the published page must then carry remote picture URLs.
+	LazyUpload    bool
+	Title         string
+	TitleSelector string
+	Body          string
+	BodySelector  string
+	SubmitTexts   []string // exact button texts; default 发布/Publish/Post/提交
+	ConfirmTexts  []string // a second confirm button, if the site asks
+	VerifyURL     string   // page to open after submit where the post must be listed
 	// Deadline bounds the whole run (the caller's own hard limit minus a
 	// margin); every step's budget is clipped to it so the run always ends
 	// with its own report instead of being cut off from outside.
@@ -100,6 +105,9 @@ type PublishReport struct {
 	NetLog []string `json:"net_log,omitempty"`
 	// Notice: a blocking notice the page showed ("…才能发布"), any frame.
 	Notice string `json:"notice,omitempty"`
+	// Method records which branch each primitive took (exploration
+	// recording; see publishRun.note): the site experience stores it.
+	Method map[string]string `json:"method,omitempty"`
 }
 
 // PublishState is the outcome of a publish run.
@@ -341,6 +349,8 @@ type publishRun struct {
 	richFilled   bool
 	imagesPlaced int
 	gallery      bool
+	// lazyImages: pictures stay local until the submit (spec.LazyUpload).
+	lazyImages bool
 }
 
 func (p *publishRun) send(method string, params interface{}) (json.RawMessage, error) {
@@ -506,7 +516,16 @@ func (p *publishRun) observeOnce() (string, error) {
 	return detail, nil
 }
 
-const publishStateJS = `(() => { let files = 0; const walk = root => { root.querySelectorAll('input[type=file]').forEach(e => files += (e.files ? e.files.length : 0)); root.querySelectorAll('*').forEach(n => { if (n.shadowRoot) walk(n.shadowRoot); }); }; walk(document); const imgs = [...document.images]; return JSON.stringify({files, blobs: imgs.filter(i => /^(blob|data):/.test(i.src)).length, imgs: imgs.length, media: document.querySelectorAll('video,canvas').length, nodes: document.getElementsByTagName('*').length, bg: [...document.querySelectorAll('[style*="blob:"]')].length}); })()`
+// publishStateJS counts file inputs, pictures and previews in the page and
+// every same-origin frame (editors in iframes preview there).
+const publishStateJS = `(() => { const docs = [document]; const addFrames = d => { for (const f of d.querySelectorAll('iframe,frame')) { try { const c = f.contentDocument; if (c && !docs.includes(c)) { docs.push(c); addFrames(c); } } catch (e) {} } }; addFrames(document); let files = 0, blobs = 0, imgs = 0, media = 0, nodes = 0, bg = 0; const walk = root => { root.querySelectorAll('input[type=file]').forEach(e => files += (e.files ? e.files.length : 0)); root.querySelectorAll('*').forEach(n => { if (n.shadowRoot) walk(n.shadowRoot); }); }; for (const d of docs) { walk(d); const im = [...d.images]; blobs += im.filter(i => /^(blob|data):/.test(i.src)).length; imgs += im.length; media += d.querySelectorAll('video,canvas').length; nodes += d.getElementsByTagName('*').length; bg += d.querySelectorAll('[style*="blob:"]').length; } return JSON.stringify({files, blobs, imgs, media, nodes, bg}); })()`
+
+// publishDropPreviewsJS removes local-only pictures (blob:/data:) that a
+// preview-only input added, so a later method does not publish them.
+const publishDropPreviewsJS = `(() => { const docs = [document]; const addFrames = d => { for (const f of d.querySelectorAll('iframe,frame')) { try { const c = f.contentDocument; if (c && !docs.includes(c)) { docs.push(c); addFrames(c); } } catch (e) {} } }; addFrames(document); const keep = new Set(window.__mcKeepPreviews || []); let n = 0; for (const d of docs) for (const i of [...d.images]) { const s = i.getAttribute('src') || ''; if (/^(blob|data):/.test(s) && !keep.has(s)) { i.remove(); n++; } } return String(n); })()`
+
+// publishKeepPreviewsJS remembers the local pictures already on the page.
+const publishKeepPreviewsJS = `(() => { const docs = [document]; const addFrames = d => { for (const f of d.querySelectorAll('iframe,frame')) { try { const c = f.contentDocument; if (c && !docs.includes(c)) { docs.push(c); addFrames(c); } } catch (e) {} } }; addFrames(document); window.__mcKeepPreviews = []; for (const d of docs) for (const i of d.images) { const s = i.getAttribute('src') || ''; if (/^(blob|data):/.test(s)) window.__mcKeepPreviews.push(s); } return '1'; })()`
 
 type uploadState struct{ Files, Blobs, Imgs, Media, Nodes, Bg int }
 
@@ -584,6 +603,7 @@ func (p *publishRun) upload() (string, error) {
 		if err != nil || obj == "" {
 			continue
 		}
+		_, _ = p.eval(publishKeepPreviewsJS)
 		before := p.state()
 		t0 := time.Now()
 		if _, err := p.send("DOM.setFileInputFiles", map[string]interface{}{"objectId": obj, "files": p.spec.Files}); err != nil {
@@ -592,11 +612,15 @@ func (p *publishRun) upload() (string, error) {
 		}
 		out, done, err := p.waitUpload(t0, before, images, fmt.Sprintf("file input %d", i+1))
 		if done {
-			return out, err
+			return joinTried(tried, out), err
+		}
+		if v, _ := p.eval(publishDropPreviewsJS); v != "" && v != "0" {
+			out += " (removed its " + v + " local preview(s))"
 		}
 		tried = append(tried, out)
 	}
 	if p.spec.UploadTrigger != "" {
+		_, _ = p.eval(publishKeepPreviewsJS)
 		// A chooser opened on a detached input cannot deliver its change
 		// event; keep such inputs in the document (hidden) before the click.
 		_, _ = p.eval(publishAttachInputsJS)
@@ -615,7 +639,10 @@ func (p *publishRun) upload() (string, error) {
 		}
 		out, done, err := p.waitUpload(t0, before, images, "intercepted chooser")
 		if done {
-			return out, err
+			return joinTried(tried, out), err
+		}
+		if v, _ := p.eval(publishDropPreviewsJS); v != "" && v != "0" {
+			out += " (removed its " + v + " local preview(s))"
 		}
 		tried = append(tried, out)
 	}
@@ -659,13 +686,16 @@ func (p *publishRun) waitUpload(t0 time.Time, before uploadState, images bool, h
 			return fmt.Sprintf("uploaded %d file(s) via %s; the site stored them (%d upload request(s) answered ok; imgs %d->%d)", want, how, ok, before.Imgs, after.Imgs), true, nil
 		}
 		if started == 0 && time.Now().After(startBy) {
+			if shown && p.spec.LazyUpload {
+				// The site's profile says it sends the pictures with the
+				// post; verify then requires remote picture URLs.
+				p.lazyImages = true
+				return fmt.Sprintf("set %d file(s) via %s; page shows them locally and the site uploads at submit (lazy_upload); remote picture URLs are required after the submit", want, how), true, nil
+			}
 			if shown {
-				// Some editors keep the files and send them with the post
-				// (multipart). The ranking already chose the input in the
-				// editor's own document, and a rich body's read-back fails
-				// on pictures that stay local; another input would only
-				// add the pictures twice.
-				return fmt.Sprintf("set %d file(s) via %s; page shows them locally and sent no upload request in %s (the site may send them with the post)", want, how, uploadStartWait), true, nil
+				// A preview with no request is not an upload
+				// (BILI-cv53625427 went out without its pictures that way).
+				return how + " only made a local preview and sent no upload request (not an upload)", false, nil
 			}
 			return how + " showed nothing and sent no upload request", false, nil
 		}
@@ -673,6 +703,13 @@ func (p *publishRun) waitUpload(t0 time.Time, before uploadState, images bool, h
 			return "", true, fmt.Errorf("the site's upload via %s did not finish (%d of %d request(s) still open); nothing was submitted", how, open, started)
 		}
 	}
+}
+
+func joinTried(tried []string, out string) string {
+	if len(tried) == 0 {
+		return out
+	}
+	return strings.Join(tried, "; ") + "; " + out
 }
 
 func minInt(a, b int) int {
@@ -1021,6 +1058,14 @@ func (p *publishRun) uploadOrInline() (string, error) {
 // a re-read of its pictures and formatting.
 func (p *publishRun) verifyAll() (string, error) {
 	out, err := p.verify()
+	if err == nil && p.lazyImages {
+		if sum, lerr := p.checkLazyImages(); lerr != nil {
+			p.incomplete.Store(lerr.Error())
+			return out, fmt.Errorf("published at %s but %v", p.rep.ResultURL, lerr)
+		} else {
+			out += "; " + sum
+		}
+	}
 	if err != nil || !p.richFilled || p.rep.PostID != "" || (p.spec.VerifyURL != "" && strings.TrimRight(p.rep.ResultURL, "/") == strings.TrimRight(p.spec.VerifyURL, "/")) {
 		return out, err
 	}
@@ -1056,8 +1101,20 @@ func (p *publishRun) readback() (string, error) {
 			return "", fmt.Errorf("body no longer holds the text (%d chars)", len([]rune(got)))
 		}
 		parts = append(parts, fmt.Sprintf("body %d chars", len([]rune(got))))
+		if p.gallery && p.spec.MinImages > 0 && !p.lazyImages {
+			// Pictures outside the body (their upload was confirmed by the
+			// network): the page must still show them; an editor that
+			// cleared them on fill dropped them.
+			st := p.state()
+			if n := st.Imgs + st.Bg; n < p.spec.MinImages {
+				return "", fmt.Errorf("the page shows %d of the %d planned picture(s): pictures were dropped; nothing was submitted", n, p.spec.MinImages)
+			}
+		}
 		if want := p.wantImages(); want > 0 {
-			if n := p.imgCount(obj); n < want {
+			// Pasted pictures are checked for storage by the rich
+			// read-back (they upload after the paste).
+			n := p.imgCount(obj)
+			if n < want {
 				return "", fmt.Errorf("the body shows %d of the %d planned picture(s): pictures were dropped; nothing was submitted", n, want)
 			} else {
 				parts = append(parts, fmt.Sprintf("%d/%d picture(s)", n, want))
@@ -1811,4 +1868,22 @@ func maxDur(a, b time.Duration) time.Duration {
 
 // pictureCountFn counts the pictures an editor holds: <img> elements, or
 // Markdown image links in a code editor's text.
+// checkLazyImages: a lazy-upload site must show the pictures stored: the
+// submit answer names remote picture URLs, or the page now shows them.
+func (p *publishRun) checkLazyImages() (string, error) {
+	want := len(p.spec.Files)
+	if p.spec.MinImages > want {
+		want = p.spec.MinImages
+	}
+	if n := p.net.answerImagesSince(p.clickedAt); n >= want {
+		return fmt.Sprintf("the submit answer names %d remote picture(s)", n), nil
+	}
+	v, _ := p.eval(`String([...document.images].filter(i => /^https?:/.test(i.src) && i.naturalWidth > 1).length)`)
+	n, _ := strconv.Atoi(v)
+	if n >= want {
+		return fmt.Sprintf("the published page shows %d remote picture(s)", n), nil
+	}
+	return "", fmt.Errorf("the lazily uploaded pictures were not confirmed: the submit answer and the page show %d remote picture(s), %d planned", n, want)
+}
+
 const pictureCountFn = `function() { let n = this.querySelectorAll('img').length; let v = ''; if (this.CodeMirror && this.CodeMirror.getValue) v = this.CodeMirror.getValue(); else if (this.cmView && this.cmView.view) v = this.cmView.view.state.doc.toString(); else if (this.tagName === 'TEXTAREA') v = this.value; else if (this.closest && this.closest('.cm-editor,.CodeMirror,.bytemd,[class*=markdown]')) v = this.innerText; n += (v.match(/!\[[^\]]*\]\(/g) || []).length; return String(n); }`

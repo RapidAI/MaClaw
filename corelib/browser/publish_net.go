@@ -54,6 +54,8 @@ type netWrite struct {
 	// postID/postURL: an id or link the JSON answer carries (evidence of a
 	// created post when the write is a publish, see evidenceSince).
 	postID, postURL string
+	// images: remote picture URLs the answer names.
+	images int
 }
 
 // Write kinds. upload: a file/picture going to the site; draft: a draft or
@@ -342,11 +344,20 @@ func (t *netTracker) readAnswer(id, what string) {
 		return
 	}
 	pid, purl := jsonPostRef(r.Body)
+	imgs := len(remoteImageRe.FindAllString(r.Body, -1))
 	if pid == "" && purl == "" {
+		if imgs > 0 {
+			t.mu.Lock()
+			if w := t.find(id); w != nil {
+				w.images = imgs
+			}
+			t.mu.Unlock()
+		}
 		return
 	}
 	t.mu.Lock()
 	if w := t.find(id); w != nil {
+		w.images = imgs
 		w.postID, w.postURL = pid, purl
 		w.answer += " (id " + pid + " " + purl + ")"
 	}
@@ -505,6 +516,20 @@ func (t *netTracker) settleAnswers(since time.Time, max time.Duration) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+var remoteImageRe = regexp.MustCompile(`(?i)https?:(?:\\?/){2}[^"'\s<>]+?\.(?:png|jpe?g|webp|gif|avif)`)
+
+// answerImagesSince: remote picture URLs named by submission answers.
+func (t *netTracker) answerImagesSince(since time.Time) int {
+	if t == nil {
+		return 0
+	}
+	n := 0
+	for _, w := range t.submitWritesSince(since) {
+		n += w.images
+	}
+	return n
 }
 
 // evidenceSince: the id or link a submission write's answer carried.

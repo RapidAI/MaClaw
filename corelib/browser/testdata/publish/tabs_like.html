@@ -16,7 +16,7 @@
 <script>
 document.querySelector('.upload-input').addEventListener('change', e => {
   const f = e.target.files; if (!f.length) return;
-  for (const x of f) { const i = document.createElement('img'); i.src = URL.createObjectURL(x); document.getElementById('imgs').appendChild(i); }
+  let k = 0; for (const x of f) { k++; fetch('/upload?n=' + k, {method: 'POST', body: x}); const i = document.createElement('img'); i.src = URL.createObjectURL(x); document.getElementById('imgs').appendChild(i); }
   e.target.value = ''; document.getElementById('up').style.display = 'none'; document.getElementById('editor').style.display = 'block';
 });
 customElements.define('xhs-publish-btn', class extends HTMLElement { constructor() { super(); const r = this.attachShadow({mode: 'closed'});
