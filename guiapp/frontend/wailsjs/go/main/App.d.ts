@@ -3071,3 +3071,9 @@ export function BuddyPushSnapshot(arg1:string):Promise<void>;
 export function BuddyPushWeather(arg1:string,arg2:string,arg3:number):Promise<void>;
 
 export function BuddyRefreshWeather():Promise<string>;
+
+export function GetDesktopBotStyle(arg1:string):Promise<{bot_id:string,current:{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string},history?:Array<{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string}>,default_soul:string,default_parts:Record<string,string>,base_changed:boolean,enabled:boolean}>;
+
+export function SaveDesktopBotStyle(arg1:string,arg2:string,arg3:string,arg4:Record<string, string>):Promise<{bot_id:string,current:{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string},history?:Array<{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string}>,default_soul:string,default_parts:Record<string,string>,base_changed:boolean,enabled:boolean}>;
+
+export function RollbackDesktopBotStyle(arg1:string,arg2:number):Promise<{bot_id:string,current:{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string},history?:Array<{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string}>,default_soul:string,default_parts:Record<string,string>,base_changed:boolean,enabled:boolean}>;

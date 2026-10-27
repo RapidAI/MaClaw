@@ -540,6 +540,9 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if phase == "execute" {
 		messageMeta["computer_helper"] = "1"
 	}
+	for k, v := range botStyleMeta(&rec, rec.Bots[index].ID) {
+		messageMeta[k] = v
+	}
 	messageBody := map[string]any{
 		"content":            content,
 		"client_session_key": desktopSessionKey(rec.Bots[index].ID, clientMessageID),

@@ -147,6 +147,7 @@ import { BotAvatar } from './BotAvatar';
 import { appearancesForUser, botNameTaken, captureBotLookRevisions, defaultAppearance, hubAppearance, hydrateBotLooks, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance, storeHubLooks, type BotAppearance } from './botAppearance';
 import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
 import { BotComputerSettingsDialog, type DesktopComputerAction, type DesktopComputerState } from './BotComputerSettingsDialog';
+import { BotStyleDialog } from './BotStyleDialog';
 import { BotNetworkSettingsDialog, BotSettingsTabs, type BotSettingsTab, type DesktopProxyModeState, type DesktopProxyModeValue } from './BotNetworkSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
@@ -808,6 +809,7 @@ function copy(lang: string) {
             empty: 'No bots yet.',
             create: 'New',
             editInfo: 'Edit info',
+            styleInfo: 'Character and voice',
             editTitle: 'Edit bot info',
             close: 'Close',
             save: 'Save',
@@ -1002,6 +1004,7 @@ function copy(lang: string) {
             empty: '還沒有 Bot。',
             create: '新建',
             editInfo: '編輯資訊',
+            styleInfo: '性格與說話風格',
             editTitle: '編輯 Bot 資訊',
             close: '關閉',
             save: '儲存',
@@ -1195,6 +1198,7 @@ function copy(lang: string) {
         empty: '还没有 Bot。',
         create: '新建',
         editInfo: '编辑信息',
+        styleInfo: '性格与说话风格',
         editTitle: '编辑 Bot 信息',
         close: '关闭',
         save: '保存',
@@ -2005,7 +2009,7 @@ function identityFraction(left: number, top: number, travel: { maxX: number; max
     return { nx: Math.min(1, Math.max(0, nx)), ny: Math.min(1, Math.max(0, ny)) };
 }
 
-function RowActionIcon({ name }: { name: 'rename' | 'remove' }) {
+function RowActionIcon({ name }: { name: 'rename' | 'remove' | 'style' }) {
     const stroke = {
         fill: 'none',
         stroke: 'currentColor',
@@ -2019,6 +2023,12 @@ function RowActionIcon({ name }: { name: 'rename' | 'remove' }) {
                 <>
                     <path {...stroke} d="M9.2 2.8 13.2 6.8 6.2 13.8H2.2V9.8L9.2 2.8Z" />
                     <path {...stroke} d="m8 4 4 4" />
+                </>
+            )}
+            {name === 'style' && (
+                <>
+                    <path {...stroke} d="M3 12.5c1.2-3.6 3.1-6.6 6-8.8l3.3 3.3c-2.2 2.9-5.2 4.8-8.8 6" />
+                    <path {...stroke} d="M10.4 2.6 13.4 5.6" />
                 </>
             )}
             {name === 'remove' && (
@@ -2074,6 +2084,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // Edit-bot dialog. Drafts live inside the dialog; the parent holds the
     // bot being edited so the row never mutates into a form.
     const [editBot, setEditBot] = useState<DesktopBot | null>(null);
+    const [styleBot, setStyleBot] = useState<DesktopBot | null>(null);
     const [editSaving, setEditSaving] = useState(false);
     const [editNotice, setEditNotice] = useState('');
     const [createOpen, setCreateOpen] = useState(false);
@@ -6595,6 +6606,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </button>
                                     <div className="desktop-bot-workspace__actions">
                                         <button type="button" data-testid={`desktop-bot-edit-${bot.id}`} aria-label={text.editInfo} title={text.editInfo} onClick={() => { setEditBot(bot); setEditNotice(''); }}><RowActionIcon name="rename" /></button>
+                                        <button type="button" data-testid={`desktop-bot-style-${bot.id}`} aria-label={text.styleInfo} title={text.styleInfo} onClick={() => setStyleBot(bot)}><RowActionIcon name="style" /></button>
                                         <button type="button" data-testid={`desktop-bot-delete-${bot.id}`} aria-label={text.remove} title={text.remove} onClick={() => { void remove(bot.id); }}><RowActionIcon name="remove" /></button>
                                     </div>
                                 </li>
@@ -7203,6 +7215,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     onSubmit={(title, description, look) => { void submitCreate(title, description, look); }}
                 />
             ) : null}
+            {styleBot ? <BotStyleDialog key={styleBot.id} botId={styleBot.id} botTitle={styleBot.title} lang={lang} onClose={() => setStyleBot(null)} /> : null}
             {editBot ? (
                 <BotEditDialog
                     key={editBot.id}

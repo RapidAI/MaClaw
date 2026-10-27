@@ -41,3 +41,20 @@ func TestFactRoundTrip(t *testing.T) {
 		t.Fatal("empty field kept")
 	}
 }
+
+func TestStyleMetaRoundTripAndCharacter(t *testing.T) {
+	st := Style{Soul: "叫小龙", Memory: "主人用知乎", Parts: map[string]string{"voice": "简短", "bogus": "x"}}
+	back := StyleFromMeta(st.Meta())
+	if back.Soul != "叫小龙" || back.Memory != "主人用知乎" || back.Overrides()[Voice] != "简短" || len(back.Overrides()) != 1 {
+		t.Fatalf("%+v", back)
+	}
+	if c := (Style{}).Character(); !strings.Contains(c, DefaultSoul) {
+		t.Fatal(c)
+	}
+	if c := back.Character(); !strings.Contains(c, "叫小龙") || !strings.Contains(c, "主人用知乎") {
+		t.Fatal(c)
+	}
+	if n := len([]rune(StyleFromMeta(map[string]string{MetaSoul: strings.Repeat("a", SoulMaxRunes+5)}).Soul)); n != SoulMaxRunes {
+		t.Fatal(n)
+	}
+}

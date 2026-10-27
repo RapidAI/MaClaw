@@ -6195,3 +6195,15 @@ export function BuddyPushWeather(arg1, arg2, arg3) {
 export function BuddyRefreshWeather() {
   return window['go']['main']['App']['BuddyRefreshWeather']();
 }
+
+export function GetDesktopBotStyle(arg1) {
+  return window['go']['main']['App']['GetDesktopBotStyle'](arg1);
+}
+
+export function SaveDesktopBotStyle(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveDesktopBotStyle'](arg1, arg2, arg3, arg4);
+}
+
+export function RollbackDesktopBotStyle(arg1, arg2) {
+  return window['go']['main']['App']['RollbackDesktopBotStyle'](arg1, arg2);
+}

@@ -389,7 +389,8 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		return "", nil
 	}
 	if botPhaseFromTurn(request) == "plan" {
-		return "The current user has one cloud desktop through the desktop tool. " +
+		return desktopStylePrompt(request, promptparts.Voice, promptparts.Honesty) +
+			"The current user has one cloud desktop through the desktop tool. " +
 			"This turn only inspects it. " +
 			"Use only probe, screenshot, app_list, file_read, file_list, or skill_list. That limit is this turn only. " +
 			"action=skill_list shows browser scripts already saved. This turn does not run them. " +
@@ -416,7 +417,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		prompt += desktopRecipeText(scope, task)
 	}
 	prompt += desktopInboxText(ctx, request)
-	prompt += promptparts.Render(nil, promptparts.Facts, promptparts.Honesty, promptparts.Progress, promptparts.Quiet)
+	prompt += desktopStylePrompt(request, promptparts.Facts, promptparts.Honesty, promptparts.Progress, promptparts.Quiet)
 	return prompt +
 		"Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. " +
 		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
@@ -3852,4 +3853,12 @@ func trimDesktopTabs(addr, attachedID string, targets []browser.TargetInfo) []br
 		out = append(out, t)
 	}
 	return out
+}
+
+// desktopStylePrompt is the bot's character (the owner's SOUL and MEMORY
+// carried in the turn's metadata, or the default) and the named style
+// parts with the owner's overrides. "" when MACLAW_STYLE_LAYER=off.
+func desktopStylePrompt(request agentruntime.TurnRequest, ids ...promptparts.ID) string {
+	st := promptparts.StyleFromMeta(desktopMessageMeta(request))
+	return st.Character() + promptparts.Render(st.Overrides(), ids...)
 }
