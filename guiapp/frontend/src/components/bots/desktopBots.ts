@@ -1124,6 +1124,18 @@ function readMessages(): StoredMessages {
     }
 }
 
+// /clear wipes this bot's chat on screen and in the local transcript. It is
+// never sent to the bot and touches no Hub task or run. Bubbles a live turn
+// still needs (a pending reply, a queued order) stay so the running work can
+// land; everything else is gone for good, including after a reload.
+export function isDesktopBotClearCommand(text: string): boolean {
+    return text.trim().toLowerCase() === '/clear';
+}
+
+export function clearedBotMessages(messages: DesktopBotMessage[]): DesktopBotMessage[] {
+    return messages.filter(message => message.pending || message.queued);
+}
+
 export function messagesForBot(userId: string, botId: string): DesktopBotMessage[] {
     const items = readMessages()[desktopUserKey(userId)]?.[botId];
     if (!Array.isArray(items)) return [];

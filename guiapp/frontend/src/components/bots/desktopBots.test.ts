@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import type { DesktopBotMessage } from './desktopBots';
 
 beforeEach(() => {
     localStorage.clear();
@@ -716,5 +717,22 @@ describe('desktop bots', () => {
         markDesktopBotNotice('alice', 'n1:from');
         expect(desktopBotNoticeSeen('alice', 'n1:from')).toBe(true);
         expect(desktopBotNoticeSeen('alice', 'n1:target')).toBe(false);
+    });
+});
+
+describe('/clear', () => {
+    it('recognizes only the exact command', () => {
+        expect(isDesktopBotClearCommand(' /CLEAR ')).toBe(true);
+        expect(isDesktopBotClearCommand('/clear now')).toBe(false);
+        expect(isDesktopBotClearCommand('clear')).toBe(false);
+    });
+    it('keeps only what a live turn still needs', () => {
+        const kept = clearedBotMessages([
+            { id: 'a', role: 'user', content: 'old' },
+            { id: 'b', role: 'assistant', content: 'done' },
+            { id: 'c', role: 'assistant', content: '', pending: true },
+            { id: 'd', role: 'user', content: 'next', queued: true },
+        ] as DesktopBotMessage[]);
+        expect(kept.map(item => item.id)).toEqual(['c', 'd']);
     });
 });

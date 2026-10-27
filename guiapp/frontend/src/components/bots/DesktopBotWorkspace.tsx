@@ -103,6 +103,8 @@ import {
     forgetBotPersona,
     clearLiveBotTurn,
     messagesForBot,
+    isDesktopBotClearCommand,
+    clearedBotMessages,
     desktopCreditReadout,
     formatDesktopCredit,
     messageNeedsComputerTakeover,
@@ -5776,6 +5778,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (!content) return;
         // A choice keeps the label. The stop list and the reading do not see it.
         if (literal) verbatim = true;
+        if (!literal && !preset && isDesktopBotClearCommand(content)) {
+            setCommand('');
+            commit(botId, clearedBotMessages(messagesForBot(userId, botId)));
+            return;
+        }
         // Typing the old approval sentence is not an approval and not a task.
         if (!literal && content === CONFIRM_COMMAND) {
             if (!preset) setCommand('');
