@@ -40,7 +40,8 @@ now[0] += 1; data[21] = []
 e.tick({20: 100, 21: 201}); print("pid change keeps", names(20), names(21) == names(20))
 now[0] += 1; data[21] = []
 e.tick({20: 100, 21: 201}); print("mass held", names(20))
-now[0] += 1; e.tick({20: 100, 21: 201}); print("mass confirmed", names(20))
+now[0] += 1; e.tick({20: 100, 21: 201}); print("mass still held", len(names(20)))
+now[0] += 31; e.tick({20: 100, 21: 201}); print("mass confirmed", names(20))
 st = e.state(); sup.loginsync_save("ab"*8, st)
 print("roundtrip", sup.loginsync_load("ab"*8)["version"] == st["version"])
 p = sup.loginsync_state_path("ab"*8); raw = p.read_text(); p.write_text(raw.replace('"t": "', '"t": "A'))
@@ -54,10 +55,79 @@ print(sup.loginsync_set_param({"name": "h", "value": "v", "domain": "www.x.test"
 		"lww True",
 		"pid change keeps [('b', '3'), ('c', '1'), ('d', '1'), ('e', '1')] True",
 		"mass held [('b', '3'), ('c', '1'), ('d', '1'), ('e', '1')]",
+		"mass still held 4",
 		"mass confirmed []",
 		"roundtrip True",
 		"tamper None",
 		"{'name': 'h', 'value': 'v', 'path': '/p', 'url': 'https://www.x.test/p', 'secure': True}",
+	}, "\n")
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// Fix 7: a site clearing its login cookies (its login page loaded, or on a
+// bot screen) is not the person's logout; a small auth loss on the owner's
+// screen is held, then confirmed.
+func TestLoginSyncSiteClearIsNotALogout(t *testing.T) {
+	out := runSupervisorPython(t, `
+now = [1000.0]
+data = {}
+tabs = {20: [], 30: []}
+def read(s): return [dict(c) for c in data.get(s, [])] if s in data else None
+def write(s, params):
+    cur = {(c["name"], c.get("domain") or "www.x.test"): c for c in data[s]}
+    for p in params:
+        dom = p.get("domain") or p["url"].split("/")[2]
+        cur.pop((p["name"], dom), None)
+        if p.get("expires") != 1:
+            c = {k: v for k, v in p.items() if k != "url"}; c["domain"] = dom; c["session"] = "expires" not in p; cur[(p["name"], dom)] = c
+    data[s] = list(cur.values())
+    return True
+def ck(name, value, domain=".csdn.test"): return {"name": name, "value": value, "domain": domain, "path": "/", "secure": True, "session": True}
+def names(s): return sorted(c["name"] for c in data[s])
+ctx = lambda s: {"owner": s == 20, "tabs": tabs[s]}
+e = sup.LoginSync(read, write, now=lambda: now[0], context=ctx)
+login = [ck("UserToken", "1"), ck("UserName", "1"), ck("UserInfo", "1"), ck("UN", "1"), ck("dc_sid", "1"), ck("uuid_tt_dd", "1"), ck("c_ref", "1")]
+data[20] = [dict(c) for c in login]; data[30] = []
+e.tick({20: 1, 30: 2}); print("seeded", names(30) == names(20))
+# bot screen 30 opens a stale login page; the site clears 3 auth cookies there
+now[0] += 1; tabs[30] = ["https://passport.csdn.test/login?code=applets"]
+data[30] = [c for c in data[30] if c["name"] not in ("UserToken", "UserName", "UserInfo")]
+e.tick({20: 1, 30: 2}); print("login page: owner keeps", names(20) == sorted(c["name"] for c in login))
+print("stale for writeback", e.state()["seen"]["30"] < e.state()["version"])
+now[0] += 60; e.tick({20: 1, 30: 2}); print("still kept", len(names(20)))
+# login page closed: the bot gets the login back
+now[0] += 1; tabs[30] = []
+e.tick({20: 1, 30: 2}); print("restored", "UserToken" in names(30))
+# a bot screen losing cookies with no login page is not a logout either
+now[0] += 1; data[30] = [c for c in data[30] if c["name"] != "dc_sid"]
+e.tick({20: 1, 30: 2}); print("bot loss kept", "dc_sid" in names(20))
+# the owner signs out: 2 auth cookies go together -> held, then confirmed
+now[0] += 1; data[20] = [c for c in data[20] if c["name"] not in ("UserToken", "UserInfo")]
+e.tick({20: 1, 30: 2}); print("owner held", "UserToken" in names(30))
+now[0] += 31; e.tick({20: 1, 30: 2}); print("owner logout", "UserToken" in names(30), "UserInfo" in names(30))
+# one non-auth cookie on the owner screen goes at once
+now[0] += 1; data[20] = [c for c in data[20] if c["name"] != "c_ref"]
+e.tick({20: 1, 30: 2}); print("single", "c_ref" in names(30))
+print(sorted(sup.loginsync_login_sites(["https://passport.csdn.test/login", "https://www.zhihu.test/signin?next=1", "https://mp.csdn.test/editor", "https://www.x.test/user/123", "https://accounts.g.test/o/oauth2/auth"])))
+print([sup.tidy_tab_verdict(u) for u in ("https://passport.csdn.test/login?code=applets", "chrome-error://chromewebdata/", "https://mp.csdn.test/mp_blog/creation/editor", "https://member.bili.test/york/read-editor")])
+close, keep = sup.tidy_tabs_plan([{"id": "1", "url": "https://passport.csdn.test/login"}, {"id": "2", "url": "https://www.x.test/"}])
+print([p["id"] for p in close], [p["id"] for p in keep])
+`)
+	want := strings.Join([]string{
+		"seeded True",
+		"login page: owner keeps True",
+		"stale for writeback True",
+		"still kept 7",
+		"restored True",
+		"bot loss kept True",
+		"owner held True",
+		"owner logout False False",
+		"single False",
+		"['csdn.test', 'g.test', 'zhihu.test']",
+		"['login_page', 'error_page', '', '']",
+		"['1'] ['2']",
 	}, "\n")
 	if out != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
@@ -122,9 +192,12 @@ try:
     print("login propagated", t is not None, "samepid", sup.browser_pid(sup.screen_profile(owner, 21)) == pid21)
     time.sleep(2.5)
     print("stable", cookies(20) == cookies(21), sorted(cookies(20)))
-    setc(21, "SESSDATA", "", expires=1)
-    t = wait(lambda: "SESSDATA" not in cookies(20))
-    print("logout propagated", t is not None, "tok kept", cookies(20).get("tok"))
+    setc(20, "SESSDATA", "", expires=1)
+    t = wait(lambda: "SESSDATA" not in cookies(21))
+    print("logout propagated", t is not None, "tok kept", cookies(21).get("tok"))
+    setc(21, "tok", "", expires=1)
+    t = wait(lambda: cookies(21).get("tok") == "h1")
+    print("bot loss restored", t is not None, cookies(20).get("tok"))
     setc(20, "SESSDATA", "v2", expires=int(time.time())+86400)
     wait(lambda: cookies(21).get("SESSDATA") == "v2")
     procs[21].send_signal(signal.SIGKILL); procs[21].wait()
@@ -135,7 +208,7 @@ try:
     sup.loginsync_on_browser_start(bot2, sup.chrome_cdp_port(22))
     print("new screen logged in at handoff", cookies(22).get("SESSDATA") == "v2", cookies(22).get("tok") == "h1")
     st = sup.loginsync_load(owner)
-    print("state encrypted", b"v2" not in sup.loginsync_state_path(owner).read_bytes(), st is not None, "no echo loop", st["version"] < 12)
+    print("state encrypted", b'"value": "v2"' not in sup.loginsync_state_path(owner).read_bytes(), st is not None, "no echo loop", st["version"] < 12)
 finally:
     for p in procs.values():
         try: p.kill(); p.wait(10)
@@ -150,6 +223,7 @@ finally:
 		"login propagated True samepid True",
 		"stable True ['SESSDATA', 'tok']",
 		"logout propagated True tok kept h1",
+		"bot loss restored True h1",
 		"kill -9 no logout True",
 		"new screen logged in at handoff True True",
 		"state encrypted True True no echo loop True",

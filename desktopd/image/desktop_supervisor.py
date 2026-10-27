@@ -569,6 +569,9 @@ def main(argv):
         return 0
     if len(argv) == 5 and argv[1] == "gate":
         return serve_gate(int(argv[2]), int(argv[3]), argv[4])
+    if len(argv) in (2, 3) and argv[1] == "tidy-tabs":
+        print(json.dumps(tidy_tabs(argv[2] if len(argv) == 3 else os.environ.get("DISPLAY", ""))))
+        return 0
     if len(argv) == 3 and argv[1] == "loginsync":
         if not valid_key(argv[2]) or len(argv[2]) != 16:
             return 2
@@ -7234,8 +7237,25 @@ LOGINSYNC_IDLE_SECONDS = 5.0
 LOGINSYNC_FAST_WINDOW = 30.0
 LOGINSYNC_IDLE_AFTER = 300.0
 LOGINSYNC_TOMBSTONE_SECONDS = 7 * 24 * 3600
-LOGINSYNC_MASS_MIN = 4
+# Mass-loss guard (owner screen): a site that loses at least half of its
+# cookies (2 or more), or 2 or more login-like cookies at once, or 3 or
+# more sites losing cookies in the same read, is held for
+# LOGINSYNC_HOLD_SECONDS before it counts as a logout. The old guard (4+
+# cookies) let CSDN's 3-cookie site-side clear through (10-27 08:29).
+LOGINSYNC_MASS_MIN = 2
 LOGINSYNC_MASS_FRACTION = 0.5
+LOGINSYNC_AUTH_MIN = 2
+LOGINSYNC_MASS_SITES = 3
+LOGINSYNC_HOLD_SECONDS = 30.0
+# A screen that lost a site's cookies is given T back at most this often,
+# so a site that clears them on every load does not loop with the sync.
+LOGINSYNC_RESTORE_SECONDS = 600.0
+LOGINSYNC_AUTH_RE = re.compile(r"(?i)token|sess|auth|login|passport|ticket|sid|jct|uid|user|account|csrf|credential")
+# Login pages: a site often clears its own login cookies when one of these
+# loads (a stale passport tab on a bot screen logged CSDN out everywhere).
+LOGINSYNC_LOGIN_URL_RE = re.compile(
+    r"(?i)^https?://(?:[^/?#]*[.\-])?(?:passport|login|signin|sso|account|accounts|auth)[.\-][^/?#]*(?:[/?#]|$)"
+    r"|^https?://[^/?#]+/(?:[^?#]*/)?(?:login|signin|sign-in|sign_in|logon|passport|sso|oauth2?|authorize)(?:[/?#.]|$)")
 LOGINSYNC_COOKIE_FIELDS = ("value", "domain", "path", "secure", "httpOnly", "sameSite", "expires", "partitionKey", "session")
 
 
@@ -7278,8 +7298,22 @@ def loginsync_snapshot(cookies, now):
 
 def loginsync_site(key):
     domain = key.split("\t")[1].lstrip(".")
-    parts = domain.split(".")
-    return ".".join(parts[-2:]) if len(parts) >= 2 else domain
+    return loginsync_host_site(domain)
+
+
+def loginsync_host_site(host):
+    parts = str(host or "").lower().split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else ".".join(parts)
+
+
+def loginsync_login_sites(urls):
+    """Sites with a login page open among these tab URLs."""
+    out = set()
+    for url in urls or []:
+        url = str(url or "")
+        if LOGINSYNC_LOGIN_URL_RE.search(url):
+            out.add(loginsync_host_site(urlsplit(url).hostname or ""))
+    return out
 
 
 def loginsync_set_param(cookie):
@@ -7321,17 +7355,24 @@ class LoginSync:
     write(screen, params) -> True when Storage.setCookies took them.
     """
 
-    def __init__(self, read, write, now=time.time, state=None):
+    def __init__(self, read, write, now=time.time, state=None, context=None):
         self.read = read
         self.write = write
         self.now = now
+        # context(screen) -> {"owner": bool, "tabs": [url, ...]} or None (an
+        # owner screen with no known tabs).
+        self.context = context or (lambda _s: None)
         state = state if isinstance(state, dict) else {}
         self.cookies = dict(state.get("cookies") or {})  # key -> {"c": cookie|None, "t": ts}
         self.version = int(state.get("version") or 0)
         self.seen = {str(k): int(v) for k, v in (state.get("seen") or {}).items()}
         self.snaps = {}  # screen -> snapshot dict
         self.pids = {}  # screen -> pid at last snapshot
-        self.suspect = {}  # screen -> set of keys whose mass delete waits one more read
+        self.suspect = {}  # screen -> {key: first seen gone} for held mass losses
+        self.cleared = {}  # screen -> set of keys a site cleared while its login page was open
+        self.restored = {}  # (screen, key) -> when T was last given back
+        self.holds = []  # (screen, site, reason, count) of the last tick, for the log
+        self.diverged = set()  # screens holding cookies T does not have
         self.last_change = 0.0
 
     def state(self):
@@ -7362,29 +7403,73 @@ class LoginSync:
         return True
 
     def _changes(self, screen, snap):
-        """What this screen changed since its last snapshot, after the guards."""
+        """What this screen changed since its last snapshot, after the guards.
+
+        Returns (ups, dels, held, restore): held keys keep their old value in
+        the snapshot (nothing is pushed for them); restore keys are dropped
+        from it so the next push gives the screen T back.
+
+        A lost cookie is a logout only when the person did it: on the owner's
+        screen, with no login page of that site open, and (for a mass loss)
+        still gone after LOGINSYNC_HOLD_SECONDS. A site clearing its cookies
+        because its login page loaded, or a bot screen losing them, is not a
+        logout of every screen.
+        """
+        now = self.now()
+        ctx = self.context(screen) or {}
+        owner = ctx.get("owner", True)
+        login_sites = loginsync_login_sites(ctx.get("tabs"))
         old = self.snaps.get(screen) or {}
         ups = {k: v for k, v in snap.items() if old.get(k) != v}
         gone = [k for k in old if k not in snap]
         by_site = {}
         for k in old:
             by_site.setdefault(loginsync_site(k), []).append(k)
-        held = set()
-        waiting = self.suspect.get(screen) or set()
         lost = {}
         for k in gone:
             lost.setdefault(loginsync_site(k), []).append(k)
+        waiting = self.suspect.get(screen) or {}
+        cleared = self.cleared.setdefault(screen, set())
+        cleared.difference_update(k for k in list(cleared) if k in snap)
+        held, restore, dels, keep_wait = set(), set(), [], {}
+        self.holds = [h for h in self.holds if h[0] != screen]
+        many_sites = len(lost) >= LOGINSYNC_MASS_SITES
         for site, keys in lost.items():
-            total = len(by_site.get(site) or [])
-            if total >= LOGINSYNC_MASS_MIN and len(keys) >= total * LOGINSYNC_MASS_FRACTION:
-                # Most of a site's cookies vanished at once. Real logouts clear a
-                # few cookies; a profile reset clears all. Wait one more read.
-                for k in keys:
-                    if k not in waiting:
+            if site in login_sites:
+                cleared.update(keys)
+                held.update(keys)
+                self.holds.append((screen, site, "login_page", len(keys)))
+                continue
+            back = [k for k in keys if k in cleared or not owner]
+            if back:
+                for k in back:
+                    cleared.discard(k)
+                    if now - self.restored.get((screen, k), 0) >= LOGINSYNC_RESTORE_SECONDS:
+                        self.restored[(screen, k)] = now
+                        restore.add(k)
+                    else:
                         held.add(k)
-        self.suspect[screen] = held
-        dels = [k for k in gone if k not in held]
-        return ups, dels, held
+                self.holds.append((screen, site, "bot_screen" if not owner else "site_cleared", len(back)))
+                keys = [k for k in keys if k not in back]
+                if not keys:
+                    continue
+            total = len(by_site.get(site) or [])
+            auth = sum(1 for k in keys if LOGINSYNC_AUTH_RE.search(k.split("\t")[0]))
+            mass = many_sites or (len(keys) >= LOGINSYNC_MASS_MIN and len(keys) >= total * LOGINSYNC_MASS_FRACTION) or auth >= LOGINSYNC_AUTH_MIN
+            if not mass:
+                dels.extend(keys)
+                continue
+            for k in keys:
+                first = waiting.get(k, now)
+                if now - first >= LOGINSYNC_HOLD_SECONDS:
+                    dels.append(k)
+                else:
+                    keep_wait[k] = first
+                    held.add(k)
+            if any(k in keep_wait for k in keys):
+                self.holds.append((screen, site, "mass_loss", len(keys)))
+        self.suspect[screen] = keep_wait
+        return ups, dels, held, restore
 
     def tick(self, screens):
         """screens: {screen_id: pid}. Returns the number of keys that changed in T."""
@@ -7407,7 +7492,7 @@ class LoginSync:
                 self.snaps[screen] = snap
                 fresh.append(screen)
                 continue
-            ups, dels, held = self._changes(screen, snap)
+            ups, dels, held, _restore = self._changes(screen, snap)
             for key, cookie in ups.items():
                 changed += self._apply(key, cookie, now)
             for key in dels:
@@ -7415,12 +7500,19 @@ class LoginSync:
             keep = dict(snap)
             for key in held:
                 keep[key] = self.snaps[screen][key]
+            # restore keys are left out of the snapshot: the push below
+            # writes T's cookie back into this screen.
             self.snaps[screen] = keep
+            if held:
+                self.diverged.add(screen)
+            else:
+                self.diverged.discard(screen)
         for screen in list(self.snaps):
             if screen not in screens:
                 self.snaps.pop(screen, None)
                 self.pids.pop(screen, None)
                 self.suspect.pop(screen, None)
+                self.cleared.pop(screen, None)
         if changed:
             self.version += 1
             self.last_change = now
@@ -7449,7 +7541,9 @@ class LoginSync:
             if not self.write(screen, params):
                 return False
             self.snaps[screen] = expect
-        self.seen[str(screen)] = self.version
+        # A screen that is missing cookies T keeps (held) must not write its
+        # profile back into the master when its Chrome exits.
+        self.seen[str(screen)] = -1 if screen in self.diverged else self.version
         return True
 
 
@@ -7596,6 +7690,15 @@ def loginsync_cdp_read(display):
     return loginsync_cdp(display, read)
 
 
+def loginsync_cdp_tabs(display):
+    """URLs of the screen's page tabs (login pages decide whether a lost
+    cookie was the person's logout)."""
+    def tabs(conn):
+        infos = conn.call("Target.getTargets", {}).get("targetInfos") or []
+        return [str(i.get("url") or "") for i in infos if i.get("type") == "page"]
+    return loginsync_cdp(display, tabs) or []
+
+
 def loginsync_cdp_write(display, params):
     def write(conn):
         for start in range(0, len(params), 200):
@@ -7615,13 +7718,21 @@ def loginsync_interval(engine, now):
 
 def run_loginsync(user, ticks=0):
     """The container's sync loop. Exits when no screen has run for a while."""
-    engine = LoginSync(loginsync_cdp_read, loginsync_cdp_write, state=loginsync_load(user))
+    screens = {}
+
+    def context(display):
+        key = (screens.get(display) or ("", 0))[0]
+        return {"owner": key == user, "tabs": loginsync_cdp_tabs(display)}
+
+    engine = LoginSync(loginsync_cdp_read, loginsync_cdp_write, state=loginsync_load(user), context=context)
     engine.last_change = time.time()
     empty_since = None
     count = 0
     saved_version = engine.version
+    logged_holds = []
     while True:
-        screens = loginsync_screens(user)
+        screens.clear()
+        screens.update(loginsync_screens(user))
         if screens:
             empty_since = None
             try:
@@ -7631,6 +7742,10 @@ def run_loginsync(user, ticks=0):
                 changed = 0
             if changed:
                 log_event("loginsync_change", key=user, changed=changed, version=engine.version, screens=sorted(screens))
+            for hold in engine.holds:
+                if hold not in logged_holds:
+                    log_event("loginsync_hold", key=user, screen=hold[0], site=hold[1], reason=hold[2], cookies=hold[3])
+            logged_holds = list(engine.holds)
             if changed or engine.version != saved_version or count % 30 == 0:
                 try:
                     loginsync_save(user, engine.state())
@@ -7720,6 +7835,73 @@ def loginsync_screen_is_stale(user, display):
         return False
     return int(seen) < int(state.get("version") or 0)
 
+
+# ---------------------------------------------------------------------------
+# Stale tab cleanup (run start). A login page left open on a bot screen
+# (passport.csdn.net from a run two days earlier) made the site clear its
+# login cookies when that screen became active again. MaClawSrv calls
+# `tidy-tabs` before a run's first desktop step; it closes login pages and
+# crashed pages on bot screens. The owner's screen is never touched.
+# ---------------------------------------------------------------------------
+
+TIDY_ERROR_URL_RE = re.compile(r"^(chrome-error://|about:blank#blocked)")
+
+
+def tidy_tab_verdict(url):
+    url = str(url or "")
+    if LOGINSYNC_LOGIN_URL_RE.search(url):
+        return "login_page"
+    if TIDY_ERROR_URL_RE.search(url):
+        return "error_page"
+    return ""
+
+
+def tidy_tabs_plan(pages):
+    """(close, keep) lists of page dicts. At least one tab stays open."""
+    close = [p for p in pages if tidy_tab_verdict(p.get("url"))]
+    keep = [p for p in pages if p not in close]
+    return close, keep
+
+
+def tidy_tabs_screen_owner(display):
+    """True for a user's own screen, False for a bot screen, None unknown."""
+    number = _display_number(display)
+    for key, entry in (load_registry().get("users", {}) or {}).items():
+        if _display_number((entry or {}).get("display") or 0) == number:
+            return key == user_key_of(key)
+    return None
+
+
+def tidy_tabs(display):
+    if os.environ.get("MACLAW_TIDY_TABS", "1").strip() == "0":
+        return {"done": False, "why": "disabled"}
+    number = _display_number(str(display).strip().lstrip(":").split(".")[0])
+    if not number:
+        return {"done": False, "why": "no display"}
+    owner = tidy_tabs_screen_owner(number)
+    if owner is None:
+        return {"done": False, "why": "screen not in the registry"}
+    if owner:
+        return {"done": False, "why": "owner screen"}
+    port = chrome_cdp_port(number)
+    try:
+        pages = browser_pages(http_json_any("127.0.0.1", port, "/json/list"))
+    except (OSError, ValueError, TypeError) as exc:
+        return {"done": False, "why": "devtools list failed: %s" % exc}
+    close, keep = tidy_tabs_plan(pages)
+    if not close:
+        return {"done": True, "closed": []}
+    closed = []
+    try:
+        if not keep:
+            http_devtools(port, "PUT", "/json/new?about:blank")
+        for page in close:
+            http_devtools(port, "GET", "/json/close/%s" % quote(str(page.get("id") or ""), safe=""))
+            closed.append({"url": str(page.get("url") or "")[:200], "why": tidy_tab_verdict(page.get("url"))})
+    except OSError as exc:
+        return {"done": False, "why": "devtools call failed: %s" % exc, "closed": closed}
+    log_event("tidy_tabs", display=number, closed=[c["url"] for c in closed])
+    return {"done": True, "closed": closed}
 
 
 if __name__ == "__main__":

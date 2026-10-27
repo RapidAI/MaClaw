@@ -13,6 +13,9 @@ func TestDesktopTidyOncePerRunExecuteOnly(t *testing.T) {
 	calls := 0
 	old := desktopTidyBash
 	desktopTidyBash = func(ctx context.Context, scope agentruntime.Scope, cmd string) (string, error) {
+		if cmd == desktopTabTidyScript {
+			return `{"done": true, "closed": []}`, nil
+		}
 		calls++
 		if strings.Contains(cmd, "windowclose") || strings.Contains(cmd, "kill") {
 			t.Fatal("tidy must never close windows")
@@ -39,15 +42,22 @@ func TestDesktopTidyOncePerRunExecuteOnly(t *testing.T) {
 }
 
 func TestDesktopTidyScriptPassesBashValidator(t *testing.T) {
-	if _, err := desktop.BashArgs(desktopContainerName(), desktopTidyScript); err != nil {
-		t.Fatalf("tidy script rejected: %v", err)
+	for _, script := range []string{desktopTidyScript, desktopTabTidyScript} {
+		if _, err := desktop.BashArgs(desktopContainerName(), script); err != nil {
+			t.Fatalf("tidy script rejected: %v", err)
+		}
 	}
 }
 
 func TestDesktopTidySkipsTheSameFlowAndShowsTheBrowser(t *testing.T) {
 	calls := 0
 	old := desktopTidyBash
+	tabs := 0
 	desktopTidyBash = func(ctx context.Context, scope agentruntime.Scope, cmd string) (string, error) {
+		if cmd == desktopTabTidyScript {
+			tabs++
+			return `{"done": true, "closed": []}`, nil
+		}
 		calls++
 		return "minimized 0x1\nfront 0x2\n", nil
 	}
@@ -58,6 +68,10 @@ func TestDesktopTidySkipsTheSameFlowAndShowsTheBrowser(t *testing.T) {
 	desktopTidyOnce(exec, agentruntime.Scope{TenantID: "t", UserID: "flow", RunID: "r2"}, "app_open")
 	if calls != 1 {
 		t.Fatalf("follow-up run tidied again: calls=%d", calls)
+	}
+	// Stale login tabs are closed for every run, also in the same flow.
+	if tabs != 2 {
+		t.Fatalf("tab tidy calls=%d, want 2", tabs)
 	}
 	if !strings.Contains(desktopTidyScript, "windowactivate") {
 		t.Fatal("tidy leaves the screen empty")

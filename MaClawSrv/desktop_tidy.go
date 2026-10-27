@@ -31,6 +31,13 @@ b=$(xdotool search --onlyvisible --class chromium 2>/dev/null | tail -1)
 [ -n "$b" ] && xdotool windowactivate "$b" 2>/dev/null && echo "front $b"
 exit 0`
 
+// desktopTabTidyScript closes stale login pages and crashed pages on a bot
+// screen (the supervisor leaves the owner's screen alone). A passport tab
+// left from an earlier run made a site clear its login cookies when the
+// screen became active again (CSDN, 10-27). Runs once per run, also in the
+// same flow: a login page from the last run is never part of the new one.
+const desktopTabTidyScript = `python3 /desktop_supervisor.py tidy-tabs "${DISPLAY:-}" 2>/dev/null || true`
+
 // desktopTidySameFlow: a run that starts this soon after the same person's
 // last desktop step continues their flow (a follow-up asking to fix the
 // document just made), so its windows are left as they are.
@@ -80,6 +87,7 @@ func desktopTidyOnce(ctx context.Context, scope agentruntime.Scope, action strin
 	if _, seen := desktopTidied.LoadOrStore(key, now); seen {
 		return
 	}
+	desktopTabTidy(ctx, scope)
 	if last, ok := desktopLastStep.Load(scope.TenantID + "/" + scope.UserID); ok {
 		if t, ok := last.(time.Time); ok && now.Sub(t) < desktopTidySameFlow {
 			log.Printf("[desktop-tidy] user=%s skipped: same flow (last step %s ago)", scope.UserID, now.Sub(t).Round(time.Second))
@@ -101,4 +109,17 @@ func desktopTidyOnce(ctx context.Context, scope agentruntime.Scope, action strin
 		return
 	}
 	log.Printf("[desktop-tidy] user=%s minimized=%d", scope.UserID, n)
+}
+
+func desktopTabTidy(ctx context.Context, scope agentruntime.Scope) {
+	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := desktopTidyBash(tctx, scope, desktopTabTidyScript)
+	if err != nil {
+		log.Printf("[desktop-tidy] user=%s tabs skipped: %v", scope.UserID, err)
+		return
+	}
+	if strings.Contains(out, `"closed": [{`) {
+		log.Printf("[desktop-tidy] user=%s tabs: %s", scope.UserID, strings.TrimSpace(out))
+	}
 }
