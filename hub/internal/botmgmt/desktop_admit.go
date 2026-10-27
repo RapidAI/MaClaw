@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -170,6 +171,11 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 	clientMessageID = strings.TrimSpace(clientMessageID)
 	botID = strings.TrimSpace(botID)
 	userID = strings.TrimSpace(userID)
+	// An isolated bot drives its own display, so only admits on the same
+	// desktop (same desktop user) make this one busy. Read the bots before
+	// taking s.mu; load does not lock.
+	desktopOf := s.botDesktopUsers(tenantID, userID)
+	mine := desktopOf(botID)
 	s.mu.Lock()
 	s.ensureDesktopHydrated(tenantID)
 	if s.desktopAdmits == nil {
@@ -203,6 +209,9 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 		if sameKey {
 			sameReal = true
 			continue
+		}
+		if !sameBot && desktopOf(desktopAdmitBot(key, userPrefix)) != mine {
+			continue // another bot's own desktop
 		}
 		otherLive = true
 	}
@@ -1078,4 +1087,31 @@ func (s *Service) readDesktopRunFromSrv(ctx context.Context, tenantID, userID, i
 		return desktopRunView{}, err
 	}
 	return view, nil
+}
+
+// desktopAdmitBot is the bot id inside an admit key under userPrefix.
+func desktopAdmitBot(key, userPrefix string) string {
+	rest := strings.TrimPrefix(key, userPrefix)
+	if i := strings.Index(rest, "\x00"); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
+// botDesktopUsers maps a bot id to the desktop user its commands drive:
+// the owner for shared bots, owner+bot for isolated ones.
+func (s *Service) botDesktopUsers(tenantID, userID string) func(string) string {
+	bots := map[string]string{}
+	if rec, err := s.load(context.Background(), tenantID); err == nil {
+		for _, b := range rec.Bots {
+			bots[b.ID] = desktopUserForBot(userID, b)
+		}
+	}
+	owner, _ := desktop.SplitDesktopUser(userID)
+	return func(botID string) string {
+		if u, ok := bots[strings.TrimSpace(botID)]; ok {
+			return u
+		}
+		return owner
+	}
 }
