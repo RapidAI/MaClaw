@@ -3080,7 +3080,7 @@ export function BuddyStart(arg1:string):Promise<void>;
 
 export function BuddyStop():Promise<void>;
 
-export function BuddyGetStatus():Promise<{enabled:boolean,port?:string,connected:boolean,device_fw?:string,device_board?:string,page?:string,last_state_at?:string,last_ack_at?:string,missing_glyphs?:number,last_error?:string,snapshot_age_s?:number}>;
+export function BuddyGetStatus():Promise<{enabled:boolean,port?:string,connected:boolean,device_fw?:string,device_board?:string,device_touch?:boolean,device_sound?:boolean,page?:string,last_state_at?:string,last_ack_at?:string,missing_glyphs?:number,last_error?:string,snapshot_age_s?:number}>;
 
 export function BuddyPushSnapshot(arg1:string):Promise<void>;
 
@@ -3107,3 +3107,7 @@ export function SaveBotRoom(arg1:string,arg2:string,arg3:Array<string>,arg4:Reco
 export function DeleteBotRoom(arg1:string):Promise<void>;
 
 export function PostBotRoomMessage(arg1:string,arg2:string):Promise<{message:{id:string,from:string,target:string,kind:string,text:string,created_at:string},woken:Array<string>}>;
+
+export function BuddyGetSoundConfig():Promise<{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number}}>;
+
+export function BuddySetSoundConfig(arg1:{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number}}):Promise<void>;

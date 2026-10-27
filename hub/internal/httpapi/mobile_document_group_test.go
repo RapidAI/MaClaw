@@ -395,6 +395,45 @@ func TestCompanionShareHostReplyRetrySurvivesTrimmedQuestion(t *testing.T) {
 	}
 }
 
+func TestCompanionDocumentShareDeleteHidesTheSingleLink(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "delete-owner@example.com")
+	shareRec := postCompanionShareAs(t, identity, ownerToken, "public", "", "0", "", "a.pdf", []byte("%PDF-delete"))
+	if shareRec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", shareRec.Code, shareRec.Body.String())
+	}
+	var shared map[string]any
+	if err := json.Unmarshal(shareRec.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := shared["token"].(string)
+	single := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/"+token, nil)
+		req.SetPathValue("token", token)
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	if got := single(); got.Code != http.StatusOK {
+		t.Fatalf("live link: %d %s", got.Code, got.Body.String())
+	}
+	del := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/shares/"+token, nil)
+	del.SetPathValue("token", token)
+	del.Header.Set("Authorization", "Bearer "+ownerToken)
+	delRec := httptest.NewRecorder()
+	CompanionDocumentShareDeleteHandler(identity).ServeHTTP(delRec, del)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", delRec.Code, delRec.Body.String())
+	}
+	// The recipient's revocation probe treats this explicit message as a
+	// deletion; a route that does not exist has no such body.
+	gone := single()
+	if gone.Code != http.StatusNotFound || !strings.Contains(gone.Body.String(), "分享链接不存在") {
+		t.Fatalf("deleted link: %d %s", gone.Code, gone.Body.String())
+	}
+}
+
 func TestCompanionDocumentGroupRenameIconLeaveAndDissolve(t *testing.T) {
 	resetCompanionDocShares(t)
 	identity, _, _ := newHTTPAPITestServices(t)

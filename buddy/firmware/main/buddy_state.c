@@ -95,6 +95,19 @@ void buddy_state_apply_clock(const char *date, const char *weekday) {
     buddy_state_unlock();
 }
 
+void buddy_state_apply_celebrate(const char *title, int seconds) {
+    buddy_state_lock();
+    strlcpy(s_view.celebrate_title, title ? title : "", sizeof(s_view.celebrate_title));
+    s_view.celebrate_active = s_view.celebrate_title[0] != '\0';
+    s_view.celebrate_start_ms = now_ms();
+    if (seconds < 2) seconds = 2;
+    if (seconds > 10) seconds = 10;
+    s_view.celebrate_seconds = seconds;
+    s_view.last_host_ms = now_ms();
+    s_view.online = true;
+    buddy_state_unlock();
+}
+
 void buddy_state_set_prompt(const char *text) {
     buddy_state_lock();
     strlcpy(s_view.prompt, text ? text : "", sizeof(s_view.prompt));
@@ -124,6 +137,10 @@ void buddy_state_tick(void) {
     }
     if (s_view.has_weather && (now - s_view.last_host_ms) >= BUDDY_STALE_MS) {
         s_view.weather_stale = true;
+    }
+    if (s_view.celebrate_active &&
+        (now - s_view.celebrate_start_ms) >= (int64_t)s_view.celebrate_seconds * 1000) {
+        s_view.celebrate_active = false;
     }
     buddy_state_unlock();
 }

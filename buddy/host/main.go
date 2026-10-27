@@ -25,6 +25,7 @@ func main() {
 	portName := flag.String("port", "", "serial port (default: first Espressif/CP210x/CH34x)")
 	idle := flag.Bool("idle", false, "push zero tasks (standby pet page)")
 	titlesFile := flag.String("titles", "", "JSON array of titles to push one at a time (font coverage check)")
+	celebrateDemo := flag.Bool("celebrate-demo", false, "push a fake task completion and watch the celebration page")
 	verbose := flag.Bool("v", true, "log link events")
 	flag.Parse()
 
@@ -67,6 +68,10 @@ func main() {
 
 	if *titlesFile != "" {
 		runFontCheck(ctx, runner, *titlesFile)
+		return
+	}
+	if *celebrateDemo {
+		runCelebrateDemo(ctx, runner)
 		return
 	}
 
@@ -166,6 +171,51 @@ func runFontCheck(ctx context.Context, runner *service.Runner, path string) {
 		fmt.Fprintln(os.Stderr, "FONT_CHECK FAILED: device not connected")
 		os.Exit(1)
 	}
+}
+
+// runCelebrateDemo pushes one in-progress task and then completes it, which
+// makes the service emit the celebrate frame. The device reports "celebrate"
+// in its heartbeat while the page is active, then returns to standby.
+func runCelebrateDemo(ctx context.Context, runner *service.Runner) {
+	waitUntil := time.Now().Add(10 * time.Second)
+	for !runner.Status().Connected && time.Now().Before(waitUntil) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	runner.SetSnapshot(protocol.Snapshot{
+		Counts: protocol.Counts{Total: 2, InProgress: 1, Done: 1},
+		Current: []protocol.TaskItem{
+			{ID: "demo-1", Title: "庆祝屏验证任务", Progress: -1},
+		},
+		UpdatedAt: time.Now().UnixMilli(),
+	})
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Second):
+	}
+	runner.SetSnapshot(protocol.Snapshot{
+		Counts:    protocol.Counts{Total: 2, InProgress: 0, Done: 2},
+		UpdatedAt: time.Now().UnixMilli(),
+	})
+
+	seen := false
+	for i := 0; i < 20; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		s := runner.Status()
+		if s.Page == "celebrate" {
+			seen = true
+		}
+		fmt.Printf("celebrate-demo page=%s\n", s.Page)
+	}
+	fmt.Printf("CELEBRATE_DEMO seen=%v connected=%v\n", seen, runner.Status().Connected)
 }
 
 func portLabel(name string) string {

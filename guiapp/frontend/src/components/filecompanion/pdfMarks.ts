@@ -169,7 +169,12 @@ export function loadPdfMarkCounts(paths: string[]): Map<string, number> {
     return counts;
 }
 
-export function savePdfMarks(path: string, value: unknown): PdfMark[] {
+// A reader's own paint or clear. The companion window listens and pushes the
+// project to the shares this document hosts; applying a received share must
+// not announce, or two readers' copies would echo updates back and forth.
+export const PDF_MARKS_CHANGED_EVENT = "maclaw:companion-pdf-marks-changed";
+
+export function savePdfMarks(path: string, value: unknown, announce = false): PdfMark[] {
     const key = pdfMarkPathKey(path);
     const marks = normalizePdfMarks(value) ?? [];
     if (!key) return marks;
@@ -178,6 +183,13 @@ export function savePdfMarks(path: string, value: unknown): PdfMark[] {
     else store[key] = marks;
     saveRevision += 1;
     savePdfMarksToHost(key, marks);
+    if (announce) {
+        try {
+            window.dispatchEvent(new CustomEvent(PDF_MARKS_CHANGED_EVENT, { detail: { path } }));
+        } catch {
+            // A non-browser host has no event bus; the host write still ran.
+        }
+    }
     return marks;
 }
 

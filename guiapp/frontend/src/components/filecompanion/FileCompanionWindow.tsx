@@ -75,7 +75,8 @@ import { NoteResultCard } from "./NoteResultCard";
 import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps } from "../../utils/windowDrag";
 import type { CodePreviewTheme } from "../ai/FileTabBar";
-import { loadPdfMarks, normalizePdfMarks, savePdfMarks, type PdfMark } from "./pdfMarks";
+import { loadPdfMarks, normalizePdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks, type PdfMark } from "./pdfMarks";
+import { savePdfTranslations } from "./pdfTranslations";
 import { CHAT_MARK_TEXT_MAX, loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
 import { applyChatHighlights, chatHighlightsSupported, chatMarkAtOffset, chatMessageIndexAt, chatMessageRoot, chatOffsetForPoint, chatSelectionSlices, chatTextSpans, clearChatHighlights, type ChatSelectionSlice } from "./chatMarkAnchors";
 import { CompanionChatMarkMenu } from "./CompanionChatMarkMenu";
@@ -1954,6 +1955,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // this file is the host's. It waits here and is posted only if the reader
     // is not the host.
     const pendingShareNotesRef = useRef(new Map<string, PendingShareNote[]>());
+    // A highlight painted before the list says this file is hosted waits here.
+    const pendingShareMarksRef = useRef(new Set<string>());
     const publishShareNoteRef = useRef<(path: string, text: string) => Promise<boolean>>(async () => false);
     // The Hub records host replies only on the newer protocol. Until a list
     // says otherwise, keep the old behavior: the reader's own turn answers.
@@ -2101,6 +2104,25 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         for (const update of synced.updates) applyShareUpdateRef.current(update);
         applyShareNotesRef.current(listed);
         if (synced.removed.length === 0) return;
+        // A revoked share is withdrawn like a local delete: its highlights,
+        // translations, and answer marks must not outlive the copy. The host
+        // side already removed the transcript and generated files.
+        for (const path of synced.removed) {
+            if (!path) continue;
+            savePdfMarks(path, []);
+            savePdfTranslations(path, []);
+            saveChatMarks(path, []);
+            const held = sharePushTimerRef.current.get(path);
+            if (held !== undefined) {
+                window.clearTimeout(held);
+                sharePushTimerRef.current.delete(path);
+            }
+            sharePushPendingRef.current.delete(path);
+            sharePushWarnedRef.current.delete(path);
+            pendingShareMarksRef.current.delete(path);
+            forgetIntro(path);
+        }
+        showToast("这份分享已被撤回，本地副本与阅读记录已清除", "info", 6000);
         const gone = new Set(synced.removed.map(companionSharePathKey));
         setTabs((current) => {
             const left = current.filter((tab) => !gone.has(companionSharePathKey(tab.path)));
@@ -2149,6 +2171,33 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         for (const timer of sharePushTimerRef.current.values()) window.clearTimeout(timer);
         sharePushTimerRef.current.clear();
     }, []);
+    // Highlights painted on the document are part of the share project too.
+    // The reader has already saved them synchronously; reuse the same debounced
+    // upload as a chat line, which also skips documents this person only reads.
+    useEffect(() => {
+        const onMarksChanged = (event: Event) => {
+            const detail = (event as CustomEvent<{ path?: string }>).detail;
+            const path = String(detail?.path || "").trim();
+            if (!path) return;
+            if (mineSharesByPathRef.current.has(companionSharePathKey(path))) {
+                pushShareTranscriptRef.current(path);
+                return;
+            }
+            // The paint can land before the library list says this file is
+            // hosted. Keep it until that list arrives.
+            pendingShareMarksRef.current.add(path);
+        };
+        window.addEventListener(PDF_MARKS_CHANGED_EVENT, onMarksChanged);
+        return () => window.removeEventListener(PDF_MARKS_CHANGED_EVENT, onMarksChanged);
+    }, []);
+    useEffect(() => {
+        if (pendingShareMarksRef.current.size === 0) return;
+        for (const path of [...pendingShareMarksRef.current]) {
+            if (!mineSharesByPathRef.current.has(companionSharePathKey(path))) continue;
+            pendingShareMarksRef.current.delete(path);
+            pushShareTranscriptRef.current(path);
+        }
+    }, [mineSharesByPath]);
     // The library panel is not the only reader. A removed member, or a newer
     // revision, has to land while the document is already open. A received
     // share polls on a short timer so the host's next line appears while the

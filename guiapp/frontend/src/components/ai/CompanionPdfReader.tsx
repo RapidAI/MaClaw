@@ -1330,7 +1330,9 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     }, [openNoteId]);
 
     const commit = (next: PdfMark[]) => {
-        const saved = savePdfMarks(absPath, next);
+        // A reader's own paint or clear is part of the shared project when this
+        // document is hosted; the companion window uploads it after a debounce.
+        const saved = savePdfMarks(absPath, next, true);
         setMarks(saved);
         setMenu(null);
     };

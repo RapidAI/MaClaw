@@ -135,10 +135,11 @@ static void draw_value_right(uint16_t *fb, int right_x, int y, int value, uint16
     draw_text(fb, right_x - width, y, buf, fg, bg, scale, W);
 }
 
-static int page_of(const buddy_view_t *v) { return v->prompt_active ? BUDDY_PAGE_PROMPT
-                                        : (v->online && v->counts.in_progress > 0)
-                                            ? BUDDY_PAGE_TASKS
-                                            : BUDDY_PAGE_STANDBY; }
+static int page_of(const buddy_view_t *v) {
+    if (v->prompt_active) return BUDDY_PAGE_PROMPT;
+    if (v->celebrate_active) return BUDDY_PAGE_CELEBRATE;
+    return (v->online && v->counts.in_progress > 0) ? BUDDY_PAGE_TASKS : BUDDY_PAGE_STANDBY;
+}
 
 int buddy_ui_page(const buddy_view_t *view) {
     if (!view) return BUDDY_PAGE_STANDBY;
@@ -151,6 +152,8 @@ const char *buddy_ui_page_name(int page) {
             return "tasks";
         case BUDDY_PAGE_PROMPT:
             return "prompt";
+        case BUDDY_PAGE_CELEBRATE:
+            return "celebrate";
         default:
             return "standby";
     }
@@ -184,7 +187,7 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
     // Three counters. The 360px panel's visible aperture is ~300px, so keep
     // content inside r=150 from (180,180): values end at x=270, labels at x=88.
     const int label_x = 88;
-    const int value_right = 266;
+    const int value_right = 262;
     draw_text(fb, label_x, 74, "总任务", COL_TEXT, COL_BG, 1, 120);
     draw_value_right(fb, value_right, 62, v->counts.total, COL_TEXT, COL_BG, 4);
 
@@ -213,12 +216,12 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
     } else {
         strlcpy(line1, "当前没有进行中的任务", sizeof(line1));
     }
-    draw_text(fb, text_x, 210, line1, COL_TEXT, COL_BG, 1, text_w);
-    if (line2[0]) draw_text(fb, text_x, 238, line2, COL_TEXT, COL_BG, 1, text_w);
+    draw_text(fb, text_x, 206, line1, COL_TEXT, COL_BG, 1, text_w);
+    if (line2[0]) draw_text(fb, text_x, 234, line2, COL_TEXT, COL_BG, 1, text_w);
 
     // Progress bar, narrowed so its bottom corners stay inside the aperture.
     const int bar_x = 108;
-    const int bar_y = 296;
+    const int bar_y = 298;
     const int bar_w = 144;
     const int bar_h = 12;
     fill_rect(fb, bar_x, bar_y, bar_w, bar_h, COL_PANEL);
@@ -230,7 +233,7 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
         fill_rect(fb, bar_x, bar_y, fill_w, bar_h, COL_ACCENT);
         char pct[8];
         snprintf(pct, sizeof(pct), "%d%%", (int)(progress * 100.0f + 0.5f));
-        draw_centered(fb, 310, pct, COL_MUTED, COL_BG, 2);
+        draw_centered(fb, 312, pct, COL_MUTED, COL_BG, 2);
     } else {
         // Indeterminate: a moving bright block.
         const int block = 30;
@@ -264,7 +267,7 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
             tail_color = COL_WARN;
         }
     }
-    if (tail[0]) draw_centered(fb, 268, tail, tail_color, COL_BG, 1);
+    if (tail[0]) draw_centered(fb, 270, tail, tail_color, COL_BG, 1);
 }
 
 static void draw_pet(uint16_t *fb, int cx, int cy, int64_t now_ms) {
@@ -355,6 +358,74 @@ static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_m
     }
 }
 
+static void draw_celebrate_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) {
+    fill_rect(fb, 0, 0, W, H, COL_BG);
+    const int64_t elapsed = now_ms - v->celebrate_start_ms;
+    if (elapsed < 0) return;
+    if (elapsed > (int64_t)v->celebrate_seconds * 1000) return;
+
+    // Staggered rockets: each rises for 600ms, then bursts into 14 particles.
+    // The schedule covers the whole 5s page with six launches.
+    typedef struct {
+        int x;
+        int y;
+        int launch_ms;
+        uint16_t color;
+    } rocket_t;
+    // The colour macros expand to buddy_color(...) calls, so the palette is
+    // copied into locals before the stack array is initialized.
+    const uint16_t c_accent = COL_ACCENT;
+    const uint16_t c_success = COL_SUCCESS;
+    const uint16_t c_warn = COL_WARN;
+    const uint16_t c_cheek = COL_PET_CHEEK;
+    const rocket_t rockets[] = {
+        {110, 150, 0, c_accent},      {250, 130, 450, c_success},
+        {180, 100, 900, c_warn},      {130, 190, 1700, c_cheek},
+        {240, 170, 2150, c_accent},   {180, 140, 2600, c_success},
+    };
+    for (size_t i = 0; i < sizeof(rockets) / sizeof(rockets[0]); ++i) {
+        const rocket_t *r = &rockets[i];
+        const int64_t e = elapsed - r->launch_ms;
+        if (e < 0) continue;
+        if (e < 600) {
+            const float k = (float)e / 600.0f;
+            const int y = 320 - (int)((320 - r->y) * k);
+            fill_rect(fb, r->x - 1, y, 3, 10, r->color);
+            fill_rect(fb, r->x, y + 10, 1, 8, COL_MUTED);
+            continue;
+        }
+        const int pe = (int)(e - 600);
+        if (pe > 1300) continue;
+        if (pe < 160) {
+            int radius = 10 - pe / 20;
+            if (radius < 2) radius = 2;
+            fill_circle(fb, r->x, r->y, radius, COL_TEXT);
+        }
+        for (int p = 0; p < 14; ++p) {
+            const float ang = (float)p * 6.2831853f / 14.0f;
+            const float speed = 40.0f + (float)(p % 4) * 14.0f;
+            const float t = (float)pe / 1000.0f;
+            const int x = r->x + (int)(cosf(ang) * speed * t);
+            const int y = r->y + (int)(sinf(ang) * speed * t + 0.5f * 90.0f * t * t);
+            fill_circle(fb, x, y, pe > 900 ? 1 : 2, r->color);
+        }
+    }
+
+    // The message is visible for the first 2.2s, then only fireworks remain.
+    if (elapsed < 2200) {
+        draw_centered(fb, 92, "✓ 任务完成", COL_ACCENT, COL_BG, 1);
+        char line1[BUDDY_TITLE_BYTES + 8];
+        char line2[BUDDY_TITLE_BYTES + 8];
+        line2[0] = '\0';
+        const size_t used = fit_text(line1, sizeof(line1), v->celebrate_title, 1, 240, true);
+        if (used < strlen(v->celebrate_title)) {
+            fit_text(line2, sizeof(line2), v->celebrate_title + used, 1, 240, true);
+        }
+        draw_centered(fb, 128, line1, COL_TEXT, COL_BG, 1);
+        if (line2[0]) draw_centered(fb, 156, line2, COL_TEXT, COL_BG, 1);
+    }
+}
+
 static void draw_prompt_page(uint16_t *fb, const buddy_view_t *v) {
     fill_rect(fb, 0, 0, W, H, COL_BG);
     draw_centered(fb, 140, "MaClaw Buddy", COL_ACCENT, COL_BG, 2);
@@ -376,8 +447,16 @@ void buddy_ui_render(const buddy_view_t *v, int64_t now_ms) {
 
     const int page = page_of(v);
     const int active = active_task_index(v, now_ms);
+    // The celebration page is a 5s animation; draw it on every tick (the UI
+    // task runs at 20fps) and let the state tick expire it.
+    if (page == BUDDY_PAGE_CELEBRATE) {
+        draw_celebrate_page(fb, v, now_ms);
+        buddy_display_flush_rows(0, H);
+        s_last_page = page;
+        return;
+    }
     // The pet uses a 120ms animation frame; redrawing a full 360x360 frame on
-    // every 100ms tick would push ~2.6MB/s over QSPI for no visible gain.
+    // every tick would push several MB/s over QSPI for no visible gain.
     static int64_t s_last_anim_ms;
     const bool anim_frame = now_ms - s_last_anim_ms >= 120;
     if (page == BUDDY_PAGE_STANDBY && !anim_frame) {

@@ -17,10 +17,12 @@
 /* Message type strings accepted on the wire. */
 #define BUDDY_MSG_AMBIENT "ambient"
 #define BUDDY_MSG_ASSET_CHUNK "asset_chunk"
+#define BUDDY_MSG_CELEBRATE "celebrate"
 #define BUDDY_MSG_CLOCK "clock"
 #define BUDDY_MSG_HEARTBEAT "heartbeat"
 #define BUDDY_MSG_HELLO "hello"
 #define BUDDY_MSG_LOG "log"
 #define BUDDY_MSG_PET "pet"
+#define BUDDY_MSG_SOUND "sound"
 #define BUDDY_MSG_STATE "state"
 #define BUDDY_MSG_STATE_ACK "state_ack"

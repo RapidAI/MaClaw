@@ -20,6 +20,7 @@ MaClaw GUI (guiapp)                buddy service（进程内）           ESP32-
 | GUI 集成 | `guiapp/buddy_service.go` | ✅ 自动连接 + Wails 设置接口 |
 | 前端快照推送 | `guiapp/frontend/src/components/layout/buddySnapshot.ts` | ✅ 与侧栏同口径 + 单测 |
 | 设置面板 | `guiapp/frontend/src/components/settings/BuddySettingsSection.tsx` | ✅ 设置 → 硬件 |
+| 通知音效 | `firmware/main/buddy_sound.c`、`tools/generate_sounds.py` | ✅ ES8311 + I2S，5 段音效，总开关/分事件开关 |
 | 联调 CLI | `host/` | ✅ `go run ./buddy/host -list` |
 | 刷写/回滚 | `tools/` | ✅ 先备份 app 分区，只写 `0x10000` |
 
@@ -108,6 +109,21 @@ go run ./buddy/host -idle           # 只推 0 个进行中任务 → 宠物+天
   因此不会与侧栏漂移。详见 `docs/PROTOCOL.md` §3.1。
 - 字库覆盖不足时画方框并计入 `missing_glyphs`，不静默吞字；**不支持的 ASCII
   标点也计入**（50 条真实标题实测为 0）。
+
+## 通知音效
+
+设备内置 5 段合成音效（16kHz/16bit 立体声，试听文件在
+`build/verify/sounds/`）。设置面板提供：
+
+- **音效总开关**（关闭后完全静音）；
+- **运行中 / 完成 / 待机** 三个事件各自的开关；
+- 每个事件从 5 种音效中选择一种（默认第 1 种）。
+
+触发时机是页面切换：待机→任务（运行中）、进入庆祝页（完成）、任务→待机
+（待机）。配置随 `sound` 协议帧下发并写入设备 NVS。
+
+> 运行中的 MaClaw 需要**重新构建/重启**才会显示音效设置；快捷方式：
+> `build\bin\MaClaw-sound.exe`（先关闭旧实例，单实例锁同名）。
 
 ## 已知限制（M4）
 

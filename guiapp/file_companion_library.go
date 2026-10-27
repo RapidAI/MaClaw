@@ -329,6 +329,15 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 			}
 		} else {
 			a.fileCompanionNotesReply.Store(notesReply)
+			// A received link can disappear from the list because the host
+			// deleted it, or because it expired. Ask the Hub which one before
+			// the merge keeps a downloaded copy forever. No library lock is
+			// held while these network probes run.
+			fileCompanionLibraryMu.Lock()
+			probeSnapshot := append([]FileCompanionLibraryItem(nil), items...)
+			dismissedForProbe := a.readDismissedShareTokensLocked()
+			fileCompanionLibraryMu.Unlock()
+			revoked := a.probeRevokedFileCompanionShares(hub, viewer, probeSnapshot, remote, dismissedForProbe)
 			fileCompanionLibraryMu.Lock()
 			fresh, freshOK := a.readFileCompanionLibraryLocked()
 			if freshOK {
@@ -342,10 +351,12 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 					epochs[item.Token] = fileCompanionShareEpoch[item.Token]
 				}
 			}
-			items = mergeFileCompanionShares(items, remote, hub, a.readDismissedShareTokensLocked())
+			dismissedNow := a.readDismissedShareTokensLocked()
+			items = mergeFileCompanionSharesWithRevoked(items, remote, hub, dismissedNow, revoked)
 			fileCompanionLibraryMu.Unlock()
 			removedTokens := map[string]bool{}
-			removed = a.dropRevokedGroupCopies(previous, remote, removedTokens, epochs)
+			var purgePaths []string
+			removed, purgePaths = a.dropRevokedFileCompanionShares(items, previous, remote, revoked, removedTokens, epochs)
 			updates = a.pullNewerFileCompanionShares(hub, viewer, items, previous)
 			fileCompanionLibraryMu.Lock()
 			if fresh, freshOK = a.readFileCompanionLibraryLocked(); freshOK {
@@ -373,9 +384,28 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 				}
 				removed = a.withoutSupersededRevokePaths(removed, superseded)
 				items = reconcileFileCompanionLibrary(fresh, items, removedTokens)
+				// Keep a tab (and its reader state) when another row still uses
+				// that path. Only a path whose last row is gone is withdrawn.
+				if len(removed) > 0 {
+					keptRemoved := make([]string, 0, len(removed))
+					for _, path := range removed {
+						if path != "" && !fileCompanionLibraryUsesPath(items, path) {
+							keptRemoved = append(keptRemoved, path)
+						}
+					}
+					removed = keptRemoved
+				}
 				updates = withoutDismissedShareUpdates(updates, dismissedNow)
 			}
 			_ = a.writeFileCompanionLibraryLocked(items)
+			// A revoked received copy also loses its transcript, drawings,
+			// generated notes, and result files. This runs while the library is
+			// locked so a re-import cannot publish into the session being purged.
+			for _, path := range purgePaths {
+				if path != "" && !fileCompanionLibraryUsesPath(items, path) {
+					a.purgeFileCompanionProjectData(path)
+				}
+			}
 			fileCompanionLibraryMu.Unlock()
 			fileCompanionLibraryRefreshMu.Unlock()
 		}
@@ -447,6 +477,14 @@ func dropMissingFileCompanionLibrary(items []FileCompanionLibraryItem) ([]FileCo
 }
 
 func mergeFileCompanionShares(items, remote []FileCompanionLibraryItem, hub string, dismissed map[string]bool) []FileCompanionLibraryItem {
+	return mergeFileCompanionSharesWithRevoked(items, remote, hub, dismissed, nil)
+}
+
+// mergeFileCompanionSharesWithRevoked also drops a previous cloud row the Hub
+// confirmed as deleted. A non-group share the list no longer returns is kept
+// only while it still exists on the Hub (for example, an expired link); a
+// revoked one must not linger just because its downloaded file is present.
+func mergeFileCompanionSharesWithRevoked(items, remote []FileCompanionLibraryItem, hub string, dismissed, revoked map[string]bool) []FileCompanionLibraryItem {
 	previous := map[string]FileCompanionLibraryItem{}
 	kept := make([]FileCompanionLibraryItem, 0, len(items)+len(remote))
 	for _, item := range items {
@@ -486,7 +524,7 @@ func mergeFileCompanionShares(items, remote []FileCompanionLibraryItem, hub stri
 		kept = append(kept, item)
 	}
 	for token, prev := range previous {
-		if seen[token] || dismissed[token] || prev.Visibility == "group" || !fileCompanionLibraryFileExists(prev.Path) {
+		if seen[token] || dismissed[token] || revoked[token] || prev.Visibility == "group" || !fileCompanionLibraryFileExists(prev.Path) {
 			continue
 		}
 		kept = append(kept, prev)

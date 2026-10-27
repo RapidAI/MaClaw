@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+    BuddyGetSoundConfig,
     BuddyGetStatus,
     BuddyListPorts,
     BuddyRefreshWeather,
+    BuddySetSoundConfig,
     BuddyStart,
     BuddyStop,
 } from '../../../wailsjs/go/main/App';
@@ -25,6 +27,7 @@ type BuddyStatus = {
     device_fw?: string;
     device_board?: string;
     device_touch?: boolean;
+    device_sound?: boolean;
     page?: string;
     last_state_at?: string;
     last_ack_at?: string;
@@ -33,8 +36,28 @@ type BuddyStatus = {
     snapshot_age_s?: number;
 };
 
+type SoundEvent = { enabled: boolean; effect: number };
+type SoundEventKey = 'running' | 'complete' | 'standby';
+type SoundConfig = {
+    master: boolean;
+    running: SoundEvent;
+    complete: SoundEvent;
+    standby: SoundEvent;
+};
+
+const SOUND_EVENTS: Array<{ key: SoundEventKey; en: string; zh: string; tw: string }> = [
+    { key: 'running', en: 'Running', zh: '运行中', tw: '執行中' },
+    { key: 'complete', en: 'Completed', zh: '完成', tw: '完成' },
+    { key: 'standby', en: 'Standby', zh: '待机', tw: '待機' },
+];
+
+const SOUND_COUNT = 5;
 const POLL_MS = 3000;
 const PORT_POLL_MS = 30000;
+
+function withEvent(cfg: SoundConfig, key: SoundEventKey, patch: Partial<SoundEvent>): SoundConfig {
+    return { ...cfg, [key]: { ...cfg[key], ...patch } };
+}
 
 /**
  * USB companion display settings. The service lives in the Go process and
@@ -48,6 +71,7 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const [weatherNote, setWeatherNote] = useState('');
+    const [sound, setSound] = useState<SoundConfig | null>(null);
     const statusRequest = useRef<Promise<void> | null>(null);
     const portsRequest = useRef<Promise<void> | null>(null);
 
@@ -89,15 +113,37 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
         await Promise.all([refreshStatus(), refreshPorts()]);
     }, [refreshPorts, refreshStatus]);
 
+    const loadSound = useCallback(async () => {
+        try {
+            setSound((await BuddyGetSoundConfig()) as SoundConfig);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        }
+    }, []);
+
     useEffect(() => {
         void refresh();
+        void loadSound();
         const stopStatus = startVisibleInterval(() => void refreshStatus(), POLL_MS);
         const stopPorts = startVisibleInterval(() => void refreshPorts(), PORT_POLL_MS);
         return () => {
             stopStatus();
             stopPorts();
         };
-    }, [refresh, refreshPorts, refreshStatus]);
+    }, [refresh, refreshPorts, refreshStatus, loadSound]);
+
+    const saveSound = async (next: SoundConfig) => {
+        // Optimistic update keeps the controls responsive; a rejected write
+        // reloads the persisted values instead of leaving a lie on screen.
+        setSound(next);
+        setError('');
+        try {
+            await BuddySetSoundConfig(next);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+            await loadSound();
+        }
+    };
 
     const toggle = async (enabled: boolean) => {
         setBusy(true);
@@ -147,6 +193,15 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
         }
     };
 
+    const effectName = (index: number): string =>
+        [
+            localizeText(lang, 'Light chime', '轻快双音', '輕快雙音'),
+            localizeText(lang, 'Bright bell', '清脆铃声', '清脆鈴聲'),
+            localizeText(lang, 'Warm chord', '温暖和弦', '溫暖和弦'),
+            localizeText(lang, 'Rising glide', '上升滑音', '上升滑音'),
+            localizeText(lang, 'Low two-tone', '低沉双音', '低沉雙音'),
+        ][index] || `#${index + 1}`;
+
     const stateText = status?.connected
         ? localizeText(lang, 'Connected', '已连接', '已連線')
         : localizeText(lang, 'Not connected', '未连接', '未連線');
@@ -157,6 +212,10 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
     const touchNote =
         status?.connected && status.device_touch === false
             ? ` · ${localizeText(lang, 'touch not detected', '触摸未检测到', '觸控未偵測到')}`
+            : '';
+    const soundNote =
+        status?.connected && status.device_sound === false
+            ? ` · ${localizeText(lang, 'audio unavailable', '音效不可用', '音效不可用')}`
             : '';
 
     return (
@@ -215,6 +274,7 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
                     {status?.device_fw ? ` · ${status.device_fw}` : ''}
                     {status?.page ? ` · ${status.page}` : ''}
                     {touchNote}
+                    {soundNote}
                     {staleNote}
                 </div>
 
@@ -223,6 +283,62 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
                         {localizeText(lang, 'Send weather now', '立即推送天气', '立即推送天氣')}
                     </button>
                     {weatherNote && <span className="buddy-settings__note">{weatherNote}</span>}
+                </div>
+
+                <div className="buddy-settings__group">
+                    <div className="buddy-settings__group-title">
+                        {localizeText(lang, 'Notification sounds', '音效', '音效')}
+                    </div>
+                    <label className="buddy-settings__row">
+                        <input
+                            type="checkbox"
+                            checked={!!sound?.master}
+                            disabled={!sound}
+                            onChange={(event) =>
+                                sound && void saveSound({ ...sound, master: event.target.checked })
+                            }
+                        />
+                        <span>{localizeText(lang, 'Enable sounds', '启用音效', '啟用音效')}</span>
+                    </label>
+                    {SOUND_EVENTS.map((event) => {
+                        const current = sound?.[event.key];
+                        const disabled = !sound || !sound.master || !current?.enabled;
+                        return (
+                            <label className="buddy-settings__row" key={event.key}>
+                                <input
+                                    type="checkbox"
+                                    checked={!!current?.enabled}
+                                    disabled={!sound || !sound.master}
+                                    onChange={(e) =>
+                                        sound &&
+                                        void saveSound(
+                                            withEvent(sound, event.key, { enabled: e.target.checked }),
+                                        )
+                                    }
+                                />
+                                <span>{localizeText(lang, event.en, event.zh, event.tw)}</span>
+                                <select
+                                    className="buddy-settings__select"
+                                    value={current?.effect ?? 0}
+                                    disabled={disabled}
+                                    onChange={(e) =>
+                                        sound &&
+                                        void saveSound(
+                                            withEvent(sound, event.key, {
+                                                effect: Number(e.target.value),
+                                            }),
+                                        )
+                                    }
+                                >
+                                    {Array.from({ length: SOUND_COUNT }, (_, index) => (
+                                        <option key={index} value={index}>
+                                            {effectName(index)}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                        );
+                    })}
                 </div>
 
                 {typeof status?.missing_glyphs === 'number' && status.missing_glyphs > 0 && (

@@ -31,6 +31,8 @@
 | `state` | 任务状态（核心） |
 | `ambient` | 天气 |
 | `clock` | 本地日期/星期（设备无 RTC/NTP，必须由 host 下发） |
+| `celebrate` | 任务完成庆祝页：任务名 + 5 秒烟花动画 |
+| `sound` | 通知音效配置：总开关 + 运行/完成/待机各自开关与选择 |
 | `pet` | 宠物情绪（`idle/happy/busy/sleep`） |
 | `heartbeat` | 保活（3s） |
 | `asset_chunk` | 预留：宠物资产分块（M4） |
@@ -108,6 +110,45 @@
 
 - 字符串由 host 按本地时区格式化，设备不做日历运算。
 - Host 每秒/每分钟重发是幂等的；设备只覆盖显示值。
+
+## 4.2 任务完成庆祝 `celebrate`
+
+Host 在快照对比中检测到"某个进行中任务消失且 done 计数增加"时，先发
+`state`（更新计数），随后发：
+
+```json
+{"type":"celebrate","proto":2,"celebrate":{"title":"整理会议纪要","seconds":5}}
+```
+
+- `title`：刚完成的任务名（UTF-8 ≤64 字节，设备端与 `state.current[].title`
+  同样截断）。
+- `seconds`：庆祝页时长，默认 5，设备端夹在 2–10 秒。
+- 设备行为：立即切到 celebrate 页；前 2.2 秒显示"✓ 任务完成 + 任务名"，
+  任务名随后消失；烟花动画持续到 `seconds` 结束，然后自动回到任务页
+  （仍有进行中任务）或待机页（无进行中任务）。
+- Host 判定是保守的：删除任务（`total` 减少）不庆祝；无法确定任务名
+  （例如完成的任务不在上一次 `current` 列表中）不庆祝；同一完成只发一次。
+
+## 4.3 通知音效 `sound`
+
+Host 在连接时和每次修改后下发完整配置：
+
+```json
+{"type":"sound","proto":2,"sound":{
+  "master":true,
+  "running":{"enabled":true,"effect":0},
+  "complete":{"enabled":true,"effect":0},
+  "standby":{"enabled":true,"effect":0}}}
+```
+
+- `master=false` 时设备完全静音，忽略三个事件各自的开关。
+- `effect`：`0..4`，对应固件内置的 5 段 16kHz 立体声 PCM 音效。
+- 触发时机（页面切换，每个事件每次切换只响一次）：
+  - 运行中：待机页 → 任务页；
+  - 完成：进入庆祝页（任务完成）；
+  - 待机：任务页 → 待机页（从庆祝页返回待机不重复响）。
+- 设备持久化到 NVS；Host 重连后再次下发覆盖。
+- 默认值：总开关开、三个事件全开、`effect=0`。
 
 ## 5. 控制台隔离（P0-2，强制）
 

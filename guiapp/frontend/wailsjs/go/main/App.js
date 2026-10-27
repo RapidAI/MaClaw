@@ -6267,3 +6267,11 @@ export function DeleteBotRoom(arg1) {
 export function PostBotRoomMessage(arg1, arg2) {
   return window['go']['main']['App']['PostBotRoomMessage'](arg1, arg2);
 }
+
+export function BuddyGetSoundConfig() {
+  return window['go']['main']['App']['BuddyGetSoundConfig']();
+}
+
+export function BuddySetSoundConfig(arg1) {
+  return window['go']['main']['App']['BuddySetSoundConfig'](arg1);
+}

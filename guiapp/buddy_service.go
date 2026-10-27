@@ -18,8 +18,9 @@ import (
 
 // buddyConfig is persisted as data/buddy.json.
 type buddyConfig struct {
-	Enabled bool   `json:"enabled"`
-	Port    string `json:"port,omitempty"`
+	Enabled bool                  `json:"enabled"`
+	Port    string                `json:"port,omitempty"`
+	Sound   *protocol.SoundConfig `json:"sound,omitempty"`
 }
 
 // BuddyStatus is what the settings panel renders. The diagnostic fields are
@@ -31,6 +32,7 @@ type BuddyStatus struct {
 	DeviceFW      string `json:"device_fw,omitempty"`
 	DeviceBoard   string `json:"device_board,omitempty"`
 	DeviceTouch   bool   `json:"device_touch"`
+	DeviceSound   bool   `json:"device_sound"`
 	Page          string `json:"page,omitempty"`
 	LastStateAt   string `json:"last_state_at,omitempty"`
 	LastAckAt     string `json:"last_ack_at,omitempty"`
@@ -52,19 +54,30 @@ func (a *App) buddyConfigPath() string {
 }
 
 func (a *App) loadBuddyConfig() buddyConfig {
-	cfg := buddyConfig{Enabled: true} // plug-and-play by default
+	sound := protocol.DefaultSoundConfig()
+	cfg := buddyConfig{Enabled: true, Sound: &sound} // plug-and-play by default
 	raw, err := os.ReadFile(a.buddyConfigPath())
 	if err != nil {
 		return cfg
 	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		log.Printf("[buddy] config parse failed: %v", err)
-		return buddyConfig{Enabled: true}
+		sound := protocol.DefaultSoundConfig()
+		return buddyConfig{Enabled: true, Sound: &sound}
 	}
+	if cfg.Sound == nil {
+		cfg.Sound = &sound
+	}
+	cfg.Sound.Sanitize()
 	return cfg
 }
 
 func (a *App) saveBuddyConfig(cfg buddyConfig) error {
+	if cfg.Sound == nil {
+		sound := protocol.DefaultSoundConfig()
+		cfg.Sound = &sound
+	}
+	cfg.Sound.Sanitize()
 	if err := os.MkdirAll(a.GetDataDir(), 0o755); err != nil {
 		return err
 	}
@@ -107,6 +120,9 @@ func (a *App) startBuddyService() {
 	}
 	runner = service.NewRunner(dial, opts)
 	a.buddyRunner = runner
+	if cfg.Sound != nil {
+		runner.SetSoundConfig(*cfg.Sound)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -211,6 +227,7 @@ func (a *App) BuddyGetStatus() BuddyStatus {
 	status.DeviceFW = s.DeviceFW
 	status.DeviceBoard = s.DeviceBoard
 	status.DeviceTouch = s.DeviceTouch
+	status.DeviceSound = s.DeviceSound
 	status.Page = s.Page
 	status.MissingGlyphs = s.MissingGlyphs
 	if s.DeviceMissingGlyphs > status.MissingGlyphs {
@@ -254,7 +271,9 @@ func (a *App) BuddyGetStatus() BuddyStatus {
 
 // BuddyStart enables the service (optionally pinned to a port).
 func (a *App) BuddyStart(port string) error {
-	cfg := buddyConfig{Enabled: true, Port: strings.TrimSpace(port)}
+	cfg := a.loadBuddyConfig()
+	cfg.Enabled = true
+	cfg.Port = strings.TrimSpace(port)
 	a.buddyMu.Lock()
 	a.buddyCfg = cfg
 	a.buddyMu.Unlock()
@@ -269,7 +288,8 @@ func (a *App) BuddyStart(port string) error {
 // BuddyStop disables the service and releases the serial port so esptool can
 // flash the device.
 func (a *App) BuddyStop() error {
-	cfg := buddyConfig{Enabled: false}
+	cfg := a.loadBuddyConfig()
+	cfg.Enabled = false
 	a.buddyMu.Lock()
 	a.buddyCfg = cfg
 	a.buddyMu.Unlock()
@@ -277,6 +297,35 @@ func (a *App) BuddyStop() error {
 		return fmt.Errorf("save buddy config: %w", err)
 	}
 	a.stopBuddyService()
+	return nil
+}
+
+// BuddyGetSoundConfig returns the persisted notification sound settings.
+func (a *App) BuddyGetSoundConfig() protocol.SoundConfig {
+	a.buddyMu.Lock()
+	defer a.buddyMu.Unlock()
+	if a.buddyCfg.Sound != nil {
+		cfg := *a.buddyCfg.Sound
+		return cfg
+	}
+	return protocol.DefaultSoundConfig()
+}
+
+// BuddySetSoundConfig persists the sound settings and pushes them to a live
+// device. A nil runner (link disabled) only saves them for the next connect.
+func (a *App) BuddySetSoundConfig(cfg protocol.SoundConfig) error {
+	cfg.Sanitize()
+	a.buddyMu.Lock()
+	a.buddyCfg.Sound = &cfg
+	full := a.buddyCfg
+	runner := a.buddyRunner
+	a.buddyMu.Unlock()
+	if err := a.saveBuddyConfig(full); err != nil {
+		return fmt.Errorf("save buddy config: %w", err)
+	}
+	if runner != nil {
+		runner.SetSoundConfig(cfg)
+	}
 	return nil
 }
 

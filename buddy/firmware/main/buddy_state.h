@@ -43,6 +43,11 @@ typedef struct {
     char date[24];
     char weekday[16];
 
+    bool celebrate_active;
+    char celebrate_title[BUDDY_TITLE_BYTES + 1];
+    int64_t celebrate_start_ms;
+    int celebrate_seconds;
+
     bool online;
     int64_t last_host_ms;
     bool prompt_active;
@@ -63,6 +68,8 @@ void buddy_state_apply_state(const buddy_counts_t *counts, const buddy_task_t *c
 void buddy_state_apply_weather(const char *summary, int temperature_c, const char *location,
                                bool stale);
 void buddy_state_apply_clock(const char *date, const char *weekday);
+/** Starts the task-completed celebration page for `seconds` (clamped 2..10). */
+void buddy_state_apply_celebrate(const char *title, int seconds);
 void buddy_state_set_prompt(const char *text);
 void buddy_state_clear_prompt(void);
 void buddy_state_add_missing(int count);

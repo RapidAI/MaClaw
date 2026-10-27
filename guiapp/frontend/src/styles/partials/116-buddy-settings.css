@@ -60,3 +60,17 @@
     color: var(--theme-text-muted);
     font-size: 12px;
 }
+
+.buddy-settings__group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.buddy-settings__group-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--theme-text-secondary);
+}

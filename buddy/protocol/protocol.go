@@ -47,9 +47,14 @@ const (
 	TypeHeartbeat  MessageType = "heartbeat"
 	TypeAssetChunk MessageType = "asset_chunk"
 	TypeClock      MessageType = "clock"
+	TypeCelebrate  MessageType = "celebrate"
+	TypeSound      MessageType = "sound"
 	TypeStateAck   MessageType = "state_ack"
 	TypeLog        MessageType = "log"
 )
+
+// SoundEffectCount is the number of clips embedded in the firmware.
+const SoundEffectCount = 5
 
 var (
 	// ErrNotJSON reports a line that does not start with a JSON object. The
@@ -126,16 +131,18 @@ type Pet struct {
 // Message is the union of every protocol frame. Only the fields relevant to
 // Type are populated; unknown fields from future peers are ignored by encoding/json.
 type Message struct {
-	Type    MessageType `json:"type"`
-	Proto   int         `json:"proto,omitempty"`
-	Ts      int64       `json:"ts,omitempty"`
-	Seq     uint64      `json:"seq,omitempty"`
-	Stale   bool        `json:"stale,omitempty"`
-	Counts  *Counts     `json:"counts,omitempty"`
-	Current []TaskItem  `json:"current,omitempty"`
-	Weather *Weather    `json:"weather,omitempty"`
-	Pet     *Pet        `json:"pet,omitempty"`
-	Clock   *Clock      `json:"clock,omitempty"`
+	Type      MessageType  `json:"type"`
+	Proto     int          `json:"proto,omitempty"`
+	Ts        int64        `json:"ts,omitempty"`
+	Seq       uint64       `json:"seq,omitempty"`
+	Stale     bool         `json:"stale,omitempty"`
+	Counts    *Counts      `json:"counts,omitempty"`
+	Current   []TaskItem   `json:"current,omitempty"`
+	Weather   *Weather     `json:"weather,omitempty"`
+	Pet       *Pet         `json:"pet,omitempty"`
+	Clock     *Clock       `json:"clock,omitempty"`
+	Celebrate *Celebrate   `json:"celebrate,omitempty"`
+	Sound     *SoundConfig `json:"sound,omitempty"`
 
 	// hello
 	FullResend bool     `json:"full_resend,omitempty"`
@@ -160,6 +167,8 @@ type Message struct {
 
 	// device hello: touch controller present (best-effort probe)
 	Touch bool `json:"touch,omitempty"`
+	// device hello: ES8311/I2S path initialized
+	SoundAvailable bool `json:"sound_available,omitempty"`
 }
 
 // Clock carries a pre-formatted local date so the device needs no timezone or
@@ -167,6 +176,55 @@ type Message struct {
 type Clock struct {
 	Date    string `json:"date"`
 	Weekday string `json:"weekday"`
+}
+
+// Celebrate asks the device to play the task-completed celebration page.
+type Celebrate struct {
+	Title   string `json:"title"`
+	Seconds int    `json:"seconds,omitempty"`
+}
+
+// SoundEventConfig is one event's switch and clip choice.
+type SoundEventConfig struct {
+	Enabled bool `json:"enabled"`
+	Effect  int  `json:"effect"`
+}
+
+// SoundConfig selects the notification sounds. Master=false silences every
+// event regardless of the per-event switches.
+type SoundConfig struct {
+	Master   bool             `json:"master"`
+	Running  SoundEventConfig `json:"running"`
+	Complete SoundEventConfig `json:"complete"`
+	Standby  SoundEventConfig `json:"standby"`
+}
+
+// DefaultSoundConfig matches the firmware defaults: master on, every event on,
+// first effect selected.
+func DefaultSoundConfig() SoundConfig {
+	on := SoundEventConfig{Enabled: true, Effect: 0}
+	return SoundConfig{Master: true, Running: on, Complete: on, Standby: on}
+}
+
+// Sanitize clamps every effect index into the embedded clip range.
+func (c *SoundConfig) Sanitize() {
+	for _, event := range []*SoundEventConfig{&c.Running, &c.Complete, &c.Standby} {
+		if event.Effect < 0 || event.Effect >= SoundEffectCount {
+			event.Effect = 0
+		}
+	}
+}
+
+// Validate reports an effect index outside the embedded clip range.
+func (c SoundConfig) Validate() error {
+	for name, event := range map[string]SoundEventConfig{
+		"running": c.Running, "complete": c.Complete, "standby": c.Standby,
+	} {
+		if event.Effect < 0 || event.Effect >= SoundEffectCount {
+			return fmt.Errorf("buddy: sound.%s.effect %d outside 0..%d", name, event.Effect, SoundEffectCount-1)
+		}
+	}
+	return nil
 }
 
 // Snapshot is the payload the GUI pushes into the in-process buddy service.
@@ -198,6 +256,12 @@ func (m *Message) Sanitize() {
 	if m.Weather != nil {
 		m.Weather.Summary = TruncateTitle(m.Weather.Summary, 32)
 		m.Weather.Location = TruncateTitle(m.Weather.Location, 32)
+	}
+	if m.Celebrate != nil {
+		m.Celebrate.Title = TruncateTitle(m.Celebrate.Title, MaxTitleBytes)
+	}
+	if m.Sound != nil {
+		m.Sound.Sanitize()
 	}
 }
 
@@ -393,6 +457,20 @@ func (m *Message) Validate() error {
 	case TypeClock:
 		if m.Clock == nil || strings.TrimSpace(m.Clock.Date) == "" {
 			return errors.New("buddy: clock requires date")
+		}
+	case TypeCelebrate:
+		if m.Celebrate == nil || strings.TrimSpace(m.Celebrate.Title) == "" {
+			return errors.New("buddy: celebrate requires title")
+		}
+		if len(m.Celebrate.Title) > MaxTitleBytes {
+			return fmt.Errorf("buddy: celebrate title %d bytes exceeds %d", len(m.Celebrate.Title), MaxTitleBytes)
+		}
+	case TypeSound:
+		if m.Sound == nil {
+			return errors.New("buddy: sound requires config")
+		}
+		if err := m.Sound.Validate(); err != nil {
+			return err
 		}
 	case TypeHello:
 		if m.Proto == 0 {

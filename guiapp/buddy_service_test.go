@@ -32,8 +32,37 @@ func TestBuddyConfigDefaultsEnabledAndRoundTrips(t *testing.T) {
 		t.Fatalf("config file missing: %v", err)
 	}
 	got := app.loadBuddyConfig()
-	if got != want {
+	if got.Enabled != want.Enabled || got.Port != want.Port {
 		t.Fatalf("round trip mismatch: %+v != %+v", got, want)
+	}
+	if got.Sound == nil {
+		t.Fatal("missing sound defaults")
+	}
+}
+
+func TestBuddySoundConfigRoundTripsAndSanitizes(t *testing.T) {
+	app := newBuddyTestApp(t)
+	app.buddyCfg = app.loadBuddyConfig()
+
+	cfg := protocol.SoundConfig{
+		Master:   true,
+		Running:  protocol.SoundEventConfig{Enabled: true, Effect: 0},
+		Complete: protocol.SoundEventConfig{Enabled: true, Effect: 2},
+		Standby:  protocol.SoundEventConfig{Enabled: false, Effect: 9}, // clamped
+	}
+	if err := app.BuddySetSoundConfig(cfg); err != nil {
+		t.Fatalf("set sound: %v", err)
+	}
+	got := app.BuddyGetSoundConfig()
+	if !got.Master || got.Complete.Effect != 2 || got.Standby.Enabled {
+		t.Fatalf("unexpected sound config: %+v", got)
+	}
+	if got.Standby.Effect != 0 {
+		t.Fatalf("effect was not clamped: %+v", got.Standby)
+	}
+	reloaded := app.loadBuddyConfig()
+	if reloaded.Sound == nil || reloaded.Sound.Complete.Effect != 2 {
+		t.Fatalf("sound config did not persist: %+v", reloaded.Sound)
 	}
 }
 

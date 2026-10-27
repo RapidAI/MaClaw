@@ -431,16 +431,34 @@ func installFileCompanionSharePaper(a *App, sessionID string, paper []byte, turn
 }
 
 func (a *App) dropRevokedGroupCopies(previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, dropped map[string]bool, epochs map[string]uint64) []string {
+	removed, _ := a.dropRevokedFileCompanionShares(nil, previous, remote, nil, dropped, epochs)
+	return removed
+}
+
+// dropRevokedFileCompanionShares removes the local copy of a share that is
+// gone for good: a group share the list no longer returns, or any share the
+// Hub's single-link probe confirmed deleted. purgePaths is the subset whose
+// transcript, figures, results, and generated notes must be dropped once the
+// final library no longer uses the path. A host's own revoked share keeps its
+// source file and reading data; only the cloud row goes away. live is the
+// merged library without the revoked rows; when another row still uses the
+// path, the file and its reader data must stay.
+func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, revoked map[string]bool, dropped map[string]bool, epochs map[string]uint64) (removed []string, purgePaths []string) {
 	seen := map[string]bool{}
 	for _, item := range remote {
 		if item.Token != "" {
 			seen[item.Token] = true
 		}
 	}
-	removed := make([]string, 0)
+	removed = make([]string, 0)
+	purgePaths = make([]string, 0)
 	root := filepath.Join(a.GetDataDir(), "file-companion", "library-files")
 	for token, prev := range previous {
-		if seen[token] || prev.Visibility != "group" || !fileCompanionShareTokenMatch.MatchString(token) {
+		if seen[token] || !fileCompanionShareTokenMatch.MatchString(token) {
+			continue
+		}
+		groupGone := prev.Visibility == "group"
+		if !groupGone && !revoked[token] {
 			continue
 		}
 		dir := filepath.Join(root, token)
@@ -451,19 +469,43 @@ func (a *App) dropRevokedGroupCopies(previous map[string]FileCompanionLibraryIte
 			fileCompanionLibraryMu.Unlock()
 			continue
 		}
+		// Another row (a local copy the reader opened, or a second share of
+		// the same file) still reads this path. Withdraw the cloud row, but
+		// leave the file and its reader state alone.
+		if fileCompanionLibraryUsesPath(live, prev.Path) {
+			if !groupGone {
+				_, _ = a.dismissFileCompanionShareLocked(token)
+			}
+			fileCompanionLibraryMu.Unlock()
+			if dropped != nil {
+				dropped[token] = true
+			}
+			continue
+		}
 		// Only the downloaded copy lives in this directory. The owner's paper
 		// is a different path, so losing the share must not close that tab.
 		closeTab := companionFigureInsideDir(dir, prev.Path)
+		if !groupGone {
+			// A deleted token is dead. Remember that before the next list, so a
+			// stale response cannot re-import the copy this drop just removed.
+			// Group shares are not dismissed: rejoining the group can make the
+			// same token visible again.
+			_, _ = a.dismissFileCompanionShareLocked(token)
+		}
 		_ = os.RemoveAll(dir)
 		fileCompanionLibraryMu.Unlock()
 		if dropped != nil {
 			dropped[token] = true
 		}
 		if closeTab {
-			removed = append(removed, strings.TrimSpace(prev.Path))
+			path := strings.TrimSpace(prev.Path)
+			removed = append(removed, path)
+			if !prev.Mine && path != "" {
+				purgePaths = append(purgePaths, path)
+			}
 		}
 	}
-	return removed
+	return removed, purgePaths
 }
 
 // withoutSupersededRevokePaths drops tab closes for shares an import took

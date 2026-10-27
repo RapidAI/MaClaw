@@ -8,6 +8,7 @@ enum {
     BUDDY_PAGE_TASKS = 0,
     BUDDY_PAGE_STANDBY = 1,
     BUDDY_PAGE_PROMPT = 2,
+    BUDDY_PAGE_CELEBRATE = 3,
 };
 
 void buddy_ui_init(void);

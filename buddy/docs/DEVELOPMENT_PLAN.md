@@ -386,6 +386,30 @@ CONFIG_ESP_CONSOLE_NONE=y                 # USB 口只走协议
   不会把"没连上"误报成"0 缺字"。
 - **时延基准修正**：服务启动重放缓存快照时重置推送时间，避免把上一会话的
   旧时间戳算进 `latency_ms`。
+- **ASCII 方向修复（真机照片发现）**：5×7 表按列存储、**bit0 = 顶行**
+  （与 iot-agentos 一致），原实现用了 `1 << (6-row)`，导致所有数字/字母
+  垂直翻转。新增 `tools/host_tests/test_font_ascii.c` 做像素级回归测试。
+- **圆屏安全区重排**：360px 面板的可视圆形约 R=150（iot-agentos 的 ambient
+  ring 也是 150）。顶部 MaClaw、右上计数、第二行标题、底部状态/进度条原先
+  越界被边框裁掉；现按 R=150 重排，并新增 `tools/preview_layout.py` 生成
+  带圆形遮罩的布局预览图。
+- **端口被 GUI 占用时的刷写**：新增 `tools/flash-when-free.ps1`，等待 COM3
+  空闲后自动刷写（伴侣连接启用时 GUI 独占串口）。实测：释放端口后自动写入
+  1,869,152 字节并校验通过，设备启动正常（`touch=true`，页面切换正常）。
+- **任务完成庆祝屏（新功能）**：Go 端对比前后快照，检测"进行中任务消失且
+  done+1"（删除不算），发 `celebrate` 帧；设备显示"✓ 任务完成 + 任务名"
+  2.2 秒，随后任务名消失、六发烟花持续到 5 秒，再自动回到任务页/待机页。
+  判定与协议有单测（`buddy/service/celebrate_test.go`），联调命令
+  `go run ./buddy/host -celebrate-demo`。
+- **通知音效（新功能）**：`tools/generate_sounds.py` 合成 5 段 16kHz/16bit
+  立体声 PCM（试听 WAV 在 `build/verify/sounds/`），固件通过 ES8311 + I2S
+  （16kHz、MCLK 4.096MHz、PA GPIO18，复用触摸 I2C 总线）播放；页面切换时
+  触发运行中/完成/待机三类音效。
+  - 配置：**总开关** + 三个事件各自的开关与 5 选 1，`sound` 协议帧下发，
+    NVS 持久化；总关时完全静音。
+  - 设置面板新增音效区；Wails 绑定 `BuddyGetSoundConfig` /
+    `BuddySetSoundConfig`，配置写入 `data/buddy.json`。
+  - 单测覆盖协议校验与服务下发；固件体积 2.11MB（app 分区 58%）。
 
 ### 9.2 实现偏差（有据可依）
 

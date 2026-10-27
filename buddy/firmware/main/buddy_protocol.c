@@ -14,6 +14,7 @@
 
 #include "buddy_display.h"
 #include "buddy_font.h"
+#include "buddy_sound.h"
 #include "buddy_state.h"
 #include "buddy_touch.h"
 #include "buddy_ui.h"
@@ -61,6 +62,7 @@ void buddy_protocol_send_hello(void) {
     cJSON_AddNumberToObject(disp, "h", BUDDY_DISPLAY_HEIGHT);
     cJSON_AddBoolToObject(disp, "round", BUDDY_DISPLAY_ROUND != 0);
     cJSON_AddBoolToObject(root, "touch", buddy_touch_available());
+    cJSON_AddBoolToObject(root, "sound_available", buddy_sound_available());
     send_json(root);
 }
 
@@ -230,6 +232,46 @@ static void handle_clock(cJSON *root) {
     buddy_state_apply_clock(date, weekday);
 }
 
+static void handle_celebrate(cJSON *root) {
+    cJSON *celebrate = obj(root, "celebrate");
+    if (!cJSON_IsObject(celebrate)) {
+        buddy_protocol_send_log("warn", "celebrate without payload");
+        return;
+    }
+    char title[BUDDY_TITLE_BYTES + 1] = {0};
+    if (!get_string(celebrate, "title", title, sizeof(title)) || title[0] == '\0') {
+        buddy_protocol_send_log("warn", "celebrate without title");
+        return;
+    }
+    buddy_state_apply_celebrate(title, get_int(celebrate, "seconds", 5));
+}
+
+static void parse_sound_event(cJSON *sound, const char *name, bool *enabled, int *effect) {
+    cJSON *event = obj(sound, name);
+    if (!cJSON_IsObject(event)) return;
+    *enabled = get_bool(event, "enabled", *enabled);
+    // The sound module clamps the index to its generated clip count.
+    *effect = get_int(event, "effect", *effect);
+}
+
+static void handle_sound(cJSON *root) {
+    cJSON *sound = obj(root, "sound");
+    if (!cJSON_IsObject(sound)) {
+        buddy_protocol_send_log("warn", "sound without payload");
+        return;
+    }
+    buddy_sound_config_t cfg;
+    buddy_sound_get_config(&cfg);
+    cfg.master = get_bool(sound, "master", cfg.master);
+    parse_sound_event(sound, "running", &cfg.enabled[BUDDY_SOUND_RUNNING],
+                      &cfg.effect[BUDDY_SOUND_RUNNING]);
+    parse_sound_event(sound, "complete", &cfg.enabled[BUDDY_SOUND_COMPLETE],
+                      &cfg.effect[BUDDY_SOUND_COMPLETE]);
+    parse_sound_event(sound, "standby", &cfg.enabled[BUDDY_SOUND_STANDBY],
+                      &cfg.effect[BUDDY_SOUND_STANDBY]);
+    buddy_sound_set_config(&cfg);
+}
+
 static void handle_hello(cJSON *root) {
     const int proto = get_int(root, "proto", 0);
     if (proto != BUDDY_PROTO_VERSION) {
@@ -270,6 +312,10 @@ static void handle_line(const char *line) {
         handle_ambient(root);
     } else if (strcmp(type, BUDDY_MSG_CLOCK) == 0) {
         handle_clock(root);
+    } else if (strcmp(type, BUDDY_MSG_CELEBRATE) == 0) {
+        handle_celebrate(root);
+    } else if (strcmp(type, BUDDY_MSG_SOUND) == 0) {
+        handle_sound(root);
     } else if (strcmp(type, BUDDY_MSG_HELLO) == 0) {
         handle_hello(root);
     } else if (strcmp(type, BUDDY_MSG_HEARTBEAT) == 0) {

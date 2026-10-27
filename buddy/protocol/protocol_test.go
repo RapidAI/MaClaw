@@ -61,7 +61,7 @@ func TestSpecMatchesConstants(t *testing.T) {
 	}
 	known := map[MessageType]bool{
 		TypeHello: true, TypeState: true, TypeAmbient: true, TypePet: true,
-		TypeHeartbeat: true, TypeAssetChunk: true, TypeClock: true,
+		TypeHeartbeat: true, TypeAssetChunk: true, TypeClock: true, TypeCelebrate: true, TypeSound: true,
 		TypeStateAck: true, TypeLog: true,
 	}
 	listed := map[MessageType]bool{}

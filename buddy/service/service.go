@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,6 +84,7 @@ type Status struct {
 	DeviceFW      string    `json:"device_fw,omitempty"`
 	DeviceBoard   string    `json:"device_board,omitempty"`
 	DeviceProto   int       `json:"device_proto,omitempty"`
+	DeviceSound   bool      `json:"device_sound"`
 	Page          string    `json:"page,omitempty"`
 	LastAckAt     time.Time `json:"last_ack_at,omitempty"`
 	LastStateAt   time.Time `json:"last_state_at,omitempty"`
@@ -112,18 +114,22 @@ type Runner struct {
 	weather    protocol.Weather
 	hasWeather bool
 	weatherAt  time.Time
+	sound      protocol.SoundConfig
+	hasSound   bool
 	status     Status
 	seq        uint64
 
-	dirty chan struct{}
+	dirty     chan struct{}
+	soundWake chan struct{}
 }
 
 // NewRunner builds a runner; call Run to start it.
 func NewRunner(dial Dialer, opts Options) *Runner {
 	return &Runner{
-		dial:  dial,
-		opts:  opts.normalize(),
-		dirty: make(chan struct{}, 1),
+		dial:      dial,
+		opts:      opts.normalize(),
+		dirty:     make(chan struct{}, 1),
+		soundWake: make(chan struct{}, 1),
 	}
 }
 
@@ -146,6 +152,20 @@ func (r *Runner) SetWeather(w protocol.Weather) {
 	r.weatherAt = time.Now()
 	r.mu.Unlock()
 	r.wake()
+}
+
+// SetSoundConfig stores the host-selected notification sounds. The runner
+// sends them on every connect and immediately after a change.
+func (r *Runner) SetSoundConfig(cfg protocol.SoundConfig) {
+	cfg.Sanitize()
+	r.mu.Lock()
+	r.sound = cfg
+	r.hasSound = true
+	r.mu.Unlock()
+	select {
+	case r.soundWake <- struct{}{}:
+	default:
+	}
 }
 
 // Status returns a copy of the current link status.
@@ -251,6 +271,11 @@ func (r *Runner) session(ctx context.Context, conn io.ReadWriteCloser) error {
 	}
 	// Full resend after every (re)connect.
 	r.wake()
+	if r.hasSoundConfig() {
+		if err := r.sendSound(conn); err != nil {
+			return err
+		}
+	}
 
 	heartbeat := time.NewTicker(r.opts.Heartbeat)
 	defer heartbeat.Stop()
@@ -277,6 +302,10 @@ func (r *Runner) session(ctx context.Context, conn io.ReadWriteCloser) error {
 		case <-r.dirty:
 			statePending = true
 			ambientPending = true
+		case <-r.soundWake:
+			if err := r.sendSound(conn); err != nil {
+				return err
+			}
 		case <-flush.C:
 			if !r.anyData() {
 				continue
@@ -327,6 +356,12 @@ func (r *Runner) sendState(conn io.ReadWriteCloser) error {
 	received := r.snapAt
 	r.seq++
 	seq := r.seq
+	hadPrev := r.status.LastSentCounts != nil
+	var prevCounts protocol.Counts
+	if hadPrev {
+		prevCounts = *r.status.LastSentCounts
+	}
+	prevCurrent := append([]protocol.TaskItem(nil), r.status.LastSentCurrent...)
 	r.mu.Unlock()
 
 	msg := &protocol.Message{
@@ -352,6 +387,7 @@ func (r *Runner) sendState(conn io.ReadWriteCloser) error {
 	if err := r.write(conn, msg); err != nil {
 		return err
 	}
+	celebrate := completionCelebration(hadPrev, prevCounts, prevCurrent, snap.Counts, msg.Current)
 	r.mu.Lock()
 	r.status.LastStateAt = time.Now()
 	r.status.LastSentAt = r.status.LastStateAt
@@ -360,7 +396,94 @@ func (r *Runner) sendState(conn io.ReadWriteCloser) error {
 	r.status.LastSentCounts = &counts
 	r.status.LastSentCurrent = append([]protocol.TaskItem(nil), msg.Current...)
 	r.mu.Unlock()
+	if celebrate != nil {
+		// Send after the state frame so the device updates its counters first
+		// and returns to the correct page when the celebration ends.
+		cm := &protocol.Message{
+			Type:      protocol.TypeCelebrate,
+			Proto:     protocol.Version,
+			Ts:        time.Now().Unix(),
+			Celebrate: celebrate,
+		}
+		if err := r.write(conn, cm); err != nil {
+			return err
+		}
+		r.opts.Logf("[buddy] celebrate %q", celebrate.Title)
+	}
 	return nil
+}
+
+// completionCelebration detects a single task that left the in-progress list
+// because it finished. It deliberately ignores deletions (total shrank) and
+// bursts where no title was ever sent, so the device never celebrates a task
+// the person removed.
+func completionCelebration(
+	hadPrev bool,
+	prev protocol.Counts,
+	prevCurrent []protocol.TaskItem,
+	next protocol.Counts,
+	nextCurrent []protocol.TaskItem,
+) *protocol.Celebrate {
+	if !hadPrev {
+		return nil
+	}
+	if next.Done <= prev.Done {
+		return nil
+	}
+	if next.Total < prev.Total {
+		return nil
+	}
+	curIDs := make(map[string]struct{}, len(nextCurrent))
+	curTitles := make(map[string]struct{}, len(nextCurrent))
+	for _, t := range nextCurrent {
+		if t.ID != "" {
+			curIDs[t.ID] = struct{}{}
+		}
+		if t.Title != "" {
+			curTitles[t.Title] = struct{}{}
+		}
+	}
+	for _, t := range prevCurrent {
+		if strings.TrimSpace(t.Title) == "" {
+			continue
+		}
+		_, byID := curIDs[t.ID]
+		_, byTitle := curTitles[t.Title]
+		if (t.ID != "" && byID) || byTitle {
+			continue
+		}
+		return &protocol.Celebrate{Title: t.Title, Seconds: 5}
+	}
+	return nil
+}
+
+func (r *Runner) hasSoundConfig() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.hasSound
+}
+
+func (r *Runner) sendSound(conn io.ReadWriteCloser) error {
+	r.mu.Lock()
+	if !r.hasSound {
+		r.mu.Unlock()
+		return nil
+	}
+	cfg := r.sound
+	r.mu.Unlock()
+
+	msg := &protocol.Message{
+		Type:  protocol.TypeSound,
+		Proto: protocol.Version,
+		Ts:    time.Now().Unix(),
+		Sound: &cfg,
+	}
+	msg.Sanitize()
+	if err := msg.Validate(); err != nil {
+		r.opts.Logf("[buddy] sound config rejected: %v", err)
+		return nil
+	}
+	return r.write(conn, msg)
 }
 
 func (r *Runner) sendAmbient(conn io.ReadWriteCloser) error {
@@ -434,6 +557,7 @@ func (r *Runner) handleDeviceMessage(msg *protocol.Message) {
 		r.status.DeviceBoard = msg.Board
 		r.status.DeviceProto = msg.Proto
 		r.status.DeviceTouch = msg.Touch
+		r.status.DeviceSound = msg.SoundAvailable
 	case protocol.TypeStateAck:
 		r.status.LastAckAt = time.Now()
 		r.status.Page = msg.Page
