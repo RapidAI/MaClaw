@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"log"
 	"os"
 	"regexp"
@@ -585,6 +586,9 @@ func desktopAfterPublishDeliverCheck(scope agentruntime.Scope, request string) e
 	if !done || strings.TrimSpace(request) == "" || desktopAskedForFileRe.MatchString(request) {
 		return nil
 	}
+	if promptparts.Enabled() {
+		return fmt.Errorf("refused: already_published — %s", promptparts.Fact("REFUSED", "reason", "already_published", "detail", "the request did not ask for a file; the published link is the result", "answer_with", "title,link,date_used", "attachment", "none", "next_allowed", "final_answer"))
+	}
 	return fmt.Errorf("refused: already_published — the request did not ask for a file; the published link is the result. Give the final answer now (title, /p/<id> link, date used) with no attachment")
 }
 
@@ -625,10 +629,10 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 		return err
 	}
 	if published && action == "bash" && !desktopAskedForFileRe.MatchString(request) && desktopUserDirWriteRe.MatchString(desktopArg(args, "command")) {
-		return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")
+		return desktopUnaskedFileAfterPublish()
 	}
 	if published && action == "file_write" && !desktopAskedForFileRe.MatchString(request) && !desktopScratchPathRe.MatchString(desktopArg(args, "path")) {
-		return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")
+		return desktopUnaskedFileAfterPublish()
 	}
 	if !inBrowser && desktopBrowserTaskRe.MatchString(request) {
 		inBrowser = true // the request is a web task even before the first page
@@ -750,4 +754,13 @@ func desktopPublishAskRegexp(siteWords []string) *regexp.Regexp {
 		site = "发(" + strings.Join(q, "|") + ")"
 	}
 	return regexp.MustCompile(`(?i)(发布|发表|发|贴|投)(到|在|至)[^。\n]{1,20}|(发布|发表|发到|发在|贴到|投到)[^。\n]{0,12}(` + p + `)|在\s*([a-z][\w.\-]*|` + p + `)[^。\n]{0,20}?(发布|发表|发[^现生觉出])|` + site + `|(post|publish)\b[^.\n]{0,30}\b(to|on)\b`)
+}
+
+// desktopUnaskedFileAfterPublish refuses saving a copy once the result is
+// published; with the style layer on it carries facts only.
+func desktopUnaskedFileAfterPublish() error {
+	if promptparts.Enabled() {
+		return fmt.Errorf("refused: unasked_file — %s", promptparts.Fact("REFUSED", "reason", "unasked_file", "detail", "already published and no file was asked for", "next_allowed", "final_answer"))
+	}
+	return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")
 }

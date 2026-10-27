@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
@@ -94,5 +95,10 @@ func desktopPublishPlanCheck(phase desktopPublishPhase, action string, args map[
 }
 
 func desktopPlanRefusal(phase desktopPublishPhase, action string) error {
-	return fmt.Errorf("refused: publish_plan(%s) — %s is not part of this phase. Next: %s", phase, action, desktopPublishPlan[phase].next)
+	pl := desktopPublishPlan[phase]
+	if promptparts.Enabled() && len(pl.allowed) == 0 {
+		// A finished phase: facts only, the bot words the final answer.
+		return fmt.Errorf("refused: publish_plan(%s) — %s", phase, promptparts.Fact("REFUSED", "reason", "publish_plan", "phase", string(phase), "action", action, "next_allowed", "final_answer"))
+	}
+	return fmt.Errorf("refused: publish_plan(%s) — %s is not part of this phase. Next: %s", phase, action, pl.next)
 }

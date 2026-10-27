@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
@@ -156,6 +157,38 @@ func desktopRecordVerifiedPage(scope agentruntime.Scope, u string) {
 // desktopPublishRecordText is what the model reads after a publish call:
 // the state, the link and the one next step that state allows.
 func desktopPublishRecordText(r desktopPublishRecord) string {
+	if promptparts.Enabled() {
+		return desktopPublishRecordFacts(r)
+	}
+	return desktopPublishRecordLegacyText(r)
+}
+
+// desktopPublishRecordFacts is the same state as facts only: no sentence for
+// the person, so the bot words the reply itself (promptparts.Facts).
+func desktopPublishRecordFacts(r desktopPublishRecord) string {
+	state, next, evidence := string(r.State), "final_answer", ""
+	switch r.State {
+	case browser.PublishLive:
+		evidence = "read_back"
+	case browser.PublishLiveIncomplete:
+		evidence = "read_back"
+	case browser.PublishSubmitted:
+		evidence = "submit_clicked_unconfirmed"
+	case browser.PublishDraftOnly:
+		next = "publish"
+	default:
+		state = string(browser.PublishNotSubmitted)
+		next = "publish"
+		if r.Notice != "" {
+			next = "final_answer"
+		}
+	}
+	return promptparts.Fact("PUBLISH_RESULT", "state", state, "link", r.URL, "missing", r.Missing, "notice", r.Notice, "evidence", evidence, "next_allowed", next)
+}
+
+// desktopPublishRecordLegacyText is the pre-style-layer wording
+// (MACLAW_STYLE_LAYER=off).
+func desktopPublishRecordLegacyText(r desktopPublishRecord) string {
 	link := r.URL
 	switch r.State {
 	case browser.PublishLive:

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
@@ -18,7 +19,7 @@ func TestPublishRecordFromReportAndIdempotent(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 	out, err := desktopPublish(scope, nil, map[string]any{"title": "t", "body": "b"})
-	if err != nil || !strings.Contains(out, "PUBLISH STATE: published") || !strings.Contains(out, r.URL) {
+	if err != nil || !strings.Contains(out, "PUBLISH_RESULT state=published") || !strings.Contains(out, r.URL) {
 		t.Fatalf("second publish must return the record: %q %v", out, err)
 	}
 	if got, _ := desktopPublishRecordOf("run-rec-1"); got.Calls != 1 {
@@ -27,6 +28,7 @@ func TestPublishRecordFromReportAndIdempotent(t *testing.T) {
 }
 
 func TestPublishRecordStatesTell(t *testing.T) {
+	t.Setenv("MACLAW_STYLE_LAYER", "off")
 	for st, want := range map[browser.PublishState]string{
 		browser.PublishNotSubmitted:   "run action=publish again",
 		browser.PublishSubmitted:      "Do not publish again",
@@ -66,7 +68,7 @@ func TestPublishRecordDraftOnlyAndDiagnostics(t *testing.T) {
 	if (desktopPublishRecord{State: browser.PublishDraftOnly}).posted() {
 		t.Fatal("draft_only counts as posted")
 	}
-	if s := desktopPublishRecordText(desktopPublishRecord{State: browser.PublishDraftOnly}); !strings.Contains(s, "draft_only") || !strings.Contains(s, "again") {
+	if s := desktopPublishRecordText(desktopPublishRecord{State: browser.PublishDraftOnly}); !strings.Contains(s, "draft_only") || !(strings.Contains(s, "again") || strings.Contains(s, "next_allowed=publish")) {
 		t.Fatal(s)
 	}
 	if s := desktopPublishRecordText(desktopPublishRecord{State: browser.PublishNotSubmitted, Notice: "转正答题后才能发布专栏"}); !strings.Contains(s, "转正答题") {
@@ -90,3 +92,44 @@ func TestPublishRecordDraftOnlyAndDiagnostics(t *testing.T) {
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
+
+// With the style layer on the record is facts only: the fields carry the
+// state, link, what is missing and the one next action; no reply wording.
+func TestPublishRecordFactsOnly(t *testing.T) {
+	cases := []struct {
+		r     desktopPublishRecord
+		state string
+		next  string
+	}{
+		{desktopPublishRecord{State: browser.PublishLive, URL: "https://a/p/1"}, "published", "final_answer"},
+		{desktopPublishRecord{State: browser.PublishLiveIncomplete, URL: "https://a/p/1", Missing: "picture 7"}, "live_incomplete", "final_answer"},
+		{desktopPublishRecord{State: browser.PublishSubmitted}, "submitted_unconfirmed", "final_answer"},
+		{desktopPublishRecord{State: browser.PublishDraftOnly}, "draft_only", "publish"},
+		{desktopPublishRecord{State: browser.PublishNotSubmitted}, "not_submitted", "publish"},
+		{desktopPublishRecord{State: browser.PublishNotSubmitted, Notice: "实名认证"}, "not_submitted", "final_answer"},
+	}
+	for _, c := range cases {
+		s := desktopPublishRecordText(c.r)
+		key, f := promptparts.ParseFact(s)
+		if key != "PUBLISH_RESULT" || f["state"] != c.state || f["next_allowed"] != c.next || f["link"] != c.r.URL || f["missing"] != c.r.Missing || f["notice"] != c.r.Notice {
+			t.Fatalf("%+v -> %q %v", c.r, s, f)
+		}
+		if strings.Contains(strings.ToLower(s), "reply") || strings.Contains(s, "user") {
+			t.Fatalf("facts carry reply wording: %q", s)
+		}
+	}
+}
+
+func TestFinishedPhaseRefusalIsFacts(t *testing.T) {
+	err := desktopPublishPlanCheck(phaseLive, "click", nil)
+	if err == nil {
+		t.Fatal("live phase allowed a click")
+	}
+	_, f := promptparts.ParseFact(err.Error()[strings.Index(err.Error(), "REFUSED"):])
+	if f["next_allowed"] != "final_answer" || f["phase"] != string(phaseLive) {
+		t.Fatalf("%v", err)
+	}
+	if _, f := promptparts.ParseFact(desktopUnaskedFileAfterPublish().Error()[strings.Index(desktopUnaskedFileAfterPublish().Error(), "REFUSED"):]); f["reason"] != "unasked_file" {
+		t.Fatal(f)
+	}
+}

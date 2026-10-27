@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"os"
 	"strings"
 	"time"
@@ -531,7 +532,7 @@ func registerMultiBotTools(registry *ToolRegistry, mb *multiBot) {
 		map[string]interface{}{"bot": botArg}, []string{"bot"}, mb.toolGetBotStatus)
 	add(toolSendToBot, "Send a short message to another bot, or answer a teammate message (pass reply_to=its id from the teammate-messages turn). It sees it at the start of its next turn; its current turn is not interrupted. Teammates message you the same way (their done/blocked/question/file reports wake you). Loops are capped: if a send is refused, tell the person instead.",
 		map[string]interface{}{"bot": botArg, "text": str("The message"), "kind": map[string]interface{}{"type": "string", "enum": []string{"info", "reply", "question", "done", "blocked", "artifact", "progress"}, "description": "Optional message kind (default info, or reply with reply_to)"}, "reply_to": str("Optional teammate message id this answers"), "artifact_ids": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional artifact ids to mention"}, "confirm": confirm}, []string{"bot", "text"}, mb.toolSendToBot)
-	add(toolAssignTask, "Hand a task to another bot (e.g. a remote desktop bot to publish in a browser). Optional files (artifact ids or local paths) are copied to its desktop first. Returns immediately; results arrive via bot_events. Do the parts that need this computer's files/shell yourself.",
+	add(toolAssignTask, "Hand a task to another bot (e.g. a remote desktop bot to publish in a browser). Optional files (artifact ids or local paths) are copied to its desktop first. Returns immediately; results arrive via bot_events. Do the parts that need this computer's files/shell yourself."+mainBotLeadHint(),
 		map[string]interface{}{"bot": botArg, "task": str("What the bot should do, self-contained"), "note": str("Optional one-line note shown to that bot"), "artifact_ids": arr("Artifacts to send along"), "local_paths": arr("Local files to send along"), "confirm": confirm},
 		[]string{"bot", "task"}, mb.toolAssignTask)
 	add(toolStopBot, "Stop another bot's current run (or one run_id).",
@@ -546,4 +547,13 @@ func registerMultiBotTools(registry *ToolRegistry, mb *multiBot) {
 		map[string]interface{}{"path": str("Local file path"), "bot": botArg, "note": str("Optional message to that bot"), "confirm": confirm}, []string{"path"}, mb.toolShareFile)
 	add(toolListArtifact, "List files passed between bots (remote outputs saved locally, local files shared), newest first, with ids and local paths.",
 		map[string]interface{}{}, nil, mb.toolListArtifacts)
+}
+
+// mainBotLeadHint is the style layer's lead part for the main bot, attached
+// to the tool it uses to hand out work ("" when MACLAW_STYLE_LAYER=off).
+func mainBotLeadHint() string {
+	if t := strings.TrimSpace(promptparts.Render(nil, promptparts.MainBotLead)); t != "" {
+		return " " + t
+	}
+	return ""
 }

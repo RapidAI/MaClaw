@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"image/jpeg"
 	"image/png"
 	"log"
@@ -415,6 +416,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		prompt += desktopRecipeText(scope, task)
 	}
 	prompt += desktopInboxText(ctx, request)
+	prompt += promptparts.Render(nil, promptparts.Facts, promptparts.Honesty, promptparts.Progress, promptparts.Quiet)
 	return prompt +
 		"Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. " +
 		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +

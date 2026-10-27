@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"log"
 	"strings"
 	"time"
@@ -107,7 +108,7 @@ func (a *App) writeDesktopBotAck(parent context.Context, req DesktopBotAckReques
 		}
 		ctx, cancel := context.WithTimeout(parent, time.Duration(attempt.timeoutSec+2)*time.Second)
 		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
-			systemPrompt: desktopBotAckSystem,
+			systemPrompt: desktopBotAckSystem + desktopBotStyleParts(),
 			userPrompt:   user,
 			timeoutSec:   attempt.timeoutSec,
 			fallback:     attempt.fallback,
@@ -313,4 +314,13 @@ func desktopBotHasHan(text string) bool {
 		}
 	}
 	return false
+}
+
+// desktopBotStyleParts appends the shared voice, quiet and honesty parts to
+// the bot's chat-line prompt ("" when MACLAW_STYLE_LAYER=off).
+func desktopBotStyleParts() string {
+	if t := promptparts.Render(nil, promptparts.Voice, promptparts.Quiet, promptparts.Honesty); t != "" {
+		return "\n" + t
+	}
+	return ""
 }
