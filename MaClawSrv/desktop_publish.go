@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -82,6 +83,14 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		prof = browser.ProfileForURL(session.CurrentURL())
 	}
 	prof.Apply(&spec)
+	if desktopArgBool(args, "explore") {
+		probe, perr := browser.ExplorePublish(session.PublishDriver(), spec)
+		if exp != nil {
+			probe["experience"] = fmt.Sprintf("v%d %s %s", exp.Version, exp.Source, exp.Status)
+		}
+		b, _ := json.Marshal(probe)
+		return "publish explore (read-only, nothing written): " + string(b), perr
+	}
 	if spec.Title == "" && spec.Body == "" {
 		return "", fmt.Errorf("publish needs title and/or body")
 	}
@@ -130,4 +139,14 @@ func desktopPostURLFor(spec browser.PublishSpec, id string) string {
 		p = browser.ProfileForURL(spec.EditorURL)
 	}
 	return p.PostURLFor(id)
+}
+
+func desktopArgBool(args map[string]any, key string) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true" || v == "1"
+	}
+	return false
 }

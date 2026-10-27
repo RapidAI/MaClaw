@@ -174,6 +174,7 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 	}
 	p.net = startNetTracker(d)
 	defer p.net.stop()
+	defer p.recordMethod()
 	steps := []struct {
 		name string
 		skip bool
@@ -334,6 +335,8 @@ type publishRun struct {
 	// seen: page URLs the editor had before the submit click (an autosave
 	// renames the editor URL; none of these is a published post).
 	seen map[string]bool
+	// uploadVia: the method whose upload the site stored (recorded).
+	uploadVia string
 	// pasteLater: no file input showed the images; paste them into the
 	// body editor after the text (paste_images step).
 	pasteLater bool
@@ -671,6 +674,7 @@ func (p *publishRun) waitUpload(t0 time.Time, before uploadState, images bool, h
 		shown := uploadReflectedFor(before, after, images)
 		if p.net == nil {
 			if shown {
+				p.uploadVia = how
 				return fmt.Sprintf("uploaded %d file(s) via %s; page shows it (files=%d previews=%d imgs %d->%d)", want, how, after.Files, after.Blobs+after.Bg, before.Imgs, after.Imgs), true, nil
 			}
 			if time.Now().After(startBy) {
@@ -683,6 +687,7 @@ func (p *publishRun) waitUpload(t0 time.Time, before uploadState, images bool, h
 			return "", true, fmt.Errorf("the site's upload via %s failed (%d of %d request(s)): %s; nothing was submitted", how, failed, started, strings.Join(p.net.failedSince(t0), "; "))
 		}
 		if started > 0 && open == 0 && ok >= minInt(want, 1) && (ok >= want || time.Now().After(startBy)) {
+			p.uploadVia = how
 			return fmt.Sprintf("uploaded %d file(s) via %s; the site stored them (%d upload request(s) answered ok; imgs %d->%d)", want, how, ok, before.Imgs, after.Imgs), true, nil
 		}
 		if started == 0 && time.Now().After(startBy) {
@@ -690,6 +695,7 @@ func (p *publishRun) waitUpload(t0 time.Time, before uploadState, images bool, h
 				// The site's profile says it sends the pictures with the
 				// post; verify then requires remote picture URLs.
 				p.lazyImages = true
+				p.uploadVia = how + " (lazy)"
 				return fmt.Sprintf("set %d file(s) via %s; page shows them locally and the site uploads at submit (lazy_upload); remote picture URLs are required after the submit", want, how), true, nil
 			}
 			if shown {
@@ -1887,3 +1893,81 @@ func (p *publishRun) checkLazyImages() (string, error) {
 }
 
 const pictureCountFn = `function() { let n = this.querySelectorAll('img').length; let v = ''; if (this.CodeMirror && this.CodeMirror.getValue) v = this.CodeMirror.getValue(); else if (this.cmView && this.cmView.view) v = this.cmView.view.state.doc.toString(); else if (this.tagName === 'TEXTAREA') v = this.value; else if (this.closest && this.closest('.cm-editor,.CodeMirror,.bytemd,[class*=markdown]')) v = this.innerText; n += (v.match(/!\[[^\]]*\]\(/g) || []).length; return String(n); }`
+
+// recordMethod writes which branch each primitive took into the report
+// (exploration while doing real tasks; the hub keeps it per site).
+func (p *publishRun) recordMethod() {
+	m := map[string]string{}
+	set := func(k, v string) {
+		if v != "" {
+			m[k] = v
+		}
+	}
+	via := p.uploadVia
+	if via == "" && p.pasteLater {
+		via = "paste"
+	}
+	if i := strings.Index(via, "file input "); i >= 0 {
+		set("upload_input_rank", strings.TrimSpace(strings.Fields(via[i+len("file input "):] + " ")[0]))
+		via = "file_input"
+	} else if strings.HasPrefix(via, "intercepted chooser") {
+		via = "chooser:" + p.spec.UploadTrigger
+	}
+	set("upload", via)
+	if p.lazyImages {
+		set("lazy_upload", "true")
+	}
+	set("body_kind", p.kind)
+	if p.spec.BodyKind != "" {
+		set("body_kind", p.spec.BodyKind)
+	}
+	if p.panelConfirmed {
+		set("submit", "panel_confirm")
+	} else if p.submitClicked.Load() {
+		set("submit", "click")
+	}
+	set("evidence", p.rep.Evidence)
+	for _, st := range p.rep.Steps {
+		if st.Name == "fill_title" || st.Name == "fill_body" {
+			if i := strings.Index(st.Detail, "("); i >= 0 {
+				if j := strings.Index(st.Detail[i:], ")"); j > 0 {
+					set(st.Name, st.Detail[i+1:i+j])
+				}
+			}
+		}
+	}
+	if len(m) > 0 {
+		p.rep.Method = m
+	}
+}
+
+// ExplorePublish reads an editor page without writing anything: which
+// fields, file inputs and publish buttons it has. No file is set, nothing
+// is typed or clicked (beyond opening spec.EditorURL).
+func ExplorePublish(d PublishDriver, spec PublishSpec) (map[string]string, error) {
+	if spec.StepBudget <= 0 {
+		spec.StepBudget = 20 * time.Second
+	}
+	if len(spec.SubmitTexts) == 0 {
+		spec.SubmitTexts = defaultSubmitTexts
+	}
+	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody("", 0, "")}
+	detail, err := p.observe()
+	out := map[string]string{"observe": detail}
+	if p.rep.Notice != "" {
+		out["notice"] = p.rep.Notice
+	}
+	if err != nil {
+		return out, err
+	}
+	out["body_kind"] = p.bodyKind()
+	if v, err := p.eval(publishExploreJS(spec.SubmitTexts)); err == nil {
+		out["surface"] = v
+	}
+	return out, nil
+}
+
+func publishExploreJS(submit []string) string {
+	b, _ := json.Marshal(submit)
+	return `(() => { const want = ` + string(b) + `; const docs = [document]; const addFrames = d => { for (const f of d.querySelectorAll('iframe,frame')) { try { const c = f.contentDocument; if (c && !docs.includes(c)) { docs.push(c); addFrames(c); } } catch (e) {} } }; addFrames(document); const inputs = [], buttons = []; for (const d of docs) { for (const i of d.querySelectorAll('input[type=file]')) inputs.push({accept: i.accept || '', multiple: !!i.multiple, frame: d !== document}); for (const e of d.querySelectorAll('button,[role=button],a')) { const t = (e.innerText || '').trim(); if (t && t.length <= 12 && want.some(w => t.includes(w))) buttons.push(t); } } return JSON.stringify({frames: docs.length - 1, file_inputs: inputs, submit_buttons: [...new Set(buttons)].slice(0, 8)}); })()`
+}

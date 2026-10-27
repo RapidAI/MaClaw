@@ -133,6 +133,9 @@ func TestPublishFlowDecoyPreviewIsNotAnUpload(t *testing.T) {
 	if !strings.Contains(rep.String(), "not an upload") || !strings.Contains(rep.String(), "the site stored them") {
 		t.Fatalf("decoy not rejected or real upload not confirmed: %s", rep.String())
 	}
+	if rep.Method["upload"] != "file_input" || rep.Method["upload_input_rank"] != "2" || rep.Method["evidence"] == "" {
+		t.Fatalf("method not recorded: %+v", rep.Method)
+	}
 	site.mu.Lock()
 	defer site.mu.Unlock()
 	if len(site.published) != 1 || !strings.Contains(site.published[0]["html"], "/img/") || strings.Contains(site.published[0]["html"], "blob:") {
@@ -176,5 +179,24 @@ func TestPublishFlowLazyUploadNeedsRemotePictures(t *testing.T) {
 		if !c.ok && (err == nil || rep.State == PublishLive) {
 			t.Fatalf("%s: unconfirmed lazy pictures passed: %s", c.q, rep.State)
 		}
+	}
+}
+
+// Exploration reads the surface (frames, inputs, buttons) and writes nothing.
+func TestExplorePublishIsReadOnly(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "decoy_preview_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit")
+	out, err := ExplorePublish(d, PublishSpec{})
+	if err != nil {
+		t.Fatal(err, out)
+	}
+	if !strings.Contains(out["surface"], `"frames":1`) || strings.Count(out["surface"], "accept") != 2 || !strings.Contains(out["surface"], "发布") {
+		t.Fatalf("surface %+v", out)
+	}
+	site.mu.Lock()
+	defer site.mu.Unlock()
+	if len(site.published) != 0 {
+		t.Fatalf("explore wrote: %+v", site)
 	}
 }

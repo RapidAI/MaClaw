@@ -152,6 +152,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"title_selector":  map[string]any{"type": "string", "description": "publish: CSS selector of the title field if not auto-found"},
 				"body_selector":   map[string]any{"type": "string", "description": "publish: CSS selector of the body editor if not auto-found"},
 				"upload_selector": map[string]any{"type": "string", "description": "publish: CSS selector of the file input"},
+				"explore":         map[string]any{"type": "boolean", "description": "publish: read-only probe of the editor (fields, frames, file inputs, publish buttons, notices); types, uploads and clicks nothing. Use it on a new site before the real publish"},
 				"upload_trigger":  map[string]any{"type": "string", "description": "publish: visible text of the upload button when there is no file input yet"},
 				"submit_texts":    map[string]any{"type": "array", "description": "publish: exact text of the publish button(s), e.g. [\"发布\"]", "items": map[string]any{"type": "string"}},
 				"confirm_texts":   map[string]any{"type": "array", "description": "publish: exact text of a second confirm button if the site asks", "items": map[string]any{"type": "string"}},
