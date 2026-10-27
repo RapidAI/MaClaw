@@ -81,6 +81,32 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
         }
     });
 
+    it("does not let a restored phase or tab prepare relabel an idle task as running", () => {
+        const base = {
+            lang: "zh-Hans",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            backgroundPhaseActive: true,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: true,
+            codingStepCount: 1,
+            codingStepsAllPassed: false,
+            pendingUnfinishedStatus: "",
+        };
+        // The durable snapshot is the outcome the sidebar row shows. A stale
+        // local phase must not overwrite it with 进行中 on tab open.
+        expect(resolveTaskExecutionStatus({ ...base, raw: "interrupted" })).toEqual({ label: "已中断", tone: "pending" });
+        expect(resolveTaskExecutionStatus({ ...base, raw: "paused implement" })).toEqual({ label: "已暂停", tone: "pending" });
+        expect(resolveTaskExecutionStatus({ ...base, raw: "cancelled" })).toEqual({ label: "已取消", tone: "cancelled" });
+        // A recovery card in the transcript is an outcome too: a stale phase
+        // must not paint over the unfinished turn it belongs to.
+        expect(resolveTaskExecutionStatus({ ...base, raw: "", pendingUnfinishedStatus: "max_rounds_reached" })).toEqual({ label: "未完成", tone: "pending" });
+        // With no outcome anywhere, local preparation still reads as work.
+        expect(resolveTaskExecutionStatus({ ...base, raw: "" })).toEqual({ label: "进行中", tone: "running" });
+    });
+
     it("labels a max-round recovery card as unfinished rather than interrupted", () => {
         const status = resolveTaskExecutionStatus({
             lang: "zh-Hans",

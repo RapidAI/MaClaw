@@ -36,32 +36,6 @@ func resetCompanionDocShares(t *testing.T) {
 	})
 }
 
-func postCompanionShare(t *testing.T, identityToken, visibility, password, days, filename string, body []byte) *httptest.ResponseRecorder {
-	t.Helper()
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-	_ = writer.WriteField("visibility", visibility)
-	_ = writer.WriteField("password", password)
-	_ = writer.WriteField("days", days)
-	part, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := part.Write(body); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares", &buf)
-	req.Header.Set("Authorization", "Bearer "+identityToken)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	rec := httptest.NewRecorder()
-	identity, _, _ := newHTTPAPITestServices(t)
-	CompanionDocumentSharesHandler(identity).ServeHTTP(rec, req)
-	return rec
-}
-
 func TestCompanionDocumentSharePublicImportAndPrivatePassword(t *testing.T) {
 	resetCompanionDocShares(t)
 	identity, _, _ := newHTTPAPITestServices(t)
@@ -543,6 +517,74 @@ func TestCompanionDocumentShareRejectsDuplicatePaperAndScope(t *testing.T) {
 	companionDocShares.Unlock()
 	if rec := create(ownerToken, "public", "", "", hash, paper); rec.Code != http.StatusOK {
 		t.Fatalf("expired re-share: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCompanionDocumentShareUpdateRejectsDuplicateScope(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "dup-editor@example.com")
+	paper := []byte("%PDF-update-dup")
+	hash := companionShareContentHash(paper)
+
+	create := func(visibility, target string) string {
+		t.Helper()
+		rec := postCompanionShareWithFields(t, identity, ownerToken, visibility, "", target, "0", "paper.pdf", hash, paper)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("create %s: %d %s", visibility, rec.Code, rec.Body.String())
+		}
+		return companionShareTokenFrom(t, rec)
+	}
+	patched := func(token, visibility, password, target string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"visibility": visibility,
+			"password":   password,
+			"target":     target,
+			"days":       0,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/shares/"+token, bytes.NewReader(body))
+		req.SetPathValue("token", token)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareUpdateHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+
+	publicToken := create("public", "")
+	personToken := create("person", "reader@example.com")
+
+	// Saving the link's own scope is not a conflict with itself.
+	if rec := patched(publicToken, "public", "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("self scope: %d %s", rec.Code, rec.Body.String())
+	}
+	// Moving the person link onto the public scope would leave two public
+	// links for one paper.
+	dup := patched(personToken, "public", "", "")
+	if dup.Code != http.StatusConflict || !strings.Contains(dup.Body.String(), "请先删除另一份分享") {
+		t.Fatalf("update duplicate: %d %s", dup.Code, dup.Body.String())
+	}
+	if rec := patched(publicToken, "private", "secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("move to private: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := patched(personToken, "private", "secret", ""); rec.Code != http.StatusConflict {
+		t.Fatalf("second private: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := patched(personToken, "person", "", "reader@example.com"); rec.Code != http.StatusOK {
+		t.Fatalf("own person scope: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Once the other private link expires, the same scope is free again.
+	companionDocShares.Lock()
+	share := companionDocShares.items[publicToken]
+	share.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+	companionDocShares.items[publicToken] = share
+	companionDocShares.Unlock()
+	if rec := patched(personToken, "private", "secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("expired other link: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

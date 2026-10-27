@@ -68,13 +68,26 @@ export interface TaskDraft {
     runWindow?: RunWindow;
 }
 
-/** 从模板库、工作流页或专家卡片带入新建任务页的预填。 */
+/** 从模板库、工作流页、专家卡片或任务右键菜单带入新建任务页的预填。 */
 export interface NewTaskWizardSeed {
     expertId?: string | null;
     expertName?: string | null;
     workflowTemplateId?: string | null;
     latexTemplateId?: string | null;
     latexTemplateName?: string | null;
+    /** 任务类型：任务右键「新任务」沿用源任务的会话/编程类型。 */
+    taskType?: TaskType;
+    /** 工作空间：任务右键「新任务」沿用源任务的工作目录、云端或远程目标。 */
+    workspace?: WorkspaceTarget;
+}
+
+/** 种子是否携带任何需要写入草稿的配置。 */
+export function hasWizardSeedContent(seed?: NewTaskWizardSeed | null): boolean {
+    if (!seed) return false;
+    return !!String(seed.expertId || '').trim()
+        || !!String(seed.workflowTemplateId || '').trim()
+        || !!seed.taskType
+        || !!seed.workspace;
 }
 
 export function defaultTaskDraft(): TaskDraft {
@@ -169,19 +182,25 @@ export function withLatexTemplate(draft: TaskDraft, id: string | null, name: str
     };
 }
 
-/** 模板库 / 工作流 / 专家卡片点进来时的草稿。专家与工作流仍互斥，专家优先。 */
+/** 模板库 / 工作流 / 专家卡片 / 任务右键「新任务」点进来时的草稿。
+ *  先落工作空间与任务类型，再应用专家/工作流：专家与工作流仍互斥，专家优先；
+ *  指定专家时非本地工作空间按既有规则归约为本地。 */
 export function draftFromWizardSeed(seed: NewTaskWizardSeed | null | undefined): TaskDraft {
-    const expertId = String(seed?.expertId || "").trim();
-    const workflowId = String(seed?.workflowTemplateId || "").trim();
+    if (!seed) return defaultTaskDraft();
+    let draft = defaultTaskDraft();
+    if (seed.workspace) draft = withWorkspace(draft, seed.workspace);
+    if (seed.taskType) draft = withTaskType(draft, seed.taskType);
+    const expertId = String(seed.expertId || "").trim();
+    const workflowId = String(seed.workflowTemplateId || "").trim();
     if (expertId) {
-        let draft = withExpert(defaultTaskDraft(), expertId, String(seed?.expertName || "").trim() || expertId);
+        draft = withExpert(draft, expertId, String(seed?.expertName || "").trim() || expertId);
         if (isLatexExpertId(expertId)) {
             draft = withLatexTemplate(draft, seed?.latexTemplateId || LATEX_BLANK_TEMPLATE_ID, seed?.latexTemplateName || null);
         }
         return draft;
     }
-    if (workflowId) return withWorkflow(defaultTaskDraft(), workflowId);
-    return defaultTaskDraft();
+    if (workflowId) return withWorkflow(draft, workflowId);
+    return draft;
 }
 
 /**

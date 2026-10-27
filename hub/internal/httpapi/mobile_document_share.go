@@ -33,6 +33,10 @@ const companionDocSharePathEnv = "MACLAW_COMPANION_DOC_SHARE_PATH"
 // way forward; a second link would only split the annotations.
 const companionShareDuplicateMessage = "这份文档已经以相同的范围分享过了，请先删除原分享，或修改原分享"
 
+// companionShareDuplicateUpdateMessage is the same rule seen from 修改: the
+// link being edited is not the conflict, another link is.
+const companionShareDuplicateUpdateMessage = "这份文档已经以相同的范围分享过了，请先删除另一份分享"
+
 var companionShareTokenPattern = regexp.MustCompile(`^cd_[0-9a-f]{32}$`)
 
 type companionDocShare struct {
@@ -193,15 +197,19 @@ func companionShareContentHash(raw []byte) string {
 }
 
 // companionShareDuplicateLocked returns the live share that already covers
-// this (paper, scope). An expired share does not block a new one: the reader
-// may publish it again. Legacy shares created before ContentHash existed do
-// not match, so they never block a share this build makes.
-func companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID string, now time.Time) (companionDocShare, bool) {
+// this (paper, scope), ignoring exceptToken so 修改 does not collide with
+// itself. An expired share does not block a new one: the reader may publish
+// it again. Legacy shares created before ContentHash existed do not match, so
+// they never block a share this build makes.
+func companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, exceptToken string, now time.Time) (companionDocShare, bool) {
 	if contentHash == "" {
 		return companionDocShare{}, false
 	}
 	scope := companionShareScopeKey(visibility, target, groupID)
 	for _, share := range companionDocShares.items {
+		if share.Token == exceptToken {
+			continue
+		}
 		if share.OwnerID != ownerID || share.expired(now) {
 			continue
 		}
@@ -377,7 +385,15 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 	// NotesReply tells the desktop that this Hub records host replies. An older
 	// Hub omits it, and the owner's machine then does not run a discussion agent:
 	// without reply_to every host line would look unanswered and loop.
-	writeJSON(w, http.StatusOK, map[string]any{"mine": mine, "received": received, "notes_reply": true})
+	// ServerTime lets the owner's watermark use this Hub's clock. The two
+	// machines can disagree by minutes, and comparing a note time from one
+	// clock with an install time from the other silently skips live notes.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mine":        mine,
+		"received":    received,
+		"notes_reply": true,
+		"server_time": now.UTC().Format(time.RFC3339),
+	})
 }
 
 func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *auth.ViewerPrincipal, ownerID string) {
@@ -452,7 +468,7 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 	now := time.Now().UTC()
 	loadCompanionDocShares()
 	companionDocShares.Lock()
-	_, duplicate := companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, now)
+	_, duplicate := companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, "", now)
 	companionDocShares.Unlock()
 	if duplicate {
 		writeError(w, http.StatusConflict, "SHARE_DUPLICATE", companionShareDuplicateMessage)
@@ -500,7 +516,7 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 	companionDocShares.Lock()
 	// The pre-check happened before the blob was written. Check once more with
 	// the lock held so two requests that raced through it cannot both publish.
-	if _, duplicate = companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, now); duplicate {
+	if _, duplicate = companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, "", now); duplicate {
 		companionDocShares.Unlock()
 		mobileDeleteDocumentBlob(blobPath)
 		writeError(w, http.StatusConflict, "SHARE_DUPLICATE", companionShareDuplicateMessage)
@@ -511,6 +527,7 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 	if err != nil {
 		delete(companionDocShares.items, token)
 		companionDocShares.Unlock()
+		mobileDeleteDocumentBlob(blobPath)
 		writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
 		return
 	}
@@ -608,7 +625,8 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 // CompanionDocumentShareUpdateHandler changes who can see a share and how long
 // it lasts. Only the owner may change it. The file, the revision, and the
 // readers' notes stay as they are; a password that is left empty keeps the
-// one already stored.
+// one already stored. A change that would leave two live links for the same
+// paper and audience is refused, exactly like creating a duplicate.
 //
 //	PATCH /api/mobile/documents/shares/{token}
 func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
@@ -710,6 +728,16 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 				share.ExpiresAt = time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour)
 			} else {
 				share.ExpiresAt = time.Time{}
+			}
+		}
+		// A link that stays expired does not collide with anything. One that is
+		// live after this edit must not duplicate another live link's scope.
+		now := time.Now().UTC()
+		if share.ExpiresAt.IsZero() || now.Before(share.ExpiresAt) {
+			if _, duplicate := companionShareDuplicateLocked(ownerID, share.ContentHash, visibility, target, groupID, token, now); duplicate {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusConflict, "SHARE_DUPLICATE", companionShareDuplicateUpdateMessage)
+				return
 			}
 		}
 		share.Visibility = visibility
@@ -910,6 +938,9 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 		share, ok = companionDocShares.items[token]
 		if !ok || share.OwnerID != ownerID {
 			companionDocShares.Unlock()
+			// A delete that landed while this sync was writing must not leave
+			// the bytes it just wrote behind as an orphan.
+			mobileDeleteDocumentBlob(blobPath)
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
 			return
 		}
@@ -1087,6 +1118,23 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 				writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有主持人可以回复批注")
 				return
 			}
+			for _, existing := range share.Notes {
+				if existing.ReplyTo != replyTo || !companionShareNoteIsHost(existing, share.OwnerID) {
+					continue
+				}
+				// A second host machine, or a retry after a dropped response,
+				// must not add a second answer to the same reader note. This
+				// check runs before the target lookup: the question may already
+				// have left the capped list while the answer is still there.
+				notes := companionShareNotesJSON(share.Notes, share.OwnerID)
+				revision := share.NotesRevision
+				companionDocShares.Unlock()
+				writeJSON(w, http.StatusOK, map[string]any{
+					"notes":          notes,
+					"notes_revision": revision,
+				})
+				return
+			}
 			target, found := companionShareNoteByID(share.Notes, replyTo)
 			if !found {
 				companionDocShares.Unlock()
@@ -1096,21 +1144,6 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 			if companionShareNoteIsHost(target, share.OwnerID) {
 				companionDocShares.Unlock()
 				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "只能回复读者的批注")
-				return
-			}
-			for _, existing := range share.Notes {
-				if existing.ReplyTo != replyTo || !companionShareNoteIsHost(existing, share.OwnerID) {
-					continue
-				}
-				// A second host machine, or a retry after a dropped response,
-				// must not add a second answer to the same reader note.
-				notes := companionShareNotesJSON(share.Notes, share.OwnerID)
-				revision := share.NotesRevision
-				companionDocShares.Unlock()
-				writeJSON(w, http.StatusOK, map[string]any{
-					"notes":          notes,
-					"notes_revision": revision,
-				})
 				return
 			}
 		}

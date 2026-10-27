@@ -55,10 +55,11 @@ type UserMessage struct {
 	// AssistantBinding is transport-internal policy supplied by a configured
 	// bot profile; it must never be inferred from untrusted message text.
 	AssistantBinding *AssistantBinding `json:"-"`
-	// CodingTaskIngressToken is a one-shot host capability attached only by a
-	// trusted coding-task ingress. It is intentionally excluded from the wire
-	// format: UserID, request text, model calls and transport metadata must not
-	// be able to manufacture a semantic Coding task relation.
+	// CodingTaskIngressToken is a one-shot host capability attached only by the
+	// desktop host's turn boundary (the owner's serialized turn window). It is
+	// intentionally excluded from the wire format: UserID, request text, model
+	// calls and transport metadata must not be able to manufacture a semantic
+	// Coding task relation.
 	CodingTaskIngressToken string `json:"-"`
 	// NoWorkflowInterception is a one-shot host flag attached by a trusted
 	// desktop wizard handoff (workflow = "none"): the message must bypass

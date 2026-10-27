@@ -3033,19 +3033,13 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		UIAction:                    req.UIAction,
 		NoWorkflowInterception:      req.NoWorkflowInterception,
 	}
-	// A Coding relation can only originate at this desktop-host request
-	// boundary. The token is in-process only (`json:"-"`) and is removed after
-	// this one handler invocation; neither the WebView nor the model can replay
-	// it or choose any identity fields.
-	if a.isDesktopCodingWorkbenchSession(userID, projectPath) {
-		workspaceDir := ""
-		if a.projectPathIsLocalCodingWorkbench(projectPath) {
-			// The App resolves this directory before minting the ingress token.
-			// It is a host workspace fact, not a project-path-derived capability.
-			workspaceDir = a.codingWorkbenchLocalExecDirOrDesktop(projectPath)
-		}
-		msg.CodingTaskIngressToken = a.beginDesktopCodingTaskIngressForRequestWithWorkspace(userID, workspaceDir, req.StartNewTask)
-		defer a.endDesktopCodingTaskIngressForOwner(userID)
+	// This request boundary owns only the semantic "start new task" fence. The
+	// Coding credential itself is minted and swept by the turn that actually
+	// runs (see attachDesktopCodingIngressForTurn): this request may wait on
+	// the owner's turn lock for up to a minute, and a token minted before that
+	// window could be swept by the turn still running.
+	if req.StartNewTask && a.isDesktopCodingWorkbenchSession(userID, projectPath) {
+		a.revokeDesktopCodingTaskRelation(userID)
 	}
 	streamEvents = newAIAssistantStreamEventEmitter(a, requestID, userID)
 	emitEvent := func(name, value string) {

@@ -50,11 +50,14 @@ func isCodingWorkbenchSlash(trimmed string) bool {
 
 // handleCodingWorkbenchIMCommand is the IM entry for pure-coding slash commands.
 // /plan approve executes the pending multi-step plan via the coding runner.
+// A non-nil providedLoopCtx means this command runs inside an already-created
+// internal loop (background chat task), which never owns a turn window.
 func (h *IMMessageHandler) handleCodingWorkbenchIMCommand(
 	msg IMUserMessage,
 	trimmed string,
 	onProgress func(string),
 	onToken func(string),
+	providedLoopCtx *LoopContext,
 ) *IMAgentResponse {
 	// Park the goal timer for the slash, including help text. The cooldown
 	// starts again when this call returns, and only if that same goal should
@@ -62,26 +65,55 @@ func (h *IMMessageHandler) handleCodingWorkbenchIMCommand(
 	resumeGoalTurn := h.suspendQueuedGoalTurn(strings.TrimSpace(msg.UserID))
 	defer resumeGoalTurn()
 	userID := strings.TrimSpace(msg.UserID)
+	lower := strings.ToLower(strings.TrimSpace(trimmed))
+	dispatchPlan := codingWorkbenchSlashDispatches(lower)
+	// Approve/Skip execute the pending plan, so they dispatch writers on the
+	// owner's workspace. They must hold the same exclusive turn window a
+	// message turn holds, which is also what mints their desktop Coding
+	// credential. Every other workbench slash answers locally and stays
+	// immediate, so a status or help command never queues behind a long turn.
+	// A command already running inside an internal loop (background chat task)
+	// must not open a second window for the same owner.
+	if dispatchPlan && providedLoopCtx == nil && !msg.IsBackground {
+		window, timeoutResponse := h.beginOwnerTurnWindow(&msg)
+		if timeoutResponse != nil {
+			return timeoutResponse
+		}
+		msg.CodingTaskIngressToken = window.Token
+		defer window.Close()
+	}
+	// Read the workbench state after the window: the turn that held the lock
+	// while this command waited may have moved it (files, step statuses, remote
+	// binding). The window itself needs no state from here.
 	mem := stickyCodingWorkbenchMemory{}
 	if h != nil {
 		mem = h.getStickyCodingWorkbenchMemory(userID)
 	}
 	projectPath := h.codingSessionWorkRoot(userID, mem)
 
-	lower := strings.ToLower(strings.TrimSpace(trimmed))
-	// Approve: run pending plan through local or remote coding template.
-	if lower == "/plan approve" || lower == "/plan run" || lower == "/plan go" {
+	if dispatchPlan {
+		// Skip executes the original request as one direct step.
+		if lower == "/plan skip" {
+			return h.executeSkippedCodingPlan(userID, projectPath, mem, msg, onProgress, onToken)
+		}
 		return h.executeApprovedCodingPlan(userID, projectPath, mem, msg, onProgress, onToken)
-	}
-	// Skip: single-step execute original pending user text.
-	if lower == "/plan skip" {
-		return h.executeSkippedCodingPlan(userID, projectPath, mem, msg, onProgress, onToken)
 	}
 	resp := h.handleCodingWorkbenchSlash(userID, projectPath, trimmed)
 	if resp == nil {
 		return &IMAgentResponse{Text: codingWorkbenchSlashHelpText()}
 	}
 	return resp
+}
+
+// codingWorkbenchSlashDispatches reports whether this slash command turns the
+// message into a coding turn that can dispatch writers. Only plan execution
+// does; the rest of the workbench slashes answer from local state.
+func codingWorkbenchSlashDispatches(lower string) bool {
+	switch lower {
+	case "/plan approve", "/plan run", "/plan go", "/plan skip":
+		return true
+	}
+	return false
 }
 
 // handleCodingWorkbenchSlash dispatches pure-coding slash commands.

@@ -45,16 +45,23 @@ type codingWorkbenchStepStatus struct {
 	Title         string                 `json:"title,omitempty"`
 	Status        string                 `json:"status"` // pending|running|passed|failed|skipped|verify_failed
 	RuntimeStatus agentruntime.JobStatus `json:"runtime_status"`
-	Summary       string                 `json:"summary,omitempty"`
-	VerifyCmd     string                 `json:"verify_cmd,omitempty"`
-	VerifyOK      *bool                  `json:"verify_ok,omitempty"`
-	UpdatedUnix   int64                  `json:"updated_unix,omitempty"`
+	// Summary is the checklist row's one-line note, never the step's result
+	// report. Writers route through codingStepChecklistNote; the full result
+	// stays on TaskRunResult.Summary for the turn's final answer.
+	Summary     string `json:"summary,omitempty"`
+	VerifyCmd   string `json:"verify_cmd,omitempty"`
+	VerifyOK    *bool  `json:"verify_ok,omitempty"`
+	UpdatedUnix int64  `json:"updated_unix,omitempty"`
 }
 
 func (s codingWorkbenchStepStatus) MarshalJSON() ([]byte, error) {
 	type alias codingWorkbenchStepStatus
 	copy := alias(s)
 	copy.RuntimeStatus = agentruntime.ProjectLegacyJobStatus(s.Status)
+	// Serialization is the last gate before a renderer or the sticky file sees
+	// the row. Projecting here keeps the note invariant even if a future writer
+	// bypasses the setters; the projection is idempotent for existing notes.
+	copy.Summary = codingStepChecklistNote(copy.Summary)
 	return json.Marshal(copy)
 }
 
@@ -467,6 +474,16 @@ func (h *IMMessageHandler) setStickyCodingStepStatuses(userID string, steps []co
 	if userID == "" {
 		return
 	}
+	// This setter is a checklist boundary too: callers may hand over restored
+	// rows or task seeds, and a report body must not enter the sticky snapshot.
+	if len(steps) > 0 {
+		projected := make([]codingWorkbenchStepStatus, len(steps))
+		copy(projected, steps)
+		for i := range projected {
+			projected[i].Summary = codingStepChecklistNote(projected[i].Summary)
+		}
+		steps = projected
+	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.StepStatuses = steps
 		// A freshly seeded list is an approval or a new plan. Keep the
@@ -504,7 +521,11 @@ func (h *IMMessageHandler) skipRemainingOrchestratedCodingSteps(planned bool, us
 	h.markRemainingCodingStepsSkipped(userID, afterIndex, reason)
 }
 
-func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int, status, summary string) {
+// updateStickyCodingStepStatus records one step outcome. resultSummary may be
+// the SubAgent's full final answer; only its first outcome line becomes the
+// checklist note, because the row above the composer is an annotation and the
+// report belongs to the transcript (codingStepChecklistNote).
+func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int, status, resultSummary string) {
 	if h == nil || index < 1 {
 		return
 	}
@@ -512,6 +533,7 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 	if userID == "" {
 		return
 	}
+	note := codingStepChecklistNote(resultSummary)
 	// Memory-only: multi-step runs touch this many times; disk flush at turn end.
 	h.updateStickyCodingWorkbenchMemoryOpts(userID, false, func(mem *stickyCodingWorkbenchMemory) {
 		now := time.Now().Unix()
@@ -519,8 +541,8 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 		for i := range mem.StepStatuses {
 			if mem.StepStatuses[i].Index == index {
 				mem.StepStatuses[i].Status = status
-				if s := strings.TrimSpace(summary); s != "" {
-					mem.StepStatuses[i].Summary = truncateRunesForSubAgent(s, 400)
+				if note != "" {
+					mem.StepStatuses[i].Summary = note
 				}
 				mem.StepStatuses[i].UpdatedUnix = now
 				found = true
@@ -531,7 +553,7 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 			mem.StepStatuses = append(mem.StepStatuses, codingWorkbenchStepStatus{
 				Index:       index,
 				Status:      status,
-				Summary:     truncateRunesForSubAgent(strings.TrimSpace(summary), 400),
+				Summary:     note,
 				UpdatedUnix: now,
 			})
 		}
@@ -542,7 +564,7 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 	h.emitCodingWorkbenchStepsUpdate(userID)
 }
 
-func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int, cmd string, ok bool, summary string) {
+func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int, cmd string, ok bool, resultSummary string) {
 	if h == nil || index < 1 {
 		return
 	}
@@ -550,6 +572,7 @@ func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int
 	if userID == "" {
 		return
 	}
+	note := codingStepChecklistNote(resultSummary)
 	// Verify outcomes matter for UI; persist so crash mid-turn keeps last gate result.
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		now := time.Now().Unix()
@@ -564,8 +587,8 @@ func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int
 				mem.StepStatuses[i].VerifyCmd = strings.TrimSpace(cmd)
 				v := ok
 				mem.StepStatuses[i].VerifyOK = &v
-				if s := strings.TrimSpace(summary); s != "" {
-					mem.StepStatuses[i].Summary = truncateRunesForSubAgent(s, 400)
+				if note != "" {
+					mem.StepStatuses[i].Summary = note
 				}
 				mem.StepStatuses[i].UpdatedUnix = now
 				found = true
@@ -579,7 +602,7 @@ func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int
 				Status:      status,
 				VerifyCmd:   strings.TrimSpace(cmd),
 				VerifyOK:    &v,
-				Summary:     truncateRunesForSubAgent(strings.TrimSpace(summary), 400),
+				Summary:     note,
 				UpdatedUnix: now,
 			})
 		}
@@ -634,13 +657,17 @@ func (h *IMMessageHandler) clearGoalFinishedCodingChecklist(userID string) {
 	h.emitCodingWorkbenchStepsUpdate(userID)
 }
 
-// codingWorkbenchStepsSnapshot copies steps for the GUI event. An empty
-// snapshot stays non-nil so it marshals as [] rather than null; the frontend
-// applies an array directly and treats null as an unexpected payload that
-// forces a status re-poll just to learn the list is empty.
+// codingWorkbenchStepsSnapshot copies steps for the GUI event and re-projects
+// every note, so a legacy row that persisted a report body cannot reach a
+// renderer. An empty snapshot stays non-nil so it marshals as [] rather than
+// null; the frontend applies an array directly and treats null as an unexpected
+// payload that forces a status re-poll just to learn the list is empty.
 func codingWorkbenchStepsSnapshot(steps []codingWorkbenchStepStatus) []codingWorkbenchStepStatus {
 	out := make([]codingWorkbenchStepStatus, len(steps))
 	copy(out, steps)
+	for i := range out {
+		out[i].Summary = codingStepChecklistNote(out[i].Summary)
+	}
 	return out
 }
 
@@ -691,6 +718,7 @@ func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterI
 	if reason == "" {
 		reason = "skipped: prior step failed"
 	}
+	note := codingStepChecklistNote(reason)
 	changed := false
 	h.updateStickyCodingWorkbenchMemoryOpts(userID, false, func(mem *stickyCodingWorkbenchMemory) {
 		now := time.Now().Unix()
@@ -702,7 +730,7 @@ func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterI
 			switch st.Status {
 			case codingStepPending, "", codingStepRunning, codingStepPassed:
 				st.Status = codingStepSkipped
-				st.Summary = truncateRunesForSubAgent(reason, 400)
+				st.Summary = note
 				st.UpdatedUnix = now
 				changed = true
 			}

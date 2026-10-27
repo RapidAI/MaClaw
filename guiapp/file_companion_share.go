@@ -656,7 +656,7 @@ func (a *App) SyncFileCompanionShare(path, highlights string) (FileCompanionShar
 			// so the next sync is not stuck on it. A 404 with no message is
 			// an old hub and the row stays.
 			if fileCompanionShareGone(postErr) {
-				a.dropFileCompanionCloudToken(share.Token)
+				a.retireFileCompanionShare(share.Token)
 				if goneErr == nil {
 					goneErr = postErr
 				}

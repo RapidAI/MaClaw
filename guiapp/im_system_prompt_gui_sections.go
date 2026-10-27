@@ -415,6 +415,12 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext, userID string, history []agent.ConversationEntry, loopCtx *LoopContext) {
 	epilogueStart := time.Now()
 	userID = strings.TrimSpace(userID)
+	// A share discussion answer is published to every reader of the document.
+	// The host's open tasks, SSH sessions, long-term memory, skills, and manual
+	// state are not part of the document and must not be able to reach it.
+	if fileCompanionShareDiscussionUserID(userID) {
+		return
+	}
 
 	// Computer Use playbook for text-only models (OmniParser local vision).
 	cuGateText := msg

@@ -752,7 +752,8 @@ func (a *App) fileCompanionHistory(sessionID string) []FileCompanionMessage {
 	return restore(entries)
 }
 
-// fileCompanionSessionPath is the open file behind one session id.
+// fileCompanionSessionPath is the open file behind one session id. A share
+// discussion session is not an open tab, so it resolves through its own map.
 func (a *App) fileCompanionSessionPath(sessionID string) string {
 	if a == nil {
 		return ""
@@ -762,6 +763,11 @@ func (a *App) fileCompanionSessionPath(sessionID string) string {
 	defer st.mu.Unlock()
 	for canonical := range st.grants {
 		if fileCompanionSessionID(canonical) == sessionID {
+			return canonical
+		}
+	}
+	if canonical := st.discussionPaths[sessionID]; canonical != "" {
+		if _, ok := st.grants[canonical]; ok {
 			return canonical
 		}
 	}

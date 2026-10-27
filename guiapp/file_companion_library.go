@@ -93,6 +93,9 @@ type FileCompanionLibraryList struct {
 	Notice  string                     `json:"notice,omitempty"`
 	Updates []FileCompanionShareUpdate `json:"updates,omitempty"`
 	Removed []string                   `json:"removed,omitempty"`
+	// NotesReply is true when the Hub records host replies. The window keeps a
+	// participant's own turn only when the Hub cannot carry the answer back.
+	NotesReply bool `json:"notesReply"`
 }
 
 // FileCompanionShareResult is the link created for the open file.
@@ -315,7 +318,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 		// the revision the first refresh already stored, instead of downloading
 		// the same project twice and writing an older library over the newer one.
 		fileCompanionLibraryRefreshMu.Lock()
-		remote, err := a.fetchFileCompanionShares(hub, viewer)
+		remote, notesReply, _, err := a.fetchFileCompanionShareList(hub, viewer)
 		if err != nil {
 			fileCompanionLibraryRefreshMu.Unlock()
 			var status *fileCompanionShareStatus
@@ -325,6 +328,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 				notice = "暂时无法连接云端，本机文档仍可查看"
 			}
 		} else {
+			a.fileCompanionNotesReply.Store(notesReply)
 			fileCompanionLibraryMu.Lock()
 			fresh, freshOK := a.readFileCompanionLibraryLocked()
 			if freshOK {
@@ -387,7 +391,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 			items[i].Expired = fileCompanionShareExpiredAt(items[i].ExpiresAt, expiredNow)
 		}
 	}
-	return FileCompanionLibraryList{Items: items, Notice: notice, Updates: updates, Removed: removed}, nil
+	return FileCompanionLibraryList{Items: items, Notice: notice, Updates: updates, Removed: removed, NotesReply: a.fileCompanionNotesReply.Load()}, nil
 }
 
 // fileCompanionShareExpiredAt reports whether an RFC3339 expiry has passed.
@@ -596,41 +600,46 @@ func (a *App) fileCompanionHubLogin() (string, string, error) {
 }
 
 func (a *App) fetchFileCompanionShares(hub, viewer string) ([]FileCompanionLibraryItem, error) {
-	items, _, err := a.fetchFileCompanionShareList(hub, viewer)
+	items, _, _, err := a.fetchFileCompanionShareList(hub, viewer)
 	return items, err
 }
 
 // fetchFileCompanionShareList also reports whether the Hub records host
-// replies. An older Hub omits notes_reply, and the owner machine then leaves
-// the discussion to its owner instead of answering every note as if new.
-func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLibraryItem, bool, error) {
+// replies, and the Hub's own clock. An older Hub omits notes_reply, and the
+// owner machine then leaves the discussion to its owner instead of answering
+// every note as if new. The server time keeps the discussion watermark on the
+// same clock as the note timestamps; comparing a Hub-created note with a
+// locally created install time can skip live notes when the clocks disagree.
+func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLibraryItem, bool, time.Time, error) {
 	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares", nil)
 	if err != nil {
-		return nil, false, err
+		return nil, false, time.Time{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, false, err
+		return nil, false, time.Time{}, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, false, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+		return nil, false, time.Time{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 	}
 	var payload struct {
 		Mine       []fileCompanionShareView `json:"mine"`
 		Received   []fileCompanionShareView `json:"received"`
 		NotesReply bool                     `json:"notes_reply"`
+		ServerTime string                   `json:"server_time"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
-		return nil, false, errors.New("云端分享记录无法读取")
+		return nil, false, time.Time{}, errors.New("云端分享记录无法读取")
 	}
+	serverTime, _ := time.Parse(time.RFC3339, strings.TrimSpace(payload.ServerTime))
 	out := make([]FileCompanionLibraryItem, 0, len(payload.Mine)+len(payload.Received))
 	out = append(out, libraryItemsFromShares(payload.Mine, true, hub)...)
 	out = append(out, libraryItemsFromShares(payload.Received, false, hub)...)
-	return out, payload.NotesReply, nil
+	return out, payload.NotesReply, serverTime, nil
 }
 
 func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub string) []FileCompanionLibraryItem {
@@ -971,7 +980,10 @@ func (a *App) DeleteFileCompanionShare(token string) error {
 		}
 		// The hub knows the route and says the link is gone; clear the row.
 	}
-	a.dropFileCompanionCloudToken(token)
+	// Retire the token and drop the row in one critical section. A list that
+	// started before the delete must not keep the row (merge keeps a local
+	// cloud row whose file exists) or publish a pull that was still in flight.
+	a.retireFileCompanionShare(token)
 	return nil
 }
 
@@ -1230,14 +1242,28 @@ func (a *App) upsertFileCompanionCloudLocked(item FileCompanionLibraryItem) erro
 	return a.writeFileCompanionLibraryLocked(trimFileCompanionLibrary(kept, fileCompanionLibraryCap))
 }
 
-// dropFileCompanionCloudToken removes one cloud row. The local file stays:
-// an expired share is not the reader's own paper.
-func (a *App) dropFileCompanionCloudToken(token string) {
+// retireFileCompanionShare removes a cloud row whose link is gone for good and
+// marks the token dismissed under one lock. The dismissal is what stops an
+// in-flight list from keeping the row and an in-flight pull from publishing it
+// again; the token itself is dead, so the marker costs nothing after that.
+func (a *App) retireFileCompanionShare(token string) {
 	if a == nil || token == "" {
 		return
 	}
 	fileCompanionLibraryMu.Lock()
 	defer fileCompanionLibraryMu.Unlock()
+	_, _ = a.dismissFileCompanionShareLocked(token)
+	a.dropFileCompanionCloudTokenLocked(token)
+}
+
+// dropFileCompanionCloudTokenLocked removes one cloud row. The local file
+// stays: a share that is gone is not the reader's own paper. The caller holds
+// fileCompanionLibraryMu so a delete can retire the share and drop its row in
+// one critical section.
+func (a *App) dropFileCompanionCloudTokenLocked(token string) {
+	if a == nil || token == "" {
+		return
+	}
 	items, ok := a.readFileCompanionLibraryLocked()
 	if !ok {
 		return

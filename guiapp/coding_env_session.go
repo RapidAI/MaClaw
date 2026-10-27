@@ -219,6 +219,12 @@ func loadStickyCodingWorkbenchMemoryFromDisk(userID string) (mem stickyCodingWor
 		log.Printf("[coding-env] load sticky memory failed path=%s err=%v", path, err)
 		return stickyCodingWorkbenchMemory{}, false, false
 	}
+	// Snapshots written before the checklist note contract may hold a step's
+	// full result report in Summary. Heal on load so a restored checklist draws
+	// annotations; the next write persists the compact form.
+	for i := range mem.StepStatuses {
+		mem.StepStatuses[i].Summary = codingStepChecklistNote(mem.StepStatuses[i].Summary)
+	}
 	if mem.UpdatedAtUnix > 0 {
 		age := time.Since(time.Unix(mem.UpdatedAtUnix, 0))
 		if age > stickyCodingMemoryMaxAge && !codingWorkbenchHasUnfinishedWork(mem) {

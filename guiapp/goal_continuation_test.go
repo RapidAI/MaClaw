@@ -99,28 +99,35 @@ func TestSharedLoopGoalPlanPhaseDropsMutationTools(t *testing.T) {
 	}
 }
 
-func TestGoalContinuationMintsCodingIngressForWorkbench(t *testing.T) {
+func TestGoalContinuationTurnCarriesCodingIngressForWorkbench(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() { app.closeCodingTaskRelationService() })
-	handler := &IMMessageHandler{app: app}
+	handler := &IMMessageHandler{app: app, memory: agent.NewConversationMemory()}
+	t.Cleanup(handler.memory.Stop)
 	app.imHandler = handler
 	owner := projectSessionOwnerID("C:/workspace/goal-cont")
 	handler.storeStickyCodingWorkbenchMemory(owner, stickyCodingWorkbenchMemory{Kind: "local"})
-	engine := NewGoalContinuationEngine(nil, app)
 
-	msg := IMUserMessage{UserID: owner, Platform: "goal-continuation", Text: "[系统续接] 分解目标"}
-	end := engine.attachCodingIngress(&msg)
-	if end == nil || msg.CodingTaskIngressToken == "" {
-		t.Fatal("coding workbench continuation must mint a desktop ingress token")
+	// A goal round is a host turn without a user send: the turn boundary is
+	// what must mint its credential, so this exercises that boundary.
+	boundary := handler.enterIMMessageSerializationBoundary(IMUserMessage{
+		RequestID: "goal-round", UserID: owner, Platform: "goal-continuation", Text: "[系统续接] 继续执行",
+	}, nil, nil, nil, explicitTaskSlotDecision{})
+	// The sweep is part of the same boundary (owner lock held); always run it.
+	defer boundary.Unlock()
+	if boundary.CodingIngressToken == "" {
+		t.Fatal("coding workbench continuation turn must carry a desktop ingress token")
 	}
-	_, _, handle, _, ok := app.nextDesktopCodingRootStepRelation(msg.CodingTaskIngressToken, owner)
+	_, _, handle, _, ok := app.nextDesktopCodingRootStepRelation(boundary.CodingIngressToken, owner)
 	if !ok || !handle.complete() {
 		t.Fatal("minted token did not bind a desktop relation")
 	}
-	end()
 
-	plain := IMUserMessage{UserID: "desktop-user", Platform: "goal-continuation", Text: "[系统续接] 分解目标"}
-	if engine.attachCodingIngress(&plain) != nil || plain.CodingTaskIngressToken != "" {
+	plain := handler.enterIMMessageSerializationBoundary(IMUserMessage{
+		RequestID: "chat-turn", UserID: "desktop-user", Platform: "goal-continuation", Text: "[系统续接] 继续执行",
+	}, nil, nil, nil, explicitTaskSlotDecision{})
+	defer plain.Unlock()
+	if plain.CodingIngressToken != "" {
 		t.Fatal("a chat session must not receive a coding ingress token")
 	}
 }

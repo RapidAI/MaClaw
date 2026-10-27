@@ -26,6 +26,17 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 }
 
 func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, loopCtx *LoopContext, workflowAgentLoop bool, phasePromptDirect string, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
+	// A share discussion answer is published to every reader of the document.
+	// Do not build the host's assistant prompt around it: the base identity,
+	// project paths, pinned rules, tasks, SSH hosts, memory, skills, steering
+	// rules, and resume trace all belong to the host and none of them are part
+	// of the document. The reader's note and the document are the whole input.
+	if fileCompanionShareDiscussionUserID(msg.UserID) {
+		if prompt := strings.TrimSpace(buildAssistantBindingPrompt(msg.AssistantBinding)); prompt != "" {
+			return prompt
+		}
+		return "你是文件伴读。只讨论当前打开的这一个文件。"
+	}
 	promptBuildStart := time.Now()
 	// File descriptions (and any host-extracted document text) are attached to
 	// the user content later in buildAgentLoopConversationStart. Keep the
@@ -894,6 +905,10 @@ func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFir
 		return
 	}
 	userID = strings.TrimSpace(userID)
+	// The answer goes to every reader, not to the host's private assistant.
+	if fileCompanionShareDiscussionUserID(userID) {
+		return
+	}
 	strictOwner := isIsolatedAssistantSessionUserID(userID)
 	b.WriteString("\n")
 	b.WriteString(corememory.PromptSectionUserMemory)

@@ -9,6 +9,11 @@ import (
 
 const hopRunSpecVersion = "hop-run/v1"
 
+// hopCurrentChannelDeliveryCapability is the capability the planner records for
+// a delivery into the host's own conversation. That step's receipt is this
+// turn's response projection, not a transport worker's later callback.
+const hopCurrentChannelDeliveryCapability = "artifact.deliver.current_channel"
+
 type HopStepStatus string
 
 const (
@@ -163,6 +168,57 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 	return snapshot
 }
 
+// requiredEffectUnsettled reports required work this turn never dispatched.
+//
+// A step that already owns an execution record is not the model's to finish:
+// another model round cannot move it. That is why a file delivery the host has
+// already handed to this request's own transport does not block the stop. The
+// response projection (current channel) or the channel gateway (specified
+// target) produces that receipt after the loop returns; counting it here made
+// every file turn end in a required_effect_unsettled hard exit after two
+// no-tool stops, and the kept recovery marker then refused the next message as
+// an uncertain external send.
+//
+// Every other unsettled state still blocks, because it either has no record
+// (pending), failed, is genuinely unknown, or still waits for a decision the
+// model's next round must not skip (a mailbox confirmation). Those are exactly
+// the states where ending the turn would report the effect as done.
+func requiredEffectUnsettled(snapshot *HopRunSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, step := range snapshot.Steps {
+		if !step.Required || step.Superseded || step.Status == HopStepCompleted {
+			continue
+		}
+		if hostTransportDeliveryStep(step) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// hostTransportDeliveryStep identifies a file delivery whose receipt is
+// produced by this request's own transport, not by a later model round:
+//
+//   - current channel: the response projection attaches the bytes to this
+//     conversation, so the projection is the delivery act;
+//   - specified target: the channel gateway sends the reply attachment after
+//     the loop returns, so the send is already committed to this request.
+//
+// Both are dispatched work. A mailbox send waiting for confirmation is not:
+// its receipt is a human decision the pause mechanism owns, so it keeps the
+// run open.
+func hostTransportDeliveryStep(step HopRunStep) bool {
+	if step.Status != HopStepRunning || step.Evidence.State != tool.PlanExecutionAwaitingReceipt {
+		return false
+	}
+	capability := strings.TrimSpace(step.Capability)
+	return strings.EqualFold(capability, hopCurrentChannelDeliveryCapability) ||
+		strings.EqualFold(capability, string(semanticSpecifiedTargetDeliveryCapability))
+}
+
 func hopEvidenceKey(surface *semanticCallSurface, selectionID string) string {
 	if surface == nil {
 		return selectionID
@@ -267,6 +323,10 @@ func finalizeHopRun(snapshot *HopRunSnapshot, result agent.LoopResult) *HopRunSn
 	return snapshot
 }
 
+// hopMissingRequiredEffects lists required effects still owed by this turn, for
+// the iteration contract fed back to the model. A file delivery already handed
+// to this request's transport is not a deliverable still to produce: telling
+// the model it is missing invites a second attempt at a spent one-shot grant.
 func hopMissingRequiredEffects(snapshot *HopRunSnapshot) []string {
 	if snapshot == nil {
 		return nil
@@ -275,6 +335,9 @@ func hopMissingRequiredEffects(snapshot *HopRunSnapshot) []string {
 	var names []string
 	for _, step := range snapshot.Steps {
 		if !step.Required || step.Status == HopStepCompleted || step.Superseded {
+			continue
+		}
+		if hostTransportDeliveryStep(step) {
 			continue
 		}
 		name := strings.TrimSpace(step.Capability)

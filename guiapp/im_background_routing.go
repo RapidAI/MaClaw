@@ -114,26 +114,32 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 	if strings.TrimSpace(promptMessage) == "" {
 		promptMessage = intentText
 	}
-	if h.memoryStore != nil {
-		systemPrompt = h.buildSystemPromptWithMemory(promptMessage, len(history) == 0, loopCtx)
-	} else if fileCompanionTurnWithoutTools(msg.UserID, msg.Platform) {
-		// Same base prompt as buildSystemPrompt, but with this loop so the
-		// coding-document contract is omitted. Companion is not a background
-		// task today; this keeps a later background turn on the same rule.
-		systemPrompt = h.buildSystemPromptWithMemory(promptMessage, false, loopCtx)
+	if fileCompanionShareDiscussionUserID(msg.UserID) {
+		// A published discussion answer keeps the minimal prompt: no host
+		// memory, unfinished task, trace evidence, or workflow contract.
+		systemPrompt = buildAssistantBindingPrompt(msg.AssistantBinding)
 	} else {
-		systemPrompt = h.buildSystemPrompt()
-	}
-	if activeSlot := h.memory.ActiveUnfinishedSlot(msg.UserID); activeSlot != nil {
-		systemPrompt += buildUnfinishedSlotResumeContextWithLang(activeSlot, msg.Lang)
-		systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, activeSlot.LastTask)
-	} else {
-		systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, promptMessage)
-	}
-	systemPrompt += workflowDocDeliverySection(msg.UserID, msg.Platform)
-	if fileCompanionTurnWithoutTools(msg.UserID, msg.Platform) {
-		if bindingPrompt := buildAssistantBindingPrompt(msg.AssistantBinding); bindingPrompt != "" {
-			systemPrompt += "\n\n" + bindingPrompt
+		if h.memoryStore != nil {
+			systemPrompt = h.buildSystemPromptWithMemory(promptMessage, len(history) == 0, loopCtx)
+		} else if fileCompanionTurnWithoutTools(msg.UserID, msg.Platform) {
+			// Same base prompt as buildSystemPrompt, but with this loop so the
+			// coding-document contract is omitted. Companion is not a background
+			// task today; this keeps a later background turn on the same rule.
+			systemPrompt = h.buildSystemPromptWithMemory(promptMessage, false, loopCtx)
+		} else {
+			systemPrompt = h.buildSystemPrompt()
+		}
+		if activeSlot := h.memory.ActiveUnfinishedSlot(msg.UserID); activeSlot != nil {
+			systemPrompt += buildUnfinishedSlotResumeContextWithLang(activeSlot, msg.Lang)
+			systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, activeSlot.LastTask)
+		} else {
+			systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, promptMessage)
+		}
+		systemPrompt += workflowDocDeliverySection(msg.UserID, msg.Platform)
+		if fileCompanionTurnWithoutTools(msg.UserID, msg.Platform) {
+			if bindingPrompt := buildAssistantBindingPrompt(msg.AssistantBinding); bindingPrompt != "" {
+				systemPrompt += "\n\n" + bindingPrompt
+			}
 		}
 	}
 

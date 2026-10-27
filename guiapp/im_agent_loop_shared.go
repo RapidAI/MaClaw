@@ -722,15 +722,6 @@ func (h *IMMessageHandler) executeSharedTurn(
 	if cb.hasPendingToolBatch {
 		return h.interruptedSharedLoopResultResponse(userText, loopResult, requestID, telemetry, onStreamDone, cb)
 	}
-	// A marker is incomplete work. Clear it when this run finished, including
-	// a no-progress stop whose paired batch is already committed. Other errors
-	// keep the checkpoint for crash recovery. User cancel already retired its
-	// marker above.
-	if cb.checkpointCommitted && sharedLoopCheckpointIsFinishedWork(loopResult) {
-		if err := h.memory.CompleteInFlightCheckpointForRun(userID, recoveryRunID); err != nil {
-			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
-		}
-	}
 
 	// Budget mid-loop / entry stop (EarlyStopper) — keep user-facing text.
 	if loopResult.Error == "daily_llm_budget_exceeded" {
@@ -778,6 +769,17 @@ func (h *IMMessageHandler) executeSharedTurn(
 		ResponseSource: responseSource,
 	}
 	attachSharedLoopArtifacts(resp, cb)
+	// A marker is incomplete work. Clear it only after the projection had its
+	// chance to settle what the loop stopped for: this turn's own response is
+	// the receipt owner of a current-channel delivery. The decision used to run
+	// before the projection, so a turn the host delivered was still recorded as
+	// an unfinished external effect and the next message was refused as an
+	// uncertain send.
+	if cb.checkpointCommitted && sharedLoopTurnSettled(loopResult, resp, cb) {
+		if err := h.memory.CompleteInFlightCheckpointForRun(userID, recoveryRunID); err != nil {
+			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
+		}
+	}
 	if loopResult.AskUser != nil {
 		resp.Text = sharedLoopUserFacingText(loopResult.Text)
 		// Mark interactive pause for UI/telemetry (parity with record_audio + legacy ask_user).
@@ -933,6 +935,9 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 		cb.flushHostOwnedDocumentGenerate(resp)
 		cb.flushHostOwnedLiveDataVisual(resp)
 	}
+	// The local-chat file materialization below is this host's delivery act.
+	// Its result is the receipt for a current-channel delivery.
+	localFileDelivered := false
 	// Specified-target runs before current-channel. Both can be live for one
 	// bound document. Current-channel would attach the local card first and
 	// set the file payload, and the IM sender would then no-op. A generate
@@ -964,7 +969,7 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 		resp.FileMimeType = cb.semanticDeliveryFileMIME
 		resp.SemanticDelivery = cb.semanticDelivery
 		setSharedLoopArtifactSource(resp, imResponseSourceFileDelivery)
-		materializeSemanticDeliveryFileForLocalChat(resp, cb)
+		localFileDelivered = materializeSemanticDeliveryFileForLocalChat(resp, cb)
 	} else if cb.semanticDeliveryVoiceData != "" {
 		resp.VoiceData = cb.semanticDeliveryVoiceData
 		resp.VoiceFileName = cb.semanticDeliveryVoiceName
@@ -975,6 +980,7 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 		setSharedLoopArtifactSource(resp, imResponseSourceScreenshot)
 	}
 	finalizeHostOwnedFileResponse(resp, cb)
+	cb.settleLocalChatDelivery(resp, localFileDelivered)
 }
 
 // materializeSemanticDeliveryFileForLocalChat writes a desktop/TUI PDF (or
@@ -986,25 +992,64 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 // LocalFilePath; FileData is for IM SendMedia and must stay off the
 // Wails event after a successful local save. Weixin/Lansenger keep FileData
 // and must not also get a path here, or the gateway would send the file twice.
-func materializeSemanticDeliveryFileForLocalChat(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) {
+//
+// The return value is the delivery receipt: true only when the bytes reached
+// the local conversation. Anything else leaves the delivery undelivered, and
+// the caller must record that instead of assuming the payload was shown.
+func materializeSemanticDeliveryFileForLocalChat(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) bool {
 	if resp == nil || cb == nil || cb.handler == nil || strings.TrimSpace(resp.FileData) == "" {
-		return
+		return false
 	}
 	switch normalizeIMMessagePlatformKind(cb.effectivePlatform()) {
 	case imMessagePlatformDesktop, imMessagePlatformTUI:
 	default:
-		return
+		return false
 	}
 	started := time.Now()
 	path, err := cb.handler.saveFileDataForLocalDelivery(cb.userID, resp.FileName, resp.FileData)
 	if err != nil {
 		log.Printf("[semantic-delivery] local chat file materialize failed: %v", err)
-		return
+		return false
 	}
 	attachLocalPreview(resp, path, "")
 	resp.FileData = ""
 	if resp.FileMaterializeNanos == 0 {
 		resp.FileMaterializeNanos = time.Since(started).Nanoseconds()
+	}
+	return true
+}
+
+// settleLocalChatDelivery records the receipt for a delivery whose channel is
+// this host's own conversation. Desktop and TUI have no gateway to report
+// acceptance: the response that carries the bytes is the delivery, so the
+// projection producing it is the receipt owner. An IM gateway keeps its own
+// settlement because SendMedia, not the response, is its delivery act.
+func (c *sharedAgentLoopCallbacks) settleLocalChatDelivery(resp *IMAgentResponse, fileMaterialized bool) {
+	if c == nil || resp == nil || c.semanticDelivery == nil || c.semanticSurface == nil {
+		return
+	}
+	switch normalizeIMMessagePlatformKind(c.effectivePlatform()) {
+	case imMessagePlatformDesktop, imMessagePlatformTUI:
+	default:
+		return
+	}
+	// Only a receipt-bound current-channel delivery belongs here. A desktop
+	// specified-target send already completed synchronously in its adapter and
+	// has no prepared delivery row to claim.
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, c.semanticDelivery.SelectionID)
+	if !ok || !semanticCurrentChannelArtifactDelivery(selection) {
+		return
+	}
+	// A turn that keeps a failure is not a delivered turn, even when the bytes
+	// reached the chat card. The prepared row is left to the receipt worker,
+	// which expires it to unknown and never replays it; claiming acceptance
+	// here would complete a route on a turn the host reported as failed.
+	if strings.TrimSpace(resp.Error) != "" && keepVisibleErrorAfterHostFileAttach(resp.Error) {
+		return
+	}
+	outcome, receipt := localChatDeliveryReceipt(resp, c.semanticDelivery.Kind, fileMaterialized)
+	if err := c.semanticDelivery.settleLocalChatDelivery(outcome, receipt); err != nil {
+		log.Printf("[semantic-delivery] local chat receipt failed selection=%s outcome=%s: %v", c.semanticDelivery.SelectionID, outcome, err)
 	}
 }
 
@@ -1095,57 +1140,64 @@ func (c *sharedAgentLoopCallbacks) flushHostOwnedLiveDataVisual(resp *IMAgentRes
 	}
 }
 
-// finalizeHostOwnedFileResponse is the last attach step. The file stays on
-// the response. A stale error that is not part of the turn's outcome is
-// cleared so the client can keep that file. A terminal class such as
-// no_progress stays, because the keep-list names it. The 已生成 receipt is
-// the fallback only when this turn published that PDF and the projected
-// answer is empty. A delivery of an already-produced document keeps the
-// delivery outcome and the original file name.
+// finalizeHostOwnedFileResponse is the last attach step. The artifact stays on
+// the response. A stale error that is not part of the turn's outcome is cleared
+// so the client can keep that artifact. A terminal class such as no_progress
+// stays, because the keep-list names it. The 已生成 receipt is the fallback
+// only when this turn published that PDF and the projected answer is empty. A
+// delivery of an already-produced document keeps the delivery outcome and the
+// original file name.
+//
+// Every projected artifact kind counts, not only files: a delivered image or
+// voice clip is the same host-owned attach, and leaving the loop error beside
+// it would record a finished turn as an unfinished external effect.
 func finalizeHostOwnedFileResponse(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) {
 	if resp == nil {
 		return
 	}
-	if strings.TrimSpace(resp.LocalFilePath) == "" && strings.TrimSpace(resp.FileData) == "" {
+	hasFile := strings.TrimSpace(resp.LocalFilePath) != "" || strings.TrimSpace(resp.FileData) != ""
+	if !hasFile && strings.TrimSpace(resp.ImageKey) == "" && strings.TrimSpace(resp.VoiceData) == "" {
 		return
 	}
-	// The continuation note is the reply. A published PDF still attaches; its
-	// receipt must not replace the note.
-	if canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceChatTaskHandoff && hostResponseHasPDF(resp) && hostTurnPublishedPDF(cb) {
-		title := ""
-		if cb != nil {
-			title = hostOwnedPDFReportTitle(cb.userText)
+	if hasFile {
+		// The continuation note is the reply. A published PDF still attaches; its
+		// receipt must not replace the note.
+		if canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceChatTaskHandoff && hostResponseHasPDF(resp) && hostTurnPublishedPDF(cb) {
+			title := ""
+			if cb != nil {
+				title = hostOwnedPDFReportTitle(cb.userText)
+			}
+			projected := agentruntime.ProjectHostPublishedPDFChat(resp.Text)
+			switch {
+			case projected != "":
+				resp.Text = projected
+			case title != "":
+				resp.Text = "已生成「" + title + "」PDF。"
+			case strings.TrimSpace(resp.Text) != "":
+				resp.Text = "已生成 PDF。"
+			}
 		}
-		projected := agentruntime.ProjectHostPublishedPDFChat(resp.Text)
-		switch {
-		case projected != "":
-			resp.Text = projected
-		case title != "":
-			resp.Text = "已生成「" + title + "」PDF。"
-		case strings.TrimSpace(resp.Text) != "":
-			resp.Text = "已生成 PDF。"
-		}
-	}
-	// A desktop forward with no assistant sentence still has to name the
-	// file that left. The caption is the same one the IM sender used, taken
-	// from the artifact file name. It is not a report title from the utterance.
-	if canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceChatTaskHandoff && !hostTurnPublishedPDF(cb) && cb != nil && cb.filesForwarded > 0 && strings.TrimSpace(resp.Text) == "" {
-		name := strings.TrimSpace(resp.FileName)
-		if name == "" {
-			name = filepath.Base(strings.TrimSpace(resp.LocalFilePath))
-		}
-		lang := "zh"
-		if cb.handler != nil {
-			lang = cb.handler.imUILangOrZh()
-		}
-		if caption := localizeIMProactiveCaption(lang, name, resp.FileMimeType); caption != "" {
-			resp.Text = caption
+		// A desktop forward with no assistant sentence still has to name the
+		// file that left. The caption is the same one the IM sender used, taken
+		// from the artifact file name. It is not a report title from the utterance.
+		if canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceChatTaskHandoff && !hostTurnPublishedPDF(cb) && cb != nil && cb.filesForwarded > 0 && strings.TrimSpace(resp.Text) == "" {
+			name := strings.TrimSpace(resp.FileName)
+			if name == "" {
+				name = filepath.Base(strings.TrimSpace(resp.LocalFilePath))
+			}
+			lang := "zh"
+			if cb.handler != nil {
+				lang = cb.handler.imUILangOrZh()
+			}
+			if caption := localizeIMProactiveCaption(lang, name, resp.FileMimeType); caption != "" {
+				resp.Text = caption
+			}
 		}
 	}
 	if !shouldClearStaleErrorAfterHostFileAttach(resp.Error) {
 		return
 	}
-	log.Printf("[semantic] host file attach recovered turn; clearing stale error %q", resp.Error)
+	log.Printf("[semantic] host artifact attach recovered turn; clearing stale error %q", resp.Error)
 	resp.Error = ""
 }
 
@@ -1381,7 +1433,8 @@ func (c *sharedAgentLoopCallbacks) projectPausedCurrentChannelFile(resp *IMAgent
 	resp.FileName = c.semanticDeliveryFileName
 	resp.FileMimeType = c.semanticDeliveryFileMIME
 	resp.SemanticDelivery = c.semanticDelivery
-	materializeSemanticDeliveryFileForLocalChat(resp, c)
+	delivered := materializeSemanticDeliveryFileForLocalChat(resp, c)
+	c.settleLocalChatDelivery(resp, delivered)
 }
 
 // flushHostOwnedSpecifiedTargetDelivery closes the model-stop gap for a
@@ -2903,7 +2956,7 @@ func (c *sharedAgentLoopCallbacks) UpgradeLightPromptToFull(reason string) bool 
 		// without the successor request's epoch, manifest, receipt, or handoff.
 		// BuildToolsForModelRequest derives the new phase and complete replacement
 		// only after RunLoop opens the next real request boundary.
-		c.systemPrompt = c.systemPromptWithTaskAnchor(c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(semanticUserIntentText(c.userText)), false, c.loopCtx))
+		c.systemPrompt = c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(semanticUserIntentText(c.userText))))
 	}
 	log.Printf("[shared-loop] light→full prompt upgrade reason=%s", reason)
 	// A full execution profile can still use a light prompt profile as an
@@ -3349,7 +3402,7 @@ func (c *sharedAgentLoopCallbacks) leaveLightProfileForUnsafePetition(parent too
 		return
 	}
 	intentText := semanticUserIntentText(c.userText)
-	c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(intentText), false, c.loopCtx)))
+	c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))))
 	c.petitionPromptReady = true
 	log.Printf("[semantic-routing] petition left the light prompt: plan has a selection the light authorizer would drop")
 }
@@ -6418,7 +6471,7 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 				}
 			}
 		}
-		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID}
+		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Kind: "document", Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID}
 		if c.semanticSurface.coordinator != nil {
 			c.semanticPreparedDelivery = &tool.DeliveryRecord{Scope: c.semanticSurface.scope, SelectionID: selection.ID, ArtifactID: record.ArtifactID, ArtifactSourceScope: record.ArtifactSourceScope, ChannelScope: target.ChannelScope, DestinationID: target.DestinationID, State: tool.DeliveryPrepared}
 		}
@@ -6444,7 +6497,7 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 		if err != nil {
 			return "[system rejected] " + err.Error()
 		}
-		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID}
+		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Kind: "document", Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID}
 		if c.semanticSurface.coordinator != nil {
 			c.semanticPreparedDelivery = &tool.DeliveryRecord{Scope: c.semanticSurface.scope, SelectionID: selection.ID, ArtifactID: record.ArtifactID, ArtifactSourceScope: record.ArtifactSourceScope, ChannelScope: target.ChannelScope, DestinationID: target.DestinationID, State: tool.DeliveryPrepared}
 		}
@@ -6505,7 +6558,7 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 		// A logical delivery may already have been prepared by a prior revision
 		// of the same root task. Keep the record's immutable scope rather than
 		// pretending that the current selection owns the prior external effect.
-		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID, OnSettled: func(outcome tool.DeliveryState) {
+		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Kind: strings.ToLower(strings.TrimSpace(artifact.Ref.Kind)), Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID, OnSettled: func(outcome tool.DeliveryState) {
 			if c.handler == nil {
 				return
 			}
@@ -8318,6 +8371,26 @@ func sharedLoopCheckpointIsFinishedWork(result agent.LoopResult) bool {
 	return result.Error == "" || result.Error == agent.ErrNoProgress || result.Error == agent.ErrDeliverableUnassigned
 }
 
+// sharedLoopTurnSettled decides whether this turn's durable recovery marker may
+// be retired. It is evaluated after the response projection so that a loop stop
+// the host itself resolved is not left behind as unfinished work.
+//
+// sharedLoopCheckpointIsFinishedWork keeps its meaning. The additional case is
+// the required-effect hard exit the artifact-attach policy already declares
+// stale: the host attached the file (the response error was cleared by that
+// policy) and the plan no longer holds required work the turn never dispatched.
+// The marker must follow that same outcome; otherwise the settled turn is
+// recovered on the next message as an interrupted external send and refused.
+func sharedLoopTurnSettled(result agent.LoopResult, resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) bool {
+	if sharedLoopCheckpointIsFinishedWork(result) {
+		return true
+	}
+	return result.AskUser == nil && result.RecordAudio == nil &&
+		result.Error == "required_effect_unsettled" &&
+		resp != nil && strings.TrimSpace(resp.Error) == "" &&
+		!cb.RequiredEffectUnsettled()
+}
+
 // interruptedSharedLoopResultResponse keeps the UI outcome aligned with the
 // durable state for non-cancel terminal exits (argument validation, policy
 // failures, hard-stop guards, and max rounds) that happen after a pre-tool
@@ -9071,7 +9144,7 @@ func (c *sharedAgentLoopCallbacks) RefreshAfterToolExecution(name string) bool {
 		// loop must re-read BuildTools so consumed grants disappear.
 		if pending && c.handler != nil && !c.semanticLightLookup() {
 			intentText := semanticUserIntentText(c.userText)
-			c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(intentText), false, c.loopCtx)))
+			c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))))
 		}
 		return true
 	}
@@ -9079,12 +9152,30 @@ func (c *sharedAgentLoopCallbacks) RefreshAfterToolExecution(name string) bool {
 		return false
 	}
 	c.surfaceRefreshPending = false
-	c.systemPrompt = c.systemPromptWithTaskAnchor(c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(semanticUserIntentText(c.userText)), false, c.loopCtx))
+	c.systemPrompt = c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(semanticUserIntentText(c.userText))))
 	return true
+}
+
+// refreshedSystemPrompt rebuilds the full assistant prompt for a later round.
+// A share discussion keeps the minimal prompt built for its turn: the host's
+// memory, tasks, skills, and rules must not enter an answer readers receive.
+func (c *sharedAgentLoopCallbacks) refreshedSystemPrompt(query string) string {
+	if c == nil {
+		return ""
+	}
+	if fileCompanionShareDiscussionUserID(c.userID) {
+		return c.systemPrompt
+	}
+	return c.handler.buildSystemPromptWithMemory(query, false, c.loopCtx)
 }
 
 func (c *sharedAgentLoopCallbacks) systemPromptWithTaskAnchor(systemPrompt string) string {
 	if c == nil {
+		return systemPrompt
+	}
+	// A share discussion answer is published to readers. Host goal phases,
+	// task anchors, and capability-extension paths belong to other work.
+	if fileCompanionShareDiscussionUserID(c.userID) {
 		return systemPrompt
 	}
 	// The host phase outranks the chat prompt. A continuation that only
@@ -9182,13 +9273,14 @@ func fileDeliverableOpen(names []string, capability string) bool {
 	return false
 }
 
-// RequiredEffectUnsettled reports any required plan effect that has not
-// succeeded. Prose is not execution evidence. A failed, pending, running,
-// unmet, or receipt-waiting required selection keeps the run open; optional
-// selections do not block completion.
+// RequiredEffectUnsettled reports required plan work this turn never
+// dispatched. Prose is not execution evidence. Every unsettled state keeps the
+// run open — pending, failed, running without a receipt, unmet, unknown —
+// except a current-channel delivery whose receipt this turn's own response
+// projection owns (see requiredEffectUnsettled). Optional selections never
+// block completion.
 func (c *sharedAgentLoopCallbacks) RequiredEffectUnsettled() bool {
-	snapshot := c.hopRunSnapshot()
-	return snapshot != nil && snapshot.Remaining > 0
+	return requiredEffectUnsettled(c.hopRunSnapshot())
 }
 
 // EarlyStop implements agent.EarlyStopper. Two stop shapes: the daily LLM

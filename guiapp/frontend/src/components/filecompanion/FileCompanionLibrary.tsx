@@ -410,6 +410,9 @@ export function companionShareNotes(raw: unknown): CompanionShareBinding[] {
     for (const item of items) {
         if (!item || typeof item !== "object") continue;
         const row = item as Record<string, unknown>;
+        // A lapsed link is no longer a discussion. Its cached notes stay in
+        // the library row, but the open tab must stop treating it as a share.
+        if (boolOf(row, "expired", "Expired")) continue;
         const path = textOf(row, "path", "Path");
         const token = textOf(row, "token", "Token");
         if (!path || !token) continue;
@@ -564,6 +567,35 @@ function dateOf(timestamp: string): string {
     return timestamp ? timestamp.slice(0, 10) : "";
 }
 
+// companionRemoveConfirm is what the row's delete button asks. A cloud row can
+// be removed here without touching its link, and only an owned share has 修改
+// to revoke it; say which case this is or a reader takes the wrong path and the
+// duplicate rule still blocks the next share.
+function companionRemoveConfirm(item: CompanionLibraryItem, name: string): { message: string; title: string } {
+    if (item.source !== "cloud") {
+        return {
+            title: "删除伴读数据",
+            message: `确认删除“${name}”？\n源文件会保留。本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
+        };
+    }
+    if (item.expired) {
+        return {
+            title: "移除文档",
+            message: `确认从文档管理移除“${name}”？\n源文件会保留；这份分享已过期。\n本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
+        };
+    }
+    if (item.mine) {
+        return {
+            title: "移除文档",
+            message: `确认从文档管理移除“${name}”？\n源文件会保留；云端分享链接不会失效。\n本机的高亮、讨论和阅读记录会被清除；如需让链接失效，请点“修改”后在底部删除分享。\n此操作不可撤销。`,
+        };
+    }
+    return {
+        title: "移除文档",
+        message: `确认从文档管理移除“${name}”？\n源文件会保留；这份分享仍属于分享者。\n本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
+    };
+}
+
 async function copyText(text: string, showToast: LibraryToast): Promise<void> {
     try {
         await navigator.clipboard.writeText(text);
@@ -659,6 +691,9 @@ export function CompanionLibraryView({
     // one as cancel. A second click before React disables the button would
     // close the real confirm and clear confirmOpenRef while it is still showing.
     const deleteGate = useRef(false);
+    // The last list object this view painted. The window echoes it back as
+    // listedSnapshot; comparing identity keeps that echo from painting twice.
+    const appliedListRef = useRef<unknown>(null);
 
     const applyList = useCallback((listed: unknown) => {
         const record = listed && typeof listed === "object" ? listed as Record<string, unknown> : {};
@@ -673,6 +708,7 @@ export function CompanionLibraryView({
         try {
             const listed = await ListFileCompanionLibrary() as { items?: unknown[]; Items?: unknown[]; updates?: unknown; Updates?: unknown; removed?: unknown; Removed?: unknown };
             if (libraryDeleteGen && libraryDeleteGen.current !== started) return;
+            appliedListRef.current = listed;
             applyList(listed);
             // The open document reads this same list. Notes, a newer transcript,
             // and a removed copy have to land while the view is the one refreshing.
@@ -688,11 +724,13 @@ export function CompanionLibraryView({
         void reload();
     }, [reload]);
 
-    // A dialog that already fetched the list pushes it here. The view repaints
-    // without asking the hub again; the snapshot is the same object the window
-    // stored, so applying it twice settles immediately.
+    // A dialog or the window's poll already fetched the list and pushed it
+    // here. The view repaints without asking the hub again; a list this view
+    // fetched itself is already on screen and is skipped by identity.
     useEffect(() => {
         if (listedSnapshot === undefined || listedSnapshot === null) return;
+        if (appliedListRef.current === listedSnapshot) return;
+        appliedListRef.current = listedSnapshot;
         applyList(listedSnapshot);
     }, [listedSnapshot, applyList]);
 
@@ -761,12 +799,13 @@ export function CompanionLibraryView({
         try {
             beginRow(item.id, "confirm");
             const name = item.name.trim() || "这个项目";
+            const confirm = companionRemoveConfirm(item, name);
             confirmOpenRef.current = true;
             let ok = false;
             try {
                 ok = await showConfirm(
-                    `确认删除“${name}”？\n源文件会保留。本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
-                    "删除伴读数据",
+                    confirm.message,
+                    confirm.title,
                     { confirmText: "删除", cancelText: "取消", confirmVariant: "danger" },
                 );
             } finally {
@@ -879,17 +918,17 @@ export function CompanionLibraryView({
                         {notes > 0 ? <span className="file-companion-badge" data-tone="note">讨论 {notes}</span> : null}
                         <span className="file-companion-project-facts">{meta}</span>
                     </p>
-                    {item.shareUrl ? <small className="file-companion-project-url" data-testid={`file-companion-library-url-${item.id}`}>{item.shareUrl}</small> : null}
+                    {item.shareUrl && !item.expired ? <small className="file-companion-project-url" data-testid={`file-companion-library-url-${item.id}`}>{item.shareUrl}</small> : null}
                 </div>
                 <div className="file-companion-project-actions">
                     {item.expired ? (
                         <span
-                            className="file-companion-project-shared"
+                            className="file-companion-badge"
+                            data-tone="mark"
                             data-testid={`file-companion-library-expired-mark-${item.id}`}
                             title="分享已过期，可以重新分享"
                         >
-                            <LibraryGlyph name="share" size={12} />
-                            <span>已过期</span>
+                            已过期
                         </span>
                     ) : alreadyShared ? (
                         <span
@@ -963,10 +1002,10 @@ export function CompanionLibraryView({
                         className="file-companion-project-action"
                         data-testid={`file-companion-library-delete-${item.id}`}
                         disabled={Boolean(busy)}
-                        title="删除伴读数据，不删除源文件"
+                        title={item.source === "cloud" ? "从文档管理移除；云端分享链接不会失效" : "删除伴读数据，不删除源文件"}
                         onClick={() => { void deleteRow(item); }}
                     >
-                        {busy === "delete" ? "删除中…" : "删除"}
+                        {busy === "delete" ? "删除中…" : item.source === "cloud" ? "移除" : "删除"}
                     </button>
                 </div>
             </div>
@@ -1694,14 +1733,20 @@ export function CompanionShareDialog({
         setShareBusy(true);
         try {
             await DeleteFileCompanionShare(token);
-            showToast("已删除分享", "success", 6000);
-            await reload();
-            onClose();
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
-        } finally {
             setShareBusy(false);
+            return;
         }
+        // The link is gone. Invalidate a list that started before the delete,
+        // or its snapshot puts the row back in the title bar and 文档管理.
+        if (libraryDeleteGen) libraryDeleteGen.current += 1;
+        // Close before asking for the list: a slow hub must not keep a deleted
+        // share's dialog on screen. The background refresh still pushes the
+        // new list into 文档管理.
+        showToast("已删除分享", "success", 6000);
+        onClose();
+        await reload();
     };
 
     const cardRef = useDialogFocus<HTMLDivElement>(".file-companion-audience-option");

@@ -1,10 +1,7 @@
 package guiapp
 
 import (
-	"context"
 	"log"
-	"sync"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
@@ -17,6 +14,10 @@ type imMessageSerializationResult struct {
 	Handled                bool
 	ActiveLoopOwnsNextTurn bool
 	Unlock                 func()
+	// CodingIngressToken is the desktop Coding credential for this turn when
+	// the boundary minted one. The caller must copy it onto the message before
+	// the loop starts; the credential is swept when this turn's window closes.
+	CodingIngressToken string
 }
 
 func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage, providedLoopCtx *LoopContext, entries []agent.ConversationEntry, unfinishedSlot *agent.UnfinishedTaskSlot, decision explicitTaskSlotDecision) imMessageSerializationResult {
@@ -53,67 +54,16 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 		}
 	}
 
-	// Per-session mutex: different userIDs can run agent loops concurrently.
-	state := h.getSessionLoop(msg.UserID)
-	state.stateMu.RLock()
-	activeBeforeLock := state.loopCtx != nil
-	activeLoopID := ""
-	activeRequestID := ""
-	if state.loopCtx != nil {
-		activeLoopID = state.loopCtx.ID
-		activeRequestID = state.loopCtx.Runtime.RequestID
+	// The owner's exclusive turn window also owns this turn's Coding
+	// credential: it is minted once the lock is held and swept before release.
+	window, timeoutResponse := h.beginOwnerTurnWindow(&msg)
+	if timeoutResponse != nil {
+		result.Handled = true
+		result.Response = timeoutResponse
+		return result
 	}
-	state.stateMu.RUnlock()
-	waitStartedAt := time.Now()
-	log.Printf("[IM serialization] acquire user=%q background=%v active=%v active_loop=%q active_request_id=%q", msg.UserID, msg.IsBackground, activeBeforeLock, activeLoopID, activeRequestID)
-
-	// Acquire state.mu with a timeout. If the previous loop is stuck on a
-	// blocking syscall (e.g. memory Store.mu.RLock waiting for pipeline write
-	// lock), we must not block the new message indefinitely. After timeout,
-	// return a recoverable error so the user can retry or restart.
-	const serializationLockTimeout = 60 * time.Second
-	acquired := false
-	deadline := time.NewTimer(serializationLockTimeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for !acquired {
-		if state.mu.TryLock() {
-			acquired = true
-			break
-		}
-		select {
-		case <-deadline.C:
-			log.Printf("[IM serialization] TIMEOUT acquiring state.mu user=%q after %v — previous loop may be stuck on a blocking lock", msg.UserID, serializationLockTimeout)
-			result.Handled = true
-			result.Response = &IMAgentResponse{
-				Text: "系统正在恢复中（上一个任务因内部锁等待超时未能正常退出），请稍后重试。如持续出现请重启程序。",
-			}
-			return result
-		case <-contextDone(msg.CancelCtx):
-			result.Handled = true
-			result.Response = &IMAgentResponse{Error: context.Canceled.Error()}
-			return result
-		case <-ticker.C:
-			// Spin with 200ms intervals to check TryLock.
-		}
-	}
-	waited := time.Since(waitStartedAt)
-	if waited > 500*time.Millisecond {
-		log.Printf("[IM serialization] waited user=%q duration=%v background=%v active_at_wait_start=%v active_loop=%q active_request_id=%q", msg.UserID, waited, msg.IsBackground, activeBeforeLock, activeLoopID, activeRequestID)
-	}
-	h.setPendingForegroundText(msg.UserID, msg.Text)
-	unlockOnce := sync.Once{}
-	result.Unlock = func() {
-		unlockOnce.Do(func() {
-			log.Printf("[IM serialization] release user=%q held=%v background=%v", msg.UserID, time.Since(waitStartedAt).Round(time.Millisecond), msg.IsBackground)
-			h.setPendingForegroundText(msg.UserID, "")
-			// This turn did not publish, or it already took the command.
-			// Either way the held note must not ride into the next message.
-			h.dropGoalCommandSteer(msg.UserID)
-			state.mu.Unlock()
-		})
-	}
+	result.CodingIngressToken = window.Token
+	result.Unlock = window.Close
 	result.EntriesBeforeClear = h.memory.Load(msg.UserID)
 	result.UnfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
 

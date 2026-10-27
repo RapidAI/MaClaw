@@ -38,6 +38,16 @@ describe("chat marks", () => {
         expect(loadChatMarks("/tmp/a.md")[0].text).toBe(text);
     });
 
+    it("keeps the newest marks when a document is at the cap", () => {
+        const many = Array.from({ length: 2001 }, (_value, index) => ({ ...mark, start: index, end: index + 1, text: "x" }));
+        saveChatMarks("/tmp/cap.md", many);
+        const kept = loadChatMarks("/tmp/cap.md");
+        expect(kept).toHaveLength(2000);
+        // The oldest mark fell off; the one just painted stayed.
+        expect(kept[0].start).toBe(1);
+        expect(kept[kept.length - 1].start).toBe(2000);
+    });
+
     it("returns null for a value that is not a list", () => {
         expect(normalizeChatMarks({ message: 1 })).toBeNull();
         expect(normalizeChatMarks([])).toEqual([]);

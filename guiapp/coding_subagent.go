@@ -19021,8 +19021,16 @@ func runTaskWithSubAgentRuntimeOptions(
 		if task != nil {
 			taskTitle = task.Title
 		}
-		log.Printf("[coding-subagent] pre-dispatch gate: implementation step without verified desktop relation user=%s project=%s task=%q",
-			loopCtx.UserID, projectPath, truncateRunesV2(taskTitle, 80))
+		// Distinguish "this turn never got a credential" from "it got one but
+		// the relation could not be bound": the first is a host-turn coverage
+		// bug, the second is a relation/chain/lease failure. Both used to look
+		// identical in a diagnostics bundle.
+		ingress := "none"
+		if strings.TrimSpace(loopCtx.CodingTaskIngressToken) != "" {
+			ingress = "unbound"
+		}
+		log.Printf("[coding-subagent] pre-dispatch gate: implementation step without verified desktop relation user=%s platform=%q ingress=%s request_id=%q project=%s task=%q",
+			loopCtx.UserID, loopCtx.Platform, ingress, loopCtx.Runtime.RequestID, projectPath, truncateRunesV2(taskTitle, 80))
 		return failedCodingSubAgentStartResult(desktopCodingVerifiedSurfaceUnavailableDiagnostic)
 	}
 	sa.SetCallbacks(wrapCodingAgentReasoningToken(onToken), onProgress)

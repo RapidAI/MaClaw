@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hydrateCompanionReaderState, subscribeCompanionReaderState } from "./companionReaderState";
+import { chatMarksSaveRevision, hydrateChatMarks, loadChatMarks, saveChatMarks } from "./chatMarks";
 import { fileCompanionInputHistory, FILE_COMPANION_INPUT_HISTORY_KEY, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
 import { hydratePdfMarks, loadPdfMarks, PDF_MARK_STORAGE_KEY, pdfMarksSaveRevision, savePdfMarks } from "./pdfMarks";
 import { hydratePdfTranslations, loadPdfTranslations, PDF_TRANSLATION_STORAGE_KEY } from "./pdfTranslations";
@@ -22,6 +23,7 @@ beforeEach(() => {
     loadState.mockReset();
     hydratePdfMarks({});
     hydratePdfTranslations({});
+    hydrateChatMarks({});
     hydrateFileCompanionInputHistory([]);
     installHostBindings();
 });
@@ -176,6 +178,37 @@ describe("companion reader state migration", () => {
         expect(loadPdfMarks("C:/docs/new.pdf").some((mark) => mark.id === "race")).toBe(true);
         expect(loadPdfTranslations("C:/docs/Paper.PDF")).toHaveLength(1);
         expect(fileCompanionInputHistory()).toEqual(["上一问"]);
+    });
+
+    it("hydrates the highlights painted on the agent's answers", async () => {
+        loadState.mockResolvedValue(JSON.stringify({
+            pdf_marks: {},
+            pdf_translations: {},
+            chat_marks: {
+                "c:/docs/paper.pdf": [{ message: 1, color: "green", start: 3, end: 8, text: "lo wo" }],
+            },
+            input_history: [],
+        }));
+
+        await hydrateCompanionReaderState();
+
+        expect(loadChatMarks("C:/docs/Paper.PDF")).toEqual([{ message: 1, color: "green", start: 3, end: 8, text: "lo wo" }]);
+    });
+
+    it("keeps a chat highlight saved while the startup read was in flight", async () => {
+        let release: (value: string) => void = () => undefined;
+        loadState.mockImplementation(() => new Promise<string>((resolve) => {
+            release = resolve;
+        }));
+        const hydrating = hydrateCompanionReaderState();
+        const before = chatMarksSaveRevision();
+        saveChatMarks("C:/docs/new.pdf", [{ message: 1, color: "pink", start: 0, end: 5, text: "Hello" }]);
+        expect(chatMarksSaveRevision()).toBeGreaterThan(before);
+
+        release(JSON.stringify({ pdf_marks: {}, pdf_translations: {}, chat_marks: {}, input_history: [] }));
+        await hydrating;
+
+        expect(loadChatMarks("C:/docs/new.pdf")).toEqual([{ message: 1, color: "pink", start: 0, end: 5, text: "Hello" }]);
     });
 
     it("leaves the mirrors empty and keeps the browser keys when the host is absent", async () => {

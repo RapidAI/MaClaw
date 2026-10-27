@@ -143,7 +143,9 @@ function overlapOf(element: HTMLElement, range: Range): Range | null {
     return overlap;
 }
 
-/** One slice per message the selection covers, in transcript order. */
+/** One slice per message the selection covers, in transcript order. The
+ *  offsets are narrowed to the non-blank core, so the stored range and the
+ *  stored quote describe exactly the same characters. */
 export function chatSelectionSlices(root: HTMLElement, range: Range): ChatSelectionSlice[] {
     const slices: ChatSelectionSlice[] = [];
     if (!root || !range) return slices;
@@ -157,9 +159,11 @@ export function chatSelectionSlices(root: HTMLElement, range: Range): ChatSelect
         const start = chatOffsetForPoint(spans, overlap.startContainer, overlap.startOffset, "start");
         const end = chatOffsetForPoint(spans, overlap.endContainer, overlap.endOffset, "end");
         if (end <= start) continue;
-        const text = chatMessageText(spans).slice(start, end).trim();
+        const raw = chatMessageText(spans).slice(start, end);
+        const leading = raw.length - raw.trimStart().length;
+        const text = raw.trim();
         if (!text) continue;
-        slices.push({ message, start, end, text });
+        slices.push({ message, start: start + leading, end: start + leading + text.length, text });
     }
     return slices;
 }
@@ -212,12 +216,19 @@ export function chatRangeForMark(root: HTMLElement, mark: ChatMark): Range | nul
     return rangeFromText(spans, chatMessageText(spans), mark);
 }
 
-/** Which stored mark covers a point inside one message, if any. */
-export function chatMarkAtOffset(marks: ChatMark[], message: number, offset: number): number {
+/** Which stored mark covers a point inside one message, if any. The mark is
+ *  re-anchored first, because the painted range and the stored offsets can
+ *  differ once the answer has been re-rendered. */
+export function chatMarkAtOffset(spans: ChatTextSpan[], marks: ChatMark[], message: number, offset: number): number {
+    if (spans.length === 0) return -1;
+    let text = "";
     for (let index = marks.length - 1; index >= 0; index -= 1) {
         const mark = marks[index];
         if (mark.message !== message) continue;
-        if (offset >= mark.start && offset <= mark.end) return index;
+        if (!text) text = chatMessageText(spans);
+        const offsets = offsetsInText(text, mark);
+        if (!offsets) continue;
+        if (offset >= offsets.start && offset <= offsets.end) return index;
     }
     return -1;
 }

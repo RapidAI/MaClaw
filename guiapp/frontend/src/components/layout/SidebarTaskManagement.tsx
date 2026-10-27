@@ -15,7 +15,7 @@ import { GlyphCloudDrive, GlyphClose, GlyphFolder } from './cloudDriveGlyphs';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
 import { TaskWorkspaceTransferDialog, type TaskTransferCloudWorkspace, type TaskTransferDirection, type TaskTransferTarget } from './TaskWorkspaceTransferDialog';
 import './cloudOverview.css';
-import { coerceActiveAssistantTask, expertIDFromTaskTags, normalizeProjectSessionPath, type ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
+import { coerceActiveAssistantTask, expertIDFromTaskTags, logAIPanelDiagnostic, normalizeProjectSessionPath, type ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 
 import { extractErrorMessage } from '../ai/participantAddError';
 
@@ -36,6 +36,8 @@ import { getWailsAppModule } from '../../utils/wailsAppModule';
 import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
 import { useDialog } from '../CustomDialog';
 import { WorkspaceTypeBadge } from '../ai/task-config/WorkspaceTypeBadge';
+import { openNewTaskWizard } from '../ai/task-config/openNewTaskWizard';
+import type { NewTaskWizardSeed } from '../ai/task-config/taskDraft';
 import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
 
 export type TaskManagementItem = {
@@ -72,6 +74,8 @@ export type TaskContextMenu = {
     isRemoteCoding?: boolean;
     tags?: string[];
     workingDir?: string;
+    /** Workflow template this task is running, so "新任务" can preselect it. */
+    workflowTemplateId?: string;
     /** Stable list identity, so archive survives a rename of the visible title. */
     orderKey?: string;
     /** True when the row already lives in the Archive folder. */
@@ -1395,7 +1399,7 @@ const newCloudWorkspaceActionLabel = (lang: string, creating: boolean) => (
         : textForLang(lang, 'New cloud workspace', '新建云端工作区', '新建雲端工作區')
 );
 
-type TaskContextMenuIconName = 'rename' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'archive' | 'restore' | 'remove';
+type TaskContextMenuIconName = 'rename' | 'new' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'archive' | 'restore' | 'remove';
 
 type TaskContextMenuItem = {
     label: string;
@@ -1419,6 +1423,12 @@ const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
             <>
                 <rect {...TASK_ICON_PROPS} x="8" y="8" width="11" height="12" rx="1.6" />
                 <path {...TASK_ICON_PROPS} d="M6 15.5V5.6A1.6 1.6 0 0 1 7.6 4H16" />
+            </>
+        )}
+        {name === 'new' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M12 5v14" />
+                <path {...TASK_ICON_PROPS} d="M5 12h14" />
             </>
         )}
         {name === 'browse' && (
@@ -1512,6 +1522,7 @@ function buildTaskContextMenuItems(opts: {
     setRenameValue: (value: string) => void;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
+    onNewTaskFromTask?: (menu: NonNullable<TaskContextMenu>) => void | Promise<void>;
     onDuplicateTask?: (menu: NonNullable<TaskContextMenu>) => void | Promise<void>;
     confirmRemoveTask: (menu: NonNullable<TaskContextMenu>) => void | Promise<void>;
     refreshTasks: () => void;
@@ -1529,7 +1540,7 @@ function buildTaskContextMenuItems(opts: {
 }): TaskContextMenuItem[] {
     const {
         lang, menu, setRenamingTaskPath, setRenameValue,
-        setTaskContextMenu, pinTask, onDuplicateTask, confirmRemoveTask, refreshTasks, openEditRemoteDialog, browseCloudWorkspace, allowCloudWorkspaceBrowse, onShareCloudWorkspace, onTransferTask, onArchiveTask,
+        setTaskContextMenu, pinTask, onNewTaskFromTask, onDuplicateTask, confirmRemoveTask, refreshTasks, openEditRemoteDialog, browseCloudWorkspace, allowCloudWorkspaceBrowse, onShareCloudWorkspace, onTransferTask, onArchiveTask,
     } = opts;
     // Delete matches the other rows: confirm, then hide the task and drop its
     // archive key. The menu close lives in confirmRemoveTask.
@@ -1567,10 +1578,20 @@ function buildTaskContextMenuItems(opts: {
             },
         },
         {
+            label: textForLang(lang, 'New task', '新任务', '新任務'),
+            icon: 'new',
+            testId: 'task-context-new-task',
+            title: textForLang(lang, 'Create a new task with this task type, folder, and expert', '用该任务的任务类型、工作目录和专家新建任务', '用該任務的任務類型、工作目錄和專家新建任務'),
+            action: () => {
+                setTaskContextMenu(null);
+                void onNewTaskFromTask?.(menu);
+            },
+        },
+        {
             label: textForLang(lang, 'Copy', '复制', '複製'),
             icon: 'copy',
             testId: 'task-context-copy',
-            title: textForLang(lang, 'New task with the same settings and no chat history', '复制为新任务：配置相同，没有聊天记录', '複製為新任務：設定相同，沒有聊天記錄'),
+            title: textForLang(lang, 'Fork this task: same settings and the full chat history', '复制并分叉该任务：配置与会话历史一并复制', '複製並分叉該任務：設定與會話歷史一併複製'),
             action: () => {
                 setTaskContextMenu(null);
                 void onDuplicateTask?.(menu);
@@ -4476,7 +4497,34 @@ export const SidebarTaskManagement = ({
      */
     const handleTaskRowClick = (task: TaskManagementItem) => {
         if (renamingTaskPath || removingTaskPaths.has(task.project_path)) return;
-        if (isTaskInstanceOpen(task)) {
+        const open = isTaskInstanceOpen(task);
+        const bucket = taskStatusBucketFor(task);
+        const liveRunning = isLiveRunningRow(task);
+        // One line per click: the row the user acted on, the status it showed,
+        // and whether the click only focused an already-open instance. A row
+        // that opens a different task than its label needs this trail.
+        logAIPanelDiagnostic({
+            tag: 'task-row',
+            event: 'click',
+            taskId: String(task.id || ''),
+            name: String(task.name || ''),
+            projectPath: String(task.project_path || ''),
+            workingDir: String(task.working_dir || ''),
+            tags: task.tags || [],
+            activeWorkflow: task.active_workflow?.status || '',
+            pendingReview: !!task.active_workflow?.pending_review,
+            hasOutput: task.has_output === true,
+            bucket,
+            liveRunning,
+            open,
+            activePath: activeAssistantTask?.projectPath || '',
+            activeExpertId: activeAssistantTask?.expertId || '',
+            activeRunning: activeAssistantTaskRunning === true,
+            // Bounded: a long open-tab list must not turn one click into a
+            // multi-kilobyte diagnostics line.
+            busyPaths: (busyTaskRuns?.projectPaths || []).slice(0, 20),
+        });
+        if (open) {
             activateTask?.(task.project_path, task);
             return;
         }
@@ -4509,6 +4557,13 @@ export const SidebarTaskManagement = ({
             // moment of interaction, avoiding a stale parent list cache from
             // misrouting an expert row as a generic project task.
             opened = await resumeTask(projectPath, task);
+            logAIPanelDiagnostic({
+                tag: 'task-row',
+                event: 'open',
+                name: String(task.name || ''),
+                projectPath: String(projectPath || ''),
+                opened: opened !== false,
+            });
             if (opened !== false && isCloudWorkspaceTask(task)) {
                 window.dispatchEvent(new CustomEvent(REVEAL_CLOUD_WORKSPACE_FILES_EVENT, {
                     detail: { projectPath, workingDir: task.working_dir || '' },
@@ -4638,7 +4693,67 @@ export const SidebarTaskManagement = ({
         await handleRemoveTask(projectPath, expertID ? menu.tags : undefined, menu.orderKey);
     };
 
-    /** Copies a task's settings into a new empty task and opens it. */
+    /**
+     * Right-click "新任务": opens the new-task page with this row's task type,
+     * working directory/workspace, and AI expert. No chat history follows.
+     */
+    const newTaskFromTask = (menu: NonNullable<TaskContextMenu>) => {
+        const tags = menu.tags || [];
+        const expertId = expertIDFromTaskTags(tags).trim();
+        const mode = agentModeFromTaskTags(tags);
+        const seed: NewTaskWizardSeed = {};
+        if (expertId) {
+            // Expert tasks carry no workspace choice; the expert path decides.
+            seed.expertId = expertId;
+            seed.expertName = createExperts.find(expert => expert.id === expertId)?.name || expertId;
+        } else {
+            const workflowTemplateId = String(menu.workflowTemplateId || '').trim();
+            if (workflowTemplateId && workflowTemplateId !== 'agent_recovery') {
+                seed.workflowTemplateId = workflowTemplateId;
+            }
+            const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({
+                tags,
+                project_path: menu.projectPath,
+                working_dir: menu.workingDir,
+            });
+            const localPath = String(menu.workingDir || '').trim();
+            // A cloud workspace cache path is not a folder the new task can run
+            // in; carry the workspace identity instead.
+            if (mode === 'remote_coding_dev') {
+                const meta = remoteCodingMetaFromTaskTags(tags);
+                seed.taskType = 'coding';
+                if (meta.host) {
+                    seed.workspace = {
+                        kind: 'remote',
+                        remote: {
+                            host: meta.host,
+                            port: meta.port,
+                            user: meta.user,
+                            password: '',
+                            workDir: meta.workDir,
+                        },
+                    };
+                }
+            } else if (cloudWorkspaceId) {
+                seed.taskType = mode ? 'coding' : 'chat';
+                seed.workspace = {
+                    kind: 'cloud',
+                    cloudWorkspaceId,
+                    cloudName: cloudWorkspaces.find(row => row.id === cloudWorkspaceId)?.name
+                        || lookupCloudWorkspaceDisplayName(cloudWorkspaceId),
+                };
+            } else if (localPath && !isCloudWorkspacePath(localPath)) {
+                seed.taskType = mode === 'coding_dev' ? 'coding' : 'chat';
+                seed.workspace = { kind: 'local', localPath };
+            } else {
+                seed.taskType = mode === 'coding_dev' ? 'coding' : 'chat';
+            }
+        }
+        setTaskListNotice('');
+        openNewTaskWizard(seed);
+    };
+
+    /** Forks a task: same settings plus its full conversation, then opens the copy. */
     const duplicateTask = async (menu: NonNullable<TaskContextMenu>) => {
         if (duplicatingTaskRef.current) return;
         duplicatingTaskRef.current = true;
@@ -5277,7 +5392,7 @@ export const SidebarTaskManagement = ({
             };
             const orderKey = taskOrderKey(proj);
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, orderKey, archived: archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, archived: archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
                     <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
                     <span className="stsm-row-body">
@@ -6178,6 +6293,7 @@ export const SidebarTaskManagement = ({
                 setRenamingTaskPath,
                 setRenameValue,
                 setTaskContextMenu,
+                onNewTaskFromTask: newTaskFromTask,
                 onDuplicateTask: duplicateTask,
                 pinTask: async (projectPath, pinned) => {
                     await pinTask(projectPath, pinned);

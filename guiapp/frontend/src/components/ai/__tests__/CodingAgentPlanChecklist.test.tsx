@@ -180,6 +180,8 @@ describe("CodingAgentPlanChecklist", () => {
         );
         expect(getByTestId("coding-agent-plan-current").textContent).toContain("T4");
         expect(getByTestId("coding-agent-plan-step-6-note").textContent).toContain("identifier not found");
+        // A path-shaped note must stay inside the row instead of overflowing it.
+        expect((getByTestId("coding-agent-plan-step-6-note") as HTMLElement).style.overflowWrap).toBe("anywhere");
     });
 
     it("shows a paraphrased understanding of the request", () => {

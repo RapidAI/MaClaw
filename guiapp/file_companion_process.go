@@ -65,6 +65,10 @@ type fileCompanionRuntime struct {
 	emitted   [][]string
 	grants    map[string]*fileCompanionGrant
 	fileMu    map[string]*sync.Mutex
+	// discussionPaths maps a share-discussion session to the document it
+	// answers for. The host's background agent is not an open tab, so it has no
+	// document session id; this entry lets the PDF tools find the same file.
+	discussionPaths map[string]string
 	// figures caches each open document's image inventory. The key is the
 	// canonical path; size and mtime decide whether it must be rebuilt.
 	figures map[string]*companionFigureInventory
@@ -148,6 +152,9 @@ func (a *App) companionRuntime() *fileCompanionRuntime {
 	}
 	if a.fileCompanion.fileMu == nil {
 		a.fileCompanion.fileMu = map[string]*sync.Mutex{}
+	}
+	if a.fileCompanion.discussionPaths == nil {
+		a.fileCompanion.discussionPaths = map[string]string{}
 	}
 	if a.fileCompanion.figures == nil {
 		a.fileCompanion.figures = map[string]*companionFigureInventory{}

@@ -19,6 +19,13 @@ export function resolveTaskExecutionStatus(input: {
     cancelPending: boolean;
     /** A turn is still working, including a round that paints this transcript under another session key. */
     busy: boolean;
+    /**
+     * Local work that is not a run: a tab restore/prepare, or a plan phase the
+     * UI still paints as executing. It keeps the badge in progress only while
+     * the durable snapshot carries no paused/interrupted/cancelled outcome;
+     * otherwise opening an idle task would claim it is running again.
+     */
+    backgroundPhaseActive?: boolean;
     hasOutput: boolean;
     hasMessages: boolean;
     workflowActive: boolean;
@@ -106,6 +113,12 @@ export function resolveTaskExecutionStatus(input: {
     // sentence is not a checked finish, so an idle chat must not say completed.
     if (input.turnIncomplete) {
         return { label: localizeText(lang, "Unfinished", "未完成", "未完成"), tone: "pending" };
+    }
+    // A restored plan phase or an in-flight tab prepare is not a run. It may
+    // answer "in progress" only after every explicit outcome above: those are
+    // what the sidebar row shows, and the two surfaces must agree.
+    if (input.backgroundPhaseActive) {
+        return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
     }
     if (/(complete|completed|finish|success|succeed|done|passed|已完成|完成|成功)/.test(raw) || input.hasOutput || (input.hasMessages && !input.workflowActive && input.codingStepCount === 0)) {
         return { label: localizeText(lang, "Completed", "已完成", "已完成"), tone: "completed" };

@@ -258,6 +258,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return serialization.Response
 	}
 	defer serialization.Unlock()
+	// The turn boundary owns this turn's desktop Coding credential (see
+	// attachDesktopCodingIngressForTurn). Copy it onto the message before any
+	// pre-loop work can dispatch a coding step; the boundary's Unlock sweeps
+	// the chain afterwards.
+	if serialization.CodingIngressToken != "" {
+		msg.CodingTaskIngressToken = serialization.CodingIngressToken
+	}
 	// Pause can land after dispatch admitted this continuation and while
 	// preflight still holds the turn. The admit generation is what pause
 	// revokes. An empty result closes the round and does not fence chat or

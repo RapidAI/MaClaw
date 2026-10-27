@@ -184,12 +184,16 @@ type App struct {
 	IsAutoStart                        bool
 	// fileCompanion is the open-file process and the Darwin document latch.
 	// processHooks replaces exec, exit, and main startup at the process boundary.
-	fileCompanion   *fileCompanionRuntime
-	processHooks    desktopProcessHooks
-	installingNode  bool      // Flag to prevent concurrent Node.js installation
-	installingGit   bool      // Flag to prevent concurrent Git installation
-	nodeInstallDone chan bool // Channel to signal Node.js installation completion
-	installMutex    sync.Mutex
+	fileCompanion *fileCompanionRuntime
+	processHooks  desktopProcessHooks
+	// fileCompanionNotesReply caches whether the Hub records host replies. It
+	// stays false until a list request succeeds on a Hub that supports them,
+	// so an updated desktop talking to an older Hub keeps answering locally.
+	fileCompanionNotesReply atomic.Bool
+	installingNode          bool      // Flag to prevent concurrent Node.js installation
+	installingGit           bool      // Flag to prevent concurrent Git installation
+	nodeInstallDone         chan bool // Channel to signal Node.js installation completion
+	installMutex            sync.Mutex
 	// legacyInstallResults stores the latest structured outcome for the
 	// compatibility InstallSkill API. The Wails method historically returns
 	// only error, so the result is exposed through InstallSkillDetailed while
@@ -2778,10 +2782,6 @@ func (a *App) startup(ctx context.Context) {
 	// polls the pending list and raises the system notification. It starts after
 	// the data-directory migration so the first poll reads the final config.
 	a.startCompanionGroupInviteWatch()
-	// Reader notes on this account's shared documents are answered by its own
-	// companion agent, and the answers go back out as notes everyone can read.
-	// This is the host side of a shared-document discussion.
-	a.startFileCompanionShareDiscussionWatch()
 	// Resume folder watches after the data directory is final.
 	go func() {
 		if err := a.ensureKnowledgeFolderWatch(); err != nil {
@@ -2972,6 +2972,11 @@ func (a *App) startup(ctx context.Context) {
 		// so the first ListTasks doesn't pay the cold-start open/migration cost.
 		go a.ensureMemoryStore()
 
+		// Reader notes on this account's shared documents are answered by its
+		// own companion agent, and the answers go back out as notes everyone
+		// can read. Start it after the Hub client is prepared so the first
+		// pending note has a handler to run in.
+		a.startFileCompanionShareDiscussionWatch()
 		log.Printf("[startup] complete in %v", time.Since(startupBegin))
 		perfMarkStartupDone()
 		return
@@ -2979,6 +2984,7 @@ func (a *App) startup(ctx context.Context) {
 	a.setPowerOptimizationEnabled(false)
 	// Background warmup: same memory-store prewarm for the no-config path.
 	go a.ensureMemoryStore()
+	a.startFileCompanionShareDiscussionWatch()
 	log.Printf("[startup] complete (no config) in %v", time.Since(startupBegin))
 	perfMarkStartupDone()
 }

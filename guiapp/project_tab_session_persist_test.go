@@ -51,6 +51,37 @@ func TestDeleteProjectSessionsRemovesIndexedAndOrphanedSessions(t *testing.T) {
 	}
 }
 
+func TestDeleteAndClearRemoveStagedForkArchiveWithoutSession(t *testing.T) {
+	persist := NewProjectTabSessionPersistForBaseDir(t.TempDir())
+	projectPath := filepath.Join(t.TempDir(), "fork-copy")
+	stagedID := taskCopyArchiveTabID(projectPath)
+	seedArchive := []interface{}{
+		map[string]interface{}{"id": "older-user", "role": "user", "content": "更早的一轮"},
+	}
+	if err := persist.SaveConversationViewArchive(stagedID, seedArchive); err != nil {
+		t.Fatal(err)
+	}
+
+	if removed, err := persist.DeleteProjectSessions(projectPath); err != nil {
+		t.Fatal(err)
+	} else if removed != 0 {
+		t.Fatalf("removed = %d, want 0 sessions", removed)
+	}
+	if archive, err := persist.LoadConversationViewArchive(stagedID); err != nil || len(archive) != 0 {
+		t.Fatalf("staged archive after delete = %+v err=%v", archive, err)
+	}
+
+	if err := persist.SaveConversationViewArchive(stagedID, seedArchive); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persist.ClearProjectSessionConversations(projectPath); err != nil {
+		t.Fatal(err)
+	}
+	if archive, err := persist.LoadConversationViewArchive(stagedID); err != nil || len(archive) != 0 {
+		t.Fatalf("staged archive after clear = %+v err=%v", archive, err)
+	}
+}
+
 func TestLoadLatestSessionForProjectUsesNewestMatchingSessionWithoutIndex(t *testing.T) {
 	persist := NewProjectTabSessionPersistForBaseDir(t.TempDir())
 	projectPath := filepath.Join(t.TempDir(), "history-task")

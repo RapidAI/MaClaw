@@ -81,8 +81,14 @@ describe("chat mark anchors", () => {
         expect(chatSelectionSlices(root, range)).toEqual([{ message: 1, start: 3, end: 8, text: "lo wo" }]);
     });
 
-    it("splits a selection that spans two answers into one slice each", () => {
-        const root = messageRoot(
+    it("narrows a slice to the non-blank core so offsets and quote agree", () => {
+        const root = messageRoot(`<div data-chat-message="1"><p>  Hello world  </p></div>`);
+        const text = root.querySelector("p")!.firstChild!;
+        const range = selectText(text, 0, text.nodeValue!.length);
+        expect(chatSelectionSlices(root, range)).toEqual([{ message: 1, start: 2, end: 13, text: "Hello world" }]);
+    });
+
+    it("splits a selection that spans two answers into one slice each", () => {        const root = messageRoot(
             `<div data-chat-message="0"><p>First answer</p></div>` +
             `<div data-chat-message="1"><p>Second answer</p></div>`,
         );
@@ -131,10 +137,20 @@ describe("chat mark anchors", () => {
     it("finds the message a click sits in and the mark covering it", () => {
         const root = messageRoot(`<div data-chat-message="1"><p>Hello world</p></div>`);
         const paragraph = root.querySelector("p")!;
+        const spans = chatTextSpans(root.querySelector<HTMLElement>("[data-chat-message]")!);
         expect(chatMessageIndexAt(paragraph)).toBe(1);
-        expect(chatMarkAtOffset([mark], 1, 4)).toBe(0);
-        expect(chatMarkAtOffset([mark], 1, 20)).toBe(-1);
-        expect(chatMarkAtOffset([mark], 0, 4)).toBe(-1);
+        expect(chatMarkAtOffset(spans, [mark], 1, 4)).toBe(0);
+        expect(chatMarkAtOffset(spans, [mark], 1, 20)).toBe(-1);
+        expect(chatMarkAtOffset(spans, [mark], 0, 4)).toBe(-1);
+    });
+
+    it("finds a mark by its re-anchored range, not the stale offsets", () => {
+        const root = messageRoot(`<div data-chat-message="1"><p>Hello world</p></div>`);
+        const spans = chatTextSpans(root.querySelector<HTMLElement>("[data-chat-message]")!);
+        // The stored offsets point past the end; the quote re-anchors to 3..8.
+        const stale = { ...mark, start: 40, end: 45 };
+        expect(chatMarkAtOffset(spans, [stale], 1, 5)).toBe(0);
+        expect(chatMarkAtOffset(spans, [stale], 1, 30)).toBe(-1);
     });
 
     it("paints one registry entry per colour and clears them", () => {

@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_ACTIVATE } from "../../constants/events";
 import { cloudWorkspaceIdFromPath } from "./codingTaskMode";
-import { normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
+import { logAIPanelDiagnostic, normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
 import type { AITab } from "./AITabTypes";
 
 /**
@@ -25,11 +25,30 @@ export function useProjectTaskActivateEvent(opts: {
             const expertId = String(detail.expertId || "").trim();
             const cloudWorkspaceId = String(detail.cloudWorkspaceId || "").trim();
             const normalizedPath = normalizeProjectSessionPath(String(detail.projectPath || ""));
-            const tab = getTabs().find(t => {
+            const tabs = getTabs();
+            const tab = tabs.find(t => {
                 if (expertId) return t.type === "expert" && t.expertId === expertId;
                 if (t.type !== "project") return false;
                 if (cloudWorkspaceId && (t.cloudWorkspaceId === cloudWorkspaceId || cloudWorkspaceIdFromPath(t.projectPath) === cloudWorkspaceId)) return true;
                 return !!normalizedPath && normalizeProjectSessionPath(t.projectPath) === normalizedPath;
+            });
+            // A clicked row is emitted on the assumption that its instance is
+            // open. A miss leaves the previous tab on screen, which reads as
+            // "clicking this task shows another task running". Keep the trail.
+            logAIPanelDiagnostic({
+                tag: "task-row",
+                event: tab ? "activate_hit" : "activate_miss",
+                requestedPath: String(detail.projectPath || ""),
+                requestedExpertId: expertId,
+                requestedWorkspaceId: cloudWorkspaceId,
+                tabId: tab?.id || "",
+                tabPath: tab?.type === "project" ? normalizeProjectSessionPath(tab.projectPath) : "",
+                tabExpertId: tab?.type === "expert" ? tab.expertId : "",
+                openPaths: tabs
+                    .filter(t => t.type === "project")
+                    .map(t => normalizeProjectSessionPath(t.projectPath))
+                    .filter(Boolean)
+                    .slice(0, 20),
             });
             if (tab) activateTab(tab.id);
         });

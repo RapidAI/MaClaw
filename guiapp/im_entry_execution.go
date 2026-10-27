@@ -503,15 +503,18 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.OnProgress("[Status] 正在整理上下文并准备模型请求")
 	}
 	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.PhasePrompt, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
-	if loopCtx != nil && loopCtx.OfferChatTaskDispatch {
+	// A share discussion answer is published to all readers. The host's chat
+	// task dispatch and worker guidance must not be able to join it.
+	shareDiscussion := fileCompanionShareDiscussionUserID(msg.UserID)
+	if !shareDiscussion && loopCtx != nil && loopCtx.OfferChatTaskDispatch {
 		systemPrompt += h.chatTaskDispatchGuidance(msg.UserID)
 	}
-	if loopCtx != nil && strings.TrimSpace(loopCtx.ChatTaskID) != "" {
+	if !shareDiscussion && loopCtx != nil && strings.TrimSpace(loopCtx.ChatTaskID) != "" {
 		systemPrompt += chatTaskWorkerGuidance()
 	}
 	promptElapsed := time.Since(promptStart)
 
-	if !unarmedRemote && (!codingWorkbench || opts.WorkflowAgentLoop) {
+	if !shareDiscussion && !unarmedRemote && (!codingWorkbench || opts.WorkflowAgentLoop) {
 		if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
 			if updatedHistory != nil {
 				history = updatedHistory

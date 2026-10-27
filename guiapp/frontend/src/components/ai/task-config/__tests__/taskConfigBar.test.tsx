@@ -13,6 +13,7 @@ import {
     withCloudWorkspace,
     draftFromWizardSeed,
     expertNeedsSetup,
+    hasWizardSeedContent,
     withExpert,
     withLatexTemplate,
     withLocalWorkspace,
@@ -230,6 +231,49 @@ describe('taskDraft', () => {
         expect(workflow.expertId).toBeNull();
         const blank = draftFromWizardSeed({ expertId: LATEX_EXPERT_ID, expertName: 'LaTeX' });
         expect(blank.latexTemplateId).toBe(LATEX_BLANK_TEMPLATE_ID);
+    });
+
+    it('seeds task type and workspace from a task row', () => {
+        expect(hasWizardSeedContent({})).toBe(false);
+        expect(hasWizardSeedContent({ taskType: 'coding' })).toBe(true);
+        expect(hasWizardSeedContent({ workspace: { kind: 'local' } })).toBe(true);
+
+        const coding = draftFromWizardSeed({
+            taskType: 'coding',
+            workspace: { kind: 'local', localPath: 'D:/work/app' },
+        });
+        expect(coding.taskType).toBe('coding');
+        expect(coding.workspace).toEqual({ kind: 'local', localPath: 'D:/work/app' });
+        expect(isDraftDefault(coding)).toBe(false);
+
+        const cloud = draftFromWizardSeed({
+            taskType: 'chat',
+            workspace: { kind: 'cloud', cloudWorkspaceId: 'cws-1', cloudName: '研发环境' },
+        });
+        expect(cloud.workspace).toEqual({ kind: 'cloud', cloudWorkspaceId: 'cws-1', cloudName: '研发环境' });
+
+        const remote = draftFromWizardSeed({
+            taskType: 'coding',
+            workspace: { kind: 'remote', remote: { host: '192.168.1.9', port: 22, user: 'root', password: '', workDir: '/srv/app' } },
+        });
+        expect(remote.taskType).toBe('coding');
+        expect(remote.workspace.kind).toBe('remote');
+
+        // 专家仍优先，并按既有规则把非本地工作空间归约为本地。
+        const expert = draftFromWizardSeed({
+            expertId: 'exp-data',
+            expertName: '数据分析专家',
+            workspace: { kind: 'remote', remote: { host: '192.168.1.9', port: 22, user: 'root', password: '', workDir: '/srv/app' } },
+        });
+        expect(expert.expertId).toBe('exp-data');
+        expect(expert.workspace).toEqual({ kind: 'local' });
+
+        // 编程 × 云端按既有规则退回本地默认目录。
+        const cloudCoding = draftFromWizardSeed({
+            taskType: 'coding',
+            workspace: { kind: 'cloud', cloudWorkspaceId: 'cws-1' },
+        });
+        expect(cloudCoding.workspace.kind).toBe('local');
     });
 
     it('summarizes workspace labels in English for en lang', () => {

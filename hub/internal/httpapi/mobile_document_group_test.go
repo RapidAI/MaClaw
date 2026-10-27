@@ -256,6 +256,145 @@ func TestCompanionDocumentShareNotesReachEveryoneWhoCanSeeTheShare(t *testing.T)
 	}
 }
 
+func TestCompanionDocumentShareHostReplyAnswersOneReaderNote(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "reply-owner@example.com")
+	readerToken, _ := issueViewerToken(t, identity, "reply-reader@example.com")
+
+	shareRec := postCompanionShareAs(t, identity, ownerToken, "person", "", "0", "reply-reader@example.com", "批注回复.pdf", []byte("%PDF-reply"))
+	if shareRec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", shareRec.Code, shareRec.Body.String())
+	}
+	var shared map[string]any
+	if err := json.Unmarshal(shareRec.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := shared["token"].(string)
+
+	posted := postCompanionNote(t, identity, readerToken, token, "这个方法能复现吗？")
+	if posted.Code != http.StatusOK {
+		t.Fatalf("reader note: %d %s", posted.Code, posted.Body.String())
+	}
+	var readerList struct {
+		Notes []struct {
+			ID     string `json:"id"`
+			Author string `json:"author"`
+			Host   bool   `json:"host"`
+			Text   string `json:"text"`
+		} `json:"notes"`
+		NotesRevision int `json:"notes_revision"`
+	}
+	if err := json.Unmarshal(posted.Body.Bytes(), &readerList); err != nil {
+		t.Fatal(err)
+	}
+	if len(readerList.Notes) != 1 || readerList.Notes[0].Host {
+		t.Fatalf("reader note was marked as the host's: %s", posted.Body.String())
+	}
+	noteID := readerList.Notes[0].ID
+
+	reply := postCompanionNoteReply(t, identity, ownerToken, token, "可以，补充材料里有完整配置。", noteID)
+	if reply.Code != http.StatusOK {
+		t.Fatalf("host reply: %d %s", reply.Code, reply.Body.String())
+	}
+	var replyList struct {
+		Notes []struct {
+			ID      string `json:"id"`
+			Author  string `json:"author"`
+			Host    bool   `json:"host"`
+			ReplyTo string `json:"reply_to"`
+			Text    string `json:"text"`
+		} `json:"notes"`
+		NotesRevision int `json:"notes_revision"`
+	}
+	if err := json.Unmarshal(reply.Body.Bytes(), &replyList); err != nil {
+		t.Fatal(err)
+	}
+	if replyList.NotesRevision != 2 || len(replyList.Notes) != 2 {
+		t.Fatalf("host reply was not stored: %s", reply.Body.String())
+	}
+	answer := replyList.Notes[1]
+	if !answer.Host || answer.ReplyTo != noteID || answer.Author != "reply-owner@example.com" || !strings.Contains(answer.Text, "补充材料") {
+		t.Fatalf("host reply shape: %+v", answer)
+	}
+
+	// The answer is what every reader who can see the share reads, and the
+	// list tells a desktop that this Hub knows how to link an answer.
+	readerView := listCompanionShares(t, identity, readerToken)
+	if !strings.Contains(readerView, `"notes_reply":true`) || !strings.Contains(readerView, `"server_time":`) || !strings.Contains(readerView, "补充材料里有完整配置") || !strings.Contains(readerView, `"reply_to":"`+noteID+`"`) {
+		t.Fatalf("reader view: %s", readerView)
+	}
+
+	// A second host machine, or a retry after a lost response, must not add a
+	// second answer to the same note.
+	again := postCompanionNoteReply(t, identity, ownerToken, token, "重复回答", noteID)
+	if again.Code != http.StatusOK {
+		t.Fatalf("duplicate reply: %d %s", again.Code, again.Body.String())
+	}
+	var againList struct {
+		NotesRevision int `json:"notes_revision"`
+	}
+	if err := json.Unmarshal(again.Body.Bytes(), &againList); err != nil {
+		t.Fatal(err)
+	}
+	if againList.NotesRevision != replyList.NotesRevision {
+		t.Fatalf("duplicate reply bumped the revision to %d", againList.NotesRevision)
+	}
+
+	// A reader's line is not an answer.
+	readerReply := postCompanionNoteReply(t, identity, readerToken, token, "我也答一句", noteID)
+	if readerReply.Code != http.StatusForbidden || !strings.Contains(readerReply.Body.String(), "只有主持人可以回复批注") {
+		t.Fatalf("reader reply: %d %s", readerReply.Code, readerReply.Body.String())
+	}
+	missing := postCompanionNoteReply(t, identity, ownerToken, token, "回复不存在的批注", "cn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if missing.Code != http.StatusBadRequest || !strings.Contains(missing.Body.String(), "被回复的批注不存在") {
+		t.Fatalf("missing target: %d %s", missing.Code, missing.Body.String())
+	}
+}
+
+func TestCompanionShareNoteIsHostReadsLegacyAuthorID(t *testing.T) {
+	share := companionDocShare{OwnerID: "owner-1"}
+	legacy := companionShareNote{ID: "cn_1", AuthorID: "owner-1"}
+	if !companionShareNoteIsHost(legacy, share.OwnerID) {
+		t.Fatal("an owner note without the host flag was treated as a reader note")
+	}
+	if companionShareNoteIsHost(companionShareNote{ID: "cn_2", AuthorID: "reader-1"}, share.OwnerID) {
+		t.Fatal("a reader note was treated as the host's")
+	}
+}
+
+func TestCompanionShareHostReplyRetrySurvivesTrimmedQuestion(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "trim-owner@example.com")
+	shareRec := postCompanionShareAs(t, identity, ownerToken, "public", "", "0", "", "a.pdf", []byte("%PDF-trim"))
+	if shareRec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", shareRec.Code, shareRec.Body.String())
+	}
+	var shared map[string]any
+	if err := json.Unmarshal(shareRec.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := shared["token"].(string)
+	// The question has left the capped list; its answer has not.
+	companionDocShares.Lock()
+	share := companionDocShares.items[token]
+	share.Notes = []companionShareNote{{
+		ID: "cn_host", AuthorID: share.OwnerID, Author: "trim-owner@example.com",
+		Text: "回答", Host: true, ReplyTo: "cn_gone", CreatedAt: time.Now().UTC(),
+	}}
+	share.NotesRevision = 2
+	companionDocShares.items[token] = share
+	companionDocShares.Unlock()
+	retry := postCompanionNoteReply(t, identity, ownerToken, token, "重试同一回答", "cn_gone")
+	if retry.Code != http.StatusOK || !strings.Contains(retry.Body.String(), `"notes_revision":2`) {
+		t.Fatalf("retry: %d %s", retry.Code, retry.Body.String())
+	}
+	if strings.Contains(retry.Body.String(), "重试同一回答") {
+		t.Fatalf("retry added a second note: %s", retry.Body.String())
+	}
+}
+
 func TestCompanionDocumentGroupRenameIconLeaveAndDissolve(t *testing.T) {
 	resetCompanionDocShares(t)
 	identity, _, _ := newHTTPAPITestServices(t)
@@ -483,7 +622,16 @@ func TestCompanionDocumentGroupRenameIconLeaveAndDissolve(t *testing.T) {
 
 func postCompanionNote(t *testing.T, identity *auth.IdentityService, viewer, token, text string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/notes", strings.NewReader(`{"text":"`+text+`"}`))
+	return postCompanionNoteReply(t, identity, viewer, token, text, "")
+}
+
+func postCompanionNoteReply(t *testing.T, identity *auth.IdentityService, viewer, token, text, replyTo string) *httptest.ResponseRecorder {
+	t.Helper()
+	payload, err := json.Marshal(map[string]string{"text": text, "reply_to": replyTo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/notes", bytes.NewReader(payload))
 	req.SetPathValue("token", token)
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	rec := httptest.NewRecorder()

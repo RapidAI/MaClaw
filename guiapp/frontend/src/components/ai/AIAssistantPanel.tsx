@@ -2432,10 +2432,23 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // session working-directory chip once it resolves the active tab.
     const activeTabWorkingDirPath = workingDirByTab[activeTab?.id || ""] || "";
     useEffect(() => {
+        const identity = activeAssistantTaskIdentity(activeTab, resolvedDirForActive);
+        // Completes the task-row trail: a click log records the row that was
+        // acted on, this records the tab that actually became visible. A row
+        // whose click lands on another task shows the two paths side by side.
+        logAIPanelDiagnostic({
+            tag: "task-row",
+            event: "active_task",
+            tabId: activeTab?.id || "",
+            tabType: activeTab?.type || "",
+            projectPath: identity?.projectPath || "",
+            expertId: identity?.expertId || "",
+            sessionKey: activeTab?.sessionKey || "",
+        });
         const onChange = props.onActiveAssistantTaskChange as ((identity: ActiveAssistantTaskIdentity | null) => void) | undefined;
         if (typeof onChange !== "function") return;
-        onChange(activeAssistantTaskIdentity(activeTab, resolvedDirForActive));
-    }, [activeTab?.id, activeTab?.type, activeTab?.expertId, activeTab?.projectPath, resolvedDirForActive, props.onActiveAssistantTaskChange]);
+        onChange(identity);
+    }, [activeTab?.id, activeTab?.type, activeTab?.expertId, activeTab?.projectPath, activeTab?.sessionKey, resolvedDirForActive, props.onActiveAssistantTaskChange]);
     const revealForActive = cloudReveal?.tabId === activeTab.id ? cloudReveal.path : "";
     // Expert optimization ("专家优化") controller, extracted to useExpertOptimize.
     const { expertOptimizeBusy, expertOptimizeDraft, handleOptimizeExpert, clearExpertOptimizeDraft } = useExpertOptimize({ activeExpertId: isExpertTabActive ? activeTab.expertId : null, lang, showAlert });
@@ -4997,7 +5010,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         raw: activeTaskExecutionSnapshot.raw,
         pendingReview: !!activeTaskExecutionSnapshot.task?.active_workflow?.pending_review || workflowAwaitingReview,
         cancelPending,
-        busy: liveWorkActive || activeProjectPreparing || workflowCurrentPhaseRunning,
+        busy: liveWorkActive,
+        // Restoring a tab or painting a restored phase is local UI work. It
+        // must not outrank the durable pause/interrupt the sidebar row shows.
+        backgroundPhaseActive: activeProjectPreparing || workflowCurrentPhaseRunning,
         hasOutput: activeTaskExecutionSnapshot.task?.has_output === true,
         hasMessages: displayMessages.length > 0,
         workflowActive: workflowState.active,

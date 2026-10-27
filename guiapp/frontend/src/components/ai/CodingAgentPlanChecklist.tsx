@@ -141,6 +141,10 @@ export function CodingAgentPlanChecklist({
                                             fontWeight: 400,
                                             color: failed ? chrome.stepFailedFg : chrome.muted,
                                             whiteSpace: "pre-wrap",
+                                            // Notes are single-line, but a long path or URL can
+                                            // still be one unbroken token; keep it inside the row.
+                                            overflowWrap: "anywhere",
+                                            maxWidth: "100%",
                                         }}
                                     >
                                         {st.summary}

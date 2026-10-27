@@ -305,21 +305,25 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	reportActivity, cleanupActivity, crossChannelPrompt := h.startAgentLoopActivity(opts.UserID, opts.Platform, opts.UserText, configStart.MaxIterations)
 	cleanupFns = append(cleanupFns, cleanupActivity)
 	systemPrompt := opts.SystemPrompt
-	// The first model request uses this prompt. A later refresh prepends the
-	// same section; without it here the opening turn only sees the chat prompt.
-	if section := goalContinuationPhaseSection(opts.UserText); section != "" {
-		systemPrompt = section + systemPrompt
-	}
-	if extra := crossChannelPrompt; extra != "" {
-		systemPrompt += extra
+	// A share discussion answer is published to readers. Goal continuation and
+	// cross-channel activity describe the host's other work and must stay out.
+	if !fileCompanionShareDiscussionUserID(opts.UserID) {
+		// The first model request uses this prompt. A later refresh prepends the
+		// same section; without it here the opening turn only sees the chat prompt.
+		if section := goalContinuationPhaseSection(opts.UserText); section != "" {
+			systemPrompt = section + systemPrompt
+		}
+		if extra := crossChannelPrompt; extra != "" {
+			systemPrompt += extra
+		}
 	}
 	if semanticSurface != nil {
 		systemPrompt = ensureSemanticGrantPromptFence(systemPrompt)
 	}
-	if ctx != nil && ctx.semanticSessionCeilingSpent {
+	if ctx != nil && ctx.semanticSessionCeilingSpent && !fileCompanionShareDiscussionUserID(opts.UserID) {
 		systemPrompt += "\n\n" + sessionCeilingTurnPrompt()
 	}
-	if ctx != nil && ctx.capabilityExtensionReason != "" {
+	if ctx != nil && ctx.capabilityExtensionReason != "" && !fileCompanionShareDiscussionUserID(opts.UserID) {
 		systemPrompt += "\n\n" + capabilityExtensionPrompt(ctx.capabilityExtensionReason, ctx.capabilityExtensionPaths, tools)
 	}
 

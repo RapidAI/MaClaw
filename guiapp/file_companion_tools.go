@@ -232,10 +232,36 @@ func fileCompanionWithoutGenerateTool(tools []map[string]interface{}) []map[stri
 	return kept
 }
 
+// fileCompanionReadOnlyTools drops every tool that creates a file. A share
+// discussion answers with a note, so the tools it may call only read.
+func fileCompanionReadOnlyTools(tools []map[string]interface{}) []map[string]interface{} {
+	kept := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		switch strings.TrimSpace(name) {
+		case fileCompanionToolRestore, fileCompanionToolGenerate:
+			continue
+		}
+		kept = append(kept, tool)
+	}
+	return kept
+}
+
+// fileCompanionShareDiscussionUserID reports the background share discussion
+// owner. Its input is a reader's note, so the answer is always a note: the
+// session may read the document but must not create or rewrite files.
+func fileCompanionShareDiscussionUserID(userID string) bool {
+	sessionID := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(userID), "file-companion:"))
+	return strings.HasPrefix(sessionID, "fcs_")
+}
+
 // fileCompanionClosedSurfaceTools is the whole executable surface a companion
 // turn gets: the document tools when the open file is a PDF, and nothing
 // otherwise. The figures a markdown or docx needs already travel with the
 // turn itself. pdf_restore adds a new file and leaves the open PDF as it is.
+// A share discussion session drops the tools that write files, so a reader's
+// note cannot turn into a generated document.
 func (h *IMMessageHandler) fileCompanionClosedSurfaceTools(userID string) []map[string]interface{} {
 	if h == nil || h.app == nil {
 		return nil
@@ -244,7 +270,11 @@ func (h *IMMessageHandler) fileCompanionClosedSurfaceTools(userID string) []map[
 	if err != nil || !strings.EqualFold(filepath.Ext(canonical), ".pdf") {
 		return nil
 	}
-	return fileCompanionToolDefinitions()
+	defs := fileCompanionToolDefinitions()
+	if !fileCompanionShareDiscussionUserID(userID) {
+		return defs
+	}
+	return fileCompanionReadOnlyTools(defs)
 }
 
 // fileCompanionOpenDocument resolves the one document a companion session may
@@ -293,6 +323,11 @@ func (h *IMMessageHandler) runFileCompanionHostTool(userID, name, argsJSON strin
 			return fmt.Sprintf("参数必须是 JSON 对象：%v", err), false
 		}
 		args = parsed
+	}
+	// The definition list already hides these from a discussion session; the
+	// execution gate keeps a model that names one anyway from writing a file.
+	if fileCompanionShareDiscussionUserID(userID) && (name == fileCompanionToolRestore || name == fileCompanionToolGenerate) {
+		return "分享讨论只能阅读文档，不能生成或改写文件。", false
 	}
 	canonical, err := h.app.fileCompanionOpenDocument(userID)
 	if err != nil {

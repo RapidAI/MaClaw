@@ -19,8 +19,9 @@ const (
 	taskCopyNamePrefix = "（副本）"
 )
 
-// DuplicateTask creates a new task with the same configuration as the source
-// and an empty conversation. The display name is "（副本）" plus the source name.
+// DuplicateTask forks a task: the copy keeps the source configuration, its
+// working directory, and the full conversation (chat transcript plus coding
+// workbench continuity). The display name is "（副本）" plus the source name.
 func (a *App) DuplicateTask(sourceProjectPath string) (ProjectSearchResult, error) {
 	zero := ProjectSearchResult{}
 	if a == nil {
@@ -65,6 +66,9 @@ func (a *App) DuplicateTask(sourceProjectPath string) (ProjectSearchResult, erro
 	if err := copyTaskCodingConfig(sourceProjectPath, created.ProjectPath, workingDir); err != nil {
 		log.Printf("[task-copy] coding config copy failed source=%q copy=%q err=%v", sourceProjectPath, created.ProjectPath, err)
 	}
+	// The copy is a fork, not a blank task: the conversation must be available
+	// the moment the new tab opens.
+	a.copyProjectConversation(sourceProjectPath, created.ProjectPath)
 	if updated := pi.Get(created.ProjectPath); updated != nil {
 		created = a.projectRecordToSearchResult(pi, *updated)
 	}
@@ -187,7 +191,9 @@ func (a *App) projectHasTaskCopyTag(projectPath string) bool {
 }
 
 // copyTaskCodingConfig copies workbench settings (permission, plan, route,
-// worktree, remote target) and leaves conversation continuity behind.
+// worktree, remote target) and the conversation context a fork continues
+// from. Ephemeral in-flight state (pending plan, checkpoints, live remote
+// session id, token counters) stays with the source.
 func copyTaskCodingConfig(sourceDir, targetDir, workingDir string) error {
 	data, err := os.ReadFile(filepath.Join(sourceDir, stickyCodingMemoryFileName))
 	if err != nil {
@@ -207,21 +213,31 @@ func copyTaskCodingConfig(sourceDir, targetDir, workingDir string) error {
 		return nil
 	}
 	cfg := stickyCodingWorkbenchMemory{
-		Kind:                  mem.Kind,
-		ProjectPath:           retargetCopiedCodingProjectPath(sourceDir, targetDir, workingDir, mem.ProjectPath),
-		SessionFullAccess:     mem.SessionFullAccess,
-		SessionHighRiskAccess: mem.SessionHighRiskAccess,
-		SessionPermissionMode: mem.SessionPermissionMode,
-		ApprovedDirs:          append([]string(nil), mem.ApprovedDirs...),
-		PlanMode:              mem.PlanMode,
-		RoutePref:             mem.RoutePref,
-		WorktreeMode:          mem.WorktreeMode,
-		RemoteWorkDir:         mem.RemoteWorkDir,
-		RemoteProjectDir:      mem.RemoteProjectDir,
-		RemoteHost:            mem.RemoteHost,
-		RemoteUser:            mem.RemoteUser,
-		RemotePort:            mem.RemotePort,
-		UpdatedAtUnix:         time.Now().Unix(),
+		Kind:                      mem.Kind,
+		ProjectPath:               retargetCopiedCodingProjectPath(sourceDir, targetDir, workingDir, mem.ProjectPath),
+		LastUserText:              mem.LastUserText,
+		LastSummary:               mem.LastSummary,
+		SessionPlan:               mem.SessionPlan,
+		ExecutionPlan:             mem.ExecutionPlan,
+		RequirementRestatement:    mem.RequirementRestatement,
+		FilesModified:             append([]string(nil), mem.FilesModified...),
+		FilesCreated:              append([]string(nil), mem.FilesCreated...),
+		TurnCount:                 mem.TurnCount,
+		SessionFullAccess:         mem.SessionFullAccess,
+		SessionHighRiskAccess:     mem.SessionHighRiskAccess,
+		SessionPermissionMode:     mem.SessionPermissionMode,
+		ApprovedDirs:              append([]string(nil), mem.ApprovedDirs...),
+		PlanMode:                  mem.PlanMode,
+		ProjectInstructions:       mem.ProjectInstructions,
+		ProjectInstructionSources: append([]string(nil), mem.ProjectInstructionSources...),
+		RoutePref:                 mem.RoutePref,
+		WorktreeMode:              mem.WorktreeMode,
+		RemoteWorkDir:             mem.RemoteWorkDir,
+		RemoteProjectDir:          mem.RemoteProjectDir,
+		RemoteHost:                mem.RemoteHost,
+		RemoteUser:                mem.RemoteUser,
+		RemotePort:                mem.RemotePort,
+		UpdatedAtUnix:             time.Now().Unix(),
 	}
 	encoded, err := json.Marshal(cfg)
 	if err != nil {
@@ -237,6 +253,14 @@ func codingConfigWorthCopying(mem stickyCodingWorkbenchMemory) bool {
 		return true
 	}
 	if mem.SessionFullAccess || mem.SessionHighRiskAccess || len(mem.ApprovedDirs) > 0 {
+		return true
+	}
+	// A fork keeps the conversation context even when no permission or route
+	// settings were ever written.
+	if strings.TrimSpace(mem.LastUserText) != "" || strings.TrimSpace(mem.LastSummary) != "" ||
+		strings.TrimSpace(mem.SessionPlan) != "" || strings.TrimSpace(mem.ExecutionPlan) != "" ||
+		strings.TrimSpace(mem.RequirementRestatement) != "" || strings.TrimSpace(mem.ProjectInstructions) != "" ||
+		mem.TurnCount > 0 || len(mem.FilesModified) > 0 || len(mem.FilesCreated) > 0 {
 		return true
 	}
 	return strings.TrimSpace(mem.RemoteHost) != "" || strings.TrimSpace(mem.RemoteWorkDir) != ""

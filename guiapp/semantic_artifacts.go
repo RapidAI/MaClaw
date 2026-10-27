@@ -80,14 +80,46 @@ func materializeTrustedDocument(payload tool.ArtifactPayload, suffix string) (st
 // across the response projection. Neither the model nor an IM payload can
 // nominate a selection ID, scope, or delivery state.
 type semanticDeliveryProjection struct {
-	Scope         tool.InvocationScope
-	SelectionID   string
+	Scope       tool.InvocationScope
+	SelectionID string
+	// Kind is the artifact kind this delivery staged ("image", "document",
+	// "audio"). The response projection can carry more than one payload slot,
+	// and only one of them belongs to this record. Settlement needs the kind to
+	// name the receipt for the right bytes instead of whichever slot is first.
+	Kind          string
 	Store         tool.ArtifactStore
 	Executor      *tool.PlanExecutor
 	Coordinator   *tool.SQLiteSemanticExecutionCoordinator
 	ChannelScope  string
 	DestinationID string
 	OnSettled     func(tool.DeliveryState)
+}
+
+// localChatDeliveryReceipt maps the projected response onto the outcome of the
+// delivery this record owns. Acceptance requires the matching payload slot:
+// a screenshot accepted on a document record would claim a delivery whose
+// bytes never reached the chat.
+func localChatDeliveryReceipt(resp *IMAgentResponse, kind string, fileMaterialized bool) (tool.DeliveryState, string) {
+	if resp == nil {
+		return tool.DeliveryFailed, ""
+	}
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "image":
+		if key := strings.TrimSpace(resp.ImageKey); key != "" {
+			return tool.DeliveryAccepted, tool.SchemaDigest([]byte("local-chat:image:" + key))
+		}
+	case "audio":
+		if data := strings.TrimSpace(resp.VoiceData); data != "" {
+			return tool.DeliveryAccepted, tool.SchemaDigest([]byte("local-chat:voice:" + data))
+		}
+	default:
+		// A document (or a projection without a kind) reaches the local chat as
+		// a materialized file; FileData staged without a local path never did.
+		if fileMaterialized && strings.TrimSpace(resp.LocalFilePath) != "" {
+			return tool.DeliveryAccepted, tool.SchemaDigest([]byte("local-chat:file:" + resp.LocalFilePath))
+		}
+	}
+	return tool.DeliveryFailed, ""
 }
 
 func (p *semanticDeliveryProjection) recordOutcome(outcome tool.DeliveryState, receiptDigest ...string) error {
@@ -125,6 +157,34 @@ func (p *semanticDeliveryProjection) recordOutcome(outcome tool.DeliveryState, r
 		p.OnSettled(outcome)
 	}
 	return err
+}
+
+// settleLocalChatDelivery records a delivery whose channel is the host's own
+// conversation. That channel has no transport to report back: the response
+// carrying the payload is the delivery, so the projection that produced it is
+// the receipt owner. The prepared row is claimed first on either store, exactly
+// as an IM gateway claims before SendMedia, so settlement and the outbox remain
+// one state machine.
+func (p *semanticDeliveryProjection) settleLocalChatDelivery(outcome tool.DeliveryState, receiptDigest string) error {
+	if p == nil {
+		return nil
+	}
+	if p.Coordinator != nil {
+		if _, dispatch, err := p.Coordinator.ClaimDelivery(p.Scope, p.SelectionID, time.Now().UTC()); err != nil {
+			return err
+		} else if !dispatch {
+			// Another owner already claimed or settled this row; its outcome is
+			// the authority and replaying here would contradict it.
+			return nil
+		}
+	} else if p.Store != nil {
+		if _, dispatch, err := p.Store.ClaimDeliveryDispatch(p.Scope, p.SelectionID, time.Now().UTC()); err != nil {
+			return err
+		} else if !dispatch {
+			return nil
+		}
+	}
+	return p.recordOutcome(outcome, receiptDigest)
 }
 
 func newSemanticArtifactBroker(scope tool.InvocationScope, store tool.ArtifactStore, routes tool.RouteStateStore, coordinators ...*tool.SQLiteSemanticExecutionCoordinator) *semanticArtifactBroker {

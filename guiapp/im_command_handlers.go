@@ -129,7 +129,10 @@ func (h *IMMessageHandler) handleImmediateIMCommandWithLoop(msg IMUserMessage, t
 		// Keep as safety net for direct callers.
 		return h.handleMoACommand(msg, trimmed, responseLang), true
 	case imCommandCodingWorkbench:
-		return h.handleCodingWorkbenchIMCommand(msg, trimmed, onProgress, onToken), true
+		// Plan execution inside this command takes the owner's turn window
+		// itself (see handleCodingWorkbenchIMCommand); a local workbench
+		// command must stay immediate.
+		return h.handleCodingWorkbenchIMCommand(msg, trimmed, onProgress, onToken, providedLoopCtx), true
 	case imCommandSkill, imCommandMCP, imCommandPlugin, imCommandInstall:
 		return h.handleInstallIMCommand(commandKind, trimmed, responseLang), true
 	}

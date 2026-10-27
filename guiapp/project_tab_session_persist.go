@@ -367,6 +367,9 @@ func (p *ProjectTabSessionPersist) ClearProjectSessionConversations(projectPath 
 		removeConversationViewArchive(dir, archiveTabID)
 		cleared++
 	}
+	// A staged fork can have a scroll-back archive without a session file (the
+	// memory-backed copy path), so the scan above never sees it.
+	removeConversationViewArchive(dir, taskCopyArchiveTabID(projectPath))
 	return cleared, errors.Join(errs...)
 }
 
@@ -507,6 +510,15 @@ func (p *ProjectTabSessionPersist) DeleteProjectSessions(projectPath string) (in
 	}
 	for tabID := range removedIDs {
 		removeFile(tabID)
+	}
+	// A staged fork transcript is written without an index entry, and its
+	// memory-backed copy path can leave an archive without a session file.
+	if stagedID := taskCopyArchiveTabID(projectPath); stagedID != "" {
+		if _, statErr := os.Stat(filepath.Join(dir, stagedID+".json")); statErr == nil {
+			removeFile(stagedID)
+		} else {
+			removeConversationViewArchive(dir, stagedID)
+		}
 	}
 
 	// Session files can outlive the index after an interrupted write. Inspect

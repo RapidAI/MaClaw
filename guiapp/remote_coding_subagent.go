@@ -432,8 +432,12 @@ func (r *RemoteCodingSubAgent) preDispatchGateDiagnostic(verifiedBound bool, tas
 	if verifiedBound || r == nil || r.requestKind == codingRequestInquiry || goalContinuationPhase(taskDescription) == "plan" || r.loopCtx == nil || !isDesktopCodingOwner(r.loopCtx.UserID) {
 		return ""
 	}
-	log.Printf("[remote-coding] pre-dispatch gate: implementation step without verified desktop relation user=%s session=%s task=%q",
-		r.loopCtx.UserID, r.sessionID, truncateRunesV2(taskDescription, 80))
+	ingress := "none"
+	if strings.TrimSpace(r.loopCtx.CodingTaskIngressToken) != "" {
+		ingress = "unbound"
+	}
+	log.Printf("[remote-coding] pre-dispatch gate: implementation step without verified desktop relation user=%s session=%s platform=%q ingress=%s request_id=%q task=%q",
+		r.loopCtx.UserID, r.sessionID, r.loopCtx.Platform, ingress, r.loopCtx.Runtime.RequestID, truncateRunesV2(taskDescription, 80))
 	return desktopCodingVerifiedSurfaceUnavailableDiagnostic
 }
 

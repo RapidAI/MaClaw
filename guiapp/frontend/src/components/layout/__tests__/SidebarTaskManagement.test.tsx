@@ -8,7 +8,7 @@ import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFro
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
-import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK } from '../../../constants/events';
+import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_OPEN_NEW_TASK_WIZARD } from '../../../constants/events';
 import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
 import { DialogProvider } from '../../CustomDialog';
 import { __resetCloudWorkspaceDisplayNamesForTests, __resetCloudWorkspaceLeaseEnsureForTests, markCloudWorkspaceLeaseEnsured, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
@@ -2856,7 +2856,7 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByText(/Edit remote SSH|编辑远程 SSH|編輯遠端 SSH/i)).toBeTruthy();
     });
 
-    it('copies a task from the context menu as a new empty task', async () => {
+    it('forks a task from the context menu and opens the copy', async () => {
         const refreshTasks = vi.fn();
         const resumeTask = vi.fn().mockResolvedValue(true);
         duplicateTaskMock.mockClear();
@@ -2883,6 +2883,143 @@ describe('SidebarTaskManagement', () => {
             project_path: 'D:/work/tasks/build-dashboard-copy',
             name: '（副本）Build dashboard',
         }));
+    });
+
+    it('opens the new-task page prefilled from the context menu', () => {
+        const seen: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                taskContextMenu: {
+                    x: 10,
+                    y: 20,
+                    projectPath: baseProject.project_path,
+                    name: '本地编程任务',
+                    pinned: false,
+                    tags: ['coding_dev'],
+                    workingDir: 'D:/work/coding-project',
+                },
+            });
+            expect(screen.getByTestId('task-context-new-task').textContent || '').toMatch(/新任务/);
+            fireEvent.click(screen.getByTestId('task-context-new-task'));
+        } finally {
+            window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        }
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({
+            taskType: 'coding',
+            workspace: { kind: 'local', localPath: 'D:/work/coding-project' },
+        });
+    });
+
+    it('prefills the new-task page with the expert and remote target from a task row', () => {
+        const seen: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                taskContextMenu: {
+                    x: 10,
+                    y: 20,
+                    projectPath: baseProject.project_path,
+                    name: '远程运维',
+                    pinned: false,
+                    tags: ['remote_coding_dev', 'remote_host:10.0.0.8', 'remote_user:ubuntu', 'remote_port:2222', 'remote_workdir:/app'],
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-new-task'));
+        } finally {
+            window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        }
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({
+            taskType: 'coding',
+            workspace: {
+                kind: 'remote',
+                remote: { host: '10.0.0.8', port: 2222, user: 'ubuntu', password: '', workDir: '/app' },
+            },
+        });
+    });
+
+    it('prefills the new-task page with the source expert', () => {
+        const seen: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                taskContextMenu: {
+                    x: 10,
+                    y: 20,
+                    projectPath: baseProject.project_path,
+                    name: '论文评审',
+                    pinned: false,
+                    tags: ['task_management', 'source:expert:paper-review'],
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-new-task'));
+        } finally {
+            window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        }
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({ expertId: 'paper-review', expertName: 'paper-review' });
+    });
+
+    it('prefills the new-task page with the cloud workspace from a task row', () => {
+        rememberCloudWorkspaceDisplayName('cws_new_task', '经营分析');
+        const seen: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                taskContextMenu: {
+                    x: 10,
+                    y: 20,
+                    projectPath: baseProject.project_path,
+                    name: '经营分析',
+                    pinned: false,
+                    tags: ['cloud_workspace:cws_new_task'],
+                    workingDir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_new_task',
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-new-task'));
+        } finally {
+            window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        }
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({
+            taskType: 'chat',
+            workspace: { kind: 'cloud', cloudWorkspaceId: 'cws_new_task', cloudName: '经营分析' },
+        });
+    });
+
+    it('prefills the workflow template from the source task', () => {
+        const seen: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                taskContextMenu: {
+                    x: 10,
+                    y: 20,
+                    projectPath: baseProject.project_path,
+                    name: '编码工作流',
+                    pinned: false,
+                    tags: ['task_management'],
+                    workflowTemplateId: 'coding_workflow',
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-new-task'));
+        } finally {
+            window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        }
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({ workflowTemplateId: 'coding_workflow', taskType: 'chat' });
     });
 
     it('hides Edit remote SSH for ordinary tasks', () => {

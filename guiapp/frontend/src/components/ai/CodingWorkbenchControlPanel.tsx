@@ -161,6 +161,7 @@ export type CodingStepStatus = {
     index: number;
     title?: string;
     status: string;
+    /** One-line note for the checklist row (backend-projected); never the step's report body. */
     summary?: string;
     verify_cmd?: string;
     verify_ok?: boolean;

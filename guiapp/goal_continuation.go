@@ -1310,43 +1310,14 @@ func (e *GoalContinuationEngine) runForegroundContinuation(handler *IMMessageHan
 		emitEvent("ai-assistant-stream-done", "")
 	}
 
-	// The coding workbench refuses an implementation step that has no desktop
-	// ingress token. A continuation is a host request for the same owner, so
-	// it mints that token here and drops it when this request returns.
-	if endIngress := e.attachCodingIngress(&msg); endIngress != nil {
-		defer endIngress()
-	}
+	// The turn itself carries the desktop Coding credential: the handler's
+	// per-owner turn window mints it and closes the chain, so this host
+	// continuation needs no credential code of its own.
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}
 	emitFinalResponse(resp)
-}
-
-// attachCodingIngress mints the same desktop coding credential a user send
-// gets at the Wails boundary. startNewTask is false: this phase continues
-// the owner's current relation and must not fence it. The returned function
-// closes that request's ingress, including any step token chained from it.
-func (e *GoalContinuationEngine) attachCodingIngress(msg *IMUserMessage) func() {
-	if e == nil || e.app == nil || msg == nil {
-		return nil
-	}
-	projectPath := projectPathFromSessionOwnerID(msg.UserID)
-	if !e.app.isDesktopCodingWorkbenchSession(msg.UserID, projectPath) {
-		return nil
-	}
-	workspaceDir := ""
-	if projectPath != "" && e.app.projectPathIsLocalCodingWorkbench(projectPath) {
-		workspaceDir = e.app.codingWorkbenchLocalExecDirOrDesktop(projectPath)
-	}
-	token := e.app.beginDesktopCodingTaskIngressForRequestWithWorkspace(msg.UserID, workspaceDir, false)
-	if token == "" {
-		return nil
-	}
-	msg.CodingTaskIngressToken = token
-	app := e.app
-	ownerID := msg.UserID
-	return func() { app.endDesktopCodingTaskIngressForOwner(ownerID) }
 }
 
 func (e *GoalContinuationEngine) emitForegroundRoundStarted(requestID, userID, prompt, displayText string) {

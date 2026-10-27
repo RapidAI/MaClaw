@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -335,6 +336,50 @@ func companionShareBodyIsProject(raw []byte, documentPrefix string) error {
 		return errors.New("分享里不是伴读项目")
 	}
 	return nil
+}
+
+func TestFileCompanionLibraryMarksExpiredShares(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	localPath := filepath.Join(home, "a.md")
+	if err := os.WriteFile(localPath, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	items := []FileCompanionLibraryItem{
+		{ID: "cd_0123456789abcdef0123456789abcdef", Token: "cd_0123456789abcdef0123456789abcdef", Name: "past.pdf", Source: "cloud", ExpiresAt: now.Add(-time.Hour).Format(time.RFC3339), OpenedAt: "2026-10-25T00:00:00Z"},
+		{ID: "cd_abcdef0123456789abcdef0123456789", Token: "cd_abcdef0123456789abcdef0123456789", Name: "future.pdf", Source: "cloud", ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), OpenedAt: "2026-10-25T00:00:00Z"},
+		{ID: "cd_11111111111111111111111111111111", Token: "cd_11111111111111111111111111111111", Name: "permanent.pdf", Source: "cloud", Permanent: true, OpenedAt: "2026-10-25T00:00:00Z"},
+		{ID: "local:a", Name: "a.md", Path: localPath, Source: "local", OpenedAt: "2026-10-25T00:00:00Z"},
+	}
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked(items)
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags := map[string]bool{}
+	for _, item := range list.Items {
+		flags[item.Name] = item.Expired
+	}
+	if _, ok := flags["a.md"]; !ok {
+		t.Fatalf("local row missing: %#v", list.Items)
+	}
+	if !flags["past.pdf"] || flags["future.pdf"] || flags["permanent.pdf"] || flags["a.md"] {
+		t.Fatalf("expired flags = %#v", flags)
+	}
+
+	if fileCompanionShareExpiredAt("not a time", now) {
+		t.Fatal("a malformed expiry must not unshare the project")
+	}
+	if !fileCompanionShareExpiredAt(now.Format(time.RFC3339), now) {
+		t.Fatal("an expiry at the current instant is expired")
+	}
 }
 
 func TestFileCompanionDeleteShareCallsHubAndDropsCloudRow(t *testing.T) {

@@ -31,7 +31,7 @@ import { builtinExpertIcon, expertTabId, parseExpertListJSON, parseInstalledMana
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, goalCreateCommand, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
-import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, withExpert, withTaskType, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withTaskType, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
 import { suggestedExpertForDraft, type NewTaskExpertSuggestion } from "./taskExpertSuggest";
 import { mismatchedTaskType, taskTypeMismatchCopy, type NewTaskTypeSuggestion } from "./taskTypeSuggest";
 import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
@@ -806,7 +806,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         if (!localTab) return;
         const separate = !isLocalTabActive;
         const applySeed = () => {
-            if (!String(seed?.expertId || "").trim() && !String(seed?.workflowTemplateId || "").trim()) return;
+            if (!hasWizardSeedContent(seed)) return;
             setTaskConfigDraft(draftFromWizardSeed(seed));
             setTaskConfigError("");
             // A template must not keep leftover guide text as its first message.
@@ -881,15 +881,16 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     useEffect(() => {
         const handler = (event: Event) => {
             const detail = (event as CustomEvent<NewTaskWizardSeed | undefined>).detail;
-            const expertId = String(detail?.expertId || "").trim();
-            const workflowId = String(detail?.workflowTemplateId || "").trim();
-            pendingWizardSeedRef.current = (expertId || workflowId) ? {
-                expertId: expertId || null,
-                expertName: detail?.expertName ?? null,
-                workflowTemplateId: workflowId || null,
-                latexTemplateId: detail?.latexTemplateId ?? null,
-                latexTemplateName: detail?.latexTemplateName ?? null,
+            const seed: NewTaskWizardSeed | null = detail && hasWizardSeedContent(detail) ? {
+                expertId: String(detail.expertId || "").trim() || null,
+                expertName: detail.expertName ?? null,
+                workflowTemplateId: String(detail.workflowTemplateId || "").trim() || null,
+                latexTemplateId: detail.latexTemplateId ?? null,
+                latexTemplateName: detail.latexTemplateName ?? null,
+                taskType: detail.taskType,
+                workspace: detail.workspace,
             } : null;
+            pendingWizardSeedRef.current = seed;
             openNewTaskWizard();
         };
         window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, handler);

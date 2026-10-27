@@ -2933,7 +2933,9 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	st.PlanMode = normalizeCodingPlanMode(mem.PlanMode)
 	st.PendingApproval = strings.TrimSpace(mem.PendingPlanJSON) != ""
 	if len(mem.StepStatuses) > 0 {
-		st.StepStatuses = append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
+		// Project notes at the exit boundary, like the live event does: a legacy
+		// row must not hand the checklist a report body.
+		st.StepStatuses = codingWorkbenchStepsSnapshot(mem.StepStatuses)
 	}
 	if len(mem.ProjectInstructionSources) > 0 {
 		st.ProjectInstructionSources = append([]string(nil), mem.ProjectInstructionSources...)
@@ -5570,28 +5572,172 @@ func (a *App) createTaskRecordWithWorkingDir(taskName, taskContent string, extra
 	return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, CreatedAt: now.Format(time.RFC3339), LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 }
 
-func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath string) {
+// copyProjectConversation forks a task's transcript onto the copy. The
+// project-scoped conversation memory is the primary source; when it is empty
+// (expert tasks keep their chat under the shared expert session), the latest
+// persisted tab transcript is copied instead so the copy opens with the same
+// visible history the source would show.
+func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath string) bool {
 	started := time.Now()
-	a.ensureInteractionInfra()
-	hubClient := a.ensureHubClient()
-	if hubClient == nil {
-		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=hub_client_unavailable elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
-		return
+	copied := false
+	if mem := a.ensureTaskConversationMemory(); mem != nil {
+		if sourceEntries, sourceOwner := a.taskCopyConversationEntries(sourceProjectPath, mem); len(sourceEntries) > 0 {
+			targetUserID := projectSessionOwnerID(targetProjectPath)
+			mem.Save(targetUserID, append([]agent.ConversationEntry(nil), sourceEntries...))
+			log.Printf("[project_search] task copy copied entries=%d source_user=%q target_user=%q elapsed=%s", len(sourceEntries), sourceOwner, targetUserID, time.Since(started).Round(time.Millisecond))
+			copied = true
+		}
 	}
-	handler := hubClient.ensureIMHandler()
-	if handler == nil || handler.memory == nil {
-		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=memory_unavailable elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
-		return
+	if a.copyProjectConversationSnapshot(sourceProjectPath, targetProjectPath) {
+		return true
 	}
-	sourceUserID := projectSessionOwnerID(sourceProjectPath)
-	targetUserID := projectSessionOwnerID(targetProjectPath)
-	sourceEntries := handler.memory.Load(sourceUserID)
-	if len(sourceEntries) == 0 {
-		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=no_entries elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
-		return
+	if copied {
+		// The live memory has the visible turn window; the tab archive keeps
+		// the older turns the copy can still scroll back to.
+		a.copyProjectConversationArchive(sourceProjectPath, targetProjectPath)
+		return true
 	}
-	handler.memory.Save(targetUserID, sourceEntries)
-	log.Printf("[project_search] ForkRecentTask copied entries=%d source_user=%q target_user=%q elapsed=%s", len(sourceEntries), sourceUserID, targetUserID, time.Since(started).Round(time.Millisecond))
+	log.Printf("[project_search] task copy skipped source=%q target=%q reason=no_conversation elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
+	return false
+}
+
+// taskCopyConversationEntries reads a task transcript from the owner that
+// actually holds it. The live task of an expert keeps its chat in the shared
+// expert session; the task's project memory can lag behind as an archive, so
+// blindly copying the project owner would fork a stale conversation.
+func (a *App) taskCopyConversationEntries(projectPath string, mem *agent.ConversationMemory) ([]agent.ConversationEntry, string) {
+	if mem == nil {
+		return nil, ""
+	}
+	if !a.projectHasTaskCopyTag(projectPath) {
+		if expertID := a.expertIDForTaskPath(projectPath); expertID != "" && a.isLiveExpertTaskPath(projectPath, expertID) {
+			owner := expertSessionUserID(expertID)
+			if entries := mem.Load(owner); len(entries) > 0 {
+				return entries, owner
+			}
+		}
+	}
+	owner := projectSessionOwnerID(projectPath)
+	return mem.Load(owner), owner
+}
+
+// ensureTaskConversationMemory resolves the shared conversation store without
+// requiring a fully connected Hub client. Copying must still work while the
+// Hub is reconnecting or when only the desktop handler exists.
+func (a *App) ensureTaskConversationMemory() *agent.ConversationMemory {
+	if a == nil {
+		return nil
+	}
+	if hub := a.hubClient(); hub != nil {
+		if handler := hub.currentIMHandler(); handler != nil && handler.memory != nil {
+			return handler.memory
+		}
+	}
+	if a.imHandler != nil && a.imHandler.memory != nil {
+		return a.imHandler.memory
+	}
+	return a.ensureConversationMemory()
+}
+
+// copyProjectConversationSnapshot saves the source task's newest persisted
+// transcript under the copy's project path. LoadProjectConversationHistory
+// uses that snapshot as its fallback, so the forked chat is visible even when
+// the live session belonged to a shared expert owner.
+func (a *App) copyProjectConversationSnapshot(sourceProjectPath, targetProjectPath string) bool {
+	persist := a.ensureProjectTabSessionPersist()
+	if persist == nil {
+		return false
+	}
+	session, err := persist.LoadLatestSessionForProject(sourceProjectPath)
+	if err != nil || session == nil || !sessionSnapshotHasUserTurn(session.Conversation) {
+		return false
+	}
+	copied := &TabSessionData{
+		TabID:        taskCopyArchiveTabID(targetProjectPath),
+		ProjectPath:  normalizeProjectSessionPath(targetProjectPath),
+		Conversation: append([]interface{}(nil), session.Conversation...),
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := persist.SaveSession(copied); err != nil {
+		log.Printf("[project_search] task copy snapshot failed source=%q target=%q err=%v", sourceProjectPath, targetProjectPath, err)
+		return false
+	}
+	a.stageTaskCopyArchive(persist, session, targetProjectPath)
+	log.Printf("[project_search] task copy snapshot source=%q target=%q messages=%d", sourceProjectPath, targetProjectPath, len(copied.Conversation))
+	return true
+}
+
+// copyProjectConversationArchive stages the source tab's scroll-back turns
+// under the copy. CreateProjectTabSession moves them onto the copy's real tab
+// id, which is only known once the frontend opens it.
+func (a *App) copyProjectConversationArchive(sourceProjectPath, targetProjectPath string) bool {
+	persist := a.ensureProjectTabSessionPersist()
+	if persist == nil {
+		return false
+	}
+	session, err := persist.LoadLatestSessionForProject(sourceProjectPath)
+	if err != nil || session == nil {
+		return false
+	}
+	return a.stageTaskCopyArchive(persist, session, targetProjectPath)
+}
+
+// stageTaskCopyArchive copies the source tab's scroll-back turns under the
+// copy's synthetic transcript id. The copy's real tab id is not known until
+// the frontend opens it.
+func (a *App) stageTaskCopyArchive(persist *ProjectTabSessionPersist, source *TabSessionData, targetProjectPath string) bool {
+	if persist == nil || source == nil || strings.TrimSpace(source.TabID) == "" {
+		return false
+	}
+	archive, err := persist.LoadConversationViewArchive(source.TabID)
+	if err != nil || len(archive) == 0 {
+		return false
+	}
+	if err := persist.SaveConversationViewArchive(taskCopyArchiveTabID(targetProjectPath), archive); err != nil {
+		log.Printf("[project_search] task copy archive failed source=%q target=%q err=%v", source.TabID, targetProjectPath, err)
+		return false
+	}
+	return true
+}
+
+// projectHasStagedTaskTranscript reports whether this project is a fork whose
+// source transcript DuplicateTask/ForkRecentTask staged under a synthetic tab.
+func (a *App) projectHasStagedTaskTranscript(projectPath string) bool {
+	if a == nil || a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	rec := pi.Get(normalizeProjectSessionPath(projectPath))
+	if rec == nil {
+		return false
+	}
+	return projectRecordHasTag(*rec, taskCopyTag) || projectRecordHasTag(*rec, taskForkedTag)
+}
+
+// stagedTaskTranscriptForNewTab returns the staged fork transcript when the
+// fork's first tab is created. Without this seed the empty tab session (newest
+// for the project path) would hide the copied conversation from history
+// restore, and its archive would start empty.
+func (a *App) stagedTaskTranscriptForNewTab(persist *ProjectTabSessionPersist, projectPath string) *TabSessionData {
+	if a == nil || persist == nil {
+		return nil
+	}
+	session, err := persist.LoadSession(taskCopyArchiveTabID(projectPath))
+	if err != nil || session == nil {
+		return nil
+	}
+	if normalizeProjectSessionPath(session.ProjectPath) != normalizeProjectSessionPath(projectPath) {
+		return nil
+	}
+	return session
+}
+
+// taskCopyArchiveTabID is the staged transcript id for a forked task.
+func taskCopyArchiveTabID(projectPath string) string {
+	return expertTaskArchiveTabIDWithPrefix(projectPath, "task-copy-")
 }
 
 func stringifyProjectConversationContent(value interface{}) string {
@@ -7030,6 +7176,19 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		LastActiveAt: now.UTC().Format(time.RFC3339),
 	}
 	adoptCloudWorkspaceSessionSnapshot(persist, session, projectPath)
+	// A forked task's first tab starts empty. Seed it from the transcript the
+	// fork staged, otherwise this newer empty session hides the copied history
+	// from restore and the scroll-back archive starts empty.
+	if a.projectHasStagedTaskTranscript(projectPath) {
+		if seed := a.stagedTaskTranscriptForNewTab(persist, projectPath); seed != nil && sessionSnapshotHasUserTurn(seed.Conversation) {
+			session.Conversation = append([]interface{}(nil), seed.Conversation...)
+		}
+		if archive, archiveErr := persist.LoadConversationViewArchive(taskCopyArchiveTabID(projectPath)); archiveErr == nil && len(archive) > 0 {
+			if saveErr := persist.SaveConversationViewArchive(tabID, archive); saveErr != nil {
+				log.Printf("[CreateProjectTabSession] copy archive tab=%s project=%q err=%v", tabID, projectPath, saveErr)
+			}
+		}
+	}
 	if err := persist.SaveSession(session); err != nil {
 		log.Printf("[CreateProjectTabSession] SaveSession failed: %v", err)
 		return ""

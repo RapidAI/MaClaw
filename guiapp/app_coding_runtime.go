@@ -98,14 +98,14 @@ const desktopCodingVerifiedSurfaceUnavailableDiagnostic = "未获得本机编程
 const desktopCodingWritableSurfaceBindFailedDiagnostic = "编程执行凭证没有绑定到可写执行面（语义锚点或工作区句柄不完整），实现步骤已停止，没有进入只读检索循环。请重新发送这一次任务。"
 
 // desktopCodingRequestLease is the lifetime of every in-process desktop
-// Coding credential held by a live request: the initial ingress token, each
+// Coding credential held by a live turn: the initial ingress token, each
 // continuation, and the workspace handle. It matches the lease
 // CreateCodingTask and VerifyCodingContinuation grant the semantic relation.
 // A continuation is minted when a step binds and consumed when the next step
 // starts, so a shorter fuse measured from bind — or restarted when the step
-// returns — expires during the step or the following verify gap. Request
-// teardown revokes these credentials immediately; this lease is only the
-// backstop for a handler that never reaches it.
+// returns — expires during the step or the following verify gap. The owner's
+// turn window sweeps these credentials when it closes; this lease is only the
+// backstop for a window that never reaches its teardown.
 const desktopCodingRequestLease = 24 * time.Hour
 
 // isDesktopCodingOwner reports whether ownerID is a desktop-host session
@@ -790,6 +790,47 @@ func (a *App) beginDesktopCodingTaskIngressForRequestWithWorkspace(ownerID, work
 		return ""
 	}
 	return a.codingCaps.beginIngressForRequestWithWorkspace(a.GetDataDir(), ownerID, workspaceDir, startNewTask)
+}
+
+// attachDesktopCodingIngressForTurn mints the turn-scoped desktop Coding
+// credential for one foreground turn of a desktop coding workbench owner.
+//
+// The credential belongs to the TURN, not to whichever component happened to
+// dispatch it. Minting it at each dispatch site let host-authored turns that
+// nobody remembered to instrument (session round waves, degraded-turn retries)
+// reach the workbench with nothing to present, where the pre-dispatch gate
+// refuses every implementation step. Minting it at the request boundary was
+// no better: that request can wait on the owner's turn lock for up to a
+// minute, and the turn still running sweeps every token of the owner when it
+// ends. So the owner's serialized turn window is the only place that mints,
+// and it sweeps the whole chain when that window closes.
+//
+// It returns "" and does nothing when the turn is background work (never
+// serialized as a turn, must not hold write authority) or when the owner is
+// not a desktop coding workbench session.
+//
+// Callers must hold the owner's turn lock: the matching
+// endDesktopCodingTaskIngressForOwner sweep removes every ingress of the owner,
+// so it may only run while no other turn of that owner can be in flight.
+func (a *App) attachDesktopCodingIngressForTurn(msg *IMUserMessage) string {
+	if a == nil || msg == nil || msg.IsBackground {
+		return ""
+	}
+	if strings.TrimSpace(msg.UserID) == "" || !isDesktopCodingOwner(msg.UserID) {
+		return ""
+	}
+	projectPath := projectPathFromSessionOwnerID(msg.UserID)
+	if !a.isDesktopCodingWorkbenchSession(msg.UserID, projectPath) {
+		return ""
+	}
+	workspaceDir := ""
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		workspaceDir = a.codingWorkbenchLocalExecDirOrDesktop(projectPath)
+	}
+	// startNewTask is always false: an in-process turn continues the owner's
+	// current relation. The "new task" fence belongs to the authenticated
+	// request boundary, which runs it before this turn can even be queued.
+	return a.beginDesktopCodingTaskIngressForRequestWithWorkspace(msg.UserID, workspaceDir, false)
 }
 
 func (a *App) endDesktopCodingTaskIngress(token string) {

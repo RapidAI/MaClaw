@@ -76,7 +76,7 @@ import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivRefer
 import { windowDragHandleProps } from "../../utils/windowDrag";
 import type { CodePreviewTheme } from "../ai/FileTabBar";
 import { loadPdfMarks, normalizePdfMarks, savePdfMarks, type PdfMark } from "./pdfMarks";
-import { loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
+import { CHAT_MARK_TEXT_MAX, loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
 import { applyChatHighlights, chatHighlightsSupported, chatMarkAtOffset, chatMessageIndexAt, chatMessageRoot, chatOffsetForPoint, chatSelectionSlices, chatTextSpans, clearChatHighlights, type ChatSelectionSlice } from "./chatMarkAnchors";
 import { CompanionChatMarkMenu } from "./CompanionChatMarkMenu";
 import { subscribeCompanionReaderState } from "./companionReaderState";
@@ -299,7 +299,7 @@ type SaveResult = {
 // the Markdown body, nothing else.
 type CompanionChatTurn = { role: "user" | "assistant"; content: string };
 
-type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reasoning?: string; resultPath?: string; noteCardPath?: string; webNote?: boolean; figures?: CompanionFigure[]; files?: CompanionFile[] };
+type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reasoning?: string; resultPath?: string; noteCardPath?: string; webNote?: boolean; figures?: CompanionFigure[]; files?: CompanionFile[]; discussion?: { askedBy: string; question: string } };
 // Stable identity keeps the scroll-follow effect from re-planning on every
 // render while no file is open.
 const NO_COMPANION_MESSAGES: ChatMessage[] = [];
@@ -1824,8 +1824,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // file's marks on the new transcript.
     const [chatMarksState, setChatMarksState] = useState<{ path: string; marks: ChatMark[] }>({ path: "", marks: NO_CHAT_MARKS });
     // Right-click menu over a selection in the answer. slices is what 高亮
-    // paints; hit indexes the stored mark 取消高亮 removes, or -1.
-    const [chatMenu, setChatMenu] = useState<{ x: number; y: number; slices: ChatSelectionSlice[]; hit: number } | null>(null);
+    // paints; hit indexes the stored mark 取消高亮 removes, or -1. selected is
+    // the browser's own selection text, which keeps block breaks for 复制.
+    const [chatMenu, setChatMenu] = useState<{ x: number; y: number; slices: ChatSelectionSlice[]; hit: number; selected: string } | null>(null);
     const [tabEnds, setTabEnds] = useState<CompanionTabEnds>({ overflow: false, canLeft: false, canRight: false });
     const [dropMessage, setDropMessage] = useState("");
     // The 打开 menu: one button, two ways in. A local file goes straight to the
@@ -1946,11 +1947,17 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const sharePushTimerRef = useRef(new Map<string, number>());
     const sharePushInFlightRef = useRef(new Set<string>());
     const sharePushPendingRef = useRef(new Set<string>());
+    // A document whose automatic upload failed is reported once, not on every
+    // turn while the network is down.
+    const sharePushWarnedRef = useRef(new Set<string>());
     // A line sent before the library list returns does not yet know whether
     // this file is the host's. It waits here and is posted only if the reader
     // is not the host.
     const pendingShareNotesRef = useRef(new Map<string, PendingShareNote[]>());
     const publishShareNoteRef = useRef<(path: string, text: string) => Promise<boolean>>(async () => false);
+    // The Hub records host replies only on the newer protocol. Until a list
+    // says otherwise, keep the old behavior: the reader's own turn answers.
+    const notesReplyRef = useRef(true);
     const flushPendingShareNotesRef = useRef<() => void>(() => undefined);
     const applyShareNotesRef = useRef<(listed: unknown) => void>(() => undefined);
     const applyLibraryListRef = useRef<(listed: unknown) => void>(() => undefined);
@@ -1958,8 +1965,16 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // after the project is gone, so that request cannot paint the project back.
     const libraryDeleteGen = useRef(0);
     // The list a share/import dialog fetched. The library view paints this
-    // snapshot so a save or delete lands without asking the hub again.
+    // snapshot so a save or delete lands without asking the hub again. Only a
+    // mounted library needs it; the poll must not re-render the window for it.
     const [libraryListSnapshot, setLibraryListSnapshot] = useState<unknown>(null);
+    const libraryViewOpenRef = useRef(false);
+    libraryViewOpenRef.current = view === "library";
+    // A closed library must not hand its last list to the next mount: the view
+    // reloads on open and a kept snapshot would paint one stale frame first.
+    useEffect(() => {
+        if (view !== "library") setLibraryListSnapshot(null);
+    }, [view]);
     const clearShareNotes = (keys: Set<string> | null) => {
         setTabs((current) => {
             let changed = false;
@@ -2071,6 +2086,17 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // The window poll and 文档管理 both read the library. One apply keeps notes,
     // the sharer's transcript, and a removed copy on the same path key.
     applyLibraryListRef.current = (listed) => {
+        // The same list carries the Hub capability and the share bindings, so
+        // read the capability first: a participant's question must not be
+        // rerouted to a host on a Hub that cannot send the answer back.
+        const listedRecord = listed && typeof listed === "object" ? listed as Record<string, unknown> : null;
+        const notesReply = listedRecord ? (listedRecord.notesReply ?? listedRecord.NotesReply) : undefined;
+        if (typeof notesReply === "boolean") notesReplyRef.current = notesReply;
+        // 文档管理 paints this same snapshot. The window poll lands here too,
+        // so an expiry or a share made elsewhere reaches an open library list.
+        // A closed library does not need it, and skipping it keeps a poll from
+        // re-rendering the whole window on every tick.
+        if (libraryViewOpenRef.current) setLibraryListSnapshot(listed);
         const synced = companionLibrarySync(listed);
         for (const update of synced.updates) applyShareUpdateRef.current(update);
         applyShareNotesRef.current(listed);
@@ -2092,10 +2118,21 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             return;
         }
         sharePushInFlightRef.current.add(path);
-        void SyncFileCompanionShare(path, JSON.stringify(loadPdfMarks(path))).catch(() => undefined).finally(() => {
-            sharePushInFlightRef.current.delete(path);
-            if (sharePushPendingRef.current.delete(path)) runSharePush(path);
-        });
+        void SyncFileCompanionShare(path, JSON.stringify(loadPdfMarks(path)))
+            .then(() => {
+                sharePushWarnedRef.current.delete(path);
+            })
+            .catch(() => {
+                // A silent failure would leave the host believing the readers
+                // are up to date. Warn once per document; 同步 can retry.
+                if (sharePushWarnedRef.current.has(path)) return;
+                sharePushWarnedRef.current.add(path);
+                showToast("自动同步到分享失败，可在文档管理里用「同步」重试", "error", 6000);
+            })
+            .finally(() => {
+                sharePushInFlightRef.current.delete(path);
+                if (sharePushPendingRef.current.delete(path)) runSharePush(path);
+            });
     };
     const pushShareTranscript = (path: string) => {
         if (!path || !mineSharesByPathRef.current.has(companionSharePathKey(path))) return;
@@ -2121,12 +2158,20 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         let stopped = false;
         let timer = 0;
         let quietTicks = 0;
+        // One list at a time. A slow download can hold the hub read for
+        // minutes; without this, every 5-second tick would queue another call
+        // behind it.
+        let reading = false;
         const refresh = () => {
+            if (stopped || reading) return;
+            reading = true;
             const started = libraryDeleteGen.current;
             void ListFileCompanionLibrary().then((listed) => {
                 if (stopped || libraryDeleteGen.current !== started) return;
                 applyLibraryListRef.current(listed);
-            }).catch(() => undefined);
+            }).catch(() => undefined).finally(() => {
+                reading = false;
+            });
         };
         // The tick is short so a received share can pick up the host's next
         // line quickly. A window without a received share only reads the hub
@@ -2945,6 +2990,28 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // The share this document already has, if this person created it.
     const sharedRow = active ? mineSharesByPath.get(companionSharePathKey(active)) ?? null : null;
     const readHost = active ? shareHosts.get(companionSharePathKey(active)) ?? null : null;
+    // A received share is a discussion. The host agent's answers arrive as
+    // notes; show the ones that answer a reader note in the chat itself, where
+    // the reader asked. The host's own window keeps them in 批注 only.
+    const discussionReplies = useMemo<ChatMessage[]>(() => {
+        if (!activeTab?.shareToken || activeTab.shareMine || !activeTab.notes) return NO_COMPANION_MESSAGES;
+        const byID = new Map(activeTab.notes.map((note) => [note.id, note]));
+        return activeTab.notes
+            .filter((note) => note.host && note.replyTo)
+            .map((note) => {
+                const target = note.replyTo ? byID.get(note.replyTo) : undefined;
+                const question = (target?.text || "").trim();
+                return {
+                    id: `share-note-${note.id}`,
+                    role: "assistant" as const,
+                    text: note.text,
+                    discussion: {
+                        askedBy: (target?.author || "读者").trim(),
+                        question: question.length > 120 ? `${question.slice(0, 120)}…` : question,
+                    },
+                };
+            });
+    }, [activeTab?.shareToken, activeTab?.shareMine, activeTab?.notes]);
     // Marks only apply to the document they were painted on.
     const chatMarks = chatMarksState.path === active ? chatMarksState.marks : NO_CHAT_MARKS;
     const chatMarksRef = useRef(chatMarks);
@@ -2956,7 +3023,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const chatHighlightsReady = useMemo(() => chatHighlightsSupported(), []);
     // A document switch shows that document's marks, never the previous file's.
     useEffect(() => {
-        setChatMarksState({ path: active, marks: active ? loadChatMarks(active) : NO_CHAT_MARKS });
+        setChatMarksState((current) => current.path === active
+            ? current
+            : { path: active, marks: active ? loadChatMarks(active) : NO_CHAT_MARKS });
         setChatMenu(null);
     }, [active]);
     // A host read slower than startup can land after this panel mounted.
@@ -2975,11 +3044,19 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         .map((message, index) => (markedMessageIndexes.has(index) ? `${index}:${message.id}:${message.text.length}` : ""))
         .join("|");
     const chatStatusKey = activeTab?.status ?? "";
+    // A share update replaces the transcript in place under the same restored
+    // ids, so the length key cannot see it; previewEpoch is that event.
+    const chatPreviewKey = activeTab?.previewEpoch ?? 0;
     useEffect(() => {
         const root = outputContainerRef.current;
-        if (!root) return;
+        if (!root) {
+            // No open document: the log is not mounted, so any range would only
+            // hold detached text nodes.
+            clearChatHighlights();
+            return;
+        }
         applyChatHighlights(root, chatMarksRef.current);
-    }, [chatHighlightKey, chatMessageKey, chatStatusKey, active]);
+    }, [chatHighlightKey, chatMessageKey, chatStatusKey, chatPreviewKey, active]);
 
     const commitChatMarks = (next: ChatMark[]) => {
         if (!active) return;
@@ -2992,13 +3069,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         if (!menu || menu.slices.length === 0) return;
         // A new colour replaces whatever covered the same range, so repeated
         // painting never stacks two colours on one phrase.
-        const painted: ChatMark[] = menu.slices.map((slice) => ({
-            message: slice.message,
-            color,
-            start: slice.start,
-            end: slice.end,
-            text: slice.text,
-        }));
+        const painted: ChatMark[] = menu.slices.map((slice) => {
+            // One mark is one quote: a longer range is cut to the text the
+            // store keeps, so the painted range and the re-anchor agree.
+            const text = slice.text.slice(0, CHAT_MARK_TEXT_MAX);
+            return { message: slice.message, color, start: slice.start, end: slice.start + text.length, text };
+        });
         const overlaps = (mark: ChatMark, slice: ChatMark) => mark.message === slice.message && mark.start < slice.end && mark.end > slice.start;
         const kept = chatMarksRef.current.filter((mark) => !painted.some((slice) => overlaps(mark, slice)));
         commitChatMarks([...kept, ...painted]);
@@ -3012,7 +3088,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     };
 
     const copyChatSelection = () => {
-        const text = chatMenuRef.current?.slices.map((slice) => slice.text).join("\n").trim() ?? "";
+        const menu = chatMenuRef.current;
+        const text = (menu?.selected || menu?.slices.map((slice) => slice.text).join("\n") || "").trim();
         setChatMenu(null);
         if (text) void copyTextToClipboard(text);
     };
@@ -3024,10 +3101,14 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         const root = outputContainerRef.current;
         if (!root) return;
         let slices: ChatSelectionSlice[] = [];
+        let selected = "";
         const selection = window.getSelection();
         if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
             const range = selection.getRangeAt(0);
-            if (root.contains(range.commonAncestorContainer)) slices = chatSelectionSlices(root, range);
+            if (root.contains(range.commonAncestorContainer)) {
+                slices = chatSelectionSlices(root, range);
+                selected = selection.toString();
+            }
         }
         let hit = -1;
         if (slices.length === 0 && typeof document.caretRangeFromPoint === "function") {
@@ -3037,7 +3118,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             if (caret && messageRoot && message >= 0 && root.contains(caret.startContainer)) {
                 const spans = chatTextSpans(messageRoot);
                 const offset = chatOffsetForPoint(spans, caret.startContainer, caret.startOffset, "start");
-                hit = chatMarkAtOffset(chatMarksRef.current, message, offset);
+                hit = chatMarkAtOffset(spans, chatMarksRef.current, message, offset);
             }
         }
         if (slices.length === 0 && hit < 0) {
@@ -3045,7 +3126,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             return;
         }
         event.preventDefault();
-        setChatMenu({ x: event.clientX, y: event.clientY, slices, hit });
+        setChatMenu({ x: event.clientX, y: event.clientY, slices, hit, selected });
     };
     const seenEditor = useRef(activeTab?.content ?? "");
     const editorValueChanged = seenEditor.current !== (activeTab?.content ?? "");
@@ -3054,7 +3135,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // version latched off permanently on long answers, because it read the
     // distance to the bottom inside the async scroll event, where a delay
     // between content growth and the pin looks like "the reader left".
-    const companionMessages = activeTab?.messages ?? NO_COMPANION_MESSAGES;
+    const companionMessages = useMemo(() => {
+        const base = activeTab?.messages ?? NO_COMPANION_MESSAGES;
+        if (discussionReplies.length === 0) return base;
+        const known = new Set(base.map((message) => message.id));
+        const extra = discussionReplies.filter((message) => !known.has(message.id));
+        return extra.length === 0 ? base : [...base, ...extra];
+    }, [activeTab?.messages, discussionReplies]);
     const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom } = useAssistantOutputScroll({
         activityKey: active,
         hasConversation: companionMessages.length > 0,
@@ -3375,14 +3462,14 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const buildChatTurns = useCallback(async (): Promise<CompanionChatExport> => {
         if (!activeTab) return EMPTY_CHAT_EXPORT;
         return companionChatExportTurns(
-            activeTab.messages,
+            companionMessages,
             Boolean(activeTab.status) || sendingPaths.has(activeTab.path),
             lightTheme,
         );
-    }, [activeTab, sendingPaths]);
-    const hasChatHistory = Boolean(activeTab && activeTab.messages.some((message) => message.text.trim() !== ""));
+    }, [activeTab, companionMessages, sendingPaths]);
+    const hasChatHistory = Boolean(activeTab && companionMessages.some((message) => message.text.trim() !== ""));
     const chatExportable = Boolean(activeTab && companionChatHasExportableTurn(
-        activeTab.messages,
+        companionMessages,
         Boolean(activeTab.status) || sendingPaths.has(activeTab.path),
     ));
     const canExportChat = chatExportable && !chatExportBusy;
@@ -3571,6 +3658,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const clearCompanionChat = async (tab: CompanionTab, text: string): Promise<boolean> => {
         const sessionId = tab.sessionId;
         chatEpochRef.current.set(sessionId, (chatEpochRef.current.get(sessionId) ?? 0) + 1);
+        // The answers these highlights belong to are gone, so the marks go too.
+        // Keeping them would let one reappear over a future answer that happens
+        // to repeat the same wording.
+        const clearedMarks = saveChatMarks(tab.path, []);
+        if (activeRef.current === tab.path) setChatMarksState({ path: tab.path, marks: clearedMarks });
         setTabs((current) => current.map((item) => {
             if (item.path !== tab.path) return item;
             const draft = item.draft.trim() === text ? "" : item.draft;
@@ -3665,28 +3757,36 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 drainIntroRef.current();
             }
         }
-        // A reader’s line is a note on the host’s paper. It goes out with the
-        // question and does not replace the host transcript. The host’s own
-        // chat still syncs with the document. A line sent before the library
-        // list arrives waits until that list says who the host is.
-        //
-        // On a received share the host's agent answers in the discussion, so
-        // this machine does not run a second, private turn: that answer would
-        // never reach the other readers.
+        // On a received share a question is the discussion. The host's agent
+        // answers it and the reply comes back through the shared note list, so
+        // this machine does not run a second, private turn. A note command is a
+        // local operation on this reader's copy: it keeps its own turn and is
+        // not published as an annotation for the host to answer. A selection
+        // travels in the note so the host answers the passage the reader
+        // actually asked about.
+        const targeted = notePhrase || webNotePhrase;
+        const composedNote = selection.trim()
+            ? `${text}\n\n选中的原文：\n${selection.trim().slice(0, 800)}${selection.trim().length > 800 ? "…" : ""}`
+            : text;
+        // The Hub accepts 2000 characters. A long selection must not turn the
+        // question into a failed note the host never sees.
+        const shareNoteText = composedNote.length > 1900 ? `${composedNote.slice(0, 1900)}…` : composedNote;
         let hostThread = false;
         if (accepted && !isWebTab) {
             const key = companionSharePathKey(tabPath);
             const shared = shareByPathRef.current.get(key);
             if (shared) {
                 if (!shared.mine) {
-                    hostThread = true;
-                    void publishShareNoteRef.current(tabPath, text).then((posted) => {
-                        if (posted) showToast("已发给主持人 Agent，回复会作为批注同步给参与者", "success", 6000);
-                    });
+                    if (!targeted && notesReplyRef.current) hostThread = true;
+                    if (!notePhrase) {
+                        void publishShareNoteRef.current(tabPath, shareNoteText).then((posted) => {
+                            if (posted && hostThread) showToast("已发给主持人 Agent，回复会作为批注同步给参与者", "success", 6000);
+                        });
+                    }
                 }
-            } else {
+            } else if (!notePhrase) {
                 const queued = pendingShareNotesRef.current.get(key) ?? [];
-                queued.push({ path: tabPath, text });
+                queued.push({ path: tabPath, text: shareNoteText });
                 if (queued.length > pendingShareNoteCap) queued.splice(0, queued.length - pendingShareNoteCap);
                 pendingShareNotesRef.current.set(key, queued);
             }
@@ -3706,7 +3806,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         }
         void (async () => {
             try {
-                if (isWebTab) {
+                if (hostThread) {
+                    // The note is the turn. The host agent answers it and the
+                    // reply arrives through the shared note list, for every
+                    // reader, not only this one.
+                } else if (isWebTab) {
                     await SendFileCompanionWebMessage({
                         sessionId,
                         text,
@@ -5155,7 +5259,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             onContextMenu={onChatContextMenu}
                             style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
                         >
-                            {activeTab.messages.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "#94a3b8", fontSize: 13 }}>针对当前文件提问</p> : null}
+                            {activeTab.messages.length === 0 && discussionReplies.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "#94a3b8", fontSize: 13 }}>针对当前文件提问</p> : null}
                             {activeTab.messages.map((message, index) => {
                                 const mine = message.role === "user";
                                 const turnLive = Boolean(activeTab.status) || sendingPaths.has(activeTab.path);
@@ -5235,12 +5339,52 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     </div>
                                 );
                             })}
+                            {discussionReplies.map((message) => (
+                                <div
+                                    key={message.id}
+                                    data-testid={`file-companion-share-reply-${message.id.replace(/^share-note-/, "")}`}
+                                    style={{ display: "flex", justifyContent: "flex-start" }}
+                                >
+                                    <div
+                                        style={{
+                                            margin: 0,
+                                            maxWidth: "86%",
+                                            minWidth: 0,
+                                            padding: "8px 12px",
+                                            borderRadius: "14px 14px 14px 4px",
+                                            background: "#ffffff",
+                                            color: "#1e293b",
+                                            border: "1px solid #e2e8f0",
+                                            fontSize: 14,
+                                            lineHeight: 1.55,
+                                            overflowWrap: "anywhere",
+                                        }}
+                                    >
+                                        <CompanionMessageActions path={activeTab.path} markdown={message.text} messageId={message.id} />
+                                        <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "#64748b" }}>
+                                            主持人回复
+                                        </p>
+                                        {message.discussion?.question ? (
+                                            <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "#64748b", borderLeft: "2px solid #cbd5e1", paddingLeft: 8 }}>
+                                                回复 {message.discussion.askedBy || "读者"}：{message.discussion.question}
+                                            </p>
+                                        ) : null}
+                                        <MessageContentRenderer
+                                            content={message.text}
+                                            theme={lightTheme}
+                                            isUser={false}
+                                            isStreaming={false}
+                                            messageId={message.id}
+                                        />
+                                    </div>
+                                </div>
+                            ))}
                             <div ref={outputEndRef} />
                         </div>
                         {chatMenu ? (
                             <CompanionChatMarkMenu
                                 state={chatMenu}
-                                quote={chatMenu.slices.map((slice) => slice.text).join(" ")}
+                                quote={chatMenu.selected || chatMenu.slices.map((slice) => slice.text).join(" ")}
                                 hasSelection={chatMenu.slices.length > 0}
                                 canPaint={chatHighlightsReady && chatMenu.slices.length > 0}
                                 canClear={chatMenu.hit >= 0}
@@ -5255,7 +5399,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 <p className="file-companion-annotations-kicker">批注</p>
                                 {activeTab.notes && activeTab.notes.length > 0 ? activeTab.notes.map((note) => (
                                     <p key={note.id} data-testid={`file-companion-annotation-${note.id}`}>
-                                        <span className="file-companion-annotations-author">{note.author || "读者"}</span>
+                                        <span className="file-companion-annotations-author">
+                                            {note.host ? `主持人${note.author ? ` · ${note.author}` : ""}` : note.author || "读者"}
+                                        </span>
                                         {note.text}
                                     </p>
                                 )) : (
@@ -5280,7 +5426,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
                     onExit={() => setView("read")}
                     onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
-                    onListed={(listed) => { applyLibraryListRef.current(listed); setLibraryListSnapshot(listed); }}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
                     onShareProject={(path) => { setImportDialogLink(""); setShareDialogRow(null); setShareDialogPath(path); }}
                     onEditShare={(row) => { setImportDialogLink(""); setShareDialogRow(row); setShareDialogPath(row.path ?? ""); }}
                     onImportLink={(link) => { setImportDialogLink(link); setImportDialogOpen(true); }}
@@ -5321,7 +5467,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     name={shareDialogName}
                     share={shareDialogRow}
                     showToast={showToast}
-                    onListed={(listed) => { applyLibraryListRef.current(listed); setLibraryListSnapshot(listed); }}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
                     libraryDeleteGen={libraryDeleteGen}
                     onClose={() => { setShareDialogPath(""); setShareDialogRow(null); }}
                 />
@@ -5332,7 +5478,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     showToast={showToast}
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
                     onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
-                    onListed={(listed) => { applyLibraryListRef.current(listed); setLibraryListSnapshot(listed); }}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
                     libraryDeleteGen={libraryDeleteGen}
                     onClose={() => { setImportDialogOpen(false); setImportDialogLink(""); }}
                 />

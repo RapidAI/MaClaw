@@ -29,7 +29,9 @@ export type ChatMark = {
 };
 
 const MAX_MARKS = 2000;
-const MAX_TEXT = 2000;
+// The quote is also what re-anchors a mark, so a range longer than this is
+// stored as its first CHAT_MARK_TEXT_MAX characters on both ends.
+export const CHAT_MARK_TEXT_MAX = 2000;
 
 const fallback = new Map<string, ChatMark[]>();
 
@@ -87,7 +89,7 @@ function oneMark(value: unknown): ChatMark | null {
     const start = Math.floor(Number(raw.start));
     const end = Math.floor(Number(raw.end));
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return null;
-    const text = String(raw.text ?? "").trim().slice(0, MAX_TEXT);
+    const text = String(raw.text ?? "").trim().slice(0, CHAT_MARK_TEXT_MAX);
     if (!text) return null;
     return { message, color, start, end, text };
 }
@@ -98,11 +100,12 @@ export function normalizeChatMarks(value: unknown): ChatMark[] | null {
     if (!list) return null;
     const marks: ChatMark[] = [];
     for (const item of list) {
-        if (marks.length >= MAX_MARKS) break;
         const mark = oneMark(item);
         if (mark) marks.push(mark);
     }
-    return marks;
+    // The accumulator appends, so the tail is the newest work. Overflowing the
+    // cap must drop the oldest marks, not the ones just painted.
+    return marks.length > MAX_MARKS ? marks.slice(marks.length - MAX_MARKS) : marks;
 }
 
 export function loadChatMarks(path: string): ChatMark[] {

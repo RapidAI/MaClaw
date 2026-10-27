@@ -12,7 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
-func TestDuplicateTaskCopiesConfigWithoutConversation(t *testing.T) {
+func TestDuplicateTaskForksConfigAndConversation(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	workingDir := filepath.Join(t.TempDir(), "worktree")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
@@ -73,8 +73,12 @@ func TestDuplicateTaskCopiesConfigWithoutConversation(t *testing.T) {
 	if projectRecordHasTagLike(copied.Tags, taskForkedTag) {
 		t.Fatalf("copy tags = %#v, must not be a fork", copied.Tags)
 	}
-	if history := app.LoadProjectConversationHistory(copied.ProjectPath); len(history) != 0 {
-		t.Fatalf("copy history = %+v, want empty", history)
+	copyHistory := app.LoadProjectConversationHistory(copied.ProjectPath)
+	if len(copyHistory) != 2 {
+		t.Fatalf("copy history = %+v, want the source transcript", copyHistory)
+	}
+	if copyHistory[0].Role != "user" || copyHistory[0].Content != "上一轮问题" || copyHistory[1].Content != "上一轮回答" {
+		t.Fatalf("copy history = %+v, want copied turns", copyHistory)
 	}
 	if history := app.LoadProjectConversationHistory(source.ProjectPath); len(history) != 2 {
 		t.Fatalf("source history len = %d, want 2", len(history))
@@ -91,13 +95,139 @@ func TestDuplicateTaskCopiesConfigWithoutConversation(t *testing.T) {
 	if copiedWorkbench.RoutePref != "reasoning" || copiedWorkbench.PlanMode != "approve" || copiedWorkbench.SessionPermissionMode != "workspace" || copiedWorkbench.WorktreeMode != "off" {
 		t.Fatalf("copied workbench settings = %+v", copiedWorkbench)
 	}
-	if copiedWorkbench.LastUserText != "" || copiedWorkbench.LastSummary != "" || copiedWorkbench.SessionPlan != "" || copiedWorkbench.TurnCount != 0 {
-		t.Fatalf("copied workbench kept chat continuity: %+v", copiedWorkbench)
+	if copiedWorkbench.LastUserText != "上一轮问题" || copiedWorkbench.LastSummary != "上一轮回答" || copiedWorkbench.SessionPlan != "把报告写完" || copiedWorkbench.TurnCount != 3 {
+		t.Fatalf("copied workbench lost chat continuity: %+v", copiedWorkbench)
 	}
 
 	listed := app.ListTasks(20)
 	if !searchResultsContainProjectPath(listed, source.ProjectPath) || !searchResultsContainProjectPath(listed, copied.ProjectPath) {
 		t.Fatalf("task list = %+v, want source and copy", listed)
+	}
+}
+
+func TestDuplicateTaskForksLiveExpertSessionOverStaleProjectMemory(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	source := app.insertExpertTaskRecordWithTitle("paper-review", "论文评审专家", "", "专家任务")
+	if source.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	mgr := NewRemoteSessionManager(app)
+	hubClient := NewRemoteHubClient(app, mgr)
+	handler := &IMMessageHandler{memory: app.ensureConversationMemory()}
+	hubClient.imHandler = handler
+	mgr.SetHubClient(hubClient)
+	app.remoteSessions = mgr
+
+	// The project owner lags behind as an archive; the live task's chat is in
+	// the shared expert session.
+	handler.memory.Save(projectSessionOwnerID(source.ProjectPath), []agent.ConversationEntry{
+		{Role: "user", Content: "旧归档"},
+	})
+	handler.memory.Save(expertSessionUserID("paper-review"), []agent.ConversationEntry{
+		{Role: "user", Content: "当前对话"},
+		{Role: "assistant", Content: "当前回答"},
+	})
+
+	copied, err := app.DuplicateTask(source.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := app.LoadProjectConversationHistory(copied.ProjectPath)
+	if len(history) != 2 || history[0].Content != "当前对话" || history[1].Content != "当前回答" {
+		t.Fatalf("copy history = %+v, want the live expert transcript", history)
+	}
+}
+
+func TestDuplicateTaskForksPersistedTranscriptWithoutProjectMemory(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	// Expert tasks keep their chat under the shared expert session, so the
+	// task's project-scoped memory stays empty; the persisted tab transcript
+	// is what reopening the task shows.
+	source := app.createTaskRecordWithWorkingDir("专家任务", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		taskSourceExpertPrefix + "paper-review",
+	}, "", true)
+	if source.ProjectPath == "" {
+		t.Fatal("source task was not created")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       "expert-tab",
+		ProjectPath: source.ProjectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"id": "user-1", "role": "user", "content": "帮我审一下这篇论文"},
+			map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "已给出审稿意见"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	copied, err := app.DuplicateTask(source.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := app.LoadProjectConversationHistory(copied.ProjectPath)
+	if len(history) != 2 {
+		t.Fatalf("copy history len = %d, want the persisted transcript: %+v", len(history), history)
+	}
+	if history[0].Content != "帮我审一下这篇论文" || history[1].Content != "已给出审稿意见" {
+		t.Fatalf("copy history = %+v, want copied turns", history)
+	}
+	if history := app.LoadProjectConversationHistory(source.ProjectPath); len(history) != 2 {
+		t.Fatalf("source history was changed: %+v", history)
+	}
+}
+
+func TestCopiedTaskFirstTabAdoptsStagedTranscript(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	source := app.createTaskRecordWithWorkingDir("专家任务", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+	}, "", true)
+	if source.ProjectPath == "" {
+		t.Fatal("source task was not created")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       "source-tab",
+		ProjectPath: source.ProjectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"id": "user-1", "role": "user", "content": "先写个提纲"},
+			map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "提纲已给出"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	if err := persist.SaveConversationViewArchive("source-tab", []interface{}{
+		map[string]interface{}{"id": "older-user", "role": "user", "content": "更早的一轮"},
+	}); err != nil {
+		t.Fatalf("SaveConversationViewArchive: %v", err)
+	}
+	copied, err := app.DuplicateTask(source.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Opening the copy creates a fresh tab session. It must adopt the staged
+	// transcript instead of hiding it as a newer empty session.
+	if notice := app.CreateProjectTabSession("proj-copy-tab", copied.ProjectPath); notice == "" {
+		t.Fatal("CreateProjectTabSession returned an empty notice")
+	}
+	session, err := persist.LoadSession("proj-copy-tab")
+	if err != nil || session == nil {
+		t.Fatalf("LoadSession: %v %v", session, err)
+	}
+	if len(session.Conversation) != 2 {
+		t.Fatalf("adopted conversation = %+v, want the staged turns", session.Conversation)
+	}
+	archive, err := persist.LoadConversationViewArchive("proj-copy-tab")
+	if err != nil || len(archive) != 1 {
+		t.Fatalf("adopted archive = %+v err=%v, want the earlier turn", archive, err)
+	}
+	history := app.LoadProjectConversationHistory(copied.ProjectPath)
+	if len(history) != 2 || history[0].Content != "先写个提纲" {
+		t.Fatalf("history after opening the copy = %+v", history)
 	}
 }
 
@@ -542,6 +672,33 @@ func TestRefreshCloudSidecarsLeavesCanonicalBundleOnCopy(t *testing.T) {
 	bundle, ok := peekCloudWorkspacePendingSidecars("cws_copy05")
 	if !ok || bundle.Session == nil || len(bundle.Session.Conversation) != 1 {
 		t.Fatalf("pending sidecar after copy refresh = ok:%v session:%v", ok, bundle.Session)
+	}
+}
+
+func TestDuplicateTaskWithoutConversationStagesNoTranscript(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	source := app.createTaskRecordWithWorkingDir("空任务", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+	}, "", true)
+	if source.ProjectPath == "" {
+		t.Fatal("source task was not created")
+	}
+
+	copied, err := app.DuplicateTask(source.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	stagedID := taskCopyArchiveTabID(copied.ProjectPath)
+	if session, err := persist.LoadSession(stagedID); err != nil || session != nil {
+		t.Fatalf("staged session = %+v err=%v, want none", session, err)
+	}
+	if archive, err := persist.LoadConversationViewArchive(stagedID); err != nil || len(archive) != 0 {
+		t.Fatalf("staged archive = %+v err=%v, want none", archive, err)
+	}
+	if history := app.LoadProjectConversationHistory(copied.ProjectPath); len(history) != 0 {
+		t.Fatalf("copy history = %+v, want empty", history)
 	}
 }
 
