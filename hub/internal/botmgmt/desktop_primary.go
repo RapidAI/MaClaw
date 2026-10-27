@@ -67,6 +67,23 @@ type BotCrossNote struct {
 	// from AckedAt (the bot's agent took it): a server-side wake acks a
 	// message, but the GUI still shows it when it opens (bot_feed.go).
 	ShownAt string `json:"shown_at,omitempty"`
+	// Assignment protocol (assignments.go; MACLAW_ASSIGNMENTS=off ignores it).
+	// State is a report's structured state; ExpectsReply marks a question
+	// that ends the sender's turn; AnswerTo is the question a message answers.
+	State        string `json:"state,omitempty"`
+	ExpectsReply bool   `json:"expects_reply,omitempty"`
+	AnswerTo     string `json:"answer_to,omitempty"`
+	// Causation: RootID is the first note of the chain, ParentID the note
+	// this one follows from, Hop how many bot messages deep it is.
+	RootID   string `json:"root_id,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
+	Hop      int    `json:"hop,omitempty"`
+	// Review is the main bot's verdict on a result: accepted or returned.
+	Review     string `json:"review,omitempty"`
+	ReviewNote string `json:"review_note,omitempty"`
+	// Reviewer is the peer bot that must check this delegate's result
+	// before the main bot reports it (S4 peer review).
+	Reviewer string `json:"reviewer,omitempty"`
 }
 
 // keyedNote is the stored note this sender already filed under key.
@@ -251,6 +268,14 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 			Order:     strings.TrimSpace(in.Order),
 			CreatedAt: s.now().UTC().Format(time.RFC3339),
 		}
+		proto, err := assignmentProtocol(rec.CrossNotes, BotCrossNote{ParentID: in.ParentID, ReplyTo: in.ReplyTo})
+		if err != nil {
+			return BotCrossNote{}, err
+		}
+		proto.apply(&note)
+		if kind == "delegate" {
+			note.Reviewer = assignmentReviewer(rec, userID, fromBotID, target, firstNonEmptyString(note.Order, note.Text), in.Reviewer)
+		}
 		rec.CrossNotes = append(rec.CrossNotes, note)
 		rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
 		if err := s.save(ctx, tenantID, rec); err != nil {
@@ -357,6 +382,10 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 		out.Duplicate = true
 		return out, false, nil
 	}
+	proto, err := assignmentProtocol(rec.CrossNotes, in)
+	if err != nil {
+		return BotCrossNote{}, false, err
+	}
 	now := s.now()
 	recent := 0
 	for i := len(rec.CrossNotes) - 1; i >= 0; i-- {
@@ -395,6 +424,7 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 		ReplyTo:   strings.TrimSpace(in.ReplyTo),
 		CreatedAt: now.UTC().Format(time.RFC3339),
 	}
+	proto.apply(&note)
 	rec.CrossNotes = append(rec.CrossNotes, note)
 	rec.CrossNotes = capReportNotes(rec.CrossNotes, userID)
 	rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)

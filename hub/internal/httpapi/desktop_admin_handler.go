@@ -551,6 +551,10 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 			Artifacts  []string `json:"artifacts"`
 			ReplyTo    string   `json:"reply_to"`
 			Key        string   `json:"key"`
+			// Assignment protocol (S3): state, expects_reply, answer_to.
+			State        string `json:"state"`
+			ExpectsReply bool   `json:"expects_reply"`
+			AnswerTo     string `json:"answer_to"`
 			// Files are the bytes of shared paths, base64; at most 3 x 8 MB.
 			Files []struct {
 				Name string `json:"name"`
@@ -578,6 +582,7 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 		}
 		note, err := bots.PostBotReportFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, botmgmt.BotCrossNote{
 			Target: in.Target, Topic: in.Kind, Text: in.Text, Artifacts: in.Artifacts, RunID: in.RunID, ReplyTo: in.ReplyTo, Key: in.Key, Files: files,
+			State: in.State, ExpectsReply: in.ExpectsReply, AnswerTo: in.AnswerTo,
 		})
 		if err != nil {
 			switch {
@@ -587,6 +592,8 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 				writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "no such bot")
 			case errors.Is(err, botmgmt.ErrRateLimited):
 				writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", err.Error())
+			case errors.Is(err, botmgmt.ErrHopLimit):
+				writeError(w, http.StatusConflict, "HOP_LIMIT", err.Error())
 			default:
 				writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "notify failed")
 			}
@@ -910,12 +917,14 @@ func PostDesktopDelegateHandler(bots *botmgmt.Service) http.HandlerFunc {
 			Target     string `json:"target"`
 			Text       string `json:"text"`
 			Key        string `json:"key"`
+			ParentID   string `json:"parent_id"`
+			Reviewer   string `json:"reviewer"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid delegate request")
 			return
 		}
-		note, err := bots.PostBotDelegateFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, botmgmt.BotCrossNote{Target: in.Target, Text: in.Text, Order: in.Text, Key: in.Key})
+		note, err := bots.PostBotDelegateFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, botmgmt.BotCrossNote{Target: in.Target, Text: in.Text, Order: in.Text, Key: in.Key, ParentID: in.ParentID, Reviewer: in.Reviewer})
 		if err != nil {
 			team, _ := bots.BotTeam(r.Context(), in.TenantID, in.UserID)
 			names := []string{}
@@ -936,5 +945,81 @@ func PostDesktopDelegateHandler(bots *botmgmt.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, note)
+	}
+}
+
+// PostDesktopAssignmentsHandler POST /api/v1/desktop-services/assignments:
+// a MaClawSrv run lists the assignments its bot gave or got.
+func PostDesktopAssignmentsHandler(bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if bots == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID   string `json:"tenant_id"`
+			UserID     string `json:"user_id"`
+			InstanceID string `json:"instance_id"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid assignments request")
+			return
+		}
+		items, err := bots.ListAssignmentsForInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID)
+		if err != nil {
+			writeAssignmentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// PostDesktopAssignmentReviewHandler POST /api/v1/desktop-services/assignment-review:
+// the main bot (or the named reviewer) accepts or returns a result.
+func PostDesktopAssignmentReviewHandler(bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if bots == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID     string `json:"tenant_id"`
+			UserID       string `json:"user_id"`
+			InstanceID   string `json:"instance_id"`
+			AssignmentID string `json:"assignment_id"`
+			Verdict      string `json:"verdict"`
+			Note         string `json:"note"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid review request")
+			return
+		}
+		a, err := bots.ReviewAssignmentFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.AssignmentID, in.Verdict, in.Note)
+		if err != nil {
+			writeAssignmentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, a)
+	}
+}
+
+func writeAssignmentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, botmgmt.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
+	case errors.Is(err, botmgmt.ErrNotFound), errors.Is(err, botmgmt.ErrNoSuchBot):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such bot or assignment")
+	case errors.Is(err, botmgmt.ErrNotPrimary):
+		writeError(w, http.StatusForbidden, "NOT_PRIMARY", err.Error())
+	case errors.Is(err, botmgmt.ErrHopLimit):
+		writeError(w, http.StatusConflict, "HOP_LIMIT", err.Error())
+	default:
+		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "assignment request failed")
 	}
 }

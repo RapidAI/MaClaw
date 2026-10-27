@@ -47,6 +47,12 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 		text = string(r[:desktopNotifyTextMax])
 	}
 	kind := strings.ToLower(strings.TrimSpace(desktopArg(args, "kind")))
+	state := strings.ToLower(strings.TrimSpace(desktopArg(args, "state")))
+	if k, ok := desktopReportStateKinds[state]; ok {
+		kind = k
+	} else {
+		state = ""
+	}
 	if !desktopNotifyKinds[kind] {
 		kind = "info"
 	}
@@ -93,6 +99,16 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 		"artifacts":   artifacts,
 		"reply_to":    strings.TrimSpace(desktopArg(args, "reply_to")),
 	}
+	expects := desktopArgBool(args, "expects_reply") || state == "waiting_human"
+	if state != "" {
+		body["state"] = state
+	}
+	if expects {
+		body["expects_reply"] = true
+	}
+	if a := strings.TrimSpace(desktopArg(args, "answer_to")); a != "" {
+		body["answer_to"] = a
+	}
 	// Shared paths travel with the message as bytes, so the receiver has the
 	// file now instead of when this run ends. Unreadable paths stay names.
 	// Read from this bot's own desktop: the same scope its file tools use
@@ -132,7 +148,19 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 	if len(skipped) > 0 {
 		return "Sent to the main bot, but these files were not attached (only their names went): " + strings.Join(skipped, "; ") + ". Fix the path or share it again when it is readable; otherwise continue the task.", nil
 	}
+	if expects {
+		return "Sent. You asked a question and expect an answer: end this turn now with a short final reply. The answer arrives as a new message and wakes you.", nil
+	}
 	return "Sent to the main bot. It sees it now, or right after its current turn. Do not wait for an answer here; continue the task (an answer arrives as a new message).", nil
+}
+
+// desktopReportStateKinds maps action=report states to the mail kind.
+var desktopReportStateKinds = map[string]string{
+	"progress":      "progress",
+	"completed":     "done",
+	"blocked":       "blocked",
+	"failed":        "blocked",
+	"waiting_human": "question",
 }
 
 // desktopRemoteInbox is set by tests; production posts to Hub.
@@ -266,6 +294,12 @@ func desktopDelegate(ctx context.Context, request agentruntime.TurnRequest, args
 		"target":      target,
 		"text":        text,
 		"key":         desktopMessageKey(runKey, "delegate", target, text),
+	}
+	if v := strings.TrimSpace(desktopArg(args, "parent_id")); v != "" {
+		body["parent_id"] = v
+	}
+	if v := strings.TrimSpace(desktopArg(args, "reviewer")); v != "" {
+		body["reviewer"] = v
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

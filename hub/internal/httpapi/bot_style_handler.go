@@ -53,3 +53,23 @@ func BotStyleHandler(svc *botmgmt.Service, identity botAuthenticator) http.Handl
 		writeJSON(w, http.StatusOK, view)
 	}
 }
+
+// BotAssignmentsHandler GET /api/v1/bots/assignments: the user's
+// assignment board (who gave what to whom, state, review).
+func BotAssignmentsHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		items, err := svc.ListAssignments(r.Context(), principal.TenantID, principal.UserID)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}

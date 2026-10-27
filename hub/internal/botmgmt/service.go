@@ -43,6 +43,8 @@ var (
 	ErrNoSuchBot = errors.New("没有这个 Bot。")
 	// ErrRateLimited is a bot sending more reports than the hourly cap.
 	ErrRateLimited = errors.New("too many reports from this bot; wait a little")
+	// ErrHopLimit stops a chain of bot messages that went too deep.
+	ErrHopLimit = errors.New("this conversation between bots is too long; tell the person instead")
 	// ErrAdminSecretMissing is ErrNotConfigured for the MaClawSrv admin secret.
 	// It is a separate sentinel so callers do not have to match on the message
 	// text to explain what is missing.

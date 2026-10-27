@@ -40,9 +40,9 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "check_inbox", "delegate", "shop_readback", "shop_compare_offers", "proxy_mode"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode"}
 
-var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "check_inbox", "shop_readback", "shop_compare_offers", "proxy_mode"}
+var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode"}
 
 func desktopActionAllowed(action string) bool {
 	for _, allowed := range desktopExecuteActions {
@@ -119,7 +119,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			desktopAXFirstPrompt() +
 			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
 			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back. " +
-			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge. action=check_inbox reads new messages other bots left for you on Hub (answers to your question, new instructions); messages that arrived before this turn are already in the instructions. action=delegate with target (a teammate bot's name) and message hands a task to that bot (main bot only); Hub starts it and its result comes back to your mailbox.",
+			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge. action=check_inbox reads new messages other bots left for you on Hub (answers to your question, new instructions); messages that arrived before this turn are already in the instructions. action=delegate with target (a teammate bot's name) and message hands a task to that bot (main bot only); Hub starts it and its result comes back to your mailbox." + desktopAssignmentToolHint(),
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -128,7 +128,14 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"message":         map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":          map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id."},
 				"paths":           map[string]any{"type": "array", "description": "notify_main: desktop file paths you hand over.", "items": map[string]any{"type": "string"}},
-				"reply_to":        map[string]any{"type": "string", "description": "notify_main: id of the message you answer."},
+				"reply_to":        map[string]any{"type": "string", "description": "notify_main/report: id of the message (or assignment) you answer."},
+				"state":           map[string]any{"type": "string", "description": "report: progress, completed, blocked, failed or waiting_human.", "enum": []string{"progress", "completed", "blocked", "failed", "waiting_human"}},
+				"expects_reply":   map[string]any{"type": "boolean", "description": "report: true when you need an answer; then end the turn."},
+				"answer_to":       map[string]any{"type": "string", "description": "report: id of the question you answer."},
+				"assignment_id":   map[string]any{"type": "string", "description": "accept_result/return_result: the assignment id from list_assignments."},
+				"note":            map[string]any{"type": "string", "description": "return_result: what to fix. accept_result: optional."},
+				"parent_id":       map[string]any{"type": "string", "description": "delegate: the assignment this one follows from."},
+				"reviewer":        map[string]any{"type": "string", "description": "delegate: a teammate bot that reviews the result."},
 				"reason":          map[string]any{"type": "string", "description": "request_takeover: one short sentence for the person, what they need to do on this desktop (log in, enter the 2FA code, solve the captcha)."},
 				"path":            map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file. action=deliver attaches that existing file, such as /home/desktop/Desktop/北京天气.pdf. /home/desktop/Desktop/a.c and ~/Desktop/a.c are the same folder."},
 				"old_string":      map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
@@ -212,8 +219,11 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	if err != nil {
 		return "", err
 	}
-	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "notify_main") {
+	if a := strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))); a == "notify_main" || a == "report" {
 		return desktopNotifyMain(ctx, request, args)
+	}
+	if a := strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))); a == "list_assignments" || a == "accept_result" || a == "return_result" {
+		return desktopAssignmentAction(ctx, request, a, args)
 	}
 	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "delegate") {
 		return desktopDelegate(ctx, request, args)

@@ -3,6 +3,7 @@ package botmgmt
 import (
 	"context"
 	"errors"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -208,10 +209,58 @@ const dispatchWakePrompt = "你的 Hub 信箱里有其他机器人发来的新�
 // dispatchOnce runs at most one job. It reports true when the desktop was
 // busy and the pass must be retried.
 func (s *Service) dispatchOnce(tenantID, userID string) bool {
-	job, ok := s.pickDispatchJob(tenantID, userID)
-	if !ok {
+	if !dispatchParallel() {
+		return s.dispatchJobOnce(tenantID, userID, nil)
+	}
+	// Parallel: each bot has its own desktop, so a busy bot only skips its
+	// own jobs for this pass; the others still start now.
+	skip := map[string]bool{}
+	busy := false
+	for i := 0; i < dispatchParallelMax; i++ {
+		started, wasBusy, bot := s.dispatchJobOnceBot(tenantID, userID, skip)
+		if wasBusy {
+			busy = true
+			skip[bot] = true
+			continue
+		}
+		if !started {
+			break
+		}
+		skip[bot] = true // one start per bot per pass
+	}
+	return busy
+}
+
+// dispatchParallelMax bounds the starts of one pass.
+const dispatchParallelMax = 8
+
+// dispatchParallel: MACLAW_DISPATCH_PARALLEL=off restores one job per pass.
+func dispatchParallel() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_DISPATCH_PARALLEL"))) {
+	case "off", "0", "false", "no":
 		return false
 	}
+	return assignmentsEnabled()
+}
+
+func (s *Service) dispatchJobOnce(tenantID, userID string, skip map[string]bool) bool {
+	_, busy, _ := s.dispatchJobOnceBot(tenantID, userID, skip)
+	return busy
+}
+
+// dispatchJobOnceBot runs at most one job, skipping bots in skip. It
+// reports whether a job was started, whether the desktop was busy, and
+// the job's bot.
+func (s *Service) dispatchJobOnceBot(tenantID, userID string, skip map[string]bool) (bool, bool, string) {
+	job, ok := s.pickDispatchJob(tenantID, userID, skip)
+	if !ok {
+		return false, false, ""
+	}
+	started, busy := s.runDispatchJob(tenantID, userID, job)
+	return started, busy, job.botID
+}
+
+func (s *Service) runDispatchJob(tenantID, userID string, job dispatchJob) (bool, bool) {
 	admit := s.dispatchAdmit
 	if admit == nil {
 		admit = s.AdmitDesktopMessage
@@ -221,14 +270,14 @@ func (s *Service) dispatchOnce(tenantID, userID string) bool {
 	cancel()
 	if errors.Is(err, ErrDesktopBusy) {
 		s.undoDispatchMark(tenantID, userID, job)
-		return true
+		return false, true
 	}
 	traceBot(job.botID, "hub_dispatch_"+job.kind, err, "key", job.key, "run", adm.RunID)
 	if job.kind != "delegate" {
 		if err == nil && strings.TrimSpace(adm.RunID) != "" {
 			s.markWakeRun(tenantID, userID, job.noteIDs, strings.TrimSpace(adm.RunID))
 		}
-		return false
+		return err == nil, false
 	}
 	noteID := job.noteIDs[0]
 	if err != nil {
@@ -238,10 +287,10 @@ func (s *Service) dispatchOnce(tenantID, userID string) bool {
 		s.dispatch.mu.Unlock()
 		if n < delegateTries {
 			s.undoDispatchMark(tenantID, userID, job)
-			return true
+			return false, true
 		}
 		s.reportDelegateRunEnd(tenantID, userID, job.botID, s.markDelegateRun(tenantID, userID, job.botID, noteID, job.key), "failed", Reply{}, err)
-		return false
+		return false, false
 	}
 	runID := strings.TrimSpace(adm.RunID)
 	if runID == "" {
@@ -251,7 +300,7 @@ func (s *Service) dispatchOnce(tenantID, userID string) bool {
 	if adm.Settled {
 		s.reportDelegateRunEnd(tenantID, userID, job.botID, runID, "succeeded", adm.Reply, nil)
 	}
-	return false
+	return true, false
 }
 
 func (s *Service) markDelegateRun(tenantID, userID, botID, noteID, runID string) string {
@@ -299,7 +348,7 @@ func (s *Service) undoDispatchMark(tenantID, userID string, job dispatchJob) {
 
 // pickDispatchJob chooses and marks the next job under s.mu: the oldest
 // unstarted delegate first, then a wake for a bot with unread mail.
-func (s *Service) pickDispatchJob(tenantID, userID string) (dispatchJob, bool) {
+func (s *Service) pickDispatchJob(tenantID, userID string, skip map[string]bool) (dispatchJob, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	userID = strings.TrimSpace(userID)
@@ -331,7 +380,7 @@ func (s *Service) pickDispatchJob(tenantID, userID string) (dispatchJob, bool) {
 		}
 		// Any claim (Hub's or a GUI's) is left alone while its admit may
 		// still be in flight.
-		if dispatchClaimFresh(n.StartedAt, now) || !botOwned(rec.Bots, userID, n.Target) {
+		if skip[n.Target] || dispatchClaimFresh(n.StartedAt, now) || !botOwned(rec.Bots, userID, n.Target) {
 			continue
 		}
 		if age, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil && now.Sub(age) > dispatchMaxAge {
@@ -367,6 +416,9 @@ func (s *Service) pickDispatchJob(tenantID, userID string) (dispatchJob, bool) {
 		byBot[n.Target] = append(byBot[n.Target], i)
 	}
 	for _, bot := range order {
+		if skip[bot] {
+			continue
+		}
 		if bot == primary && s.guiReading(tenantID, userID, bot) {
 			continue
 		}
