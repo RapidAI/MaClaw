@@ -171,6 +171,11 @@ import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
 import { BotRailIcon } from '../layout/SidebarNavIcons';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+import { useBotCollab } from './collab/useBotCollab';
+import { BotCollabStatus } from './collab/BotCollabStatus';
+import { BotSaidInline } from './collab/BotSaidInline';
+import { BotRoomsDialog } from './collab/BotRoomsDialog';
+import { saidForChat } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
 
 
@@ -1793,6 +1798,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // bot being edited so the row never mutates into a form.
     const [editBot, setEditBot] = useState<DesktopBot | null>(null);
     const [styleBot, setStyleBot] = useState<DesktopBot | null>(null);
+    const [roomsOpen, setRoomsOpen] = useState(false);
+    const collab = useBotCollab(true);
     const [editSaving, setEditSaving] = useState(false);
     const [editNotice, setEditNotice] = useState('');
     const [createOpen, setCreateOpen] = useState(false);
@@ -6369,7 +6376,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <path d="M6 3.5 11 8l-5 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                                 </svg>
                             </button>
+                            {collab.features.rooms ? (
+                                <button type="button" className="btn-secondary desktop-bot-chat__rooms-btn" data-testid="bot-rooms-open" onClick={() => setRoomsOpen(true)}>群聊</button>
+                            ) : null}
                         </header>
+                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} /> : null}
                         <div
                             ref={logRef}
                             className="desktop-bot-chat__log"
@@ -6546,6 +6557,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <p className="desktop-bot-chat__entry">
                                     <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-return-control" onClick={() => resumeFromScreenHandoff(selected.id)}>{text.returnControl}</button>
                                 </p>
+                            ) : null}
+                            {collab.features.say ? (
+                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary)} bots={bots} lookOf={lookOf} />
                             ) : null}
                             </div>
                         </div>
@@ -6923,6 +6937,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     onSubmit={(title, description, look) => { void submitCreate(title, description, look); }}
                 />
             ) : null}
+            {roomsOpen && collab.features.rooms ? <BotRoomsDialog bots={bots} onClose={() => setRoomsOpen(false)} /> : null}
             {styleBot ? <BotStyleDialog key={styleBot.id} botId={styleBot.id} botTitle={styleBot.title} lang={lang} onClose={() => setStyleBot(null)} /> : null}
             {editBot ? (
                 <BotEditDialog

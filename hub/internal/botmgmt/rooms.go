@@ -346,3 +346,14 @@ func RoomAnsweredBy(notes []BotCrossNote, userID, target string) []string {
 	}
 	return out
 }
+
+// CollabFeatures reports which collaboration parts are on, so clients hide
+// the screens of the parts that are off.
+func CollabFeatures() map[string]bool {
+	return map[string]bool{
+		"assignments": assignmentsEnabled(),
+		"peer_review": peerReviewAuto(),
+		"say":         botSayEnabled(),
+		"rooms":       botRoomsEnabled(),
+	}
+}

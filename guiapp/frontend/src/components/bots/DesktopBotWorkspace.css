@@ -3197,3 +3197,37 @@
     background: color-mix(in srgb, var(--theme-danger, #d92d20) 42%, var(--theme-surface, #fff));
     color: var(--theme-on-primary, #fff);
 }
+
+/* Bot collaboration: status row, prompts, said bubbles, rooms */
+.desktop-bot-chat__rooms-btn { margin-left: auto; align-self: center; }
+.bot-collab { display: flex; flex-direction: column; gap: 6px; padding: 6px 16px; border-bottom: 1px solid var(--border-color, rgba(127,127,127,.2)); font-size: 12px; }
+.bot-collab__row { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 2px 0; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.bot-collab__row > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bot-collab__row > i { width: 7px; height: 7px; border-radius: 50%; background: #9aa0a6; flex: none; }
+.bot-collab__row > i.is-working { background: #34a853; }
+.bot-collab__row > small { opacity: .7; }
+.bot-collab__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; }
+.bot-collab__list li { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 6px 8px; border-radius: 8px; background: rgba(127,127,127,.08); }
+.bot-collab__list small { width: 100%; opacity: .8; }
+.bot-collab__state { padding: 0 6px; border-radius: 6px; background: rgba(127,127,127,.18); }
+.bot-collab__state--completed { background: rgba(52,168,83,.18); }
+.bot-collab__state--blocked, .bot-collab__state--failed { background: rgba(234,67,53,.18); }
+.bot-collab__state--waiting_human, .bot-collab__state--needs_login, .bot-collab__state--held { background: rgba(251,188,4,.25); }
+.bot-collab__prompt { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: rgba(251,188,4,.16); border: 1px solid rgba(251,188,4,.5); }
+.bot-said__who { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; margin-bottom: 2px; }
+.bot-said__who time { opacity: .6; }
+.bot-rooms-dialog { width: min(560px, 92vw); }
+.bot-rooms__list, .bot-rooms__members { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.bot-rooms__list li, .bot-rooms__members li { display: flex; align-items: center; gap: 8px; }
+.bot-rooms__open { flex: 1; display: flex; flex-direction: column; align-items: flex-start; background: none; border: 1px solid rgba(127,127,127,.25); border-radius: 8px; padding: 6px 10px; color: inherit; cursor: pointer; text-align: left; }
+.bot-rooms__members label { flex: 1; }
+.bot-rooms__hint { font-size: 12px; opacity: .75; }
+.bot-rooms__editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.bot-room-chat__log { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; padding: 4px; }
+.bot-room-chat__msg { display: flex; flex-direction: column; padding: 6px 10px; border-radius: 8px; background: rgba(127,127,127,.08); max-width: 85%; }
+.bot-room-chat__msg.is-me { align-self: flex-end; background: rgba(66,133,244,.14); }
+.bot-room-chat__answered { font-size: 12px; opacity: .75; min-height: 1em; margin: 4px 0; }
+.bot-room-chat__mentions { list-style: none; margin: 0 0 4px; padding: 4px; border: 1px solid rgba(127,127,127,.25); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+.bot-room-chat__mentions button { background: none; border: 0; color: inherit; cursor: pointer; padding: 2px 6px; }
+.bot-room-chat__form { display: flex; gap: 8px; align-items: flex-end; }
+.bot-room-chat__form textarea { flex: 1; resize: vertical; }

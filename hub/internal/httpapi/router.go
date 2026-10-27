@@ -486,6 +486,7 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/v1/bots/{id}/appearance", PutBotAppearanceHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/assignments", BotAssignmentsHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/said", BotSaidHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/collab-features", BotCollabFeaturesHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bot-rooms", BotRoomsHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bot-rooms", BotRoomsHandler(botSvc, identity))
 	mux.HandleFunc("PUT /api/v1/bot-rooms/{rid}", BotRoomsHandler(botSvc, identity))

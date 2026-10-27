@@ -3093,3 +3093,17 @@ export function GetDesktopBotStyle(arg1:string):Promise<{bot_id:string,current:{
 export function SaveDesktopBotStyle(arg1:string,arg2:string,arg3:string,arg4:Record<string, string>):Promise<{bot_id:string,current:{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string},history?:Array<{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string}>,default_soul:string,default_parts:Record<string,string>,base_changed:boolean,enabled:boolean}>;
 
 export function RollbackDesktopBotStyle(arg1:string,arg2:number):Promise<{bot_id:string,current:{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string},history?:Array<{version:number,soul?:string,memory?:string,parts?:Record<string,string>,base_hash?:string,updated_at?:string}>,default_soul:string,default_parts:Record<string,string>,base_changed:boolean,enabled:boolean}>;
+
+export function GetBotCollabFeatures():Promise<{assignments:boolean,peer_review:boolean,say:boolean,rooms:boolean}>;
+
+export function ListBotSaid(arg1:string):Promise<Array<{id:string,from:string,target:string,kind:string,text:string,created_at:string}>>;
+
+export function ListBotAssignments():Promise<Array<{id:string,owner_bot:string,target_bot:string,task:string,state:string,parent_id?:string,created_at:string,last_report?:string,artifacts?:Array<string>,open_question?:string,review?:string,review_note?:string,reviewer?:string}>>;
+
+export function ListBotRooms():Promise<Array<{id:string,name:string,members:Array<string>,attention?:Record<string,string>,created_at:string}>>;
+
+export function SaveBotRoom(arg1:string,arg2:string,arg3:Array<string>,arg4:Record<string, string>):Promise<{id:string,name:string,members:Array<string>,attention?:Record<string,string>,created_at:string}>;
+
+export function DeleteBotRoom(arg1:string):Promise<void>;
+
+export function PostBotRoomMessage(arg1:string,arg2:string):Promise<{message:{id:string,from:string,target:string,kind:string,text:string,created_at:string},woken:Array<string>}>;

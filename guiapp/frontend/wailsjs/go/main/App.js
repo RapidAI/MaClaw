@@ -6239,3 +6239,31 @@ export function SaveDesktopBotStyle(arg1, arg2, arg3, arg4) {
 export function RollbackDesktopBotStyle(arg1, arg2) {
   return window['go']['main']['App']['RollbackDesktopBotStyle'](arg1, arg2);
 }
+
+export function GetBotCollabFeatures() {
+  return window['go']['main']['App']['GetBotCollabFeatures']();
+}
+
+export function ListBotSaid(arg1) {
+  return window['go']['main']['App']['ListBotSaid'](arg1);
+}
+
+export function ListBotAssignments() {
+  return window['go']['main']['App']['ListBotAssignments']();
+}
+
+export function ListBotRooms() {
+  return window['go']['main']['App']['ListBotRooms']();
+}
+
+export function SaveBotRoom(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveBotRoom'](arg1, arg2, arg3, arg4);
+}
+
+export function DeleteBotRoom(arg1) {
+  return window['go']['main']['App']['DeleteBotRoom'](arg1);
+}
+
+export function PostBotRoomMessage(arg1, arg2) {
+  return window['go']['main']['App']['PostBotRoomMessage'](arg1, arg2);
+}

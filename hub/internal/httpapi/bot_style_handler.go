@@ -153,3 +153,14 @@ func BotRoomsHandler(svc *botmgmt.Service, identity botAuthenticator) http.Handl
 		writeJSON(w, http.StatusOK, out)
 	}
 }
+
+// BotCollabFeaturesHandler GET /api/v1/bots/collab-features: which
+// collaboration parts (assignments, peer_review, say, rooms) are on.
+func BotCollabFeaturesHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := botMachine(w, r, identity); !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, botmgmt.CollabFeatures())
+	}
+}
