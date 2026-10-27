@@ -202,7 +202,10 @@ void buddy_font_draw(uint16_t *fb, int fw, int fh, int x, int y, const char *tex
             fill_rect(fb, fw, fh, x + pen, y, 5 * scale, 7 * scale, bg);
             for (int row = 0; row < 7; ++row) {
                 for (int col = 0; col < 5; ++col) {
-                    if (rows[col] & (1u << (6 - row))) {
+                    // The 5x7 table stores one byte per column with bit 0 as
+                    // the TOP row (same convention as iot-agentos). Using
+                    // 1 << (6-row) here flipped every ASCII glyph vertically.
+                    if (rows[col] & (1u << row)) {
                         fill_rect(fb, fw, fh, x + pen + col * scale, y + row * scale, scale,
                                   scale, fg);
                     }

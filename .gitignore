@@ -387,3 +387,6 @@ mobile/maclaw_mobile/.idea/
 # 部署/积分任务构建产物（带时间戳的临时目录）
 /build/deploy-*/
 /build/usercredits-*/
+
+# Host-side firmware test binaries (built next to their .c sources).
+buddy/firmware/tools/host_tests/*.exe

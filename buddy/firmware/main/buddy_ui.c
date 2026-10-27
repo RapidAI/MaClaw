@@ -178,39 +178,28 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
     fill_rect(fb, 0, 0, W, H, COL_BG);
     const int active = active_task_index(v, now_ms);
 
-    // Header.
-    draw_text(fb, 40, 22, "MaClaw", COL_MUTED, COL_BG, 2, 120);
-    if (!v->online) {
-        draw_text(fb, 246, 22, "离线", COL_DANGER, COL_BG, 1, 90);
-    } else if (v->stale) {
-        draw_text(fb, 240, 22, "数据陈旧", COL_WARN, COL_BG, 1, 96);
-    }
+    // Header stays inside the circle: the top corners are bezel, not pixels.
+    draw_centered(fb, 36, "MaClaw", COL_MUTED, COL_BG, 2);
 
-    // Three counters.
-    const int label_x = 56;
-    const int value_right = 300;
-    draw_text(fb, label_x, 70, "总任务", COL_TEXT, COL_BG, 1, 120);
-    draw_value_right(fb, value_right, 58, v->counts.total, COL_TEXT, COL_BG, 4);
+    // Three counters. The 360px panel's visible aperture is ~300px, so keep
+    // content inside r=150 from (180,180): values end at x=270, labels at x=88.
+    const int label_x = 88;
+    const int value_right = 266;
+    draw_text(fb, label_x, 74, "总任务", COL_TEXT, COL_BG, 1, 120);
+    draw_value_right(fb, value_right, 62, v->counts.total, COL_TEXT, COL_BG, 4);
 
-    draw_text(fb, label_x, 122, "进行中", COL_ACCENT, COL_BG, 1, 120);
-    draw_value_right(fb, value_right, 110, v->counts.in_progress, COL_ACCENT, COL_BG, 4);
+    draw_text(fb, label_x, 126, "进行中", COL_ACCENT, COL_BG, 1, 120);
+    draw_value_right(fb, value_right, 114, v->counts.in_progress, COL_ACCENT, COL_BG, 4);
 
-    draw_text(fb, label_x, 174, "已完成", COL_SUCCESS, COL_BG, 1, 120);
-    draw_value_right(fb, value_right, 162, v->counts.done, COL_SUCCESS, COL_BG, 4);
+    draw_text(fb, label_x, 178, "已完成", COL_SUCCESS, COL_BG, 1, 120);
+    draw_value_right(fb, value_right, 166, v->counts.done, COL_SUCCESS, COL_BG, 4);
 
-    if (v->counts.failed > 0) {
-        char buf[24];
-        // The bucket covers failed, cancelled and blocked rows, so "异常" is
-        // accurate where "失败" would over-claim.
-        snprintf(buf, sizeof(buf), "异常 %d", v->counts.failed);
-        draw_text(fb, 236, 186, buf, COL_DANGER, COL_BG, 1, 100);
-    }
+    hline(fb, 90, 270, 204, COL_PANEL);
 
-    hline(fb, 50, 310, 206, COL_PANEL);
-
-    // Current task title, two lines.
-    const int text_x = 38;
-    const int text_w = W - 2 * text_x;
+    // Current task title, two lines. 240px wide keeps the second line inside
+    // the lower chord.
+    const int text_x = 60;
+    const int text_w = 240;
     char line1[BUDDY_TITLE_BYTES + 8];
     char line2[BUDDY_TITLE_BYTES + 8];
     line1[0] = '\0';
@@ -224,13 +213,13 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
     } else {
         strlcpy(line1, "当前没有进行中的任务", sizeof(line1));
     }
-    draw_text(fb, text_x, 216, line1, COL_TEXT, COL_BG, 1, text_w);
-    if (line2[0]) draw_text(fb, text_x, 244, line2, COL_TEXT, COL_BG, 1, text_w);
+    draw_text(fb, text_x, 210, line1, COL_TEXT, COL_BG, 1, text_w);
+    if (line2[0]) draw_text(fb, text_x, 238, line2, COL_TEXT, COL_BG, 1, text_w);
 
-    // Progress bar.
-    const int bar_x = 60;
+    // Progress bar, narrowed so its bottom corners stay inside the aperture.
+    const int bar_x = 108;
     const int bar_y = 296;
-    const int bar_w = 240;
+    const int bar_w = 144;
     const int bar_h = 12;
     fill_rect(fb, bar_x, bar_y, bar_w, bar_h, COL_PANEL);
     float progress = v->current_count > 0 ? v->current[active].progress : -1;
@@ -241,19 +230,41 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
         fill_rect(fb, bar_x, bar_y, fill_w, bar_h, COL_ACCENT);
         char pct[8];
         snprintf(pct, sizeof(pct), "%d%%", (int)(progress * 100.0f + 0.5f));
-        draw_text(fb, 30, 318, pct, COL_MUTED, COL_BG, 2, 60);
+        draw_centered(fb, 310, pct, COL_MUTED, COL_BG, 2);
     } else {
         // Indeterminate: a moving bright block.
-        const int block = 36;
+        const int block = 30;
         const int travel = bar_w - block;
         const int pos = (int)((now_ms / 4) % (travel > 0 ? travel : 1));
         fill_rect(fb, bar_x + pos, bar_y, block, bar_h, COL_MUTED);
     }
-    if (v->counts.pending > 0) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "待处理 %d", v->counts.pending);
-        draw_text(fb, 240, 318, buf, COL_WARN, COL_BG, 1, 110);
+
+    // One status line at the bottom. It combines at most two short pieces so
+    // it stays inside the circle; stale is only shown when nothing else is.
+    char tail[64];
+    tail[0] = '\0';
+    uint16_t tail_color = COL_MUTED;
+    if (!v->online) {
+        strlcpy(tail, "未连接", sizeof(tail));
+        tail_color = COL_MUTED;
+    } else {
+        if (v->counts.failed > 0) {
+            snprintf(tail, sizeof(tail), "异常 %d", v->counts.failed);
+            tail_color = COL_DANGER;
+        }
+        if (v->counts.pending > 0) {
+            char piece[24];
+            snprintf(piece, sizeof(piece), "待处理 %d", v->counts.pending);
+            if (tail[0]) strlcat(tail, " · ", sizeof(tail));
+            strlcat(tail, piece, sizeof(tail));
+            if (v->counts.failed == 0) tail_color = COL_WARN;
+        }
+        if (!tail[0] && v->stale) {
+            strlcpy(tail, "数据陈旧", sizeof(tail));
+            tail_color = COL_WARN;
+        }
     }
+    if (tail[0]) draw_centered(fb, 268, tail, tail_color, COL_BG, 1);
 }
 
 static void draw_pet(uint16_t *fb, int cx, int cy, int64_t now_ms) {
@@ -302,41 +313,45 @@ static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_m
     } else {
         strlcpy(date_line, "MaClaw Buddy", sizeof(date_line));
     }
-    draw_centered(fb, 26, date_line, COL_TEXT, COL_BG, 1);
+    draw_centered(fb, 48, date_line, COL_TEXT, COL_BG, 1);
 
-    draw_pet(fb, W / 2, 150, now_ms);
+    draw_pet(fb, W / 2, 146, now_ms);
 
     if (v->has_weather) {
-        draw_centered(fb, 246, v->weather_summary, COL_TEXT, COL_BG, 1);
+        char summary[64];
+        fit_text(summary, sizeof(summary), v->weather_summary, 1, 230, true);
+        draw_centered(fb, 208, summary, COL_TEXT, COL_BG, 1);
         char temp[24];
         snprintf(temp, sizeof(temp), "%d", v->weather_temp);
         const int temp_w = buddy_font_width(temp, 3, W);
         const int cx = W / 2;
         const int temp_x = cx - (temp_w + 22) / 2;
-        draw_text(fb, temp_x, 274, temp, COL_ACCENT, COL_BG, 3, 120);
+        draw_text(fb, temp_x, 236, temp, COL_ACCENT, COL_BG, 3, 120);
         // Draw the degree ring and C with primitives so the unit matches the
         // digit height; a 24px glyph next to 21px digits looked oversized.
-        fill_circle(fb, temp_x + temp_w + 5, 280, 3, COL_BG);
-        fill_ring(fb, temp_x + temp_w + 5, 280, 3, 2, COL_ACCENT);
-        draw_text(fb, temp_x + temp_w + 10, 276, "C", COL_ACCENT, COL_BG, 2, 24);
+        fill_circle(fb, temp_x + temp_w + 5, 242, 3, COL_BG);
+        fill_ring(fb, temp_x + temp_w + 5, 242, 3, 2, COL_ACCENT);
+        draw_text(fb, temp_x + temp_w + 10, 238, "C", COL_ACCENT, COL_BG, 2, 24);
         if (v->weather_stale) {
-            draw_text(fb, 250, 250, "旧", COL_WARN, COL_BG, 1, 40);
+            draw_text(fb, 222, 242, "旧", COL_WARN, COL_BG, 1, 40);
         }
     } else {
-        draw_centered(fb, 268, "正在获取天气", COL_MUTED, COL_BG, 1);
+        draw_centered(fb, 240, "正在获取天气", COL_MUTED, COL_BG, 1);
     }
 
     if (v->has_weather && v->weather_location[0]) {
-        draw_centered(fb, 312, v->weather_location, COL_MUTED, COL_BG, 1);
+        // Keep the location inside the circle's lower chord.
+        char loc[64];
+        fit_text(loc, sizeof(loc), v->weather_location, 1, 190, true);
+        draw_centered(fb, 262, loc, COL_MUTED, COL_BG, 1);
     }
 
     if (!v->online) {
-        const char *label = "未连接 MaClaw";
-        draw_centered(fb, 336, label, COL_MUTED, COL_BG, 1);
+        draw_centered(fb, 292, "未连接", COL_MUTED, COL_BG, 1);
     } else if (v->counts.pending > 0) {
         char buf[32];
         snprintf(buf, sizeof(buf), "待处理 %d", v->counts.pending);
-        draw_centered(fb, 336, buf, COL_WARN, COL_BG, 1);
+        draw_centered(fb, 292, buf, COL_WARN, COL_BG, 1);
     }
 }
 
