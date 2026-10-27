@@ -63,6 +63,17 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if spec.EditURL == "" {
 		spec.EditURL = ts.EditURL
 	}
+	expURL := spec.EditorURL
+	if expURL == "" {
+		expURL = session.CurrentURL()
+	}
+	site := siteExpKey(expURL)
+	if site == "" && ts.Profile != nil {
+		site = ts.Profile.ID
+	}
+	exp := siteExpLoad(site)
+	// The site's verified experience first; the profile fills what it lacks.
+	expUsed := siteExpApply(exp, &spec)
 	prof := ts.Profile
 	if prof == nil {
 		prof = browser.ProfileForURL(spec.EditorURL)
@@ -89,9 +100,18 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	}
 	rep, err := browser.RunPublish(session.PublishDriver(), spec)
 	rec := desktopRecordPublish(scope, spec, rep, err)
+	siteExpRecord(scope, site, expUsed, spec, rep, err)
 	out := ""
 	if rep != nil {
 		out = rep.String()
+		if rep.State == browser.PublishLive {
+			siteExpClearBlocks(scope, site)
+		}
+	}
+	if !rec.posted() {
+		if bt := siteExpBlockText(siteExpBlocks(scope, site)); bt != "" {
+			out += "\n" + bt
+		}
 	}
 	if rec.posted() {
 		return out + "\n" + desktopPublishRecordText(rec), nil

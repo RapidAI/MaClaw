@@ -47,6 +47,9 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "site-experience" {
+		os.Exit(siteExpMain(os.Args[2:], os.Stdout))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "runs" {
 		os.Exit(desktopRunsMain(os.Args[2:], os.Stdout))
 	}
