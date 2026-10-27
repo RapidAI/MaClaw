@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -172,8 +173,36 @@ func readRepairDraftFile(path string) (cskill.RepairDraft, error) {
 	return draft, nil
 }
 
-// toolListSkillRepairDrafts lists pending repair drafts for file-backed skills.
-// Args: name (optional skill name filter).
+type repairDraftCacheEntry struct {
+	info         os.FileInfo
+	size         int64
+	modTimeNanos int64
+	draft        cskill.RepairDraft
+	err          error
+}
+
+var repairDraftReadCache sync.Map
+
+func readRepairDraftFileCached(path string, info os.FileInfo) (cskill.RepairDraft, error) {
+	if cached, ok := repairDraftReadCache.Load(path); ok {
+		entry := cached.(repairDraftCacheEntry)
+		if entry.size == info.Size() && entry.modTimeNanos == info.ModTime().UnixNano() && os.SameFile(entry.info, info) {
+			return entry.draft, entry.err
+		}
+	}
+	draft, err := readRepairDraftFile(path)
+	repairDraftReadCache.Store(path, repairDraftCacheEntry{
+		info:         info,
+		size:         info.Size(),
+		modTimeNanos: info.ModTime().UnixNano(),
+		draft:        draft,
+		err:          err,
+	})
+	return draft, err
+}
+
+// toolListSkillRepairDrafts lists pending repair-draft summaries for
+// file-backed skills. Args: name (optional skill name filter).
 func (h *IMMessageHandler) toolListSkillRepairDrafts(args map[string]interface{}) string {
 	if h == nil || h.app == nil {
 		return `{"ok":false,"error":"app not initialized"}`
@@ -193,21 +222,13 @@ func (h *IMMessageHandler) toolListSkillRepairDrafts(args map[string]interface{}
 	}
 
 	type draftItem struct {
-		Skill       string `json:"skill"`
-		Draft       string `json:"draft"`
-		Explanation string `json:"explanation,omitempty"`
-		LastError   string `json:"last_error,omitempty"`
-		CreatedAt   string `json:"created_at,omitempty"`
-		// Unreadable marks draft files that failed to parse; they are still
-		// listed (without steps) so the user can reject them.
-		Unreadable bool `json:"unreadable,omitempty"`
-		// Disable marks "disable suggestion" drafts (apply sets the skill
-		// status to disabled instead of writing steps back).
-		Disable bool `json:"disable,omitempty"`
-		// Full step arrays (frontend contract), omitted for unreadable drafts.
-		OldSteps []repairDraftStepView `json:"old_steps,omitempty"`
-		NewSteps []repairDraftStepView `json:"new_steps,omitempty"`
-		// Compact count+actions summaries kept for backward compatibility.
+		Skill           string                  `json:"skill"`
+		Draft           string                  `json:"draft"`
+		Explanation     string                  `json:"explanation,omitempty"`
+		LastError       string                  `json:"last_error,omitempty"`
+		CreatedAt       string                  `json:"created_at,omitempty"`
+		Unreadable      bool                    `json:"unreadable,omitempty"`
+		Disable         bool                    `json:"disable,omitempty"`
 		OldStepsSummary repairDraftStepsSummary `json:"old_steps_summary"`
 		NewStepsSummary repairDraftStepsSummary `json:"new_steps_summary"`
 	}
@@ -230,20 +251,25 @@ func (h *IMMessageHandler) toolListSkillRepairDrafts(args map[string]interface{}
 			if f.IsDir() || !strings.HasSuffix(strings.ToLower(f.Name()), ".json") {
 				continue
 			}
-			draft, err := readRepairDraftFile(filepath.Join(dir, f.Name()))
-			if err != nil {
-				// Unreadable drafts must stay visible so the user can reject
-				// them; skill ownership comes from the directory, not the file.
-				log.Printf("[skill-repair-draft] list unreadable draft %s/%s: %v", entry.Name, f.Name(), err)
-				items = append(items, draftItem{
-					Skill:      entry.Name,
-					Draft:      f.Name(),
-					Unreadable: true,
-				})
+			path := filepath.Join(dir, f.Name())
+			info, infoErr := f.Info()
+			if infoErr != nil {
+				if os.IsNotExist(infoErr) {
+					continue
+				}
+				log.Printf("[skill-repair-draft] stat draft %s/%s: %v", entry.Name, f.Name(), infoErr)
+				items = append(items, draftItem{Skill: entry.Name, Draft: f.Name(), Unreadable: true})
 				continue
 			}
-			// skill is always the owning entry name (directory ownership),
-			// never the draft file's self-declared skill field.
+			draft, err := readRepairDraftFileCached(path, info)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				log.Printf("[skill-repair-draft] list unreadable draft %s/%s: %v", entry.Name, f.Name(), err)
+				items = append(items, draftItem{Skill: entry.Name, Draft: f.Name(), Unreadable: true})
+				continue
+			}
 			items = append(items, draftItem{
 				Skill:           entry.Name,
 				Draft:           f.Name(),
@@ -251,8 +277,6 @@ func (h *IMMessageHandler) toolListSkillRepairDrafts(args map[string]interface{}
 				LastError:       draft.LastError,
 				CreatedAt:       draft.CreatedAt,
 				Disable:         draft.Disable,
-				OldSteps:        repairDraftStepViews(draft.OldSteps),
-				NewSteps:        repairDraftStepViews(draft.NewSteps),
 				OldStepsSummary: summarizeRepairDraftSteps(draft.OldSteps),
 				NewStepsSummary: summarizeRepairDraftSteps(draft.NewSteps),
 			})
@@ -265,7 +289,7 @@ func (h *IMMessageHandler) toolListSkillRepairDrafts(args map[string]interface{}
 		"count":         len(items),
 		"drafts":        items,
 	}
-	data, err := json.MarshalIndent(payload, "", "  ")
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Sprintf("List repair drafts marshal failed: %v", err)
 	}
@@ -706,6 +730,74 @@ func (h *IMMessageHandler) toolApplySkillRepairDraft(args map[string]interface{}
 	return string(data)
 }
 
+// toolGetSkillRepairDraft returns one expanded repair draft so the review
+// panel can show its full step diff. Args: name (required), draft (required
+// file name). The response wraps the draft so the frontend can validate it.
+func (h *IMMessageHandler) toolGetSkillRepairDraft(args map[string]interface{}) string {
+	fail := func(msg string) string {
+		data, _ := json.MarshalIndent(map[string]interface{}{"ok": false, "error": msg}, "", "  ")
+		return string(data)
+	}
+	if h == nil || h.app == nil {
+		return fail("app not initialized")
+	}
+	if h.app.skillExecutor == nil {
+		return fail("skill executor not initialized")
+	}
+	skillName := strings.TrimSpace(stringVal(args, "name"))
+	if skillName == "" {
+		skillName = strings.TrimSpace(stringVal(args, "skill"))
+	}
+	if skillName == "" {
+		return fail("skill name is required")
+	}
+	draftName := strings.TrimSpace(stringVal(args, "draft"))
+	if draftName == "" {
+		return fail("draft file name is required")
+	}
+
+	h.app.skillExecutor.suspendStatusOverlayPersistence()
+	defer h.app.skillExecutor.resumeStatusOverlayPersistence()
+	h.app.ensureInteractionInfra()
+	if h.app.skillExecutor == nil {
+		return fail("skill executor not initialized")
+	}
+
+	var skillDir string
+	for _, entry := range h.app.skillExecutor.loadSkills() {
+		if cskill.IsFileBackedSkill(entry) && entry.MatchesName(skillName) {
+			skillDir = entry.SkillDir
+			break
+		}
+	}
+	if skillDir == "" {
+		return fail("skill not found: " + skillName)
+	}
+	path, err := resolveRepairDraftPath(skillDir, draftName)
+	if err != nil {
+		return fail(err.Error())
+	}
+	draft, err := readRepairDraftFile(path)
+	if err != nil {
+		return fail(err.Error())
+	}
+	payload := map[string]interface{}{
+		"ok": true,
+		"draft": map[string]interface{}{
+			"skill":       skillName,
+			"draft":       draftName,
+			"explanation": draft.Explanation,
+			"last_error":  draft.LastError,
+			"created_at":  draft.CreatedAt,
+			"disable":     draft.Disable,
+			"old_steps":   repairDraftStepViews(draft.OldSteps),
+			"new_steps":   repairDraftStepViews(draft.NewSteps),
+		},
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return string(data)
+}
+
 // toolRejectSkillRepairDraft deletes a pending repair draft without applying
 // it. The rejection still bumps the repair attempt counter (plus a
 // via="reviewed_draft_rejected" history row when the draft is parseable) so
@@ -774,6 +866,15 @@ func (h *IMMessageHandler) toolRejectSkillRepairDraft(args map[string]interface{
 func (a *App) ListSkillRepairDrafts() string {
 	h := &IMMessageHandler{app: a}
 	return h.toolListSkillRepairDrafts(map[string]interface{}{})
+}
+
+// GetSkillRepairDraft is a Wails binding for one expanded repair draft.
+func (a *App) GetSkillRepairDraft(skill, draft string) string {
+	h := &IMMessageHandler{app: a}
+	return h.toolGetSkillRepairDraft(map[string]interface{}{
+		"name":  skill,
+		"draft": draft,
+	})
 }
 
 // ApplySkillRepairDraft is a Wails binding for the "apply" button on a pending

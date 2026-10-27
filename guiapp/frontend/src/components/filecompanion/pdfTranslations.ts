@@ -1,8 +1,13 @@
 // Companion PDF translations live beside the highlight marks. They are not
-// written into the PDF and they are not a highlight colour.
+// written into the PDF and they are not a highlight colour. The store is the
+// desktop SQLite database; this module keeps a synchronous mirror that
+// hydratePdfTranslations fills once at startup.
 
 import { pdfMarkPathKey, type PdfMarkRect } from "./pdfMarks";
+import { enqueueCompanionReaderWrite } from "./companionReaderWriteQueue";
 
+// Older builds kept the same document under this WebView localStorage key. It
+// is read once during startup migration and removed after the import succeeds.
 export const PDF_TRANSLATION_STORAGE_KEY = "maclaw.fileCompanionPdfTranslations.v1";
 
 export type PdfTranslationPart = { page: number; rects: PdfMarkRect[] };
@@ -34,6 +39,41 @@ const MAX_SOURCE = 4000;
 const MAX_TRANSLATION = 12000;
 
 const fallback = new Map<string, PdfTranslation[]>();
+
+// Synchronous mirror of the SQLite store, keyed by pdfMarkPathKey.
+let store: Record<string, unknown> = {};
+let saveRevision = 0;
+
+// hydratePdfTranslations replaces the mirror with the value read from SQLite at
+// startup. A non-object clears it, which is also how tests start clean.
+export function hydratePdfTranslations(value: unknown): void {
+    store = value && typeof value === "object" && !Array.isArray(value)
+        ? { ...(value as Record<string, unknown>) }
+        : {};
+    fallback.clear();
+}
+
+export function pdfTranslationsSaveRevision(): number {
+    return saveRevision;
+}
+
+const writeSeq = new Map<string, number>();
+
+function savePdfTranslationsToHost(key: string, list: PdfTranslation[]): void {
+    const app = (window as unknown as { go?: { main?: { App?: Record<string, unknown> } } }).go?.main?.App;
+    const save = app?.SaveCompanionPdfTranslations;
+    if (typeof save !== "function") return;
+    const seq = (writeSeq.get(key) ?? 0) + 1;
+    writeSeq.set(key, seq);
+    const body = JSON.stringify(list);
+    enqueueCompanionReaderWrite(async () => {
+        try {
+            await (save as (path: string, body: string) => Promise<unknown>)(key, body);
+        } catch {
+            if (writeSeq.get(key) === seq) fallback.set(key, list);
+        }
+    });
+}
 const flight = new Map<string, PdfTranslationDraft[]>();
 const flightError = new Map<string, string>();
 const draggedPlace = new Map<string, PdfTranslationPlace>();
@@ -141,25 +181,12 @@ function normalizePdfTranslations(value: unknown): PdfTranslation[] {
     return list.slice(list.length - MAX_TRANSLATIONS);
 }
 
-function readStore(): Record<string, unknown> {
-    if (typeof localStorage === "undefined") return {};
-    try {
-        const raw = localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY);
-        if (!raw) return {};
-        const parsed = JSON.parse(raw) as unknown;
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-        return parsed as Record<string, unknown>;
-    } catch {
-        return {};
-    }
-}
-
 export function loadPdfTranslations(path: string): PdfTranslation[] {
     const key = pdfMarkPathKey(path);
     if (!key) return [];
     const held = fallback.get(key);
     if (held) return held;
-    return normalizePdfTranslations(readStore()[key]);
+    return normalizePdfTranslations(store[key]);
 }
 
 export function savePdfTranslations(path: string, value: unknown): PdfTranslation[] {
@@ -167,14 +194,10 @@ export function savePdfTranslations(path: string, value: unknown): PdfTranslatio
     const list = normalizePdfTranslations(value);
     if (!key) return list;
     fallback.delete(key);
-    const store = readStore();
     if (list.length === 0) delete store[key];
     else store[key] = list;
-    try {
-        localStorage.setItem(PDF_TRANSLATION_STORAGE_KEY, JSON.stringify(store));
-    } catch {
-        fallback.set(key, list);
-    }
+    saveRevision += 1;
+    savePdfTranslationsToHost(key, list);
     emitPdfTranslations(key);
     return list;
 }

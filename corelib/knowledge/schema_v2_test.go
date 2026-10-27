@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,122 @@ func TestNewSQLiteStoreMigratesLegacyV1Metadata(t *testing.T) {
 	}
 	if migratedFrom != "v1" {
 		t.Fatalf("migrated_from = %q, want v1", migratedFrom)
+	}
+}
+
+func TestNewSQLiteStoreSegmentsMigratedCardAndFactFTS(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "knowledge.db")
+	legacyDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if err := applyPragmas(legacyDB); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := createTables(legacyDB); err != nil {
+		t.Fatalf("create legacy tables: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := legacyDB.Exec(insertSourceSQL,
+		"src_1", SourceKindText, "memory://legacy", "", "Legacy Source", "", "",
+		formatTime(now), formatTime(now), "hash_1", "owner_1", "tenant_1",
+		"", "", 0.8, "", "", StatusDistilled, "", formatTime(now), formatTime(now),
+	); err != nil {
+		t.Fatalf("insert legacy source: %v", err)
+	}
+	if _, err := legacyDB.Exec(`INSERT INTO document_nodes (id, source_id, type, title, text)
+		VALUES ('node_1', 'src_1', 'paragraph', '文件系统', 'Windows 文件系统负责管理磁盘上的文件和目录')`); err != nil {
+		t.Fatalf("insert legacy node: %v", err)
+	}
+	if _, err := legacyDB.Exec(`INSERT INTO knowledge_cards (id, source_id, title, claim, summary, created_at, updated_at)
+		VALUES ('card_1', 'src_1', '文件系统', '文件系统负责管理磁盘上的文件和目录', '文件系统', ?, ?)`,
+		formatTime(now), formatTime(now)); err != nil {
+		t.Fatalf("insert legacy card: %v", err)
+	}
+	if _, err := legacyDB.Exec(`INSERT INTO knowledge_facts (id, card_id, source_id, subject, predicate, object)
+		VALUES ('fact_1', 'card_1', 'src_1', '文件系统', '职责', '管理磁盘')`); err != nil {
+		t.Fatalf("insert legacy fact: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	// Raw no-space-script text has no token boundary, so the migrated row must
+	// carry the same n-grams every other writer produces.
+	for _, tc := range []struct{ query, want string }{
+		{`SELECT text FROM document_nodes_fts WHERE node_id = 'node_1'`, "件系"},
+		{`SELECT claim FROM knowledge_cards_fts WHERE card_id = 'card_1'`, "件系"},
+		{`SELECT claim FROM kb_cards_fts WHERE card_id = 'card_1'`, "件系"},
+		{`SELECT subject FROM kb_facts_fts WHERE fact_id = 'fact_1'`, "件系"},
+		{`SELECT subject FROM knowledge_facts_fts WHERE fact_id = 'fact_1'`, "件系"},
+	} {
+		var indexed string
+		if err := store.db.QueryRow(tc.query).Scan(&indexed); err != nil {
+			t.Fatalf("%s: %v", tc.query, err)
+		}
+		if !strings.Contains(indexed, tc.want) || !strings.Contains(indexed, "文件") {
+			t.Fatalf("migrated FTS text is not segmented: %q", indexed)
+		}
+	}
+}
+
+func TestRewriteFTSRowsTxPagesAllRows(t *testing.T) {
+	ctx := t.Context()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, Source{ID: "src_page", Kind: SourceKindText, URI: "memory://page", Status: StatusParsed}); err != nil {
+		t.Fatalf("SaveSource: %v", err)
+	}
+	const total = 300
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for i := 0; i < total; i++ {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO document_nodes (id, source_id, type, title, text)
+			VALUES (?, 'src_page', 'paragraph', '文件系统', '文件系统负责管理磁盘')`, fmt.Sprintf("node_%03d", i)); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("insert node %d: %v", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit nodes: %v", err)
+	}
+
+	tx, err = store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin rewrite: %v", err)
+	}
+	if err := rewriteFTSRowsTx(ctx, tx, documentNodesFTSRewrite()); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("rewriteFTSRowsTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit rewrite: %v", err)
+	}
+
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM document_nodes_fts`).Scan(&count); err != nil {
+		t.Fatalf("count fts: %v", err)
+	}
+	if count != total {
+		t.Fatalf("indexed rows = %d, want %d", count, total)
+	}
+	var text string
+	if err := store.db.QueryRow(`SELECT text FROM document_nodes_fts WHERE node_id = 'node_299'`).Scan(&text); err != nil {
+		t.Fatalf("read last page row: %v", err)
+	}
+	if !strings.Contains(text, "件系") {
+		t.Fatalf("last page row was not segmented: %q", text)
 	}
 }
 

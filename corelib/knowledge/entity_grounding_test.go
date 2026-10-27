@@ -61,10 +61,10 @@ func TestAnchorDoesNotFormAcrossEvidenceFields(t *testing.T) {
 	}
 	card := SearchResult{ResultType: "card", Claim: "中国人奇强只是测试称呼"}
 	node := SearchResult{ResultType: "node", Snippet: "中国人奇强只是测试称呼"}
-	if strictAnchorsAlreadyCovered("中国人奇强", []SearchResult{card}) {
+	if strictAnchorsAlreadyCovered("中国人奇强", []SearchResult{card}, 1) {
 		t.Fatal("a card hit must not skip the original-node scan")
 	}
-	if !strictAnchorsAlreadyCovered("中国人奇强", []SearchResult{node}) {
+	if !strictAnchorsAlreadyCovered("中国人奇强", []SearchResult{node}, 1) {
 		t.Fatal("a covering node should skip a redundant LIKE scan")
 	}
 }

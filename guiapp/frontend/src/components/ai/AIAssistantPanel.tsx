@@ -123,6 +123,7 @@ import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
 import { GoalQuickBar } from "./GoalQuickBar";
 import { ChatTaskTray } from "./ChatTaskTray";
+import { chatTaskTerminal } from "./chatTaskModel";
 import { useChatTaskActionBridge, useRunChatTaskInBackground } from "./useChatTaskPanelWiring";
 import { AssistantQuickSettingsBar } from "./AssistantQuickSettingsBar";
 import { ExpertTabEmptyBanner, ProjectPreparingBanner } from "./assistantPanelInlineBanners";
@@ -164,7 +165,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
-    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null, chatTasks = [] } = state;
+    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, offscreenLiveSessionKeys: rawOffscreenLiveSessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null, chatTasks = [] } = state;
     const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
@@ -4346,6 +4347,44 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         () => Array.isArray(rawStreamingSessionKeys) ? rawStreamingSessionKeys.map(key => String(key || '').trim()).filter(Boolean) : [],
         [rawStreamingSessionKeys],
     );
+    // Backend continuations of tasks that are not this tab. They are not this
+    // tab's work, but the sidebar has to mark their rows running: the durable
+    // snapshot still carries the pause/pending state the round resumed from.
+    const offscreenLiveSessionKeys = useMemo(
+        () => Array.isArray(rawOffscreenLiveSessionKeys) ? rawOffscreenLiveSessionKeys.map(key => String(key || '').trim()).filter(Boolean) : [],
+        [rawOffscreenLiveSessionKeys],
+    );
+    // A running background chat task is the same kind of invisible work: the
+    // header already counts it for the open tab, so the sidebar must count it
+    // for every row. A task waiting for the user's answer is not running.
+    const chatTaskLiveSessionKeys = useMemo(() => {
+        const keys = new Set<string>();
+        for (const task of chatTasks) {
+            if (chatTaskTerminal(String(task?.status || ""))) continue;
+            if (task?.status === "needs_input") continue;
+            const key = normalizeAssistantSessionKey(task?.sessionKey);
+            if (key) keys.add(key);
+        }
+        return Array.from(keys).sort();
+    }, [chatTasks]);
+    const sidebarLiveSessionKeys = useMemo(() => {
+        if (offscreenLiveSessionKeys.length === 0 && chatTaskLiveSessionKeys.length === 0) return busySessionKeys;
+        // Keep the existing in-flight order and append the extra identities.
+        // Re-sorting the whole set would republish a payload that only moved.
+        const keys = [...busySessionKeys];
+        const seen = new Set(keys);
+        for (const key of chatTaskLiveSessionKeys) {
+            if (seen.has(key)) continue;
+            seen.add(key);
+            keys.push(key);
+        }
+        for (const key of offscreenLiveSessionKeys) {
+            if (seen.has(key)) continue;
+            seen.add(key);
+            keys.push(key);
+        }
+        return keys;
+    }, [busySessionKeys, chatTaskLiveSessionKeys, offscreenLiveSessionKeys]);
     useEffect(() => {
         if (projectTabRoundsRef.current.size === 0 || !Array.isArray(rawBusySessionKeys)) return;
         const busySet = new Set(busySessionKeys.map(key => normalizeAssistantSessionKey(key)));
@@ -4978,8 +5017,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [taskExecutionStatus.tone, props.onActiveTaskRunningChange]);
     // Publish every busy task identity (project paths + expert IDs) so the
     // sidebar can mark all concurrently running rows — including detached
-    // runs — as 进行中 (see useBusyTaskRunsSignal).
-    useBusyTaskRunsSignal(busySessionKeys, props.onBusyTaskRunsChange);
+    // runs, backend continuations of a task that is not on screen, and
+    // background chat tasks — as 进行中 (see useBusyTaskRunsSignal).
+    useBusyTaskRunsSignal(sidebarLiveSessionKeys, props.onBusyTaskRunsChange);
     const pureCodingEmptyTitle = isRemoteMaintenanceEnvironment
         ? (remoteCodingNeedsReconnect
             ? localizeText(lang, "Remote maintenance needs SSH reconnect", "远程维护需要重新连接 SSH", "遠端維護需要重新連線 SSH")

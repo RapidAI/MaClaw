@@ -5,21 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
-// segmentTextForFTS tokenizes text using gse (via bm25.Tokenize) and returns
-// a space-separated string suitable for FTS5 indexing. This enables Chinese
-// text to be properly searchable via FTS5's default unicode61 tokenizer, which
-// splits on whitespace.
+// Recall contract for no-space scripts (Han, kana, Hangul, Thai)
 //
-// Text in no-space scripts is indexed both with script-appropriate tokens and
-// overlapping character n-grams. The latter is a deterministic fallback for
-// Japanese, Korean, Thai, and mixed-script text when no morphology dictionary
-// is installed locally.
+// The lexical index holds gse words plus deterministic overlapping n-grams
+// (2 and 3) per contiguous script run. Query building must not require a gse
+// token on the indexed side: gse is context sensitive, so the same surface
+// string can be one word in the query and two words in the document, or two
+// words in a library indexed by an older dictionary. Short spans are therefore
+// matched through their n-grams. Precision for names and multi-span terms is
+// enforced afterwards by retainEntityMentionEvidence, which requires every
+// span to appear in the result.
+//
+// Keep the indexer (segmentTextForFTS) and the query builder
+// (buildFTSQuerySegmented) on the same n-gram contract.
+//
+// segmentTextForFTS tokenizes text and returns a space-separated string
+// suitable for FTS5 indexing. This enables Chinese text to be properly
+// searchable via FTS5's default unicode61 tokenizer, which splits on whitespace.
+//
+// Indexed text has two independent parts for no-space scripts:
+//   - gse dictionary/HMM words, which give BM25 rare-term weight;
+//   - overlapping character n-grams (2 and 3) per contiguous script run.
 func segmentTextForFTS(text string) string {
 	text = normalizeKnowledgeLexicalText(text)
 	if text == "" {
@@ -28,8 +41,8 @@ func segmentTextForFTS(text string) string {
 	if !containsNoSpaceScriptRunes(text) {
 		return text
 	}
-	tokens := bm25.Tokenize(text)
-	tokens = append(tokens, scriptNGrams(text, 2)...)
+	tokens := bm25.Segment(text)
+	tokens = append(tokens, scriptNGramTokens(text, 2, 3)...)
 	if len(tokens) == 0 {
 		return text
 	}
@@ -37,8 +50,11 @@ func segmentTextForFTS(text string) string {
 }
 
 // buildFTSQuerySegmented builds an FTS5 MATCH expression from a query string.
-// For CJK text, it uses gse tokenization to split into meaningful terms.
-// For non-CJK text, it uses the original whitespace-based splitting.
+// Plain Latin queries keep the whitespace split. No-space-script queries are
+// expressed over the deterministic n-gram contract instead of gse tokens:
+// a short span becomes the intersection of its overlapping bigrams, so it is
+// found whenever the characters occur adjacently in the text, no matter how
+// the dictionary cut either side.
 func buildFTSQuerySegmented(query string) string {
 	query = normalizeKnowledgeLexicalText(query)
 	if query == "" {
@@ -47,23 +63,27 @@ func buildFTSQuerySegmented(query string) string {
 	if !containsNoSpaceScriptRunes(query) {
 		return buildFTSQuery(query)
 	}
-	// A composite or unknown name must be present as its own spans. ORing every
-	// bigram makes "中国人奇强" match a biography that only contains "中国人"
-	// and "奇安信". A single dictionary word stays one term so synonym recall
-	// is still possible, without searching each of its characters.
+	// A short Han query is an entity span or a term. Each span is rendered on
+	// its own n-grams; composite names AND their spans. Evidence filtering
+	// later enforces the whole span.
 	if anchors, strict := bm25.QueryAnchors(query); len(anchors) > 0 && (strict || len(anchors) == 1) {
 		parts := make([]string, 0, len(anchors))
 		for _, anchor := range anchors {
-			parts = append(parts, quoteFTSTerm(anchor))
+			if expr := buildNoSpaceSpanFTSExpr(anchor); expr != "" {
+				parts = append(parts, expr)
+			}
 		}
-		if !strict || len(parts) == 1 {
-			return parts[0]
+		if len(parts) > 0 {
+			if !strict || len(parts) == 1 {
+				return parts[0]
+			}
+			return strings.Join(parts, " AND ")
 		}
-		return strings.Join(parts, " AND ")
 	}
-	// Use gse tokens plus n-grams for CJK/Japanese/Korean/Thai queries.
-	tokens := bm25.Tokenize(query)
-	tokens = append(tokens, scriptNGrams(query, 2)...)
+	// Longer sentences and questions keep recall-first OR over gse words and
+	// n-grams: every word of a question is not expected to co-occur.
+	tokens := bm25.Segment(query)
+	tokens = append(tokens, scriptNGramTokens(query, 2, 3)...)
 	if len(tokens) == 0 {
 		return buildFTSQuery(query)
 	}
@@ -79,6 +99,7 @@ func buildFTSQuerySegmented(query string) string {
 			meaningful = append(meaningful, t)
 		}
 	}
+	meaningful = uniqueFTSTerms(meaningful)
 	if len(meaningful) == 0 {
 		return buildFTSQuery(query)
 	}
@@ -91,6 +112,50 @@ func buildFTSQuerySegmented(query string) string {
 		return parts[0]
 	}
 	return strings.Join(parts, " OR ")
+}
+
+// buildNoSpaceSpanFTSExpr renders one span of a no-space script as an FTS5
+// expression over the indexed n-grams.
+//
+// A span of at most three characters is itself an indexed n-gram, so the
+// quoted span is exact and selective. A longer span cannot be represented by
+// one n-gram; it is the intersection of all of its overlapping bigrams. Every
+// bigram of the span is indexed whenever the span occurs in a contiguous run,
+// which makes the expression equivalent to "this span occurs here" without
+// depending on a dictionary token that gse may or may not have produced.
+//
+// Bigrams, not trigrams, are the common denominator: every index generation
+// carries per-run bigrams, including libraries written before the current
+// n-gram contract was installed. A 4+ character span is always classified as
+// strict, so the evidence filter still requires the whole span afterwards;
+// a broad candidate set therefore cannot leak fragment matches into results.
+func buildNoSpaceSpanFTSExpr(span string) string {
+	span = strings.TrimSpace(span)
+	if span == "" {
+		return ""
+	}
+	// Mixed spans (Latin letters, digits, spaces, punctuation) are not covered
+	// by the n-gram contract. Keep them as one literal term.
+	for _, r := range span {
+		if !isNoSpaceScriptRune(r) {
+			return quoteFTSTerm(span)
+		}
+	}
+	if len([]rune(span)) <= 3 {
+		return quoteFTSTerm(span)
+	}
+	grams := uniqueFTSTerms(scriptNGrams(span, 2))
+	parts := make([]string, 0, len(grams))
+	for _, gram := range grams {
+		parts = append(parts, quoteFTSTerm(gram))
+	}
+	if len(parts) == 0 {
+		return quoteFTSTerm(span)
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return strings.Join(parts, " AND ")
 }
 
 // retainEntityMentionEvidence drops hits that do not contain every content
@@ -111,17 +176,29 @@ func retainEntityMentionEvidence(query string, results []SearchResult) []SearchR
 	return kept
 }
 
-// strictAnchorsAlreadyCovered reports that a composite-name query already has
-// a lexical hit containing every span, so the full-table LIKE scan can be skipped.
-func strictAnchorsAlreadyCovered(query string, results []SearchResult) bool {
+// strictAnchorsAlreadyCovered reports that the lexical candidate pool is
+// already saturated with node hits containing every content anchor, so the
+// full-table LIKE scan cannot add recall.
+//
+// One covering hit is not saturation. A 4+ character span is matched through
+// its bigram intersection, so a node can satisfy the FTS expression while
+// other documents that contain the same span never enter the pool. The LIKE
+// scan is the correctness net for no-space scripts; it is skipped only when
+// the pool this query would keep is already full.
+func strictAnchorsAlreadyCovered(query string, results []SearchResult, want int) bool {
 	anchors, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(query))
-	if !strict || len(anchors) == 0 || len(results) == 0 {
+	if !strict || len(anchors) == 0 || len(results) == 0 || want <= 0 {
 		return false
 	}
+	covered := 0
 	for _, result := range results {
 		// A card can name the entity and still omit the original passage.
 		// Only a node hit is enough to skip the full-text LIKE scan.
-		if result.ResultType == "node" && evidenceHasAnchors(result, anchors) {
+		if result.ResultType != "node" || !evidenceHasAnchors(result, anchors) {
+			continue
+		}
+		covered++
+		if covered >= want {
 			return true
 		}
 	}
@@ -239,27 +316,72 @@ func containsNoSpaceScriptRunes(s string) bool {
 	return false
 }
 
+// scriptNGrams returns overlapping character n-grams of one size for every
+// contiguous no-space-script run.
 func scriptNGrams(text string, n int) []string {
 	if n < 1 {
 		return nil
 	}
-	runes := make([]rune, 0, len(text))
-	for _, r := range text {
-		if isNoSpaceScriptRune(r) {
-			runes = append(runes, r)
-		}
-	}
-	if len(runes) == 0 {
+	return scriptNGramTokens(text, n)
+}
+
+// scriptNGramTokens returns overlapping n-grams for several sizes in one pass
+// over the text. Runs shorter than a size are kept whole so a single character
+// or a short word still contributes a token.
+//
+// n-grams are derived per run, never across a run boundary: joining the
+// remaining characters of two sentences would index bigrams such as 件系 from
+// "文件。系统", which never occurs in the source text and only adds false
+// candidates and noise to BM25 document length.
+func scriptNGramTokens(text string, sizes ...int) []string {
+	if len(sizes) == 0 {
 		return nil
 	}
-	if len(runes) < n {
-		return []string{string(runes)}
+	runs := noSpaceScriptRuneRuns(text)
+	if len(runs) == 0 {
+		return nil
 	}
-	grams := make([]string, 0, len(runes)-n+1)
-	for i := 0; i+n <= len(runes); i++ {
-		grams = append(grams, string(runes[i:i+n]))
+	capacity := 0
+	for _, run := range runs {
+		capacity += len(run)
 	}
-	return grams
+	tokens := make([]string, 0, capacity*len(sizes))
+	for _, runes := range runs {
+		for _, n := range sizes {
+			if n < 1 {
+				continue
+			}
+			if len(runes) < n {
+				tokens = append(tokens, string(runes))
+				continue
+			}
+			for i := 0; i+n <= len(runes); i++ {
+				tokens = append(tokens, string(runes[i:i+n]))
+			}
+		}
+	}
+	return tokens
+}
+
+// noSpaceScriptRuneRuns splits text into maximal runs of no-space-script runes.
+func noSpaceScriptRuneRuns(text string) [][]rune {
+	var runs [][]rune
+	var current []rune
+	flush := func() {
+		if len(current) > 0 {
+			runs = append(runs, current)
+			current = nil
+		}
+	}
+	for _, r := range text {
+		if isNoSpaceScriptRune(r) {
+			current = append(current, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return runs
 }
 
 func uniqueFTSTerms(terms []string) []string {
@@ -647,10 +769,34 @@ func (s *SQLiteStore) rebuildFactsFTS(ctx context.Context) error {
 	}
 }
 
+// insertFTSPage writes one page in its own transaction. A rebuild runs while
+// imports and searches keep the database busy, and the index table has already
+// been cleared when this is called: a single SQLITE_BUSY here would leave the
+// lexical index partial until the next successful rebuild. Retry the page on
+// lock errors instead of abandoning it.
 func (s *SQLiteStore) insertFTSPage(ctx context.Context, query string, rows [][]any) error {
 	if len(rows) == 0 {
 		return nil
 	}
+	const attempts = 4
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 250 * time.Millisecond):
+			}
+		}
+		err = s.insertFTSPageOnce(ctx, query, rows)
+		if err == nil || !IsSQLiteLockedError(err) {
+			return err
+		}
+	}
+	return err
+}
+
+func (s *SQLiteStore) insertFTSPageOnce(ctx context.Context, query string, rows [][]any) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -665,8 +811,11 @@ func (s *SQLiteStore) insertFTSPage(ctx context.Context, query string, rows [][]
 }
 
 // ftsSegmentationVersion is bumped when the segmentation algorithm changes,
-// forcing a re-index on next startup.
-const ftsSegmentationVersion = 1
+// forcing the next version-gated rebuild to rewrite the lexical indexes.
+// Version 2 indexes overlapping 2- and 3-grams per contiguous script run
+// (previously one document-wide bigram stream), which is the contract
+// short-span queries are built on.
+const ftsSegmentationVersion = 2
 
 // HasFTSSegmentationMarker checks if the FTS index has already been rebuilt
 // with the current segmentation version. Uses a lightweight metadata table.

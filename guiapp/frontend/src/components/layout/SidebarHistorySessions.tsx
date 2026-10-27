@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { GroupDiscussionListLocalHidden, GroupDiscussionListMine, GroupDiscussionSetLocalHidden } from '../../../wailsjs/go/main/App';
+import { GroupDiscussionListLocalHidden, GroupDiscussionListMinePage, GroupDiscussionSetLocalHidden } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { localizeText } from '../../i18n';
 import { getHistoryDiscussionRelation, isHistoryDiscussionReadOnly } from '../ai/historyDiscussionUtils';
@@ -14,6 +14,8 @@ export type HistoryDiscussionSummary = {
     readonly?: boolean;
     status?: string;
     participant_ids?: string[];
+    created_at?: string;
+    updated_at?: string;
 };
 
 type Props = {
@@ -30,6 +32,7 @@ type ContextMenuState = {
 
 const textForLang = localizeText;
 const HISTORY_REFRESH_DELAY_MS = 150;
+const HISTORY_PAGE_SIZE = 50;
 
 function safeEventsOn(eventName: string, callback: (...args: any[]) => void) {
     try {
@@ -51,6 +54,31 @@ const discussionRenameEventInfo = (event: any): { discussionId: string; topic: s
     const discussionId = String(payload?.discussion_id || payload?.discussionId || payload?.session_id || payload?.sessionId || event?.discussion_id || event?.session_id || '').trim();
     const topic = String(payload?.topic || payload?.title || payload?.Topic || payload?.Title || event?.topic || event?.title || '').trim();
     return { discussionId, topic };
+};
+
+const discussionSummaryEventInfo = (event: any) => {
+    const outer = event?.payload || event?.Payload || event || {};
+    const payload = outer?.payload || outer?.Payload || outer;
+    const message = payload?.message || payload?.Message || {};
+    const { discussionId, topic } = discussionRenameEventInfo(event);
+    const status = String(payload?.status || payload?.Status || event?.status || '').trim();
+    const updatedAt = String(message?.updated_at || message?.updatedAt || message?.created_at || message?.createdAt || payload?.updated_at || payload?.updatedAt || outer?.ts || event?.ts || '').trim();
+    return { discussionId, topic, status, updatedAt };
+};
+
+const mergeHistoryItems = (current: HistoryDiscussionSummary[], incoming: HistoryDiscussionSummary[]) => {
+    const seen = new Set(current.map(item => String(item.id || '').trim()));
+    const merged = current.concat(incoming.filter(item => {
+        const id = String(item.id || '').trim();
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+    }));
+    return merged.sort((left, right) => {
+        const leftTime = Date.parse(left.created_at || left.updated_at || '') || 0;
+        const rightTime = Date.parse(right.created_at || right.updated_at || '') || 0;
+        return leftTime - rightTime || String(left.id || '').localeCompare(String(right.id || ''));
+    });
 };
 
 
@@ -76,27 +104,45 @@ const relationMeta = (lang: string, relation: string): { icon: ReactNode; label:
 export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion }: Props) => {
     const [items, setItems] = useState<HistoryDiscussionSummary[]>([]);
     const [loading, setLoading] = useState(false);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [hasMore, setHasMore] = useState(false);
     const [showHidden, setShowHidden] = useState(false);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const loadSeqRef = useRef(0);
+    const loadedLimitRef = useRef(HISTORY_PAGE_SIZE);
     const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    const loadItems = useCallback(async () => {
+    const loadItems = useCallback(async (append = false) => {
         if (!enabled) return;
         const seq = loadSeqRef.current + 1;
         loadSeqRef.current = seq;
-        setLoading(true);
+        const offset = append ? loadedLimitRef.current : 0;
+        const limit = append ? HISTORY_PAGE_SIZE : Math.max(HISTORY_PAGE_SIZE, loadedLimitRef.current);
+        setLoading(!append);
+        setLoadingMore(append);
         try {
-            const list = showHidden ? await GroupDiscussionListLocalHidden() : await GroupDiscussionListMine('all');
-            if (loadSeqRef.current === seq) setItems(Array.isArray(list) ? list : []);
+            const list = showHidden ? await GroupDiscussionListLocalHidden() : await GroupDiscussionListMinePage('all', limit, offset);
+            const page = Array.isArray(list) ? list : [];
+            if (loadSeqRef.current === seq) {
+                loadedLimitRef.current = append ? offset + page.length : page.length;
+                setHasMore(!showHidden && page.length === limit);
+                setItems(prev => append ? mergeHistoryItems(prev, page) : page);
+            }
         } catch {
-            if (loadSeqRef.current === seq) setItems([]);
+            if (loadSeqRef.current === seq && !append) {
+                setItems([]);
+                setHasMore(false);
+            }
         } finally {
-            if (loadSeqRef.current === seq) setLoading(false);
+            if (loadSeqRef.current === seq) {
+                setLoading(false);
+                setLoadingMore(false);
+            }
         }
     }, [enabled, showHidden]);
 
     useEffect(() => {
+        loadedLimitRef.current = HISTORY_PAGE_SIZE;
         void loadItems();
     }, [loadItems]);
 
@@ -110,10 +156,25 @@ export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion 
 
     useEffect(() => {
         if (!enabled) return;
-        const refreshNonStream = (event: any) => {
+        const applySummaryEvent = (event: any) => {
             const kind = eventDiscussionKind(event);
             if (kind === 'stream_chunk' || kind === 'stream_end' || kind === 'stream_status') return;
-            scheduleLoadItems();
+            const { discussionId, topic, status, updatedAt } = discussionSummaryEventInfo(event);
+            if (!discussionId) return;
+            setItems(prev => {
+                let changed = false;
+                const next = prev.map(item => {
+                    if (String(item.id || '').trim() !== discussionId) return item;
+                    changed = true;
+                    return {
+                        ...item,
+                        updated_at: updatedAt || new Date().toISOString(),
+                        ...(topic ? { topic } : {}),
+                        ...(status ? { status } : {}),
+                    };
+                });
+                return changed ? next : prev;
+            });
         };
         const applyRename = (event: any) => {
             const eventType = String(event?.type || event?.Type || '').trim();
@@ -123,7 +184,7 @@ export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion 
             setItems(prev => prev.map(item => String(item.id || '').trim() === discussionId ? { ...item, topic } : item));
             scheduleLoadItems();
         };
-        const offDiscussion = safeEventsOn('ve-event', refreshNonStream);
+        const offDiscussion = safeEventsOn('ve-event', applySummaryEvent);
         const offRename = safeEventsOn('ve:discussion_rename', applyRename);
         const offStreamEnd = safeEventsOn('ve:stream_end', scheduleLoadItems);
         return () => {
@@ -176,6 +237,9 @@ export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion 
                 {readOnly && <span className="shs-item-badge">{textForLang(lang, 'Read-only', '\u53ea\u8bfb', '\u552f\u8b80')}</span>}
             </button>;
         })}
+        {!showHidden && hasMore && <button type="button" className="shs-load-more" disabled={loadingMore} onClick={() => void loadItems(true)} style={menuItemStyle}>
+            {loadingMore ? textForLang(lang, 'Loading...', '\u52a0\u8f7d\u4e2d...', '\u8f09\u5165\u4e2d...') : textForLang(lang, 'Load more', '\u52a0\u8f7d\u66f4\u591a', '\u8f09\u5165\u66f4\u591a')}
+        </button>}
         {contextMenu && <div role="menu" style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 9999, minWidth: 132, padding: '4px 0', border: '1px solid var(--theme-border)', borderRadius: 6, background: 'var(--theme-surface)', boxShadow: '0 6px 18px rgba(0,0,0,0.16)' }}>
             <button type="button" role="menuitem" onClick={() => { onOpenDiscussion?.(contextMenu.item); setContextMenu(null); }} style={menuItemStyle}>{textForLang(lang, 'Open session', '\u6253\u5f00\u4f1a\u8bdd', '\u6253\u958b\u6703\u8a71')}</button>
             <button type="button" role="menuitem" onClick={() => void setHidden(contextMenu.item, !showHidden)} style={menuItemStyle}>{showHidden ? textForLang(lang, 'Restore', '\u6062\u590d\u663e\u793a', '\u6062\u5fa9\u986f\u793a') : textForLang(lang, 'Hide locally', '\u672c\u5730\u9690\u85cf', '\u672c\u5730\u96b1\u85cf')}</button>

@@ -734,15 +734,30 @@ func (a *App) AddFileCompanionShareNote(path, text string) (FileCompanionShareNo
 	if !ok {
 		return FileCompanionShareNotesResult{}, errors.New("这份文档还没有分享，不能写批注")
 	}
+	return a.addFileCompanionShareNoteByToken(item.Token, text, "")
+}
+
+// addFileCompanionShareNoteByToken publishes one note without needing the
+// document open. replyTo is set only by the host's agent answering a reader
+// note; an empty value is a reader's own discussion line.
+func (a *App) addFileCompanionShareNoteByToken(token, text, replyTo string) (FileCompanionShareNotesResult, error) {
+	if a == nil {
+		return FileCompanionShareNotesResult{}, errors.New("app unavailable")
+	}
+	token = strings.TrimSpace(token)
+	text = strings.TrimSpace(text)
+	if token == "" || text == "" {
+		return FileCompanionShareNotesResult{}, errors.New("无法保存批注")
+	}
 	hub, viewer, err := a.fileCompanionHubLogin()
 	if err != nil {
 		return FileCompanionShareNotesResult{}, err
 	}
-	payload, err := json.Marshal(map[string]string{"text": text})
+	payload, err := json.Marshal(map[string]string{"text": text, "reply_to": strings.TrimSpace(replyTo)})
 	if err != nil {
 		return FileCompanionShareNotesResult{}, errors.New("无法保存批注")
 	}
-	body, err := a.fileCompanionHubJSON(http.MethodPost, hub+"/api/mobile/documents/shares/"+item.Token+"/notes", viewer, payload)
+	body, err := a.fileCompanionHubJSON(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/notes", viewer, payload)
 	if err != nil {
 		return FileCompanionShareNotesResult{}, err
 	}
@@ -750,7 +765,7 @@ func (a *App) AddFileCompanionShareNote(path, text string) (FileCompanionShareNo
 	if err != nil {
 		return FileCompanionShareNotesResult{}, err
 	}
-	if stored, storedRevision, ok := a.storeFileCompanionShareNotes(item.Token, notes, revision); ok {
+	if stored, storedRevision, ok := a.storeFileCompanionShareNotes(token, notes, revision); ok {
 		notes, revision = stored, storedRevision
 	}
 	return FileCompanionShareNotesResult{Notes: notes, NotesRevision: revision}, nil

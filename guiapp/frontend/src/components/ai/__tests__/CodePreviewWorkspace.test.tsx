@@ -1374,3 +1374,59 @@ describe('CodePreviewWorkspace context menu', () => {
         expect(screen.getByTestId('code-preview-workspace-properties').textContent).not.toContain('/remote/app/first.go');
     });
 });
+
+describe('CodePreviewWorkspace virtualized entries', () => {
+    it('renders only the viewport for 500 entries and preserves scrolling and keyboard focus', async () => {
+        getDirectory.mockResolvedValue({
+            root: '/remote/app',
+            entries: Array.from({ length: 500 }, (_, index) => ({ name: `file-${String(index).padStart(4, '0')}.go`, path: `file-${String(index).padStart(4, '0')}.go`, is_dir: false })),
+        });
+        render(<CodePreviewWorkspace projectPath="remote-task" lang="en" theme={theme} onOpenFile={vi.fn()} />);
+        const scroller = document.querySelector('.cpws-entries') as HTMLDivElement;
+        Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 240 });
+        await screen.findByText('file-0000.go');
+
+        const tree = screen.getByTestId('code-preview-workspace-tree');
+        expect(tree.style.height).toBe('12000px');
+        expect(screen.getAllByTestId('code-preview-workspace-file')).toHaveLength(22);
+        expect(tree.querySelectorAll('svg')).toHaveLength(22);
+        expect(tree.querySelectorAll('*')).toHaveLength(132);
+        expect(screen.queryByText('file-0499.go')).toBeNull();
+
+        const first = screen.getByText('file-0000.go').closest('button') as HTMLButtonElement;
+        act(() => first.focus());
+        scroller.scrollTop = 1200;
+        fireEvent.scroll(scroller);
+        expect(screen.getByText('file-0000.go')).toBeTruthy();
+        expect(screen.getByText('file-0050.go')).toBeTruthy();
+        expect(first.isConnected).toBe(true);
+        expect(document.activeElement).toBe(first);
+        expect(screen.getAllByTestId('code-preview-workspace-file')).toHaveLength(23);
+
+        const lastWindowEntry = screen.getByText('file-0065.go').closest('button') as HTMLButtonElement;
+        fireEvent.keyDown(lastWindowEntry, { key: 'Tab' });
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByText('file-0066.go').closest('button')));
+        expect(scroller.scrollTop).toBe(1368);
+    });
+
+    it('keeps the directory truncation notice reachable at the bottom', async () => {
+        getDirectory
+            .mockResolvedValueOnce({ root: '/remote/app', entries: [{ name: 'src', path: 'src', is_dir: true }] })
+            .mockResolvedValueOnce({
+                root: '/remote/app', path: 'src', truncated: true,
+                entries: Array.from({ length: 500 }, (_, index) => ({ name: `file-${index}.go`, path: `src/file-${index}.go`, is_dir: false })),
+            });
+        render(<CodePreviewWorkspace projectPath="remote-task" lang="en" theme={theme} onOpenFile={vi.fn()} />);
+        const scroller = document.querySelector('.cpws-entries') as HTMLDivElement;
+        Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 240 });
+        fireEvent.click(await screen.findByTestId('code-preview-workspace-directory'));
+        await screen.findByText('file-0.go');
+        expect(screen.queryByText('Showing the first 500 items.')).toBeNull();
+
+        scroller.scrollTop = 502 * 24 - 240;
+        fireEvent.scroll(scroller);
+
+        expect(await screen.findByText('Showing the first 500 items.')).toBeTruthy();
+        expect(screen.getByText('file-499.go')).toBeTruthy();
+    });
+});

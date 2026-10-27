@@ -1,5 +1,12 @@
 // Companion PDF marks live with the reader. They are not written into the PDF.
+// The store is the desktop SQLite database (companion_reader_state.db). This
+// module keeps a synchronous mirror so the reader can render without awaiting a
+// binding; hydratePdfMarks fills it once at startup.
 
+import { enqueueCompanionReaderWrite } from "./companionReaderWriteQueue";
+
+// Older builds kept the same document under this WebView localStorage key. It
+// is read once during startup migration and removed after the import succeeds.
 export const PDF_MARK_STORAGE_KEY = "maclaw.fileCompanionPdfMarks.v1";
 
 export const PDF_MARK_COLORS = [
@@ -34,6 +41,46 @@ const FILL: Record<PdfMarkColor, string> = {
 };
 
 const fallback = new Map<string, PdfMark[]>();
+
+// Synchronous mirror of the SQLite store, keyed by pdfMarkPathKey.
+let store: Record<string, unknown> = {};
+// Counts saves so a startup read that began before a save cannot overwrite the
+// newer in-memory state with its older snapshot.
+let saveRevision = 0;
+
+// hydratePdfMarks replaces the mirror with the value read from SQLite at
+// startup. A non-object clears it, which is also how tests start clean.
+export function hydratePdfMarks(value: unknown): void {
+    store = value && typeof value === "object" && !Array.isArray(value)
+        ? { ...(value as Record<string, unknown>) }
+        : {};
+    fallback.clear();
+}
+
+export function pdfMarksSaveRevision(): number {
+    return saveRevision;
+}
+
+const writeSeq = new Map<string, number>();
+
+function savePdfMarksToHost(key: string, marks: PdfMark[]): void {
+    const app = (window as unknown as { go?: { main?: { App?: Record<string, unknown> } } }).go?.main?.App;
+    const save = app?.SaveCompanionPdfMarks;
+    if (typeof save !== "function") return;
+    const seq = (writeSeq.get(key) ?? 0) + 1;
+    writeSeq.set(key, seq);
+    const body = JSON.stringify(marks);
+    enqueueCompanionReaderWrite(async () => {
+        try {
+            await (save as (path: string, body: string) => Promise<unknown>)(key, body);
+        } catch {
+            // Keep the marks for this session so the reader still shows them.
+            // Only the newest failed write may supply the fallback; an older
+            // failure must not mask a newer save.
+            if (writeSeq.get(key) === seq) fallback.set(key, marks);
+        }
+    });
+}
 
 export function pdfMarkFill(color: PdfMarkColor): string {
     return FILL[color];
@@ -102,48 +149,22 @@ export function normalizePdfMarks(value: unknown): PdfMark[] | null {
     return marks;
 }
 
-function readStore(): Record<string, unknown> {
-    if (typeof localStorage === "undefined") return {};
-    try {
-        const raw = localStorage.getItem(PDF_MARK_STORAGE_KEY);
-        if (!raw) return {};
-        const parsed = JSON.parse(raw) as unknown;
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-        return parsed as Record<string, unknown>;
-    } catch {
-        return {};
-    }
-}
-
 export function loadPdfMarks(path: string): PdfMark[] {
     const key = pdfMarkPathKey(path);
     if (!key) return [];
     const held = fallback.get(key);
     if (held) return held;
-    return normalizePdfMarks(readStore()[key]) ?? [];
+    return normalizePdfMarks(store[key]) ?? [];
 }
 
-// loadPdfMarkCounts answers the same question for many paths at once. Each
-// loadPdfMarks call parses the whole store, so a list of N projects would
-// re-parse it N times; this parses once.
+// loadPdfMarkCounts answers the same question for many paths at once.
 export function loadPdfMarkCounts(paths: string[]): Map<string, number> {
     const counts = new Map<string, number>();
-    const wanted: string[] = [];
     for (const path of paths) {
         const key = pdfMarkPathKey(path);
         if (!key || counts.has(key)) continue;
         const held = fallback.get(key);
-        if (held) {
-            counts.set(key, held.length);
-            continue;
-        }
-        wanted.push(key);
-    }
-    if (wanted.length === 0) return counts;
-    const store = readStore();
-    for (const key of wanted) {
-        const marks = normalizePdfMarks(store[key]) ?? [];
-        counts.set(key, marks.length);
+        counts.set(key, held ? held.length : (normalizePdfMarks(store[key]) ?? []).length);
     }
     return counts;
 }
@@ -153,14 +174,10 @@ export function savePdfMarks(path: string, value: unknown): PdfMark[] {
     const marks = normalizePdfMarks(value) ?? [];
     if (!key) return marks;
     fallback.delete(key);
-    const store = readStore();
     if (marks.length === 0) delete store[key];
     else store[key] = marks;
-    try {
-        localStorage.setItem(PDF_MARK_STORAGE_KEY, JSON.stringify(store));
-    } catch {
-        fallback.set(key, marks);
-    }
+    saveRevision += 1;
+    savePdfMarksToHost(key, marks);
     return marks;
 }
 

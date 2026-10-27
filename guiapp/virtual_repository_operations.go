@@ -94,6 +94,29 @@ type VirtualRepositoryOperationResult struct {
 	FinishedAt    time.Time                              `json:"finished_at"`
 	Items         []VirtualRepositoryOperationItemResult `json:"items"`
 	SkippedLocal  int                                    `json:"skipped_local"`
+	Completed     int                                    `json:"completed"`
+	TargetCount   int                                    `json:"target_count"`
+}
+
+type VirtualRepositoryOperationProgress struct {
+	JobID         string                 `json:"job_id"`
+	Action        string                 `json:"action"`
+	Message       string                 `json:"message,omitempty"`
+	Status        string                 `json:"status"`
+	RuntimeStatus agentruntime.JobStatus `json:"runtime_status"`
+	StartedAt     time.Time              `json:"started_at"`
+	FinishedAt    time.Time              `json:"finished_at"`
+	SkippedLocal  int                    `json:"skipped_local"`
+	Completed     int                    `json:"completed"`
+	TargetCount   int                    `json:"target_count"`
+}
+
+type VirtualRepositoryOperationItemsPage struct {
+	JobID      string                                 `json:"job_id"`
+	Items      []VirtualRepositoryOperationItemResult `json:"items"`
+	Offset     int                                    `json:"offset"`
+	NextOffset int                                    `json:"next_offset"`
+	Total      int                                    `json:"total"`
 }
 
 func virtualRepositoryOperationRuntimeStatus(status string) agentruntime.JobStatus {
@@ -631,19 +654,41 @@ func marshalVirtualRepositoryOperationJob(job *virtualRepositoryOperationJob) (s
 	defer job.mu.RUnlock()
 	result := job.result
 	result.RuntimeStatus = virtualRepositoryOperationRuntimeStatus(result.Status)
+	result.Completed = len(result.Items)
+	result.TargetCount = job.targetCount
 	data, err := json.Marshal(result)
 	return string(data), err
 }
 
+func marshalVirtualRepositoryOperationJobProgress(job *virtualRepositoryOperationJob) (string, error) {
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	result := job.result
+	progress := VirtualRepositoryOperationProgress{
+		JobID:         result.JobID,
+		Action:        result.Action,
+		Message:       result.Message,
+		Status:        result.Status,
+		RuntimeStatus: virtualRepositoryOperationRuntimeStatus(result.Status),
+		StartedAt:     result.StartedAt,
+		FinishedAt:    result.FinishedAt,
+		SkippedLocal:  result.SkippedLocal,
+		Completed:     len(result.Items),
+		TargetCount:   job.targetCount,
+	}
+	data, err := json.Marshal(progress)
+	return string(data), err
+}
+
 func (a *App) emitVirtualRepositoryJob(job *virtualRepositoryOperationJob) {
-	if raw, err := marshalVirtualRepositoryOperationJob(job); err == nil {
+	if raw, err := marshalVirtualRepositoryOperationJobProgress(job); err == nil {
 		a.emitEvent("virtual-repository:job-updated", raw)
 	}
 }
 
-// Bound full-result events to roughly one hundred updates for large virtual
-// repositories. Clients can still poll, and the terminal result is always
-// emitted by the caller after the loop.
+// Bound progress events to roughly one hundred updates for large virtual
+// repositories. Clients fetch new items separately, and the terminal progress
+// event is always emitted by the caller after the loop.
 func shouldEmitVirtualRepositoryJobProgress(completed, total int) bool {
 	if completed <= 10 || completed >= total || total <= 100 {
 		return true
@@ -660,6 +705,50 @@ func (a *App) GetVirtualRepositoryOperation(jobID string) (string, error) {
 		return "", errors.New("virtual repository operation not found")
 	}
 	return marshalVirtualRepositoryOperationJob(job)
+}
+
+func (a *App) GetVirtualRepositoryOperationStatus(jobID string) (string, error) {
+	virtualRepositoryOperationJobs.Lock()
+	job := virtualRepositoryOperationJobs.items[strings.TrimSpace(jobID)]
+	virtualRepositoryOperationJobs.Unlock()
+	if job == nil {
+		return "", errors.New("virtual repository operation not found")
+	}
+	return marshalVirtualRepositoryOperationJobProgress(job)
+}
+
+func (a *App) GetVirtualRepositoryOperationItems(jobID string, offset, limit int) (string, error) {
+	if offset < 0 {
+		return "", errors.New("virtual repository operation item offset cannot be negative")
+	}
+	if limit <= 0 {
+		return "", errors.New("virtual repository operation item limit must be positive")
+	}
+	limit = min(limit, 200)
+	virtualRepositoryOperationJobs.Lock()
+	job := virtualRepositoryOperationJobs.items[strings.TrimSpace(jobID)]
+	virtualRepositoryOperationJobs.Unlock()
+	if job == nil {
+		return "", errors.New("virtual repository operation not found")
+	}
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	total := len(job.result.Items)
+	if offset > total {
+		return "", errors.New("virtual repository operation item offset exceeds completed count")
+	}
+	end := min(offset+limit, total)
+	items := make([]VirtualRepositoryOperationItemResult, end-offset)
+	copy(items, job.result.Items[offset:end])
+	page := VirtualRepositoryOperationItemsPage{
+		JobID:      job.result.JobID,
+		Items:      items,
+		Offset:     offset,
+		NextOffset: end,
+		Total:      total,
+	}
+	data, err := json.Marshal(page)
+	return string(data), err
 }
 
 func (a *App) CancelVirtualRepositoryOperation(jobID string) error {

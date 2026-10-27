@@ -37,3 +37,13 @@ export const UtilitiesPage = lazy(() => import('./components/pages/UtilitiesPage
 export const MobileDocumentsPanel = lazy(() => import('./components/layout/MobileDocumentsPanel').then((module) => ({ default: module.MobileDocumentsPanel })));
 export const LatexTemplateLibraryPage = lazy(() => import('./components/pages/LatexTemplateLibraryPage').then((module) => ({ default: module.LatexTemplateLibraryPage })));
 export const TokenBankPanel = lazy(() => import('./components/TokenBankPanel').then((module) => ({ default: module.TokenBankPanel })));
+export const DesktopBotWorkspace = lazy(() => import('./components/bots/DesktopBotWorkspace').then((module) => ({ default: module.DesktopBotWorkspace })));
+export const OnboardingWizard = lazy(() => import('./components/remote/OnboardingWizard').then((module) => ({ default: module.OnboardingWizard })));
+export const PetSettingsPanel = lazy(() => import('./components/PetSettingsPanel').then((module) => ({ default: module.PetSettingsPanel })));
+export const FavoriteEmployeeSettingsPanel = lazy(() => import('./components/settings/FavoriteEmployeeSettingsPanel').then((module) => ({ default: module.FavoriteEmployeeSettingsPanel })));
+export const PPTStylesSettingsPanel = lazy(() => import('./components/settings/PPTStylesSettingsPanel').then((module) => ({ default: module.PPTStylesSettingsPanel })));
+export const PDFStylesSettingsPanel = lazy(() => import('./components/settings/PDFStylesSettingsPanel').then((module) => ({ default: module.PDFStylesSettingsPanel })));
+export const IMSettingsPanel = lazy(() => import('./components/settings/IMSettingsPanel').then((module) => ({ default: module.IMSettingsPanel })));
+export const EmailSettingsPanel = lazy(() => import('./components/settings/EmailSettingsPanel').then((module) => ({ default: module.EmailSettingsPanel })));
+export const ThirdPartyAccessSettings = lazy(() => import('./components/settings/ThirdPartyAccessSettings').then((module) => ({ default: module.ThirdPartyAccessSettings })));
+export const BuddySettingsSection = lazy(() => import('./components/settings/BuddySettingsSection').then((module) => ({ default: module.BuddySettingsSection })));

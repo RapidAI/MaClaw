@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DeleteCodingWorkbenchEntry, DownloadCodingWorkbenchEntry, ExportLatexSubmissionZip, GetCodingWorkbenchDirectory, GetCodingWorkbenchEntryProperties, GetCodingWorkbenchFilePreview, IsCodingWorkbenchVSCodeAvailable, OpenCodingWorkbenchFileInVSCode, OpenCodingWorkbenchFileLocally } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime";
 import { useDialog } from "../CustomDialog";
@@ -280,16 +280,91 @@ function isBinaryPreviewError(error: unknown) {
     return lastSeg === "binary files cannot be previewed";
 }
 
-function FileIcon({ entry, theme, open }: { entry: DirectoryEntry; theme: CodePreviewTheme; open: boolean }) {
+const FileIcon = React.memo(function FileIcon({ entry, theme, open }: { entry: DirectoryEntry; theme: CodePreviewTheme; open: boolean }) {
     const icon = entry.is_dir ? { badge: "", kind: "data" as const } : workspaceFileIconKind(entry.name);
     const color = open ? theme.tabActiveText : icon.kind === "code" ? theme.syntaxKeyword : icon.kind === "text" ? theme.syntaxString : theme.syntaxNumber;
     return <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16" className="cpws-icon"><path d={entry.is_dir ? "M2.5 5.5c0-1.1.9-2 2-2h3l1.4 1.7h6.6c1.1 0 2 .9 2 2v6.3c0 1.1-.9 2-2 2h-11c-1.1 0-2-.9-2-2V5.5Z" : "M4.25 2.5h7l4.5 4.5v9.25c0 .69-.56 1.25-1.25 1.25H5.5c-.69 0-1.25-.56-1.25-1.25V3.75c0-.69.56-1.25 1.25-1.25Z"} fill={color} opacity=".22" stroke={color} strokeWidth="1.2" /><text x="10" y="14" textAnchor="middle" fill={color} fontSize="5.5" fontWeight="700">{icon.badge}</text></svg>;
+});
+
+type VisibleRow =
+    | { kind: "entry"; key: string; entry: DirectoryEntry; depth: number }
+    | { kind: "error"; key: string; path: string; depth: number; message: string }
+    | { kind: "loading"; key: string; path: string; depth: number }
+    | { kind: "truncated"; key: string; path: string; depth: number };
+
+const workspaceRowHeight = 24;
+const workspaceVirtualThreshold = 80;
+const workspaceOverscan = 6;
+
+function flattenVisibleRows(directories: Map<string, DirectoryResponse>, expanded: Set<string>, errors: Map<string, string>, loading: Set<string>) {
+    const rows: VisibleRow[] = [];
+    const visit = (path: string, depth: number, ancestors: Set<string>) => {
+        for (const entry of directories.get(path)?.entries || []) {
+            rows.push({ kind: "entry", key: `${path}\n${entry.path}`, entry, depth });
+            if (!entry.is_dir || ancestors.has(entry.path) || !expanded.has(entry.path)) continue;
+            const nextAncestors = new Set(ancestors).add(entry.path);
+            const error = errors.get(entry.path);
+            if (error) rows.push({ kind: "error", key: `${path}\nerror:${entry.path}`, path: entry.path, depth, message: error });
+            if (loading.has(entry.path) && !directories.has(entry.path)) rows.push({ kind: "loading", key: `${path}\nloading:${entry.path}`, path: entry.path, depth });
+            else visit(entry.path, depth + 1, nextAncestors);
+            if (directories.get(entry.path)?.truncated) rows.push({ kind: "truncated", key: `${path}\ntruncated:${entry.path}`, path: entry.path, depth });
+        }
+    };
+    visit("", 0, new Set([""]));
+    return rows;
 }
+
+const EntryRow = React.memo(function EntryRow({ entry, depth, expanded, selected, manageFiles, cloudMode, lang, theme, virtualIndex, onActivate, onDoubleClick, onContextMenu, onKeyboardMenu, onTab, onFocus, onBlur }: {
+    entry: DirectoryEntry;
+    depth: number;
+    expanded: boolean;
+    selected: boolean;
+    manageFiles: boolean;
+    cloudMode: boolean;
+    lang: string;
+    theme: CodePreviewTheme;
+    virtualIndex?: number;
+    onActivate: (entry: DirectoryEntry, clickCount: number) => void;
+    onDoubleClick: (entry: DirectoryEntry) => void;
+    onContextMenu: (entry: DirectoryEntry, x: number, y: number, trigger: HTMLButtonElement) => void;
+    onKeyboardMenu: (entry: DirectoryEntry, trigger: HTMLButtonElement) => void;
+    onTab: (entry: DirectoryEntry, shiftKey: boolean) => boolean;
+    onFocus: (path: string) => void;
+    onBlur: (path: string) => void;
+}) {
+    const style: React.CSSProperties = {
+        display: "flex", width: "100%", border: 0, padding: `4px 10px 4px ${12 + depth * 16}px`, gap: 6,
+        background: manageFiles ? undefined : "transparent", color: theme.text, textAlign: "left", cursor: "pointer", font: "inherit", fontSize: 12,
+        ...(virtualIndex === undefined ? {} : { position: "absolute", top: virtualIndex * workspaceRowHeight, left: 0, height: workspaceRowHeight, boxSizing: "border-box" }),
+    };
+    return <button type="button" data-testid={entry.is_dir ? "code-preview-workspace-directory" : "code-preview-workspace-file"} data-entry-path={entry.path}
+        onClick={event => onActivate(entry, event.detail)}
+        data-selected={manageFiles && selected ? "true" : undefined}
+        onDoubleClick={event => { event.preventDefault(); onDoubleClick(entry); }}
+        onContextMenu={event => { event.preventDefault(); onContextMenu(entry, event.clientX, event.clientY, event.currentTarget); }}
+        onKeyDown={event => {
+            if (event.key === "Tab") { if (onTab(entry, event.shiftKey)) event.preventDefault(); return; }
+            if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+            event.preventDefault();
+            onKeyboardMenu(entry, event.currentTarget);
+        }}
+        onFocus={() => { if (virtualIndex !== undefined) onFocus(entry.path); }} onBlur={() => { if (virtualIndex !== undefined) onBlur(entry.path); }}
+        aria-expanded={entry.is_dir ? expanded : undefined} aria-haspopup="menu"
+        title={cloudMode && !entry.is_dir ? `${entry.path}\n${isLikelyBinaryName(entry.name) && !manageFiles ? label(lang, "Click to open locally", "单击在本地打开", "按一下在本機開啟") : label(lang, "Double-click to open locally", "双击在本地打开", "按兩下在本機開啟")}` : entry.path}
+        style={style}><span className="cpws-tw">{entry.is_dir ? (expanded ? "v" : ">") : ""}</span><FileIcon entry={entry} theme={theme} open={expanded} /><span className="cpws-entry-name">{entry.name}</span></button>;
+});
 
 export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRefresh = false, cloudMode = false, paperWorkspace = false, hideHeader = false, hideTitle = false, manageFiles = false, onRefreshReady, lang, theme, onOpenFile, onFileDeleted }: { projectPath?: string; refreshToken?: number; resetOnRefresh?: boolean; cloudMode?: boolean; paperWorkspace?: boolean; hideHeader?: boolean; hideTitle?: boolean; manageFiles?: boolean; onRefreshReady?: (refresh: () => void, refreshing: boolean) => void; lang: string; theme: CodePreviewTheme; onOpenFile: (file: CodeFile) => void; onFileDeleted?: (path: string) => void }) {
     const { showConfirm } = useDialog();
-    const [, setDirectories] = useState<Map<string, DirectoryResponse>>(new Map());
+    const [directories, setDirectories] = useState<Map<string, DirectoryResponse>>(new Map());
     const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
+    const expandedRef = useRef(expanded);
+    expandedRef.current = expanded;
+    const [focusedPath, setFocusedPath] = useState("");
+    const [treeMetrics, setTreeMetrics] = useState({ scrollTop: 0, viewportHeight: 480, treeTop: 0 });
+    const entriesRef = useRef<HTMLDivElement | null>(null);
+    const treeRef = useRef<HTMLDivElement | null>(null);
+    const pendingFocusRef = useRef("");
     const [loading, setLoading] = useState<Set<string>>(new Set());
     const [errors, setErrors] = useState<Map<string, string>>(new Map());
     const [root, setRoot] = useState("");
@@ -526,7 +601,7 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
         return () => window.removeEventListener("keydown", onKeyDown);
     }, [manageFiles, propertiesEntry]);
 
-    const toggle = useCallback((entry: DirectoryEntry) => { const willOpen = !expanded.has(entry.path); setExpanded(prev => { const next = new Set(prev); willOpen ? next.add(entry.path) : next.delete(entry.path); return next; }); if (willOpen) void load(entry.path); }, [expanded, load]);
+    const toggle = useCallback((entry: DirectoryEntry) => { const next = new Set(expandedRef.current); const willOpen = !next.has(entry.path); willOpen ? next.add(entry.path) : next.delete(entry.path); expandedRef.current = next; setExpanded(next); if (willOpen) void load(entry.path); }, [load]);
     const openLocally = useCallback(async (entry: DirectoryEntry) => {
         if (!projectPath || !cloudMode || entry.is_dir) return;
         const now = Date.now();
@@ -731,7 +806,96 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
         void openLocally(entry);
     }, [cloudMode, openLocally]);
 
-    const renderEntries = (path: string, depth: number, ancestors = new Set<string>([path])): React.ReactNode => pagesRef.current.get(path)?.entries?.map(entry => <React.Fragment key={entry.path}><button type="button" data-testid={entry.is_dir ? "code-preview-workspace-directory" : "code-preview-workspace-file"} onClick={event => { if (manageFiles && entry.is_dir && event.detail > 1) return; if (manageFiles) setSelectedPath(entry.path); if (entry.is_dir) { toggle(entry); return; } if (manageFiles) return; void openFile(entry); }} data-selected={manageFiles && selectedPath === entry.path ? "true" : undefined} onDoubleClick={event => { event.preventDefault(); handleEntryDoubleClick(entry); }} onContextMenu={event => { event.preventDefault(); if (isVSCodeSourceFile(entry)) refreshVSCodeAvailability(); openMenu(entry, event.clientX, event.clientY, event.currentTarget); }} onKeyDown={event => { if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return; event.preventDefault(); if (isVSCodeSourceFile(entry)) refreshVSCodeAvailability(); const bounds = event.currentTarget.getBoundingClientRect(); openMenu(entry, bounds.left + Math.min(bounds.width / 2, 40), bounds.top + Math.min(bounds.height, 36), event.currentTarget); }} aria-expanded={entry.is_dir ? expanded.has(entry.path) : undefined} aria-haspopup="menu" title={cloudMode && !entry.is_dir ? `${entry.path}\n${isLikelyBinaryName(entry.name) && !manageFiles ? label(lang, "Click to open locally", "单击在本地打开", "按一下在本機開啟") : label(lang, "Double-click to open locally", "双击在本地打开", "按兩下在本機開啟")}` : entry.path} style={{ display: "flex", width: "100%", border: 0, padding: `4px 10px 4px ${12 + depth * 16}px`, gap: 6, background: manageFiles ? undefined : "transparent", color: theme.text, textAlign: "left", cursor: "pointer", font: "inherit", fontSize: 12 }}><span className="cpws-tw">{entry.is_dir ? (expanded.has(entry.path) ? "v" : ">") : ""}</span><FileIcon entry={entry} theme={theme} open={expanded.has(entry.path)} /><span className="cpws-entry-name">{entry.name}</span></button>{entry.is_dir && !ancestors.has(entry.path) && expanded.has(entry.path) ? <>{errors.get(entry.path) ? <DirectoryLoadError message={errors.get(entry.path) || ""} depth={depth} lang={lang} theme={theme} onRetry={() => void load(entry.path, true)} /> : null}{loading.has(entry.path) && !pagesRef.current.has(entry.path) ? <DirectoryLoading depth={depth} lang={lang} theme={theme} /> : renderEntries(entry.path, depth + 1, new Set([...ancestors, entry.path]))}{pagesRef.current.get(entry.path)?.truncated ? <div style={{ paddingLeft: 32 + depth * 16, color: theme.textMuted, fontSize: 11 }}>{label(lang, "Showing the first 500 items.", "仅显示前 500 个项目。", "僅顯示前 500 個項目。")}</div> : null}</> : null}</React.Fragment>);
+    const handleEntryActivate = useCallback((entry: DirectoryEntry, clickCount: number) => {
+        if (manageFiles && entry.is_dir && clickCount > 1) return;
+        if (manageFiles) setSelectedPath(entry.path);
+        if (entry.is_dir) { toggle(entry); return; }
+        if (manageFiles) return;
+        void openFile(entry);
+    }, [manageFiles, openFile, toggle]);
+    const handleEntryContextMenu = useCallback((entry: DirectoryEntry, x: number, y: number, trigger: HTMLButtonElement) => {
+        if (isVSCodeSourceFile(entry)) refreshVSCodeAvailability();
+        openMenu(entry, x, y, trigger);
+    }, [openMenu, refreshVSCodeAvailability]);
+    const handleEntryKeyboardMenu = useCallback((entry: DirectoryEntry, trigger: HTMLButtonElement) => {
+        if (isVSCodeSourceFile(entry)) refreshVSCodeAvailability();
+        const bounds = trigger.getBoundingClientRect();
+        openMenu(entry, bounds.left + Math.min(bounds.width / 2, 40), bounds.top + Math.min(bounds.height, 36), trigger);
+    }, [openMenu, refreshVSCodeAvailability]);
+    const handleEntryFocus = useCallback((path: string) => setFocusedPath(path), []);
+    const handleEntryBlur = useCallback((path: string) => setFocusedPath(current => current === path ? "" : current), []);
+    const retryDirectory = useCallback((path: string) => { void load(path, true); }, [load]);
+    const visibleRows = useMemo(() => flattenVisibleRows(directories, expanded, errors, loading), [directories, errors, expanded, loading]);
+    const virtualized = visibleRows.length > workspaceVirtualThreshold && !visibleRows.some(row => row.kind === "error");
+    const updateTreeMetrics = useCallback(() => {
+        const scroller = entriesRef.current;
+        if (!scroller) return;
+        const next = { scrollTop: scroller.scrollTop, viewportHeight: scroller.clientHeight || 480, treeTop: treeRef.current?.offsetTop || 0 };
+        setTreeMetrics(current => current.scrollTop === next.scrollTop && current.viewportHeight === next.viewportHeight && current.treeTop === next.treeTop ? current : next);
+    }, []);
+    useLayoutEffect(() => {
+        updateTreeMetrics();
+        const scroller = entriesRef.current;
+        if (!scroller) return;
+        const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateTreeMetrics);
+        observer?.observe(scroller);
+        window.addEventListener("resize", updateTreeMetrics);
+        return () => { observer?.disconnect(); window.removeEventListener("resize", updateTreeMetrics); };
+    }, [updateTreeMetrics]);
+    const windowStart = virtualized ? Math.max(0, Math.floor((treeMetrics.scrollTop - treeMetrics.treeTop) / workspaceRowHeight) - workspaceOverscan) : 0;
+    const windowEnd = virtualized ? Math.min(visibleRows.length, windowStart + Math.ceil(treeMetrics.viewportHeight / workspaceRowHeight) + workspaceOverscan * 2) : visibleRows.length;
+    const visibleRowsRef = useRef(visibleRows);
+    visibleRowsRef.current = visibleRows;
+    const renderedRangeRef = useRef({ start: windowStart, end: windowEnd, virtualized });
+    renderedRangeRef.current = { start: windowStart, end: windowEnd, virtualized };
+    const treeMetricsRef = useRef(treeMetrics);
+    treeMetricsRef.current = treeMetrics;
+    const handleEntryTab = useCallback((entry: DirectoryEntry, shiftKey: boolean) => {
+        const range = renderedRangeRef.current;
+        if (!range.virtualized) return false;
+        const rows = visibleRowsRef.current;
+        const current = rows.findIndex(row => row.kind === "entry" && row.entry.path === entry.path);
+        if (current < 0) return false;
+        let target = current + (shiftKey ? -1 : 1);
+        while (rows[target] && rows[target].kind !== "entry") target += shiftKey ? -1 : 1;
+        const targetRow = rows[target];
+        if (!targetRow || targetRow.kind !== "entry" || (target >= range.start && target < range.end)) return false;
+        pendingFocusRef.current = targetRow.entry.path;
+        const metrics = treeMetricsRef.current;
+        const scroller = entriesRef.current;
+        if (!scroller) return false;
+        scroller.scrollTop = Math.max(0, metrics.treeTop + target * workspaceRowHeight - (shiftKey ? 0 : metrics.viewportHeight - workspaceRowHeight));
+        updateTreeMetrics();
+        return true;
+    }, [updateTreeMetrics]);
+    useLayoutEffect(() => {
+        updateTreeMetrics();
+        const pending = pendingFocusRef.current;
+        if (!pending || !treeRef.current) return;
+        const target = Array.from(treeRef.current.querySelectorAll<HTMLButtonElement>("[data-entry-path]")).find(button => button.dataset.entryPath === pending);
+        if (!target) return;
+        pendingFocusRef.current = "";
+        target.focus();
+    });
+    const renderedIndexes = useMemo(() => {
+        if (!virtualized) return visibleRows.map((_, index) => index);
+        const indexes = new Set<number>();
+        for (let index = windowStart; index < windowEnd; index++) indexes.add(index);
+        for (const path of [focusedPath, menu?.entry.path]) {
+            if (!path) continue;
+            const index = visibleRows.findIndex(row => row.kind === "entry" && row.entry.path === path);
+            if (index >= 0) indexes.add(index);
+        }
+        return Array.from(indexes).sort((a, b) => a - b);
+    }, [focusedPath, menu?.entry.path, virtualized, visibleRows, windowEnd, windowStart]);
+    const renderedEntries = renderedIndexes.map(index => {
+        const row = visibleRows[index];
+        const position = virtualized ? { position: "absolute" as const, top: index * workspaceRowHeight, left: 0, width: "100%", height: workspaceRowHeight, boxSizing: "border-box" as const } : undefined;
+        if (row.kind === "entry") return <EntryRow key={row.key} entry={row.entry} depth={row.depth} expanded={expanded.has(row.entry.path)} selected={selectedPath === row.entry.path} manageFiles={manageFiles} cloudMode={cloudMode} lang={lang} theme={theme} virtualIndex={virtualized ? index : undefined} onActivate={handleEntryActivate} onDoubleClick={handleEntryDoubleClick} onContextMenu={handleEntryContextMenu} onKeyboardMenu={handleEntryKeyboardMenu} onTab={handleEntryTab} onFocus={handleEntryFocus} onBlur={handleEntryBlur} />;
+        if (row.kind === "error") return <DirectoryLoadError key={row.key} message={row.message} depth={row.depth} lang={lang} theme={theme} onRetry={() => retryDirectory(row.path)} />;
+        if (row.kind === "loading") return <div key={row.key} style={position}><DirectoryLoading depth={row.depth} lang={lang} theme={theme} /></div>;
+        return <div key={row.key} style={{ paddingLeft: 32 + row.depth * 16, color: theme.textMuted, fontSize: 11, ...position }}>{label(lang, "Showing the first 500 items.", "仅显示前 500 个项目。", "僅顯示前 500 個項目。")}</div>;
+    });
 
     if (!projectPath) return <div data-testid="code-preview-workspace-status">{cloudMode ? label(lang, "Cloud workspace unavailable", "云端工作区不可用", "雲端工作區無法使用") : label(lang, "Working directory unavailable", "工作目录不可用", "工作目錄無法使用")}</div>;
     const rootError = errors.get("");
@@ -739,7 +903,7 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
         ? (rootResolved ? label(lang, "Cloud files", "云端文件", "雲端檔案") : label(lang, "Loading cloud files...", "正在加载云端文件...", "正在載入雲端檔案..."))
         : (root || (rootResolved ? label(lang, "Working directory", "工作目录", "工作目錄") : label(lang, "Resolving directory...", "正在定位目录...", "正在定位目錄...")));
     const propertiesPanel = propertiesEntry ? <Properties entry={propertiesEntry} properties={properties} loading={propertiesLoading} error={propertiesError} lang={lang} theme={theme} hideAbsPath={cloudMode} onClose={() => { propertyRef.current++; setPropertiesEntry(null); setPropertiesLoading(false); }} /> : null;
-    return <div data-testid="code-preview-workspace" data-cloud-mode={cloudMode ? "true" : undefined} data-manage-files={manageFiles ? "true" : undefined} style={{ display: "flex", flexDirection: "column", height: "100%", background: theme.bg, ["--cpws-row-hover" as string]: theme.tabHoverBg, ["--cpws-row-accent" as string]: theme.syntaxKeyword }}>{!hideHeader ? <div data-testid="code-preview-workspace-header" style={{ display: "flex", alignItems: "center", gap: 8, boxSizing: "border-box", height: 42, padding: "0 14px", borderBottom: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 12 }}>{hideTitle ? null : <strong style={{ color: theme.tabActiveText, fontWeight: 600, flexShrink: 0, lineHeight: 1.2 }}>{cloudMode ? label(lang, "Cloud workspace", "云端工作区", "雲端工作區") : label(lang, "WORKING DIRECTORY", "工作目录", "工作目錄")}</strong>}<span data-testid="code-preview-workspace-root-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: rootResolved ? theme.textMuted : theme.lineNumText, fontSize: rootResolved ? 11 : 10.5, fontWeight: 400, lineHeight: 1.2 }}>{rootLabel}</span>{exportButton}<button type="button" aria-label={cloudMode ? label(lang, "Refresh cloud files", "刷新云端文件", "重新整理雲端檔案") : label(lang, "Refresh working directory", "刷新工作目录", "重新整理工作目錄")} title={label(lang, "Refresh", "刷新", "重新整理")} aria-busy={loading.has("")} onClick={refreshRoot} style={{ marginLeft: paperWorkspace ? 0 : "auto", border: 0, borderRadius: 4, padding: "2px 5px", background: "transparent", color: theme.tabActiveText, cursor: "pointer", font: "inherit", lineHeight: 1.2, flexShrink: 0 }}>{label(lang, "Refresh", "刷新", "重新整理")}</button></div> : null}{hideHeader && exportButton ? <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: `1px solid ${theme.border}` }}>{exportButton}</div> : null}{manageFiles && propertiesPanel ? <div className="cpws-properties">{propertiesPanel}</div> : null}<div className="cpws-entries">{rootError ? <WorkspaceNotice message={rootError} isError lang={lang} theme={theme} onClose={() => setErrors(prev => { const next = new Map(prev); next.delete(""); return next; })} /> : null}{notice ? <WorkspaceNotice message={notice} isError={noticeIsError} lang={lang} theme={theme} onClose={() => { setNotice(""); setNoticeIsError(false); }} /> : null}{manageFiles ? null : propertiesPanel}{loading.has("") && !pagesRef.current.has("") ? <DirectoryLoading root lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{rootResolved && !rootError && pagesRef.current.has("") && !pagesRef.current.get("")?.entries?.length ? <EmptyDirectory lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{renderEntries("", 0)}</div>{menu ? <Menu menu={menu} theme={theme} lang={lang} showPreview={!manageFiles && (menu.entry.is_dir || !cloudMode || !isLikelyBinaryName(menu.entry.name))} showDownload={cloudMode} showOpenLocal={cloudMode && !menu.entry.is_dir} showVSCode={!cloudMode && vscodeAvailable && isVSCodeSourceFile(menu.entry)} actionRef={menuActionRef} onPreview={() => { closeMenu(); menu.entry.is_dir ? void load(menu.entry.path, true) : void openFile(menu.entry); }} onOpenLocal={() => { closeMenu(); void openLocally(menu.entry); }} onDownload={() => { closeMenu(); void downloadEntry(menu.entry); }} onVSCode={() => { closeMenu(); void openVSCode(menu.entry); }} onProperties={() => { closeMenu(); void openProperties(menu.entry); }} latexEdit={(cloudMode || paperWorkspace) && !menu.entry.is_dir && isLatexSourceName(menu.entry.name)} showDelete={cloudMode} menuZIndex={manageFiles ? 110000 : 20} onDelete={() => { closeMenu(); void deleteEntry(menu.entry); }} /> : null}</div>;
+    return <div data-testid="code-preview-workspace" data-cloud-mode={cloudMode ? "true" : undefined} data-manage-files={manageFiles ? "true" : undefined} style={{ display: "flex", flexDirection: "column", height: "100%", background: theme.bg, ["--cpws-row-hover" as string]: theme.tabHoverBg, ["--cpws-row-accent" as string]: theme.syntaxKeyword }}>{!hideHeader ? <div data-testid="code-preview-workspace-header" style={{ display: "flex", alignItems: "center", gap: 8, boxSizing: "border-box", height: 42, padding: "0 14px", borderBottom: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 12 }}>{hideTitle ? null : <strong style={{ color: theme.tabActiveText, fontWeight: 600, flexShrink: 0, lineHeight: 1.2 }}>{cloudMode ? label(lang, "Cloud workspace", "云端工作区", "雲端工作區") : label(lang, "WORKING DIRECTORY", "工作目录", "工作目錄")}</strong>}<span data-testid="code-preview-workspace-root-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: rootResolved ? theme.textMuted : theme.lineNumText, fontSize: rootResolved ? 11 : 10.5, fontWeight: 400, lineHeight: 1.2 }}>{rootLabel}</span>{exportButton}<button type="button" aria-label={cloudMode ? label(lang, "Refresh cloud files", "刷新云端文件", "重新整理雲端檔案") : label(lang, "Refresh working directory", "刷新工作目录", "重新整理工作目錄")} title={label(lang, "Refresh", "刷新", "重新整理")} aria-busy={loading.has("")} onClick={refreshRoot} style={{ marginLeft: paperWorkspace ? 0 : "auto", border: 0, borderRadius: 4, padding: "2px 5px", background: "transparent", color: theme.tabActiveText, cursor: "pointer", font: "inherit", lineHeight: 1.2, flexShrink: 0 }}>{label(lang, "Refresh", "刷新", "重新整理")}</button></div> : null}{hideHeader && exportButton ? <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: `1px solid ${theme.border}` }}>{exportButton}</div> : null}{manageFiles && propertiesPanel ? <div className="cpws-properties">{propertiesPanel}</div> : null}<div ref={entriesRef} className="cpws-entries" onScroll={updateTreeMetrics} style={{ position: "relative" }}>{rootError ? <WorkspaceNotice message={rootError} isError lang={lang} theme={theme} onClose={() => setErrors(prev => { const next = new Map(prev); next.delete(""); return next; })} /> : null}{notice ? <WorkspaceNotice message={notice} isError={noticeIsError} lang={lang} theme={theme} onClose={() => { setNotice(""); setNoticeIsError(false); }} /> : null}{manageFiles ? null : propertiesPanel}{loading.has("") && !pagesRef.current.has("") ? <DirectoryLoading root lang={lang} theme={theme} cloudMode={cloudMode} /> : null}{rootResolved && !rootError && pagesRef.current.has("") && !pagesRef.current.get("")?.entries?.length ? <EmptyDirectory lang={lang} theme={theme} cloudMode={cloudMode} /> : null}<div ref={treeRef} data-testid="code-preview-workspace-tree" style={virtualized ? { position: "relative", height: visibleRows.length * workspaceRowHeight } : undefined}>{renderedEntries}</div></div>{menu ? <Menu menu={menu} theme={theme} lang={lang} showPreview={!manageFiles && (menu.entry.is_dir || !cloudMode || !isLikelyBinaryName(menu.entry.name))} showDownload={cloudMode} showOpenLocal={cloudMode && !menu.entry.is_dir} showVSCode={!cloudMode && vscodeAvailable && isVSCodeSourceFile(menu.entry)} actionRef={menuActionRef} onPreview={() => { closeMenu(); menu.entry.is_dir ? void load(menu.entry.path, true) : void openFile(menu.entry); }} onOpenLocal={() => { closeMenu(); void openLocally(menu.entry); }} onDownload={() => { closeMenu(); void downloadEntry(menu.entry); }} onVSCode={() => { closeMenu(); void openVSCode(menu.entry); }} onProperties={() => { closeMenu(); void openProperties(menu.entry); }} latexEdit={(cloudMode || paperWorkspace) && !menu.entry.is_dir && isLatexSourceName(menu.entry.name)} showDelete={cloudMode} menuZIndex={manageFiles ? 110000 : 20} onDelete={() => { closeMenu(); void deleteEntry(menu.entry); }} /> : null}</div>;
 }
 
 function Menu({ menu, theme, lang, showPreview = true, showDownload = false, showOpenLocal = false, showVSCode, showDelete = false, latexEdit = false, menuZIndex = 20, actionRef, onPreview, onOpenLocal, onDownload, onVSCode, onProperties, onDelete }: { menu: ContextMenu; theme: CodePreviewTheme; lang: string; showPreview?: boolean; showDownload?: boolean; showOpenLocal?: boolean; showVSCode: boolean; showDelete?: boolean; latexEdit?: boolean; menuZIndex?: number; actionRef: React.RefObject<HTMLButtonElement>; onPreview: () => void; onOpenLocal: () => void; onDownload: () => void; onVSCode: () => void; onProperties: () => void; onDelete: () => void }) { const style: React.CSSProperties = { display: "block", width: "100%", border: 0, background: "transparent", color: theme.text, padding: "7px 12px", textAlign: "left", cursor: "pointer" }; const openLocalRef = !showPreview && showOpenLocal ? actionRef : undefined; const downloadRef = !showPreview && !showOpenLocal && showDownload ? actionRef : undefined; const propertiesRef = !showPreview && !showOpenLocal && !showDownload ? actionRef : undefined; return <div role="menu" aria-label={menu.entry.name} data-testid="code-preview-workspace-context-menu" style={{ position: "fixed", zIndex: menuZIndex, left: menu.x, top: menu.y, width: "min(196px, calc(100vw - 16px))", padding: 4, border: `1px solid ${theme.border}`, borderRadius: 6, background: theme.tabBg }}>{showPreview ? <button ref={actionRef} type="button" role="menuitem" data-testid="code-preview-workspace-context-preview" style={style} onClick={onPreview}>{menu.entry.is_dir ? label(lang, "Preview folder", "预览文件夹", "預覽資料夾") : latexEdit ? label(lang, "Edit LaTeX", "编辑 LaTeX", "編輯 LaTeX") : label(lang, "Preview", "预览", "預覽")}</button> : null}{showOpenLocal ? <button ref={openLocalRef} type="button" role="menuitem" data-testid="code-preview-workspace-context-open-local" style={style} onClick={onOpenLocal}>{label(lang, "Open locally", "在本地打开", "在本機開啟")}</button> : null}{showDownload ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-download" ref={downloadRef} style={style} onClick={onDownload}>{label(lang, "Download", "下载", "下載")}</button> : null}{showVSCode ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-open-vscode" style={style} onClick={onVSCode}>{label(lang, "Open with VS Code", "使用 VS Code 打开", "使用 VS Code 開啟")}</button> : null}<button type="button" role="menuitem" data-testid="code-preview-workspace-context-properties" ref={propertiesRef} style={style} onClick={onProperties}>{label(lang, "Properties", "属性", "屬性")}</button>{showDelete ? <button type="button" role="menuitem" data-testid="code-preview-workspace-context-delete" style={{ ...style, color: theme.diffDeleteText, borderTop: `1px solid ${theme.border}`, marginTop: 2 }} onClick={onDelete}>{menu.entry.is_dir ? label(lang, "Delete folder", "删除文件夹", "刪除資料夾") : label(lang, "Delete", "删除", "刪除")}</button> : null}</div>; }

@@ -4315,6 +4315,21 @@ input.cwshare-url {
   background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
   outline: none;
 }
+/* Highlights on the agent's answers ride the CSS Custom Highlight API: the
+   text nodes stay React's, so streaming and re-renders cannot corrupt the
+   transcript the way wrapped <mark> nodes could. */
+::highlight(companion-chat-yellow) {
+  background-color: #ffe08a;
+}
+::highlight(companion-chat-green) {
+  background-color: #b6e7c3;
+}
+::highlight(companion-chat-blue) {
+  background-color: #b9d4f5;
+}
+::highlight(companion-chat-pink) {
+  background-color: #f6c1d8;
+}
 .companion-pdf-translation {
   position: absolute;
   box-sizing: border-box;
@@ -6491,6 +6506,61 @@ body.companion-pdf-translation-dragging * {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+/* A shared document says so on its own tab, so the reader can tell the cloud
+   state of every open file without selecting it first. */
+.file-companion-tab-share {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--theme-primary, #2e75cb);
+}
+.file-companion-tab-share[data-state="received"] {
+  color: var(--theme-text-muted, #56677c);
+}
+.file-companion-tab-share svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+/* The host seat travels with the document: the same tab says 你是主持人 here
+   and names the host on a participant's screen. */
+.file-companion-tab-host {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  background: #fff1cf;
+  color: #8a5a00;
+  font: 600 10px/15px "Segoe UI", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.file-companion-tab-host[data-state="guest"] {
+  background: #eef2f7;
+  color: var(--theme-text-secondary, #546479);
+}
+.file-companion-host-badge {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 9px;
+  border: 1px solid #f0d59a;
+  border-radius: 999px;
+  background: #fff4d6;
+  color: #8a5a00;
+  font: 600 11px/18px "Segoe UI", "Microsoft YaHei", sans-serif;
+  --wails-draggable: no-drag;
+}
+.file-companion-host-badge[data-state="guest"] {
+  border-color: var(--theme-border, #c9ddf6);
+  background: var(--theme-surface-muted, #eef5ff);
+  color: var(--theme-text-secondary, #546479);
 }
 .file-companion-send {
   height: 36px;

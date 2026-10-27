@@ -491,21 +491,16 @@ func TestApplySkillRepairDraftRejectsInvalidSteps(t *testing.T) {
 	}
 }
 
-// TestListSkillRepairDraftsContract covers fix 8: the list payload is a
-// pinned frontend contract — entry-owned skill names, full old/new step
-// arrays with raw params, summary fields, and unreadable drafts listed with
-// unreadable=true (no steps) so they can still be rejected.
+// TestListSkillRepairDraftsContract pins the summary-list and on-demand
+// detail contracts, including entry-owned names and unreadable draft cleanup.
 func TestListSkillRepairDraftsContract(t *testing.T) {
 	entry, draftName := writeFileBackedSkillWithDraft(t, t.TempDir())
 	draftsDir := filepath.Join(entry.SkillDir, cskill.RepairDraftsDirName)
 
-	// A draft whose self-declared skill field disagrees with the directory —
-	// the directory (entry name) must win.
 	spoofed := `{"skill":"spoofed-other","old_steps":[],"new_steps":[{"action":"bash","params":{"command":"echo x"},"on_error":"stop"}],"explanation":"spoof","created_at":"2026-01-01T00:00:00Z"}`
 	if err := os.WriteFile(filepath.Join(draftsDir, "20990101T000000.000000000Z.json"), []byte(spoofed), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// An unparseable draft file — must still be listed as unreadable.
 	if err := os.WriteFile(filepath.Join(draftsDir, "20990102T000000.000000000Z.json"), []byte("{corrupt"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -516,19 +511,11 @@ func TestListSkillRepairDraftsContract(t *testing.T) {
 		OK     bool `json:"ok"`
 		Count  int  `json:"count"`
 		Drafts []struct {
-			Skill      string `json:"skill"`
-			Draft      string `json:"draft"`
-			Unreadable bool   `json:"unreadable"`
-			OldSteps   []struct {
-				Action  string                 `json:"action"`
-				Params  map[string]interface{} `json:"params"`
-				OnError string                 `json:"on_error"`
-			} `json:"old_steps"`
-			NewSteps []struct {
-				Action  string                 `json:"action"`
-				Params  map[string]interface{} `json:"params"`
-				OnError string                 `json:"on_error"`
-			} `json:"new_steps"`
+			Skill           string          `json:"skill"`
+			Draft           string          `json:"draft"`
+			Unreadable      bool            `json:"unreadable"`
+			OldSteps        json.RawMessage `json:"old_steps"`
+			NewSteps        json.RawMessage `json:"new_steps"`
 			OldStepsSummary struct {
 				Count   int      `json:"count"`
 				Actions []string `json:"actions"`
@@ -549,9 +536,11 @@ func TestListSkillRepairDraftsContract(t *testing.T) {
 	byDraft := map[string]int{}
 	for i, d := range payload.Drafts {
 		byDraft[d.Draft] = i
-		// skill 一律取 entry 名（目录归属）。
 		if d.Skill != "draft-skill" {
 			t.Fatalf("draft %s skill = %q, want entry name draft-skill", d.Draft, d.Skill)
+		}
+		if d.OldSteps != nil || d.NewSteps != nil {
+			t.Fatalf("summary list must not include full steps for %s", d.Draft)
 		}
 	}
 
@@ -559,36 +548,73 @@ func TestListSkillRepairDraftsContract(t *testing.T) {
 	if good.Unreadable {
 		t.Fatal("good draft flagged unreadable")
 	}
-	if len(good.OldSteps) != 1 || good.OldSteps[0].Action != "bash" ||
-		good.OldSteps[0].Params["command"] != "echo old" {
-		t.Fatalf("old_steps = %+v", good.OldSteps)
-	}
-	if len(good.NewSteps) != 1 || good.NewSteps[0].Params["command"] != "echo new" {
-		t.Fatalf("new_steps = %+v", good.NewSteps)
-	}
 	if good.OldStepsSummary.Count != 1 || good.NewStepsSummary.Count != 1 ||
 		len(good.NewStepsSummary.Actions) != 1 || good.NewStepsSummary.Actions[0] != "bash" {
 		t.Fatalf("summaries = %+v / %+v", good.OldStepsSummary, good.NewStepsSummary)
 	}
 
-	spoof := payload.Drafts[byDraft["20990101T000000.000000000Z.json"]]
-	if len(spoof.NewSteps) != 1 || spoof.NewSteps[0].OnError != "stop" {
-		t.Fatalf("spoofed draft steps = %+v", spoof.NewSteps)
+	type detailPayload struct {
+		OK    bool `json:"ok"`
+		Draft struct {
+			Skill    string `json:"skill"`
+			OldSteps []struct {
+				Action  string                 `json:"action"`
+				Params  map[string]interface{} `json:"params"`
+				OnError string                 `json:"on_error"`
+			} `json:"old_steps"`
+			NewSteps []struct {
+				Action  string                 `json:"action"`
+				Params  map[string]interface{} `json:"params"`
+				OnError string                 `json:"on_error"`
+			} `json:"new_steps"`
+		} `json:"draft"`
+	}
+	getDetail := func(name string) detailPayload {
+		t.Helper()
+		var detail detailPayload
+		if err := json.Unmarshal([]byte(app.GetSkillRepairDraft("draft-skill", name)), &detail); err != nil {
+			t.Fatalf("invalid detail response for %s: %v", name, err)
+		}
+		if !detail.OK || detail.Draft.Skill != "draft-skill" {
+			t.Fatalf("invalid detail payload for %s: %+v", name, detail)
+		}
+		return detail
+	}
+	goodDetail := getDetail(draftName)
+	if len(goodDetail.Draft.OldSteps) != 1 || goodDetail.Draft.OldSteps[0].Action != "bash" ||
+		goodDetail.Draft.OldSteps[0].Params["command"] != "echo old" {
+		t.Fatalf("old_steps = %+v", goodDetail.Draft.OldSteps)
+	}
+	if len(goodDetail.Draft.NewSteps) != 1 || goodDetail.Draft.NewSteps[0].Params["command"] != "echo new" {
+		t.Fatalf("new_steps = %+v", goodDetail.Draft.NewSteps)
+	}
+	spoofDetail := getDetail("20990101T000000.000000000Z.json")
+	if len(spoofDetail.Draft.NewSteps) != 1 || spoofDetail.Draft.NewSteps[0].OnError != "stop" {
+		t.Fatalf("spoofed draft steps = %+v", spoofDetail.Draft.NewSteps)
 	}
 
-	bad := payload.Drafts[byDraft["20990102T000000.000000000Z.json"]]
-	if !bad.Unreadable {
+	badName := "20990102T000000.000000000Z.json"
+	if !payload.Drafts[byDraft[badName]].Unreadable {
 		t.Fatal("corrupt draft must be listed with unreadable=true")
 	}
-	if len(bad.OldSteps) != 0 || len(bad.NewSteps) != 0 {
-		t.Fatalf("unreadable draft must not carry steps: %+v", bad)
-	}
-	// 不可读 draft 也必须可 reject（用户清理入口）。
 	parsed := map[string]interface{}{}
-	if err := json.Unmarshal([]byte(app.RejectSkillRepairDraft("draft-skill", "20990102T000000.000000000Z.json")), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(app.RejectSkillRepairDraft("draft-skill", badName)), &parsed); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := parsed["ok"].(bool); !ok {
 		t.Fatalf("reject unreadable draft failed: %v", parsed["error"])
+	}
+
+	res = app.ListSkillRepairDrafts()
+	if err := json.Unmarshal([]byte(res), &payload); err != nil {
+		t.Fatalf("invalid JSON response after rejection %q", res)
+	}
+	for _, d := range payload.Drafts {
+		if d.Draft == badName {
+			t.Fatal("rejected draft returned from cached list")
+		}
+	}
+	if payload.Count != 2 || len(payload.Drafts) != 2 {
+		t.Fatalf("count after rejection = %d/%d, want 2", payload.Count, len(payload.Drafts))
 	}
 }

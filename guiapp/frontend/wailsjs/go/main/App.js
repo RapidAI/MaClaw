@@ -1481,6 +1481,10 @@ export function DeleteFileCompanionProject(arg1) {
   return window['go']['main']['App']['DeleteFileCompanionProject'](arg1);
 }
 
+export function DeleteFileCompanionShare(arg1) {
+  return window['go']['main']['App']['DeleteFileCompanionShare'](arg1);
+}
+
 export function LeaveFileCompanionGroup(arg1) {
   return window['go']['main']['App']['LeaveFileCompanionGroup'](arg1);
 }
@@ -1495,6 +1499,26 @@ export function AcceptFileCompanionGroupInvite(arg1) {
 
 export function IgnoreFileCompanionGroupInvite(arg1) {
   return window['go']['main']['App']['IgnoreFileCompanionGroupInvite'](arg1);
+}
+
+export function LoadCompanionReaderState(arg1, arg2, arg3) {
+  return window['go']['main']['App']['LoadCompanionReaderState'](arg1, arg2, arg3);
+}
+
+export function SaveCompanionPdfMarks(arg1, arg2) {
+  return window['go']['main']['App']['SaveCompanionPdfMarks'](arg1, arg2);
+}
+
+export function SaveCompanionPdfTranslations(arg1, arg2) {
+  return window['go']['main']['App']['SaveCompanionPdfTranslations'](arg1, arg2);
+}
+
+export function SaveCompanionChatMarks(arg1, arg2) {
+  return window['go']['main']['App']['SaveCompanionChatMarks'](arg1, arg2);
+}
+
+export function SaveCompanionInputHistory(arg1) {
+  return window['go']['main']['App']['SaveCompanionInputHistory'](arg1);
 }
 
 export function DeclineFileCompanionGroupInvite(arg1) {
@@ -2657,6 +2681,10 @@ export function GroupDiscussionListMine(arg1) {
   return window['go']['main']['App']['GroupDiscussionListMine'](arg1);
 }
 
+export function GroupDiscussionListMinePage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GroupDiscussionListMinePage'](arg1, arg2, arg3);
+}
+
 export function GroupDiscussionProcessPendingInvites() {
   return window['go']['main']['App']['GroupDiscussionProcessPendingInvites']();
 }
@@ -3767,6 +3795,10 @@ export function ListSkillMaintenanceDrafts() {
 
 export function ListSkillRepairDrafts() {
   return window['go']['main']['App']['ListSkillRepairDrafts']();
+}
+
+export function GetSkillRepairDraft(arg1, arg2) {
+  return window['go']['main']['App']['GetSkillRepairDraft'](arg1, arg2);
 }
 
 export function ListSkillRunArtifacts(arg1, arg2) {

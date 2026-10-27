@@ -3,6 +3,7 @@ import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import { useDialog } from '../CustomDialog';
 import type { CodingTaskLaunch as SharedCodingTaskLaunch } from '../ai/codingTaskLaunch';
 import { toolsBackHintLabel, toolsBackLabel } from '../../i18n/utilitiesLabels';
+import { startVisibleInterval } from '../../utils/visibleInterval';
 import './VirtualRepositoryWorkspace.css';
 
 type RepoKind = 'git' | 'svn' | 'local';
@@ -307,21 +308,9 @@ const parseRequiredJSON = <T,>(raw: unknown, label: string): T => {
 
 const operationStatuses = new Set(['running', 'success', 'failed', 'partial_success', 'cancelled']);
 const operationItemStatuses = new Set(['success', 'failed', 'cancelled']);
-const parseOperationResult = (raw: unknown, label: string, expectedJobID?: string) => {
-	const result = parseRequiredJSON<any>(raw, label);
-	if (!result || typeof result !== 'object' || typeof result.job_id !== 'string' || !result.job_id.trim()) {
-		throw new Error(`${label} returned no job id`);
-	}
-	if (expectedJobID && result.job_id !== expectedJobID) {
-		throw new Error(`${label} returned a different job`);
-	}
-	if (typeof result.status !== 'string' || !operationStatuses.has(result.status)) {
-		throw new Error(`${label} returned an invalid status`);
-	}
-	if (!Array.isArray(result.items)) {
-		throw new Error(`${label} returned invalid operation items`);
-	}
-	if (result.items.length > 10000 || result.items.some((item: any) =>
+const OPERATION_RESULT_PAGE_SIZE = 200;
+const validateOperationItems = (items: unknown, label: string) => {
+	if (!Array.isArray(items) || items.length > 10000 || items.some((item: any) =>
 		!item || typeof item !== 'object'
 		|| typeof item.status !== 'string' || !operationItemStatuses.has(item.status)
 		|| (item.node_id != null && typeof item.node_id !== 'string')
@@ -332,7 +321,38 @@ const parseOperationResult = (raw: unknown, label: string, expectedJobID?: strin
 		|| (item.duration_ms != null && (typeof item.duration_ms !== 'number' || !Number.isFinite(item.duration_ms) || item.duration_ms < 0)))) {
 		throw new Error(`${label} returned invalid operation items`);
 	}
+};
+const validOperationCount = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+const parseOperationResult = (raw: unknown, label: string, expectedJobID?: string, requireItems = true) => {
+	const result = parseRequiredJSON<any>(raw, label);
+	if (!result || typeof result !== 'object' || typeof result.job_id !== 'string' || !result.job_id.trim()) {
+		throw new Error(`${label} returned no job id`);
+	}
+	if (expectedJobID && result.job_id !== expectedJobID) {
+		throw new Error(`${label} returned a different job`);
+	}
+	if (typeof result.status !== 'string' || !operationStatuses.has(result.status)) {
+		throw new Error(`${label} returned an invalid status`);
+	}
+	if (requireItems || result.items !== undefined) validateOperationItems(result.items, label);
+	if (Array.isArray(result.items)) {
+		result.completed ??= result.items.length;
+		result.target_count ??= result.completed;
+	}
+	if (!validOperationCount(result.completed) || !validOperationCount(result.target_count)) {
+		throw new Error(`${label} returned invalid operation counts`);
+	}
 	return result;
+};
+const parseOperationItemsPage = (raw: unknown, label: string, expectedJobID: string, expectedOffset: number) => {
+	const page = parseRequiredJSON<any>(raw, label);
+	if (!page || typeof page !== 'object' || page.job_id !== expectedJobID) throw new Error(`${label} returned a different job`);
+	validateOperationItems(page.items, label);
+	if (page.offset !== expectedOffset || !validOperationCount(page.next_offset) || !validOperationCount(page.total)
+		|| page.next_offset !== page.offset + page.items.length || page.total < page.next_offset) {
+		throw new Error(`${label} returned invalid operation item offsets`);
+	}
+	return page;
 };
 
 const operationIsTerminal = (status: unknown) => typeof status === 'string' && status !== 'running' && operationStatuses.has(status);
@@ -340,6 +360,7 @@ const shouldAcceptOperationResult = (current: any, next: any) => {
 	if (!current || current.job_id !== next.job_id) return true;
 	if (operationIsTerminal(current.status)) return false;
 	if (Array.isArray(current.items) && Array.isArray(next.items) && next.items.length < current.items.length) return false;
+	if (validOperationCount(current.completed) && validOperationCount(next.completed) && next.completed < current.completed) return false;
 	return true;
 };
 
@@ -700,6 +721,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const [mappingDraftBeforeCredentials, setMappingDraftBeforeCredentials] = useState<Record<string, unknown> | null>(null);
 	const [operation, setOperation] = useState<{ action: 'sync' | 'commit' | 'push' | 'commit_push' | 'revert'; message: string; preview?: any } | null>(null);
     const [operationResult, setOperationResult] = useState<any>(null);
+	const [operationResultPage, setOperationResultPage] = useState(1);
 	const [operationCancelPending, setOperationCancelPending] = useState(false);
     const [retryNodeIds, setRetryNodeIds] = useState<string[]>([]);
     const [directoryStats, setDirectoryStats] = useState<any>(null);
@@ -746,6 +768,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const directoryPickerOpenRef = useRef(false);
 	const operationPreviewRequestRef = useRef(0);
 	const operationStartingRef = useRef(false);
+	const operationItemsLoadingRef = useRef(false);
+	const operationFullResultJobRef = useRef('');
 	const operationRefreshRequestRef = useRef(0);
 	const statusInspectionRequestRef = useRef(0);
 	const changesRequestRef = useRef(0);
@@ -896,6 +920,16 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	}, [backgroundSyncPending]);
 
     const operationRunning = operationResult?.status === 'running';
+	const operationItems: any[] = Array.isArray(operationResult?.items) ? operationResult.items : [];
+	const operationResultPageCount = Math.max(1, Math.ceil(operationItems.length / OPERATION_RESULT_PAGE_SIZE));
+	const operationResultPageSafe = Math.min(operationResultPage, operationResultPageCount);
+	const visibleOperationItems = operationItems.length > OPERATION_RESULT_PAGE_SIZE
+		? operationItems.slice((operationResultPageSafe - 1) * OPERATION_RESULT_PAGE_SIZE, operationResultPageSafe * OPERATION_RESULT_PAGE_SIZE)
+		: operationItems;
+	useEffect(() => { setOperationResultPage(1); }, [operationResult?.job_id]);
+	useEffect(() => {
+		if (operationResultPage > operationResultPageCount) setOperationResultPage(operationResultPageCount);
+	}, [operationResultPage, operationResultPageCount]);
     const mutationLocked = busy || operationRunning;
     busyRef.current = busy;
 
@@ -1902,24 +1936,73 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		}
 	};
 
+	const loadTerminalOperationResult = useCallback(async (jobID: string) => {
+		if (operationFullResultJobRef.current === jobID) return;
+		operationFullResultJobRef.current = jobID;
+		try {
+			const result = parseOperationResult(await app()?.GetVirtualRepositoryOperation?.(jobID), 'Operation result', jobID);
+			if (!workspaceMountedRef.current || operationResultRef.current?.job_id !== jobID || !operationIsTerminal(result.status)) return;
+			operationResultRef.current = result;
+			setOperationResult(result);
+		} catch (e: any) {
+			if (operationFullResultJobRef.current === jobID) operationFullResultJobRef.current = '';
+			if (workspaceMountedRef.current && operationResultRef.current?.job_id === jobID) setError(localizeVRepoError(e, isZh));
+		}
+	}, [isZh]);
+
+	const loadNewOperationItems = useCallback(async (jobID: string) => {
+		if (operationItemsLoadingRef.current) return;
+		operationItemsLoadingRef.current = true;
+		try {
+			while (workspaceMountedRef.current && operationResultRef.current?.job_id === jobID && operationResultRef.current?.status === 'running') {
+				const current = operationResultRef.current;
+				const offset = Array.isArray(current.items) ? current.items.length : 0;
+				if (!validOperationCount(current.completed) || current.completed <= offset) return;
+				const page = parseOperationItemsPage(
+					await app()?.GetVirtualRepositoryOperationItems?.(jobID, offset, 200),
+					'Operation items', jobID, offset,
+				);
+				if (!workspaceMountedRef.current || operationResultRef.current?.job_id !== jobID || operationResultRef.current?.status !== 'running') return;
+				const latest = operationResultRef.current;
+				if (!Array.isArray(latest.items) || latest.items.length !== offset) continue;
+				const next = { ...latest, items: latest.items.concat(page.items) };
+				if (!shouldAcceptOperationResult(latest, next)) return;
+				operationResultRef.current = next;
+				setOperationResult(next);
+			}
+		} catch (e: any) {
+			if (workspaceMountedRef.current && operationResultRef.current?.job_id === jobID) setError(localizeVRepoError(e, isZh));
+		} finally {
+			operationItemsLoadingRef.current = false;
+		}
+	}, [isZh]);
+
+	const applyOperationUpdate = useCallback((result: any) => {
+		const current = operationResultRef.current;
+		if (!current?.job_id || current.job_id !== result.job_id) return;
+		const next = Array.isArray(result.items) ? result : { ...current, ...result, items: current.items || [] };
+		if (!shouldAcceptOperationResult(current, next)) return;
+		operationResultRef.current = next;
+		setOperationResult(next);
+		if (next.status !== 'running') {
+			setOperationCancelPending(false);
+			setBusy(false);
+			void refreshStatusAfterOperation();
+			if (Array.isArray(result.items)) operationFullResultJobRef.current = next.job_id;
+			else void loadTerminalOperationResult(next.job_id);
+		} else if (next.completed > next.items.length) {
+			void loadNewOperationItems(next.job_id);
+		}
+	}, [loadNewOperationItems, loadTerminalOperationResult, refreshStatusAfterOperation]);
+
 	useEffect(() => {
-        try {
+		try {
 			return EventsOn('virtual-repository:job-updated', (raw: unknown) => {
-				if (!workspaceMountedRef.current) return;
-				let result: any;
-				try { result = parseOperationResult(raw, 'Operation update', operationResultRef.current?.job_id); } catch { return; }
-				if (!operationResultRef.current?.job_id) return;
-				if (!shouldAcceptOperationResult(operationResultRef.current, result)) return;
-                operationResultRef.current = result;
-                setOperationResult(result);
-                if (result.status !== 'running') {
-					setOperationCancelPending(false);
-                    setBusy(false);
-                    void refreshStatusAfterOperation();
-                }
-            });
-        } catch { return undefined; }
-	}, [refreshStatusAfterOperation]);
+				if (!workspaceMountedRef.current || !operationResultRef.current?.job_id) return;
+				try { applyOperationUpdate(parseOperationResult(raw, 'Operation update', operationResultRef.current.job_id, false)); } catch { return; }
+			});
+		} catch { return undefined; }
+	}, [applyOperationUpdate]);
 
 	const saveNode = async () => {
         if (!repo) return;
@@ -2442,7 +2525,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		const requestID = ++operationPreviewRequestRef.current;
         setRetryNodeIds([]);
         const next = { action, message: '', preview: undefined as any };
-        setOperation(next); operationResultRef.current = null; setOperationResult(null); setError('');
+        setOperation(next); operationResultRef.current = null; operationFullResultJobRef.current = ''; setOperationResult(null); setError('');
         if (action === 'commit' || action === 'commit_push') return;
         try {
 			const preview = parseRequiredJSON<any>(await app()?.PreviewVirtualRepositoryOperation?.(JSON.stringify({ root_path: activeMappingRootPath || repo.root_path, repository_id: repo.id, mapping_id: activeMapping?.id || '', node_id: selectedId, action })), 'Operation preview');
@@ -2470,6 +2553,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         setBusy(true); setError('');
         try {
 			const result = parseOperationResult(await app()?.StartVirtualRepositoryOperation?.(JSON.stringify({ root_path: activeMappingRootPath || repo.root_path, repository_id: repo.id, mapping_id: activeMapping?.id || '', node_id: selectedId, node_ids: retryNodeIds, action: operation.action, message: operation.message, expected_repository_id: operation.preview?.repository_id, expected_updated_at: operation.preview?.updated_at })), 'Start operation');
+			operationFullResultJobRef.current = result.status === 'running' ? '' : result.job_id;
 			operationResultRef.current = result;
 			setOperationResult(result); setOperation(null); setRetryNodeIds([]);
 			if (result.status !== 'running') {
@@ -2486,26 +2570,23 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         const jobID = operationResult.job_id;
 		let pollInFlight = false;
 		let disposed = false;
-        const timer = window.setInterval(async () => {
-			if (pollInFlight) return;
+		const poll = async () => {
+			if (pollInFlight || operationResultRef.current?.job_id !== jobID || operationResultRef.current?.status !== 'running') return;
 			pollInFlight = true;
 			try {
-				const result = parseOperationResult(await app()?.GetVirtualRepositoryOperation?.(jobID), 'Operation status', jobID);
-				if (disposed || !workspaceMountedRef.current) return;
-				if (operationResultRef.current?.job_id !== jobID) return;
-				if (!shouldAcceptOperationResult(operationResultRef.current, result)) return;
-                operationResultRef.current = result;
-                setOperationResult(result);
-				if (result.status !== 'running') { setBusy(false); setOperationCancelPending(false); window.clearInterval(timer); void refreshStatusAfterOperation(); }
+				const result = parseOperationResult(await app()?.GetVirtualRepositoryOperationStatus?.(jobID), 'Operation status', jobID, false);
+				if (disposed || !workspaceMountedRef.current || operationResultRef.current?.job_id !== jobID) return;
+				applyOperationUpdate(result);
 			} catch (e: any) {
 				if (!disposed && workspaceMountedRef.current && operationResultRef.current?.job_id === jobID) {
 					setError(localizeVRepoError(e, isZh));
 				}
 			}
 			finally { pollInFlight = false; }
-        }, 750);
-		return () => { disposed = true; window.clearInterval(timer); };
-	}, [operationResult?.job_id, operationResult?.status, refreshStatusAfterOperation]);
+		};
+		const stopPolling = startVisibleInterval(() => { void poll(); }, 4000);
+		return () => { disposed = true; stopPolling(); };
+	}, [operationResult?.job_id, operationResult?.status, applyOperationUpdate, isZh]);
 
 	const cancelOperation = async () => {
 		if (!operationResult?.job_id || operationCancelPending) return;
@@ -2787,6 +2868,16 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
                 {operation.action === 'revert' ? <p className="vrepo-operation__danger">{text.revertWarning}</p> : null}
             </> : null}
         </VRepoDialog> : null}
-		{operationResult ? <section className="vrepo-operation-result" role="region" aria-live="polite" aria-atomic="false"><div className="vrepo-detail__title"><div><h2>{text.operation}: {operationResult.status}</h2>{operationRunning ? <p>{text.operationRunningHint}</p> : null}</div><div>{operationRunning ? <button type="button" className="danger" disabled={operationCancelPending} title={tips.cancel} onClick={() => void cancelOperation()}>{operationCancelPending ? text.loading : text.cancel}</button> : <button type="button" className="secondary" title={text.close} onClick={() => { operationResultRef.current = null; setOperationResult(null); setOperationCancelPending(false); }}>{text.close}</button>}</div></div>{(operationResult.items || []).map((item: any) => <div key={item.node_id || item.name} className={item.status === 'failed' ? 'is-error' : ''}><strong>{item.name || text.operation}</strong><span>{item.status}{item.error_code ? ` · ${item.error_code}` : ''}{item.error ? ` · ${localizeVRepoError(item.error, isZh)}` : ''}</span></div>)}{operationResult.status !== 'cancelled' && !operationRunning && operationResult.items?.some((item: any) => item.status === 'failed' && item.node_id) ? <button type="button" onClick={() => { const retry = retryOperationForResult(operationResult); setRetryNodeIds(retry.failed.map((item: any) => item.node_id)); setOperation({ action: retry.action, message: operationResult.message || '' }); operationResultRef.current = null; setOperationResult(null); setOperationCancelPending(false); }} title={tips.retryFailed}>{text.retryFailed}</button> : null}</section> : null}
+		{operationResult ? <section className="vrepo-operation-result" role="region" aria-live="polite" aria-atomic="false">
+			<div className="vrepo-detail__title"><div><h2>{text.operation}: {operationResult.status}</h2><p>{operationResult.completed ?? 0} / {operationResult.target_count ?? 0} {text.repositories}</p>{operationRunning ? <p>{text.operationRunningHint}</p> : null}</div><div>{operationRunning ? <button type="button" className="danger" disabled={operationCancelPending} title={tips.cancel} onClick={() => void cancelOperation()}>{operationCancelPending ? text.loading : text.cancel}</button> : <button type="button" className="secondary" title={text.close} onClick={() => { operationResultRef.current = null; operationFullResultJobRef.current = ''; setOperationResult(null); setOperationCancelPending(false); }}>{text.close}</button>}</div></div>
+			{!operationRunning && operationResult.completed > operationItems.length ? <button type="button" className="secondary" onClick={() => void loadTerminalOperationResult(operationResult.job_id)}>{isZh ? '加载完整结果' : 'Load full results'}</button> : null}
+			{visibleOperationItems.map((item: any) => <div key={item.node_id || item.name} className={item.status === 'failed' ? 'is-error' : ''}><strong>{item.name || text.operation}</strong><span>{item.status}{item.error_code ? ` · ${item.error_code}` : ''}{item.error ? ` · ${localizeVRepoError(item.error, isZh)}` : ''}</span></div>)}
+			{operationItems.length > OPERATION_RESULT_PAGE_SIZE ? <nav aria-label={isZh ? '操作结果分页' : 'Operation result pages'}>
+				<button type="button" className="secondary" disabled={operationResultPageSafe <= 1} onClick={() => setOperationResultPage(Math.max(1, operationResultPageSafe - 1))}>{isZh ? '上一页' : 'Previous'}</button>
+				<span>{isZh ? `第 ${operationResultPageSafe} / ${operationResultPageCount} 页` : `Page ${operationResultPageSafe} of ${operationResultPageCount}`}</span>
+				<button type="button" className="secondary" disabled={operationResultPageSafe >= operationResultPageCount} onClick={() => setOperationResultPage(Math.min(operationResultPageCount, operationResultPageSafe + 1))}>{isZh ? '下一页' : 'Next'}</button>
+			</nav> : null}
+			{operationResult.status !== 'cancelled' && !operationRunning && operationResult.items?.some((item: any) => item.status === 'failed' && item.node_id) ? <button type="button" onClick={() => { const retry = retryOperationForResult(operationResult); setRetryNodeIds(retry.failed.map((item: any) => item.node_id)); setOperation({ action: retry.action, message: operationResult.message || '' }); operationResultRef.current = null; operationFullResultJobRef.current = ''; setOperationResult(null); setOperationCancelPending(false); }} title={tips.retryFailed}>{text.retryFailed}</button> : null}
+		</section> : null}
     </div>;
 }

@@ -3,6 +3,7 @@ package guiapp
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,7 +119,7 @@ func TestFileCompanionLibraryRemembersOpensAndDropsMissing(t *testing.T) {
 }
 
 func TestFileCompanionLibraryShareAndImport(t *testing.T) {
-	var postedName, postedVisibility, postedDays, postedPassword string
+	var postedName, postedVisibility, postedDays, postedPassword, postedContentHash string
 	var postedBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
@@ -142,6 +143,7 @@ func TestFileCompanionLibraryShareAndImport(t *testing.T) {
 			postedVisibility = form.Value["visibility"][0]
 			postedDays = form.Value["days"][0]
 			postedPassword = form.Value["password"][0]
+			postedContentHash = form.Value["content_hash"][0]
 			files := form.File["file"]
 			if len(files) != 1 {
 				http.Error(w, "missing file", http.StatusBadRequest)
@@ -205,6 +207,10 @@ func TestFileCompanionLibraryShareAndImport(t *testing.T) {
 	}
 	if postedVisibility != "private" || postedDays != "90" || postedPassword != "secret" || postedName != filepath.Base(source) {
 		t.Fatalf("posted name=%q visibility=%q days=%q password=%q", postedName, postedVisibility, postedDays, postedPassword)
+	}
+	wantHash := fmt.Sprintf("%x", sha256.Sum256([]byte("%PDF-")))
+	if postedContentHash != wantHash {
+		t.Fatalf("posted content_hash = %q, want %q", postedContentHash, wantHash)
 	}
 	if err := companionShareBodyIsProject(postedBody, "%PDF-"); err != nil {
 		t.Fatal(err)
@@ -329,6 +335,95 @@ func companionShareBodyIsProject(raw []byte, documentPrefix string) error {
 		return errors.New("分享里不是伴读项目")
 	}
 	return nil
+}
+
+func TestFileCompanionDeleteShareCallsHubAndDropsCloudRow(t *testing.T) {
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	var deleted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			if deleted {
+				_, _ = io.WriteString(w, `{"mine":[],"received":[]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"mine":[{"token":"`+token+`","name":"shared.pdf","visibility":"public","permanent":true,"url":"https://hub.example/hub/documents/shares/`+token+`","created_at":"2026-10-25T00:00:00Z","owner":"me@example.com","size":5}],"received":[]}`)
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/mobile/documents/shares/"+token:
+			if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+				t.Errorf("authorization = %q", got)
+			}
+			if deleted {
+				// A second delete finds nothing. The hub says so with a
+				// message, and the caller treats that as already done.
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"message":"分享链接不存在"}`)
+				return
+			}
+			deleted = true
+			_, _ = io.WriteString(w, `{"deleted":"`+token+`"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range list.Items {
+		if item.Token == token {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("cloud row missing before delete: %#v", list.Items)
+	}
+
+	if err := app.DeleteFileCompanionShare(token); err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Fatal("hub did not receive DELETE")
+	}
+	list, err = app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range list.Items {
+		if item.Token == token {
+			t.Fatalf("cloud row survived delete: %#v", item)
+		}
+	}
+	if err := app.DeleteFileCompanionShare(token); err != nil {
+		t.Fatalf("missing link should be treated as deleted: %v", err)
+	}
+}
+
+func TestFileCompanionDeleteShareReportsOldHub(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	err := app.DeleteFileCompanionShare("cd_0123456789abcdef0123456789abcdef")
+	if err == nil || !strings.Contains(err.Error(), "云端还不支持删除分享，需要更新 Hub") {
+		t.Fatalf("old hub = %v", err)
+	}
 }
 
 func TestReconcileFileCompanionLibraryKeepsRowsOpenedDuringAPull(t *testing.T) {

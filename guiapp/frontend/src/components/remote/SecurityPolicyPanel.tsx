@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { corelib, main } from '../../../wailsjs/go/models';
 import { GetHubSecurityPolicy, IsHubSecurityReadOnly } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
@@ -120,9 +120,10 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
             });
         };
         refresh();
-        EventsOn("hub-security-policy-changed", refresh);
+        const unsubscribe = EventsOn("hub-security-policy-changed", refresh);
         return () => {
             mounted = false;
+            if (typeof unsubscribe === "function") unsubscribe();
         };
     }, []);
 

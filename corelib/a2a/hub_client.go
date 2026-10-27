@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -148,7 +149,7 @@ func (c *HubClient) PublishExpertProfile(ctx context.Context, profile GroupProfi
 }
 
 func (c *HubClient) ListDiscussions(ctx context.Context, role string) ([]HubDiscussionSummary, error) {
-	return c.listDiscussions(ctx, "", role)
+	return c.listDiscussions(ctx, "", role, 0, 0)
 }
 
 func (c *HubClient) ListDiscussionsForAgent(ctx context.Context, agentID, role string) ([]HubDiscussionSummary, error) {
@@ -156,16 +157,30 @@ func (c *HubClient) ListDiscussionsForAgent(ctx context.Context, agentID, role s
 	if agentID == "" {
 		return nil, fmt.Errorf("agent id is required")
 	}
-	return c.listDiscussions(ctx, agentID, role)
+	return c.listDiscussions(ctx, agentID, role, 0, 0)
 }
 
-func (c *HubClient) listDiscussions(ctx context.Context, agentID, role string) ([]HubDiscussionSummary, error) {
+func (c *HubClient) ListDiscussionsForAgentPage(ctx context.Context, agentID, role string, limit, offset int) ([]HubDiscussionSummary, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil, fmt.Errorf("agent id is required")
+	}
+	return c.listDiscussions(ctx, agentID, role, limit, offset)
+}
+
+func (c *HubClient) listDiscussions(ctx context.Context, agentID, role string, limit, offset int) ([]HubDiscussionSummary, error) {
 	values := url.Values{}
 	if agentID = strings.TrimSpace(agentID); agentID != "" {
 		values.Set("participant_id", agentID)
 	}
 	if role = strings.TrimSpace(role); role != "" && !strings.EqualFold(role, "all") {
 		values.Set("role", role)
+	}
+	if limit > 0 {
+		values.Set("limit", strconv.Itoa(limit))
+	}
+	if offset > 0 {
+		values.Set("offset", strconv.Itoa(offset))
 	}
 	path := "/api/a2a/discussions/mine"
 	if encoded := values.Encode(); encoded != "" {

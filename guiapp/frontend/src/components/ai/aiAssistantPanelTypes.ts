@@ -27,6 +27,12 @@ export interface AIAssistantPanelHookState {
     sending: boolean;
     sendingSessionKey?: string;
     busySessionKeys?: string[];
+    /**
+     * Sessions running a backend-started round that is not the visible
+     * transcript (goal and session-round continuations). Not this tab's work,
+     * but their tasks are running and the sidebar must show them as such.
+     */
+    offscreenLiveSessionKeys?: string[];
     streaming: boolean;
     streamingSessionKey?: string;
     streamingSessionKeys?: string[];

@@ -1,9 +1,9 @@
-import { type CSSProperties, useCallback, useEffect, useState } from 'react';
+import { type CSSProperties, useCallback, useEffect, useMemo, useState } from 'react';
 import { useDialog } from '../CustomDialog';
 import { useToast } from '../Toast';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { EVENT_SKILL_REPAIRED, EVENT_SKILL_REPAIR_DRAFT_READY } from '../../constants/events';
-import { ApplySkillRepairDraft, ListSkillRepairDrafts, RejectSkillRepairDraft } from '../../../wailsjs/go/main/App';
+import { ApplySkillRepairDraft, GetSkillRepairDraft, ListSkillRepairDrafts, RejectSkillRepairDraft } from '../../../wailsjs/go/main/App';
 import { colors, consoleInsetHeadStyle, consoleSectionStyle } from './styles';
 
 /** One full step entry in old_steps/new_steps; params is preserved verbatim.
@@ -20,23 +20,32 @@ interface SkillRepairDraftStep {
     condition?: string;
 }
 
-/** Pending human-reviewed repair draft for a file-backed skill
- *  (<skill_dir>/.evolution-drafts/*.json), as listed by ListSkillRepairDrafts.
- *  Drafts whose stored JSON cannot be parsed come back with unreadable:true
- *  and no steps; they can only be rejected, never applied. */
+interface SkillRepairDraftStepsSummary {
+    count?: number;
+    actions?: string[];
+}
+
+/** Pending human-reviewed repair draft summary returned by the list API. */
 interface SkillRepairDraftItem {
     skill?: string;
     draft?: string;
     explanation?: string;
     last_error?: string;
     created_at?: string;
-    old_steps?: SkillRepairDraftStep[];
-    new_steps?: SkillRepairDraftStep[];
+    old_steps_summary?: SkillRepairDraftStepsSummary;
+    new_steps_summary?: SkillRepairDraftStepsSummary;
     unreadable?: boolean;
-    /** True when the draft proposes disabling the skill entirely — no
-     *  old_steps/new_steps; explanation carries the disable reason. */
+    /** True when the draft proposes disabling the skill entirely. */
     disable?: boolean;
 }
+
+interface SkillRepairDraftDetail extends SkillRepairDraftItem {
+    old_steps?: SkillRepairDraftStep[];
+    new_steps?: SkillRepairDraftStep[];
+}
+
+const EMPTY_REPAIR_DRAFT_STEPS: SkillRepairDraftStep[] = [];
+const REPAIR_DRAFT_FALLBACK_POLL_MS = 30_000;
 
 type Props = {
     localizeText: (en: string, zhHans: string, zhHant: string) => string;
@@ -59,8 +68,8 @@ function skillNamesEqual(a: string | undefined | null, b: string | undefined | n
  *
  * File-backed skills never get auto-applied repairs: the evolution pipeline
  * writes a draft under <skill_dir>/.evolution-drafts/ and emits
- * skill:repair_draft_ready. This panel lists those drafts (5s poll + event
- * refresh) and lets the user apply (config + skill.yaml write-back) or
+ * skill:repair_draft_ready. This panel refreshes primarily from events, with
+ * a visibility-aware fallback poll, and lets the user apply or
  * reject (delete) each one. Extracted from SkillsManagementPanelView to keep
  * that file under the main-UI guard line budget.
  */
@@ -77,6 +86,9 @@ export function SkillRepairDraftsPanel({
     const [repairDrafts, setRepairDrafts] = useState<SkillRepairDraftItem[]>([]);
     const [repairDraftsLoading, setRepairDraftsLoading] = useState(false);
     const [expandedRepairDraftKey, setExpandedRepairDraftKey] = useState<string | null>(null);
+    const [repairDraftDetails, setRepairDraftDetails] = useState<Record<string, SkillRepairDraftDetail>>({});
+    const [repairDraftDetailLoadingKey, setRepairDraftDetailLoadingKey] = useState<string | null>(null);
+    const [repairDraftDetailError, setRepairDraftDetailError] = useState<{ key: string; message: string } | null>(null);
 
     // ListSkillRepairDrafts returns a JSON string: { ok, count, drafts: [...] }.
     const loadRepairDrafts = useCallback(async () => {
@@ -103,12 +115,44 @@ export function SkillRepairDraftsPanel({
         }
     }, []);
 
-    // Poll alongside the Evolution tab's pipeline-status refresh (same 5s cadence).
-    // The panel is only mounted while the Evolution tab is active.
+    const loadRepairDraftDetail = useCallback(async (key: string, d: SkillRepairDraftItem) => {
+        setRepairDraftDetailLoadingKey(key);
+        setRepairDraftDetailError(null);
+        try {
+            const raw = await GetSkillRepairDraft(String(d.skill || ""), String(d.draft || ""));
+            const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as { draft?: unknown } | null;
+            if (!parsed?.draft || typeof parsed.draft !== "object" || Array.isArray(parsed.draft)) {
+                throw new Error("repair draft detail missing");
+            }
+            setRepairDraftDetails((current) => ({
+                ...current,
+                [key]: parsed.draft as SkillRepairDraftDetail,
+            }));
+        } catch (err) {
+            setRepairDraftDetailError({ key, message: String(err) });
+        } finally {
+            setRepairDraftDetailLoadingKey((current) => current === key ? null : current);
+        }
+    }, []);
+
     useEffect(() => {
-        void loadRepairDrafts();
-        const id = window.setInterval(() => { void loadRepairDrafts(); }, 5000);
-        return () => window.clearInterval(id);
+        const refreshFallback = () => {
+            if (!document.hidden) {
+                void loadRepairDrafts();
+            }
+        };
+        const onVisibilityChange = () => {
+            if (!document.hidden) {
+                void loadRepairDrafts();
+            }
+        };
+        refreshFallback();
+        const id = window.setInterval(refreshFallback, REPAIR_DRAFT_FALLBACK_POLL_MS);
+        document.addEventListener("visibilitychange", onVisibilityChange);
+        return () => {
+            window.clearInterval(id);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
+        };
     }, [loadRepairDrafts]);
 
     // Refresh on repair-draft / repair-applied events; toast on a brand-new draft.
@@ -304,8 +348,11 @@ export function SkillRepairDraftsPanel({
                         const focused = skillNamesEqual(d.skill, evolutionFocusSkill);
                         const unreadable = d.unreadable === true;
                         const disable = d.disable === true;
-                        const oldSteps = Array.isArray(d.old_steps) ? d.old_steps : [];
-                        const newSteps = Array.isArray(d.new_steps) ? d.new_steps : [];
+                        const detail = repairDraftDetails[key];
+                        const oldSteps = Array.isArray(detail?.old_steps) ? detail.old_steps : EMPTY_REPAIR_DRAFT_STEPS;
+                        const newSteps = Array.isArray(detail?.new_steps) ? detail.new_steps : EMPTY_REPAIR_DRAFT_STEPS;
+                        const oldStepCount = d.old_steps_summary?.count ?? oldSteps.length;
+                        const newStepCount = d.new_steps_summary?.count ?? newSteps.length;
                         return (
                             <div
                                 key={key}
@@ -363,16 +410,25 @@ export function SkillRepairDraftsPanel({
                                                         "草案檔案損毀/不可讀，無法顯示步驟",
                                                     )
                                                     : undefined}
-                                                onClick={() => setExpandedRepairDraftKey(open ? null : key)}
+                                                onClick={() => {
+                                                    if (open) {
+                                                        setExpandedRepairDraftKey(null);
+                                                        return;
+                                                    }
+                                                    setExpandedRepairDraftKey(key);
+                                                    if (!repairDraftDetails[key]) {
+                                                        void loadRepairDraftDetail(key, d);
+                                                    }
+                                                }}
                                             >
                                                 {open
                                                     ? localizeText("Hide steps", "收起步骤", "收起步驟")
                                                     : unreadable
                                                         ? localizeText("Steps (unreadable)", "步骤（不可读）", "步驟（不可讀）")
                                                         : localizeText(
-                                                            `Steps (${oldSteps.length} → ${newSteps.length})`,
-                                                            `步骤 (${oldSteps.length} → ${newSteps.length})`,
-                                                            `步驟 (${oldSteps.length} → ${newSteps.length})`,
+                                                            `Steps (${oldStepCount} → ${newStepCount})`,
+                                                            `步骤 (${oldStepCount} → ${newStepCount})`,
+                                                            `步驟 (${oldStepCount} → ${newStepCount})`,
                                                         )}
                                             </button>
                                         )}
@@ -424,7 +480,7 @@ export function SkillRepairDraftsPanel({
                                         )}
                                     </div>
                                 )}
-                                {open && !unreadable && (
+                                {open && !unreadable && (detail ? (
                                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginTop: "6px", fontSize: "0.7rem" }}>
                                         <StepsColumn
                                             title={localizeText("Old steps", "旧步骤", "舊步驟")}
@@ -437,7 +493,15 @@ export function SkillRepairDraftsPanel({
                                             localizeText={localizeText}
                                         />
                                     </div>
-                                )}
+                                ) : (
+                                    <div style={{ marginTop: "6px", fontSize: "0.7rem", color: repairDraftDetailError?.key === key ? colors.danger : colors.textMuted }}>
+                                        {repairDraftDetailError?.key === key
+                                            ? `${localizeText("Failed to load steps", "步骤加载失败", "步驟載入失敗")}: ${repairDraftDetailError.message}`
+                                            : repairDraftDetailLoadingKey === key
+                                                ? localizeText("Loading...", "加载中...", "載入中...")
+                                                : ""}
+                                    </div>
+                                ))}
                             </div>
                         );
                     })}
@@ -489,6 +553,10 @@ function StepsColumn({
     steps: SkillRepairDraftStep[];
     localizeText: (en: string, zhHans: string, zhHant: string) => string;
 }) {
+    const formattedParams = useMemo(
+        () => steps.map((step) => formatStepParams(step.params, localizeText)),
+        [steps, localizeText],
+    );
     return (
         <div>
             <strong>{title} ({steps.length})</strong>
@@ -500,7 +568,7 @@ function StepsColumn({
                         <li key={j} style={{ marginBottom: 4 }}>
                             <div style={{ fontWeight: 600 }}>{s.action || "—"}</div>
                             <pre style={stepParamsPreStyle}>
-                                {formatStepParams(s.params, localizeText)}
+                                {formattedParams[j]}
                             </pre>
                             {s.on_error ? (
                                 <div style={{ fontSize: "0.66rem", color: colors.textMuted }}>

@@ -23,6 +23,10 @@ func newCodingPlanExecutionLoopContext(id string, maxIter int, httpClient *http.
 		return nil
 	}
 	loopCtx.UserID = strings.TrimSpace(userID)
+	loopCtx.Platform = strings.TrimSpace(msg.Platform)
+	if loopCtx.Platform == "" {
+		loopCtx.Platform = desktopPlatform
+	}
 	loopCtx.CodingTaskIngressToken = strings.TrimSpace(msg.CodingTaskIngressToken)
 	return loopCtx
 }

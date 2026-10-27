@@ -819,7 +819,15 @@ export function projectPathFromSessionKey(sessionKey?: string | null): string {
     // Expert session keys carry no project path — never hand "expert:<id>" to
     // path-based routing (it would be mistaken for a real project path).
     if (isExpertSessionKey(key) || isACPAssistantSessionKey(key)) return "";
-    return normalizeProjectSessionPath(key.slice(prefix.length));
+    let rest = key.slice(prefix.length);
+    // A project-less background chat task is desktop-user:task:<id>. "task" is
+    // not a directory (mirrors projectSessionOwnerID).
+    if (rest.startsWith("task:")) return "";
+    // A background chat task of a project runs as
+    // desktop-user:<project>:task:<id>; its worker still belongs to that project.
+    const taskCut = rest.lastIndexOf(":task:");
+    if (taskCut > 0) rest = rest.slice(0, taskCut);
+    return normalizeProjectSessionPath(rest);
 }
 
 /** Remove matching tab metadata and history blobs from localStorage. */

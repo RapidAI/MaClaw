@@ -2,7 +2,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SidebarHistorySessions, type HistoryDiscussionSummary } from '../SidebarHistorySessions';
-import { GroupDiscussionListLocalHidden, GroupDiscussionListMine, GroupDiscussionSetLocalHidden } from '../../../../wailsjs/go/main/App';
+import { GroupDiscussionListLocalHidden, GroupDiscussionListMinePage, GroupDiscussionSetLocalHidden } from '../../../../wailsjs/go/main/App';
 import { EventsOff } from '../../../../wailsjs/runtime';
 
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -16,7 +16,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
-    GroupDiscussionListMine: vi.fn(),
+    GroupDiscussionListMinePage: vi.fn(),
     GroupDiscussionListLocalHidden: vi.fn(),
     GroupDiscussionSetLocalHidden: vi.fn(),
 }));
@@ -33,7 +33,7 @@ const hiddenSessions: HistoryDiscussionSummary[] = [
     { id: 'disc-hidden', topic: 'Hidden audit', local_relation: 'owned_ve_invited', readonly: true },
 ];
 
-const listMine = vi.mocked(GroupDiscussionListMine);
+const listMine = vi.mocked(GroupDiscussionListMinePage);
 const listHidden = vi.mocked(GroupDiscussionListLocalHidden);
 const setHidden = vi.mocked(GroupDiscussionSetLocalHidden);
 const eventsOff = vi.mocked(EventsOff);
@@ -65,11 +65,12 @@ describe('SidebarHistorySessions', () => {
 
         fireEvent.click(screen.getByText('Vendor audit'));
         expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'disc-2', local_relation: 'owned_ve_invited' }));
-        expect(listMine).toHaveBeenCalledWith('all');
+        expect(listMine).toHaveBeenCalledWith('all', 50, 0);
     });
 
-    it('refreshes history when digital employee discussion events arrive', async () => {
-        render(<SidebarHistorySessions lang="en" />);
+    it('patches ordinary events locally and refreshes on stream end', async () => {
+        const onOpen = vi.fn();
+        render(<SidebarHistorySessions lang="en" onOpenDiscussion={onOpen} />);
 
         expect(await screen.findByText('Contract review')).toBeTruthy();
         expect(listMine).toHaveBeenCalledTimes(1);
@@ -80,9 +81,12 @@ describe('SidebarHistorySessions', () => {
         await waitFor(() => expect(listMine).toHaveBeenCalledTimes(2));
 
         await act(async () => {
-            eventHandlers.get('ve-event')?.({ payload: { session_id: 'disc-2' } });
+            eventHandlers.get('ve-event')?.({ payload: { session_id: 'disc-2', status: 'closed', updated_at: '2026-01-02T03:04:05Z' } });
         });
-        await waitFor(() => expect(listMine).toHaveBeenCalledTimes(3));
+        fireEvent.click(screen.getByText('Vendor audit'));
+        expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'disc-2', status: 'closed', updated_at: '2026-01-02T03:04:05Z' }));
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        expect(listMine).toHaveBeenCalledTimes(2);
     });
 
     it('updates renamed group titles in the history list immediately', async () => {
@@ -133,6 +137,22 @@ describe('SidebarHistorySessions', () => {
         await waitFor(() => expect(listMine).toHaveBeenCalledTimes(2));
         await new Promise((resolve) => setTimeout(resolve, 220));
         expect(listMine).toHaveBeenCalledTimes(2);
+    });
+
+    it('loads older sessions on demand without replacing the current entries', async () => {
+        const recent = Array.from({ length: 50 }, (_, index) => ({ id: `recent-${index}`, topic: `Recent ${index}` }));
+        listMine
+            .mockResolvedValueOnce(recent as any)
+            .mockResolvedValueOnce([{ id: 'disc-older', topic: 'Older session' }] as any);
+        render(<SidebarHistorySessions lang="en" />);
+
+        expect(await screen.findByText('Recent 0')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+        expect(await screen.findByText('Older session')).toBeTruthy();
+        expect(screen.getByText('Recent 0')).toBeTruthy();
+        expect(listMine).toHaveBeenNthCalledWith(2, 'all', 50, 50);
+        expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
     });
 
     it('cleans up only its own event listeners on unmount', async () => {

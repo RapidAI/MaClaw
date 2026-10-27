@@ -451,6 +451,39 @@ func (s *GroupDiscussionHistoryStore) CachedSummaries(ctx context.Context, inclu
 	return out, rows.Err()
 }
 
+func (s *GroupDiscussionHistoryStore) CachedSummariesPage(ctx context.Context, includeHidden bool, limit, offset int) ([]a2a.HubDiscussionSummary, error) {
+	if limit <= 0 {
+		return s.CachedSummaries(ctx, includeHidden)
+	}
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	where := ""
+	if !includeHidden {
+		where = " WHERE local_visibility <> 'hidden'"
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT summary_json FROM group_discussion_summaries`+where+` ORDER BY updated_at DESC, discussion_id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []a2a.HubDiscussionSummary{}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var summary a2a.HubDiscussionSummary
+		if err := json.Unmarshal([]byte(raw), &summary); err == nil && strings.TrimSpace(summary.ID) != "" {
+			out = append(out, normalizeHistorySummaryForCache(summary))
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *GroupDiscussionHistoryStore) HiddenSummaries(ctx context.Context) ([]a2a.HubDiscussionSummary, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
@@ -994,6 +1027,25 @@ func mergeGroupDiscussionSummaries(live, cached []a2a.HubDiscussionSummary, role
 		out = append(out, normalizeHistorySummaryForCache(summary))
 	}
 	return sortGroupDiscussionSummariesByCreated(out)
+}
+
+func mergeGroupDiscussionSummariesPage(live, cached []a2a.HubDiscussionSummary, role string, limit int) []a2a.HubDiscussionSummary {
+	merged := mergeGroupDiscussionSummaries(live, cached, role)
+	sort.SliceStable(merged, func(i, j int) bool {
+		left := merged[i].UpdatedAt
+		if left.IsZero() {
+			left = merged[i].CreatedAt
+		}
+		right := merged[j].UpdatedAt
+		if right.IsZero() {
+			right = merged[j].CreatedAt
+		}
+		return left.After(right)
+	})
+	if limit > 0 && len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return sortGroupDiscussionSummariesByCreated(merged)
 }
 
 // deduplicateDiscussionsByFingerprint removes semantic duplicates from a single

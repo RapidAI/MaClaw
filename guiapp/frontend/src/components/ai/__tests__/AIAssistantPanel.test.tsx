@@ -8008,6 +8008,43 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
+    it('publishes backend continuations and running background chat tasks as busy', async () => {
+        const onBusyTaskRunsChange = vi.fn();
+        const onHandled = vi.fn();
+
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-visible',
+                taskTitle: 'Visible project',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            onBusyTaskRunsChange,
+            state: {
+                messages: [],
+                sending: false,
+                busySessionKeys: [],
+                // A goal/session-round continuation resumed while another tab
+                // is visible. The sidebar row must not keep its pause glyph.
+                offscreenLiveSessionKeys: ['desktop-user:D:/tasks/project-continuation'],
+                chatTasks: [
+                    { id: 'ct-run', sessionKey: 'desktop-user:D:/tasks/project-chat-running', title: 'Running in background', status: 'running' },
+                    // Waiting for the user's answer is not running work.
+                    { id: 'ct-ask', sessionKey: 'desktop-user:D:/tasks/project-chat-waiting', title: 'Waiting', status: 'needs_input' },
+                    { id: 'ct-done', sessionKey: 'desktop-user:D:/tasks/project-chat-done', title: 'Finished', status: 'done' },
+                ],
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => {
+            const last = onBusyTaskRunsChange.mock.calls.at(-1)?.[0];
+            expect(last?.projectPaths).toEqual(['D:/tasks/project-chat-running', 'D:/tasks/project-continuation']);
+        });
+    });
+
     it('keeps a project tab queued when its detached session remains busy after the active round idles', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const sendMessage = vi.fn().mockResolvedValue(true);

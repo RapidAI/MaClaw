@@ -3,11 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
 const ListSkillRepairDraftsMock = vi.fn();
+const GetSkillRepairDraftMock = vi.fn();
 const ApplySkillRepairDraftMock = vi.fn();
 const RejectSkillRepairDraftMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListSkillRepairDrafts: (...args: unknown[]) => ListSkillRepairDraftsMock(...args),
+    GetSkillRepairDraft: (...args: unknown[]) => GetSkillRepairDraftMock(...args),
     ApplySkillRepairDraft: (...args: unknown[]) => ApplySkillRepairDraftMock(...args),
     RejectSkillRepairDraft: (...args: unknown[]) => RejectSkillRepairDraftMock(...args),
 }));
@@ -72,28 +74,40 @@ describe('SkillRepairDraftsPanel', () => {
         vi.clearAllMocks();
     });
 
-    it('expands steps with a capture object without crashing and renders var → pattern entries', async () => {
-        ListSkillRepairDraftsMock.mockResolvedValue(
-            JSON.stringify({ ok: true, count: 1, drafts: [draftWithCapture] }),
+    it('loads full steps on expansion and renders capture map entries', async () => {
+        ListSkillRepairDraftsMock.mockResolvedValue(JSON.stringify({
+            ok: true,
+            count: 1,
+            drafts: [{
+                skill: draftWithCapture.skill,
+                draft: draftWithCapture.draft,
+                explanation: draftWithCapture.explanation,
+                created_at: draftWithCapture.created_at,
+                old_steps_summary: { count: 1, actions: ['http_get'] },
+                new_steps_summary: { count: 1, actions: ['http_get'] },
+            }],
+        }));
+        GetSkillRepairDraftMock.mockResolvedValue(
+            JSON.stringify({ ok: true, draft: draftWithCapture }),
         );
         renderPanel();
 
-        // Draft row appears after the initial load.
         await screen.findByText('web_scraper');
+        expect(GetSkillRepairDraftMock).not.toHaveBeenCalled();
 
-        // Expand the old/new steps comparison.
         fireEvent.click(await screen.findByText(/步骤 \(1 → 1\)/));
 
-        // capture (a JSON object) renders as per-entry var → pattern rows —
-        // never as a raw object (which React would refuse to render).
         await screen.findByText('page_html → $.body');
+        expect(GetSkillRepairDraftMock).toHaveBeenCalledWith('web_scraper', 'draft-001.json');
         expect(screen.getByText('next_url → $.links.next')).toBeTruthy();
         expect(screen.getByText('page_html → $.data')).toBeTruthy();
         expect(screen.queryByText(/\[object Object\]/)).toBeNull();
-
-        // The step name field shows up among the meta rows.
         expect(screen.getByText(/name: fetch list/)).toBeTruthy();
         expect(screen.getByText(/label: fetch/)).toBeTruthy();
+
+        fireEvent.click(screen.getByText('收起步骤'));
+        fireEvent.click(screen.getByText(/步骤 \(1 → 1\)/));
+        expect(GetSkillRepairDraftMock).toHaveBeenCalledTimes(1);
     });
 
     it('shows the empty state when there are no drafts', async () => {

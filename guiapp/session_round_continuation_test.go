@@ -98,6 +98,58 @@ func TestSessionRoundContinuationSkipsLightAndGoalTurns(t *testing.T) {
 	}
 }
 
+func TestSessionRoundContinuationSkipsChannelPlatforms(t *testing.T) {
+	h := newSessionRoundHandler(t)
+	userID := "desktop-user:platform-test"
+	t.Cleanup(func() { h.cancelSessionRoundContinuation(userID) })
+	channel := NewLoopContext("chat-channel", 30, nil)
+	channel.Platform = "lansenger"
+	channelOpts := sessionRoundExitOptions("把这批论文做成综述", 4)
+	channelOpts.UserID = userID
+	if resp := h.maxRoundsAgentLoopExit(channel, channelOpts); resp == nil || resp.sessionRoundContinue {
+		t.Fatalf("channel turn armed a desktop wave: %#v", resp)
+	}
+	h.sessionRounds.mu.Lock()
+	armed := h.sessionRounds.timers[userID] != nil
+	h.sessionRounds.mu.Unlock()
+	if armed {
+		t.Fatal("channel turn left a wave queued")
+	}
+
+	desktop := NewLoopContext("chat-desktop", 30, nil)
+	desktop.Platform = desktopPlatform
+	desktopOpts := sessionRoundExitOptions("把这批论文做成综述", 4)
+	desktopOpts.UserID = userID
+	if resp := h.maxRoundsAgentLoopExit(desktop, desktopOpts); resp == nil || !resp.sessionRoundContinue {
+		t.Fatalf("desktop turn did not continue: %#v", resp)
+	}
+}
+
+func TestSessionRoundContinuationSkipsWorkflowPhases(t *testing.T) {
+	h := newSessionRoundHandler(t)
+	userID := "desktop-user:workflow-phase-test"
+	t.Cleanup(func() { h.cancelSessionRoundContinuation(userID) })
+	opts := sessionRoundExitOptions("把这批论文做成综述", 4)
+	opts.UserID = userID
+
+	phase := NewLoopContext("chat-workflow", 30, nil)
+	phase.WorkflowPhaseID = "phase-1"
+	if resp := h.maxRoundsAgentLoopExit(phase, opts); resp == nil || resp.sessionRoundContinue {
+		t.Fatalf("workflow phase armed a session wave: %#v", resp)
+	}
+	doc := NewLoopContext("chat-workflow-doc", 30, nil)
+	doc.WorkflowDocPhase = true
+	if resp := h.maxRoundsAgentLoopExit(doc, opts); resp == nil || resp.sessionRoundContinue {
+		t.Fatalf("workflow doc phase armed a session wave: %#v", resp)
+	}
+	h.sessionRounds.mu.Lock()
+	armed := h.sessionRounds.timers[userID] != nil
+	h.sessionRounds.mu.Unlock()
+	if armed {
+		t.Fatal("a workflow phase left a wave queued")
+	}
+}
+
 func TestSessionRoundContinuationUserMessageCancelsTheWave(t *testing.T) {
 	h := newSessionRoundHandler(t)
 	if !h.armSessionRoundContinuation("desktop-user", "把这批论文做成综述") {

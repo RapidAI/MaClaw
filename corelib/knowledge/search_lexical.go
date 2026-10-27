@@ -219,7 +219,7 @@ func (s *SQLiteStore) collectLexicalResults(ctx context.Context, opts SearchOpti
 	// 2. FTS tokenization mismatch (new words not in gse dictionary)
 	// 3. FTS found card/fact results but missed relevant document_nodes content
 	//    (distillation loss: cards/facts may not cover all original document text)
-	if containsNoSpaceScriptRunes(opts.Query) && !strictAnchorsAlreadyCovered(opts.Query, results) {
+	if containsNoSpaceScriptRunes(opts.Query) && !strictAnchorsAlreadyCovered(opts.Query, results, likeLimit) {
 		// For no-space scripts, run LIKE fallback to search document_nodes original
 		// text when lexical FTS has not already covered a composite name. FTS
 		// tokenization mismatch means FTS may find some nodes (via "马勇"

@@ -4,8 +4,9 @@ import { resolve } from "node:path";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanionPdfReader } from "../CompanionPdfReader";
-import { PDF_MARK_STORAGE_KEY, savePdfMarks } from "../../filecompanion/pdfMarks";
-import { PDF_TRANSLATION_STORAGE_KEY, resetPdfTranslationFlight, savePdfTranslations } from "../../filecompanion/pdfTranslations";
+import { hydratePdfMarks, loadPdfMarks, savePdfMarks } from "../../filecompanion/pdfMarks";
+import { hydratePdfTranslations, loadPdfTranslations, resetPdfTranslationFlight, savePdfTranslations } from "../../filecompanion/pdfTranslations";
+import { hydrateCompanionReaderState } from "../../filecompanion/companionReaderState";
 import type { CodePreviewTheme } from "../FileTabBar";
 
 const getDocument = vi.fn();
@@ -76,7 +77,9 @@ function selectHello(page: HTMLElement) {
 beforeEach(() => {
     cleanup();
     resetPdfTranslationFlight();
-    localStorage.clear();
+    hydratePdfMarks({});
+    hydratePdfTranslations({});
+    delete (window as unknown as { go?: unknown }).go;
     getDocument.mockReset();
     preview.mockReset();
     translate.mockReset();
@@ -116,7 +119,7 @@ describe("companion pdf reader", () => {
         const mark = document.querySelector("[data-color='green']");
         expect(mark).toBeTruthy();
         expect((mark as HTMLElement).style.left).toBe("5%");
-        expect(localStorage.getItem(PDF_MARK_STORAGE_KEY)).toContain("green");
+        expect(loadPdfMarks("C:/docs/Paper.PDF").some((item) => item.color === "green")).toBe(true);
 
         view.unmount();
         const again = render(<CompanionPdfReader absPath="c:/docs/paper.pdf" theme={theme} lang="zh-Hans" />);
@@ -127,6 +130,46 @@ describe("companion pdf reader", () => {
         render(<CompanionPdfReader absPath="C:/docs/other.pdf" theme={theme} lang="zh-Hans" />);
         await screen.findByText("Hello world");
         expect(document.querySelector("[data-color='green']")).toBeNull();
+    });
+
+    it("paints highlights that arrive after the reader mounted", async () => {
+        pdfWithPages(1);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        expect(await screen.findByText("Hello world")).toBeTruthy();
+        expect(document.querySelector("[data-color='green']")).toBeNull();
+
+        (window as unknown as { go: unknown }).go = {
+            main: {
+                App: {
+                    LoadCompanionReaderState: async () => JSON.stringify({
+                        pdf_marks: {
+                            "c:/docs/paper.pdf": [{
+                                id: "late",
+                                page: 1,
+                                color: "green",
+                                rects: [{ x: 0.05, y: 0.05, w: 0.2, h: 0.03 }],
+                                text: "Hello",
+                            }],
+                        },
+                        pdf_translations: {
+                            "c:/docs/paper.pdf": [{
+                                id: "late-t",
+                                text: "Hello",
+                                translation: "你好",
+                                parts: [{ page: 1, rects: [{ x: 0.05, y: 0.05, w: 0.2, h: 0.03 }] }],
+                            }],
+                        },
+                        input_history: [],
+                    }),
+                },
+            },
+        };
+        await act(async () => {
+            await hydrateCompanionReaderState();
+        });
+
+        await waitFor(() => expect(document.querySelector("[data-color='green']")).toBeTruthy());
+        expect(await screen.findByRole("button", { name: "译文" })).toBeTruthy();
     });
 
     it("clears a highlight from the right-click menu", async () => {
@@ -146,7 +189,7 @@ describe("companion pdf reader", () => {
         expect(screen.queryByTestId("pdf-translate")).toBeNull();
         fireEvent.mouseDown(screen.getByTestId("pdf-highlight-clear"));
         expect(document.querySelector("[data-color='blue']")).toBeNull();
-        expect(localStorage.getItem(PDF_MARK_STORAGE_KEY) || "").not.toContain("m-clear");
+        expect(loadPdfMarks("C:/docs/a.pdf").some((item) => item.id === "m-clear")).toBe(false);
     });
 
     it("does not paint every page of a long file up front", async () => {
@@ -170,7 +213,7 @@ describe("companion pdf reader", () => {
         fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
         expect(screen.getByTestId("pdf-highlight-menu").textContent).toContain("高亮");
         expect(screen.getByTestId("pdf-translate").querySelector("svg")).toBeTruthy();
-        const marksBefore = localStorage.getItem(PDF_MARK_STORAGE_KEY);
+        const marksBefore = JSON.stringify(loadPdfMarks("C:/docs/Paper.PDF"));
         fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
         expect(translate).toHaveBeenCalledTimes(1);
         expect(translate).toHaveBeenCalledWith("C:/docs/Paper.PDF", "Hello");
@@ -188,9 +231,10 @@ describe("companion pdf reader", () => {
         expect(icon.textContent).toBe("译文");
         expect(document.querySelectorAll(".companion-pdf-translation")).toHaveLength(1);
         expect((document.querySelector(".companion-pdf-translation") as HTMLElement).style.left).toBe("5%");
-        expect(localStorage.getItem(PDF_MARK_STORAGE_KEY)).toBe(marksBefore);
-        expect(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY)).toContain("你好");
-        expect(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY)).toContain("Hello");
+        expect(JSON.stringify(loadPdfMarks("C:/docs/Paper.PDF"))).toBe(marksBefore);
+        const saved = loadPdfTranslations("C:/docs/Paper.PDF");
+        expect(saved.some((item) => item.translation === "你好")).toBe(true);
+        expect(saved.some((item) => item.text === "Hello")).toBe(true);
         fireEvent.mouseDown(icon);
         expect(screen.getByRole("dialog").textContent).toContain("你好");
         expect(screen.getByRole("dialog").className).not.toContain("companion-pdf-translation-pop--above");
@@ -308,13 +352,13 @@ describe("companion pdf reader", () => {
         expect(css).toMatch(/\.companion-pdf-translation-chrome\s*\{[^}]*position:\s*sticky/);
         fireEvent.mouseDown(grip, { button: 0, clientX: 0, clientY: 0 });
         fireEvent.mouseUp(window);
-        expect(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY) || "").not.toContain("\"place\"");
+        expect(loadPdfTranslations("C:/docs/Paper.PDF").some((item) => item.place)).toBe(false);
         const copy = pop.querySelector("[data-testid^='pdf-translate-copy-']") as HTMLElement;
         fireEvent.mouseDown(copy, { button: 0, clientX: 0, clientY: 0 });
         fireEvent.mouseMove(window, { clientX: 40, clientY: 24 });
         fireEvent.mouseUp(window);
         expect(document.body.classList.contains("companion-pdf-translation-dragging")).toBe(false);
-        expect(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY) || "").not.toContain("\"place\"");
+        expect(loadPdfTranslations("C:/docs/Paper.PDF").some((item) => item.place)).toBe(false);
 
         const kicker = pop.querySelector(".companion-pdf-translation-kicker") as HTMLElement;
         fireEvent.mouseDown(kicker, { button: 0, clientX: 0, clientY: 0 });
@@ -323,8 +367,7 @@ describe("companion pdf reader", () => {
         const span = document.querySelector(".companion-pdf-translation") as HTMLElement;
         expect(Number.parseFloat(span.style.getPropertyValue("--pop-x"))).toBeCloseTo(30, 3);
         expect(Number.parseFloat(span.style.getPropertyValue("--pop-y"))).toBeCloseTo(20, 3);
-        const stored = JSON.parse(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY) || "{}") as Record<string, Array<{ place?: { x: number; y: number; above?: boolean }; translation?: string }>>;
-        const row = Object.values(stored)[0]?.[0];
+        const row = loadPdfTranslations("C:/docs/Paper.PDF")[0];
         expect(row?.translation).toBe("你好");
         expect(row?.place?.x).toBeCloseTo(0.15, 4);
         expect(row?.place?.y).toBeCloseTo(0.05, 4);
@@ -390,8 +433,7 @@ describe("companion pdf reader", () => {
         const span = pop.parentElement as HTMLElement;
         expect(Number.parseFloat(span.style.getPropertyValue("--pop-x"))).toBeCloseTo(50, 3);
         expect(Number.parseFloat(span.style.getPropertyValue("--pop-y"))).toBeCloseTo(100, 3);
-        const stored = JSON.parse(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY) || "{}") as Record<string, Array<{ place?: { x: number; y: number } }>>;
-        const row = Object.values(stored)[0]?.[0];
+        const row = loadPdfTranslations("C:/docs/Paper.PDF")[0];
         expect(row?.place?.x).toBeCloseTo(0.25, 4);
         expect(row?.place?.y).toBeCloseTo(0.25, 4);
     });
@@ -474,7 +516,7 @@ describe("companion pdf reader", () => {
         expect((await screen.findByTestId("pdf-translate-error")).textContent).toContain("翻译失败，请稍后重试");
         await waitFor(() => expect(document.querySelector(".companion-pdf-translation")).toBeNull());
         expect(document.querySelector("[data-color='green']")).toBeTruthy();
-        expect(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY)).toBeNull();
+        expect(loadPdfTranslations("C:/docs/Paper.PDF")).toHaveLength(0);
     });
 
     it("shows a translation that finishes after the same PDF is opened again", async () => {
@@ -511,11 +553,11 @@ describe("companion pdf reader", () => {
         await act(async () => {
             release("你好");
         });
-        await waitFor(() => expect(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY) || "").toContain("你好"));
-        const stored = localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY) || "";
-        expect(stored).toContain("Hello");
-        expect(stored).toContain("保留");
-        expect(stored).toContain("Keep");
+        await waitFor(() => expect(loadPdfTranslations("C:/docs/Paper.PDF").some((item) => item.translation === "你好")).toBe(true));
+        const stored = loadPdfTranslations("C:/docs/Paper.PDF");
+        expect(stored.some((item) => item.text === "Hello")).toBe(true);
+        expect(stored.some((item) => item.translation === "保留")).toBe(true);
+        expect(stored.some((item) => item.text === "Keep")).toBe(true);
         expect(screen.getAllByRole("button", { name: "译文" })).toHaveLength(2);
     });
 
@@ -527,7 +569,7 @@ describe("companion pdf reader", () => {
         fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
         fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
         const icon = await screen.findByRole("button", { name: "译文" });
-        const marks = localStorage.getItem(PDF_MARK_STORAGE_KEY);
+        const marks = JSON.stringify(loadPdfMarks("C:/docs/Paper.PDF"));
         fireEvent.mouseDown(icon, { button: 2 });
         expect(screen.queryByRole("dialog")).toBeNull();
         fireEvent.mouseDown(icon);
@@ -541,8 +583,8 @@ describe("companion pdf reader", () => {
         fireEvent.contextMenu(icon);
         fireEvent.mouseDown(screen.getByTestId("pdf-translate-clear"));
         await waitFor(() => expect(screen.queryByRole("button", { name: "译文" })).toBeNull());
-        expect(localStorage.getItem(PDF_TRANSLATION_STORAGE_KEY) || "").not.toContain("你好");
-        expect(localStorage.getItem(PDF_MARK_STORAGE_KEY)).toBe(marks);
+        expect(loadPdfTranslations("C:/docs/Paper.PDF")).toHaveLength(0);
+        expect(JSON.stringify(loadPdfMarks("C:/docs/Paper.PDF"))).toBe(marks);
     });
 
     it("explains a login or credit failure", async () => {
@@ -599,7 +641,7 @@ describe("companion pdf reader", () => {
         fireEvent.mouseDown(screen.getByTestId("pdf-copy"));
         await waitFor(() => expect(writeText).toHaveBeenCalledWith("Hello"));
         expect(screen.queryByTestId("pdf-highlight-menu")).toBeNull();
-        expect(localStorage.getItem(PDF_MARK_STORAGE_KEY)).toBeNull();
+        expect(loadPdfMarks("C:/docs/Paper.PDF")).toHaveLength(0);
     });
 
     it("moves through the menu with the arrow keys and closes on Escape", async () => {

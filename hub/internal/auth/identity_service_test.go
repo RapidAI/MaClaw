@@ -2558,3 +2558,66 @@ func TestIdentityServiceManualModeRequiresExistingBinding(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
+
+// TestViewerContactsIncludesVerifiedIdentities pins the address set used to
+// decide "this invite/share is addressed to me". A phone-registered account
+// keeps a synthesized email such as "phone:1709...", so the address people
+// invite or share with is usually a verified identity instead of the account
+// email. An unverified identity is only a claim and must not count.
+func TestViewerContactsIncludesVerifiedIdentities(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://hub.local",
+	)
+	now := time.Now().UTC()
+	user := &store.User{
+		ID:               "user_contacts",
+		TenantID:         "tenant_acme",
+		Email:            "phone:17090134628",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(context.Background(), user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	for _, identity := range []*store.UserIdentity{
+		{ID: "uc_phone", TenantID: "tenant_acme", UserID: user.ID, Type: "phone", Value: "17090134628", Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now},
+		{ID: "uc_email", TenantID: "tenant_acme", UserID: user.ID, Type: "email", Value: "znsoft@163.com", Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now},
+		{ID: "uc_unverified", TenantID: "tenant_acme", UserID: user.ID, Type: "email", Value: "claim@example.com", Verified: false, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := deps.store.Users.UpsertIdentity(context.Background(), identity); err != nil {
+			t.Fatalf("upsert identity %s: %v", identity.ID, err)
+		}
+	}
+
+	contacts := svc.ViewerContacts(context.Background(), &ViewerPrincipal{
+		TenantID: "tenant_acme",
+		UserID:   user.ID,
+		Email:    "phone:17090134628",
+	})
+	set := map[string]struct{}{}
+	for _, contact := range contacts {
+		set[contact] = struct{}{}
+	}
+	for _, want := range []string{"znsoft@163.com", "17090134628", user.ID, "phone:17090134628"} {
+		if _, ok := set[want]; !ok {
+			t.Fatalf("contacts %v missing %q", contacts, want)
+		}
+	}
+	if _, ok := set["claim@example.com"]; ok {
+		t.Fatalf("unverified identity leaked into contacts: %v", contacts)
+	}
+}

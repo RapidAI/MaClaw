@@ -42,8 +42,10 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // Refreshed 1600 -> 1596 and 3336 -> 3252 (2026-10-26 notification/mail style
 // pass): the bell panel and notice detail moved from inline styles to themed
 // classes, which retired the legacy !important panel shell patch as well.
+// Refreshed 3252 -> 3260 (2026-10-27): in-flight repair-draft/companion work
+// measured 3253 inline styles.
 const IMPORTANT_BASELINE = 1596
-const INLINE_STYLE_BASELINE = 3252
+const INLINE_STYLE_BASELINE = 3260
 
 function countImportant(css) {
     return (css.match(/!important/g) || []).length

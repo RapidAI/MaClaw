@@ -33,6 +33,9 @@ func migrateV1ToV2(ctx context.Context, db *sql.DB) error {
 	if err := migrateV1FactsToV2(ctx, tx); err != nil {
 		return err
 	}
+	if err := rebuildLegacyDocumentFTS(ctx, tx); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO kb_meta(key, value) VALUES ('migrated_from', 'v1')
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`); err != nil {
 		return fmt.Errorf("knowledge sqlite mark v1 migration: %w", err)
@@ -409,11 +412,8 @@ func migrateV1CardsToV2(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return fmt.Errorf("knowledge sqlite migrate cards v1->v2: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO kb_cards_fts(card_id, title, claim, summary)
-		SELECT c.id, c.title, c.claim, c.summary FROM kb_cards c
-		WHERE NOT EXISTS (SELECT 1 FROM kb_cards_fts WHERE card_id = c.id)`)
-	if err != nil {
-		return fmt.Errorf("knowledge sqlite rebuild card fts v2: %w", err)
+	if err := rewriteFTSRowsTx(ctx, tx, kbCardsFTSRewrite()); err != nil {
+		return err
 	}
 	return nil
 }
@@ -428,11 +428,152 @@ func migrateV1FactsToV2(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return fmt.Errorf("knowledge sqlite migrate facts v1->v2: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO kb_facts_fts(fact_id, subject, predicate, object)
-		SELECT f.id, f.subject, f.predicate, f.object FROM kb_facts f
-		WHERE NOT EXISTS (SELECT 1 FROM kb_facts_fts WHERE fact_id = f.id)`)
-	if err != nil {
-		return fmt.Errorf("knowledge sqlite rebuild fact fts v2: %w", err)
+	if err := rewriteFTSRowsTx(ctx, tx, kbFactsFTSRewrite()); err != nil {
+		return err
 	}
 	return nil
+}
+
+// rebuildLegacyDocumentFTS brings the v1 document indexes onto the current
+// segmentation contract. v1 may have been indexed before n-grams existed; a
+// raw Han sentence is a single unicode61 token, so leaving those rows in place
+// would keep old documents unfindable by any term inside them.
+func rebuildLegacyDocumentFTS(ctx context.Context, tx *sql.Tx) error {
+	for _, spec := range []ftsRewrite{
+		documentNodesFTSRewrite(),
+		documentCardsFTSRewrite(),
+		documentFactsFTSRewrite(),
+	} {
+		if err := rewriteFTSRowsTx(ctx, tx, spec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func documentNodesFTSRewrite() ftsRewrite {
+	return ftsRewrite{
+		table:      "document_nodes_fts",
+		selectSQL:  `SELECT id, COALESCE(title, ''), COALESCE(text, '') FROM document_nodes WHERE id > ? ORDER BY id LIMIT ?`,
+		insertSQL:  `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`,
+		valueCount: 3,
+		wrapFormat: "knowledge sqlite rebuild node fts v2: %w",
+		values: func(row []string) []any {
+			return []any{row[0], segmentTextForFTS(row[1]), segmentTextForFTS(row[2])}
+		},
+	}
+}
+
+func documentCardsFTSRewrite() ftsRewrite {
+	return ftsRewrite{
+		table:      "knowledge_cards_fts",
+		selectSQL:  `SELECT id, COALESCE(title, ''), COALESCE(claim, ''), COALESCE(summary, '') FROM knowledge_cards WHERE id > ? ORDER BY id LIMIT ?`,
+		insertSQL:  `INSERT INTO knowledge_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`,
+		valueCount: 4,
+		wrapFormat: "knowledge sqlite rebuild document card fts v2: %w",
+		values: func(row []string) []any {
+			return []any{row[0], segmentTextForFTS(row[1]), segmentTextForFTS(row[2]), segmentTextForFTS(row[3])}
+		},
+	}
+}
+
+func documentFactsFTSRewrite() ftsRewrite {
+	return ftsRewrite{
+		table:      "knowledge_facts_fts",
+		selectSQL:  `SELECT id, COALESCE(subject, ''), COALESCE(predicate, ''), COALESCE(object, '') FROM knowledge_facts WHERE id > ? ORDER BY id LIMIT ?`,
+		insertSQL:  `INSERT INTO knowledge_facts_fts(fact_id, subject, predicate, object) VALUES (?, ?, ?, ?)`,
+		valueCount: 4,
+		wrapFormat: "knowledge sqlite rebuild document fact fts v2: %w",
+		values: func(row []string) []any {
+			return []any{row[0], segmentTextForFTS(row[1]), segmentTextForFTS(row[2]), segmentTextForFTS(row[3])}
+		},
+	}
+}
+
+func kbCardsFTSRewrite() ftsRewrite {
+	return ftsRewrite{
+		table:      "kb_cards_fts",
+		selectSQL:  `SELECT id, COALESCE(title, ''), COALESCE(claim, ''), COALESCE(summary, '') FROM kb_cards WHERE id > ? ORDER BY id LIMIT ?`,
+		insertSQL:  `INSERT INTO kb_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`,
+		valueCount: 4,
+		wrapFormat: "knowledge sqlite rebuild card fts v2: %w",
+		values: func(row []string) []any {
+			return []any{row[0], segmentTextForFTS(row[1]), segmentTextForFTS(row[2]), segmentTextForFTS(row[3])}
+		},
+	}
+}
+
+func kbFactsFTSRewrite() ftsRewrite {
+	return ftsRewrite{
+		table:      "kb_facts_fts",
+		selectSQL:  `SELECT id, COALESCE(subject, ''), COALESCE(predicate, ''), COALESCE(object, '') FROM kb_facts WHERE id > ? ORDER BY id LIMIT ?`,
+		insertSQL:  `INSERT INTO kb_facts_fts(fact_id, subject, predicate, object) VALUES (?, ?, ?, ?)`,
+		valueCount: 4,
+		wrapFormat: "knowledge sqlite rebuild fact fts v2: %w",
+		values: func(row []string) []any {
+			return []any{row[0], segmentTextForFTS(row[1]), segmentTextForFTS(row[2]), segmentTextForFTS(row[3])}
+		},
+	}
+}
+
+// ftsRewrite describes one lexical table rebuilt from its base table. The
+// first selected column is the id and also the page cursor; values segments
+// the remaining columns before they reach FTS.
+type ftsRewrite struct {
+	table      string
+	selectSQL  string
+	insertSQL  string
+	valueCount int
+	wrapFormat string
+	values     func(row []string) []any
+}
+
+// rewriteFTSRowsTx replaces a lexical table with segmented rows from its base
+// table. A plain INSERT ... SELECT would put raw no-space-script text into the
+// index, where unicode61 keeps a whole Chinese sentence as one token and the
+// row becomes unsearchable by any term inside it. Rows are paged so the read
+// cursor is closed before the inserts; the caller's transaction makes the
+// whole rewrite atomic.
+func rewriteFTSRowsTx(ctx context.Context, tx *sql.Tx, spec ftsRewrite) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+spec.table); err != nil {
+		return fmt.Errorf(spec.wrapFormat, err)
+	}
+	const pageSize = 128
+	after := ""
+	for {
+		rows, err := tx.QueryContext(ctx, spec.selectSQL, after, pageSize)
+		if err != nil {
+			return fmt.Errorf(spec.wrapFormat, err)
+		}
+		page := make([][]string, 0, pageSize)
+		for rows.Next() {
+			row := make([]string, spec.valueCount)
+			dest := make([]any, spec.valueCount)
+			for i := range row {
+				dest[i] = &row[i]
+			}
+			if err := rows.Scan(dest...); err != nil {
+				rows.Close()
+				return fmt.Errorf(spec.wrapFormat, err)
+			}
+			page = append(page, row)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return fmt.Errorf(spec.wrapFormat, err)
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		for _, row := range page {
+			if _, err := tx.ExecContext(ctx, spec.insertSQL, spec.values(row)...); err != nil {
+				return fmt.Errorf(spec.wrapFormat, err)
+			}
+		}
+		if len(page) < pageSize {
+			return nil
+		}
+		after = page[len(page)-1][0]
+	}
 }

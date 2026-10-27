@@ -119,6 +119,28 @@ func TestHubClientListDiscussionsAllOmitsRoleQuery(t *testing.T) {
 	}
 }
 
+func TestHubClientListDiscussionsPageQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("limit"); got != "50" {
+			t.Fatalf("limit = %q, want 50", got)
+		}
+		if got := r.URL.Query().Get("offset"); got != "100" {
+			t.Fatalf("offset = %q, want 100", got)
+		}
+		_ = json.NewEncoder(w).Encode(DiscussionListResponse{Discussions: []HubDiscussionSummary{{ID: "disc-page"}}})
+	}))
+	defer server.Close()
+
+	client, _ := NewHubClient(server.URL)
+	items, err := client.ListDiscussionsForAgentPage(context.Background(), "machine-1", "all", 50, 100)
+	if err != nil {
+		t.Fatalf("ListDiscussionsForAgentPage: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "disc-page" {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
 func TestHubClientGetConsultationDetail(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/a2a/consultations/disc-1/detail" || r.Method != http.MethodGet {

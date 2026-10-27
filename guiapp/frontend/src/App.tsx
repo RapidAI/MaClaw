@@ -22,7 +22,6 @@ import { useStartupPerfProbe, reportInteractiveAfterPaint } from './components/s
 import { defaultModelForQuickProvider } from './components/ai/assistantQuickModelMenu';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
-import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
 import type { AIExecutionProfile } from './components/ai/AITabTypes';
@@ -200,8 +199,8 @@ import { ConfirmDialog } from './components/modals/ConfirmDialog';
 import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import { EnvCheckSplash } from './components/startup/EnvCheckSplash';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
-import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel, LatexTemplateLibraryPage } from './appLazyComponents';
-import { DesktopBotWorkspace, bindDesktopBotResultStore } from './components/bots/DesktopBotWorkspace';
+import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel, LatexTemplateLibraryPage, DesktopBotWorkspace, OnboardingWizard } from './appLazyComponents';
+import { bindDesktopBotResultStore } from './components/bots/desktopBotResultStore';
 import { BotsPageErrorBoundary } from './components/bots/BotsPageErrorBoundary';
 import { desktopBotAccountId } from './components/bots/desktopBots';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
@@ -4933,21 +4932,33 @@ function App() {
     const [sidebarPassthroughCommands, setSidebarPassthroughCommands] = useState<any[]>([]);
     useEffect(() => {
         let cancelled = false;
+        let inFlight = false;
+        const sameContent = (previous: any[], next: any[]) =>
+            previous.length === next.length && JSON.stringify(previous) === JSON.stringify(next);
         const refresh = async () => {
-            const [loops, scheduled, passthrough] = await Promise.allSettled([
-                ListBackgroundLoops(),
-                ListScheduledTasks(),
-                ListPassthroughCommands(),
-            ]);
-            if (cancelled) return;
-            if (loops.status === 'fulfilled') {
-                setSidebarBgLoops(Array.isArray(loops.value) ? loops.value : []);
-            }
-            if (scheduled.status === 'fulfilled') {
-                setSidebarScheduledTasks(Array.isArray(scheduled.value) ? scheduled.value : []);
-            }
-            if (passthrough.status === 'fulfilled') {
-                setSidebarPassthroughCommands(Array.isArray(passthrough.value) ? passthrough.value : []);
+            if (inFlight) return;
+            inFlight = true;
+            try {
+                const [loops, scheduled, passthrough] = await Promise.allSettled([
+                    ListBackgroundLoops(),
+                    ListScheduledTasks(),
+                    ListPassthroughCommands(),
+                ]);
+                if (cancelled) return;
+                if (loops.status === 'fulfilled') {
+                    const next = Array.isArray(loops.value) ? loops.value : [];
+                    setSidebarBgLoops(previous => sameContent(previous, next) ? previous : next);
+                }
+                if (scheduled.status === 'fulfilled') {
+                    const next = Array.isArray(scheduled.value) ? scheduled.value : [];
+                    setSidebarScheduledTasks(previous => sameContent(previous, next) ? previous : next);
+                }
+                if (passthrough.status === 'fulfilled') {
+                    const next = Array.isArray(passthrough.value) ? passthrough.value : [];
+                    setSidebarPassthroughCommands(previous => sameContent(previous, next) ? previous : next);
+                }
+            } finally {
+                inFlight = false;
             }
         };
         void refresh();
@@ -6048,7 +6059,7 @@ ${instruction}`;
                     windowMaximized={windowMaximized}
                 />}
                 {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab} style={navTab === 'skills' || navTab === 'bots' ? { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } : undefined}>
-                {navTab === 'bots' && <BotsPageErrorBoundary lang={lang}><DesktopBotWorkspace lang={lang} userId={desktopBotAccountId(config)} /></BotsPageErrorBoundary>}
+                {navTab === 'bots' && <BotsPageErrorBoundary lang={lang}><Suspense fallback={<div role="status">{localizeText('Loading bots…', '正在加载 Bot…', '正在載入 Bot…')}</div>}><DesktopBotWorkspace lang={lang} userId={desktopBotAccountId(config)} /></Suspense></BotsPageErrorBoundary>}
                 {/* Settings is outside page Suspense. General panels are eager so the default
                     open path never depends on a lazy chunk (OEM intermittent blank fix). */}
                 {navTab === 'settings' ? (
@@ -7021,6 +7032,7 @@ ${instruction}`;
             {/* MaClaw Onboarding Wizard */}
             {/* MaClaw Onboarding Wizard */}
             {showMaclawLLMPopup && (
+                <Suspense fallback={<div className="modal-overlay" role="status">{localizeText('Loading…', '正在加载…', '正在載入…')}</div>}>
                 <OnboardingWizard
                     lang={lang}
                     hubUrl={referralHandoff?.hubUrl || config?.remote_hub_url || ""}
@@ -7072,6 +7084,7 @@ ${instruction}`;
                         return saveRemoteConfigField(patch as any);
                     }}
                 />
+                </Suspense>
             )}
 
             {hubAuthRejectedPrompt && (

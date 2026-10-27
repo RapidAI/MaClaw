@@ -37,6 +37,7 @@ import {
     type PdfTranslationDraft,
     type PdfTranslationPlace,
 } from "../filecompanion/pdfTranslations";
+import { subscribeCompanionReaderState } from "../filecompanion/companionReaderState";
 
 export interface CompanionPdfReaderProps {
     absPath: string;
@@ -1141,6 +1142,13 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
 
     useEffect(() => subscribePdfTranslations((key) => {
         if (key !== pdfMarkPathKey(pathRef.current)) return;
+        applyStoredTranslations(pathRef.current);
+    }), [applyStoredTranslations]);
+
+    // A host read slower than the startup wait can land after this reader is
+    // already mounted. Re-read both mirrors instead of painting stale state.
+    useEffect(() => subscribeCompanionReaderState(() => {
+        setMarks(loadPdfMarks(pathRef.current));
         applyStoredTranslations(pathRef.current);
     }), [applyStoredTranslations]);
 

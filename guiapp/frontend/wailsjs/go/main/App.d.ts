@@ -741,6 +741,8 @@ export function DeleteFileCompanionGroup(arg1:string):Promise<void>;
 
 export function DeleteFileCompanionProject(arg1:string):Promise<Record<string, any>>;
 
+export function DeleteFileCompanionShare(arg1:string):Promise<void>;
+
 export function LeaveFileCompanionGroup(arg1:string):Promise<void>;
 
 export function ListFileCompanionGroupInvites():Promise<Array<Record<string, any>>>;
@@ -750,6 +752,16 @@ export function AcceptFileCompanionGroupInvite(arg1:string):Promise<void>;
 export function DeclineFileCompanionGroupInvite(arg1:string):Promise<void>;
 
 export function IgnoreFileCompanionGroupInvite(arg1:string):Promise<void>;
+
+export function LoadCompanionReaderState(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function SaveCompanionPdfMarks(arg1:string,arg2:string):Promise<void>;
+
+export function SaveCompanionPdfTranslations(arg1:string,arg2:string):Promise<void>;
+
+export function SaveCompanionChatMarks(arg1:string,arg2:string):Promise<void>;
+
+export function SaveCompanionInputHistory(arg1:string):Promise<void>;
 
 export function FileCompanionExportChatPDF(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<string>;
 
@@ -1332,6 +1344,8 @@ export function GroupDiscussionListLocalHidden():Promise<Array<a2a.HubDiscussion
 
 export function GroupDiscussionListMine(arg1:string):Promise<Array<a2a.HubDiscussionSummary>>;
 
+export function GroupDiscussionListMinePage(arg1:string,arg2:number,arg3:number):Promise<Array<a2a.HubDiscussionSummary>>;
+
 export function GroupDiscussionProcessPendingInvites():Promise<Array<a2a.GroupInviteSummary>>;
 
 export function GroupDiscussionPublishProfile():Promise<a2a.GroupProfile>;
@@ -1881,6 +1895,8 @@ export function ClearSkillEvolutionCompensation(arg1:string,arg2:string,arg3:str
 export function ListSkillMaintenanceDrafts():Promise<Record<string, any>>;
 
 export function ListSkillRepairDrafts():Promise<string>;
+
+export function GetSkillRepairDraft(arg1:string,arg2:string):Promise<string>;
 
 export function ListSkillRunArtifacts(arg1:string,arg2:number):Promise<Array<main.SkillArtifactRegistryEntry>>;
 

@@ -193,4 +193,7 @@ func TestCodingPlanExecutionLoopContextPropagatesDesktopIngressToken(t *testing.
 	if loopCtx.UserID != msg.UserID {
 		t.Fatalf("user id was not propagated: got %q want %q", loopCtx.UserID, msg.UserID)
 	}
+	if loopCtx.Platform != desktopPlatform {
+		t.Fatalf("platform default = %q, want %q", loopCtx.Platform, desktopPlatform)
+	}
 }

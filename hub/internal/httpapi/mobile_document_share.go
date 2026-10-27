@@ -28,6 +28,11 @@ import (
 
 const companionDocSharePathEnv = "MACLAW_COMPANION_DOC_SHARE_PATH"
 
+// companionShareDuplicateMessage is what a reader sees when the same paper is
+// already shared to the same audience. Deleting or editing that link is the
+// way forward; a second link would only split the annotations.
+const companionShareDuplicateMessage = "这份文档已经以相同的范围分享过了，请先删除原分享，或修改原分享"
+
 var companionShareTokenPattern = regexp.MustCompile(`^cd_[0-9a-f]{32}$`)
 
 type companionDocShare struct {
@@ -51,6 +56,9 @@ type companionDocShare struct {
 	Target string `json:"target,omitempty"`
 	// GroupID is set when Visibility is group. Access follows accepted members.
 	GroupID string `json:"group_id,omitempty"`
+	// ContentHash identifies the paper itself, not the companion project zip.
+	// It is what makes (paper, scope) unique per owner while a share is live.
+	ContentHash string `json:"content_hash,omitempty"`
 	// Notes are other readers' discussion. They are not the host transcript,
 	// and a host sync of the paper must not drop them.
 	Notes         []companionShareNote `json:"notes,omitempty"`
@@ -60,12 +68,19 @@ type companionDocShare struct {
 // companionShareNote is one reader's discussion on a share. The host's own
 // chat stays in the project. These notes are what everyone who can see the
 // share reads.
+//
+// Host marks a note written by the share owner: the owner's own line, or the
+// answer the owner's agent wrote for a reader note. ReplyTo is the reader note
+// a host note answers, and it is how every machine learns that the note
+// already received its one answer.
 type companionShareNote struct {
 	ID        string    `json:"id"`
 	AuthorID  string    `json:"author_id,omitempty"`
 	Author    string    `json:"author"`
 	Text      string    `json:"text"`
 	CreatedAt time.Time `json:"created_at"`
+	Host      bool      `json:"host,omitempty"`
+	ReplyTo   string    `json:"reply_to,omitempty"`
 }
 
 var companionDocShares = struct {
@@ -143,6 +158,62 @@ func newCompanionShareToken() (string, error) {
 		return "", err
 	}
 	return "cd_" + hex.EncodeToString(buf), nil
+}
+
+// companionShareScopeKey is the audience half of the duplicate key. A private
+// share's password is not part of it: sharing the same paper privately twice is
+// a duplicate even when the password differs.
+func companionShareScopeKey(visibility, target, groupID string) string {
+	switch visibility {
+	case "group":
+		return "group:" + strings.TrimSpace(groupID)
+	case "person":
+		return "person:" + strings.TrimSpace(target)
+	default:
+		return visibility
+	}
+}
+
+func normalizeCompanionContentHash(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) != 64 {
+		return ""
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return ""
+		}
+	}
+	return value
+}
+
+func companionShareContentHash(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// companionShareDuplicateLocked returns the live share that already covers
+// this (paper, scope). An expired share does not block a new one: the reader
+// may publish it again. Legacy shares created before ContentHash existed do
+// not match, so they never block a share this build makes.
+func companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID string, now time.Time) (companionDocShare, bool) {
+	if contentHash == "" {
+		return companionDocShare{}, false
+	}
+	scope := companionShareScopeKey(visibility, target, groupID)
+	for _, share := range companionDocShares.items {
+		if share.OwnerID != ownerID || share.expired(now) {
+			continue
+		}
+		if strings.TrimSpace(share.ContentHash) != contentHash {
+			continue
+		}
+		if companionShareScopeKey(share.Visibility, share.Target, share.GroupID) != scope {
+			continue
+		}
+		return share, true
+	}
+	return companionDocShare{}, false
 }
 
 func hashCompanionSharePassword(password, salt string) string {
@@ -303,7 +374,10 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 		}
 	}
 	companionDocShares.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"mine": mine, "received": received})
+	// NotesReply tells the desktop that this Hub records host replies. An older
+	// Hub omits it, and the owner's machine then does not run a discussion agent:
+	// without reply_to every host line would look unanswered and loop.
+	writeJSON(w, http.StatusOK, map[string]any{"mine": mine, "received": received, "notes_reply": true})
 }
 
 func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *auth.ViewerPrincipal, ownerID string) {
@@ -369,6 +443,21 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
+	contentHash := normalizeCompanionContentHash(r.FormValue("content_hash"))
+	if contentHash == "" {
+		// An older desktop does not send the paper hash. The uploaded bytes are
+		// then the only identity available; an exact retry still dedupes.
+		contentHash = companionShareContentHash(raw)
+	}
+	now := time.Now().UTC()
+	loadCompanionDocShares()
+	companionDocShares.Lock()
+	_, duplicate := companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, now)
+	companionDocShares.Unlock()
+	if duplicate {
+		writeError(w, http.StatusConflict, "SHARE_DUPLICATE", companionShareDuplicateMessage)
+		return
+	}
 	token, err := newCompanionShareToken()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法创建分享")
@@ -379,21 +468,21 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 		writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享文件")
 		return
 	}
-	now := time.Now().UTC()
 	share := companionDocShare{
-		Token:      token,
-		TenantID:   strings.TrimSpace(principal.TenantID),
-		OwnerID:    ownerID,
-		OwnerLabel: companionShareOwnerLabel(principal),
-		Name:       companionShareFileName(name),
-		Size:       int64(len(raw)),
-		BlobPath:   blobPath,
-		Visibility: visibility,
-		CreatedAt:  now,
-		Importers:  map[string]string{},
-		Revision:   1,
-		Target:     target,
-		GroupID:    groupID,
+		Token:       token,
+		TenantID:    strings.TrimSpace(principal.TenantID),
+		OwnerID:     ownerID,
+		OwnerLabel:  companionShareOwnerLabel(principal),
+		Name:        companionShareFileName(name),
+		Size:        int64(len(raw)),
+		BlobPath:    blobPath,
+		Visibility:  visibility,
+		CreatedAt:   now,
+		Importers:   map[string]string{},
+		Revision:    1,
+		Target:      target,
+		GroupID:     groupID,
+		ContentHash: contentHash,
 	}
 	if days > 0 {
 		share.ExpiresAt = now.Add(time.Duration(days) * 24 * time.Hour)
@@ -409,6 +498,14 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 	}
 	loadCompanionDocShares()
 	companionDocShares.Lock()
+	// The pre-check happened before the blob was written. Check once more with
+	// the lock held so two requests that raced through it cannot both publish.
+	if _, duplicate = companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, now); duplicate {
+		companionDocShares.Unlock()
+		mobileDeleteDocumentBlob(blobPath)
+		writeError(w, http.StatusConflict, "SHARE_DUPLICATE", companionShareDuplicateMessage)
+		return
+	}
 	companionDocShares.items[token] = share
 	err = persistCompanionDocSharesLocked()
 	if err != nil {
@@ -460,6 +557,51 @@ func CompanionDocumentShareHandler(identity *auth.IdentityService) http.HandlerF
 			return
 		}
 		writeJSON(w, http.StatusOK, companionShareView(share, r))
+	}
+}
+
+// CompanionDocumentShareDeleteHandler removes one of the caller's links. The
+// blob goes with it; copies readers already imported stay on their machines.
+//
+//	DELETE /api/mobile/documents/shares/{token}
+func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use DELETE")
+			return
+		}
+		_, ownerID, ok := companionRequireViewer(w, r, identity)
+		if !ok {
+			return
+		}
+		token := strings.TrimSpace(r.PathValue("token"))
+		if !companionShareTokenPattern.MatchString(token) {
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, found := companionDocShares.items[token]
+		if !found {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		if share.OwnerID != ownerID {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有分享者可以删除分享")
+			return
+		}
+		delete(companionDocShares.items, token)
+		if err := persistCompanionDocSharesLocked(); err != nil {
+			companionDocShares.items[token] = share
+			companionDocShares.Unlock()
+			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法删除分享")
+			return
+		}
+		companionDocShares.Unlock()
+		mobileDeleteDocumentBlob(share.BlobPath)
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": token})
 	}
 }
 
@@ -789,22 +931,46 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 }
 
 func companionShareAttachNotes(view map[string]any, share companionDocShare) {
-	view["notes"] = companionShareNotesJSON(share.Notes)
+	view["notes"] = companionShareNotesJSON(share.Notes, share.OwnerID)
 	view["notes_revision"] = share.NotesRevision
 }
 
-func companionShareNotesJSON(notes []companionShareNote) []map[string]any {
+// companionShareNoteIsHost reads the owner out of the persisted note. Notes
+// written before Host existed still carry AuthorID, so an owner line is never
+// mistaken for a reader's note and answered again.
+func companionShareNoteIsHost(note companionShareNote, ownerID string) bool {
+	if note.Host {
+		return true
+	}
+	return note.AuthorID != "" && note.AuthorID == ownerID
+}
+
+func companionShareNoteByID(notes []companionShareNote, noteID string) (companionShareNote, bool) {
+	for _, note := range notes {
+		if note.ID == noteID {
+			return note, true
+		}
+	}
+	return companionShareNote{}, false
+}
+
+func companionShareNotesJSON(notes []companionShareNote, ownerID string) []map[string]any {
 	out := make([]map[string]any, 0, len(notes))
 	for _, note := range notes {
 		if strings.TrimSpace(note.ID) == "" || strings.TrimSpace(note.Text) == "" {
 			continue
 		}
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"id":         note.ID,
 			"author":     note.Author,
 			"text":       note.Text,
 			"created_at": note.CreatedAt.UTC().Format(time.RFC3339),
-		})
+			"host":       companionShareNoteIsHost(note, ownerID),
+		}
+		if note.ReplyTo != "" {
+			row["reply_to"] = note.ReplyTo
+		}
+		out = append(out, row)
 	}
 	return out
 }
@@ -867,7 +1033,8 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 		var body struct {
-			Text string `json:"text"`
+			Text    string `json:"text"`
+			ReplyTo string `json:"reply_to"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请填写批注")
@@ -878,6 +1045,7 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", message)
 			return
 		}
+		replyTo := strings.TrimSpace(body.ReplyTo)
 		noteID, err := newCompanionShareNoteID()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存批注")
@@ -909,12 +1077,51 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		}
 		previous := share
 		previous.Notes = cloneCompanionShareNotes(share.Notes)
+		isHost := share.OwnerID == ownerID
+		if replyTo != "" {
+			// Only the host answers a reader note. A reader's own line is a new
+			// discussion entry, not an answer, and every answer names the note
+			// it replies to so no machine answers the same note twice.
+			if !isHost {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有主持人可以回复批注")
+				return
+			}
+			target, found := companionShareNoteByID(share.Notes, replyTo)
+			if !found {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "被回复的批注不存在")
+				return
+			}
+			if companionShareNoteIsHost(target, share.OwnerID) {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "只能回复读者的批注")
+				return
+			}
+			for _, existing := range share.Notes {
+				if existing.ReplyTo != replyTo || !companionShareNoteIsHost(existing, share.OwnerID) {
+					continue
+				}
+				// A second host machine, or a retry after a dropped response,
+				// must not add a second answer to the same reader note.
+				notes := companionShareNotesJSON(share.Notes, share.OwnerID)
+				revision := share.NotesRevision
+				companionDocShares.Unlock()
+				writeJSON(w, http.StatusOK, map[string]any{
+					"notes":          notes,
+					"notes_revision": revision,
+				})
+				return
+			}
+		}
 		note := companionShareNote{
 			ID:        noteID,
 			AuthorID:  ownerID,
 			Author:    companionShareOwnerLabel(principal),
 			Text:      text,
 			CreatedAt: time.Now().UTC(),
+			Host:      isHost,
+			ReplyTo:   replyTo,
 		}
 		share.Notes = append(cloneCompanionShareNotes(share.Notes), note)
 		if len(share.Notes) > 80 {
@@ -930,7 +1137,7 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		}
 		companionDocShares.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"notes":          companionShareNotesJSON(share.Notes),
+			"notes":          companionShareNotesJSON(share.Notes, share.OwnerID),
 			"notes_revision": share.NotesRevision,
 		})
 	}

@@ -2,27 +2,22 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
     FILE_COMPANION_INPUT_ENTRY_MAX,
-    FILE_COMPANION_INPUT_HISTORY_KEY,
     FILE_COMPANION_INPUT_HISTORY_MAX,
     fileCompanionInputHistory,
+    hydrateFileCompanionInputHistory,
     rememberFileCompanionInput,
 } from "./fileCompanionInputHistory";
 
-const ASSISTANT_PROMPT_HISTORY_KEY = "ai-assistant-prompt-history";
-
 beforeEach(() => {
-    localStorage.clear();
+    hydrateFileCompanionInputHistory([]);
 });
 
 describe("fileCompanionInputHistory", () => {
-    it("stores companion questions and leaves the assistant history alone", () => {
-        localStorage.setItem(ASSISTANT_PROMPT_HISTORY_KEY, JSON.stringify(["助手里的一句"]));
+    it("keeps trimmed questions, newest last, without duplicating the latest", () => {
         rememberFileCompanionInput("  文件里有什么  ");
         rememberFileCompanionInput("文件里有什么");
         rememberFileCompanionInput("再总结一下");
         expect(fileCompanionInputHistory()).toEqual(["文件里有什么", "再总结一下"]);
-        expect(JSON.parse(localStorage.getItem(ASSISTANT_PROMPT_HISTORY_KEY) || "[]")).toEqual(["助手里的一句"]);
-        expect(localStorage.getItem(FILE_COMPANION_INPUT_HISTORY_KEY)).toContain("再总结一下");
     });
 
     it("drops a blank or oversized entry and keeps the newest hundred", () => {
@@ -36,5 +31,10 @@ describe("fileCompanionInputHistory", () => {
         expect(stored).toHaveLength(FILE_COMPANION_INPUT_HISTORY_MAX);
         expect(stored[0]).toBe("问 5");
         expect(stored[stored.length - 1]).toBe(`问 ${FILE_COMPANION_INPUT_HISTORY_MAX + 4}`);
+    });
+
+    it("hydrates from the stored list", () => {
+        hydrateFileCompanionInputHistory(["旧问题", "  另一个  "]);
+        expect(fileCompanionInputHistory()).toEqual(["旧问题", "另一个"]);
     });
 });

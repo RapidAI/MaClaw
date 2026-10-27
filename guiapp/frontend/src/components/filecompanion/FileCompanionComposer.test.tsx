@@ -3,7 +3,7 @@ import { useState } from "react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { FileCompanionComposer } from "./FileCompanionComposer";
-import { FILE_COMPANION_INPUT_HISTORY_KEY, rememberFileCompanionInput } from "./fileCompanionInputHistory";
+import { fileCompanionInputHistory, hydrateFileCompanionInputHistory, rememberFileCompanionInput } from "./fileCompanionInputHistory";
 
 const ASSISTANT_PROMPT_HISTORY_KEY = "ai-assistant-prompt-history";
 
@@ -32,7 +32,7 @@ function input(): HTMLTextAreaElement {
 }
 
 beforeEach(() => {
-    localStorage.clear();
+    hydrateFileCompanionInputHistory([]);
 });
 
 describe("FileCompanionComposer", () => {
@@ -78,7 +78,7 @@ describe("FileCompanionComposer", () => {
         fireEvent.change(input(), { target: { value: "助手" } });
         expect(screen.queryByTestId("file-companion-input-history")).toBeNull();
         expect(JSON.parse(localStorage.getItem(ASSISTANT_PROMPT_HISTORY_KEY) || "[]")).toEqual(["助手里的一句"]);
-        expect(localStorage.getItem(FILE_COMPANION_INPUT_HISTORY_KEY)).toContain("文件里有什么");
+        expect(fileCompanionInputHistory()).toContain("文件里有什么");
     });
 
     it("puts the draft back on the file being left", async () => {
@@ -137,7 +137,7 @@ describe("FileCompanionComposer", () => {
         fireEvent.keyDown(input(), { key: "ArrowUp" });
         await waitFor(() => expect(input().value).toBe("旧问题"));
         await act(async () => { resolveSend(true); });
-        await waitFor(() => expect(localStorage.getItem(FILE_COMPANION_INPUT_HISTORY_KEY)).toContain("请改写"));
+        await waitFor(() => expect(fileCompanionInputHistory()).toContain("请改写"));
         fireEvent.keyDown(input(), { key: "Escape" });
         await waitFor(() => expect(input().value).toBe(""));
         expect(screen.getByTestId("draft-b").textContent).toBe("");
@@ -162,7 +162,7 @@ describe("FileCompanionComposer", () => {
             await Promise.resolve();
         });
         expect(input().value).toBe("请改写");
-        expect(localStorage.getItem(FILE_COMPANION_INPUT_HISTORY_KEY)).toBeNull();
+        expect(fileCompanionInputHistory()).toEqual([]);
     });
 
     it("does not store a question while a turn is in flight", () => {
@@ -173,6 +173,6 @@ describe("FileCompanionComposer", () => {
         fireEvent.click(screen.getByTestId("file-companion-send"));
         expect(screen.getByTestId("sent").textContent).toBe("");
         expect(input().value).toBe("先别发出去");
-        expect(localStorage.getItem(FILE_COMPANION_INPUT_HISTORY_KEY)).toBeNull();
+        expect(fileCompanionInputHistory()).toEqual([]);
     });
 });

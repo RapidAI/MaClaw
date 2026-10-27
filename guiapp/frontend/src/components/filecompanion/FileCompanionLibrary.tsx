@@ -5,6 +5,7 @@ import {
     ImportFileCompanionShare,
     DeleteFileCompanionGroup,
     DeleteFileCompanionProject,
+    DeleteFileCompanionShare,
     LeaveFileCompanionGroup,
     ListFileCompanionGroups,
     ListFileCompanionLibrary,
@@ -36,6 +37,9 @@ export type CompanionLibraryItem = {
     revision: number;
     target: string;
     groupId: string;
+    // expired is derived by the backend on every list. An expired cloud row
+    // keeps the project here but no longer counts as an active share.
+    expired: boolean;
     highlights: string;
     // Notes are other readers' discussion carried on each cloud row.
     notes: CompanionShareNote[];
@@ -51,6 +55,10 @@ export type CompanionShareNote = {
     author: string;
     text: string;
     createdAt: string;
+    // host marks the share owner's notes, including the owner agent's answer.
+    // replyTo names the reader note that answer belongs to.
+    host?: boolean;
+    replyTo?: string;
 };
 
 export type CompanionShareBinding = {
@@ -166,6 +174,7 @@ function readItem(raw: unknown): CompanionLibraryItem | null {
         revision: numberOf(record, "revision", "Revision"),
         target: textOf(record, "target", "Target"),
         groupId: textOf(record, "groupId", "GroupID"),
+        expired: boolOf(record, "expired", "Expired"),
         highlights: textOf(record, "highlights", "Highlights"),
         notes: companionNotesFrom(record.notes ?? record.Notes),
         token: textOf(record, "token", "Token") || (id.startsWith("cd_") ? id : ""),
@@ -348,6 +357,8 @@ function readNote(raw: unknown): CompanionShareNote | null {
         author: textOf(record, "author", "Author"),
         text,
         createdAt: textOf(record, "createdAt", "CreatedAt") || textOf(record, "created_at", "created_at"),
+        host: boolOf(record, "host", "Host"),
+        replyTo: textOf(record, "replyTo", "ReplyTo") || textOf(record, "reply_to", "reply_to"),
     };
 }
 
@@ -420,7 +431,8 @@ function readRemoved(raw: unknown): string[] {
 
 // companionMineShares reads the cloud rows this person created. A document
 // that already has one of these must not be shared a second time from the
-// title bar; the button edits the share it already has.
+// title bar; the button edits the share it already has. An expired link is
+// not a live share: the paper may be published again.
 export function companionMineShares(raw: unknown): CompanionShareRow[] {
     if (!raw || typeof raw !== "object") return [];
     const record = raw as Record<string, unknown>;
@@ -429,7 +441,7 @@ export function companionMineShares(raw: unknown): CompanionShareRow[] {
     for (const item of items) {
         if (!item || typeof item !== "object") continue;
         const row = item as Record<string, unknown>;
-        if (!boolOf(row, "mine", "Mine")) continue;
+        if (!boolOf(row, "mine", "Mine") || boolOf(row, "expired", "Expired")) continue;
         const token = textOf(row, "token", "Token") || textOf(row, "id", "ID");
         if (!token.startsWith("cd_")) continue;
         out.push({
@@ -443,6 +455,34 @@ export function companionMineShares(raw: unknown): CompanionShareRow[] {
             target: textOf(row, "target", "Target"),
             groupId: textOf(row, "groupId", "GroupID"),
         });
+    }
+    return out;
+}
+
+export type CompanionShareHost = { owner: string; mine: boolean };
+
+// companionShareHosts reads who hosts each shared path. A share's creator is
+// the host of that document, so the same badge can say "you" on the host's
+// screen and name the person on every participant's screen.
+export function companionShareHosts(raw: unknown): Map<string, CompanionShareHost> {
+    const out = new Map<string, CompanionShareHost>();
+    if (!raw || typeof raw !== "object") return out;
+    const record = raw as Record<string, unknown>;
+    const items = Array.isArray(record.items) ? record.items : Array.isArray(record.Items) ? record.Items : [];
+    for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const row = item as Record<string, unknown>;
+        if (boolOf(row, "expired", "Expired")) continue;
+        const path = textOf(row, "path", "Path");
+        const token = textOf(row, "token", "Token");
+        if (!path || !token) continue;
+        const key = companionSharePathKey(path);
+        const mine = boolOf(row, "mine", "Mine");
+        const owner = textOf(row, "owner", "Owner");
+        const held = out.get(key);
+        // One file can belong to several shares. The share this person created
+        // is the host seat here; otherwise the first received share answers.
+        if (!held || (mine && !held.mine)) out.set(key, { owner, mine });
     }
     return out;
 }
@@ -482,6 +522,7 @@ function shareSpanFromExpiry(expiresAt: string): { span: ShareSpan; amount: stri
 }
 
 function whenLabel(item: CompanionLibraryItem): string {
+    if (item.expired) return item.expiresAt ? `已过期 · ${item.expiresAt.slice(0, 10)}` : "已过期";
     if (item.permanent || (item.source === "cloud" && !item.expiresAt)) return "永久";
     if (item.expiresAt) return `至 ${item.expiresAt.slice(0, 10)}`;
     if (item.openedAt) return item.openedAt.slice(0, 10);
@@ -575,6 +616,7 @@ export function CompanionLibraryView({
     onImportLink,
     onProjectDeleted,
     libraryDeleteGen,
+    listedSnapshot,
     dialogOpen,
 }: {
     activePath: string;
@@ -592,6 +634,9 @@ export function CompanionLibraryView({
     // Bumped when a delete finishes. A list that started earlier must not paint
     // that project, its marks, or its transcript back onto the screen.
     libraryDeleteGen?: { current: number };
+    // A list fetched by the share/import dialog, pushed down so this view
+    // paints it without a second request.
+    listedSnapshot?: unknown;
     dialogOpen?: boolean;
 }) {
     const [items, setItems] = useState<CompanionLibraryItem[]>([]);
@@ -615,15 +660,20 @@ export function CompanionLibraryView({
     // close the real confirm and clear confirmOpenRef while it is still showing.
     const deleteGate = useRef(false);
 
+    const applyList = useCallback((listed: unknown) => {
+        const record = listed && typeof listed === "object" ? listed as Record<string, unknown> : {};
+        const next = Array.isArray(record.items) ? record.items : Array.isArray(record.Items) ? record.Items : [];
+        setItems(next.map(readItem).filter((item): item is CompanionLibraryItem => item !== null));
+        setNotice(textOf(record, "notice", "Notice"));
+    }, []);
+
     const reload = useCallback(async () => {
         const started = libraryDeleteGen?.current ?? 0;
         setLoading(true);
         try {
             const listed = await ListFileCompanionLibrary() as { items?: unknown[]; Items?: unknown[]; updates?: unknown; Updates?: unknown; removed?: unknown; Removed?: unknown };
             if (libraryDeleteGen && libraryDeleteGen.current !== started) return;
-            const next = Array.isArray(listed?.items) ? listed.items : Array.isArray(listed?.Items) ? listed.Items : [];
-            setItems(next.map(readItem).filter((item): item is CompanionLibraryItem => item !== null));
-            setNotice(textOf(listed as Record<string, unknown>, "notice", "Notice"));
+            applyList(listed);
             // The open document reads this same list. Notes, a newer transcript,
             // and a removed copy have to land while the view is the one refreshing.
             listedRef.current?.(listed);
@@ -632,11 +682,19 @@ export function CompanionLibraryView({
         } finally {
             setLoading(false);
         }
-    }, [libraryDeleteGen]);
+    }, [libraryDeleteGen, applyList]);
 
     useEffect(() => {
         void reload();
     }, [reload]);
+
+    // A dialog that already fetched the list pushes it here. The view repaints
+    // without asking the hub again; the snapshot is the same object the window
+    // stored, so applying it twice settles immediately.
+    useEffect(() => {
+        if (listedSnapshot === undefined || listedSnapshot === null) return;
+        applyList(listedSnapshot);
+    }, [listedSnapshot, applyList]);
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
@@ -749,11 +807,12 @@ export function CompanionLibraryView({
     const cloudItems = items.filter((item) => item.source === "cloud");
     // A local document that was already published has a cloud row beside it.
     // The local card must offer 修改 on that row instead of 分享, or the same
-    // paper ends up with two links.
+    // paper ends up with two links. An expired link is not live, so it does
+    // not hold that seat any more.
     const sharedByPath = useMemo(() => {
         const map = new Map<string, CompanionLibraryItem>();
         for (const item of cloudItems) {
-            if (!item.mine || !item.path) continue;
+            if (!item.mine || item.expired || !item.path) continue;
             const key = companionSharePathKey(item.path);
             if (key && !map.has(key)) map.set(key, item);
         }
@@ -784,10 +843,11 @@ export function CompanionLibraryView({
         const isOpen = item.path === activePath;
         // A cloud row is itself a share. A local row is only shared when this
         // person already published the same path, and then 修改 edits that row.
+        // An expired row no longer holds either seat: the paper can go out again.
         const shareRow = item.source === "cloud"
-            ? (item.mine ? item : null)
+            ? (item.mine && !item.expired ? item : null)
             : (sharedByPath.get(companionSharePathKey(item.path)) ?? null);
-        const alreadyShared = item.source === "cloud" || Boolean(shareRow);
+        const alreadyShared = Boolean(shareRow) || (item.source === "cloud" && !item.expired);
         return (
             <div key={item.id} className="file-companion-project" data-testid={`file-companion-library-card-${item.id}`} data-open={isOpen ? "true" : undefined}>
                 <span className="file-companion-project-kind" data-kind={kindOf(item.name)} aria-hidden="true">{kindLabel(item.name)}</span>
@@ -822,7 +882,16 @@ export function CompanionLibraryView({
                     {item.shareUrl ? <small className="file-companion-project-url" data-testid={`file-companion-library-url-${item.id}`}>{item.shareUrl}</small> : null}
                 </div>
                 <div className="file-companion-project-actions">
-                    {alreadyShared ? (
+                    {item.expired ? (
+                        <span
+                            className="file-companion-project-shared"
+                            data-testid={`file-companion-library-expired-mark-${item.id}`}
+                            title="分享已过期，可以重新分享"
+                        >
+                            <LibraryGlyph name="share" size={12} />
+                            <span>已过期</span>
+                        </span>
+                    ) : alreadyShared ? (
                         <span
                             className="file-companion-project-shared"
                             data-testid={`file-companion-library-shared-mark-${item.id}`}
@@ -1497,6 +1566,7 @@ export function CompanionShareDialog({
     const echoExpiresAt = savedEcho ? savedEcho.expiresAt : (share?.expiresAt ?? "");
     const listedRef = useRef(onListed);
     listedRef.current = onListed;
+    const { showConfirm } = useDialog();
 
     useEffect(() => {
         let dead = false;
@@ -1584,7 +1654,7 @@ export function CompanionShareDialog({
             // field means the next save keeps it instead of hashing it again.
             setPassword("");
             setExpiryTouched(false);
-            showToast(editing ? "已更新分享" : "已分享到云端", "success", 6000);
+            showToast(editing ? "已更新分享" : "分享成功，链接已生成", "success", 6000);
             await reload();
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
@@ -1606,6 +1676,29 @@ export function CompanionShareDialog({
         // so the list shows the revision that landed.
         try {
             await reload();
+        } finally {
+            setShareBusy(false);
+        }
+    };
+
+    const deleteCurrent = async () => {
+        const token = share?.token ?? "";
+        if (!token || shareBusy) return;
+        const docName = name || share?.name || "当前文档";
+        const ok = await showConfirm(
+            `确认删除“${docName}”的分享？\n链接会立即失效，其他人将无法再打开。\n源文件仍会保留。`,
+            "删除分享",
+            { confirmText: "删除", cancelText: "取消", confirmVariant: "danger" },
+        );
+        if (!ok) return;
+        setShareBusy(true);
+        try {
+            await DeleteFileCompanionShare(token);
+            showToast("已删除分享", "success", 6000);
+            await reload();
+            onClose();
+        } catch (err) {
+            showToast(libraryError(err), "error", 6000);
         } finally {
             setShareBusy(false);
         }
@@ -1744,7 +1837,11 @@ export function CompanionShareDialog({
                         {editing ? "改范围或有效期后，链接不变，已导入的人继续可用。" : "分享包含文档、高亮和聊天，之后可同步新标注。"}
                     </p>
                     <div className="file-companion-dialog-actions">
-                        {editing ? null : (
+                        {editing ? (
+                            <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-delete" disabled={shareBusy} onClick={() => { void deleteCurrent(); }}>
+                                删除分享
+                            </button>
+                        ) : (
                             <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-library-sync" disabled={shareBusy} onClick={() => { void syncCurrent(); }}>
                                 同步更新
                             </button>

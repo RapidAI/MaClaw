@@ -4,6 +4,7 @@ import {createRoot} from 'react-dom/client'
 import './style.css'
 import './App.css'
 import { readFileCompanionBootFlag } from './components/filecompanion/fileCompanionBootFlag'
+import { hydrateCompanionReaderState } from './components/filecompanion/companionReaderState'
 import { DialogProvider } from './components/CustomDialog'
 import { ToastProvider } from './components/Toast'
 import { KnowledgeImportProvider } from './components/settings/KnowledgeImportContext'
@@ -107,36 +108,62 @@ function scheduleBootSplashHandoff() {
     }
 }
 
-try {
-    console.log('[startup-trace] main.tsx: scheduling React render')
-    appRoot.render(
-        <React.StrictMode>
-            <ToastProvider>
-                <KnowledgeImportProvider>
-                    <DialogProvider>
-                        <React.Suspense fallback={
-                            <div className="app-loading-shell" aria-busy="true">
-                                <div className="app-loading-card">
-                                    <p className="app-loading-status" role="status">
-                                        {localizeStartupText('Loading…', '正在加载…', '正在載入…')}
-                                    </p>
+function renderApp() {
+    if (!appRoot) {
+        renderStartupError(new Error('React root is missing'))
+        return
+    }
+    try {
+        console.log('[startup-trace] main.tsx: scheduling React render')
+        appRoot.render(
+            <React.StrictMode>
+                <ToastProvider>
+                    <KnowledgeImportProvider>
+                        <DialogProvider>
+                            <React.Suspense fallback={
+                                <div className="app-loading-shell" aria-busy="true">
+                                    <div className="app-loading-card">
+                                        <p className="app-loading-status" role="status">
+                                            {localizeStartupText('Loading…', '正在加载…', '正在載入…')}
+                                        </p>
+                                    </div>
                                 </div>
-                            </div>
-                        }>
-                            {isFileCompanionWindow ? <FileCompanionWindow /> : <App />}
-                        </React.Suspense>
-                    </DialogProvider>
-                </KnowledgeImportProvider>
-            </ToastProvider>
-        </React.StrictMode>
-    )
-    renderScheduled = true
-    scheduleBootSplashHandoff()
-    console.log('[startup-trace] main.tsx: render scheduled OK')
-} catch (error) {
-    console.error('Failed to schedule initial render', error)
-    renderStartupError(error)
+                            }>
+                                {isFileCompanionWindow ? <FileCompanionWindow /> : <App />}
+                            </React.Suspense>
+                        </DialogProvider>
+                    </KnowledgeImportProvider>
+                </ToastProvider>
+            </React.StrictMode>
+        )
+        renderScheduled = true
+        scheduleBootSplashHandoff()
+        console.log('[startup-trace] main.tsx: render scheduled OK')
+    } catch (error) {
+        console.error('Failed to schedule initial render', error)
+        renderStartupError(error)
+    }
 }
+
+// The companion reader keeps highlights and its typed-question history in
+// SQLite. Hydrate the synchronous mirror before the first render so the reader
+// never paints without them. Only the companion window renders that reader, so
+// the main window skips the read instead of parsing state it will not use. A
+// slow or missing host must not block startup: the render happens after a short
+// bound either way.
+const companionReaderState = isFileCompanionWindow
+    ? hydrateCompanionReaderState()
+    : Promise.resolve()
+void Promise.race([
+    companionReaderState,
+    new Promise<void>((resolve) => { window.setTimeout(resolve, 2000) }),
+])
+    .catch((error) => {
+        // The legacy keys stay in place for the next launch; the reader simply
+        // starts empty. Log it so a locked or corrupt database is diagnosable.
+        console.warn('[companion-reader] state hydration failed', error)
+    })
+    .finally(renderApp)
 
 installFrontendIssueReporting()
 

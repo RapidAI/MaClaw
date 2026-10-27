@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
-import { PDF_MARK_STORAGE_KEY, loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
+import { hydratePdfMarks, loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
 
 const mark = {
     id: "m1",
@@ -11,7 +11,8 @@ const mark = {
 };
 
 beforeEach(() => {
-    localStorage.clear();
+    hydratePdfMarks({});
+    delete (window as unknown as { go?: unknown }).go;
 });
 
 describe("pdf marks", () => {
@@ -20,9 +21,6 @@ describe("pdf marks", () => {
         expect(loadPdfMarks("c:/docs/paper.pdf")).toEqual([mark]);
         expect(loadPdfMarks("C:/docs/other.pdf")).toEqual([]);
         expect(pdfMarkPathKey("C:\\Docs\\Paper.PDF")).toBe("c:/docs/paper.pdf");
-        const stored = localStorage.getItem(PDF_MARK_STORAGE_KEY) || "";
-        expect(stored).toContain("yellow");
-        expect(stored).not.toContain("%PDF");
     });
 
     it("drops a mark that is not one of the four colours", () => {
@@ -52,5 +50,36 @@ describe("pdf marks", () => {
         const counts = loadPdfMarkCounts(["/tmp/c.pdf", "/tmp/d.pdf"]);
         expect(counts.get("/tmp/c.pdf")).toBe(loadPdfMarks("/tmp/c.pdf").length);
         expect(counts.get("/tmp/d.pdf")).toBe(loadPdfMarks("/tmp/d.pdf").length);
+    });
+
+    it("writes to the host in the order the marks were saved", async () => {
+        const calls: string[] = [];
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        (window as unknown as { go: unknown }).go = {
+            main: {
+                App: {
+                    SaveCompanionPdfMarks: async (_path: string, body: string) => {
+                        calls.push(body);
+                        if (calls.length === 1) await gate;
+                    },
+                },
+            },
+        };
+        try {
+            savePdfMarks("/tmp/order.pdf", [mark]);
+            savePdfMarks("/tmp/order.pdf", []);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            // The clear must not overtake the save it follows on disk.
+            expect(calls).toEqual([JSON.stringify([mark])]);
+
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(calls).toEqual([JSON.stringify([mark]), "[]"]);
+        } finally {
+            delete (window as unknown as { go?: unknown }).go;
+        }
     });
 });

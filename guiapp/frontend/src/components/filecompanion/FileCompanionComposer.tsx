@@ -6,6 +6,7 @@ import { useInputHistoryAutocomplete } from "../ai/useInputHistoryAutocomplete";
 import { useTextCompositionGuard } from "../ai/useTextCompositionGuard";
 import { isHistoryResetCommandText } from "../ai/composeAction";
 import { fileCompanionInputHistory, rememberFileCompanionInput } from "./fileCompanionInputHistory";
+import { subscribeCompanionReaderState } from "./companionReaderState";
 
 interface FileCompanionComposerProps {
     path: string;
@@ -24,6 +25,11 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
     const [history, setHistory] = useState<string[]>(() => fileCompanionInputHistory());
     const listboxDomId = useId();
     const historyListboxId = `file-companion-input-history-${listboxDomId}`;
+
+    // A slow host read can finish after this composer mounted.
+    useEffect(() => subscribeCompanionReaderState(() => {
+        setHistory(fileCompanionInputHistory());
+    }), []);
 
     const applyInputValue = useCallback((next: string) => {
         onChange(next);

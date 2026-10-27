@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -43,6 +44,34 @@ func TestGroupDiscussionListMineFallsBackToLocalCacheWhenDisabled(t *testing.T) 
 	}
 	if len(got) != 1 || got[0].ID != "cached-1" {
 		t.Fatalf("cached discussions = %+v", got)
+	}
+}
+
+func TestGroupDiscussionListMinePageFallsBackToPagedCache(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: false}}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.CacheSummaries(context.Background(), []a2a.HubDiscussionSummary{
+		{ID: "old", CreatedAt: now.Add(-3 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour)},
+		{ID: "middle", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour)},
+		{ID: "new", CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+	}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+	_ = store.Close()
+
+	got, err := app.GroupDiscussionListMinePage("all", 1, 1)
+	if err != nil {
+		t.Fatalf("GroupDiscussionListMinePage: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "middle" {
+		t.Fatalf("cached page = %+v", got)
 	}
 }
 

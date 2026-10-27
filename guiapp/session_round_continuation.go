@@ -77,6 +77,14 @@ func (h *IMMessageHandler) beginSessionRoundContinuation(ctx *LoopContext, userI
 	if userID == "" {
 		return nil, false
 	}
+	// ACP Mode B streams one request through the bridge callbacks and closes
+	// its durable attempt when that call returns. A timer wave would keep
+	// editing after the editor saw the result, outside that attempt and with
+	// no stream to the client. The client owns the retry.
+	if isACPAssistantSessionUserID(userID) {
+		log.Printf("[session-round] ACP turn does not arm a desktop wave user=%s", userID)
+		return nil, false
+	}
 	// A newer user message arrived while this turn ran. Resuming the old
 	// work would compete with the request the user just made, so the newer
 	// turn owns the next round. An unprepared context (0) keeps the old
@@ -107,6 +115,23 @@ func sessionRoundEligible(ctx *LoopContext, task, userText string, history []age
 		return false
 	}
 	if ctx.Kind != LoopKindChat || ctx.ForegroundChatBudget > 0 || ctx.Runtime.Execution.IsLight() {
+		return false
+	}
+	// The wave is delivered through the desktop assistant event stream. A
+	// channel turn (Lansenger, WeChat, Hub, group executor, ...) already
+	// returned its response, so a wave there would keep working with no
+	// delivery path. Leave the retry to the channel user. Empty is the
+	// internal/test context and stays on the desktop behavior.
+	platform := strings.TrimSpace(ctx.Platform)
+	if platform != "" && platform != desktopPlatform && platform != sessionRoundContinuationPlatform {
+		log.Printf("[session-round] channel turn does not arm a desktop wave platform=%q user=%q", platform, ctx.UserID)
+		return false
+	}
+	// A workflow phase owns its own retry and resume. A session wave bypasses
+	// the workflow router and would leave the phase waiting. WorkflowAgentLoop
+	// alone is not the signal: an armed pure-coding session also carries it
+	// while the workbench, not a phase, runs.
+	if ctx.WorkflowDocPhase || strings.TrimSpace(ctx.WorkflowPhaseID) != "" {
 		return false
 	}
 	task = strings.TrimSpace(task)

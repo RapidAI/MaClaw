@@ -16,7 +16,10 @@ import FileCompanionWindow, {
 import { finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
 import { ToastProvider } from "../Toast";
 import { DialogProvider } from "../CustomDialog";
-import { loadPdfMarks, savePdfMarks } from "./pdfMarks";
+import { loadPdfMarks, savePdfMarks, hydratePdfMarks } from "./pdfMarks";
+import { hydrateChatMarks, loadChatMarks } from "./chatMarks";
+import { chatTextSpans } from "./chatMarkAnchors";
+import { fileCompanionInputHistory, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
 
 const boot = vi.fn();
 const resume = vi.fn();
@@ -90,6 +93,7 @@ const removeGroupMember = vi.fn(async () => ({ id: "cg_0123456789abcdef012345678
 const updateGroup = vi.fn(async (id: string, name: string, icon: string) => ({ id, name, icon, admin: true, members: [] as Array<Record<string, unknown>> }));
 const deleteGroup = vi.fn(async () => undefined);
 const deleteProject = vi.fn(async (..._args: unknown[]) => ({ id: "", path: "", name: "", cleared: false }));
+const deleteShare = vi.fn(async (..._args: unknown[]): Promise<void> => undefined);
 const leaveGroup = vi.fn(async () => undefined);
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
@@ -146,6 +150,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     UpdateFileCompanionGroup: (...args: Parameters<typeof updateGroup>) => updateGroup(...args),
     DeleteFileCompanionGroup: (...args: Parameters<typeof deleteGroup>) => deleteGroup(...args),
     DeleteFileCompanionProject: (...args: unknown[]) => deleteProject(...args),
+    DeleteFileCompanionShare: (...args: unknown[]) => deleteShare(...args),
     LeaveFileCompanionGroup: (...args: Parameters<typeof leaveGroup>) => leaveGroup(...args),
     FileCompanionExportChatPDF: (...args: Parameters<typeof exportChatPdf>) => exportChatPdf(...args),
     FileCompanionExportChatCloud: (...args: Parameters<typeof exportChatCloud>) => exportChatCloud(...args),
@@ -304,6 +309,8 @@ beforeEach(() => {
     listLibrary.mockResolvedValue({ items: [], notice: "" });
     deleteProject.mockReset();
     deleteProject.mockResolvedValue({ id: "", path: "", name: "", cleared: false });
+    deleteShare.mockReset();
+    deleteShare.mockResolvedValue(undefined);
     shareDocument.mockReset();
     shareDocument.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true });
     importShare.mockReset();
@@ -366,7 +373,11 @@ beforeEach(() => {
     clipboardWrite.mockReset();
     clipboardWrite.mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText: clipboardWrite } });
-    localStorage.removeItem("maclaw.fileCompanionInputHistory.v1");
+    // The reader stores live in SQLite in the app; tests start from an empty
+    // in-memory mirror.
+    hydrateFileCompanionInputHistory([]);
+    hydratePdfMarks({});
+    hydrateChatMarks({});
     ready.mockResolvedValue(undefined);
     replaceOffice.mockResolvedValue(undefined);
     clearChat.mockResolvedValue(undefined);
@@ -558,7 +569,7 @@ describe("FileCompanionWindow", () => {
         const input = await screen.findByTestId("file-companion-input") as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: "文件里有什么" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
-        await waitFor(() => expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toContain("文件里有什么"));
+        await waitFor(() => expect(fileCompanionInputHistory()).toContain("文件里有什么"));
         expect(send).toHaveBeenCalledTimes(1);
         fireEvent.change(input, { target: { value: "" } });
         input.setSelectionRange(0, 0);
@@ -582,7 +593,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.keyDown(input, { key: "ArrowUp" });
         await waitFor(() => expect(input.value).toBe("文件里有什么"));
         expect(JSON.parse(localStorage.getItem("ai-assistant-prompt-history") || "[]")).toEqual(["助手里的一句"]);
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toContain("文件里有什么");
+        expect(fileCompanionInputHistory()).toContain("文件里有什么");
     });
 
     it("does not store the paper button as input history", async () => {
@@ -594,7 +605,7 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-paper");
         fireEvent.click(screen.getByTestId("file-companion-paper"));
         await waitFor(() => expect(send).toHaveBeenCalled());
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toBeNull();
+        expect(fileCompanionInputHistory()).toEqual([]);
         expect(JSON.parse(localStorage.getItem("ai-assistant-prompt-history") || "[]")).toEqual(["助手里的一句"]);
     });
 
@@ -1995,8 +2006,266 @@ describe("FileCompanionWindow", () => {
         expect(shareDocument).not.toHaveBeenCalled();
     });
 
-    it("asks with the custom dialog before deleting companion data and keeps the tab when cancelled", async () => {
-        const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
+    it("toasts a successful share and reports an already shared paper and range", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        listLibrary.mockResolvedValue({
+            items: [{ id: "local:a", name: "a.md", path: "C:/notes/a.md", source: "local", openedAt: "2026-10-25T00:00:00Z" }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-share-open"));
+        await screen.findByTestId("file-companion-share-dialog");
+
+        fireEvent.click(screen.getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalled());
+        expect(await screen.findByText("分享成功，链接已生成")).toBeTruthy();
+
+        shareDocument.mockRejectedValueOnce(new Error("这份文档已经以相同的范围分享过了，请先删除原分享，或修改原分享"));
+        fireEvent.click(screen.getByTestId("file-companion-library-share"));
+        expect(await screen.findByText("这份文档已经以相同的范围分享过了，请先删除原分享，或修改原分享")).toBeTruthy();
+    });
+
+    it("offers sharing again after the previous share expired", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        listLibrary.mockResolvedValue({
+            items: [
+                { id: "local:a", name: "a.pdf", path: "C:/notes/a.pdf", source: "local", openedAt: "2026-10-25T00:00:00Z" },
+                {
+                    id: token,
+                    token,
+                    name: "a.pdf",
+                    path: "C:/notes/a.pdf",
+                    source: "cloud",
+                    owner: "me@example.com",
+                    visibility: "public",
+                    permanent: false,
+                    expiresAt: "2026-01-01T00:00:00Z",
+                    expired: true,
+                    mine: true,
+                },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        // The title bar reads an expired link as no live share.
+        expect(screen.getByTestId("file-companion-share-open").getAttribute("aria-label")).toBe("分享");
+
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+        const expiredMark = await screen.findByTestId(`file-companion-library-expired-mark-${token}`);
+        expect(expiredMark.textContent).toContain("已过期");
+        // The local row offers 分享 again, and 修改 is gone with the lapsed link.
+        expect(screen.getByTestId("file-companion-library-share-action-local:a")).toBeTruthy();
+        expect(screen.queryByTestId(`file-companion-library-edit-share-${token}`)).toBeNull();
+    });
+
+    it("deletes a share from the edit dialog after confirmation and refreshes the library", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const localItem = { id: "local:a", name: "a.pdf", path: "C:/notes/a.pdf", source: "local", openedAt: "2026-10-25T00:00:00Z" };
+        const cloudItem = {
+            id: token,
+            token,
+            name: "a.pdf",
+            path: "C:/notes/a.pdf",
+            source: "cloud",
+            owner: "me@example.com",
+            visibility: "public",
+            permanent: true,
+            mine: true,
+            openedAt: "2026-10-25T00:00:00Z",
+        };
+        listLibrary.mockResolvedValue({ items: [localItem, cloudItem], notice: "" });
+        deleteShare.mockImplementation(async () => {
+            listLibrary.mockResolvedValue({ items: [localItem], notice: "" });
+        });
+        installRuntime();
+        render(
+            <DialogProvider>
+                <ToastProvider>
+                    <FileCompanionWindow askOnOpen={false} />
+                </ToastProvider>
+            </DialogProvider>,
+        );
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId(`file-companion-library-edit-share-${token}`);
+        fireEvent.click(screen.getByTestId(`file-companion-library-edit-share-${token}`));
+
+        const dialog = await screen.findByTestId("file-companion-share-dialog");
+        fireEvent.click(within(dialog).getByTestId("file-companion-share-delete"));
+        const confirm = await screen.findByRole("dialog", { name: "删除分享" });
+        fireEvent.click(within(confirm).getByRole("button", { name: "删除" }));
+
+        await waitFor(() => expect(deleteShare).toHaveBeenCalledWith(token));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-share-dialog")).toBeNull());
+        expect(await screen.findByText("已删除分享")).toBeTruthy();
+        // The dialog's list is pushed into the open screen: the row is gone
+        // and the local card can share the paper again.
+        await waitFor(() => expect(screen.queryByTestId(`file-companion-library-card-${token}`)).toBeNull());
+        expect(screen.getByTestId("file-companion-library-share-action-local:a")).toBeTruthy();
+    });
+
+    it("marks the host on the tab and names the host on a participant's screen", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf", "C:/notes/b.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const mineToken = "cd_0123456789abcdef0123456789abcdef";
+        const guestToken = "cd_fedcba9876543210fedcba9876543210";
+        listLibrary.mockResolvedValue({
+            items: [
+                { id: mineToken, token: mineToken, name: "a.pdf", path: "C:/notes/a.pdf", source: "cloud", owner: "me@example.com", visibility: "public", permanent: true, mine: true },
+                { id: guestToken, token: guestToken, name: "b.pdf", path: "C:/notes/b.pdf", source: "cloud", owner: "zhang@example.com", visibility: "group", permanent: true, mine: false },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        fireEvent.click(await screen.findByTestId("file-companion-tab-a.pdf"));
+        // The host seat shows on the tab and at the top, and the tab also
+        // carries the share mark.
+        const mineHost = await screen.findByTestId("file-companion-tab-host-a.pdf");
+        expect(mineHost.textContent).toBe("主持");
+        expect(mineHost.getAttribute("title")).toBe("你是主持人");
+        expect(screen.getByTestId("file-companion-tab-share-a.pdf").getAttribute("data-state")).toBe("mine");
+        await waitFor(() => expect(screen.getByTestId("file-companion-host-badge").textContent).toBe("你是主持人"));
+
+        // A participant sees the same marks, with the host named instead.
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.pdf"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-host-badge").textContent).toBe("主持人：zhang@example.com"));
+        expect(screen.getByTestId("file-companion-tab-host-b.pdf").getAttribute("title")).toBe("主持人：zhang@example.com");
+        expect(screen.getByTestId("file-companion-tab-share-b.pdf").getAttribute("data-state")).toBe("received");
+    });
+
+    it("pushes the host's new question to the share without waiting for 同步", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        listLibrary.mockResolvedValue({
+            items: [{ id: token, token, name: "a.pdf", path: "C:/notes/a.pdf", source: "cloud", owner: "me@example.com", visibility: "public", permanent: true, mine: true }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        const input = await screen.findByTestId("file-companion-input") as HTMLTextAreaElement;
+        // The host seat has to be known before the send; 修改分享 is that fact.
+        await waitFor(() => expect(screen.getByTestId("file-companion-share-open").getAttribute("aria-label")).toBe("修改分享"));
+        fireEvent.change(input, { target: { value: "这个方法的效果如何" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        // The question reaches the hub on its own, not through the 同步 button.
+        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShare.mock.calls[0] as unknown as [string, string];
+        expect(args[0]).toBe("C:/notes/a.pdf");
+        expect(JSON.parse(args[1])).toEqual([]);
+    });
+
+    it("paints and clears a highlight on the agent's answer from the right-click menu", async () => {
+        // jsdom has no Custom Highlight API. The menu only offers 高亮 when the
+        // WebView can paint it, so this case installs a stub first.
+        const registry = new Map<string, { size: number }>();
+        class FakeHighlight {
+            readonly ranges: Set<Range>;
+            constructor(...ranges: Range[]) {
+                this.ranges = new Set(ranges);
+            }
+            get size() {
+                return this.ranges.size;
+            }
+        }
+        (globalThis as unknown as { Highlight: unknown }).Highlight = FakeHighlight;
+        const css = (globalThis as unknown as { CSS?: Record<string, unknown> }).CSS ?? {};
+        css.highlights = {
+            set: (name: string, value: { size: number }) => registry.set(name, value),
+            delete: (name: string) => registry.delete(name),
+        };
+        (globalThis as unknown as { CSS: unknown }).CSS = css;
+        try {
+            boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+            open.mockResolvedValue(doc("C:/notes/a.pdf", {
+                messages: [{ role: "user", text: "这段讲什么" }, { role: "assistant", text: "讲方法" }],
+            }));
+            installRuntime();
+            renderWindow();
+            const answer = await screen.findByTestId("file-companion-answer");
+            // The same text walk the highlight uses, so the test anchors the
+            // selection exactly where the menu does.
+            const bubble = answer.closest<HTMLElement>("[data-chat-message]")!;
+            const spans = chatTextSpans(bubble);
+            expect(spans.length).toBeGreaterThan(0);
+            const text = spans[0].node;
+            expect(text.nodeValue).toContain("讲方法");
+            const range = document.createRange();
+            range.setStart(text, 0);
+            range.setEnd(text, 2);
+            const selection = window.getSelection()!;
+            selection.removeAllRanges();
+            selection.addRange(range);
+
+            fireEvent.contextMenu(answer, { clientX: 40, clientY: 40 });
+            expect(await screen.findByTestId("chat-highlight-menu")).toBeTruthy();
+            expect(screen.getByTestId("chat-menu-quote").textContent).toContain("讲方");
+            fireEvent.click(screen.getByTestId("chat-highlight-yellow"));
+
+            await waitFor(() => expect(loadChatMarks("C:/notes/a.pdf")).toEqual([
+                { message: 1, color: "yellow", start: 0, end: 2, text: "讲方" },
+            ]));
+            // The mark paints through the Custom Highlight registry.
+            expect(registry.get("companion-chat-yellow")?.size).toBe(1);
+
+            // A right-click on the painted phrase offers 取消高亮. jsdom has no
+            // caretRangeFromPoint, so the collapsed caret is stubbed here.
+            (document as unknown as { caretRangeFromPoint: () => Range }).caretRangeFromPoint = () => {
+                const caret = document.createRange();
+                caret.setStart(text, 1);
+                caret.collapse(true);
+                return caret;
+            };
+            fireEvent.contextMenu(answer, { clientX: 40, clientY: 40 });
+            fireEvent.click(await screen.findByTestId("chat-highlight-clear"));
+            await waitFor(() => expect(loadChatMarks("C:/notes/a.pdf")).toEqual([]));
+            expect(registry.get("companion-chat-yellow")).toBeUndefined();
+        } finally {
+            delete (globalThis as unknown as { Highlight?: unknown }).Highlight;
+            delete css.highlights;
+            delete (document as unknown as { caretRangeFromPoint?: unknown }).caretRangeFromPoint;
+            window.getSelection()?.removeAllRanges();
+        }
+    });
+
+    it("keeps copy available when the WebView cannot paint highlights", async () => {
+        // jsdom has no Custom Highlight API, which is exactly the old-WebView
+        // case: the quote and 复制 stay, the colour row is not offered.
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockResolvedValue(doc("C:/notes/a.pdf", {
+            messages: [{ role: "user", text: "这段讲什么" }, { role: "assistant", text: "讲方法" }],
+        }));
+        installRuntime();
+        renderWindow();
+        const answer = await screen.findByTestId("file-companion-answer");
+        const bubble = answer.closest<HTMLElement>("[data-chat-message]")!;
+        const spans = chatTextSpans(bubble);
+        const range = document.createRange();
+        range.setStart(spans[0].node, 0);
+        range.setEnd(spans[0].node, 2);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        fireEvent.contextMenu(answer, { clientX: 40, clientY: 40 });
+        expect(await screen.findByTestId("chat-menu-copy")).toBeTruthy();
+        expect(screen.queryByTestId("chat-highlight-yellow")).toBeNull();
+        fireEvent.click(screen.getByTestId("chat-menu-copy"));
+        await waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith("讲方"));
+    });
+
+    it("asks with the custom dialog before deleting companion data and keeps the tab when cancelled", async () => {        const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
         savePdfMarks("C:/notes/a.md", [mark]);
         boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
@@ -3589,7 +3858,7 @@ describe("FileCompanionWindow", () => {
         const second = send.mock.calls[1][0] as { path?: string; text?: string };
         expect(second.path).toBe("C:/notes/b.md");
         expect(second.text).toBe("问 B");
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1") || "").toContain("问 B");
+        expect(fileCompanionInputHistory()).toContain("问 B");
         fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
         expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
         expect(screen.getByTestId("file-companion-send").getAttribute("aria-busy")).toBe("true");
@@ -3949,10 +4218,9 @@ describe("FileCompanionWindow", () => {
     });
 
     it("packs the open file with its highlights and restores an imported project", async () => {
-        localStorage.clear();
-        localStorage.setItem("maclaw.fileCompanionPdfMarks.v1", JSON.stringify({
+        hydratePdfMarks({
             "c:/paper.pdf": [{ id: "m1", page: 1, color: "yellow", rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "方法" }],
-        }));
+        });
         boot.mockResolvedValue({ paths: ["C:/paper.pdf"] });
         open.mockResolvedValue(doc("C:/paper.pdf", {
             messages: [{ role: "user", text: "这段讲什么" }, { role: "assistant", text: "讲方法", reasoning: "先看摘要" }],
@@ -3964,7 +4232,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(exportProject).toHaveBeenCalledWith("C:/paper.pdf", expect.stringContaining("yellow")));
         expect(screen.getByText("这段讲什么")).toBeTruthy();
 
-        localStorage.clear();
+        hydratePdfMarks({});
         open.mockResolvedValue(doc("C:/restored/paper.pdf", {
             messages: [{ role: "user", text: "打包里的问题" }, { role: "assistant", text: "打包里的回答" }],
             highlights: [{ id: "m9", page: 1, color: "pink", rects: [{ x: 0.2, y: 0.3, w: 0.2, h: 0.05 }], text: "方法" }],
@@ -3973,9 +4241,9 @@ describe("FileCompanionWindow", () => {
         runtime.emit("file-companion:open", ["C:/project.zip"]);
         await screen.findByText("打包里的问题");
         expect(open).toHaveBeenCalledWith("C:/project.zip");
-        const stored = localStorage.getItem("maclaw.fileCompanionPdfMarks.v1") || "";
-        expect(stored).toContain("pink");
-        expect(stored).toContain("c:/restored/paper.pdf");
+        const restored = loadPdfMarks("C:/restored/paper.pdf");
+        expect(restored).toHaveLength(1);
+        expect(restored[0].color).toBe("pink");
     });
 
     it("shows the assistant reply on the matching session_key only", async () => {
@@ -4247,8 +4515,8 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "先问这句" })));
         expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("改成下一句");
         expect(screen.getByTestId("file-companion-chat").textContent).toContain("先问这句");
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toContain("先问这句");
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).not.toContain("改成下一句");
+        expect(fileCompanionInputHistory()).toContain("先问这句");
+        expect(fileCompanionInputHistory()).not.toContain("改成下一句");
     });
 
     it("saves a dirty editor before sending", async () => {
@@ -4399,7 +4667,7 @@ describe("FileCompanionWindow", () => {
         expect(send).not.toHaveBeenCalled();
         expect(save.mock.calls.length).toBe(saves);
         expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("请改写");
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toBeNull();
+        expect(fileCompanionInputHistory()).toEqual([]);
     });
 
     it("does not send when the file conflicts while the send is waiting to save", async () => {
@@ -4434,7 +4702,7 @@ describe("FileCompanionWindow", () => {
         expect(send).not.toHaveBeenCalled();
         expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("v2");
         expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("请改写");
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toBeNull();
+        expect(fileCompanionInputHistory()).toEqual([]);
     });
 
     it("ignores a slower open after a newer open of the same path", async () => {
@@ -5028,7 +5296,7 @@ describe("FileCompanionWindow", () => {
         expect(sent.purpose).toBeUndefined();
         expect(screen.getByTestId("file-companion-message-user").textContent).toBe("这篇文档是什么？");
         expect(screen.queryByTestId("file-companion-chat-empty")).toBeNull();
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toBeNull();
+        expect(fileCompanionInputHistory()).toEqual([]);
         runtime.emit("file-companion:open", ["C:/notes/a.md"]);
         await waitFor(() => expect(open).toHaveBeenCalledTimes(2));
         await act(async () => { await Promise.resolve(); });
@@ -5044,7 +5312,7 @@ describe("FileCompanionWindow", () => {
         const follow = send.mock.calls[1][0] as Record<string, unknown>;
         expect(follow.text).toBe("第一行");
         expect(follow.path).toBe("C:/notes/a.md");
-        const history = localStorage.getItem("maclaw.fileCompanionInputHistory.v1") || "";
+        const history = fileCompanionInputHistory();
         expect(history).toContain("第一行");
         expect(history).not.toContain("这篇文档是什么？");
     });
@@ -5107,7 +5375,7 @@ describe("FileCompanionWindow", () => {
         const input = screen.getByTestId("file-companion-input") as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: "我的问题" } });
         expect(input.value).toBe("我的问题");
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toBeNull();
+        expect(fileCompanionInputHistory()).toEqual([]);
         expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
         fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
         expect(screen.getByTestId("file-companion-message-user").textContent).toBe("这篇文档是什么？");

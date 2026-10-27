@@ -4073,6 +4073,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const [pendingTask, setPendingTask] = useState<AIAssistantPendingTask | null>(null);
     const [inFlightRoundVersion, setInFlightRoundVersion] = useState(0);
     const [pendingTaskVersion, setPendingTaskVersion] = useState(0);
+    /** Bumped when a backend round for a session that is not on screen starts or ends. */
+    const [offscreenLiveRoundVersion, setOffscreenLiveRoundVersion] = useState(0);
     const [agentView, setAgentView] = useState<AgentView | null>(null);
     const activeRoundRef = useRef<ActiveRound>(IDLE_ROUND);
     const pendingTaskRef = useRef<AIAssistantPendingTask | null>(null);
@@ -4080,6 +4082,15 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const foregroundSendTailRef = useRef<Promise<boolean>>(Promise.resolve(true));
     const foregroundSendTailsBySessionRef = useRef<Map<string, Promise<boolean>>>(new Map());
     const inFlightRoundsByRequestRef = useRef<Map<string, ActiveRound>>(new Map());
+    /**
+     * Backend-started rounds of sessions that are not on screen (goal and
+     * session-round continuations). They keep running without owning the
+     * visible transcript, but the sidebar still has to know the task is busy:
+     * the durable task row keeps the stale pause/pending snapshot the round
+     * was resumed from. Keyed by request id, refreshed by every event of the
+     * round, and removed when its final response lands.
+     */
+    const offscreenLiveRoundsByRequestRef = useRef<Map<string, { sessionKey: string; lastSeenAt: number }>>(new Map());
     const idleWaitersBySessionRef = useRef<Map<string, Set<() => void>>>(new Map());
     const initStatusRef = useRef<AIAssistantInitStatus>("connecting");
     const latestNewsPayloadRef = useRef<string>("[]");
@@ -4400,6 +4411,53 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
         return Array.from(keys);
     }, [activeRound, inFlightRoundVersion, pendingTaskVersion]);
+    // A backend round always ends with a final response, which clears its
+    // entry. The bound only decides when a lost terminal event stops holding
+    // the row in 进行中; it is four activity windows, refreshed by every event.
+    const offscreenLiveRoundTtlMs = Math.max(responseActivityTimeoutSec, 60) * 1000 * 4;
+    /**
+     * Sessions running a backend round that is not the visible transcript.
+     * They must not drive this tab's composer, but the sidebar still needs
+     * their identity so a resumed task does not keep its stale pause glyph.
+     */
+    const offscreenLiveSessionKeys = useMemo(() => {
+        const now = Date.now();
+        const keys = new Set<string>();
+        for (const round of offscreenLiveRoundsByRequestRef.current.values()) {
+            if (now - round.lastSeenAt > offscreenLiveRoundTtlMs) continue;
+            keys.add(round.sessionKey);
+        }
+        return Array.from(keys).sort();
+    }, [offscreenLiveRoundVersion, offscreenLiveRoundTtlMs]);
+    // Expiry needs a deadline of its own: an idle round emits no event, so a
+    // memo alone would keep a missed terminal response in the busy set.
+    useEffect(() => {
+        if (offscreenLiveRoundsByRequestRef.current.size === 0) return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const pruneExpired = () => {
+            timer = null;
+            const now = Date.now();
+            let changed = false;
+            let nextExpiry = Number.POSITIVE_INFINITY;
+            for (const [requestId, round] of offscreenLiveRoundsByRequestRef.current) {
+                const expiresAt = round.lastSeenAt + offscreenLiveRoundTtlMs;
+                if (expiresAt <= now) {
+                    offscreenLiveRoundsByRequestRef.current.delete(requestId);
+                    changed = true;
+                    continue;
+                }
+                nextExpiry = Math.min(nextExpiry, expiresAt);
+            }
+            if (changed) setOffscreenLiveRoundVersion(version => version + 1);
+            if (Number.isFinite(nextExpiry)) {
+                timer = setTimeout(pruneExpired, Math.max(1000, nextExpiry - Date.now()));
+            }
+        };
+        pruneExpired();
+        return () => {
+            if (timer) clearTimeout(timer);
+        };
+    }, [offscreenLiveRoundVersion, offscreenLiveRoundTtlMs]);
     const streamingSessionKeys = useMemo(() => {
         const keys = new Set<string>();
         if (activeRound.phase === 'streaming') keys.add(normalizeRuntimeSessionKey(activeRound.sessionKey || 'desktop-user'));
@@ -4557,6 +4615,54 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             notifyForegroundIdle();
         }
     }, [notifyForegroundIdle]);
+
+    /** Remember a backend round whose session is not the visible transcript. */
+    const rememberOffscreenLiveRound = useCallback((requestId: string, sessionKey: string) => {
+        const id = String(requestId || '').trim();
+        const owner = normalizeRuntimeSessionKey(sessionKey || '');
+        // The local assistant owns no task row, and an anonymous event names no
+        // task the sidebar could mark.
+        if (!id || !owner || owner === 'desktop-user') return;
+        // A cleared session ignores residual events from its old run; the same
+        // fence must keep a hidden continuation from resurrecting the row.
+        const forgottenAt = forgottenEventSessionsRef.current.get(owner);
+        if (forgottenAt && Date.now() - forgottenAt < FORGOTTEN_EVENT_SESSION_TTL_MS) return;
+        const existing = offscreenLiveRoundsByRequestRef.current.get(id);
+        if (existing && existing.sessionKey === owner) {
+            existing.lastSeenAt = Date.now();
+            return;
+        }
+        offscreenLiveRoundsByRequestRef.current.set(id, { sessionKey: owner, lastSeenAt: Date.now() });
+        setOffscreenLiveRoundVersion(version => version + 1);
+    }, []);
+
+    /** Keep a remembered offscreen round from expiring while it still streams. */
+    const touchOffscreenLiveRound = useCallback((requestId: string | undefined) => {
+        const id = String(requestId || '').trim();
+        if (!id) return;
+        const existing = offscreenLiveRoundsByRequestRef.current.get(id);
+        if (existing) existing.lastSeenAt = Date.now();
+    }, []);
+
+    const forgetOffscreenLiveRound = useCallback((requestId: string | undefined): boolean => {
+        const id = String(requestId || '').trim();
+        if (!id) return false;
+        if (!offscreenLiveRoundsByRequestRef.current.delete(id)) return false;
+        setOffscreenLiveRoundVersion(version => version + 1);
+        return true;
+    }, []);
+
+    const forgetOffscreenLiveRoundsForSession = useCallback((sessionKey: string): boolean => {
+        const normalized = normalizeRuntimeSessionKey(sessionKey || 'desktop-user');
+        let changed = false;
+        for (const [requestId, round] of offscreenLiveRoundsByRequestRef.current) {
+            if (normalizeRuntimeSessionKey(round.sessionKey) !== normalized) continue;
+            offscreenLiveRoundsByRequestRef.current.delete(requestId);
+            changed = true;
+        }
+        if (changed) setOffscreenLiveRoundVersion(version => version + 1);
+        return changed;
+    }, []);
 
     const replaceRuntimeRequestId = useCallback((oldRequestId: string, nextRequestId: string) => {
         if (!oldRequestId || !nextRequestId || oldRequestId === nextRequestId) return;
@@ -4853,10 +4959,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return controller;
     }, [clearTransientProgress, emitPetStateForAssistant, forgetInFlightRound, resetActiveRound, responseActivityTimeoutSec, stopResponseTimeout]);
 
-    const startEventDrivenForegroundRound = useCallback((event: AIAssistantStreamEvent) => {
+    const startEventDrivenForegroundRound = useCallback((event: AIAssistantStreamEvent, startOptions?: { silent?: boolean }) => {
         const requestId = event.request_id?.trim();
         if (!requestId) return null;
         if (activeRoundRef.current.requestId === requestId || inFlightRoundsByRequestRef.current.has(requestId)) {
+            // The visible transcript owns this round now; the sidebar hears about
+            // it through the regular in-flight list.
+            forgetOffscreenLiveRound(requestId);
             return null;
         }
         const sessionKey = normalizeRuntimeSessionKey(event.session_key || activeSessionKeyForEvents() || 'desktop-user');
@@ -4864,6 +4973,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // active so request_id-matched tokens still stream into the chat.
         const isDetachedBackendRound = requestId.startsWith('acp-') || requestId.startsWith('horizon-');
         if (!isDetachedBackendRound && !isMatchingSessionEvent({ ...event, session_key: sessionKey }, activeSessionKeyForEvents())) {
+            // Goal and session-round continuations keep running in the backend
+            // while the user looks at another task. Their tokens stay out of the
+            // visible transcript, but the task is genuinely busy: publish the
+            // identity so the sidebar stops showing the stale pause snapshot.
+            rememberOffscreenLiveRound(requestId, sessionKey);
             return null;
         }
         forgottenEventSessionsRef.current.delete(sessionKey);
@@ -4881,10 +4995,23 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
         clearTransientProgress(sessionKey);
         rememberInFlightRound(nextRound);
+        forgetOffscreenLiveRound(requestId);
         setRoundState(nextRound);
         emitPetStateForAssistant('thinking', 'ai:event-round-start', 15000);
         const goalRound = requestId.startsWith('goal-cont-');
         setMessages(prev => {
+            // An adopted offscreen round already passed its start event. It has
+            // no display row to add now; only the placeholder its tokens need.
+            if (startOptions?.silent) {
+                return [...prev, {
+                    id: assistantMessageId,
+                    role: 'assistant' as const,
+                    content: '',
+                    requestId,
+                    sessionKey,
+                    timestamp: Date.now(),
+                }];
+            }
             const base = goalRound
                 ? upsertGoalChecklistMessage(prev, sessionKey, displayText)
                 : [...prev, {
@@ -4905,7 +5032,33 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         });
         startResponseTimeout({ generation, assistantMessageId, requestId, source: 'ai:event-round' });
         return nextRound;
-    }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, goalContinuationDisplayText, rememberInFlightRound, setRoundState, startResponseTimeout]);
+    }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, forgetOffscreenLiveRound, goalContinuationDisplayText, rememberInFlightRound, rememberOffscreenLiveRound, setRoundState, startResponseTimeout]);
+
+    // A continuation that started while another tab was visible is not a round
+    // yet, so its tokens and final response would be dropped after the user
+    // opens that task. Adopt it silently the moment its session becomes the
+    // visible one: the placeholder appears and the rest of the round streams in.
+    // The version dependency also covers an event that is classified as
+    // offscreen before the tab switch reaches this hook.
+    useEffect(() => {
+        const activeKey = normalizeRuntimeSessionKey(activeSessionKeyForEvents() || 'desktop-user');
+        if (!activeKey || activeKey === 'desktop-user') return;
+        const now = Date.now();
+        for (const [requestId, entry] of Array.from(offscreenLiveRoundsByRequestRef.current.entries())) {
+            // A stale entry is a round whose terminal event never arrived: it
+            // would only paint a placeholder that has to time out later.
+            if (now - entry.lastSeenAt > offscreenLiveRoundTtlMs) {
+                forgetOffscreenLiveRound(requestId);
+                continue;
+            }
+            if (normalizeRuntimeSessionKey(entry.sessionKey) !== activeKey) continue;
+            startEventDrivenForegroundRound(
+                { request_id: requestId, session_key: entry.sessionKey, text: '', display_text: '' },
+                { silent: true },
+            );
+            forgetOffscreenLiveRound(requestId);
+        }
+    }, [activeSessionKeyForEvents, forgetOffscreenLiveRound, offscreenLiveRoundTtlMs, offscreenLiveRoundVersion, startEventDrivenForegroundRound]);
 
     const recoverGoalContinuationRound = useCallback((event: AIAssistantStreamEvent) => {
         const requestId = event.request_id?.trim() || '';
@@ -5221,6 +5374,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 changed = true;
             }
         }
+        // A hidden continuation of this session is stale too: the reset drops
+        // its work, so it must stop marking the task as running.
+        if (forgetOffscreenLiveRoundsForSession(normalizedSessionKey)) changed = true;
         if (normalizeRuntimeSessionKey(pendingTaskRef.current?.sessionKey || 'desktop-user') === normalizedSessionKey) {
             const nextTask = Array.from(pendingTasksByRequestRef.current.values()).at(-1) || null;
             pendingTaskRef.current = nextTask;
@@ -5248,7 +5404,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             resetStreamTokenBuffer(currentRound.requestId);
             resetActiveRound(currentRound.generation + 1);
         }
-    }, [bumpSelectedFilesRevision, bumpSessionResetEpoch, clearTransientProgress, notifyForegroundIdle, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
+    }, [bumpSelectedFilesRevision, bumpSessionResetEpoch, clearTransientProgress, forgetOffscreenLiveRoundsForSession, notifyForegroundIdle, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
     const queueStreamToken = useCallback((round: ActiveRound, text: string, eventSequence?: number, pieces?: string[]) => {
         const incoming = pieces && pieces.length > 0 ? pieces : (text ? [text] : []);
@@ -5535,6 +5691,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
         const tokenHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
+            touchOffscreenLiveRound(event.request_id);
             const pieces = event.deltas && event.deltas.length > 0 ? event.deltas : (event.text ? [event.text] : []);
             const loggedText = event.text || pieces.join('');
             // A desktop-bot run does not stream prose or thinking into a bubble
@@ -5577,6 +5734,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
         const newRoundHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
+            touchOffscreenLiveRound(event.request_id);
             let currentRound = activeRoundRef.current;
             const recoveredRound = recoverGoalContinuationRound(event);
             if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
@@ -5615,6 +5773,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
         const streamDoneHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
+            touchOffscreenLiveRound(event.request_id);
             let currentRound = activeRoundRef.current;
             const recoveredRound = recoverGoalContinuationRound(event);
             if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
@@ -5655,7 +5814,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             offStreamDone();
             resetAllStreamTokenBuffers();
         };
-    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, clearStreamTokenFlushTimer, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, recoverGoalContinuationRound, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, startEventDrivenForegroundRound, transitionRound, updateInFlightRound]);
+    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, clearStreamTokenFlushTimer, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, recoverGoalContinuationRound, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, startEventDrivenForegroundRound, touchOffscreenLiveRound, transitionRound, updateInFlightRound]);
 
     // Listen for the async response event. When SendAIAssistantMessage returns
     // {deferred: true} (non-blocking mode), the actual response arrives here.
@@ -5675,11 +5834,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // the round to never finalize if the user switches tabs mid-stream,
             // permanently locking the input box.
             const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
+            const responseRequestId = resolveSendRequestID(normalized) || '';
+            // The round ended, whichever transcript it was writing. A hidden
+            // continuation must stop marking its task as running here.
+            forgetOffscreenLiveRound(responseRequestId);
             if (isChatTaskResultResponse(normalized)) {
                 setMessages(prev => appendChatTaskResultMessage(prev, normalized) as ChatMessage[]);
                 return;
             }
-            const responseRequestId = resolveSendRequestID(normalized) || '';
             if (responseRequestId.startsWith('goal-cont-')) {
                 recoverGoalContinuationRound({
                     request_id: responseRequestId,
@@ -5804,7 +5966,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);
         return () => { off(); };
-    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
+    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, forgetOffscreenLiveRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
 
     // P0-1 (0b-i) degraded-turn recovery channel. When a degraded write turn
     // self-recovers, the backend re-runs it and streams the result on
@@ -6461,6 +6623,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         foregroundSendTailRef.current = Promise.resolve(true);
         foregroundSendTailsBySessionRef.current.clear();
         inFlightRoundsByRequestRef.current.clear();
+        // Only this clear's session stops being busy. Another task's hidden
+        // continuation is still running and must keep its row in 进行中.
+        forgetOffscreenLiveRoundsForSession(activeSessionKeyForEvents() || 'desktop-user');
         contextBoundaryMessageIDRef.current = null;
         persistContextBoundaryMessageID(null);
         legacyClearAIAssistantUIState();
@@ -6489,7 +6654,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         } finally {
             persistOnUnmountRef.current = true;
         }
-    }, [activeSessionKeyForEvents, bumpSessionResetEpoch, clearTransientProgress, doFetchNews, persistUIState, resetActiveRound, resetAllStreamTokenBuffers, setSelectedFiles, stopAllResponseTimeouts]);
+    }, [activeSessionKeyForEvents, bumpSessionResetEpoch, clearTransientProgress, doFetchNews, forgetOffscreenLiveRoundsForSession, persistUIState, resetActiveRound, resetAllStreamTokenBuffers, setSelectedFiles, stopAllResponseTimeouts]);
 
     const recordSubmittedPrompt = useCallback((prompt: string, attachments?: PromptHistoryAttachment[]) => {
         setPromptHistory(prev => appendPromptHistory(prev, prompt, attachments));
@@ -6726,6 +6891,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     useEffect(() => {
         const handler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
+            touchOffscreenLiveRound(event.request_id);
             let currentRound = activeRoundRef.current;
             const recoveredRound = recoverGoalContinuationRound(event);
             if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
@@ -6830,7 +6996,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return () => {
             offProgress();
         };
-    }, [activeSessionKeyForEvents, appendCodingProgressToRound, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
+    }, [activeSessionKeyForEvents, appendCodingProgressToRound, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, touchOffscreenLiveRound]);
 
     useEffect(() => {
         const handler = (payload: unknown) => {
@@ -7458,6 +7624,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         sending,
         sendingSessionKey,
         busySessionKeys,
+        offscreenLiveSessionKeys,
         streaming,
         streamingSessionKey,
         streamingSessionKeys,
@@ -7472,7 +7639,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         scrollToTopSeq,
         agentView,
         chatTasks,
-    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView, chatTasks]);
+    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView, chatTasks]);
 
     const deactivateRecordingSession = useCallback((messageId: string) => {
         const id = String(messageId || "").trim();
@@ -7514,7 +7681,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         waitForForegroundIdle,
     }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle]);
 
-    return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
+    return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

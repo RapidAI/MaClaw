@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -4181,9 +4180,16 @@ func pastedFileExtensionFromMIME(mimeType string) string {
 // containing error-level keywords. Returns the most recent 500 error lines
 // in reverse chronological order (newest first).
 func (a *App) ReadErrorLog() ([]string, error) {
-	logPath := filepath.Join(corelib.MaclawLogsDir(), "maclaw.log")
+	return readErrorLogTail(filepath.Join(corelib.MaclawLogsDir(), "maclaw.log"), 500)
+}
 
-	f, err := os.Open(logPath)
+const (
+	errorLogTailChunkSize = 64 * 1024
+	errorLogMaxLineBytes  = 64 * 1024
+)
+
+func readErrorLogTail(path string, limit int) ([]string, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []string{}, nil
@@ -4192,30 +4198,95 @@ func (a *App) ReadErrorLog() ([]string, error) {
 	}
 	defer f.Close()
 
-	var errors []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if classifyAppLogLine(line) == appLogLineError {
-			errors = append(errors, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	info, err := f.Stat()
+	if err != nil {
 		return nil, fmt.Errorf("error reading log file: %w", err)
 	}
-
-	// Keep only the most recent 500 lines.
-	const maxLines = 500
-	if len(errors) > maxLines {
-		errors = errors[len(errors)-maxLines:]
+	if limit <= 0 || info.Size() == 0 {
+		return nil, nil
 	}
 
-	// Reverse so newest errors appear first.
-	for i, j := 0, len(errors)-1; i < j; i, j = i+1, j-1 {
-		errors[i], errors[j] = errors[j], errors[i]
+	var errors []string
+	var pending []byte
+	var pendingHead []byte
+	pendingError := false
+	const patternOverlap = len("[error]") - 1
+	prepend := func(prefix []byte) {
+		combined := make([]byte, len(prefix)+len(pending))
+		copy(combined, prefix)
+		copy(combined[len(prefix):], pending)
+		if len(combined) > errorLogMaxLineBytes {
+			combined = combined[:errorLogMaxLineBytes]
+		}
+		pending = combined
+
+		boundaryPrefix := prefix
+		if len(boundaryPrefix) > patternOverlap {
+			boundaryPrefix = boundaryPrefix[len(boundaryPrefix)-patternOverlap:]
+		}
+		boundary := make([]byte, 0, len(boundaryPrefix)+len(pendingHead))
+		boundary = append(boundary, boundaryPrefix...)
+		boundary = append(boundary, pendingHead...)
+		pendingError = pendingError ||
+			classifyAppLogLine(string(prefix)) == appLogLineError ||
+			classifyAppLogLine(string(boundary)) == appLogLineError
+
+		head := make([]byte, 0, len(prefix)+len(pendingHead))
+		head = append(head, prefix...)
+		head = append(head, pendingHead...)
+		if len(head) > patternOverlap {
+			head = head[:patternOverlap]
+		}
+		pendingHead = head
+	}
+	trimCR := func(line []byte) []byte {
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			return line[:len(line)-1]
+		}
+		return line
+	}
+	collect := func() {
+		if pendingError {
+			errors = append(errors, string(pending))
+		}
+		pending = nil
+		pendingHead = nil
+		pendingError = false
 	}
 
+	for end := info.Size(); end > 0 && len(errors) < limit; {
+		start := end - errorLogTailChunkSize
+		if start < 0 {
+			start = 0
+		}
+		chunk := make([]byte, int(end-start))
+		n, readErr := f.ReadAt(chunk, start)
+		if readErr != nil {
+			return nil, fmt.Errorf("error reading log file: %w", readErr)
+		}
+		data := make([]byte, 0, n+len(pending))
+		data = append(data, chunk[:n]...)
+		data = append(data, pending...)
+		pending = nil
+
+		lineEnd := len(data)
+		for i := len(data) - 1; i >= 0 && len(errors) < limit; i-- {
+			if data[i] != '\n' {
+				continue
+			}
+			prepend(trimCR(data[i+1 : lineEnd]))
+			collect()
+			lineEnd = i
+		}
+		if len(errors) >= limit {
+			break
+		}
+		prepend(trimCR(data[:lineEnd]))
+		if start == 0 {
+			collect()
+		}
+		end = start
+	}
 	return errors, nil
 }
 

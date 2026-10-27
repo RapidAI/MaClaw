@@ -31,6 +31,8 @@ function installBackend() {
         PreviewVirtualRepositoryOperation: vi.fn(),
         StartVirtualRepositoryOperation: vi.fn(),
         GetVirtualRepositoryOperation: vi.fn(),
+		GetVirtualRepositoryOperationStatus: vi.fn(),
+		GetVirtualRepositoryOperationItems: vi.fn(),
         CancelVirtualRepositoryOperation: vi.fn(),
         TestRemoteVirtualRepositoryConnection: vi.fn(),
 		RepairRemoteVirtualRepositoryConnection: vi.fn(),
@@ -1785,6 +1787,55 @@ describe('Virtual repository utility', () => {
 		act(() => handler(JSON.stringify({ job_id: 'job_1', status: 'failed', items: [{ node_id: 'node_1', status: 'failed', error: 'stale' }] })));
 		expect(screen.getByText(/Operation: success/i)).toBeTruthy();
 		expect(screen.queryByText(/stale/)).toBeNull();
+	});
+
+	it('loads incremental items for lightweight events and the terminal result once', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', updated_at: '2026-07-22T01:02:03Z', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.PreviewVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ repository_id: repository.id, updated_at: repository.updated_at, targets: [], skipped_local: 0 }));
+		backend.StartVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ job_id: 'job_1', status: 'running', items: [], completed: 0, target_count: 2 }));
+		backend.GetVirtualRepositoryOperationItems.mockResolvedValue(JSON.stringify({ job_id: 'job_1', offset: 0, next_offset: 1, total: 1, items: [{ node_id: 'node_1', name: 'First', status: 'success' }] }));
+		backend.GetVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ job_id: 'job_1', status: 'success', items: [{ node_id: 'node_1', name: 'First', status: 'success' }, { node_id: 'node_2', name: 'Second', status: 'failed', error: 'failed output' }], completed: 2, target_count: 2 }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByText('Push'));
+		fireEvent.click(await screen.findByText('Execute'));
+		await screen.findByText(/Operation: running/i);
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:job-updated')?.[1] as ((raw: string) => void);
+		act(() => handler(JSON.stringify({ job_id: 'job_1', status: 'running', completed: 1, target_count: 2 })));
+		expect(await screen.findByText('First')).toBeTruthy();
+		expect(backend.GetVirtualRepositoryOperationItems).toHaveBeenCalledWith('job_1', 0, 200);
+		expect(backend.GetVirtualRepositoryOperation).not.toHaveBeenCalled();
+		act(() => handler(JSON.stringify({ job_id: 'job_1', status: 'success', completed: 2, target_count: 2 })));
+		expect(await screen.findByText('Second')).toBeTruthy();
+		expect(backend.GetVirtualRepositoryOperation).toHaveBeenCalledTimes(1);
+		act(() => handler(JSON.stringify({ job_id: 'job_1', status: 'success', completed: 2, target_count: 2 })));
+		expect(backend.GetVirtualRepositoryOperation).toHaveBeenCalledTimes(1);
+	});
+
+	it('paginates operation results without changing their order', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', updated_at: '2026-07-22T01:02:03Z', nodes: [] };
+		const items = Array.from({ length: 201 }, (_, index) => ({ node_id: `node_${index + 1}`, name: `Node ${index + 1}`, status: 'success' }));
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.PreviewVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ repository_id: repository.id, updated_at: repository.updated_at, targets: [], skipped_local: 0 }));
+		backend.StartVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ job_id: 'job_1', status: 'success', items, completed: items.length, target_count: items.length }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByText('Push'));
+		fireEvent.click(await screen.findByText('Execute'));
+		expect(await screen.findByText('Node 1')).toBeTruthy();
+		expect(screen.getByText('Node 200')).toBeTruthy();
+		expect(screen.queryByText('Node 201')).toBeNull();
+		const pages = screen.getByRole('navigation', { name: 'Operation result pages' });
+		fireEvent.click(within(pages).getByRole('button', { name: 'Next' }));
+		expect(await screen.findByText('Node 201')).toBeTruthy();
+		expect(screen.queryByText('Node 1')).toBeNull();
 	});
 
 	it('retries only push after commit succeeded but push failed', async () => {

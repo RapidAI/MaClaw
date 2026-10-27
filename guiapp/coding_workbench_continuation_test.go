@@ -139,6 +139,18 @@ func TestCodingWorkbenchIterationExhaustionArmsSessionRound(t *testing.T) {
 	if !armed || waves != 1 {
 		t.Fatalf("armed=%v waves=%d, want the next round queued", armed, waves)
 	}
+
+	// A pure-coding session carries WorkflowAgentLoop because its pending
+	// template makes the workflow router report an agent loop. That marker
+	// alone must not suppress the continuation; only a real phase does.
+	workerID := "desktop-user:coding-workflow-marker"
+	t.Cleanup(func() { h.cancelSessionRoundContinuation(workerID) })
+	markerCtx := NewLoopContext("coding-workbench-marker", config.MaxAgentIterationsCap, nil)
+	markerCtx.UserID = workerID
+	markerCtx.WorkflowAgentLoop = true
+	if _, ok := h.continueCodingWorkbenchAfterIterationBudget(markerCtx, workerID, "做一个偷金子游戏", results, 320); !ok {
+		t.Fatal("pure-coding WorkflowAgentLoop without a phase did not continue")
+	}
 }
 
 func TestCodingWorkbenchContinuationUsesTheTurnEpoch(t *testing.T) {
@@ -168,6 +180,26 @@ func TestCodingWorkbenchContinuationUsesTheTurnEpoch(t *testing.T) {
 	h.sessionRounds.mu.Unlock()
 	if armed {
 		t.Fatal("a superseded turn left a wave queued")
+	}
+}
+
+func TestCodingWorkbenchContinuationSkipsACPSessions(t *testing.T) {
+	h := newCodingWorkbenchContinuationHandler(t)
+	userID := acpAssistantSessionOwnerID("vscode-session")
+	t.Cleanup(func() { h.cancelSessionRoundContinuation(userID) })
+	ctx := NewLoopContext("coding-workbench", config.MaxAgentIterationsCap, nil)
+	ctx.UserID = userID
+	results := []v2.TaskRunResult{
+		{TaskIndex: 1, Status: v2.TaskFailed, Error: "max iterations reached"},
+	}
+	if _, ok := h.continueCodingWorkbenchAfterIterationBudget(ctx, userID, "做一个偷金子游戏", results, 80); ok {
+		t.Fatal("an ACP session armed a desktop continuation")
+	}
+	h.sessionRounds.mu.Lock()
+	armed := h.sessionRounds.timers[userID] != nil
+	h.sessionRounds.mu.Unlock()
+	if armed {
+		t.Fatal("an ACP session left a wave queued")
 	}
 }
 

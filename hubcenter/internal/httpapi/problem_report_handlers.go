@@ -457,7 +457,18 @@ func (h *ProblemReportHandlers) ListMine(w http.ResponseWriter, r *http.Request)
 
 func (h *ProblemReportHandlers) AdminList(w http.ResponseWriter, r *http.Request) {
 	_, _ = h.store.ArchiveUnprocessedProblemReports(r.Context(), time.Now().Add(-problemReportAutoArchiveAge))
-	items, total, err := h.store.ListProblemReports(r.Context(), "", strings.TrimSpace(r.URL.Query().Get("status")), 0, 300)
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
+	if offset < 0 {
+		offset = 0
+	}
+	items, total, err := h.store.ListProblemReports(r.Context(), "", strings.TrimSpace(r.URL.Query().Get("status")), offset, limit)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return

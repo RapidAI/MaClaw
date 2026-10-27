@@ -60,6 +60,10 @@ type FileCompanionLibraryItem struct {
 	Revision   int    `json:"revision,omitempty"`
 	Target     string `json:"target,omitempty"`
 	GroupID    string `json:"groupId,omitempty"`
+	// Expired is derived on every list: the hub no longer lists a link whose
+	// time is up, but the project stays here so the reader keeps the paper.
+	// An expired share does not block sharing the same paper again.
+	Expired bool `json:"expired,omitempty"`
 	// Notes are other readers' discussion on this share. The host transcript
 	// stays in Messages. NotesKnown is set when this list actually carried
 	// the notes field, so an older hub does not wipe notes already stored.
@@ -72,11 +76,15 @@ type FileCompanionLibraryItem struct {
 }
 
 // FileCompanionShareNote is one reader's discussion on a shared paper.
+// Host marks the share owner's notes, including the owner agent's answers.
+// ReplyTo names the reader note a host note answers.
 type FileCompanionShareNote struct {
 	ID        string `json:"id"`
 	Author    string `json:"author"`
 	Text      string `json:"text"`
 	CreatedAt string `json:"createdAt,omitempty"`
+	Host      bool   `json:"host,omitempty"`
+	ReplyTo   string `json:"replyTo,omitempty"`
 }
 
 // FileCompanionLibraryList is the local history plus cloud shares.
@@ -134,6 +142,8 @@ type fileCompanionNoteWire struct {
 	Text      string `json:"text"`
 	CreatedAt string `json:"created_at"`
 	Created   string `json:"createdAt"`
+	Host      bool   `json:"host"`
+	ReplyTo   string `json:"reply_to"`
 }
 
 type fileCompanionShareStatus struct {
@@ -369,7 +379,30 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	if items == nil {
 		items = []FileCompanionLibraryItem{}
 	}
+	// Expiry is derived, never stored: a row read here may predate the current
+	// moment, and the UI needs to know it can publish the paper again.
+	expiredNow := time.Now().UTC()
+	for i := range items {
+		if items[i].Source == "cloud" {
+			items[i].Expired = fileCompanionShareExpiredAt(items[i].ExpiresAt, expiredNow)
+		}
+	}
 	return FileCompanionLibraryList{Items: items, Notice: notice, Updates: updates, Removed: removed}, nil
+}
+
+// fileCompanionShareExpiredAt reports whether an RFC3339 expiry has passed.
+// An empty value is a permanent share; an unreadable one is left alone so a
+// malformed hub value does not silently unshare a project.
+func fileCompanionShareExpiredAt(expiresAt string, now time.Time) bool {
+	expiresAt = strings.TrimSpace(expiresAt)
+	if expiresAt == "" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return false
+	}
+	return !now.Before(at)
 }
 
 func dropMissingFileCompanionLibrary(items []FileCompanionLibraryItem) ([]FileCompanionLibraryItem, bool) {
@@ -563,32 +596,41 @@ func (a *App) fileCompanionHubLogin() (string, string, error) {
 }
 
 func (a *App) fetchFileCompanionShares(hub, viewer string) ([]FileCompanionLibraryItem, error) {
+	items, _, err := a.fetchFileCompanionShareList(hub, viewer)
+	return items, err
+}
+
+// fetchFileCompanionShareList also reports whether the Hub records host
+// replies. An older Hub omits notes_reply, and the owner machine then leaves
+// the discussion to its owner instead of answering every note as if new.
+func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLibraryItem, bool, error) {
 	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares", nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+		return nil, false, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 	}
 	var payload struct {
-		Mine     []fileCompanionShareView `json:"mine"`
-		Received []fileCompanionShareView `json:"received"`
+		Mine       []fileCompanionShareView `json:"mine"`
+		Received   []fileCompanionShareView `json:"received"`
+		NotesReply bool                     `json:"notes_reply"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
-		return nil, errors.New("云端分享记录无法读取")
+		return nil, false, errors.New("云端分享记录无法读取")
 	}
 	out := make([]FileCompanionLibraryItem, 0, len(payload.Mine)+len(payload.Received))
 	out = append(out, libraryItemsFromShares(payload.Mine, true, hub)...)
 	out = append(out, libraryItemsFromShares(payload.Received, false, hub)...)
-	return out, nil
+	return out, payload.NotesReply, nil
 }
 
 func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub string) []FileCompanionLibraryItem {
@@ -657,6 +699,8 @@ func notesFromCompanionShareView(view fileCompanionShareView) []FileCompanionSha
 			Author:    strings.TrimSpace(note.Author),
 			Text:      text,
 			CreatedAt: created,
+			Host:      note.Host,
+			ReplyTo:   strings.TrimSpace(note.ReplyTo),
 		})
 	}
 	return out
@@ -733,6 +777,13 @@ func (a *App) ShareFileCompanionDocument(path, visibility, password, target, hig
 	if info.Size() > mobileDocumentOriginalMaxBytes {
 		return FileCompanionShareResult{}, errors.New("文件过大")
 	}
+	// The paper's own bytes name the article. The zip below also carries the
+	// highlights and the chat, so hashing it would make the same paper look
+	// different after every annotation change.
+	contentHash, err := fileCompanionDocumentSHA256(canonical)
+	if err != nil {
+		return FileCompanionShareResult{}, errors.New("文件无法读取")
+	}
 	zipPath, err := a.writeFileCompanionShareZip(canonical, highlights)
 	if err != nil {
 		return FileCompanionShareResult{}, err
@@ -751,7 +802,7 @@ func (a *App) ShareFileCompanionDocument(path, visibility, password, target, hig
 	}
 	defer file.Close()
 	name := filepath.Base(canonical)
-	view, err := postFileCompanionShare(hub, viewer, name, visibility, password, target, days, file)
+	view, err := postFileCompanionShare(hub, viewer, name, visibility, password, target, days, contentHash, file)
 	if err != nil {
 		return FileCompanionShareResult{}, err
 	}
@@ -888,7 +939,56 @@ func staleHubUpdateError(err error) error {
 	}
 }
 
-func postFileCompanionShare(hub, viewer, name, visibility, password, target string, days int, raw io.Reader) (fileCompanionShareView, error) {
+// DeleteFileCompanionShare removes one of this person's links from the hub and
+// drops the cloud row here. A hub that already lost the link counts as done;
+// an old hub without the DELETE route is reported so the reader knows the link
+// is still live.
+func (a *App) DeleteFileCompanionShare(token string) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	token = strings.TrimSpace(token)
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return errors.New("分享链接不存在")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return err
+	}
+	_, err = a.fileCompanionHubJSON(http.MethodDelete, hub+"/api/mobile/documents/shares/"+token, viewer, nil)
+	if err != nil {
+		var status *fileCompanionShareStatus
+		if !errors.As(err, &status) || status == nil {
+			return err
+		}
+		switch {
+		case status.status == http.StatusNotFound && strings.TrimSpace(status.message) == "":
+			return errors.New("云端还不支持删除分享，需要更新 Hub")
+		case status.status == http.StatusMethodNotAllowed || status.status == http.StatusNotImplemented:
+			return errors.New("云端还不支持删除分享，需要更新 Hub")
+		case status.status != http.StatusNotFound:
+			return err
+		}
+		// The hub knows the route and says the link is gone; clear the row.
+	}
+	a.dropFileCompanionCloudToken(token)
+	return nil
+}
+
+func fileCompanionDocumentSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func postFileCompanionShare(hub, viewer, name, visibility, password, target string, days int, contentHash string, raw io.Reader) (fileCompanionShareView, error) {
 	pipeReader, pipeWriter := io.Pipe()
 	writer := multipart.NewWriter(pipeWriter)
 	go func() {
@@ -907,6 +1007,9 @@ func postFileCompanionShare(hub, viewer, name, visibility, password, target stri
 			return
 		}
 		if writeErr = writer.WriteField("target", target); writeErr != nil {
+			return
+		}
+		if writeErr = writer.WriteField("content_hash", contentHash); writeErr != nil {
 			return
 		}
 		ext := filepath.Ext(name)

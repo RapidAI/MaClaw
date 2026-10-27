@@ -1,4 +1,10 @@
 (function () {
+  const PROBLEM_REPORTS_PAGE_SIZE = 30;
+  const ATTACHMENT_MANIFEST_CONCURRENCY = 3;
+  let problemReportsPage = 1;
+  let problemReportsLoadSeq = 0;
+  let attachmentManifestActive = 0;
+  const attachmentManifestQueue = [];
   function installProblemReportsTab() {
     const contentGroup = document.querySelector('[data-nav-group="ops"]');
     const main = document.querySelector('main.main');
@@ -13,7 +19,7 @@
     if (typeof applyI18n === 'function') applyI18n();
     const panel = document.createElement('section');
     panel.id = 'tab-problemreports'; panel.className = 'panel card';
-    panel.innerHTML = '<div class="head"><div><h3>故障报告</h3><div class="desc">查看用户诊断包、联系信息及处理状态。</div></div><div class="actions"><select id="problemReportsStatus" onchange="loadProblemReports()"><option value="">全部状态</option><option value="pending">待处理</option><option value="fixed">已修复</option><option value="deferred">延期</option><option value="rejected">不予处理</option><option value="archived">已归档</option></select><button class="btn-ghost" onclick="loadProblemReports()">刷新</button></div></div><div id="problemReportsList" class="list"><div class="hint">暂无故障报告。</div></div>';
+    panel.innerHTML = '<div class="head"><div><h3>故障报告</h3><div class="desc">查看用户诊断包、联系信息及处理状态。</div></div><div class="actions"><select id="problemReportsStatus" onchange="changeProblemReportsStatus()"><option value="">全部状态</option><option value="pending">待处理</option><option value="fixed">已修复</option><option value="deferred">延期</option><option value="rejected">不予处理</option><option value="archived">已归档</option></select><button class="btn-ghost" onclick="loadProblemReports()">刷新</button></div></div><div id="problemReportsList" class="list"><div class="hint">暂无故障报告。</div></div><div id="problemReportsPager" class="pager pager-compact"><div id="problemReportsPageInfo" class="pager-meta" aria-live="polite"></div><div class="pager-actions"><button id="problemReportsPrev" class="btn-ghost" type="button" onclick="changeProblemReportsPage(-1)">Previous</button><button id="problemReportsNext" class="btn-ghost" type="button" onclick="changeProblemReportsPage(1)">Next</button></div></div>';
     main.appendChild(panel);
     const previousOpenTab = window.openTab;
     window.openTab = function (name) {
@@ -56,15 +62,51 @@
     }
     return raw || 'Unable to delete the problem report.';
   }
+  function renderProblemReportsPager(total, itemCount) {
+    const pages = Math.max(1, Math.ceil(total / PROBLEM_REPORTS_PAGE_SIZE));
+    const offset = (problemReportsPage - 1) * PROBLEM_REPORTS_PAGE_SIZE;
+    const start = itemCount ? offset + 1 : 0;
+    const end = offset + itemCount;
+    const info = document.getElementById('problemReportsPageInfo');
+    const prev = document.getElementById('problemReportsPrev');
+    const next = document.getElementById('problemReportsNext');
+    if (info) info.textContent = 'Showing ' + start + '-' + end + ' of ' + total;
+    if (prev) prev.disabled = problemReportsPage <= 1;
+    if (next) next.disabled = problemReportsPage >= pages;
+  }
+  window.changeProblemReportsStatus = function () {
+    problemReportsPage = 1;
+    window.loadProblemReports();
+  };
+  window.changeProblemReportsPage = function (delta) {
+    problemReportsPage = Math.max(1, problemReportsPage + delta);
+    window.loadProblemReports();
+  };
   window.loadProblemReports = async function () {
     const root = document.getElementById('problemReportsList');
     if (!root) return;
+    const seq = ++problemReportsLoadSeq;
+    root.setAttribute('aria-busy', 'true');
     root.textContent = 'Loading...';
     const status = document.getElementById('problemReportsStatus')?.value || '';
+    const params = new URLSearchParams({limit:String(PROBLEM_REPORTS_PAGE_SIZE), offset:String((problemReportsPage - 1) * PROBLEM_REPORTS_PAGE_SIZE)});
+    if (status) params.set('status', status);
     try {
-      const payload = await request('/api/v1/admin/problem-reports' + (status ? '?status=' + encodeURIComponent(status) : ''));
+      const payload = await request('/api/v1/admin/problem-reports?' + params.toString());
+      if (seq !== problemReportsLoadSeq) return;
       const items = payload.items || [];
-      if (!items.length) { root.innerHTML = '<div class="hint">No problem reports.</div>'; return; }
+      const total = Math.max(0, Number(payload.total) || 0);
+      const pages = Math.max(1, Math.ceil(total / PROBLEM_REPORTS_PAGE_SIZE));
+      if (!items.length && total > 0 && problemReportsPage > pages) {
+        problemReportsPage = pages;
+        window.loadProblemReports();
+        return;
+      }
+      if (!items.length) {
+        root.innerHTML = '<div class="hint">No problem reports.</div>';
+        renderProblemReportsPager(total, 0);
+        return;
+      }
       root.innerHTML = items.map(function (item) {
         const attachments = ['diagnostics.zip'].concat(item.screenshot_paths || []).map(function (file) {
           return '<button type="button" class="btn-ghost compact-btn" onclick="downloadProblemReportAttachment(\'' + String(item.id).replace(/'/g, "\\'") + '\',\'' + String(file).replace(/'/g, "\\'") + '\')">' + escapeValue(file) + '</button>';
@@ -72,12 +114,17 @@
         return '<article class="item"><div class="head"><div><div class="item-title">' + escapeValue(item.id) + ' <span class="badge ' + (item.status === 'fixed' ? 'ok' : item.status === 'pending' ? 'warn' : '') + '">' + escapeValue(label(item.status)) + '</span></div><div class="item-meta">' + escapeValue(item.created_at) + '</div></div></div>' +
           '<div class="grid2"><div><label>Reporter ID / contact (admin only)</label><div class="item-meta">' + escapeValue(item.reporter_user_id) + '<br>' + escapeValue(reporterContact(item.reporter_contact)) + '</div></div><div><label>运行环境</label><div class="item-meta">操作系统：' + escapeValue(item.os_version) + '<br>MaClaw GUI：' + escapeValue(item.gui_version || '未提供') + '</div></div></div>' +
           '<div class="stack-gap-sm"><label>Description</label><pre class="item-meta problem-report-description">' + escapeValue(item.description) + '</pre></div>' +
-          '<div class="stack-gap-sm"><label>Attachments</label><div class="actions" id="problem-attachments-' + escapeValue(item.id) + '">' + attachments + '</div></div>' +
+          '<details class="stack-gap-sm" ontoggle="if(this.open)loadProblemReportAttachmentManifest(\'' + String(item.id).replace(/'/g, "\\'") + '\')"><summary>Attachments</summary><div class="actions" id="problem-attachments-' + escapeValue(item.id) + '" data-report-id="' + escapeValue(item.id) + '" data-manifest-known="' + ((item.screenshot_paths || []).length ? '1' : '') + '">' + attachments + '</div></details>' +
           '<div class="grid2 stack-gap-sm"><div><label>Status</label><select id="problem-status-' + escapeValue(item.id) + '"><option value="pending">Pending</option><option value="fixed">Fixed</option><option value="deferred">Deferred</option><option value="rejected">Not processed</option><option value="archived">Archived</option></select></div><div><label>Administrator note</label><input id="problem-note-' + escapeValue(item.id) + '" value="' + escapeValue(item.admin_note) + '"></div></div>' +
           '<div class="actions section-gap"><button class="btn-primary" onclick="saveProblemReport(\'' + String(item.id).replace(/'/g, "\\'") + '\')">Save status</button><button class="btn-ghost" onclick="deleteProblemReport(\'' + String(item.id).replace(/'/g, "\\'") + '\')">Force delete</button></div></article>';
       }).join('');
-      items.forEach(function (item) { const select = document.getElementById('problem-status-' + item.id); if (select) select.value = item.status; window.loadProblemReportAttachmentManifest(item.id, item.screenshot_paths || []); });
-    } catch (error) { root.innerHTML = '<div class="hint">Failed to load reports: ' + escapeValue(error.message || error) + '</div>'; }
+      items.forEach(function (item) { const select = document.getElementById('problem-status-' + item.id); if (select) select.value = item.status; });
+      renderProblemReportsPager(total, items.length);
+    } catch (error) {
+      if (seq === problemReportsLoadSeq) root.innerHTML = '<div class="hint">Failed to load reports: ' + escapeValue(error.message || error) + '</div>';
+    } finally {
+      if (seq === problemReportsLoadSeq) root.setAttribute('aria-busy', 'false');
+    }
   };
   window.saveProblemReport = async function (id) {
     const status = document.getElementById('problem-status-' + id).value;
@@ -124,22 +171,49 @@
       alert(error.message || error);
     }
   };
-  window.loadProblemReportAttachmentManifest = async function (id, knownScreenshots) {
-    if (knownScreenshots && knownScreenshots.length) return;
+  function problemReportAttachmentRoot(id) {
     const root = document.getElementById('problem-attachments-' + id);
-    if (!root) return;
-    try {
-      const payload = await request('/api/v1/admin/problem-reports/' + encodeURIComponent(id) + '/attachments');
-      const files = Array.isArray(payload.items) ? payload.items : [];
-      if (!files.length) return;
-      root.replaceChildren();
-      files.forEach(function (file) {
-        const button = document.createElement('button');
-        button.type = 'button'; button.className = 'btn-ghost compact-btn'; button.textContent = file;
-        button.onclick = function () { window.downloadProblemReportAttachment(id, file); };
-        root.appendChild(button);
+    return root && root.dataset.reportId === String(id) ? root : null;
+  }
+  function pumpProblemReportAttachmentManifests() {
+    while (attachmentManifestActive < ATTACHMENT_MANIFEST_CONCURRENCY && attachmentManifestQueue.length) {
+      const job = attachmentManifestQueue.shift();
+      const root = problemReportAttachmentRoot(job.id);
+      if (root !== job.root || root.dataset.manifestToken !== job.token) continue;
+      attachmentManifestActive++;
+      root.dataset.manifestState = 'loading';
+      request('/api/v1/admin/problem-reports/' + encodeURIComponent(job.id) + '/attachments').then(function (payload) {
+        const current = problemReportAttachmentRoot(job.id);
+        if (current !== job.root || current.dataset.manifestToken !== job.token) return;
+        const files = Array.isArray(payload.items) ? payload.items : [];
+        if (files.length) {
+          current.replaceChildren();
+          files.forEach(function (file) {
+            const button = document.createElement('button');
+            button.type = 'button'; button.className = 'btn-ghost compact-btn'; button.textContent = file;
+            button.onclick = function () { window.downloadProblemReportAttachment(job.id, file); };
+            current.appendChild(button);
+          });
+        }
+        current.dataset.manifestState = 'loaded';
+      }).catch(function () {
+        const current = problemReportAttachmentRoot(job.id);
+        if (current === job.root && current.dataset.manifestToken === job.token) current.dataset.manifestState = '';
+      }).finally(function () {
+        attachmentManifestActive--;
+        pumpProblemReportAttachmentManifests();
       });
-    } catch (_) { /* diagnostics download remains available from the initial button */ }
+    }
+  }
+  window.loadProblemReportAttachmentManifest = function (id, knownScreenshots) {
+    if (knownScreenshots && knownScreenshots.length) return;
+    const root = problemReportAttachmentRoot(id);
+    if (!root || root.dataset.manifestKnown === '1' || ['queued', 'loading', 'loaded'].includes(root.dataset.manifestState)) return;
+    const token = String(Number(root.dataset.manifestToken || 0) + 1);
+    root.dataset.manifestToken = token;
+    root.dataset.manifestState = 'queued';
+    attachmentManifestQueue.push({id:String(id), root:root, token:token});
+    pumpProblemReportAttachmentManifests();
   };
   window.deleteProblemReport = async function (id) {
     if (!window.confirm('Force delete this report and all stored attachments? This cannot be undone.')) return;

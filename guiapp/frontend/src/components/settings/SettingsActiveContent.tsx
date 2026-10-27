@@ -35,20 +35,20 @@ import {
     VirtualEmployeeSettingsPanel,
     WebSearchConfigPanel,
     TokenBankPanel,
+    PetSettingsPanel,
+    FavoriteEmployeeSettingsPanel,
+    PPTStylesSettingsPanel,
+    PDFStylesSettingsPanel,
+    IMSettingsPanel,
+    EmailSettingsPanel,
+    ThirdPartyAccessSettings,
+    BuddySettingsSection,
 } from '../../appLazyComponents';
-import { PetSettingsPanel } from '../PetSettingsPanel';
 import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
 import type { AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
-import { FavoriteEmployeeSettingsPanel } from './FavoriteEmployeeSettingsPanel';
-import { PPTStylesSettingsPanel } from './PPTStylesSettingsPanel';
-import { PDFStylesSettingsPanel } from './PDFStylesSettingsPanel';
 import { GeneralAdvancedSettingsPanel } from './GeneralAdvancedSettingsPanel';
 import { GeneralSettingsPanel } from './GeneralSettingsPanel';
-import { IMSettingsPanel } from './IMSettingsPanel';
-import { EmailSettingsPanel } from './EmailSettingsPanel';
-import { ThirdPartyAccessSettings } from './ThirdPartyAccessSettings';
-import { BuddySettingsSection } from './BuddySettingsSection';
 import type { IMSubTab } from './IMSubTabs';
 import { SettingsPanelErrorBoundary } from './SettingsPanelErrorBoundary';
 import { SettingsPanelFallback } from './SettingsPanelFallback';

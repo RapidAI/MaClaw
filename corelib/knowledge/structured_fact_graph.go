@@ -11,7 +11,7 @@ func (s *SQLiteStore) kbFactGraphEdges(ctx context.Context, opts SearchOptions) 
 	if limit <= 0 || limit > 100 {
 		limit = 40
 	}
-	query := buildFTSQuery(opts.Query)
+	query := buildFTSQuerySegmented(opts.Query)
 	where := []string{"f.row_id IS NOT NULL", "c.origin_type = 'table_row'"}
 	args := make([]interface{}, 0)
 	from := `kb_facts f`

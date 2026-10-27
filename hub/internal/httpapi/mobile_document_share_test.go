@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
 
 func resetCompanionDocShares(t *testing.T) {
@@ -431,5 +433,177 @@ func TestCompanionDocumentShareUpdateChangesAudienceAndExpiry(t *testing.T) {
 	}
 	if strings.Contains(listRec.Body.String(), "password_hash") {
 		t.Fatalf("list leaked a password: %s", listRec.Body.String())
+	}
+}
+
+func postCompanionShareWithFields(t *testing.T, identity *auth.IdentityService, identityToken, visibility, password, target, days, filename, contentHash string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("visibility", visibility)
+	_ = writer.WriteField("password", password)
+	_ = writer.WriteField("target", target)
+	_ = writer.WriteField("days", days)
+	_ = writer.WriteField("content_hash", contentHash)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares", &buf)
+	req.Header.Set("Authorization", "Bearer "+identityToken)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(rec, req)
+	return rec
+}
+
+func companionShareTokenFrom(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var view map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("create view: %v (%s)", err, rec.Body.String())
+	}
+	token, _ := view["token"].(string)
+	if !companionShareTokenPattern.MatchString(token) {
+		t.Fatalf("token: %q (%s)", token, rec.Body.String())
+	}
+	return token
+}
+
+func deleteCompanionShareAs(t *testing.T, identity *auth.IdentityService, identityToken, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/shares/"+token, nil)
+	req.SetPathValue("token", token)
+	req.Header.Set("Authorization", "Bearer "+identityToken)
+	rec := httptest.NewRecorder()
+	CompanionDocumentShareDeleteHandler(identity).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCompanionDocumentShareRejectsDuplicatePaperAndScope(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "dup-owner@example.com")
+	otherToken, _ := issueViewerToken(t, identity, "dup-other@example.com")
+	paper := []byte("%PDF-duplicate")
+	hash := companionShareContentHash(paper)
+
+	create := func(token, visibility, password, target, contentHash string, body []byte) *httptest.ResponseRecorder {
+		return postCompanionShareWithFields(t, identity, token, visibility, password, target, "0", "论文.pdf", contentHash, body)
+	}
+
+	first := create(ownerToken, "public", "", "", hash, paper)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first share: %d %s", first.Code, first.Body.String())
+	}
+	firstToken := companionShareTokenFrom(t, first)
+
+	duplicate := create(ownerToken, "public", "", "", hash, paper)
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate: %d %s", duplicate.Code, duplicate.Body.String())
+	}
+	if !strings.Contains(duplicate.Body.String(), "已经以相同的范围分享过") {
+		t.Fatalf("duplicate message: %s", duplicate.Body.String())
+	}
+
+	// A different audience is a different link.
+	if rec := create(ownerToken, "person", "", "reader@example.com", hash, paper); rec.Code != http.StatusOK {
+		t.Fatalf("person share: %d %s", rec.Code, rec.Body.String())
+	}
+	// A private share is its own scope, and the password is not part of it:
+	// the same paper with another password is still a duplicate.
+	if rec := create(ownerToken, "private", "secret", "", hash, paper); rec.Code != http.StatusOK {
+		t.Fatalf("private share: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := create(ownerToken, "private", "different", "", hash, paper); rec.Code != http.StatusConflict {
+		t.Fatalf("private duplicate: %d %s", rec.Code, rec.Body.String())
+	}
+	// Another owner may publish the same paper to the same audience.
+	if rec := create(otherToken, "public", "", "", hash, paper); rec.Code != http.StatusOK {
+		t.Fatalf("other owner: %d %s", rec.Code, rec.Body.String())
+	}
+	// A different paper with the same name is not a duplicate.
+	otherPaper := []byte("%PDF-different")
+	if rec := create(ownerToken, "public", "", "", companionShareContentHash(otherPaper), otherPaper); rec.Code != http.StatusOK {
+		t.Fatalf("different paper: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Once the earlier link expires, the same paper and audience can go out
+	// again. The expired record stays behind; it no longer blocks anything.
+	companionDocShares.Lock()
+	share := companionDocShares.items[firstToken]
+	share.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+	companionDocShares.items[firstToken] = share
+	companionDocShares.Unlock()
+	if rec := create(ownerToken, "public", "", "", hash, paper); rec.Code != http.StatusOK {
+		t.Fatalf("expired re-share: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCompanionDocumentShareDeleteRemovesLinkAndBlob(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "delete-owner@example.com")
+	otherToken, _ := issueViewerToken(t, identity, "delete-outsider@example.com")
+	body := []byte("%PDF-delete")
+
+	created := postCompanionShareWithFields(t, identity, ownerToken, "public", "", "", "0", "gone.pdf", "", body)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	token := companionShareTokenFrom(t, created)
+	share, ok := companionShareByToken(token)
+	if !ok {
+		t.Fatal("share disappeared after create")
+	}
+	blobPath, err := mobileBlobAbsPath(share.BlobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(blobPath); err != nil {
+		t.Fatalf("blob missing before delete: %v", err)
+	}
+
+	if rec := deleteCompanionShareAs(t, identity, otherToken, token); rec.Code != http.StatusForbidden {
+		t.Fatalf("outsider delete: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := companionShareByToken(token); !ok {
+		t.Fatal("outsider delete removed the share")
+	}
+
+	if rec := deleteCompanionShareAs(t, identity, ownerToken, token); rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := companionShareByToken(token); ok {
+		t.Fatal("share still in the store after delete")
+	}
+	if _, err := os.Stat(blobPath); !os.IsNotExist(err) {
+		t.Fatalf("blob after delete: %v", err)
+	}
+
+	metaReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/"+token, nil)
+	metaReq.SetPathValue("token", token)
+	metaRec := httptest.NewRecorder()
+	CompanionDocumentShareHandler(identity).ServeHTTP(metaRec, metaReq)
+	if metaRec.Code != http.StatusNotFound {
+		t.Fatalf("metadata after delete: %d %s", metaRec.Code, metaRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
+	listReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	listRec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(listRec, listReq)
+	if strings.Contains(listRec.Body.String(), token) {
+		t.Fatalf("list still carries the deleted token: %s", listRec.Body.String())
+	}
+
+	if rec := deleteCompanionShareAs(t, identity, ownerToken, token); rec.Code != http.StatusNotFound {
+		t.Fatalf("second delete: %d %s", rec.Code, rec.Body.String())
 	}
 }

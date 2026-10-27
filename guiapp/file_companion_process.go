@@ -766,6 +766,10 @@ func (a *App) fileCompanionStartup(ctx context.Context) {
 	}
 	a.startFileCompanionConfigWatcher()
 	a.prepareFileCompanionHub()
+	// A host may have only the companion window open (Open with). The window
+	// still answers reader notes on its own shares; the Hub claim link keeps
+	// this process and the main window from answering the same note twice.
+	a.startFileCompanionShareDiscussionWatch()
 	logFileCompanion("startup complete")
 }
 

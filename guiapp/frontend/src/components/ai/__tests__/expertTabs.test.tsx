@@ -77,6 +77,10 @@ describe("expert session key helpers", () => {
     it("expert session keys never leak into project path routing", () => {
         expect(projectPathFromSessionKey("desktop-user:expert:exp-1")).toBe("");
         expect(projectPathFromSessionKey("desktop-user:D:/work/x")).toBe("D:/work/x");
+        // A background chat task worker still belongs to its project; a
+        // project-less worker names no directory.
+        expect(projectPathFromSessionKey("desktop-user:D:/work/x:task:abc123")).toBe("D:/work/x");
+        expect(projectPathFromSessionKey("desktop-user:task:abc123")).toBe("");
     });
 
     it("expert messages are not treated as local session messages", () => {

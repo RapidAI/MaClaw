@@ -853,9 +853,6 @@ func createTables(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
-		`INSERT INTO knowledge_facts_fts(fact_id, subject, predicate, object)
-			SELECT f.id, f.subject, f.predicate, f.object FROM knowledge_facts f
-			WHERE NOT EXISTS (SELECT 1 FROM knowledge_facts_fts WHERE fact_id = f.id)`,
 		`CREATE TABLE IF NOT EXISTS knowledge_import_batches (
 			id TEXT PRIMARY KEY,
 			root_path TEXT NOT NULL,
@@ -3527,7 +3524,7 @@ func facetExample(hit SearchResult) string {
 }
 
 func (s *SQLiteStore) FactGraph(ctx context.Context, opts SearchOptions) (FactGraphResult, error) {
-	query := buildFTSQuery(opts.Query)
+	query := buildFTSQuerySegmented(opts.Query)
 	if opts.Limit <= 0 || opts.Limit > 100 {
 		opts.Limit = 40
 	}

@@ -1216,6 +1216,9 @@ func (s *IdentityService) ViewerContacts(ctx context.Context, principal *ViewerP
 		user, err := s.users.GetByID(ctx, principal.UserID)
 		if err == nil && user != nil {
 			add(user.Email)
+			// Every verified address belongs to this account, and the identity
+			// rows are the only place a phone is stored, so one query covers
+			// both kinds.
 			if identities, idErr := s.users.ListIdentitiesByUser(ctx, user.TenantID, user.ID); idErr == nil {
 				for _, identity := range identities {
 					if identity == nil || !identity.Verified {
@@ -1228,11 +1231,6 @@ func (s *IdentityService) ViewerContacts(ctx context.Context, principal *ViewerP
 						add(normalizePhoneIdentityValue(identity.Value))
 					}
 				}
-			}
-			// Keeps the pre-identity-verification path working for a phone that
-			// was bound without an identity row.
-			if phone, phoneErr := s.BoundPhoneNumberForUser(ctx, user); phoneErr == nil {
-				add(phone)
 			}
 		}
 	}

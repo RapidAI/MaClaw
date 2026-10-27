@@ -103,6 +103,37 @@ func TestGroupDiscussionHistoryStoreKeepsCreationOrderAfterUpdates(t *testing.T)
 	}
 }
 
+func TestGroupDiscussionHistoryStoreCachedSummariesPageUsesRecentUpdateOrder(t *testing.T) {
+	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("NewGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	if err := store.CacheSummaries(context.Background(), []a2a.HubDiscussionSummary{
+		{ID: "first", CreatedAt: now.Add(-3 * time.Hour), UpdatedAt: now.Add(-time.Hour)},
+		{ID: "second", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now},
+		{ID: "third", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-2 * time.Hour)},
+	}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+	page, err := store.CachedSummariesPage(context.Background(), false, 2, 0)
+	if err != nil {
+		t.Fatalf("CachedSummariesPage: %v", err)
+	}
+	if len(page) != 2 || page[0].ID != "second" || page[1].ID != "first" {
+		t.Fatalf("first page = %+v", page)
+	}
+	page, err = store.CachedSummariesPage(context.Background(), false, 2, 2)
+	if err != nil {
+		t.Fatalf("CachedSummariesPage offset: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != "third" {
+		t.Fatalf("second page = %+v", page)
+	}
+}
+
 func TestGroupDiscussionHistoryStoreCacheSummariesNormalizesRelationAndReadonly(t *testing.T) {
 	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {

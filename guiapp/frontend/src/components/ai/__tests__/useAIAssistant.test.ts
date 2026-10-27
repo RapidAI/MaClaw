@@ -2579,6 +2579,162 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('→ 2. 物理内核');
     });
 
+    it('tracks a backend continuation of a task that is not the visible tab', async () => {
+        const hiddenSession = 'desktop-user:C:/work/tasks/hidden';
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:C:/work/tasks/visible' });
+        const requestId = 'session-round-1700000000000';
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: hiddenSession,
+                text: '[系统续轮] 继续完成同一任务。',
+                display_text: '接着做',
+            });
+        });
+
+        // The visible transcript stays untouched, but the sidebar needs the task.
+        expect(result.current.busySessionKeys).toEqual([]);
+        expect(result.current.sending).toBe(false);
+        expect(result.current.offscreenLiveSessionKeys).toEqual([hiddenSession]);
+        expect(result.current.messages).toHaveLength(0);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: hiddenSession, text: '继续实现' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: requestId, session_key: hiddenSession, text: 'Coding Agent: running T1' });
+        });
+
+        expect(result.current.offscreenLiveSessionKeys).toEqual([hiddenSession]);
+        expect(assistantMessages(result.current.messages)).toHaveLength(0);
+        expect(result.current.progressMessages).toHaveLength(0);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: hiddenSession,
+                text: '本轮完成',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+        expect(result.current.sending).toBe(false);
+    });
+
+    it('adopts a session-round continuation that started while another tab was visible', async () => {
+        const session = 'desktop-user:C:/work/tasks/session-round';
+        const requestId = 'session-round-1700000000001';
+        const { result, rerender } = renderHook(
+            (props: { activeSessionKey: string }) => useAIAssistant({ activeSessionKey: props.activeSessionKey }),
+            { initialProps: { activeSessionKey: 'desktop-user:C:/work/tasks/visible' } },
+        );
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '[系统续轮] 继续完成同一任务。',
+                display_text: '接着做',
+            });
+        });
+        expect(result.current.offscreenLiveSessionKeys).toEqual([session]);
+        expect(result.current.messages).toHaveLength(0);
+
+        rerender({ activeSessionKey: session });
+        await waitFor(() => expect(result.current.busySessionKeys).toEqual([session]));
+
+        expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+        expect(result.current.sending).toBe(true);
+        // Adoption is silent: only the assistant placeholder the rest of the
+        // round writes into, no duplicated start row.
+        expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '继续实现' });
+        });
+        expect(assistantMessages(result.current.messages)[0].content).toBe('继续实现');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: session,
+                text: '本轮完成',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+        expect(result.current.sending).toBe(false);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('本轮完成');
+    });
+
+    it('hands an offscreen continuation to the tab once its session becomes visible', async () => {
+        const session = 'desktop-user:C:/work/tasks/handoff';
+        const requestId = 'goal-cont-handoff';
+        const { result, rerender } = renderHook(
+            (props: { activeSessionKey: string }) => useAIAssistant({ activeSessionKey: props.activeSessionKey }),
+            { initialProps: { activeSessionKey: 'desktop-user:C:/work/tasks/visible' } },
+        );
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: 'continue',
+                display_text: '接着做',
+            });
+        });
+        expect(result.current.offscreenLiveSessionKeys).toEqual([session]);
+        expect(result.current.busySessionKeys).toEqual([]);
+
+        rerender({ activeSessionKey: session });
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '继续' });
+        });
+
+        // The visible transcript owns the round now; the sidebar signal does
+        // not need (and must not keep) a second identity.
+        expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+        expect(result.current.busySessionKeys).toEqual([session]);
+    });
+
+    it('expires an offscreen continuation that never reports a final response', async () => {
+        vi.useFakeTimers();
+        try {
+            const hiddenSession = 'desktop-user:C:/work/tasks/hidden-expiry';
+            const requestId = 'goal-cont-expiry';
+            const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:C:/work/tasks/visible' });
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                    request_id: requestId,
+                    session_key: hiddenSession,
+                    text: 'continue',
+                    display_text: '接着做',
+                });
+            });
+            expect(result.current.offscreenLiveSessionKeys).toEqual([hiddenSession]);
+
+            // Activity before the deadline pushes the expiry out.
+            await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000); });
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: hiddenSession, text: 'still working' });
+                await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+            });
+            expect(result.current.offscreenLiveSessionKeys).toEqual([hiddenSession]);
+
+            // Silence past the refreshed bound drops the identity: a lost
+            // terminal response must not hold the row in 进行中 forever.
+            await act(async () => { await vi.advanceTimersByTimeAsync(11 * 60 * 1000); });
+            expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('recovers goal continuation output if the foreground start event was missed', async () => {
         const { result } = renderAssistantHook();
         const requestId = 'goal-cont-missed-start';

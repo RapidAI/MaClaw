@@ -46,11 +46,12 @@ import {
     AddFileCompanionShareNote,
     SendFileCompanionMessage,
     SendFileCompanionWebMessage,
+    SyncFileCompanionShare,
 } from "../../../wailsjs/go/main/App";
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareNotes, companionSharePathKey, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -75,6 +76,10 @@ import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivRefer
 import { windowDragHandleProps } from "../../utils/windowDrag";
 import type { CodePreviewTheme } from "../ai/FileTabBar";
 import { loadPdfMarks, normalizePdfMarks, savePdfMarks, type PdfMark } from "./pdfMarks";
+import { loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
+import { applyChatHighlights, chatHighlightsSupported, chatMarkAtOffset, chatMessageIndexAt, chatMessageRoot, chatOffsetForPoint, chatSelectionSlices, chatTextSpans, clearChatHighlights, type ChatSelectionSlice } from "./chatMarkAnchors";
+import { CompanionChatMarkMenu } from "./CompanionChatMarkMenu";
+import { subscribeCompanionReaderState } from "./companionReaderState";
 import { FilePreviewView } from "../preview/FilePreviewView";
 import { filePreviewKindFromName, type FilePreviewKind } from "../preview/filePreviewKind";
 
@@ -82,6 +87,18 @@ const CLOUD_DISABLE_BYTES = 400 * 1024 * 1024;
 // Asked once when a new document has no transcript. A selection is not sent:
 // the host would write the reply back into the file.
 const FILE_COMPANION_INTRO = "这篇文档是什么？";
+// A participant's window polls the library often enough that the host's new
+// line shows up while the discussion is still going. A window with no received
+// share keeps the slow cadence: the hub has nothing new for a document this
+// person hosts, and the list costs a hub round trip. The tick stays short
+// because a share can arrive while the window is already open.
+const COMPANION_POLL_TICK_MS = 5000;
+const COMPANION_POLL_SLOW_TICKS = 12;
+
+function companionLibraryPollFast(tabs: { shareToken?: string; shareMine?: boolean }[]): boolean {
+    return tabs.some((tab) => Boolean(tab.shareToken) && !tab.shareMine);
+}
+
 // A cleared chat bumps the session generation. Events bound to an older
 // generation, and any unbound event after the first clear, stay off the log.
 function companionEventCurrent(epochs: Map<string, number>, requests: Map<string, number>, sessionId: string, requestID: string): boolean {
@@ -286,6 +303,7 @@ type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reaso
 // Stable identity keeps the scroll-follow effect from re-planning on every
 // render while no file is open.
 const NO_COMPANION_MESSAGES: ChatMessage[] = [];
+const NO_CHAT_MARKS: ChatMark[] = [];
 // One stable empty result for an idle window, so an export that has nothing to
 // build does not hand a new object to every effect that depends on it.
 const EMPTY_CHAT_EXPORT: CompanionChatExport = { turns: [], missingFigures: 0, missingDiagrams: 0 };
@@ -1576,6 +1594,7 @@ function sameShareNotes(left: CompanionShareNote[], right: CompanionShareNote[])
     if (left.length !== right.length) return false;
     for (let i = 0; i < left.length; i++) {
         if (left[i].id !== right[i].id || left[i].text !== right[i].text || left[i].author !== right[i].author) return false;
+        if (Boolean(left[i].host) !== Boolean(right[i].host) || (left[i].replyTo ?? "") !== (right[i].replyTo ?? "")) return false;
     }
     return true;
 }
@@ -1799,6 +1818,14 @@ function companionArxivPage(raw: unknown): CompanionArxivPage {
 export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: boolean } = {}) {
     const [tabs, setTabs] = useState<CompanionTab[]>([]);
     const [active, setActive] = useState("");
+    // Highlights the reader painted on the agent's answers, keyed by the
+    // document they belong to. The store mirror keeps them across restarts;
+    // keying the state by path means a tab switch never paints the previous
+    // file's marks on the new transcript.
+    const [chatMarksState, setChatMarksState] = useState<{ path: string; marks: ChatMark[] }>({ path: "", marks: NO_CHAT_MARKS });
+    // Right-click menu over a selection in the answer. slices is what 高亮
+    // paints; hit indexes the stored mark 取消高亮 removes, or -1.
+    const [chatMenu, setChatMenu] = useState<{ x: number; y: number; slices: ChatSelectionSlice[]; hit: number } | null>(null);
     const [tabEnds, setTabEnds] = useState<CompanionTabEnds>({ overflow: false, canLeft: false, canRight: false });
     const [dropMessage, setDropMessage] = useState("");
     // The 打开 menu: one button, two ways in. A local file goes straight to the
@@ -1907,17 +1934,32 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // instead of 分享 for a document that already has one: publishing again
     // would leave two links to the same paper.
     const [mineSharesByPath, setMineSharesByPath] = useState<Map<string, CompanionShareRow>>(() => new Map());
+    const mineSharesByPathRef = useRef(mineSharesByPath);
+    mineSharesByPathRef.current = mineSharesByPath;
+    // Who hosts each shared file: the share's creator. A host badge marks the
+    // document here and on every participant's screen at the same place.
+    const [shareHosts, setShareHosts] = useState<Map<string, CompanionShareHost>>(() => new Map());
+    // A host's new chat line and its answer reach the hub without a manual
+    // 同步. One upload per burst, and a line that arrives mid-upload is sent
+    // again after it, so the newest transcript always lands last.
+    const pushShareTranscriptRef = useRef<(path: string) => void>(() => undefined);
+    const sharePushTimerRef = useRef(new Map<string, number>());
+    const sharePushInFlightRef = useRef(new Set<string>());
+    const sharePushPendingRef = useRef(new Set<string>());
     // A line sent before the library list returns does not yet know whether
     // this file is the host's. It waits here and is posted only if the reader
     // is not the host.
     const pendingShareNotesRef = useRef(new Map<string, PendingShareNote[]>());
-    const publishShareNoteRef = useRef<(path: string, text: string) => Promise<void>>(async () => undefined);
+    const publishShareNoteRef = useRef<(path: string, text: string) => Promise<boolean>>(async () => false);
     const flushPendingShareNotesRef = useRef<() => void>(() => undefined);
     const applyShareNotesRef = useRef<(listed: unknown) => void>(() => undefined);
     const applyLibraryListRef = useRef<(listed: unknown) => void>(() => undefined);
     // A list request records this value when it starts. Delete increments it
     // after the project is gone, so that request cannot paint the project back.
     const libraryDeleteGen = useRef(0);
+    // The list a share/import dialog fetched. The library view paints this
+    // snapshot so a save or delete lands without asking the hub again.
+    const [libraryListSnapshot, setLibraryListSnapshot] = useState<unknown>(null);
     const clearShareNotes = (keys: Set<string> | null) => {
         setTabs((current) => {
             let changed = false;
@@ -1943,6 +1985,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             const same = nextMine.size === current.size
                 && [...nextMine].every(([key, row]) => current.get(key)?.token === row.token);
             return same ? current : nextMine;
+        });
+        const nextHosts = companionShareHosts(listed);
+        setShareHosts((current) => {
+            const same = nextHosts.size === current.size
+                && [...nextHosts].every(([key, host]) => current.get(key)?.owner === host.owner && current.get(key)?.mine === host.mine);
+            return same ? current : nextHosts;
         });
         const rows = companionShareNotes(listed);
         if (rows.length === 0) {
@@ -2034,10 +2082,45 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             return left;
         });
     };
+    // The host's own line and its answer reach the hub as they happen; the
+    // 同步 button stays for an explicit re-upload. One upload per burst, and a
+    // line that arrives mid-upload is sent again after it, so the newest
+    // transcript always lands last.
+    const runSharePush = (path: string) => {
+        if (sharePushInFlightRef.current.has(path)) {
+            sharePushPendingRef.current.add(path);
+            return;
+        }
+        sharePushInFlightRef.current.add(path);
+        void SyncFileCompanionShare(path, JSON.stringify(loadPdfMarks(path))).catch(() => undefined).finally(() => {
+            sharePushInFlightRef.current.delete(path);
+            if (sharePushPendingRef.current.delete(path)) runSharePush(path);
+        });
+    };
+    const pushShareTranscript = (path: string) => {
+        if (!path || !mineSharesByPathRef.current.has(companionSharePathKey(path))) return;
+        const timers = sharePushTimerRef.current;
+        const held = timers.get(path);
+        if (held !== undefined) window.clearTimeout(held);
+        timers.set(path, window.setTimeout(() => {
+            timers.delete(path);
+            runSharePush(path);
+        }, 1200));
+    };
+    pushShareTranscriptRef.current = pushShareTranscript;
+    useEffect(() => () => {
+        for (const timer of sharePushTimerRef.current.values()) window.clearTimeout(timer);
+        sharePushTimerRef.current.clear();
+    }, []);
     // The library panel is not the only reader. A removed member, or a newer
-    // revision, has to land while the document is already open.
+    // revision, has to land while the document is already open. A received
+    // share polls on a short timer so the host's next line appears while the
+    // discussion is still going; a window with no received share keeps the
+    // slow poll, because nothing new can arrive there from the hub.
     useEffect(() => {
         let stopped = false;
+        let timer = 0;
+        let quietTicks = 0;
         const refresh = () => {
             const started = libraryDeleteGen.current;
             void ListFileCompanionLibrary().then((listed) => {
@@ -2045,12 +2128,27 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 applyLibraryListRef.current(listed);
             }).catch(() => undefined);
         };
+        // The tick is short so a received share can pick up the host's next
+        // line quickly. A window without a received share only reads the hub
+        // on the old slow cadence; the empty ticks cost nothing.
+        const schedule = () => {
+            if (stopped) return;
+            timer = window.setTimeout(() => {
+                const fast = companionLibraryPollFast(tabsRef.current);
+                quietTicks += 1;
+                if (document.visibilityState !== "hidden" && (fast || quietTicks >= COMPANION_POLL_SLOW_TICKS)) {
+                    quietTicks = 0;
+                    refresh();
+                }
+                schedule();
+            }, COMPANION_POLL_TICK_MS);
+        };
         refresh();
-        const timer = window.setInterval(refresh, 60_000);
+        schedule();
         window.addEventListener("focus", refresh);
         return () => {
             stopped = true;
-            window.clearInterval(timer);
+            window.clearTimeout(timer);
             window.removeEventListener("focus", refresh);
         };
     }, []);
@@ -2431,6 +2529,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 }
                 return { ...tab, messages, status: "" };
             }));
+            // The finished answer is the other half of what participants see.
+            if (!errText && matched) pushShareTranscriptRef.current(matched.path);
             if (reloadPath) void openPath(reloadPath, false, true);
         };
         const windowIsEmpty = () => opensInFlight.current === 0 && !tabCommittedRef.current && tabsRef.current.length === 0;
@@ -2844,6 +2944,109 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const activeTab = tabs.find((tab) => tab.path === active) ?? null;
     // The share this document already has, if this person created it.
     const sharedRow = active ? mineSharesByPath.get(companionSharePathKey(active)) ?? null : null;
+    const readHost = active ? shareHosts.get(companionSharePathKey(active)) ?? null : null;
+    // Marks only apply to the document they were painted on.
+    const chatMarks = chatMarksState.path === active ? chatMarksState.marks : NO_CHAT_MARKS;
+    const chatMarksRef = useRef(chatMarks);
+    chatMarksRef.current = chatMarks;
+    const chatMenuRef = useRef(chatMenu);
+    chatMenuRef.current = chatMenu;
+    const activePathRef = useRef(active);
+    activePathRef.current = active;
+    const chatHighlightsReady = useMemo(() => chatHighlightsSupported(), []);
+    // A document switch shows that document's marks, never the previous file's.
+    useEffect(() => {
+        setChatMarksState({ path: active, marks: active ? loadChatMarks(active) : NO_CHAT_MARKS });
+        setChatMenu(null);
+    }, [active]);
+    // A host read slower than startup can land after this panel mounted.
+    useEffect(() => subscribeCompanionReaderState(() => {
+        const path = activePathRef.current;
+        setChatMarksState({ path, marks: path ? loadChatMarks(path) : NO_CHAT_MARKS });
+    }), []);
+    useEffect(() => () => clearChatHighlights(), []);
+    // Repaint when the DOM a mark anchors to changes. Only messages that carry
+    // a mark are part of the key, so a streaming answer without marks costs
+    // nothing per token; a marked message re-parses when its text grows or the
+    // turn stops streaming.
+    const markedMessageIndexes = new Set(chatMarks.map((mark) => mark.message));
+    const chatHighlightKey = chatMarks.map((mark) => `${mark.message}:${mark.start}:${mark.end}:${mark.color}`).join("|");
+    const chatMessageKey = (activeTab?.messages ?? [])
+        .map((message, index) => (markedMessageIndexes.has(index) ? `${index}:${message.id}:${message.text.length}` : ""))
+        .join("|");
+    const chatStatusKey = activeTab?.status ?? "";
+    useEffect(() => {
+        const root = outputContainerRef.current;
+        if (!root) return;
+        applyChatHighlights(root, chatMarksRef.current);
+    }, [chatHighlightKey, chatMessageKey, chatStatusKey, active]);
+
+    const commitChatMarks = (next: ChatMark[]) => {
+        if (!active) return;
+        setChatMarksState({ path: active, marks: saveChatMarks(active, next) });
+        setChatMenu(null);
+    };
+
+    const paintChatMarks = (color: ChatMarkColor) => {
+        const menu = chatMenuRef.current;
+        if (!menu || menu.slices.length === 0) return;
+        // A new colour replaces whatever covered the same range, so repeated
+        // painting never stacks two colours on one phrase.
+        const painted: ChatMark[] = menu.slices.map((slice) => ({
+            message: slice.message,
+            color,
+            start: slice.start,
+            end: slice.end,
+            text: slice.text,
+        }));
+        const overlaps = (mark: ChatMark, slice: ChatMark) => mark.message === slice.message && mark.start < slice.end && mark.end > slice.start;
+        const kept = chatMarksRef.current.filter((mark) => !painted.some((slice) => overlaps(mark, slice)));
+        commitChatMarks([...kept, ...painted]);
+        window.getSelection()?.removeAllRanges();
+    };
+
+    const clearChatMarkHit = () => {
+        const menu = chatMenuRef.current;
+        if (!menu || menu.hit < 0) return;
+        commitChatMarks(chatMarksRef.current.filter((_mark, index) => index !== menu.hit));
+    };
+
+    const copyChatSelection = () => {
+        const text = chatMenuRef.current?.slices.map((slice) => slice.text).join("\n").trim() ?? "";
+        setChatMenu(null);
+        if (text) void copyTextToClipboard(text);
+    };
+
+    // The answer is rendered Markdown, so a right-click is ours only when there
+    // is a selection inside a message or an existing highlight under the
+    // pointer. Anything else keeps the browser's own menu.
+    const onChatContextMenu = (event: React.MouseEvent) => {
+        const root = outputContainerRef.current;
+        if (!root) return;
+        let slices: ChatSelectionSlice[] = [];
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
+            const range = selection.getRangeAt(0);
+            if (root.contains(range.commonAncestorContainer)) slices = chatSelectionSlices(root, range);
+        }
+        let hit = -1;
+        if (slices.length === 0 && typeof document.caretRangeFromPoint === "function") {
+            const caret = document.caretRangeFromPoint(event.clientX, event.clientY);
+            const messageRoot = chatMessageRoot(event.target as HTMLElement | null);
+            const message = chatMessageIndexAt(event.target as HTMLElement | null);
+            if (caret && messageRoot && message >= 0 && root.contains(caret.startContainer)) {
+                const spans = chatTextSpans(messageRoot);
+                const offset = chatOffsetForPoint(spans, caret.startContainer, caret.startOffset, "start");
+                hit = chatMarkAtOffset(chatMarksRef.current, message, offset);
+            }
+        }
+        if (slices.length === 0 && hit < 0) {
+            setChatMenu(null);
+            return;
+        }
+        event.preventDefault();
+        setChatMenu({ x: event.clientX, y: event.clientY, slices, hit });
+    };
     const seenEditor = useRef(activeTab?.content ?? "");
     const editorValueChanged = seenEditor.current !== (activeTab?.content ?? "");
     seenEditor.current = activeTab?.content ?? "";
@@ -3376,6 +3579,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         try {
             if (tab.kind === "web") await ClearFileCompanionWebChat(tab.sessionId);
             else await ClearFileCompanionChat(tab.path);
+            // A cleared host transcript is the new state participants should
+            // read, so it goes out like a turn does.
+            if (tab.kind !== "web") pushShareTranscriptRef.current(tab.path);
         } catch (err) {
             showToast(turnErrorText(err instanceof Error ? err.message : "没能清空聊天"), "error", 6000);
         }
@@ -3387,17 +3593,19 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         return AddFileCompanionShareNote(tabPath, text).then((raw) => {
             const posted = companionNotePost(raw);
             const prev = shareByPathRef.current.get(key);
-            if (!prev) return;
+            if (!prev) return true;
             const part = prev.parts.length === 1 ? prev.parts[0] : prev.parts.find((item) => !item.mine);
-            if (!part || !companionNotesRevisionWins(part.revision, posted.revision)) return;
+            if (!part || !companionNotesRevisionWins(part.revision, posted.revision)) return true;
             const revision = Math.max(part.revision, posted.revision);
-            if (part.revision === revision && sameShareNotes(part.notes, posted.notes)) return;
+            if (part.revision === revision && sameShareNotes(part.notes, posted.notes)) return true;
             const stored = shareBindFromParts(prev.parts.map((item) => item.token === part.token ? { ...item, notes: posted.notes, revision } : item));
             shareByPathRef.current.set(key, stored);
             const token = shareBindToken(stored);
             setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
+            return true;
         }).catch((err) => {
             showToast(turnErrorText(err instanceof Error ? err.message : "批注没有同步出去"), "error", 6000);
+            return false;
         });
     };
     flushPendingShareNotesRef.current = () => {
@@ -3461,11 +3669,21 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         // question and does not replace the host transcript. The host’s own
         // chat still syncs with the document. A line sent before the library
         // list arrives waits until that list says who the host is.
+        //
+        // On a received share the host's agent answers in the discussion, so
+        // this machine does not run a second, private turn: that answer would
+        // never reach the other readers.
+        let hostThread = false;
         if (accepted && !isWebTab) {
             const key = companionSharePathKey(tabPath);
             const shared = shareByPathRef.current.get(key);
             if (shared) {
-                if (!shared.mine) void publishShareNoteRef.current(tabPath, text);
+                if (!shared.mine) {
+                    hostThread = true;
+                    void publishShareNoteRef.current(tabPath, text).then((posted) => {
+                        if (posted) showToast("已发给主持人 Agent，回复会作为批注同步给参与者", "success", 6000);
+                    });
+                }
             } else {
                 const queued = pendingShareNotesRef.current.get(key) ?? [];
                 queued.push({ path: tabPath, text });
@@ -3507,6 +3725,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         ...(notePhrase ? { purpose: "video-note" } : {}),
                         ...(selection && selectionStart >= 0 ? { selection_start: selectionStart } : {}),
                     });
+                    // The host's question is part of the transcript participants
+                    // are reading, so it goes out with the turn, not at 同步.
+                    pushShareTranscriptRef.current(tabPath);
                 }
             } catch (err) {
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
@@ -4358,7 +4579,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     </button>
                 ) : null}
                 <div className="file-companion-titlebar-tabs" data-testid="file-companion-titlebar-tabs" role="tablist" aria-label="打开的文档" ref={tabsScrollRef}>
-                {tabs.map((tab) => (
+                {tabs.map((tab) => {
+                    const host = shareHosts.get(companionSharePathKey(tab.path)) ?? null;
+                    return (
                     <button
                         key={tab.path}
                         type="button"
@@ -4371,6 +4594,32 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         onClick={() => setActive(tab.path)}
                     >
                         <span className="file-companion-tab-name">{tab.name}{tab.dirty ? "*" : ""}</span>
+                        {host ? (
+                            <span
+                                className="file-companion-tab-host"
+                                data-testid={`file-companion-tab-host-${tab.name}`}
+                                data-state={host.mine ? "mine" : "guest"}
+                                title={host.mine ? "你是主持人" : `主持人：${host.owner || "其他人"}`}
+                                aria-label={host.mine ? "你是主持人" : `主持人：${host.owner || "其他人"}`}
+                            >
+                                主持
+                            </span>
+                        ) : null}
+                        {tab.shareToken ? (
+                            <span
+                                className="file-companion-tab-share"
+                                data-testid={`file-companion-tab-share-${tab.name}`}
+                                data-state={tab.shareMine ? "mine" : "received"}
+                                title={tab.shareMine ? "已分享 — 链接可以修改分享范围和有效期" : "收到的分享"}
+                                aria-label={tab.shareMine ? "已分享" : "收到的分享"}
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+                                    <path d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
+                                    <path d="M12 20.5v-8.2" />
+                                    <path d="m9.3 14.8 2.7-2.7 2.7 2.7" />
+                                </svg>
+                            </span>
+                        ) : null}
                         <span
                             className="file-companion-tab-close"
                             role="button"
@@ -4397,7 +4646,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             ×
                         </span>
                     </button>
-                ))}
+                    );
+                })}
                 </div>
                 {tabEnds.overflow ? (
                     <button
@@ -4566,6 +4816,16 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 <div className="file-companion-titlebar-gap" data-testid="file-companion-titlebar-gap" />
                 {activeTab ? (
                     <div className="file-companion-titlebar-actions" data-testid="file-companion-export">
+                        {readHost ? (
+                            <span
+                                className="file-companion-host-badge"
+                                data-testid="file-companion-host-badge"
+                                data-state={readHost.mine ? "mine" : "guest"}
+                                title={readHost.mine ? "你是这份文档的主持人" : "这份文档由对方分享，对方是主持人"}
+                            >
+                                {readHost.mine ? "你是主持人" : `主持人：${readHost.owner || "其他人"}`}
+                            </span>
+                        ) : null}
                         <button
                             type="button"
                             className="file-companion-tool file-companion-tool--icon"
@@ -4892,6 +5152,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             onWheel={handleUserScrollIntent}
                             onTouchMove={handleUserScrollIntent}
                             onPointerDown={handleUserScrollIntent}
+                            onContextMenu={onChatContextMenu}
                             style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
                         >
                             {activeTab.messages.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "#94a3b8", fontSize: 13 }}>针对当前文件提问</p> : null}
@@ -4913,6 +5174,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                     <div key={message.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
                                         <div
                                             data-testid={`file-companion-message-${message.role}`}
+                                            data-chat-message={mine ? undefined : index}
                                             style={{
                                                 margin: 0,
                                                 maxWidth: "86%",
@@ -4929,6 +5191,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                             >
                                                 {shareable ? <CompanionMessageActions path={activeTab.path} markdown={answerText} messageId={message.id} figures={message.figures} webSession={activeTab.kind === "web" ? activeTab.sessionId : undefined} /> : null}
                                                 {displayReasoning ? (
+                                                    <div data-chat-mark-skip>
                                                     <AssistantReasoningPanel
                                                         defaultOpen={streaming}
                                                     label={streaming ? "正在思考" : "思考过程"}
@@ -4939,6 +5202,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 >
                                                     {renderContentWithCodeBlocks(displayReasoning, lightTheme, reasoningTrailMarkdownOptions)}
                                                 </AssistantReasoningPanel>
+                                                    </div>
                                             ) : null}
                                             <div data-testid={mine ? undefined : "file-companion-answer"}>
                                                 {mine || message.resultPath ? (
@@ -4973,6 +5237,19 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             })}
                             <div ref={outputEndRef} />
                         </div>
+                        {chatMenu ? (
+                            <CompanionChatMarkMenu
+                                state={chatMenu}
+                                quote={chatMenu.slices.map((slice) => slice.text).join(" ")}
+                                hasSelection={chatMenu.slices.length > 0}
+                                canPaint={chatHighlightsReady && chatMenu.slices.length > 0}
+                                canClear={chatMenu.hit >= 0}
+                                onCopy={copyChatSelection}
+                                onPaint={paintChatMarks}
+                                onClear={clearChatMarkHit}
+                                onClose={() => setChatMenu(null)}
+                            />
+                        ) : null}
                         {activeTab.shareToken && (!activeTab.shareMine || (activeTab.notes && activeTab.notes.length > 0)) ? (
                             <div className="file-companion-annotations" data-testid="file-companion-annotations">
                                 <p className="file-companion-annotations-kicker">批注</p>
@@ -5003,11 +5280,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
                     onExit={() => setView("read")}
                     onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
-                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); setLibraryListSnapshot(listed); }}
                     onShareProject={(path) => { setImportDialogLink(""); setShareDialogRow(null); setShareDialogPath(path); }}
                     onEditShare={(row) => { setImportDialogLink(""); setShareDialogRow(row); setShareDialogPath(row.path ?? ""); }}
                     onImportLink={(link) => { setImportDialogLink(link); setImportDialogOpen(true); }}
                     libraryDeleteGen={libraryDeleteGen}
+                    listedSnapshot={libraryListSnapshot}
                     onProjectDeleted={(path) => {
                         const key = companionSharePathKey(path);
                         if (!key) return;
@@ -5043,7 +5321,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     name={shareDialogName}
                     share={shareDialogRow}
                     showToast={showToast}
-                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); setLibraryListSnapshot(listed); }}
                     libraryDeleteGen={libraryDeleteGen}
                     onClose={() => { setShareDialogPath(""); setShareDialogRow(null); }}
                 />
@@ -5054,7 +5332,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     showToast={showToast}
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
                     onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
-                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); setLibraryListSnapshot(listed); }}
                     libraryDeleteGen={libraryDeleteGen}
                     onClose={() => { setImportDialogOpen(false); setImportDialogLink(""); }}
                 />

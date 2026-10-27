@@ -120,6 +120,66 @@ func (a *App) GroupDiscussionListMine(role string) ([]a2a.HubDiscussionSummary, 
 	return discussions, nil
 }
 
+func (a *App) GroupDiscussionListMinePage(role string, limit, offset int) ([]a2a.HubDiscussionSummary, error) {
+	role = strings.TrimSpace(role)
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	client, cfg, err := a.groupDiscussionClient()
+	if err != nil {
+		if cached, cacheErr := a.cachedGroupDiscussionSummariesPage(role, limit, offset); cacheErr == nil && len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, err
+	}
+	agentID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if agentID == "" {
+		if cached, cacheErr := a.cachedGroupDiscussionSummariesPage(role, limit, offset); cacheErr == nil && len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, fmt.Errorf("remote machine id is required")
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	discussions, err := client.ListDiscussionsForAgentPage(ctx, agentID, role, limit, offset)
+	store, storeErr := a.openGroupDiscussionHistoryStore()
+	if storeErr == nil {
+		defer store.Close()
+	}
+	if err != nil {
+		if cached, cacheErr := store.CachedSummariesPage(ctx, false, limit, offset); storeErr == nil && cacheErr == nil && len(cached) > 0 {
+			return sortGroupDiscussionSummariesByCreated(filterGroupDiscussionSummariesByRole(cached, role)), nil
+		}
+		return nil, err
+	}
+	if storeErr == nil {
+		_ = store.CacheSummaries(ctx, discussions, a.groupDiscussionAttachmentRoot)
+		discussions, _ = store.VisibleSummaries(ctx, discussions)
+		if cached, cacheErr := store.CachedSummariesPage(ctx, false, limit, offset); cacheErr == nil && len(cached) > 0 {
+			discussions = mergeGroupDiscussionSummariesPage(discussions, cached, role, limit)
+		}
+	}
+	return sortGroupDiscussionSummariesByCreated(discussions), nil
+}
+
+func (a *App) cachedGroupDiscussionSummariesPage(role string, limit, offset int) ([]a2a.HubDiscussionSummary, error) {
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	cached, err := store.CachedSummariesPage(ctx, false, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return sortGroupDiscussionSummariesByCreated(filterGroupDiscussionSummariesByRole(cached, strings.TrimSpace(role))), nil
+}
+
 func (a *App) cachedGroupDiscussionSummaries(role string) ([]a2a.HubDiscussionSummary, error) {
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()

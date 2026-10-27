@@ -2778,6 +2778,10 @@ func (a *App) startup(ctx context.Context) {
 	// polls the pending list and raises the system notification. It starts after
 	// the data-directory migration so the first poll reads the final config.
 	a.startCompanionGroupInviteWatch()
+	// Reader notes on this account's shared documents are answered by its own
+	// companion agent, and the answers go back out as notes everyone can read.
+	// This is the host side of a shared-document discussion.
+	a.startFileCompanionShareDiscussionWatch()
 	// Resume folder watches after the data directory is final.
 	go func() {
 		if err := a.ensureKnowledgeFolderWatch(); err != nil {
@@ -3248,6 +3252,7 @@ func (a *App) shutdown(ctx context.Context) {
 	// server run. The person saying stop is what posts cancel.
 	abandonDesktopSurface()
 	a.stopCompanionGroupInviteWatch()
+	a.stopFileCompanionShareDiscussionWatch()
 	closeKnowledgeEmbeddingRefresh()
 	a.stopKnowledgeFolderWatch()
 	a.releaseAllCloudWorkspaces()
