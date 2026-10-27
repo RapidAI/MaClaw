@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/buddy/service"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"image"
@@ -404,21 +405,29 @@ type App struct {
 	contextBridge                    *ContextBridge
 	aiTrace                          *AITraceService
 	taskOrchestrator2                *TaskOrchestrator2
-	qqBotGateway                     *qqBotGatewayManager
-	telegramGateway                  *telegramGatewayManager
-	slackGateway                     *slackGatewayManager
-	weixinGateway                    *weixinGatewayManager
-	lansengerGateway                 *lansengerGatewayManager
-	lansengerGateways                *lansengerGatewayRegistry
-	localStartMenu                   *localStartMenuService
-	localStartMenuMu                 sync.Mutex
-	lansengerWatch                   *lansengerWatchService
-	lansengerWatchOnce               sync.Once
-	thirdPartyGateway                *thirdPartyGatewayManager
-	acpHost                          *acpHost // Mode B: loopback ACP for VS Code programming agent
-	acpHostMu                        sync.Mutex
-	imGatewaySyncMu                  sync.Mutex
-	passthroughRegistry              *PassthroughRegistry
+	// Buddy companion display over USB serial (see buddy_service.go).
+	buddyMu             sync.Mutex
+	buddyRunner         *service.Runner
+	buddyCancel         context.CancelFunc
+	buddyDone           chan struct{}
+	buddyCfg            buddyConfig
+	buddyLastSnapshot   string
+	buddyLastPushAt     time.Time
+	qqBotGateway        *qqBotGatewayManager
+	telegramGateway     *telegramGatewayManager
+	slackGateway        *slackGatewayManager
+	weixinGateway       *weixinGatewayManager
+	lansengerGateway    *lansengerGatewayManager
+	lansengerGateways   *lansengerGatewayRegistry
+	localStartMenu      *localStartMenuService
+	localStartMenuMu    sync.Mutex
+	lansengerWatch      *lansengerWatchService
+	lansengerWatchOnce  sync.Once
+	thirdPartyGateway   *thirdPartyGatewayManager
+	acpHost             *acpHost // Mode B: loopback ACP for VS Code programming agent
+	acpHostMu           sync.Mutex
+	imGatewaySyncMu     sync.Mutex
+	passthroughRegistry *PassthroughRegistry
 	// configMu serializes writers (load/mutate/publish). Hot-path readers do NOT
 	// take configMu: they copy from configSnap (atomic.Pointer to an immutable
 	// AppConfig). Writers always publish a fresh heap snapshot via
@@ -2753,6 +2762,9 @@ func (a *App) startup(ctx context.Context) {
 	// Ambient date is rendered locally by the hardware; GUI owns live weather
 	// resolution and publishes compact snapshots through the authenticated Hub.
 	a.startDeviceAmbientWeather(ctx)
+	// USB companion display: auto-detects a buddy board and mirrors the task
+	// census the sidebar shows. Disabled state is persisted in data/buddy.json.
+	a.startBuddyService()
 	// Migrate legacy ~/.cceasy data to ~/.maclaw/data on first launch.
 	a.MigrateDataDir()
 	// One-time enable shared agent loop for pre-default installs.
@@ -2761,6 +2773,11 @@ func (a *App) startup(ctx context.Context) {
 	a.credentialStore = oauth.NewFileCredentialStore(oauth.DefaultCredentialStorePath())
 	// Migrate data to custom data_dir if configured and not yet migrated.
 	a.migrateToCustomDataDir()
+	// A reading-group invitation has to reach this person even when the
+	// assistant panel is closed, and keep asking until they decide. The watcher
+	// polls the pending list and raises the system notification. It starts after
+	// the data-directory migration so the first poll reads the final config.
+	a.startCompanionGroupInviteWatch()
 	// Resume folder watches after the data directory is final.
 	go func() {
 		if err := a.ensureKnowledgeFolderWatch(); err != nil {
@@ -3225,9 +3242,12 @@ func (a *App) SetCodingFontFamily(id string) error {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	// Release the exclusive serial port before the process exits.
+	a.stopBuddyService()
 	// Closing the window stops this surface's wait. It does not cancel the
 	// server run. The person saying stop is what posts cancel.
 	abandonDesktopSurface()
+	a.stopCompanionGroupInviteWatch()
 	closeKnowledgeEmbeddingRefresh()
 	a.stopKnowledgeFolderWatch()
 	a.releaseAllCloudWorkspaces()
@@ -6294,6 +6314,7 @@ func (a *App) applyDataDirFromConfig(config corelib.AppConfig) {
 }
 
 func (a *App) resetPathBoundStateForDataDirChange() {
+	invalidateLatexVerifiedCache()
 	a.answerCacheMu.Lock()
 	a.answerCache = nil
 	a.answerCacheMu.Unlock()

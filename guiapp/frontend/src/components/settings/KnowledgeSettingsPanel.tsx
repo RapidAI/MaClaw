@@ -6,7 +6,7 @@ import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, peekPendingKnowl
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
-import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeBrowseAddFolderWatch, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListFolderWatches, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListCollections, KnowledgeCreateCollection, KnowledgeListCollectionMembers, KnowledgeAddCollectionMember, KnowledgeRemoveCollectionMember, KnowledgeListUnassignedSources, KnowledgeListSourceCollectionRefs, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRemoveFolderWatch, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
+import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeBrowseAddFolderWatch, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListFolderWatches, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListCollections, KnowledgeCreateCollection, KnowledgeListCollectionMembers, KnowledgeAddCollectionMember, KnowledgeRemoveCollectionMember, KnowledgeListUnassignedSources, KnowledgeListSourceCollectionRefs, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRemoveFolderWatch, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
 import { knowledge } from '../../../wailsjs/go/models';
 import { SuggestCombobox } from '../ui/SuggestCombobox';
 import { knowledgeEnterpriseLabel, knowledgeHitPreview, knowledgeHitTitle, knowledgeResultKey } from '../ai/unifiedHeaderSearch';
@@ -756,6 +756,207 @@ const sourceStatusOptions = ['pending', 'parsed', 'distilled', 'failed', 'stale'
 const sourceCoverageOptions = ['missing_nodes', 'missing_cards', 'missing_facts', 'missing_links', 'missing_labels', 'pdf_ocr_needed', 'complete', 'has_nodes', 'has_cards', 'has_facts', 'has_links'];
 const refreshableSourceKinds = new Set(['url', 'html', 'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'csv', 'markdown', 'text']);
 const preferredCoverageAliasOrder = ['rebuildcards', 'rebuild_cards', 'rebuildfacts', 'rebuild_facts', 'needsocr', 'needs_ocr', 'haslinks', 'linked', 'missinglabels', 'unlabeled'];
+
+type KnowledgeOptionLabelEntry = [en: string, zhHans: string];
+const knowledgeOptionLabelSets = {
+    status: {
+        pending: ['Pending import', '待导入'],
+        parsed: ['Parsed', '已解析'],
+        distilled: ['Distilled', '已提炼'],
+        stale: ['Stale', '内容过期'],
+        failed: ['Import failed', '导入失败'],
+        disabled: ['Disabled', '已禁用'],
+    } as Record<string, KnowledgeOptionLabelEntry>,
+    coverage: {
+        all: ['All', '全部'],
+        missing_nodes: ['Missing nodes', '缺少节点'],
+        missing_cards: ['Missing cards', '缺少卡片'],
+        missing_facts: ['Missing facts', '缺少事实'],
+        missing_links: ['Missing links', '缺少链接'],
+        missing_labels: ['Missing labels', '缺少标签'],
+        pdf_ocr_needed: ['Needs PDF OCR', 'PDF 需要 OCR'],
+        complete: ['Complete', '内容完整'],
+        has_nodes: ['Has nodes', '已有节点'],
+        has_cards: ['Has cards', '已有卡片'],
+        has_facts: ['Has facts', '已有事实'],
+        has_links: ['Has links', '已有链接'],
+    } as Record<string, KnowledgeOptionLabelEntry>,
+    distill_mode: {
+        auto: ['Auto', '自动提炼'],
+        rules_only: ['Rules only', '仅规则提炼'],
+        llm_if_available: ['Use LLM when available', '可用时用 LLM 提炼'],
+        llm_optional: ['LLM optional', '可选 LLM 提炼'],
+        llm_required: ['LLM required', '必须 LLM 提炼'],
+    } as Record<string, KnowledgeOptionLabelEntry>,
+    source_kind: {
+        url: ['Web page (URL)', '网页（URL）'],
+        html: ['Web page (HTML)', '网页（HTML）'],
+        pdf: ['PDF', 'PDF'],
+        ppt: ['PPT', 'PPT'],
+        pptx: ['PPTX', 'PPTX'],
+        doc: ['Word', 'Word'],
+        docx: ['DOCX', 'DOCX'],
+        xls: ['Excel', 'Excel'],
+        xlsx: ['Excel', 'Excel'],
+        csv: ['CSV', 'CSV'],
+        markdown: ['Markdown', 'Markdown'],
+        text: ['Plain text', '纯文本'],
+        image: ['Image', '图片'],
+        conversation: ['Conversation', '会话'],
+        workflow_artifact: ['Workflow artifact', '工作流产物'],
+    } as Record<string, KnowledgeOptionLabelEntry>,
+    quality_policy: {
+        balanced: ['Balanced', '均衡'],
+        conservative: ['Conservative', '保守'],
+        aggressive: ['Aggressive', '进取'],
+    } as Record<string, KnowledgeOptionLabelEntry>,
+} satisfies Record<string, Record<string, KnowledgeOptionLabelEntry>>;
+
+export function knowledgeOptionDisplayLabel(
+    group: keyof typeof knowledgeOptionLabelSets,
+    value: string,
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+): string {
+    const entry = knowledgeOptionLabelSets[group][String(value || '').trim().toLowerCase()];
+    return entry ? t(entry[0], entry[1]) : value;
+}
+
+// Operation results are shown as a compact human summary (counts, key fields,
+// warnings, failures) instead of a raw JSON dump. Fields outside the allow
+// lists stay hidden so unrelated payloads never leak into the panel.
+const knowledgeOperationCountLabels: Record<string, KnowledgeOptionLabelEntry> = {
+    records: ['Records read', '读取记录'],
+    would_import: ['Would import', '将导入'],
+    imported: ['Imported', '已导入'],
+    skipped: ['Skipped', '已跳过'],
+    conflicts: ['Conflicts', '冲突'],
+    failed: ['Failed', '失败'],
+    unknown_records: ['Unknown records', '未知记录'],
+    missing_references: ['Missing references', '缺失引用'],
+    url_policies: ['URL policies', 'URL 策略'],
+    sources: ['Sources', '来源'],
+    source_versions: ['Source versions', '来源版本'],
+    source_links: ['Source links', '来源链接'],
+    source_link_events: ['Link events', '链接事件'],
+    nodes: ['Nodes', '节点'],
+    cards: ['Cards', '卡片'],
+    facts: ['Facts', '事实'],
+    total_files: ['Files found', '发现文件'],
+    queued_files: ['Files queued', '排队文件'],
+    duplicate_files: ['Duplicate files', '重复文件'],
+    processed_files: ['Files processed', '已处理文件'],
+    imported_files: ['Files imported', '已导入文件'],
+    skipped_files: ['Files skipped', '已跳过文件'],
+    failed_files: ['Files failed', '失败文件'],
+    requested: ['Requested', '请求'],
+    saved: ['Saved', '已保存'],
+};
+
+const knowledgeOperationTextLabels: Record<string, KnowledgeOptionLabelEntry> = {
+    import_status: ['Import status', '导入状态'],
+    status: ['Status', '状态'],
+    batch_id: ['Batch', '批次'],
+    root_path: ['Root path', '根目录'],
+    input_path: ['Source file', '来源文件'],
+    output_path: ['Output file', '输出文件'],
+    safety_backup_path: ['Safety backup', '安全备份'],
+    current_file: ['Current file', '当前文件'],
+    knowledge_id: ['Knowledge ID', '知识 ID'],
+    title: ['Title', '标题'],
+};
+
+export type KnowledgeOperationResultSummaryModel = {
+    countStats: Array<{ key: string; value: number }>;
+    textChips: Array<{ key: string; value: string }>;
+    warnings: string[];
+    sourceChips: string[];
+    failureLines: string[];
+    hasContent: boolean;
+};
+
+export function knowledgeOperationResultSummaryModel(result: any): KnowledgeOperationResultSummaryModel {
+    const model: KnowledgeOperationResultSummaryModel = {
+        countStats: [],
+        textChips: [],
+        warnings: [],
+        sourceChips: [],
+        failureLines: [],
+        hasContent: false,
+    };
+    if (!result || typeof result !== 'object') return model;
+    for (const [key, rawValue] of Object.entries(result as Record<string, unknown>)) {
+        if (rawValue == null) continue;
+        if (typeof rawValue === 'number') {
+            const label = knowledgeOperationCountLabels[key];
+            if (label && Number.isFinite(rawValue)) model.countStats.push({ key, value: rawValue });
+        } else if (typeof rawValue === 'string') {
+            const label = knowledgeOperationTextLabels[key];
+            const value = rawValue.trim();
+            if (label && value) model.textChips.push({ key, value });
+        } else if (Array.isArray(rawValue)) {
+            const listKey = key.toLowerCase();
+            for (const entry of rawValue.slice(0, 12)) {
+                if (typeof entry === 'string') {
+                    const value = entry.trim();
+                    if (value) {
+                        if (listKey === 'warnings' || listKey === 'errors') model.warnings.push(value);
+                        else if (listKey.endsWith('_source_ids')) model.sourceChips.push(value);
+                    }
+                } else if (entry && typeof entry === 'object') {
+                    const record = entry as Record<string, any>;
+                    const who = [record.id, record.url, record.type, record.sheet_name]
+                        .map(item => String(item || '').trim())
+                        .filter(Boolean)[0] || '';
+                    const line = [record.line != null ? `#${String(record.line).trim()}` : '', who, record.error || record.reason || '']
+                        .map(item => String(item || '').trim())
+                        .filter(Boolean)
+                        .join(' · ');
+                    if (line) model.failureLines.push(line);
+                }
+            }
+        }
+    }
+    model.hasContent = !!(model.countStats.length || model.textChips.length || model.warnings.length || model.sourceChips.length || model.failureLines.length);
+    return model;
+}
+
+function OperationResultSummary({ t, model }: {
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    model: KnowledgeOperationResultSummaryModel;
+}) {
+    return (
+        <div className="knowledge-stack">
+            {model.countStats.length ? (
+                <div className="knowledge-stats-grid">
+                    {model.countStats.map(item => {
+                        const entry = knowledgeOperationCountLabels[item.key];
+                        return <Stat key={item.key} label={entry ? t(entry[0], entry[1]) : item.key} value={item.value} />;
+                    })}
+                </div>
+            ) : null}
+            {model.textChips.length ? <KeyValueList values={model.textChips.map(chip => {
+                const entry = knowledgeOperationTextLabels[chip.key];
+                return entry ? `${t(entry[0], entry[1])}: ${chip.value}` : `${chip.key}: ${chip.value}`;
+            })} empty="" /> : null}
+            {model.sourceChips.length ? <KeyValueList values={model.sourceChips} empty="" /> : null}
+            {model.warnings.length ? (
+                <div className="knowledge-alert knowledge-alert--warning">
+                    <strong>{t('Warnings', '警告')}</strong>
+                    <ul>{model.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul>
+                </div>
+            ) : null}
+            {model.failureLines.length ? (
+                <div className="knowledge-list">
+                    {model.failureLines.map((line, index) => (
+                        <div key={`${line}-${index}`} className="knowledge-failure-row"><span>{line}</span></div>
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+
 
 export function normalizeKnowledgeCoverageOption(value: string) {
     return value.trim().toLowerCase().replace(/[-_./]+/g, ' ').split(/\s+/).filter(Boolean).join('_');
@@ -1876,8 +2077,12 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         : t('All sources', '全部来源');
     const hubShareDescriptionMissing = !hubShareForm.description.trim();
     const distillModes = capabilities?.distill_modes?.length ? capabilities.distill_modes : ['rules_only', 'llm_optional'];
-    const formatSummary = (capabilities?.formats || []).slice(0, 6).map(format => `${format.kind || 'format'}${format.extensions?.length ? ` (${format.extensions.join(', ')})` : ''}`);
-    const aliasSummary = knowledgeCoverageAliasSummary(capabilities, 4);
+    const formatSummary = (capabilities?.formats || []).slice(0, 6).map(format => {
+        const kindRaw = format.kind || 'format';
+        const kindLabel = knowledgeOptionDisplayLabel('source_kind', kindRaw, t);
+        const extensions = format.extensions?.length ? ` (${format.extensions.join(', ')})` : '';
+        return `${kindLabel}${extensions}`;
+    });
     const structuredColumnSuggestions = useMemo(() => {
         const seen = new Map<string, StructuredCatalogColumn>();
         for (const table of structuredCatalog?.tables || []) {
@@ -2126,6 +2331,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 ? t('Local knowledge package exported from Maclaw.', '从 Maclaw 导出的本地知识包。')
                 : '',
         }), {
+            recordResult: false,
             successMessage: exportFormat === 'package'
                 ? t('Knowledge package exported.', '知识包已导出。')
                 : t('Knowledge snapshot exported.', '知识库快照已导出。'),
@@ -2252,6 +2458,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             void loadMyHubShares();
             return result;
         }, {
+            recordResult: false,
             successMessage: t('Knowledge shared to Hub.', '知识已分享到 Hub。'),
         });
     };
@@ -2303,6 +2510,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             await loadMySubmissions();
             return result;
         }, {
+            recordResult: false,
             successMessage: t('Submitted to the organization. An admin will review it.', '已投稿到组织，等待管理员审批。'),
         });
     };
@@ -2313,6 +2521,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             await loadMySubmissions();
             return result;
         }, {
+            recordResult: false,
             successMessage: t('Submission withdrawn.', '已撤回投稿。'),
         });
     };
@@ -2498,7 +2707,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             const normalized = normalizeSyncStatusWithLocalService(result, serviceStatus);
             setSyncStatus(normalized || null);
             return normalized;
-        }, { successMessage: false });
+        }, { successMessage: false, recordResult: false });
     };
 
     const loadEnterpriseLibraries = async (opts?: { quiet?: boolean }) => {
@@ -2523,7 +2732,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             }
             return;
         }
-        await runTask('enterpriseList', run, { successMessage: false });
+        await runTask('enterpriseList', run, { successMessage: false, recordResult: false });
     };
 
     const toggleEnterpriseLibraryUserSync = async (lib: EnterpriseLibrary, enabled: boolean) => {
@@ -2538,7 +2747,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 ? t('Digital-asset sync enabled.', '已开启该数字资产同步。')
                 : t('Digital-asset sync disabled.', '已禁止该数字资产同步。'));
             return true;
-        }, { successMessage: false });
+        }, { successMessage: false, recordResult: false });
     };
 
     const purgeEnterpriseLibrary = async (lib: EnterpriseLibrary) => {
@@ -2567,7 +2776,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                         setEnterprisePurgePending(false);
                         setConfirmDialog(prev => ({ ...prev, show: false }));
                     }
-                }, { successMessage: false });
+                }, { successMessage: false, recordResult: false });
             },
         });
     };
@@ -2588,7 +2797,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             }
             notifySuccess(t('Digital-asset sync finished.', '企业数字资产同步已完成。'));
             return status;
-        }, { successMessage: false });
+        }, { successMessage: false, recordResult: false });
     };
 
     const setEnterpriseSyncPaused = async (paused: boolean) => {
@@ -2600,7 +2809,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 ? t('Digital-asset auto-sync paused.', '已暂停数字资产自动同步。')
                 : t('Digital-asset auto-sync resumed.', '已恢复数字资产自动同步。'));
             return status;
-        }, { successMessage: false });
+        }, { successMessage: false, recordResult: false });
     };
 
     const enterpriseOutcomeLabel = (outcome?: string) => {
@@ -2675,6 +2884,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             refreshSources: true,
             refreshHealth: true,
             successMessage: false,
+            recordResult: false,
         });
     };
 
@@ -2699,6 +2909,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             refreshSources: true,
             refreshHealth: true,
             successMessage: t('Knowledge sync completed.', '知识库同步完成。'),
+            recordResult: false,
         });
     };
 
@@ -2709,6 +2920,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             return result;
         }, {
             successMessage: t('Cloud sync package deleted.', '云端同步包已删除。'),
+            recordResult: false,
         });
     };
 
@@ -2743,11 +2955,44 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     };
 
     const loadSources = async () => {
+        // Loading the list is browsing, not an operation: no toast, no "Last Operation" entry.
         await runTask('sources', async () => {
             const nextSources = await refreshSourceList();
             return { count: nextSources.length };
-        });
+        }, { successMessage: false, recordResult: false });
     };
+
+    // Auto-load the sources list when entering the tab and after each filter
+    // change, so the panel never dead-ends behind a manual "Load Sources"
+    // click. The request stays quiet so the manual button and its busy state
+    // remain in the user's control; failures keep manual retry working
+    // without a retry loop. Debounced because every keystroke in the filter
+    // fields changes the payload; the payload key is consumed only when the
+    // request actually starts so a cancelled debounce can still retry later.
+    const sourcesAutoLoadPayloadRef = useRef('');
+    const [sourcesAutoLoading, setSourcesAutoLoading] = useState(false);
+    useEffect(() => {
+        if (activeTab !== 'sources') return;
+        const payloadKey = JSON.stringify(sourcePayload);
+        if (sourcesAutoLoadPayloadRef.current === payloadKey) return;
+        setSourcesAutoLoading(true);
+        const timer = window.setTimeout(() => {
+            sourcesAutoLoadPayloadRef.current = payloadKey;
+            void (async () => {
+                try {
+                    await refreshSourceList();
+                } catch (err: any) {
+                    setError(err?.message || String(err));
+                } finally {
+                    setSourcesAutoLoading(false);
+                }
+            })();
+        }, 400);
+        return () => {
+            window.clearTimeout(timer);
+            setSourcesAutoLoading(false);
+        };
+    }, [activeTab, sourcePayload]);
 
     // Source previews deliberately render persisted knowledge nodes rather than
     // reopening a local document. This makes the GUI show the exact bounded
@@ -2770,7 +3015,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 });
             }
             return { source_id: sourceID, nodes: safeNodes.length };
-        }, { successMessage: false });
+        }, { successMessage: false, recordResult: false });
     };
 
     const loadStructuredCatalog = async () => {
@@ -2801,7 +3046,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             distill_mode: textForm.distillMode,
             labels: parseLabelList(textForm.labels),
             auto_labels: true,
-        } as knowledge.TextSaveRequest), { refreshSources: true, refreshHealth: true, successMessage: false });
+        } as knowledge.TextSaveRequest), { refreshSources: true, refreshHealth: true, successMessage: false, recordResult: false });
         if (result) {
             if (result.save_status === 'duplicate') {
                 notifySuccess(t('Content already exists in knowledge base (updated).', '内容已存在于知识库中（已更新）。'));
@@ -2819,7 +3064,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         }
         const result = await runTask('saveURLs', () => urls.length === 1
             ? KnowledgeSaveURL(urls[0], urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels)
-            : KnowledgeSaveURLs(urls, urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels), { refreshSources: true, refreshHealth: true, successMessage: false });
+            : KnowledgeSaveURLs(urls, urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels), { refreshSources: true, refreshHealth: true, successMessage: false, recordResult: false });
         if (result) {
             if (urls.length === 1) {
                 // Single URL: result is a Source with save_status
@@ -2858,7 +3103,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             const files = await SelectKnowledgeFiles();
             setSelectedFiles(Array.isArray(files) ? files : []);
             return { files: Array.isArray(files) ? files.length : 0 };
-        });
+        }, { successMessage: false, recordResult: false });
     };
 
     const importFiles = async () => {
@@ -2874,7 +3119,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             const directory = await SelectKnowledgeDirectory();
             if (directory) setFileForm(form => ({ ...form, directory }));
             return { directory };
-        });
+        }, { successMessage: false, recordResult: false });
     };
 
     const startDirectoryImport = async () => {
@@ -2992,7 +3237,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             setQualityReport(report || null);
             setQualityPlan(plan || null);
             return { sources: report?.count || 0, actions: plan?.count || plan?.actions?.length || 0 };
-        });
+        }, { successMessage: false, recordResult: false });
     };
 
     const executeQualityAction = async (action?: SourceQualityMaintenanceAction) => {
@@ -3019,7 +3264,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const toggleSource = async (source: Source) => {
         if (!source.id) return;
         const isDisabled = String(source.status || '').toLowerCase() === 'disabled';
-        await runTask(isDisabled ? 'enableSource' : 'disableSource', () => isDisabled ? KnowledgeEnableSource(source.id || '') : KnowledgeDisableSource(source.id || ''), { refreshSources: true, refreshHealth: true });
+        await runTask(isDisabled ? 'enableSource' : 'disableSource', () => isDisabled ? KnowledgeEnableSource(source.id || '') : KnowledgeDisableSource(source.id || ''), { refreshSources: true, refreshHealth: true, recordResult: false });
     };
 
     const deleteSource = async (source: Source) => {
@@ -3030,7 +3275,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             message: t('Delete this knowledge source?', '确定删除这个知识来源？'),
             onConfirm: async () => {
                 setConfirmDialog(prev => ({ ...prev, show: false }));
-                await runTask('deleteSource', () => KnowledgeDeleteSource(source.id || ''), { refreshSources: true, refreshHealth: true });
+                await runTask('deleteSource', () => KnowledgeDeleteSource(source.id || ''), { refreshSources: true, refreshHealth: true, recordResult: false });
             },
         });
     };
@@ -3092,22 +3337,22 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     };
 
     useEffect(() => {
+        const snapshot = knowledgeImportGlobal?.job;
+        if (!snapshot?.id) return;
+        setImportJob(prev => prev === snapshot ? prev : snapshot);
+    }, [knowledgeImportGlobal?.job]);
+
+    const refreshedImportJobRef = useRef('');
+    useEffect(() => {
         const id = String(importJob?.id || '').trim();
         const status = String(importJob?.status || '').toLowerCase();
-        if (!id || !['queued', 'running', 'pending'].includes(status)) return;
-        const handle = window.setInterval(() => {
-            void KnowledgeImportJobStatus(id)
-                .then(job => {
-                    setImportJob(job || null);
-                    if (job && !['queued', 'running', 'pending'].includes(String(job.status || '').toLowerCase())) {
-                        setOperationResult(job);
-                        void refreshSourceList();
-                        void refresh();
-                    }
-                })
-                .catch(err => setError(err?.message || String(err)));
-        }, 1500);
-        return () => window.clearInterval(handle);
+        if (!id || (status !== 'completed' && status !== 'failed')) return;
+        const key = `${id}:${status}`;
+        if (refreshedImportJobRef.current === key) return;
+        refreshedImportJobRef.current = key;
+        setOperationResult(importJob);
+        void refreshSourceList();
+        void refresh();
     }, [importJob?.id, importJob?.status, sourcePayload]);
 
     useEffect(() => {
@@ -3142,6 +3387,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 : syncStatus?.has_package
                     ? t('Temporary package expires 7 days after upload.', '临时同步包会在上传 7 天后到期。')
                     : t('No cloud sync package yet.', '暂无云端同步包。');
+    const lastOperationIsQuality = !!executionResult && operationResult === executionResult;
+    const lastOperationIsJob = !!importJob && operationResult?.id === importJob.id && !lastOperationIsQuality;
+    const operationSummaryModel = !lastOperationIsQuality && !lastOperationIsJob
+        ? knowledgeOperationResultSummaryModel(operationResult)
+        : null;
 
     return (
         <>
@@ -3154,9 +3404,6 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 <div className="knowledge-panel-actions">
                     <button type="button" className="knowledge-button knowledge-button--secondary" onClick={refresh} disabled={loading}>
                         {loading ? t('Refreshing...', '刷新中...') : t('Refresh', '刷新')}
-                    </button>
-                    <button type="button" className="knowledge-button knowledge-button--danger" onClick={handleClearAll} disabled={!!busy}>
-                        {t('Clear All', '清空')}
                     </button>
                 </div>
             </div>
@@ -3185,9 +3432,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-overview" aria-labelledby="knowledge-tab-overview">
                     <div className="knowledge-stats-grid">
                         <Stat label={t('Status', '状态')} value={summary?.status || 'Unknown'} />
-                        <Stat label={t('Score', '评分')} value={summary?.score ?? 0} />
-                        <Stat label={t('Quality', '质量')} value={summary?.qualityAvgScore ?? 0} />
-                        <Stat label={t('Actions', '动作')} value={summary?.actions?.length ?? 0} />
+                        <Stat label={t('Health score', '健康评分')} value={summary?.score ?? 0} />
+                        <Stat label={t('Avg. source score', '来源平均分')} value={summary?.qualityAvgScore ?? 0} />
+                        <Stat label={t('Pending suggestions', '待处理建议')} value={(summary?.actions || []).length} />
                     </div>
                     <div className="knowledge-two-column">
                         <PanelBlock title={t('Health Signals', '健康信号')}>
@@ -3195,10 +3442,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                         </PanelBlock>
                         <PanelBlock title={t('Capabilities', '能力')}>
                             <KeyValueList values={[
-                                capabilities?.storage_backend ? `storage ${capabilities.storage_backend}` : '',
-                                capabilities?.search_backend ? `search ${capabilities.search_backend}` : '',
+                                capabilities?.storage_backend ? `${t('Storage engine', '存储引擎')}: ${capabilities.storage_backend}` : '',
+                                capabilities?.search_backend ? `${t('Search engine', '检索引擎')}: ${capabilities.search_backend}` : '',
                                 ...(formatSummary.length ? formatSummary : []),
-                                ...(aliasSummary.length ? aliasSummary : []),
                             ]} empty={t('Capabilities are not loaded yet.', '能力信息尚未加载。')} />
                         </PanelBlock>
                     </div>
@@ -3794,7 +4040,6 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                             />
                             <Stat label={t('Last run', '上次运行')} value={enterpriseSyncStatus?.last_run_at || '—'} />
                             <Stat label={t('Result', '最近结果')} value={enterpriseOutcomeLabel(enterpriseSyncStatus?.last_outcome)} />
-                            <Stat label={t('Last error', '最近错误')} value={enterpriseSyncStatus?.last_error ? t('Yes', '有') : t('None', '无')} />
                         </div>
                         {enterpriseSyncStatus?.last_outcome === 'skipped_no_credentials' ? (
                             <div className="knowledge-alert knowledge-alert--warning" style={{ marginTop: 10 }}>
@@ -4184,11 +4429,14 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                     <div className="knowledge-inline-actions">
                         <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={loadSources}>{busy === 'sources' ? t('Loading...', '加载中...') : t('Load Sources', '加载来源')}</button>
                         {sources !== null && <span className="knowledge-muted-line">{sources.length >= sourceFilter.limit ? `${sources.length}+ ${t('results (limit reached)', '条结果（已达上限）')}` : `${sources.length} ${t('results', '条结果')}`}</span>}
-                        <span className="knowledge-muted-line">{t('Payload', '条件')} {JSON.stringify(sourcePayload)}</span>
                     </div>
                     <div className="knowledge-list">
                         {sources === null ? (
-                            <div className="knowledge-empty">{t('Click "Load Sources" to query.', '点击「加载来源」按钮进行查询。')}</div>
+                            <div className="knowledge-empty">
+                                {busy === 'sources' || sourcesAutoLoading
+                                    ? t('Loading sources...', '正在加载来源...')
+                                    : t('No knowledge sources yet. Adjust the filters or import content first.', '暂无知识来源。可调整筛选，或先在导入页添加内容。')}
+                            </div>
                         ) : sources.length ? sources.map(source => (
                             <div key={source.id || source.uri || source.title} className="knowledge-row">
                                 <div className="knowledge-row-main">
@@ -4289,6 +4537,12 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                             </div>
                         </div>
                     </PanelBlock>
+                    <PanelBlock title={t('Danger zone', '危险区')}>
+                        <div className="knowledge-danger-row">
+                            <span className="knowledge-muted-line">{t('Clear the whole knowledge base: imported documents, URLs, cards, and facts are permanently deleted. This requires double confirmation.', '清空整个知识库：所有已导入的文档、URL、卡片与事实将被永久删除，需要二次确认。')}</span>
+                            <button type="button" className="knowledge-button knowledge-button--danger" disabled={!!busy} onClick={handleClearAll}>{t('Clear All', '清空')}</button>
+                        </div>
+                    </PanelBlock>
                 </div>
             )}
 
@@ -4300,9 +4554,25 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-quality" aria-labelledby="knowledge-tab-quality">
                     <SourceFilters t={t} filter={qualityFilter} coverageOptions={qualityCoverageOptions} onChange={setQualityFilter} />
                     <div className="knowledge-compact-grid">
-                        <select className="knowledge-input" value={qualityOptions.policy} onChange={event => setQualityOptions({ ...qualityOptions, policy: event.target.value })}><option value="balanced">balanced</option><option value="conservative">conservative</option><option value="aggressive">aggressive</option></select>
-                        <select className="knowledge-input" value={qualityOptions.distillMode} onChange={event => setQualityOptions({ ...qualityOptions, distillMode: event.target.value })}><option value="">{t('Default distill mode', '默认蒸馏模式')}</option>{distillModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}</select>
-                        <input className="knowledge-input" type="number" value={qualityOptions.maxSourcesPerAction} onChange={event => setQualityOptions({ ...qualityOptions, maxSourcesPerAction: Number(event.target.value) })} />
+                        <label className="knowledge-field">
+                            <span className="knowledge-field-label">{t('Maintenance policy', '维护策略')}</span>
+                            <select className="knowledge-input" value={qualityOptions.policy} onChange={event => setQualityOptions({ ...qualityOptions, policy: event.target.value })}>
+                                <option value="balanced">{t('Balanced', '均衡')}</option>
+                                <option value="conservative">{t('Conservative', '保守')}</option>
+                                <option value="aggressive">{t('Aggressive', '进取')}</option>
+                            </select>
+                        </label>
+                        <label className="knowledge-field">
+                            <span className="knowledge-field-label">{t('Distill mode for rebuilds', '重建时提炼方式')}</span>
+                            <select className="knowledge-input" value={qualityOptions.distillMode} onChange={event => setQualityOptions({ ...qualityOptions, distillMode: event.target.value })}>
+                                <option value="">{t('Default distill mode', '默认提炼模式')}</option>
+                                {distillModes.map(mode => <option key={mode} value={mode}>{knowledgeOptionDisplayLabel('distill_mode', mode, t)}</option>)}
+                            </select>
+                        </label>
+                        <label className="knowledge-field">
+                            <span className="knowledge-field-label">{t('Max sources per action', '单次动作来源上限')}</span>
+                            <input className="knowledge-input" type="number" min={1} value={qualityOptions.maxSourcesPerAction} onChange={event => setQualityOptions({ ...qualityOptions, maxSourcesPerAction: Number(event.target.value) })} />
+                        </label>
                     </div>
                     <div className="knowledge-inline-actions">
                         <label className="knowledge-checkbox"><input type="checkbox" checked={qualityOptions.dryRun} onChange={event => setQualityOptions({ ...qualityOptions, dryRun: event.target.checked })} /> {t('Preview only', '仅预览')}</label>
@@ -4337,16 +4607,15 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 </div>
             )}
 
-            {operationResult ? (
+            {operationResult && (lastOperationIsQuality || lastOperationIsJob || operationSummaryModel?.hasContent) ? (
                 <PanelBlock title={t('Last Operation', '最近操作')}>
-                    {executionResult && operationResult === executionResult ? (
+                    {lastOperationIsQuality ? (
                         <ExecutionSummary t={t} result={executionResult} context={executionContext} />
+                    ) : lastOperationIsJob ? (
+                        <ImportJobSummary t={t} job={importJob} />
+                    ) : operationSummaryModel ? (
+                        <OperationResultSummary t={t} model={operationSummaryModel} />
                     ) : null}
-                    {importJob && operationResult?.id === importJob.id ? <ImportJobSummary t={t} job={importJob} /> : null}
-                    <details>
-                        <summary className="knowledge-details-summary">{t('Raw payload', '原始数据')}</summary>
-                        <pre className="knowledge-raw-pre">{JSON.stringify(operationResult, null, 2)}</pre>
-                    </details>
                 </PanelBlock>
             ) : null}
         </section>
@@ -4975,9 +5244,9 @@ function MetadataControls({ t, labels, topicHint, saveScope, distillMode, distil
                 <option value="personal">{t('Personal', '个人')}</option>
                 <option value="local_only">{t('Local only', '仅本地')}</option>
             </select>
-            <select className="knowledge-input" value={distillMode} onChange={event => onChange({ distillMode: event.target.value })}>
-                <option value="">{t('Default distill mode', '默认蒸馏模式')}</option>
-                {distillModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}
+            <select className="knowledge-input" value={distillMode} onChange={event => onChange({ distillMode: event.target.value })} aria-label={t('Distill mode', '提炼模式')}>
+                <option value="">{t('Default distill mode', '默认提炼模式')}</option>
+                {distillModes.map(mode => <option key={mode} value={mode}>{knowledgeOptionDisplayLabel('distill_mode', mode, t)}</option>)}
             </select>
         </div>
     );
@@ -4993,23 +5262,33 @@ function SourceFilters({ t, filter, coverageOptions, onChange }: {
         <PanelBlock title={t('Filters', '筛选')}>
             <div className="knowledge-compact-grid">
                 <input className="knowledge-input" value={filter.query} onChange={event => onChange({ ...filter, query: event.target.value })} placeholder={t('Query', '关键词')} />
-                <input className="knowledge-input" value={filter.kind} onChange={event => onChange({ ...filter, kind: event.target.value })} placeholder={t('Kind', '类型')} />
-                <select className="knowledge-input" value={filter.status} onChange={event => onChange({ ...filter, status: event.target.value })}>
+                <select className="knowledge-input" value={filter.kind || 'all'} onChange={event => onChange({ ...filter, kind: event.target.value })} aria-label={t('Kind filter', '类型筛选')}>
+                    <option value="all">{t('All kinds', '全部种类')}</option>
+                    {sourceKindOptions.map(option => <option key={option} value={option}>{knowledgeOptionDisplayLabel('source_kind', option, t)}</option>)}
+                    {filter.kind && filter.kind !== 'all' && !sourceKindOptions.includes(filter.kind) ? <option value={filter.kind}>{filter.kind}</option> : null}
+                </select>
+                <select className="knowledge-input" value={filter.status} onChange={event => onChange({ ...filter, status: event.target.value })} aria-label={t('Status filter', '状态筛选')}>
                     <option value="all">{t('All statuses', '全部状态')}</option>
                     <option value="active">{t('active (non-disabled)', 'active（非禁用）')}</option>
-                    <option value="pending">pending</option>
-                    <option value="parsed">parsed</option>
-                    <option value="distilled">distilled</option>
-                    <option value="stale">stale</option>
-                    <option value="failed">failed</option>
-                    <option value="disabled">disabled</option>
+                    {sourceStatusOptions.map(option => <option key={option} value={option}>{knowledgeOptionDisplayLabel('status', option, t)}</option>)}
                 </select>
-                <select className="knowledge-input" value={filter.coverage} onChange={event => onChange({ ...filter, coverage: event.target.value })}>
-                    {coverageOptions.map(option => <option key={option} value={option}>{option}</option>)}
+                <select className="knowledge-input" value={filter.coverage} onChange={event => onChange({ ...filter, coverage: event.target.value })} aria-label={t('Coverage filter', '覆盖筛选')}>
+                    {coverageOptions.map(option => <option key={option} value={option}>{knowledgeOptionDisplayLabel('coverage', option, t)}</option>)}
                 </select>
                 <input className="knowledge-input" value={filter.domain} onChange={event => onChange({ ...filter, domain: event.target.value })} placeholder={t('Domain', '域名')} />
                 <input className="knowledge-input" value={filter.labels} onChange={event => onChange({ ...filter, labels: event.target.value })} placeholder={t('Labels', '标签')} />
-                <input className="knowledge-input" type="number" value={filter.limit} onChange={event => onChange({ ...filter, limit: Number(event.target.value) })} />
+                <label className="knowledge-field">
+                    <span className="knowledge-field-label">{t('Limit', '条数上限')}</span>
+                    <input
+                        className="knowledge-input"
+                        type="number"
+                        min={1}
+                        max={5000}
+                        value={filter.limit}
+                        onChange={event => onChange({ ...filter, limit: Number(event.target.value) })}
+                        data-testid="knowledge-source-filter-limit"
+                    />
+                </label>
             </div>
         </PanelBlock>
     );

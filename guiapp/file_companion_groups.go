@@ -37,6 +37,9 @@ type FileCompanionGroupInvite struct {
 	Owner     string `json:"owner"`
 	Contact   string `json:"contact"`
 	InvitedAt string `json:"invited_at,omitempty"`
+	// NotificationID is the Hub notification that delivered this invitation.
+	// It is what a client that was offline pulls on its next connect.
+	NotificationID string `json:"notification_id,omitempty"`
 }
 
 func (a *App) ListFileCompanionGroups() ([]FileCompanionGroup, error) {
@@ -156,12 +159,25 @@ func (a *App) ListFileCompanionGroupInvites() ([]FileCompanionGroupInvite, error
 	if err != nil {
 		return empty, nil
 	}
+	invites, err := a.fetchFileCompanionGroupInvites(hub, viewer)
+	if err != nil {
+		return nil, err
+	}
+	if invites == nil {
+		return empty, nil
+	}
+	return invites, nil
+}
+
+// fetchFileCompanionGroupInvites reads the pending invite list for a signed-in
+// viewer. nil means the Hub has no invitation route (an older build).
+func (a *App) fetchFileCompanionGroupInvites(hub, viewer string) ([]FileCompanionGroupInvite, error) {
 	body, err := a.fileCompanionHubJSON(http.MethodGet, hub+"/api/mobile/documents/groups/invites", viewer, nil)
 	if err != nil {
 		// An empty 404 is an old hub whose invites route is missing. A 404
 		// that carries a hub message is a real failure and must be shown.
 		if fileCompanionInviteListIsOldHub(err) {
-			return empty, nil
+			return nil, nil
 		}
 		return nil, fileCompanionGroupCallError(err)
 	}
@@ -170,9 +186,6 @@ func (a *App) ListFileCompanionGroupInvites() ([]FileCompanionGroupInvite, error
 	}
 	if json.Unmarshal(body, &payload) != nil {
 		return nil, errors.New("云端群组无法读取")
-	}
-	if payload.Invites == nil {
-		return empty, nil
 	}
 	return payload.Invites, nil
 }
@@ -183,6 +196,13 @@ func (a *App) AcceptFileCompanionGroupInvite(groupID string) error {
 
 func (a *App) DeclineFileCompanionGroupInvite(groupID string) error {
 	return a.decideFileCompanionGroupInvite(groupID, "decline")
+}
+
+// IgnoreFileCompanionGroupInvite silences an invitation on the Hub. The member
+// row stays pending for the admin, but this person stops being notified, so the
+// choice survives a reinstall or a second device.
+func (a *App) IgnoreFileCompanionGroupInvite(groupID string) error {
+	return a.decideFileCompanionGroupInvite(groupID, "ignore")
 }
 
 func (a *App) decideFileCompanionGroupInvite(groupID, action string) error {

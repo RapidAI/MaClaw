@@ -5302,6 +5302,16 @@ if (typeof I18N_ZH !== 'undefined') {
       +'<div class="llm-embed-meta"><span class="llm-embed-k">'+esc(t('runtimeDir'))+'</span><span class="llm-embed-path mono">'+esc(path||'-')+'</span></div>'
       +(data.last_download_error?'<p class="llm-embed-error">'+esc(data.last_download_error)+'</p>':'');
   }
+  function scheduleLLMEmbeddingRuntimePoll(data) {
+    if (llmEmbeddingRuntimePollTimer) clearTimeout(llmEmbeddingRuntimePollTimer);
+    llmEmbeddingRuntimePollTimer = 0;
+    var waitEmbedder = llmClassHeadViewVisible() && !!(data && data.ready) && !data.embedder_ready;
+    if (document.hidden || (!embeddingRuntimeNeedsPoll(data) && !waitEmbedder)) return;
+    llmEmbeddingRuntimePollTimer = setTimeout(function() {
+      llmEmbeddingRuntimePollTimer = 0;
+      if (!document.hidden) loadLLMEmbeddingModelRuntime({ silent: true });
+    }, 2500);
+  }
   async function loadLLMEmbeddingModelRuntime(opts) {
     var seq = ++llmEmbeddingLoadSeq;
     var silent = !!(opts && opts.silent);
@@ -5311,17 +5321,23 @@ if (typeof I18N_ZH !== 'undefined') {
       llmEmbeddingModelRuntimeCache = data;
       if (data.ready) { /* keep badge ready even before embedder warms */ }
       renderLLMEmbeddingModelRuntime();
-      var waitEmbedder = llmClassHeadViewVisible() && !!(data.ready) && !data.embedder_ready;
-      if (embeddingRuntimeNeedsPoll(data) || waitEmbedder) {
-        if (llmEmbeddingRuntimePollTimer) clearTimeout(llmEmbeddingRuntimePollTimer);
-        llmEmbeddingRuntimePollTimer = setTimeout(function(){ loadLLMEmbeddingModelRuntime({ silent: true }); }, 2500);
-      }
+      scheduleLLMEmbeddingRuntimePoll(data);
     } catch (e) {
       if (seq !== llmEmbeddingLoadSeq) return;
       if (!silent) toast(e.message || t('sgFailed'), 'error');
     }
   }
   window.loadLLMEmbeddingModelRuntime = loadLLMEmbeddingModelRuntime;
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      if (llmEmbeddingRuntimePollTimer) clearTimeout(llmEmbeddingRuntimePollTimer);
+      llmEmbeddingRuntimePollTimer = 0;
+      return;
+    }
+    var data = llmEmbeddingModelRuntimeCache;
+    var waitEmbedder = llmClassHeadViewVisible() && !!(data && data.ready) && !data.embedder_ready;
+    if (embeddingRuntimeNeedsPoll(data) || waitEmbedder) loadLLMEmbeddingModelRuntime({ silent: true });
+  });
   async function triggerLLMEmbeddingModelDownload() {
     var st = llmEmbeddingModelRuntimeCache || {};
     if (st.downloading || st.warming) { toast(t('runtimeAlreadyRunning'), 'info'); return; }

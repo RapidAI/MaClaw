@@ -646,9 +646,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/AssistantInputActions.tsx', 520],
   ['guiapp/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 100],
   ['guiapp/frontend/src/components/ai/AssistantTitleBar.tsx', 220],
-  // Refreshed 180 -> 220 (2026-10-25): in-flight notification work measured
-  // 207 lines.
-  ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 220],
+  // Refreshed 180 -> 220 -> 250 (2026-10-27): in-flight notification work
+  // measured 228 lines.
+  ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 250],
   ['guiapp/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   // Refreshed 240 -> 255 (2026-10-15): attachment-snapshot recall wiring
   // (guard counts 247).

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DownloadLatexTinyTeX, GetLatexTinyTeXStatus, SetLatexTinyTeXEnabled } from '../../../wailsjs/go/main/App';
 import { EventsOff, EventsOn } from '../../../wailsjs/runtime';
 import { localizeText } from '../../i18n';
 import { formatBytes } from '../remote/ModelStatusBox';
+import { startVisibleInterval } from '../../utils/visibleInterval';
 
 type LatexStatus = {
     enabled?: boolean;
@@ -34,6 +35,7 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
         localizeText(lang, en, zhHans, zhHant), [lang]);
     const [status, setStatus] = useState<LatexStatus | null>(null);
     const [loading, setLoading] = useState(true);
+    const initialRequestRef = useRef(false);
 
     const refresh = useCallback(async () => {
         const next = (await GetLatexTinyTeXStatus()) as LatexStatus;
@@ -45,9 +47,11 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
         });
     }, []);
 
+    const phase = status?.phase || 'idle';
+    const busy = ACTIVE.has(phase);
+
     useEffect(() => {
         let cancelled = false;
-        let timer = 0;
         const tick = async () => {
             try {
                 await refresh();
@@ -57,13 +61,23 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
                 if (!cancelled) setLoading(false);
             }
         };
-        void tick();
-        timer = window.setInterval(() => { void tick(); }, 2000);
+        if (!initialRequestRef.current) {
+            initialRequestRef.current = true;
+            if (!document.hidden) void tick();
+        }
+        const stopPolling = busy
+            ? startVisibleInterval(() => { if (!cancelled) void tick(); }, 2000)
+            : undefined;
+        const onVisibilityChange = () => {
+            if (!busy && !document.hidden && !cancelled) void tick();
+        };
+        document.addEventListener('visibilitychange', onVisibilityChange);
         return () => {
             cancelled = true;
-            window.clearInterval(timer);
+            stopPolling?.();
+            document.removeEventListener('visibilitychange', onVisibilityChange);
         };
-    }, [refresh]);
+    }, [refresh, busy]);
 
     useEffect(() => {
         const handler = (data: ProgressEvent) => {
@@ -82,8 +96,6 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
         return () => { EventsOff('latex-tinytex-progress'); };
     }, [refresh]);
 
-    const phase = status?.phase || 'idle';
-    const busy = ACTIVE.has(phase);
     const phaseLabel = (value: string) => {
         switch (value) {
             case 'downloading':

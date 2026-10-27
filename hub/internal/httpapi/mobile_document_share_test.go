@@ -314,3 +314,122 @@ func TestCompanionDocumentShareStateReloads(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCompanionDocumentShareUpdateChangesAudienceAndExpiry(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "share-editor@example.com")
+	otherToken, _ := issueViewerToken(t, identity, "share-outsider@example.com")
+	// The helper builds its own service, which would mint a token this one
+	// cannot read, so the create request is built here.
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("visibility", "public")
+	_ = writer.WriteField("days", "0")
+	part, err := writer.CreateFormFile("file", "paper.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("%PDF-update")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares", &buf)
+	createReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	createReq.Header.Set("Content-Type", writer.FormDataContentType())
+	created := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(created, createReq)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	var view map[string]any
+	if err := json.Unmarshal(created.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := view["token"].(string)
+	if !companionShareTokenPattern.MatchString(token) {
+		t.Fatalf("token: %q", token)
+	}
+
+	patch := func(identityToken, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/shares/"+token, strings.NewReader(body))
+		req.SetPathValue("token", token)
+		req.Header.Set("Authorization", "Bearer "+identityToken)
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareUpdateHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Someone else's link is not theirs to change.
+	if rec := patch(otherToken, `{"visibility":"private","password":"secret","days":7}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("outsider: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := patch(ownerToken, `{"visibility":"nope","days":0}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad audience: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := patch(ownerToken, `{"visibility":"private","days":0}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("private without a password: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Public → private with a password, and a fresh expiry.
+	if rec := patch(ownerToken, `{"visibility":"private","password":"secret","days":7}`); rec.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+	}
+	share, ok := companionShareByToken(token)
+	if !ok {
+		t.Fatal("share disappeared")
+	}
+	if share.Visibility != "private" || !companionSharePasswordOK(share, "secret") {
+		t.Fatalf("share = %#v", share)
+	}
+	if share.ExpiresAt.IsZero() || time.Until(share.ExpiresAt) < 6*24*time.Hour {
+		t.Fatalf("expiry = %v", share.ExpiresAt)
+	}
+	// Changing only the audience leaves the expiry alone: a request without a
+	// days field must not silently turn a dated link permanent.
+	before := share.PasswordHash
+	if rec := patch(ownerToken, `{"visibility":"private"}`); rec.Code != http.StatusOK {
+		t.Fatalf("keep expiry: %d %s", rec.Code, rec.Body.String())
+	}
+	share, _ = companionShareByToken(token)
+	if share.PasswordHash != before || !companionSharePasswordOK(share, "secret") {
+		t.Fatalf("password changed: %#v", share)
+	}
+	if share.ExpiresAt.IsZero() {
+		t.Fatalf("expiry was dropped by a request that did not mention it")
+	}
+	// Changing only the expiry keeps the password already stored.
+	before = share.PasswordHash
+	if rec := patch(ownerToken, `{"visibility":"private","days":0}`); rec.Code != http.StatusOK {
+		t.Fatalf("keep password: %d %s", rec.Code, rec.Body.String())
+	}
+	share, _ = companionShareByToken(token)
+	if share.PasswordHash != before || !companionSharePasswordOK(share, "secret") {
+		t.Fatalf("password changed: %#v", share)
+	}
+	if !share.ExpiresAt.IsZero() {
+		t.Fatalf("permanent expected, got %v", share.ExpiresAt)
+	}
+	// Back to public drops the password entirely.
+	if rec := patch(ownerToken, `{"visibility":"public","days":0}`); rec.Code != http.StatusOK {
+		t.Fatalf("public: %d %s", rec.Code, rec.Body.String())
+	}
+	share, _ = companionShareByToken(token)
+	if share.PasswordHash != "" || share.PasswordSalt != "" || share.Visibility != "public" {
+		t.Fatalf("public share kept a password: %#v", share)
+	}
+	// The reader who imported the public link is no longer in 收到的分享:
+	// the list is what the desktop draws, so the change has to show there.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
+	listReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	listRec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"permanent":true`) {
+		t.Fatalf("list after update: %d %s", listRec.Code, listRec.Body.String())
+	}
+	if strings.Contains(listRec.Body.String(), "password_hash") {
+		t.Fatalf("list leaked a password: %s", listRec.Body.String())
+	}
+}

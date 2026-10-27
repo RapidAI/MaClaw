@@ -1,0 +1,17 @@
+{"valid":true,"line":"{\"type\":\"hello\",\"proto\":2,\"host\":\"MaClaw\",\"ver\":\"8.1.0\"}"}
+{"valid":true,"line":"{\"type\":\"state\",\"proto\":2,\"ts\":1769900000,\"seq\":1,\"counts\":{\"total\":3,\"in_progress\":1,\"pending\":1,\"paused\":0,\"done\":1,\"failed\":0},\"current\":[{\"id\":\"t1\",\"title\":\"整理会议纪要\",\"progress\":0.5}]}"}
+{"valid":true,"line":"{\"type\":\"state\",\"counts\":{\"total\":0,\"in_progress\":0,\"pending\":0,\"paused\":0,\"done\":0,\"failed\":0}}"}
+{"valid":true,"line":"{\"type\":\"ambient\",\"proto\":2,\"ts\":1769900000,\"stale\":false,\"weather\":{\"summary\":\"晴\",\"temperatureC\":23,\"location\":\"北京\"}}"}
+{"valid":true,"line":"{\"type\":\"clock\",\"clock\":{\"date\":\"10月27日\",\"weekday\":\"周一\"}}"}
+{"valid":true,"line":"{\"type\":\"heartbeat\",\"ts\":1769900003}"}
+{"valid":true,"line":"{\"type\":\"pet\",\"pet\":{\"state\":\"happy\"}}"}
+{"valid":true,"line":"{\"type\":\"state_ack\",\"applied\":true,\"page\":\"tasks\",\"missing_glyphs\":0}"}
+{"valid":true,"line":"{\"type\":\"log\",\"level\":\"warn\",\"msg\":\"unknown type\"}"}
+{"valid":true,"line":"{\"type\":\"asset_chunk\",\"seq\":1,\"total\":2,\"sha256\":\"abc\",\"data_b64\":\"AAAA\"}"}
+{"valid":false,"line":"{\"type\":\"state\"}"}
+{"valid":false,"line":"{\"type\":\"state\",\"counts\":{\"total\":5,\"in_progress\":1,\"pending\":0,\"paused\":0,\"done\":1,\"failed\":0}}"}
+{"valid":false,"line":"{\"type\":\"ambient\"}"}
+{"valid":false,"line":"{\"type\":\"hello\"}"}
+{"valid":false,"line":"{\"type\":\"clock\",\"clock\":{}}"}
+{"valid":false,"line":"{\"counts\":{\"total\":0}}"}
+{"valid":false,"line":"not json at all"}

@@ -43,6 +43,44 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
         expect(status).toEqual({ label: "已中断", tone: "pending" });
     });
 
+    it("keeps a live run in progress when a recovery card left an interrupted marker", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "interrupted passed",
+            pendingReview: false,
+            cancelPending: false,
+            busy: true,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: false,
+            pendingUnfinishedStatus: "interrupted",
+        });
+        // The thought is still streaming; the marker belongs to the turn the
+        // user resumed, so the header must not say 已中断.
+        expect(status).toEqual({ label: "进行中", tone: "running" });
+    });
+
+    it("keeps a live run in progress over a paused or failed snapshot", () => {
+        const base = {
+            lang: "zh-Hans",
+            pendingReview: false,
+            cancelPending: false,
+            busy: true,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: false,
+            pendingUnfinishedStatus: "",
+        };
+        for (const raw of ["paused implement", "failed", "cancelled"]) {
+            const status = resolveTaskExecutionStatus({ ...base, raw });
+            expect(status).toEqual({ label: "进行中", tone: "running" });
+        }
+    });
+
     it("labels a max-round recovery card as unfinished rather than interrupted", () => {
         const status = resolveTaskExecutionStatus({
             lang: "zh-Hans",

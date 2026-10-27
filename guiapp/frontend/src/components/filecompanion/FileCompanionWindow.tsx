@@ -50,7 +50,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionLibrarySync, companionNotePost, companionNotesRevisionWins, companionShareNotes, companionSharePathKey, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareNote, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareNotes, companionSharePathKey, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -1812,6 +1812,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // 文档管理 screen, and the 阅读群组 screen. 分享 opens over either.
     const [view, setView] = useState<CompanionView>("read");
     const [shareDialogPath, setShareDialogPath] = useState("");
+    // The cloud row 修改 edits. 分享 leaves it empty and publishes a new link.
+    const [shareDialogRow, setShareDialogRow] = useState<CompanionShareRow | null>(null);
     const [importDialogOpen, setImportDialogOpen] = useState(false);
     // A link pasted into 导入分享, or the one carried by a cloud row that has
     // no local copy yet. The dialog opens on it either way.
@@ -1858,19 +1860,22 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const closeSharePasswordRef = useRef<() => void>(() => undefined);
     const openMenuRef = useRef(false);
     openMenuRef.current = openMenu;
+    // 分享 opens on a path. 修改 opens on a cloud row, which may have no local
+    // copy on this machine, so the row alone is enough to open the dialog.
+    const shareDialogOpen = Boolean(shareDialogPath) || Boolean(shareDialogRow);
     // Escape ownership: a full screen (文档管理 / 阅读群组) or a popup
     // (分享 / 导入) takes Escape before a fullscreen exit may run.
     const overlayRef = useRef(false);
-    overlayRef.current = view !== "read" || Boolean(shareDialogPath) || importDialogOpen || arxivSearchOpen;
+    overlayRef.current = view !== "read" || shareDialogOpen || importDialogOpen || arxivSearchOpen;
     // The share dialog names the project it is sharing. The row that opened it
     // is the truth; the open tab is the fallback for the title-bar button.
     const shareDialogName = useMemo(() => {
-        if (!shareDialogPath) return "";
+        if (!shareDialogPath) return shareDialogRow?.name ?? "";
         const tab = tabs.find((item) => companionSharePathKey(item.path) === companionSharePathKey(shareDialogPath));
         if (tab) return tab.name;
         const base = shareDialogPath.replace(/\\/g, "/").split("/").pop() ?? "";
         return base;
-    }, [shareDialogPath, tabs]);
+    }, [shareDialogPath, shareDialogRow, tabs]);
     // The destination panel owns Escape the same way 打开 does. The ref is
     // assigned once the panel flag is known, later in this render.
     const chatExportDestOpenRef = useRef(false);
@@ -1898,6 +1903,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // for that file, so the reply already on the way cannot land on top of it.
     const chatEpochRef = useRef(new Map<string, number>());
     const shareByPathRef = useRef(new Map<string, ShareBind>());
+    // The shares this person created, by path. The title bar offers 修改
+    // instead of 分享 for a document that already has one: publishing again
+    // would leave two links to the same paper.
+    const [mineSharesByPath, setMineSharesByPath] = useState<Map<string, CompanionShareRow>>(() => new Map());
     // A line sent before the library list returns does not yet know whether
     // this file is the host's. It waits here and is posted only if the reader
     // is not the host.
@@ -1923,6 +1932,18 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         });
     };
     applyShareNotesRef.current = (listed) => {
+        // Every list carries the cloud rows, so the title bar's 分享/修改
+        // decision is refreshed from the same snapshot as the notes.
+        const nextMine = new Map<string, CompanionShareRow>();
+        for (const row of companionMineShares(listed)) {
+            const key = companionSharePathKey(row.path);
+            if (key && !nextMine.has(key)) nextMine.set(key, row);
+        }
+        setMineSharesByPath((current) => {
+            const same = nextMine.size === current.size
+                && [...nextMine].every(([key, row]) => current.get(key)?.token === row.token);
+            return same ? current : nextMine;
+        });
         const rows = companionShareNotes(listed);
         if (rows.length === 0) {
             // No share rows. Notes for a share the hub no longer has should
@@ -2821,6 +2842,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     };
 
     const activeTab = tabs.find((tab) => tab.path === active) ?? null;
+    // The share this document already has, if this person created it.
+    const sharedRow = active ? mineSharesByPath.get(companionSharePathKey(active)) ?? null : null;
     const seenEditor = useRef(activeTab?.content ?? "");
     const editorValueChanged = seenEditor.current !== (activeTab?.content ?? "");
     seenEditor.current = activeTab?.content ?? "";
@@ -4430,7 +4453,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         <div className={playerHost === "native" && playerTab ? "file-companion-open-menu file-companion-open-menu--beside-player" : "file-companion-open-menu"} id="file-companion-open-menu" data-testid="file-companion-open-menu" role="group" aria-label="打开方式">
                             <button
                                 type="button"
-                                className="file-companion-open-item"
+                                className="file-companion-open-hero"
                                 data-testid="file-companion-open-local"
                                 disabled={arxivBusy || chooseBusy}
                                 onClick={() => {
@@ -4439,8 +4462,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     void chooseFiles();
                                 }}
                             >
-                                <CompanionActionIcon name="file" size={14} />
-                                打开文档或导入项目
+                                <span className="file-companion-open-hero-icon" aria-hidden="true">
+                                    <CompanionActionIcon name="file" size={18} />
+                                </span>
+                                <span className="file-companion-open-hero-text">
+                                    <span className="file-companion-open-hero-title">打开文档或导入项目</span>
+                                    <span className="file-companion-open-hero-sub">支持一次选择多个文件</span>
+                                </span>
                             </button>
                             <div className="file-companion-open-sep" />
                             <div className="file-companion-open-row">
@@ -4542,13 +4570,17 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             type="button"
                             className="file-companion-tool file-companion-tool--icon"
                             data-testid="file-companion-share-open"
+                            data-shared={sharedRow ? "true" : undefined}
                             disabled={Boolean(activeTab.error) || isWebTab || !activeTab.path}
-                            aria-label="分享"
-                            title="分享 — 上传文档、高亮和聊天，生成云端链接"
-                            onClick={() => { setShareDialogPath(activeTab.path); }}
+                            aria-label={sharedRow ? "修改分享" : "分享"}
+                            title={sharedRow ? "修改分享 — 调整分享范围、有效期，链接不变" : "分享 — 上传文档、高亮和聊天，生成云端链接"}
+                            onClick={() => {
+                                setShareDialogRow(sharedRow);
+                                setShareDialogPath(activeTab.path);
+                            }}
                         >
                             <CompanionActionIcon name="share" />
-                            <span className="file-companion-sr">分享</span>
+                            <span className="file-companion-sr">{sharedRow ? "修改分享" : "分享"}</span>
                         </button>
                         {showConvert ? (
                         <button
@@ -4972,7 +5004,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     onExit={() => setView("read")}
                     onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
                     onListed={(listed) => { applyLibraryListRef.current(listed); }}
-                    onShareProject={(path) => { setImportDialogLink(""); setShareDialogPath(path); }}
+                    onShareProject={(path) => { setImportDialogLink(""); setShareDialogRow(null); setShareDialogPath(path); }}
+                    onEditShare={(row) => { setImportDialogLink(""); setShareDialogRow(row); setShareDialogPath(row.path ?? ""); }}
                     onImportLink={(link) => { setImportDialogLink(link); setImportDialogOpen(true); }}
                     libraryDeleteGen={libraryDeleteGen}
                     onProjectDeleted={(path) => {
@@ -4995,7 +5028,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             return rest[Math.max(0, Math.min(index, rest.length - 1))]?.path ?? "";
                         });
                     }}
-                    dialogOpen={Boolean(shareDialogPath) || importDialogOpen}
+                    dialogOpen={shareDialogOpen || importDialogOpen}
                 />
             ) : null}
             {view === "groups" ? (
@@ -5004,14 +5037,15 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     onClose={() => setView("read")}
                 />
             ) : null}
-            {shareDialogPath ? (
+            {shareDialogOpen ? (
                 <CompanionShareDialog
                     path={shareDialogPath}
                     name={shareDialogName}
+                    share={shareDialogRow}
                     showToast={showToast}
                     onListed={(listed) => { applyLibraryListRef.current(listed); }}
                     libraryDeleteGen={libraryDeleteGen}
-                    onClose={() => setShareDialogPath("")}
+                    onClose={() => { setShareDialogPath(""); setShareDialogRow(null); }}
                 />
             ) : null}
             {importDialogOpen ? (

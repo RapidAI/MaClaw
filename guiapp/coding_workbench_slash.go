@@ -166,6 +166,10 @@ func (h *IMMessageHandler) executeApprovedCodingPlan(
 
 	loopCtx := newCodingPlanExecutionLoopContext("coding-plan-approve", h.getMaclawAgentMaxIterations(), h.client, userID, msg)
 	if loopCtx != nil {
+		// This rebuilt context is not prepared by the entry path; keep the
+		// turn's session-round epoch so a newer user message can supersede
+		// the continuation it arms.
+		loopCtx.sessionRoundEpochAtStart = h.sessionRoundEpoch(userID)
 		defer func() {
 			loopCtx.Cancel()
 			loopCtx.Done()
@@ -216,6 +220,9 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 
 	loopCtx := newCodingPlanExecutionLoopContext("coding-plan-skip", h.getMaclawAgentMaxIterations(), h.client, userID, msg)
 	if loopCtx != nil {
+		// Same epoch handoff as /plan approve: this context is rebuilt inside
+		// the command handler, not prepared by the entry path.
+		loopCtx.sessionRoundEpochAtStart = h.sessionRoundEpoch(userID)
 		defer func() {
 			loopCtx.Cancel()
 			loopCtx.Done()

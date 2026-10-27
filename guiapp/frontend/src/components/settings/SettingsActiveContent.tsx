@@ -48,6 +48,7 @@ import { GeneralSettingsPanel } from './GeneralSettingsPanel';
 import { IMSettingsPanel } from './IMSettingsPanel';
 import { EmailSettingsPanel } from './EmailSettingsPanel';
 import { ThirdPartyAccessSettings } from './ThirdPartyAccessSettings';
+import { BuddySettingsSection } from './BuddySettingsSection';
 import type { IMSubTab } from './IMSubTabs';
 import { SettingsPanelErrorBoundary } from './SettingsPanelErrorBoundary';
 import { SettingsPanelFallback } from './SettingsPanelFallback';
@@ -585,19 +586,22 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             break;
         case 'hardware':
             body = wrapPanel('settings-content settings-panel', (
-                <ThirdPartyAccessSettings
-                    config={config}
-                    setConfig={setConfig}
-                    lang={lang}
-                    saveRemoteConfigField={saveRemoteConfigField}
-                    showToastMessage={showToastMessage}
-                    setIMAuditPlatform={setIMAuditPlatform}
-                    thirdPartyGatewayStatus={thirdPartyGatewayStatus}
-                    setThirdPartyGatewayStatus={setThirdPartyGatewayStatus}
-                    thirdPartyGatewayLocalMode={thirdPartyGatewayLocalMode}
-                    setThirdPartyGatewayLocalModeState={setThirdPartyGatewayLocalModeState}
-                    mode="hardware"
-                />
+                <div className="settings-hardware-stack">
+                    <ThirdPartyAccessSettings
+                        config={config}
+                        setConfig={setConfig}
+                        lang={lang}
+                        saveRemoteConfigField={saveRemoteConfigField}
+                        showToastMessage={showToastMessage}
+                        setIMAuditPlatform={setIMAuditPlatform}
+                        thirdPartyGatewayStatus={thirdPartyGatewayStatus}
+                        setThirdPartyGatewayStatus={setThirdPartyGatewayStatus}
+                        thirdPartyGatewayLocalMode={thirdPartyGatewayLocalMode}
+                        setThirdPartyGatewayLocalModeState={setThirdPartyGatewayLocalModeState}
+                        mode="hardware"
+                    />
+                    <BuddySettingsSection lang={lang} />
+                </div>
             ));
             break;
         case 'assetManagement':

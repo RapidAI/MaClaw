@@ -77,16 +77,14 @@ describe("useCompanionGroupInvites", () => {
         await waitFor(() => expect(screen.queryByTestId("companion-group-notice")).toBeNull());
     });
 
-    it("hides an ignored invite across later refreshes", async () => {
+    it("keeps the invite and says so when this build cannot ask the Hub to ignore", async () => {
         render(<Harness active />);
         await screen.findByTestId("companion-group-notice");
         fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
-        await waitFor(() => expect(screen.queryByTestId("companion-group-notice")).toBeNull());
+        expect((await screen.findByTestId("companion-group-invite-error")).textContent).toBe("暂时无法忽略邀请");
+        expect(screen.getByTestId("companion-group-notice")).toBeTruthy();
         expect(accept).not.toHaveBeenCalled();
         expect(decline).not.toHaveBeenCalled();
-        window.dispatchEvent(new Event("focus"));
-        await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(1));
-        expect(screen.queryByTestId("companion-group-notice")).toBeNull();
     });
 
     it("stays quiet until the window is active, then loads on focus", async () => {
@@ -150,22 +148,6 @@ describe("useCompanionGroupInvites", () => {
         expect(row.textContent).toContain("Group invitation");
         expect(row.textContent).toContain("invited you to the reading group");
         expect(row.textContent).toContain("论文组");
-    });
-
-    it("keeps the invite when ignore cannot be stored", async () => {
-        render(<Harness active />);
-        await screen.findByTestId("companion-group-notice");
-        const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-            throw new Error("full");
-        });
-        try {
-            fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
-            expect((await screen.findByTestId("companion-group-invite-error")).textContent).toBe("暂时无法忽略邀请");
-            expect(screen.getByTestId("companion-group-notice")).toBeTruthy();
-            expect(accept).not.toHaveBeenCalled();
-        } finally {
-            spy.mockRestore();
-        }
     });
 
     it("keeps a shown invite when a later refresh fails", async () => {
@@ -251,74 +233,6 @@ describe("useCompanionGroupInvites", () => {
         ]);
     });
 
-    it("shows a later invitation to the same group after 忽略", async () => {
-        list.mockResolvedValue([{ ...invite, invited_at: "2026-10-01T00:00:00Z" }]);
-        render(<Harness active />);
-        await screen.findByTestId("companion-group-notice");
-        fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
-        await waitFor(() => expect(screen.queryByTestId("companion-group-notice")).toBeNull());
-        list.mockResolvedValue([{ ...invite, invited_at: "2026-10-02T00:00:00Z" }]);
-        window.dispatchEvent(new Event("focus"));
-        expect((await screen.findByTestId("companion-group-notice")).textContent).toContain("论文组");
-    });
-
-    it("keeps 忽略 across an empty inbox", async () => {
-        const row = { ...invite, contact: "a@example.com", invited_at: "2026-10-01T00:00:00Z" };
-        const key = `a@example.com\t${invite.id}\t2026-10-01T00:00:00Z`;
-        const pending: Array<(value: unknown) => void> = [];
-        list.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
-        render(<Harness active />);
-        await waitFor(() => expect(pending.length).toBe(1));
-        await act(async () => { pending[0]([row]); });
-        await screen.findByTestId("companion-group-notice");
-        fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
-        await waitFor(() => expect(screen.queryByTestId("companion-group-notice")).toBeNull());
-        window.dispatchEvent(new Event("focus"));
-        await waitFor(() => expect(pending.length).toBe(2));
-        await act(async () => { pending[1]([]); });
-        expect(JSON.parse(localStorage.getItem("maclaw.companion-group-invite.ignored") || "[]")).toContain(key);
-        window.dispatchEvent(new Event("focus"));
-        await waitFor(() => expect(pending.length).toBe(3));
-        await act(async () => { pending[2]([row]); });
-        expect(screen.queryByTestId("companion-group-notice")).toBeNull();
-    });
-
-    it("keeps one account's 忽略 when another account loads the same group", async () => {
-        const row = { ...invite, contact: "a@example.com", invited_at: "2026-10-01T00:00:00Z" };
-        const key = `a@example.com\t${invite.id}\t2026-10-01T00:00:00Z`;
-        const pending: Array<(value: unknown) => void> = [];
-        list.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
-        render(<Harness active />);
-        await waitFor(() => expect(pending.length).toBe(1));
-        await act(async () => { pending[0]([row]); });
-        await screen.findByTestId("companion-group-notice");
-        fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
-        await waitFor(() => expect(screen.queryByTestId("companion-group-notice")).toBeNull());
-        window.dispatchEvent(new Event("focus"));
-        await waitFor(() => expect(pending.length).toBe(2));
-        await act(async () => { pending[1]([{ ...row, contact: "b@example.com", name: "乙的组" }]); });
-        expect((await screen.findByTestId("companion-group-notice")).textContent).toContain("乙的组");
-        expect(JSON.parse(localStorage.getItem("maclaw.companion-group-invite.ignored") || "[]")).toEqual([key]);
-        window.dispatchEvent(new Event("focus"));
-        await waitFor(() => expect(pending.length).toBe(3));
-        await act(async () => { pending[2]([row]); });
-        expect(screen.queryByTestId("companion-group-notice")).toBeNull();
-        expect(JSON.parse(localStorage.getItem("maclaw.companion-group-invite.ignored") || "[]")).toEqual([key]);
-    });
-
-    it("still hides an invite ignored before the contact was stored", async () => {
-        const legacy = `${invite.id}\t2026-10-01T00:00:00Z`;
-        const key = `a@example.com\t${invite.id}\t2026-10-01T00:00:00Z`;
-        const pending: Array<(value: unknown) => void> = [];
-        localStorage.setItem("maclaw.companion-group-invite.ignored", JSON.stringify([legacy]));
-        list.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
-        render(<Harness active />);
-        await waitFor(() => expect(pending.length).toBe(1));
-        await act(async () => { pending[0]([{ ...invite, contact: "a@example.com", invited_at: "2026-10-01T00:00:00Z" }]); });
-        expect(screen.queryByTestId("companion-group-notice")).toBeNull();
-        expect(JSON.parse(localStorage.getItem("maclaw.companion-group-invite.ignored") || "[]")).toEqual([key]);
-    });
-
     it("keeps the invite when 接受 fails", async () => {
         accept.mockRejectedValue("没有找到入群邀请");
         render(<Harness active />);
@@ -338,5 +252,72 @@ describe("useCompanionGroupInvites", () => {
         window.dispatchEvent(new Event("focus"));
         await waitFor(() => expect(screen.queryByTestId("companion-group-notice")).toBeNull());
         expect(screen.queryByTestId("companion-group-invite-error")).toBeNull();
+    });
+});
+
+describe("useCompanionGroupInvites 忽略 on the Hub", () => {
+    const ignore = vi.fn();
+
+    beforeEach(() => {
+        localStorage.clear();
+        ignore.mockReset();
+        list.mockReset();
+        list.mockResolvedValue([invite]);
+        ignore.mockResolvedValue(undefined);
+        (window as unknown as { go: unknown }).go = {
+            main: {
+                App: {
+                    ListFileCompanionGroupInvites: () => list(),
+                    IgnoreFileCompanionGroupInvite: (id: string) => ignore(id),
+                },
+            },
+        };
+    });
+
+    afterEach(() => {
+        delete (window as unknown as { go?: unknown }).go;
+        localStorage.clear();
+    });
+
+    it("tells the Hub so the invite stays ignored on every device", async () => {
+        render(<Harness active />);
+        await screen.findByTestId("companion-group-notice");
+        fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
+        await waitFor(() => expect(ignore).toHaveBeenCalledWith(invite.id));
+        await waitFor(() => expect(screen.queryByTestId("companion-group-notice")).toBeNull());
+        // A server-side ignore must not depend on this browser's storage.
+        expect(localStorage.getItem("maclaw.companion-group-invite.ignored")).toBeNull();
+    });
+
+    it("keeps the invite when the Hub refuses the ignore", async () => {
+        ignore.mockRejectedValue("暂时无法连接云端");
+        render(<Harness active />);
+        await screen.findByTestId("companion-group-notice");
+        fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
+        expect((await screen.findByTestId("companion-group-invite-error")).textContent).toBe("暂时无法连接云端");
+        expect(screen.getByTestId("companion-group-notice")).toBeTruthy();
+    });
+
+    it("sends 忽略 once when the button is clicked twice", async () => {
+        let resolveIgnore: (() => void) | undefined;
+        ignore.mockImplementation(() => new Promise<void>((resolve) => { resolveIgnore = resolve; }));
+        render(<Harness active />);
+        await screen.findByTestId("companion-group-notice");
+        fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
+        fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
+        expect(ignore).toHaveBeenCalledTimes(1);
+        await act(async () => { resolveIgnore?.(); });
+        await waitFor(() => expect(screen.queryByTestId("companion-group-notice")).toBeNull());
+    });
+
+    it("shows the invitation even when an older build left a local ignore behind", async () => {
+        // The old build hid the row only on this machine, and the product no
+        // longer reads that record: the Hub is the only place a decision lives.
+        localStorage.setItem("maclaw.companion-group-invite.ignored", JSON.stringify([`${invite.id}\t2026-10-01T00:00:00Z`]));
+        list.mockResolvedValue([{ ...invite, contact: "a@example.com", invited_at: "2026-10-01T00:00:00Z" }]);
+        render(<Harness active />);
+        expect(await screen.findByTestId("companion-group-notice")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("companion-group-invite-ignore"));
+        await waitFor(() => expect(ignore).toHaveBeenCalledWith(invite.id));
     });
 });

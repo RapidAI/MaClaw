@@ -67,23 +67,34 @@ type RemoteSessionView struct {
 	UpdatedAt      time.Time                `json:"updated_at"`
 	Summary        SessionSummary           `json:"summary"`
 	Preview        SessionPreview           `json:"preview"`
-	Events         []ImportantEvent         `json:"events"`
-	RawOutputLines []string                 `json:"raw_output_lines"`
+	Events         []ImportantEvent         `json:"events,omitempty"`
+	RawOutputLines []string                 `json:"raw_output_lines,omitempty"`
 	OutputImages   []SessionOutputImage     `json:"output_images,omitempty"`
 	TokenUsage     *RemoteSessionTokenUsage `json:"token_usage,omitempty"`
 }
 
 func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
+	return buildRemoteSessionView(s, true)
+}
+
+func buildRemoteSessionView(s *RemoteSession, includeOutput bool) RemoteSessionView {
 	s.mu.RLock()
 	summary := s.Summary
+	summary.ImportantFiles = append([]string(nil), s.Summary.ImportantFiles...)
 	preview := s.Preview
+	preview.PreviewLines = append([]string(nil), s.Preview.PreviewLines...)
 	pendingQuestion := clonePendingQuestionView(s.Summary.PendingQuestion)
 	if pendingQuestion != nil {
 		summary.PendingQuestion = pendingQuestion
 	}
-	events := append([]ImportantEvent(nil), s.Events...)
-	rawLines := append([]string(nil), s.RawOutputLines...)
-	outputImages := append([]SessionOutputImage(nil), s.OutputImages...)
+	var events []ImportantEvent
+	var rawLines []string
+	var outputImages []SessionOutputImage
+	if includeOutput {
+		events = append([]ImportantEvent(nil), s.Events...)
+		rawLines = append([]string(nil), s.RawOutputLines...)
+		outputImages = append([]SessionOutputImage(nil), s.OutputImages...)
+	}
 	tokenUsage := s.TokenUsage
 	status := s.Status
 	runtimeStatus := sessionSummaryRuntimeStatus(status.String())
@@ -547,11 +558,8 @@ func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (Re
 	return report, nil
 }
 
-// listRemoteSessionsFlight coalesces concurrent refreshes. Building the
-// snapshot copies and sanitizes every session's full preview, events and
-// output, and the frontend debounce (200ms local, 300ms hub) is shorter
-// than a build while output streams in, so without this guard each refresh
-// serialized the whole list again and contended on the Wails bridge.
+// listRemoteSessionsFlight coalesces concurrent list snapshots so debounced
+// frontend refreshes do not repeat the same work.
 var listRemoteSessionsFlight singleflight.Group
 
 // listRemoteSessionsBuildHook is set by tests to observe or stall a build.
@@ -561,15 +569,47 @@ func (a *App) ListRemoteSessions() []RemoteSessionView {
 	result, _, _ := listRemoteSessionsFlight.Do(fmt.Sprintf("list:%p", a), func() (any, error) {
 		return a.buildRemoteSessionList(), nil
 	})
+	return cloneRemoteSessionViewSlice(result)
+}
+
+func (a *App) ListRemoteSessionSummaries() []RemoteSessionView {
+	result, _, _ := listRemoteSessionsFlight.Do(fmt.Sprintf("list-summary:%p", a), func() (any, error) {
+		return a.buildRemoteSessionSummaryList(), nil
+	})
+	return cloneRemoteSessionViewSlice(result)
+}
+
+func cloneRemoteSessionViewSlice(result any) []RemoteSessionView {
 	views, _ := result.([]RemoteSessionView)
-	// Every caller used to receive its own slice; keep that so one caller's
-	// append or trim cannot corrupt a concurrent caller's result.
+	// Keep each caller's top-level slice independent.
 	out := make([]RemoteSessionView, len(views))
 	copy(out, views)
 	return out
 }
 
+func (a *App) GetRemoteSession(sessionID string) (RemoteSessionView, error) {
+	if a.remoteSessions != nil {
+		if session, ok := a.remoteSessions.Get(sessionID); ok && session != nil {
+			return toRemoteSessionView(session), nil
+		}
+	}
+	if a.browserSessions != nil {
+		if session, ok := a.browserSessions.Get(sessionID); ok {
+			return remoteSessionViewFromBrowser(session), nil
+		}
+	}
+	return RemoteSessionView{}, fmt.Errorf("remote session not found: %s", sessionID)
+}
+
 func (a *App) buildRemoteSessionList() []RemoteSessionView {
+	return a.buildRemoteSessionViews(true)
+}
+
+func (a *App) buildRemoteSessionSummaryList() []RemoteSessionView {
+	return a.buildRemoteSessionViews(false)
+}
+
+func (a *App) buildRemoteSessionViews(includeOutput bool) []RemoteSessionView {
 	if listRemoteSessionsBuildHook != nil {
 		listRemoteSessionsBuildHook()
 	}
@@ -580,40 +620,50 @@ func (a *App) buildRemoteSessionList() []RemoteSessionView {
 			if s == nil {
 				continue
 			}
-			view := toRemoteSessionView(s)
-			a.log(fmt.Sprintf("[remote-list] session %s: status=%s, preview_lines=%d, raw_lines=%d", view.ID, view.Status, len(view.Preview.PreviewLines), len(view.RawOutputLines)))
+			view := buildRemoteSessionView(s, includeOutput)
+			if includeOutput {
+				a.log(fmt.Sprintf("[remote-list] session %s: status=%s, preview_lines=%d, raw_lines=%d", view.ID, view.Status, len(view.Preview.PreviewLines), len(view.RawOutputLines)))
+			}
 			out = append(out, view)
 		}
 	}
 	if a.browserSessions != nil {
-		for _, sess := range a.browserSessions.List() {
-			out = append(out, RemoteSessionView{
-				ID:             sess.ID,
-				Tool:           sess.Tool,
-				Title:          sess.Title,
-				LaunchSource:   "browser",
-				ProjectPath:    sess.CurrentURL,
-				WorkspacePath:  sess.CurrentURL,
-				WorkspaceRoot:  sess.CurrentURL,
-				ModelID:        "browser-agent",
-				RunID:          sess.RunID,
-				CurrentURL:     sess.CurrentURL,
-				CurrentTitle:   sess.CurrentTitle,
-				ReadyState:     sess.ReadyState,
-				LastSnapshotID: sess.LastSnapshotID,
-				ExecutionMode:  "browser-agent",
-				Status:         sess.Status,
-				CreatedAt:      sess.CreatedAt,
-				UpdatedAt:      sess.UpdatedAt,
-				Summary:        sess.Summary,
-				Preview:        sess.Preview,
-				Events:         sess.Events,
-				RawOutputLines: sess.RawOutputLines,
-				OutputImages:   sess.OutputImages,
-			})
+		sessions := a.browserSessions.ListSummaries()
+		if includeOutput {
+			sessions = a.browserSessions.List()
+		}
+		for _, sess := range sessions {
+			out = append(out, remoteSessionViewFromBrowser(sess))
 		}
 	}
 	return out
+}
+
+func remoteSessionViewFromBrowser(sess BrowserSessionView) RemoteSessionView {
+	return RemoteSessionView{
+		ID:             sess.ID,
+		Tool:           sess.Tool,
+		Title:          sess.Title,
+		LaunchSource:   "browser",
+		ProjectPath:    sess.CurrentURL,
+		WorkspacePath:  sess.CurrentURL,
+		WorkspaceRoot:  sess.CurrentURL,
+		ModelID:        "browser-agent",
+		RunID:          sess.RunID,
+		CurrentURL:     sess.CurrentURL,
+		CurrentTitle:   sess.CurrentTitle,
+		ReadyState:     sess.ReadyState,
+		LastSnapshotID: sess.LastSnapshotID,
+		ExecutionMode:  "browser-agent",
+		Status:         sess.Status,
+		CreatedAt:      sess.CreatedAt,
+		UpdatedAt:      sess.UpdatedAt,
+		Summary:        sess.Summary,
+		Preview:        sess.Preview,
+		Events:         sess.Events,
+		RawOutputLines: sess.RawOutputLines,
+		OutputImages:   sess.OutputImages,
+	}
 }
 
 func (a *App) StartRemoteClaudeSession(projectDir string, useProxy bool) (RemoteSessionView, error) {

@@ -11,6 +11,8 @@ import (
 )
 
 func TestGetLatexTinyTeXStatusReportsSchemeAndVerifiedTree(t *testing.T) {
+	invalidateLatexVerifiedCache()
+	t.Cleanup(invalidateLatexVerifiedCache)
 	latexRuntime.mu.Lock()
 	latexRuntime.phase = ""
 	latexRuntime.running = false
@@ -65,6 +67,18 @@ func TestGetLatexTinyTeXStatusReportsSchemeAndVerifiedTree(t *testing.T) {
 	status = app.GetLatexTinyTeXStatus()
 	if status["ready"] != true || status["phase"] != "ready" || status["version"] != "XeTeX test" {
 		t.Fatalf("verified status = %#v", status)
+	}
+	if err := tinytex.WriteStamp(dist, "XeTeX updated"); err != nil {
+		t.Fatal(err)
+	}
+	status = app.GetLatexTinyTeXStatus()
+	if status["version"] != "XeTeX test" {
+		t.Fatalf("cached version = %#v", status["version"])
+	}
+	invalidateLatexVerifiedCache()
+	status = app.GetLatexTinyTeXStatus()
+	if status["version"] != "XeTeX updated" {
+		t.Fatalf("version after invalidation = %#v", status["version"])
 	}
 
 	app.configCache.LatexTinyTeXEnabled = false

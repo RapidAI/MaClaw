@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type Dispatch, type SetStateAction, type ReactNode } from "react";
 import type { RemoteSessionView } from "./types";
-import { SendRemoteSessionInput, SendRemoteSessionRawInput, SendRemoteSessionImage, CaptureRemoteScreenshot, CaptureRemoteWindowScreenshot, InterruptRemoteSession, SetFullscreen } from "../../../wailsjs/go/main/App";
+import { SendRemoteSessionInput, SendRemoteSessionRawInput, SendRemoteSessionImage, CaptureRemoteScreenshot, CaptureRemoteWindowScreenshot, GetRemoteSession, InterruptRemoteSession, SetFullscreen } from "../../../wailsjs/go/main/App";
 import { IconBolt, IconCheck, IconChevronRight, IconCross, IconFolder, StatusGlyph } from "../ai/WorkbenchIcons";
 import {
     leadingIndentColumns,
@@ -439,7 +439,7 @@ const responseBlockStyle: React.CSSProperties = {
 
 export function RemoteSessionConsole(props: Props) {
     const {
-        session,
+        session: sessionProp,
         remoteInputDrafts,
         setRemoteInputDrafts,
         killRemoteSession,
@@ -448,6 +448,33 @@ export function RemoteSessionConsole(props: Props) {
         readOnly = false,
     } = props;
     const { showPrompt } = useDialog();
+    const [sessionDetail, setSessionDetail] = useState<RemoteSessionView | null>(null);
+    const shouldLoadDetail = sessionProp.raw_output_lines === undefined;
+
+    useEffect(() => {
+        setSessionDetail(null);
+    }, [sessionProp.id]);
+
+    useEffect(() => {
+        if (!shouldLoadDetail) return;
+        let cancelled = false;
+        GetRemoteSession(sessionProp.id).then((detail) => {
+            if (!cancelled && detail?.id === sessionProp.id) setSessionDetail(detail);
+        }).catch((err) => {
+            console.error("Failed to load remote session output:", err);
+        });
+        return () => { cancelled = true; };
+    }, [sessionProp.id, sessionProp.preview?.output_seq, sessionProp.preview?.updated_at, sessionProp.updated_at, shouldLoadDetail]);
+
+    const session = sessionDetail?.id === sessionProp.id
+        ? {
+            ...sessionDetail,
+            ...sessionProp,
+            events: sessionDetail.events,
+            raw_output_lines: sessionDetail.raw_output_lines,
+            output_images: sessionDetail.output_images,
+        }
+        : sessionProp;
 
     const currentLang = getCurrentLang();
     const [sending, setSending] = useState(false);

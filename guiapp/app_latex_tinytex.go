@@ -31,6 +31,51 @@ var latexRuntime struct {
 	err        string
 }
 
+var latexVerifiedCache struct {
+	mu         sync.Mutex
+	generation uint64
+	valid      bool
+	dataDir    string
+	dist       string
+	version    string
+}
+
+func invalidateLatexVerifiedCache() {
+	latexVerifiedCache.mu.Lock()
+	latexVerifiedCache.generation++
+	latexVerifiedCache.valid = false
+	latexVerifiedCache.dataDir = ""
+	latexVerifiedCache.dist = ""
+	latexVerifiedCache.version = ""
+	latexVerifiedCache.mu.Unlock()
+}
+
+func latexVerifiedTree(dataDir string) (dist, version string, ready bool) {
+	latexVerifiedCache.mu.Lock()
+	if latexVerifiedCache.valid && latexVerifiedCache.dataDir == dataDir {
+		dist, version = latexVerifiedCache.dist, latexVerifiedCache.version
+		latexVerifiedCache.mu.Unlock()
+		return dist, version, true
+	}
+	generation := latexVerifiedCache.generation
+	latexVerifiedCache.mu.Unlock()
+
+	dist, _ = tinytex.FindDistRoot(tinytex.DistDir(dataDir))
+	ready = tinytex.Verified(dist)
+	if ready {
+		version, _ = tinytex.ReadStamp(dist)
+		latexVerifiedCache.mu.Lock()
+		if latexVerifiedCache.generation == generation {
+			latexVerifiedCache.valid = true
+			latexVerifiedCache.dataDir = dataDir
+			latexVerifiedCache.dist = dist
+			latexVerifiedCache.version = version
+		}
+		latexVerifiedCache.mu.Unlock()
+	}
+	return dist, version, ready
+}
+
 // GetLatexTinyTeXStatus reports whether scheme-small is verified and, if an
 // install is running, which step it is on.
 func (a *App) GetLatexTinyTeXStatus() map[string]interface{} {
@@ -38,12 +83,7 @@ func (a *App) GetLatexTinyTeXStatus() map[string]interface{} {
 	if a != nil {
 		dataDir = a.GetDataDir()
 	}
-	dist, _ := tinytex.FindDistRoot(tinytex.DistDir(dataDir))
-	ready := tinytex.Verified(dist)
-	version := ""
-	if ready {
-		version, _ = tinytex.ReadStamp(dist)
-	}
+	dist, version, ready := latexVerifiedTree(dataDir)
 	source, _ := tinytex.OfficialAssetURL(runtime.GOOS, runtime.GOARCH)
 
 	latexRuntime.mu.Lock()
@@ -156,11 +196,8 @@ func (a *App) latexTreeVerified() bool {
 	if a == nil {
 		return false
 	}
-	dist, err := tinytex.FindDistRoot(tinytex.DistDir(a.GetDataDir()))
-	if err != nil {
-		return false
-	}
-	return tinytex.Verified(dist)
+	_, _, ready := latexVerifiedTree(a.GetDataDir())
+	return ready
 }
 
 func (a *App) installLatexTinyTeX() error {
@@ -172,7 +209,9 @@ func (a *App) installLatexTinyTeX() error {
 	latexRuntime.running = true
 	latexRuntime.err = ""
 	latexRuntime.mu.Unlock()
+	invalidateLatexVerifiedCache()
 	defer func() {
+		invalidateLatexVerifiedCache()
 		latexRuntime.mu.Lock()
 		latexRuntime.running = false
 		latexRuntime.mu.Unlock()

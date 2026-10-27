@@ -719,6 +719,8 @@ export function ListFileCompanionLibrary():Promise<{items:Array<Record<string, a
 
 export function ShareFileCompanionDocument(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<Record<string, any>>;
 
+export function UpdateFileCompanionShare(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<Record<string, any>>;
+
 export function ImportFileCompanionShare(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function SyncFileCompanionShare(arg1:string,arg2:string):Promise<Record<string, any>>;
@@ -746,6 +748,8 @@ export function ListFileCompanionGroupInvites():Promise<Array<Record<string, any
 export function AcceptFileCompanionGroupInvite(arg1:string):Promise<void>;
 
 export function DeclineFileCompanionGroupInvite(arg1:string):Promise<void>;
+
+export function IgnoreFileCompanionGroupInvite(arg1:string):Promise<void>;
 
 export function FileCompanionExportChatPDF(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<string>;
 
@@ -1095,6 +1099,8 @@ export function GetRemotePTYProbe():Promise<main.RemotePTYProbeResult>;
 export function GetRemoteRegistrationAuth(arg1:string,arg2:string):Promise<main.RemoteRegistrationAuthResult>;
 
 export function GetRemoteRegistrationProfile():Promise<main.RemoteRegistrationProfileResult>;
+
+export function GetRemoteSession(arg1:string):Promise<main.RemoteSessionView>;
 
 export function GetRemoteSessions():Promise<main.RemoteSessionManager>;
 
@@ -1843,6 +1849,8 @@ export function ListReclaimableVirtualEmployees():Promise<Array<main.Reclaimable
 export function ListRemoteHubs(arg1:string,arg2:string):Promise<Array<main.RemoteHubCenterHub>>;
 
 export function ListRemoteLaunchProjects():Promise<Array<main.RemoteLaunchProject>>;
+
+export function ListRemoteSessionSummaries():Promise<Array<main.RemoteSessionView>>;
 
 export function ListRemoteSessions():Promise<Array<main.RemoteSessionView>>;
 
@@ -3049,3 +3057,17 @@ export function WriteDesktopBotAck(arg1:{kind:string,message:string,lang:string,
 export function GetHubConnectionState():Promise<{state:string,attempts?:number,next_retry_ms?:number,last_error?:string}>;
 
 export function ReconnectHub(arg1:string):Promise<{state:string,attempts?:number,next_retry_ms?:number,last_error?:string}>;
+
+export function BuddyListPorts():Promise<Array<{name:string,description?:string,vid?:string,pid?:string,serial_number?:string,is_buddy:boolean}>>;
+
+export function BuddyStart(arg1:string):Promise<void>;
+
+export function BuddyStop():Promise<void>;
+
+export function BuddyGetStatus():Promise<{enabled:boolean,port?:string,connected:boolean,device_fw?:string,device_board?:string,page?:string,last_state_at?:string,last_ack_at?:string,missing_glyphs?:number,last_error?:string,snapshot_age_s?:number}>;
+
+export function BuddyPushSnapshot(arg1:string):Promise<void>;
+
+export function BuddyPushWeather(arg1:string,arg2:string,arg3:number):Promise<void>;
+
+export function BuddyRefreshWeather():Promise<string>;

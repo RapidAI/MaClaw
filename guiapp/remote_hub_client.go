@@ -479,6 +479,9 @@ func (c *RemoteHubClient) Connect() error {
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
 	go c.app.PullUnreadNotifications()
+	// A reading-group invitation sent while offline rides the same reconnect, so
+	// check the pending list now instead of waiting out an idle poll interval.
+	go c.app.pollCompanionGroupInvites()
 	go c.app.refreshDeviceAmbientWeatherOnce()
 	go c.syncDeviceGatewayPetProfile()
 	go c.syncDeviceGatewayHardwareState()
@@ -869,6 +872,9 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
 	go c.app.PullUnreadNotifications()
+	// A reading-group invitation sent while offline rides the same reconnect, so
+	// check the pending list now instead of waiting out an idle poll interval.
+	go c.app.pollCompanionGroupInvites()
 	go c.app.refreshDeviceAmbientWeatherOnce()
 	go c.syncDeviceGatewayPetProfile()
 	go c.syncDeviceGatewayHardwareState()

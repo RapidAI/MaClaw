@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, clusterKnowledgeFacetChips, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeExportGroups, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSearchFacetActive, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchKindOptions, knowledgeSearchResultTypeOptions, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption, splitKnowledgeFacetChip, toggleKnowledgeSearchFacet } from '../KnowledgeSettingsPanel';
+import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, clusterKnowledgeFacetChips, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeExportGroups, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeOperationResultSummaryModel, knowledgeOptionDisplayLabel, knowledgeQualityExecutionContextLabel, knowledgeSearchFacetActive, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchKindOptions, knowledgeSearchResultTypeOptions, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption, splitKnowledgeFacetChip, toggleKnowledgeSearchFacet } from '../KnowledgeSettingsPanel';
 
 describe('normalizeKnowledgeCoverageOption', () => {
     it('matches backend coverage filter key normalization style', () => {
@@ -763,5 +763,65 @@ describe('knowledgeSearchShouldReload', () => {
     it('allows structured reload from a column filter without a query', () => {
         expect(knowledgeSearchShouldReload('structured', '', { columnName: '部门', columnValue: '法务' })).toBe(true);
         expect(knowledgeSearchShouldReload('structured', '', { columnName: '部门' })).toBe(false);
+    });
+});
+
+describe('knowledgeOptionDisplayLabel', () => {
+    it('localizes known status, coverage, distill, and policy values', () => {
+        expect(knowledgeOptionDisplayLabel('status', 'FAILED', en => en)).toBe('Import failed');
+        expect(knowledgeOptionDisplayLabel('coverage', 'missing_cards', (en, zh) => zh)).toBe('缺少卡片');
+        expect(knowledgeOptionDisplayLabel('distill_mode', 'rules_only', (en, zh) => zh)).toBe('仅规则提炼');
+        expect(knowledgeOptionDisplayLabel('quality_policy', 'balanced', (en, zh) => zh)).toBe('均衡');
+        expect(knowledgeOptionDisplayLabel('source_kind', 'conversation', (en, zh) => zh)).toBe('会话');
+    });
+
+    it('falls back to the raw value for unknown entries', () => {
+        expect(knowledgeOptionDisplayLabel('status', 'new_state', en => en)).toBe('new_state');
+        expect(knowledgeOptionDisplayLabel('coverage', 'custom_filter', en => en)).toBe('custom_filter');
+        expect(knowledgeOptionDisplayLabel('quality_policy', '', en => en)).toBe('');
+    });
+});
+
+describe('knowledgeOperationResultSummaryModel', () => {
+    it('shows mapped counts and key fields while hiding unrelated payload', () => {
+        const model = knowledgeOperationResultSummaryModel({
+            imported: 3,
+            skipped: 1,
+            failed: 0,
+            url_policies: 2,
+            import_status: 'completed',
+            package_id: 'pkg_1',
+            warnings: ['big content truncated'],
+            imported_source_ids: ['ksrc_a', 'ksrc_b'],
+            safety_backup: { output_path: '/tmp/backup.jsonl' },
+            limit_bytes: 524288000,
+            has_package: true,
+        });
+        expect(model.hasContent).toBe(true);
+        expect(model.countStats.map(item => item.key)).toEqual(['imported', 'skipped', 'failed', 'url_policies']);
+        expect(model.countStats.map(item => item.value)).toEqual([3, 1, 0, 2]);
+        expect(model.textChips).toEqual([{ key: 'import_status', value: 'completed' }]);
+        expect(model.warnings).toEqual(['big content truncated']);
+        expect(model.sourceChips).toEqual(['ksrc_a', 'ksrc_b']);
+    });
+
+    it('renders failure records as compact lines', () => {
+        const model = knowledgeOperationResultSummaryModel({
+            failures: [
+                { line: 12, type: 'card', id: 'kdn_1', error: 'missing reference' },
+                { line: 30, type: 'card', id: 'kdn_2', error: 'conflict' },
+            ],
+        });
+        expect(model.hasContent).toBe(true);
+        expect(model.failureLines).toEqual([
+            '#12 · kdn_1 · missing reference',
+            '#30 · kdn_2 · conflict',
+        ]);
+    });
+
+    it('reports nothing to show for ack-only results', () => {
+        expect(knowledgeOperationResultSummaryModel({ ok: true }).hasContent).toBe(false);
+        expect(knowledgeOperationResultSummaryModel(null).hasContent).toBe(false);
+        expect(knowledgeOperationResultSummaryModel({}).hasContent).toBe(false);
     });
 });

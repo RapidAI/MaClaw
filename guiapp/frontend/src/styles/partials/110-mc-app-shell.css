@@ -4784,7 +4784,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-open-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 8px);
   /* Centred on the window: left/right both pinned with an auto margin keeps the
      panel in the middle without a transform, which would create a containing
      block for anything inside it. A PDF iframe lives in this webview, so the
@@ -4795,26 +4795,44 @@ body.companion-pdf-translation-dragging * {
   max-width: calc(100% - 16px);
   z-index: 30;
   box-sizing: border-box;
-  width: 268px;
+  width: 420px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: 12px;
+  padding: 16px;
   border: 1px solid var(--theme-border, #c9ddf6);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   background: var(--theme-surface, #ffffff);
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+  box-shadow:
+    0 24px 48px -12px rgba(15, 23, 42, 0.18),
+    0 8px 20px rgba(15, 23, 42, 0.08);
+  /* Opacity only, for the same reason the panel carries no transform: a
+     transform — even a transient one from a keyframe — would turn this panel
+     into the containing block for fixed descendants. */
+  animation: file-companion-open-menu-in 0.18s ease-out;
 }
 /* The Windows player is its own HWND on the left preview. It paints above
    this webview, so the centred panel sits under the video and the 打开 click
    looks dead. The chat column is this webview and stays at least 280px, so
-   a 268px panel 8px from the right edge clears the player and the 12px
-   split. Hiding the player to reveal the panel would unload the document. */
+   the panel pinned 8px from the right edge must keep the compact width to
+   clear the player and the 12px split. Hiding the player to reveal the panel
+   would unload the document. */
 .file-companion-open-menu--beside-player {
   left: auto;
   right: 8px;
   margin-left: 0;
   margin-right: 0;
+  width: 268px;
+  gap: 10px;
+  padding: 12px;
+}
+@keyframes file-companion-open-menu-in {
+  from { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .file-companion-open-menu {
+    animation: none;
+  }
 }
 /* These two squares share one row, so the title bar's flex gap never
    lands between them. The strip is part of this anchor and stays no-drag. */
@@ -4964,6 +4982,20 @@ body.companion-pdf-translation-dragging * {
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+}
+/* A cloud row is already a share. It carries a mark instead of a button:
+   the only action left on it is 修改, which edits that same link. */
+.file-companion-project-shared {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--theme-primary, #2563eb) 9%, transparent);
+  color: var(--theme-primary, #2563eb);
+  font: 600 11.5px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
 }
 .file-companion-project-action {
   display: inline-flex;
@@ -5768,9 +5800,75 @@ body.companion-pdf-translation-dragging * {
   opacity: 0.45;
   cursor: default;
 }
+/* The hero row: the primary action reads as a card — icon tile, title,
+   sub-caption — instead of one compact menu line. The export menu keeps the
+   compact .file-companion-open-item look; this class is only the 打开 panel. */
+.file-companion-open-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  min-height: 58px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary, #2e75cb) 24%, var(--theme-border, #c9ddf6));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--theme-primary, #2e75cb) 10%, var(--theme-surface, #ffffff)),
+    color-mix(in srgb, var(--theme-primary, #2e75cb) 3%, var(--theme-surface, #ffffff)));
+  color: var(--theme-primary, #2e75cb);
+  font: 600 14px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.file-companion-open-hero:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 45%, var(--theme-border, #c9ddf6));
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--theme-primary, #2e75cb) 16%, var(--theme-surface, #ffffff)),
+    color-mix(in srgb, var(--theme-primary, #2e75cb) 6%, var(--theme-surface, #ffffff)));
+  box-shadow: 0 8px 18px -8px color-mix(in srgb, var(--theme-primary, #2e75cb) 45%, transparent);
+}
+.file-companion-open-hero:active:not(:disabled) {
+  box-shadow: none;
+}
+.file-companion-open-hero:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.file-companion-open-hero-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--theme-primary, #2e75cb);
+  color: #ffffff;
+  box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--theme-primary, #2e75cb) 55%, transparent);
+}
+.file-companion-open-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.file-companion-open-hero-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.file-companion-open-hero-sub {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 400 12px/1.4 "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  color: var(--theme-text-muted, #64748b);
+}
 /* Keyboard focus must stay visible inside the menu (WCAG 2.4.7): the panel is
    opened by keyboard as often as by mouse. */
 .file-companion-open-item:focus-visible,
+.file-companion-open-hero:focus-visible,
 .file-companion-open-go:focus-visible {
   outline: 2px solid var(--theme-primary, #2563eb);
   outline-offset: 2px;
@@ -5786,27 +5884,31 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-open-row {
   display: flex;
-  gap: 6px;
+  gap: 8px;
 }
 .file-companion-open-input {
   flex: 1 1 auto;
   min-width: 0;
   box-sizing: border-box;
-  height: 32px;
-  padding: 0 8px;
+  height: 40px;
+  padding: 0 12px;
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
   color: var(--theme-text, #1e293b);
   font: 400 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  transition: border-color 0.15s ease;
+}
+.file-companion-open-input:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #c9ddf6));
 }
 .file-companion-open-input:disabled {
   opacity: 0.6;
 }
 .file-companion-open-go {
   flex: 0 0 auto;
-  height: 32px;
-  padding: 0 12px;
+  height: 40px;
+  padding: 0 18px;
   border: 1px solid var(--theme-primary, #2e75cb);
   border-radius: var(--radius-md);
   background: var(--theme-primary, #2e75cb);
@@ -5814,6 +5916,11 @@ body.companion-pdf-translation-dragging * {
   font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
   cursor: pointer;
   white-space: nowrap;
+  transition: filter 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.file-companion-open-go:hover:not(:disabled):not(.file-companion-open-search) {
+  filter: brightness(1.08);
+  box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--theme-primary, #2e75cb) 50%, transparent);
 }
 .file-companion-open-go:disabled {
   opacity: 0.45;
@@ -5822,6 +5929,7 @@ body.companion-pdf-translation-dragging * {
 /* 搜索 sits beside 确定. It stays an outline button so 确定 remains the
    action that opens whatever was typed. */
 .file-companion-open-search {
+  padding: 0 14px;
   border-color: var(--theme-border, #c9ddf6);
   background: var(--theme-surface, #ffffff);
   color: var(--theme-text, #1e293b);
@@ -5834,7 +5942,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-open-hint {
   margin: 0;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--theme-text-muted, #64748b);
 }
 .file-companion-open-hint[data-state="error"] {

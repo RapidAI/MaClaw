@@ -17,6 +17,7 @@ export function resolveTaskExecutionStatus(input: {
     raw: string;
     pendingReview: boolean;
     cancelPending: boolean;
+    /** A turn is still working, including a round that paints this transcript under another session key. */
     busy: boolean;
     hasOutput: boolean;
     hasMessages: boolean;
@@ -38,15 +39,16 @@ export function resolveTaskExecutionStatus(input: {
 }): TaskExecutionStatus {
     const raw = input.raw || "";
     const lang = input.lang;
-    // Failure still beats pause and an in-flight stop. A live worker is the
-    // current outcome, so a failed token left in the snapshot does not hide it.
-    if (!input.openChatWork && /(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
+    // Live foreground work is the current outcome. A failed, cancelled, or
+    // interrupted token left in the snapshot (or a recovery card from an
+    // earlier turn) describes the previous attempt; while the turn is still
+    // working, the badge must say in progress rather than contradict the
+    // reasoning trail that is still streaming.
+    const liveWork = input.busy === true;
+    // Failure still beats pause and an in-flight stop. A live worker wins, so
+    // a failed token left in the snapshot does not hide it.
+    if (!input.openChatWork && !liveWork && /(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
         return { label: localizeText(lang, "Failed", "失败", "失敗"), tone: "failed" };
-    }
-    // Only the leading status token counts. A later phase named "pause" must
-    // not turn a finished run into a paused one.
-    if (/^(paused|pause|已暂停|暂停)(?=$|[\s_])/.test(raw)) {
-        return { label: localizeText(lang, "Paused", "已暂停", "已暫停"), tone: "pending" };
     }
     if (input.cancelPending) {
         return { label: localizeText(lang, "Stopping", "正在停止", "正在停止"), tone: "pending" };
@@ -58,6 +60,18 @@ export function resolveTaskExecutionStatus(input: {
     }
     if (input.openChatWork === "needs_input") {
         return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" };
+    }
+    // A live round outranks every durable outcome token below it. Interrupted
+    // and cancelled markers can linger from the resume/recovery card that the
+    // current turn continued from; reporting them here made the header say
+    // 已中断 while the coding thought was still streaming.
+    if (liveWork) {
+        return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
+    }
+    // Only the leading status token counts. A later phase named "pause" must
+    // not turn a finished run into a paused one.
+    if (/^(paused|pause|已暂停|暂停)(?=$|[\s_])/.test(raw)) {
+        return { label: localizeText(lang, "Paused", "已暂停", "已暫停"), tone: "pending" };
     }
     if (/(cancel|canceled|cancelled|stopped|已取消|已停止)/.test(raw)) {
         return { label: localizeText(lang, "Cancelled", "已取消", "已取消"), tone: "cancelled" };

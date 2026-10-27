@@ -463,6 +463,153 @@ func CompanionDocumentShareHandler(identity *auth.IdentityService) http.HandlerF
 	}
 }
 
+// CompanionDocumentShareUpdateHandler changes who can see a share and how long
+// it lasts. Only the owner may change it. The file, the revision, and the
+// readers' notes stay as they are; a password that is left empty keeps the
+// one already stored.
+//
+//	PATCH /api/mobile/documents/shares/{token}
+func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH")
+			return
+		}
+		_, ownerID, ok := companionRequireViewer(w, r, identity)
+		if !ok {
+			return
+		}
+		token := strings.TrimSpace(r.PathValue("token"))
+		if !companionShareTokenPattern.MatchString(token) {
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		var body struct {
+			Visibility string `json:"visibility"`
+			Password   string `json:"password"`
+			Target     string `json:"target"`
+			Days       *int   `json:"days"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请选择分享对象")
+			return
+		}
+		visibility := strings.TrimSpace(body.Visibility)
+		switch visibility {
+		case "public", "private", "person", "group":
+		default:
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请选择分享对象")
+			return
+		}
+		// Validate the audience before taking the share lock. The group check
+		// takes the group lock, and holding one store's lock while waiting on
+		// another is how two requests deadlock.
+		password := strings.TrimSpace(body.Password)
+		target := ""
+		groupID := ""
+		switch visibility {
+		case "private":
+			if password != "" {
+				if n := len([]rune(password)); n < 4 || n > 64 {
+					writeError(w, http.StatusBadRequest, "BAD_REQUEST", "分享密码需为 4–64 个字符")
+					return
+				}
+			}
+		case "person":
+			password = ""
+			target = normalizeCompanionContact(body.Target)
+			if target == "" {
+				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请填写邮箱或手机号")
+				return
+			}
+		case "group":
+			password = ""
+			groupID = strings.TrimSpace(body.Target)
+			if !companionGroupTokenPattern.MatchString(groupID) || !companionGroupIsAdmin(ownerID, groupID) {
+				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请选择群组")
+				return
+			}
+			target = groupID
+		default:
+			password = ""
+		}
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, found := companionDocShares.items[token]
+		if !found {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		if share.OwnerID != ownerID {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有分享者可以修改分享")
+			return
+		}
+		if visibility == "private" && password == "" && share.PasswordHash == "" {
+			// A private link with no password cannot be opened by anyone but
+			// the people who already imported it. The owner has to send one
+			// the first time they make the link private.
+			companionDocShares.Unlock()
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "分享密码需为 4–64 个字符")
+			return
+		}
+		previous := share
+		// An absent days field leaves the expiry alone. A caller that only
+		// changes the audience must not silently turn a dated link permanent.
+		if body.Days != nil {
+			days := *body.Days
+			if days < 0 || days > 3660 {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "分享时间不正确")
+				return
+			}
+			if days > 0 {
+				share.ExpiresAt = time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour)
+			} else {
+				share.ExpiresAt = time.Time{}
+			}
+		}
+		share.Visibility = visibility
+		share.Target = target
+		share.GroupID = groupID
+		if visibility == "private" {
+			if password != "" {
+				salt := make([]byte, 16)
+				if _, err := rand.Read(salt); err != nil {
+					companionDocShares.Unlock()
+					writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
+					return
+				}
+				share.PasswordSalt = hex.EncodeToString(salt)
+				share.PasswordHash = hashCompanionSharePassword(password, share.PasswordSalt)
+			}
+		} else {
+			share.PasswordSalt = ""
+			share.PasswordHash = ""
+		}
+		companionDocShares.items[token] = share
+		if err := persistCompanionDocSharesLocked(); err != nil {
+			companionDocShares.items[token] = previous
+			companionDocShares.Unlock()
+			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
+			return
+		}
+		companionDocShares.Unlock()
+		view := companionShareView(share, r)
+		// The owner is looking at their own link, so the target and the group
+		// are part of what the edit dialog echoes back.
+		if share.Target != "" {
+			view["target"] = share.Target
+		}
+		if share.GroupID != "" {
+			view["group_id"] = share.GroupID
+		}
+		companionShareAttachNotes(view, share)
+		writeJSON(w, http.StatusOK, view)
+	}
+}
+
 // CompanionDocumentShareImportHandler checks the password and returns the file.
 // The caller is recorded so the file shows up in that person's library.
 //

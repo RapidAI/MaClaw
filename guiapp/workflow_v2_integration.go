@@ -3506,6 +3506,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 
 	// Multi-turn session memory: carry prior summaries/files into this turn.
 	sessionMem := h.getStickyCodingWorkbenchMemory(userID)
+	if isSessionRoundContinuation(userText) {
+		// Prompt-only copy: the previous round's failure summary is host
+		// accounting, not the state of the work. A planned resume replaces
+		// this note with its own step-specific one below.
+		sessionMem.LastSummary = codingContinuationResumeNote()
+	}
 	prevOutputs := sessionMem.prevOutputs()
 	reqCtx := ""
 	if sessionMem.TurnCount > 0 {
@@ -3527,13 +3533,15 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	var planOutline []*v2.TaskItem
 	planStepTotal := 0
 	resumeIncompletePlan := false
-	recordUserText := userText
+	recordUserText := sessionRoundCodingTask(userText)
 	var decision codingRequestDecision
 	// A host continuation is the goal store's phase, not approval of a
 	// previously staged file plan. Taking that plan would replace the phase
-	// prompt and run file changes before goal(action=plan|step).
+	// prompt and run file changes before goal(action=plan|step). A session
+	// round resumes the plan that is already open; it is not the user
+	// approving a different pending plan.
 	tookApprovedPlan := false
-	if !isGoalSystemContinuation(userText) {
+	if !isGoalSystemContinuation(userText) && !isSessionRoundContinuation(userText) {
 		if approved, ok := h.takeStickyApprovedCodingPlan(userID); ok {
 			tookApprovedPlan = true
 			tasks = approved.Tasks
@@ -3557,7 +3565,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			recordUserText = userText
 		}
 		attachCodingWorkRoot(&sessionMem, projectPath)
-		resumeIncompletePlan = codingWorkbenchShouldResumeIncompletePlan(recordUserText, sessionMem)
+		resumeIncompletePlan = codingWorkbenchShouldResumeIncompletePlan(userText, sessionMem)
 		if isGoalSystemContinuation(recordUserText) {
 			// The goal store already owns this turn's phase. A coding-request
 			// paraphrase would rewrite the objective (for example "图形界面"
@@ -3618,7 +3626,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		reqCtx = strings.TrimSpace(reqCtx + "\n\nA multi-step execution plan was generated for this request. Complete the CURRENT step fully, then stop; later steps run as separate tasks.")
 	}
 	if len(tasks) == 0 {
-		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
+		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(recordUserText, 80), Description: recordUserText}}
 		planned = false
 	}
 	planOutline = tasks
@@ -4070,6 +4078,21 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 	}
 	report := formatCodingWorkbenchUserAnswer(requestKind, runResults, runCtx.Err() != nil)
+	// A step that spent its iteration budget is unfinished, not failed for
+	// good. Arm the same session-round wave the chat loop uses so the next
+	// round resumes the open plan step instead of waiting for the user to
+	// send another message. A goal turn already has its own continuation.
+	continuing := false
+	if note, ok := h.continueCodingWorkbenchAfterIterationBudget(loopCtx, userID, userText, runResults, totalToolCalls); ok {
+		// Lead with the continuation: the failure detail below explains the
+		// step, but this round is not the end of the task.
+		if strings.TrimSpace(report) == "" {
+			report = note
+		} else {
+			report = note + "\n\n" + strings.TrimSpace(report)
+		}
+		continuing = true
+	}
 	if lastCodingResult != nil {
 		// Aggregate file audit across multi-step runs for sticky memory.
 		lastCodingResult.FilesModified = uniqueSortedSubAgentStrings(append(lastCodingResult.FilesModified, mergedModified...))
@@ -4129,6 +4152,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		body = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
 	}
 	resp := &IMAgentResponse{Text: body}
+	if continuing {
+		resp.sessionRoundContinue = true
+		resp.ResponseSource = sessionRoundContinuationSource
+	}
 	if errText := goalContinuationCodingHostError(userText, runCtx.Err() != nil, runResults); errText != "" {
 		resp.Error = errText
 	}
@@ -4272,10 +4299,15 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}
 		return coding
 	}
-	requested := strings.TrimSpace(userText)
-	userText = requested
-	if userText == "" {
-		userText = remoteTaskLabel("执行远程编程任务", "执行远程维护任务")
+	sessionWave := isSessionRoundContinuation(userText)
+	requested := sessionRoundCodingTask(userText)
+	if requested == "" {
+		requested = remoteTaskLabel("执行远程编程任务", "执行远程维护任务")
+		userText = requested
+	} else if !isSessionRoundContinuation(userText) {
+		// Ordinary turns keep the normalized text. A host wave must stay
+		// recognizable until the resume decision below reads it.
+		userText = requested
 	}
 	// SSH/cancel preflight first; register before planning (see below).
 	cleanupPureCodingRuntime := func() {}
@@ -4342,7 +4374,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	var planOutline []*v2.TaskItem
 	planStepTotal := 0
 	resumeIncompletePlan := false
-	recordUserText := userText
+	recordUserText := sessionRoundCodingTask(userText)
 	decisionForRecord := func() codingRequestDecision {
 		if decision, ok := normalizeCodingRequestDecision(codingRequestDecision{
 			Kind:       remoteCtx.RequestKind,
@@ -4355,7 +4387,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 	var decision codingRequestDecision
 	tookApprovedPlan := false
-	if !isGoalSystemContinuation(userText) {
+	if !isGoalSystemContinuation(userText) && !isSessionRoundContinuation(userText) {
 		if approved, ok := h.takeStickyApprovedCodingPlan(userID); ok {
 			tookApprovedPlan = true
 			tasks = approved.Tasks
@@ -4376,7 +4408,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			recordUserText = userText
 		}
 		attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
-		resumeIncompletePlan = codingWorkbenchShouldResumeIncompletePlan(recordUserText, sessionMem)
+		resumeIncompletePlan = codingWorkbenchShouldResumeIncompletePlan(userText, sessionMem)
 		if isGoalSystemContinuation(recordUserText) {
 			resumeIncompletePlan = false
 			h.setStickyCodingRequirementRestatement(userID, "")
@@ -4390,7 +4422,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 				sessionMem = h.getStickyCodingWorkbenchMemory(userID)
 				attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
 			}
-			decision = forceWorkspaceClearCodingDecision(userText, decisionForRecord())
+			decision = forceWorkspaceClearCodingDecision(recordUserText, decisionForRecord())
 			if !remoteCtx.Maintenance {
 				if upgraded := applyCodingSessionImplementationPosture(decision, sessionMem); upgraded.Kind != decision.Kind {
 					log.Printf("[coding-plan] remote session already wrote files; keep read/write implementation")
@@ -4420,7 +4452,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
 	}
 	if len(tasks) == 0 {
-		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
+		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(recordUserText, 80), Description: recordUserText}}
 		planned = false
 	}
 	planOutline = tasks
@@ -4431,6 +4463,15 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			userText = goal
 		}
 		sessionMem.LastSummary = codingPlanResumeStopNote()
+	} else {
+		// A host wave carries a continuation header. The step prompt and the
+		// decision below use the task the wave repeats, not that header.
+		userText = recordUserText
+		if sessionWave {
+			// Prompt-only: the previous round's failure summary is host
+			// accounting, not the state of the work.
+			sessionMem.LastSummary = codingContinuationResumeNote()
+		}
 	}
 	// Same continuation-chain budget as the local runner: writer + reviewer
 	// per step plus retry slack, so a remote multi-step plan cannot mint an
@@ -4738,6 +4779,14 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if strings.TrimSpace(report) == "" {
 		report = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
 	}
+	// A remote step that spent its iteration budget keeps its plan row open.
+	// Continue the same session in another round instead of asking the user
+	// to send another message. A goal turn has its own continuation.
+	continuing := false
+	if note, ok := h.continueCodingWorkbenchAfterIterationBudget(loopCtx, userID, userText, runResults, totalTools); ok {
+		report = note + "\n\n" + strings.TrimSpace(report)
+		continuing = true
+	}
 	// A round that ended early (failed step, nil result) may never have reached
 	// an iteration boundary, leaving the user's mid-run steering queued. Surface
 	// it instead of letting the injection sit silently until the next round.
@@ -4750,6 +4799,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	resp := &IMAgentResponse{
 		Text:            report,
 		TraceEventCount: codingSubAgentActivityTraceCount(totalTools, totalIters),
+	}
+	if continuing {
+		resp.sessionRoundContinue = true
+		resp.ResponseSource = sessionRoundContinuationSource
 	}
 	if errText := goalContinuationCodingHostError(userText, cancelled, runResults); errText != "" {
 		resp.Error = errText

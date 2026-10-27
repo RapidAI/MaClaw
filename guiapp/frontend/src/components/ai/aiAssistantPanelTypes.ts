@@ -83,7 +83,8 @@ export interface AIAssistantPanelHookActions {
     setDraftInputValue: (text: string) => void;
     executeAction: (command: string, routeOptions?: AIAssistantActionRouteOptions) => Promise<boolean | undefined | void>;
     refreshNews: () => void;
-    cancelSession: () => Promise<CancelAIAssistantResult>;
+    /** Stop the open session's work. Pass a key to stop a round that paints this transcript under another session key. */
+    cancelSession: (sessionKey?: string) => Promise<CancelAIAssistantResult>;
     submitAgentView: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     dismissAgentView: (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => void | Promise<void>;
     /** Mark a record_audio card inactive so the mic UI does not re-open. */

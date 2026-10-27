@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,6 +36,12 @@ type companionDocGroupMember struct {
 	UserID    string    `json:"user_id,omitempty"`
 	InvitedAt time.Time `json:"invited_at"`
 	JoinedAt  time.Time `json:"joined_at,omitempty"`
+	// NotificationID is the delivery notice raised for this invitation, so it
+	// can be withdrawn once the invitation is settled.
+	NotificationID string `json:"notification_id,omitempty"`
+	// Muted means the invitee chose to ignore the invitation. The row stays
+	// pending for the admin, but it no longer notifies the invitee.
+	Muted bool `json:"muted,omitempty"`
 }
 
 type companionDocGroup struct {
@@ -324,9 +331,15 @@ func companionGroupView(group companionDocGroup, ownerID string) map[string]any 
 	if admin {
 		members := make([]map[string]any, 0, len(group.Members))
 		for _, member := range group.Members {
+			status := member.Status
+			// A muted pending row is not waiting on the admin: that person
+			// already said no to the notice, so say so instead of showing 待确认.
+			if status == "pending" && member.Muted {
+				status = "ignored"
+			}
 			members = append(members, map[string]any{
 				"contact": member.Contact,
-				"status":  member.Status,
+				"status":  status,
 			})
 		}
 		view["members"] = members
@@ -336,14 +349,21 @@ func companionGroupView(group companionDocGroup, ownerID string) map[string]any 
 
 // latestPendingCompanionInvite is the viewer's newest pending row in this group.
 // One person can be pending under more than one contact. The bell shows one row.
-func latestPendingCompanionInvite(group companionDocGroup, contacts map[string]struct{}) (companionDocGroupMember, bool) {
+// A row the invitee muted stays pending for the admin but never notifies them.
+// The row matches by the invitee's user id first: the invited address can be any
+// verified identity of the account, and the id is what both sides agree on.
+func latestPendingCompanionInvite(group companionDocGroup, userID string, contacts map[string]struct{}) (companionDocGroupMember, bool) {
 	var best companionDocGroupMember
 	found := false
 	for _, member := range group.Members {
-		if member.Status != "pending" || member.Contact == "" {
+		if member.Status != "pending" || member.Muted || member.Contact == "" {
 			continue
 		}
-		if _, ok := contacts[member.Contact]; !ok {
+		mine := userID != "" && member.UserID == userID
+		if !mine {
+			_, mine = contacts[member.Contact]
+		}
+		if !mine {
 			continue
 		}
 		if !found || member.InvitedAt.After(best.InvitedAt) {
@@ -356,6 +376,7 @@ func latestPendingCompanionInvite(group companionDocGroup, contacts map[string]s
 
 func companionGroupInviteView(group companionDocGroup, contact string) map[string]any {
 	invitedAt := ""
+	notificationID := ""
 	for _, member := range group.Members {
 		if member.Contact != contact {
 			continue
@@ -363,15 +384,17 @@ func companionGroupInviteView(group companionDocGroup, contact string) map[strin
 		if !member.InvitedAt.IsZero() {
 			invitedAt = member.InvitedAt.UTC().Format(time.RFC3339)
 		}
+		notificationID = member.NotificationID
 		break
 	}
 	return map[string]any{
-		"id":         group.ID,
-		"name":       group.Name,
-		"icon":       companionGroupIcon(group.Icon),
-		"owner":      group.OwnerLabel,
-		"contact":    contact,
-		"invited_at": invitedAt,
+		"id":              group.ID,
+		"name":            group.Name,
+		"icon":            companionGroupIcon(group.Icon),
+		"owner":           group.OwnerLabel,
+		"contact":         contact,
+		"invited_at":      invitedAt,
+		"notification_id": notificationID,
 	}
 }
 
@@ -526,16 +549,16 @@ func CompanionDocumentGroupMembersHandler(identity *auth.IdentityService) http.H
 		}
 		switch r.Method {
 		case http.MethodPost:
-			addCompanionGroupMember(w, groupID, ownerID, contact)
+			addCompanionGroupMember(r.Context(), identity, w, groupID, ownerID, contact)
 		case http.MethodDelete:
-			removeCompanionGroupMember(w, groupID, ownerID, contact)
+			removeCompanionGroupMember(r.Context(), w, groupID, ownerID, contact)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST or DELETE")
 		}
 	}
 }
 
-func addCompanionGroupMember(w http.ResponseWriter, groupID, ownerID, contact string) {
+func addCompanionGroupMember(ctx context.Context, identity *auth.IdentityService, w http.ResponseWriter, groupID, ownerID, contact string) {
 	loadCompanionDocGroups()
 	companionDocGroups.Lock()
 	group, ok := companionDocGroups.items[groupID]
@@ -549,24 +572,46 @@ func addCompanionGroupMember(w http.ResponseWriter, groupID, ownerID, contact st
 		writeError(w, http.StatusForbidden, "GROUP_FORBIDDEN", "只有群组管理员可以邀请成员")
 		return
 	}
-	for _, member := range group.Members {
-		if member.Contact == contact {
-			companionDocGroups.Unlock()
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "这位用户已经在群组里")
-			return
+	// Inviting again is how an admin reaches someone who ignored the first
+	// invitation: that pending row is re-armed and re-notified. A pending row
+	// that is not muted is already in their bell; an accepted row is a member.
+	rearmIndex := -1
+	for i, member := range group.Members {
+		if member.Contact != contact {
+			continue
 		}
+		if member.Status == "pending" && member.Muted {
+			rearmIndex = i
+			break
+		}
+		companionDocGroups.Unlock()
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "这位用户已经在群组里")
+		return
 	}
-	if len(group.Members) >= 200 {
+	// Re-arming does not add a member, so the cap only applies to a new row.
+	if rearmIndex < 0 && len(group.Members) >= 200 {
 		companionDocGroups.Unlock()
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "群组成员已达上限")
 		return
 	}
 	previous := cloneCompanionGroup(group)
-	group.Members = append(group.Members, companionDocGroupMember{
-		Contact:   contact,
-		Status:    "pending",
-		InvitedAt: time.Now().UTC(),
-	})
+	// The user id resolved from the contact is the durable credential for this
+	// invitation: the invited address may be any verified identity of the
+	// account, and it may not be the account email at all.
+	inviteeUserID := companionContactUserID(ctx, identity, group.TenantID, contact)
+	if rearmIndex >= 0 {
+		group.Members[rearmIndex].Muted = false
+		group.Members[rearmIndex].NotificationID = ""
+		group.Members[rearmIndex].InvitedAt = time.Now().UTC()
+		group.Members[rearmIndex].UserID = inviteeUserID
+	} else {
+		group.Members = append(group.Members, companionDocGroupMember{
+			Contact:   contact,
+			Status:    "pending",
+			UserID:    inviteeUserID,
+			InvitedAt: time.Now().UTC(),
+		})
+	}
 	companionDocGroups.items[groupID] = group
 	err := persistCompanionDocGroupsLocked()
 	if err != nil {
@@ -576,10 +621,55 @@ func addCompanionGroupMember(w http.ResponseWriter, groupID, ownerID, contact st
 		return
 	}
 	companionDocGroups.Unlock()
+	// The invitation must reach a person who is offline now, so it becomes a
+	// real notification: pushed when they are connected, pulled when they are not.
+	// The stored member row keeps the notice id for a later revoke.
+	if notifier := companionGroupInviteNotifierFor(); notifier != nil {
+		noticeID := notifier.notifyInvite(ctx, group, contact, inviteeUserID)
+		if noticeID != "" {
+			if stored := storeCompanionGroupMemberNotification(groupID, contact, noticeID); stored != nil {
+				group = *stored
+			} else {
+				// The row was settled or removed between the invite and this
+				// write. A notice nothing can revoke later must not be left
+				// sitting in the invitee's bell.
+				notifier.revokeInvites(ctx, noticeID)
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, companionGroupView(group, ownerID))
 }
 
-func removeCompanionGroupMember(w http.ResponseWriter, groupID, ownerID, contact string) {
+// storeCompanionGroupMemberNotification records the delivery notice on a member
+// row. It returns the updated group, or nil when the row disappeared meanwhile.
+func storeCompanionGroupMemberNotification(groupID, contact, noticeID string) *companionDocGroup {
+	loadCompanionDocGroups()
+	companionDocGroups.Lock()
+	defer companionDocGroups.Unlock()
+	group, ok := companionDocGroups.items[groupID]
+	if !ok {
+		return nil
+	}
+	for i := range group.Members {
+		if group.Members[i].Contact != contact || group.Members[i].Status != "pending" {
+			continue
+		}
+		group.Members[i].NotificationID = noticeID
+		companionDocGroups.items[groupID] = group
+		if err := persistCompanionDocGroupsLocked(); err != nil {
+			log.Printf("[companion-group] persist invite notice %s: %v", groupID, err)
+			// Without the id on disk a decision could never revoke the notice.
+			// Keep memory and disk agreeing and let the caller withdraw it.
+			group.Members[i].NotificationID = ""
+			companionDocGroups.items[groupID] = group
+			return nil
+		}
+		return &group
+	}
+	return nil
+}
+
+func removeCompanionGroupMember(ctx context.Context, w http.ResponseWriter, groupID, ownerID, contact string) {
 	loadCompanionDocGroups()
 	companionDocGroups.Lock()
 	group, ok := companionDocGroups.items[groupID]
@@ -595,9 +685,13 @@ func removeCompanionGroupMember(w http.ResponseWriter, groupID, ownerID, contact
 	}
 	next := make([]companionDocGroupMember, 0, len(group.Members))
 	found := false
+	noticeIDs := make([]string, 0, 1)
 	for _, member := range group.Members {
 		if member.Contact == contact {
 			found = true
+			if member.NotificationID != "" && !companionGroupNotificationStillPending(group.Members, member.NotificationID, contact) {
+				noticeIDs = append(noticeIDs, member.NotificationID)
+			}
 			continue
 		}
 		next = append(next, member)
@@ -618,6 +712,9 @@ func removeCompanionGroupMember(w http.ResponseWriter, groupID, ownerID, contact
 		return
 	}
 	companionDocGroups.Unlock()
+	// A withdrawn invitation must leave the bell, not stay as a notice whose
+	// buttons the hub would reject.
+	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
 	writeJSON(w, http.StatusOK, companionGroupView(group, ownerID))
 }
 
@@ -642,7 +739,7 @@ func CompanionDocumentGroupHandler(identity *auth.IdentityService) http.HandlerF
 		case http.MethodPatch:
 			updateCompanionGroup(w, r, groupID, ownerID)
 		case http.MethodDelete:
-			deleteCompanionGroup(w, groupID, ownerID)
+			deleteCompanionGroup(r.Context(), w, groupID, ownerID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH or DELETE")
 		}
@@ -695,7 +792,7 @@ func updateCompanionGroup(w http.ResponseWriter, r *http.Request, groupID, owner
 	writeJSON(w, http.StatusOK, companionGroupView(group, ownerID))
 }
 
-func deleteCompanionGroup(w http.ResponseWriter, groupID, ownerID string) {
+func deleteCompanionGroup(ctx context.Context, w http.ResponseWriter, groupID, ownerID string) {
 	loadCompanionDocGroups()
 	companionDocGroups.Lock()
 	group, found := companionDocGroups.items[groupID]
@@ -709,6 +806,7 @@ func deleteCompanionGroup(w http.ResponseWriter, groupID, ownerID string) {
 		writeError(w, http.StatusForbidden, "GROUP_FORBIDDEN", "只有群组管理员可以解散群组")
 		return
 	}
+	noticeIDs := companionGroupMemberNotificationIDs(group.Members)
 	previous := cloneCompanionGroup(group)
 	delete(companionDocGroups.items, groupID)
 	if err := persistCompanionDocGroupsLocked(); err != nil {
@@ -718,6 +816,8 @@ func deleteCompanionGroup(w http.ResponseWriter, groupID, ownerID string) {
 		return
 	}
 	companionDocGroups.Unlock()
+	// Every pending invitation in a dissolved group is dead; its notice must go.
+	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -806,7 +906,7 @@ func CompanionDocumentGroupInvitesHandler(identity *auth.IdentityService) http.H
 			if group.OwnerID == ownerID {
 				continue
 			}
-			member, ok := latestPendingCompanionInvite(group, contacts)
+			member, ok := latestPendingCompanionInvite(group, ownerID, contacts)
 			if !ok {
 				continue
 			}
@@ -830,7 +930,7 @@ func CompanionDocumentGroupAcceptHandler(identity *auth.IdentityService) http.Ha
 		if !ok {
 			return
 		}
-		decideCompanionGroupInvite(w, r, identity, principal, ownerID, true)
+		decideCompanionGroupInvite(r.Context(), w, r, identity, principal, ownerID, "accept")
 	}
 }
 
@@ -847,17 +947,49 @@ func CompanionDocumentGroupDeclineHandler(identity *auth.IdentityService) http.H
 		if !ok {
 			return
 		}
-		decideCompanionGroupInvite(w, r, identity, principal, ownerID, false)
+		decideCompanionGroupInvite(r.Context(), w, r, identity, principal, ownerID, "decline")
 	}
 }
 
-func decideCompanionGroupInvite(w http.ResponseWriter, r *http.Request, identity *auth.IdentityService, principal *auth.ViewerPrincipal, ownerID string, accept bool) {
+// CompanionDocumentGroupIgnoreHandler silences an invitation without deciding
+// it. The admin still sees the member as pending; the invitee stops being
+// notified. Unlike a decline, the row survives so the person can still be
+// accepted from the group's member list later.
+//
+//	POST /api/mobile/documents/groups/{id}/ignore
+func CompanionDocumentGroupIgnoreHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, ownerID, ok := companionRequireViewer(w, r, identity)
+		if !ok {
+			return
+		}
+		decideCompanionGroupInvite(r.Context(), w, r, identity, principal, ownerID, "ignore")
+	}
+}
+
+// decideCompanionGroupInvite accepts, declines, or mutes the caller's pending
+// invitation. Accepting and declining settle the invitation and withdraw its
+// notice. Ignoring keeps the row pending for the admin but mutes it for the
+// invitee, so the bell stays quiet until the admin invites them again.
+func decideCompanionGroupInvite(ctx context.Context, w http.ResponseWriter, r *http.Request, identity *auth.IdentityService, principal *auth.ViewerPrincipal, ownerID string, action string) {
+	switch action {
+	case "accept", "decline", "ignore":
+	default:
+		// The three handlers below only pass these values. A new caller with a
+		// typo must not silently accept the invitation.
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "未知的邀请处理")
+		return
+	}
 	groupID := strings.TrimSpace(r.PathValue("id"))
 	if !companionGroupTokenPattern.MatchString(groupID) {
 		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "没有找到入群邀请")
 		return
 	}
-	contacts := companionViewerContactSet(identity, r.Context(), principal)
+	contacts := companionViewerContactSet(identity, ctx, principal)
 	loadCompanionDocGroups()
 	companionDocGroups.Lock()
 	group, ok := companionDocGroups.items[groupID]
@@ -870,17 +1002,36 @@ func decideCompanionGroupInvite(w http.ResponseWriter, r *http.Request, identity
 	// Leaving a second address pending would put the same group back in the bell.
 	now := time.Now().UTC()
 	kept := make([]companionDocGroupMember, 0, len(group.Members))
+	noticeIDs := make([]string, 0, 1)
 	found := false
 	for _, member := range group.Members {
 		if member.Status == "pending" && member.Contact != "" {
-			if _, isMine := contacts[member.Contact]; isMine {
+			// The user id is the durable credential: the invited address may be
+			// any verified identity of this account and not its account email.
+			isMine := ownerID != "" && member.UserID == ownerID
+			if !isMine {
+				_, isMine = contacts[member.Contact]
+			}
+			if isMine {
 				found = true
-				if !accept {
-					continue
+				if member.NotificationID != "" {
+					noticeIDs = append(noticeIDs, member.NotificationID)
 				}
-				member.Status = "accepted"
-				member.UserID = ownerID
-				member.JoinedAt = now
+				switch action {
+				case "decline":
+					continue
+				case "ignore":
+					member.Muted = true
+					member.NotificationID = ""
+					kept = append(kept, member)
+					continue
+				default:
+					member.Status = "accepted"
+					member.UserID = ownerID
+					member.JoinedAt = now
+					member.Muted = false
+					member.NotificationID = ""
+				}
 			}
 		}
 		kept = append(kept, member)
@@ -901,5 +1052,7 @@ func decideCompanionGroupInvite(w http.ResponseWriter, r *http.Request, identity
 		return
 	}
 	companionDocGroups.Unlock()
+	// A decided invitation is answered. Its notice must leave every device.
+	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LatexSettingsPanel } from '../LatexSettingsPanel';
 
@@ -37,6 +37,7 @@ describe('LatexSettingsPanel', () => {
 
     afterEach(() => {
         cleanup();
+        vi.useRealTimers();
         vi.clearAllMocks();
     });
 
@@ -69,5 +70,40 @@ describe('LatexSettingsPanel', () => {
         const box = await screen.findByRole('switch');
         fireEvent.click(box);
         await waitFor(() => expect(mocks.setEnabled).toHaveBeenCalledWith(false));
+    });
+
+    it('does not keep polling a ready installation', async () => {
+        vi.useFakeTimers();
+        render(<LatexSettingsPanel lang="en" />);
+        await act(async () => { await Promise.resolve(); });
+        expect(mocks.status).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            vi.advanceTimersByTime(6000);
+            await Promise.resolve();
+        });
+        expect(mocks.status).toHaveBeenCalledTimes(1);
+    });
+
+    it('polls during installation and stops when ready', async () => {
+        vi.useFakeTimers();
+        mocks.status.mockResolvedValueOnce({
+            enabled: true,
+            ready: false,
+            phase: 'downloading',
+            percent: 25,
+        });
+        render(<LatexSettingsPanel lang="en" />);
+        await act(async () => { await Promise.resolve(); });
+        expect(mocks.status).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            vi.advanceTimersByTime(2000);
+            await Promise.resolve();
+        });
+        expect(mocks.status).toHaveBeenCalledTimes(2);
+        await act(async () => {
+            vi.advanceTimersByTime(6000);
+            await Promise.resolve();
+        });
+        expect(mocks.status).toHaveBeenCalledTimes(2);
     });
 });

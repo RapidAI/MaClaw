@@ -13,6 +13,7 @@ import {
     ShowItemInFolder,
     SyncFileCompanionShare,
     UpdateFileCompanionGroup,
+    UpdateFileCompanionShare,
     FileCompanionExportProject,
 } from "../../../wailsjs/go/main/App";
 import { useDialog } from "../CustomDialog";
@@ -38,6 +39,9 @@ export type CompanionLibraryItem = {
     highlights: string;
     // Notes are other readers' discussion carried on each cloud row.
     notes: CompanionShareNote[];
+    // token is the share identity on the hub. A cloud row's id is the token,
+    // but a local row has none, so the edit dialog reads it here.
+    token: string;
 };
 
 type ShareAudience = "public" | "private" | "person" | "group";
@@ -63,6 +67,20 @@ export type CompanionShareUpdate = {
     messages: unknown[];
     project: boolean;
     replaceMessages: boolean;
+};
+
+// CompanionShareRow is the share a library row carries: who can see it and how
+// long it lasts. The title bar reads it to echo the share already on screen.
+export type CompanionShareRow = {
+    path: string;
+    token: string;
+    mine: boolean;
+    name: string;
+    visibility: string;
+    expiresAt: string;
+    shareUrl: string;
+    target: string;
+    groupId: string;
 };
 
 type CompanionGroupMember = { contact: string; status: string };
@@ -150,6 +168,7 @@ function readItem(raw: unknown): CompanionLibraryItem | null {
         groupId: textOf(record, "groupId", "GroupID"),
         highlights: textOf(record, "highlights", "Highlights"),
         notes: companionNotesFrom(record.notes ?? record.Notes),
+        token: textOf(record, "token", "Token") || (id.startsWith("cd_") ? id : ""),
     };
 }
 
@@ -399,6 +418,35 @@ function readRemoved(raw: unknown): string[] {
     return raw.filter((item): item is string => typeof item === "string" && item !== "");
 }
 
+// companionMineShares reads the cloud rows this person created. A document
+// that already has one of these must not be shared a second time from the
+// title bar; the button edits the share it already has.
+export function companionMineShares(raw: unknown): CompanionShareRow[] {
+    if (!raw || typeof raw !== "object") return [];
+    const record = raw as Record<string, unknown>;
+    const items = Array.isArray(record.items) ? record.items : Array.isArray(record.Items) ? record.Items : [];
+    const out: CompanionShareRow[] = [];
+    for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const row = item as Record<string, unknown>;
+        if (!boolOf(row, "mine", "Mine")) continue;
+        const token = textOf(row, "token", "Token") || textOf(row, "id", "ID");
+        if (!token.startsWith("cd_")) continue;
+        out.push({
+            path: textOf(row, "path", "Path"),
+            token,
+            mine: true,
+            name: textOf(row, "name", "Name"),
+            visibility: textOf(row, "visibility", "Visibility") || "public",
+            expiresAt: textOf(row, "expiresAt", "ExpiresAt"),
+            shareUrl: textOf(row, "shareUrl", "ShareURL"),
+            target: textOf(row, "target", "Target"),
+            groupId: textOf(row, "groupId", "GroupID"),
+        });
+    }
+    return out;
+}
+
 function audienceLabel(visibility: string): string {
     if (visibility === "private") return "私密";
     if (visibility === "person") return "指定的人";
@@ -419,11 +467,35 @@ function shareDays(span: ShareSpan, amount: string): number | null {
     return value;
 }
 
+// shareSpanFromExpiry reads a share's remaining life back into the dialog's
+// 永久/几天/几月 control, so 修改 opens on what the link already has. A whole
+// number of months stays months; anything else counts in days. A link that
+// expires within the current day still shows the one day it has left.
+function shareSpanFromExpiry(expiresAt: string): { span: ShareSpan; amount: string } {
+    if (!expiresAt) return { span: "forever", amount: "7" };
+    const when = Date.parse(expiresAt);
+    if (Number.isNaN(when)) return { span: "forever", amount: "7" };
+    const days = Math.ceil((when - Date.now()) / 86_400_000);
+    if (days <= 0) return { span: "days", amount: "1" };
+    if (days % 30 === 0 && days <= 3660) return { span: "months", amount: String(days / 30) };
+    return { span: "days", amount: String(Math.min(days, 3660)) };
+}
+
 function whenLabel(item: CompanionLibraryItem): string {
     if (item.permanent || (item.source === "cloud" && !item.expiresAt)) return "永久";
     if (item.expiresAt) return `至 ${item.expiresAt.slice(0, 10)}`;
     if (item.openedAt) return item.openedAt.slice(0, 10);
     return "";
+}
+
+// sharedMarkTitle is the hover text on the 已分享 mark: the share's own range
+// and expiry when this row carries them, and where 修改 lives otherwise.
+function sharedMarkTitle(item: CompanionLibraryItem, row: CompanionLibraryItem | null): string {
+    if (row) {
+        const range = audienceLabel(row.visibility || item.visibility);
+        return item.mine ? `已分享 — ${range}，${whenLabel(row)}` : `收到的分享 — ${range}，${whenLabel(row)}`;
+    }
+    return "已分享 — 到云端项目里可以修改分享范围和有效期";
 }
 
 function fmtSize(size: number): string {
@@ -499,6 +571,7 @@ export function CompanionLibraryView({
     onShareUpdated,
     onListed,
     onShareProject,
+    onEditShare,
     onImportLink,
     onProjectDeleted,
     libraryDeleteGen,
@@ -511,6 +584,9 @@ export function CompanionLibraryView({
     onShareUpdated?: (update: CompanionShareUpdate) => void;
     onListed?: (listed: unknown) => void;
     onShareProject: (path: string) => void;
+    // A cloud row this person created opens 修改 instead of 分享: the link
+    // already exists, so the dialog edits it rather than making another.
+    onEditShare: (row: CompanionShareRow) => void;
     onImportLink: (link: string) => void;
     onProjectDeleted?: (path: string) => void;
     // Bumped when a delete finishes. A list that started earlier must not paint
@@ -671,6 +747,18 @@ export function CompanionLibraryView({
 
     const localItems = items.filter((item) => item.source !== "cloud");
     const cloudItems = items.filter((item) => item.source === "cloud");
+    // A local document that was already published has a cloud row beside it.
+    // The local card must offer 修改 on that row instead of 分享, or the same
+    // paper ends up with two links.
+    const sharedByPath = useMemo(() => {
+        const map = new Map<string, CompanionLibraryItem>();
+        for (const item of cloudItems) {
+            if (!item.mine || !item.path) continue;
+            const key = companionSharePathKey(item.path);
+            if (key && !map.has(key)) map.set(key, item);
+        }
+        return map;
+    }, [cloudItems]);
     // One parse for the whole list; each row then reads its count from the map.
     const markCounts = useMemo(
         () => loadPdfMarkCounts(items.map((item) => item.path).filter(Boolean)),
@@ -689,9 +777,17 @@ export function CompanionLibraryView({
                 ? (item.mine ? "我的分享" : (item.owner || "别人的分享"))
                 : "本机",
             fmtSize(item.size),
-            dateOf(item.openedAt) ? (item.source === "cloud" ? dateOf(item.openedAt) : `打开于 ${dateOf(item.openedAt)}`) : "",
+            // A cloud row's openedAt is when the share was created, so the
+            // card says 分享于 instead of 打开于.
+            dateOf(item.openedAt) ? (item.source === "cloud" ? `分享于 ${dateOf(item.openedAt)}` : `打开于 ${dateOf(item.openedAt)}`) : "",
         ].filter(Boolean).join(" · ");
         const isOpen = item.path === activePath;
+        // A cloud row is itself a share. A local row is only shared when this
+        // person already published the same path, and then 修改 edits that row.
+        const shareRow = item.source === "cloud"
+            ? (item.mine ? item : null)
+            : (sharedByPath.get(companionSharePathKey(item.path)) ?? null);
+        const alreadyShared = item.source === "cloud" || Boolean(shareRow);
         return (
             <div key={item.id} className="file-companion-project" data-testid={`file-companion-library-card-${item.id}`} data-open={isOpen ? "true" : undefined}>
                 <span className="file-companion-project-kind" data-kind={kindOf(item.name)} aria-hidden="true">{kindLabel(item.name)}</span>
@@ -726,17 +822,50 @@ export function CompanionLibraryView({
                     {item.shareUrl ? <small className="file-companion-project-url" data-testid={`file-companion-library-url-${item.id}`}>{item.shareUrl}</small> : null}
                 </div>
                 <div className="file-companion-project-actions">
-                    <button
-                        type="button"
-                        className="file-companion-project-action"
-                        data-testid={`file-companion-library-share-action-${item.id}`}
-                        disabled={!item.path || Boolean(busy)}
-                        title="分享 — 上传文档、高亮和聊天，生成云端链接"
-                        onClick={() => onShareProject(item.path)}
-                    >
-                        分享
-                    </button>
-                    {item.path && item.mine ? (
+                    {alreadyShared ? (
+                        <span
+                            className="file-companion-project-shared"
+                            data-testid={`file-companion-library-shared-mark-${item.id}`}
+                            title={sharedMarkTitle(item, shareRow)}
+                        >
+                            <LibraryGlyph name="share" size={12} />
+                            <span>{item.source === "cloud" && !item.mine ? "收到的" : "已分享"}</span>
+                        </span>
+                    ) : (
+                        <button
+                            type="button"
+                            className="file-companion-project-action"
+                            data-testid={`file-companion-library-share-action-${item.id}`}
+                            disabled={!item.path || Boolean(busy)}
+                            title="分享 — 上传文档、高亮和聊天，生成云端链接"
+                            onClick={() => onShareProject(item.path)}
+                        >
+                            分享
+                        </button>
+                    )}
+                    {item.source === "cloud" && shareRow ? (
+                        <button
+                            type="button"
+                            className="file-companion-project-action"
+                            data-testid={`file-companion-library-edit-share-${item.id}`}
+                            disabled={Boolean(busy)}
+                            title="修改分享 — 调整分享范围、有效期，链接不变"
+                            onClick={() => onEditShare({
+                                path: shareRow.path,
+                                token: shareRow.token,
+                                mine: true,
+                                name: shareRow.name,
+                                visibility: shareRow.visibility,
+                                expiresAt: shareRow.expiresAt,
+                                shareUrl: shareRow.shareUrl,
+                                target: shareRow.target,
+                                groupId: shareRow.groupId,
+                            })}
+                        >
+                            修改
+                        </button>
+                    ) : null}
+                    {item.path && item.source === "cloud" && shareRow ? (
                         <button
                             type="button"
                             className="file-companion-project-action"
@@ -1262,7 +1391,7 @@ export function CompanionGroupsDialog({
                                                     {selected.members.map((member) => (
                                                         <div key={member.contact} className="file-companion-library-member">
                                                             <span className="file-companion-library-member-contact">{member.contact}</span>
-                                                            <small className="file-companion-library-member-status" data-ok={member.status === "accepted" ? "true" : undefined}>{member.status === "accepted" ? "已加入" : "待确认"}</small>
+                                                            <small className="file-companion-library-member-status" data-ok={member.status === "accepted" ? "true" : undefined}>{member.status === "accepted" ? "已加入" : member.status === "ignored" ? "已忽略" : "待确认"}</small>
                                                             <button
                                                                 type="button"
                                                                 className="file-companion-library-x"
@@ -1322,11 +1451,13 @@ export function CompanionGroupsDialog({
 }
 
 // CompanionShareDialog is the sharing popup: audience, validity, password,
-// person target, or a group pick. It shares one project path and offers to
-// sync the newest marks afterwards.
+// person target, or a group pick. With no share it publishes one project and
+// returns a link. With a share it edits that link — the same link keeps
+// working, only who can open it and how long it lasts change.
 export function CompanionShareDialog({
     path,
     name,
+    share,
     showToast,
     onListed,
     libraryDeleteGen,
@@ -1334,20 +1465,36 @@ export function CompanionShareDialog({
 }: {
     path: string;
     name: string;
+    // share is the existing cloud row this dialog edits. Absent means 分享.
+    share?: CompanionShareRow | null;
     showToast: LibraryToast;
     onListed?: (listed: unknown) => void;
     libraryDeleteGen?: { current: number };
     onClose: () => void;
 }) {
-    const [visibility, setVisibility] = useState<ShareAudience>("public");
-    const [personTarget, setPersonTarget] = useState("");
-    const [groupID, setGroupID] = useState("");
+    const editing = Boolean(share?.token);
+    const initialSpan = useMemo(() => shareSpanFromExpiry(share?.expiresAt ?? ""), [share?.expiresAt]);
+    const [visibility, setVisibility] = useState<ShareAudience>((share?.visibility as ShareAudience) || "public");
+    const [personTarget, setPersonTarget] = useState(share?.visibility === "person" ? share.target : "");
+    const [groupID, setGroupID] = useState(share?.visibility === "group" ? share.groupId : "");
     const [groups, setGroups] = useState<CompanionGroup[]>([]);
-    const [span, setSpan] = useState<ShareSpan>("forever");
-    const [amount, setAmount] = useState("7");
+    const [span, setSpan] = useState<ShareSpan>(initialSpan.span);
+    const [amount, setAmount] = useState(initialSpan.amount);
+    // 修改 shows the link's remaining life, but only sends a new expiry once
+    // the reader touches 有效期. Sending the rounded-down remaining days on
+    // every save would walk the expiry a day earlier each time.
+    const [expiryTouched, setExpiryTouched] = useState(false);
+    // 修改 starts with an empty password field: the hub keeps the one already
+    // stored unless a new one is typed.
     const [password, setPassword] = useState("");
     const [shareBusy, setShareBusy] = useState(false);
-    const [shareURL, setShareURL] = useState("");
+    const [shareURL, setShareURL] = useState(share?.shareUrl ?? "");
+    // The saved result is what the header echoes. The row the dialog was
+    // opened with is a snapshot, so it still shows the old audience and
+    // expiry after a save.
+    const [savedEcho, setSavedEcho] = useState<{ visibility: string; expiresAt: string } | null>(null);
+    const echoVisibility = savedEcho?.visibility ?? share?.visibility ?? "public";
+    const echoExpiresAt = savedEcho ? savedEcho.expiresAt : (share?.expiresAt ?? "");
     const listedRef = useRef(onListed);
     listedRef.current = onListed;
 
@@ -1387,16 +1534,32 @@ export function CompanionShareDialog({
     const highlightsCount = marks.length;
 
     const shareCurrent = async () => {
-        if (!path || shareBusy) return;
-        const days = shareDays(span, amount);
+        // 修改 works from the share alone: a row this account created on
+        // another machine has no local copy here, and it is still editable.
+        if ((!editing && !path) || shareBusy) return;
+        // An edit that did not touch 有效期 sends -1, which the backend reads
+        // as "keep the expiry already on the link".
+        const days = editing && !expiryTouched ? -1 : shareDays(span, amount);
         if (days === null) {
             showToast("分享时间不正确", "error", 6000);
             return;
         }
         const secret = password.trim();
-        if (visibility === "private" && (Array.from(secret).length < 4 || Array.from(secret).length > 64)) {
-            showToast("分享密码需为 4–64 个字符", "error", 6000);
-            return;
+        // A blank password keeps the one already on the link, but only when
+        // the link is private already. echoVisibility is the saved state, so
+        // a second save after switching to 私密 does not ask for the password
+        // again. A link that becomes private needs one now.
+        const keepStoredPassword = editing && secret === "" && echoVisibility === "private";
+        if (visibility === "private" && !keepStoredPassword) {
+            const n = Array.from(secret).length;
+            if (n === 0) {
+                showToast("请设置分享密码", "error", 6000);
+                return;
+            }
+            if (n < 4 || n > 64) {
+                showToast("分享密码需为 4–64 个字符", "error", 6000);
+                return;
+            }
         }
         const target = visibility === "person" ? personTarget.trim() : visibility === "group" ? groupID : "";
         if (visibility === "person" && target === "") {
@@ -1409,9 +1572,19 @@ export function CompanionShareDialog({
         }
         setShareBusy(true);
         try {
-            const result = await ShareFileCompanionDocument(path, visibility, visibility === "private" ? secret : "", target, marksJSON, days) as Record<string, unknown>;
+            const result = editing
+                ? await UpdateFileCompanionShare(share!.token, visibility, visibility === "private" ? secret : "", target, days) as Record<string, unknown>
+                : await ShareFileCompanionDocument(path, visibility, visibility === "private" ? secret : "", target, marksJSON, days) as Record<string, unknown>;
             setShareURL(textOf(result, "url", "URL"));
-            showToast("已分享到云端", "success", 6000);
+            setSavedEcho({
+                visibility: textOf(result, "visibility", "Visibility") || visibility,
+                expiresAt: textOf(result, "expiresAt", "ExpiresAt"),
+            });
+            // The password just sent is stored on the link now. Clearing the
+            // field means the next save keeps it instead of hashing it again.
+            setPassword("");
+            setExpiryTouched(false);
+            showToast(editing ? "已更新分享" : "已分享到云端", "success", 6000);
             await reload();
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
@@ -1446,10 +1619,11 @@ export function CompanionShareDialog({
             <div className="file-companion-dialog-card file-companion-share" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
-                        <h2 id="file-companion-share-dialog-title">分享到云端</h2>
+                        <h2 id="file-companion-share-dialog-title">{editing ? "修改分享" : "分享到云端"}</h2>
                         <p className="file-companion-dialog-sub">
-                            <span className="file-companion-dialog-doc">{name || "当前文档"}</span>
-                            {highlightsCount > 0 ? <span className="file-companion-dialog-dot">标注 {highlightsCount}</span> : null}
+                            <span className="file-companion-dialog-doc">{name || share?.name || "当前文档"}</span>
+                            {editing ? <span className="file-companion-dialog-dot">当前 {audienceLabel(echoVisibility)} · {echoExpiresAt ? `至 ${echoExpiresAt.slice(0, 10)}` : "永久"}</span> : null}
+                            {!editing && highlightsCount > 0 ? <span className="file-companion-dialog-dot">标注 {highlightsCount}</span> : null}
                         </p>
                     </div>
                     <button
@@ -1492,7 +1666,7 @@ export function CompanionShareDialog({
                                 data-testid="file-companion-share-password"
                                 type="password"
                                 aria-label="分享密码"
-                                placeholder="设置密码，4–64 个字符"
+                                placeholder={editing ? "留空则保持原密码" : "设置密码，4–64 个字符"}
                                 value={password}
                                 onChange={(event) => setPassword(event.target.value)}
                             />
@@ -1529,9 +1703,9 @@ export function CompanionShareDialog({
                         <h3 className="file-companion-dialog-label">有效期</h3>
                         <div className="file-companion-dialog-row">
                             <div className="file-companion-segment" role="group" aria-label="有效期">
-                                <button type="button" data-testid="file-companion-share-forever" aria-pressed={span === "forever"} onClick={() => setSpan("forever")}>永久</button>
-                                <button type="button" data-testid="file-companion-share-days" aria-pressed={span === "days"} onClick={() => setSpan("days")}>几天</button>
-                                <button type="button" data-testid="file-companion-share-months" aria-pressed={span === "months"} onClick={() => setSpan("months")}>几月</button>
+                                <button type="button" data-testid="file-companion-share-forever" aria-pressed={span === "forever"} onClick={() => { setSpan("forever"); setExpiryTouched(true); }}>永久</button>
+                                <button type="button" data-testid="file-companion-share-days" aria-pressed={span === "days"} onClick={() => { setSpan("days"); setExpiryTouched(true); }}>几天</button>
+                                <button type="button" data-testid="file-companion-share-months" aria-pressed={span === "months"} onClick={() => { setSpan("months"); setExpiryTouched(true); }}>几月</button>
                             </div>
                             {span !== "forever" ? (
                                 <label className="file-companion-dialog-amount">
@@ -1543,7 +1717,7 @@ export function CompanionShareDialog({
                                         max={span === "months" ? 122 : 3660}
                                         aria-label={span === "months" ? "分享月数" : "分享天数"}
                                         value={amount}
-                                        onChange={(event) => setAmount(event.target.value)}
+                                        onChange={(event) => { setAmount(event.target.value); setExpiryTouched(true); }}
                                     />
                                     <span>{span === "months" ? "个月" : "天"}</span>
                                 </label>
@@ -1553,7 +1727,7 @@ export function CompanionShareDialog({
 
                     {shareURL ? (
                         <section className="file-companion-dialog-section file-companion-dialog-result" data-testid="file-companion-share-result">
-                            <h3 className="file-companion-dialog-label">链接已生成</h3>
+                            <h3 className="file-companion-dialog-label">{editing ? "分享链接" : "链接已生成"}</h3>
                             <div className="file-companion-dialog-linkrow">
                                 <p className="file-companion-dialog-link" data-testid="file-companion-library-link">{shareURL}</p>
                                 <button type="button" className="file-companion-dialog-copy" data-testid="file-companion-library-copy" aria-label="复制分享链接" title="复制分享链接" onClick={() => { void copyText(shareURL, showToast); }}>
@@ -1566,13 +1740,17 @@ export function CompanionShareDialog({
                 </div>
 
                 <footer className="file-companion-dialog-foot">
-                    <p className="file-companion-dialog-hint">分享包含文档、高亮和聊天，之后可同步新标注。</p>
+                    <p className="file-companion-dialog-hint">
+                        {editing ? "改范围或有效期后，链接不变，已导入的人继续可用。" : "分享包含文档、高亮和聊天，之后可同步新标注。"}
+                    </p>
                     <div className="file-companion-dialog-actions">
-                        <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-library-sync" disabled={shareBusy} onClick={() => { void syncCurrent(); }}>
-                            同步更新
-                        </button>
+                        {editing ? null : (
+                            <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-library-sync" disabled={shareBusy} onClick={() => { void syncCurrent(); }}>
+                                同步更新
+                            </button>
+                        )}
                         <button type="button" className="file-companion-dialog-primary" data-testid="file-companion-library-share" disabled={shareBusy} aria-busy={shareBusy} onClick={() => { void shareCurrent(); }}>
-                            {shareBusy ? "正在分享…" : "分享到云端"}
+                            {shareBusy ? (editing ? "正在保存…" : "正在分享…") : (editing ? "保存修改" : "分享到云端")}
                         </button>
                     </div>
                 </footer>

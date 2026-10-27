@@ -79,6 +79,7 @@ const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documen
 const importShare = vi.fn(async (..._args: any[]): Promise<{ id: string; name: string; path: string; source: string }> => ({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" }));
 const listGroups = vi.fn(async () => [] as Array<Record<string, unknown>>);
 const syncShare = vi.fn(async () => ({ revision: 2 }));
+const updateShare = vi.fn(async (..._args: unknown[]) => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" }));
 // AddFileCompanionShareNote returns the legacy notes array or the newer
 // { notes, notesRevision } object; companionNotePost accepts both.
 type AddShareNoteResult = Array<Record<string, unknown>> | { notes?: Array<Record<string, unknown>>; notesRevision?: number };
@@ -134,6 +135,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportProject: (...args: Parameters<typeof exportProject>) => exportProject(...args),
     ListFileCompanionLibrary: (...args: Parameters<typeof listLibrary>) => listLibrary(...args),
     ShareFileCompanionDocument: (...args: Parameters<typeof shareDocument>) => shareDocument(...args),
+    UpdateFileCompanionShare: (...args: Parameters<typeof updateShare>) => updateShare(...args),
     ImportFileCompanionShare: (...args: Parameters<typeof importShare>) => importShare(...args),
     ListFileCompanionGroups: (...args: Parameters<typeof listGroups>) => listGroups(...args),
     SyncFileCompanionShare: (...args: Parameters<typeof syncShare>) => syncShare(...args),
@@ -310,6 +312,8 @@ beforeEach(() => {
     listGroups.mockResolvedValue([]);
     syncShare.mockReset();
     syncShare.mockResolvedValue({ revision: 2 });
+    updateShare.mockReset();
+    updateShare.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" });
     addShareNote.mockReset();
     addShareNote.mockResolvedValue([]);
     createGroup.mockReset();
@@ -1923,6 +1927,72 @@ describe("FileCompanionWindow", () => {
         // 导出项目 is per project, not per open tab.
         fireEvent.click(screen.getByTestId("file-companion-library-export-local:a"));
         await waitFor(() => expect(exportProject).toHaveBeenCalledWith("C:/notes/a.md", expect.any(String)));
+    });
+
+    it("marks an already shared cloud project instead of offering 分享 again, and edits that link", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        listLibrary.mockResolvedValue({
+            items: [
+                { id: "local:a", name: "论文.pdf", path: "C:/notes/a.pdf", source: "local", openedAt: "2026-10-25T00:00:00Z" },
+                {
+                    id: token,
+                    token,
+                    name: "论文.pdf",
+                    path: "C:/notes/a.pdf",
+                    source: "cloud",
+                    owner: "me@example.com",
+                    visibility: "public",
+                    permanent: false,
+                    expiresAt: "2026-11-24T00:00:00Z",
+                    shareUrl: `https://hub.example/hub/documents/shares/${token}`,
+                    openedAt: "2026-10-25T00:00:00Z",
+                    mine: true,
+                },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        // The title bar reads the same share: 修改分享, not 分享.
+        const shareTool = screen.getByTestId("file-companion-share-open");
+        expect(shareTool.getAttribute("aria-label")).toBe("修改分享");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+
+        // A cloud row is already a share: it carries a mark, not a button.
+        expect(screen.getByTestId(`file-companion-library-shared-mark-${token}`).textContent).toContain("已分享");
+        expect(screen.queryByTestId(`file-companion-library-share-action-${token}`)).toBeNull();
+        // The local row for the same paper is shared too, so it must not
+        // offer a second 分享 either.
+        expect(screen.getByTestId("file-companion-library-shared-mark-local:a").textContent).toContain("已分享");
+        expect(screen.queryByTestId("file-companion-library-share-action-local:a")).toBeNull();
+
+        // 修改 opens on the link that already exists.
+        fireEvent.click(screen.getByTestId(`file-companion-library-edit-share-${token}`));
+        const dialog = await screen.findByTestId("file-companion-share-dialog");
+        expect(dialog.textContent).toContain("修改分享");
+        expect(dialog.textContent).toContain("当前 公开 · 至 2026-11-24");
+        expect((screen.getByTestId("file-companion-share-public") as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+        expect(screen.getByTestId("file-companion-library-link").textContent).toContain(token);
+
+        // Changing only the audience must not resend the expiry: -1 keeps it.
+        fireEvent.click(screen.getByTestId("file-companion-share-private"));
+        fireEvent.change(screen.getByTestId("file-companion-share-password"), { target: { value: "secret" } });
+        fireEvent.click(screen.getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(updateShare).toHaveBeenCalledWith(token, "private", "secret", "", -1));
+        // The header echoes what was just saved, not the snapshot it opened on.
+        await waitFor(() => expect(screen.getByTestId("file-companion-share-dialog").textContent).toContain("当前 私密 · 至 2026-11-24"));
+
+        // Touching 有效期 does send the new one.
+        updateShare.mockClear();
+        fireEvent.click(screen.getByTestId("file-companion-share-forever"));
+        fireEvent.click(screen.getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(updateShare).toHaveBeenCalledWith(token, "private", "", "", 0));
+        // 修改 does not publish a second link.
+        expect(shareDocument).not.toHaveBeenCalled();
     });
 
     it("asks with the custom dialog before deleting companion data and keeps the tab when cancelled", async () => {

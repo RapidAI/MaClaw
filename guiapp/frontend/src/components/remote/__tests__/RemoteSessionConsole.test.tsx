@@ -9,6 +9,7 @@ const CaptureRemoteScreenshotMock = vi.fn();
 const CaptureRemoteWindowScreenshotMock = vi.fn();
 const InterruptRemoteSessionMock = vi.fn();
 const GetBrowserSessionTraceMock = vi.fn();
+const GetRemoteSessionMock = vi.fn();
 const InvokeBrowserToolMock = vi.fn();
 const ClipboardSetTextMock = vi.fn();
 
@@ -20,6 +21,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     CaptureRemoteWindowScreenshot: (...args: unknown[]) => CaptureRemoteWindowScreenshotMock(...args),
     InterruptRemoteSession: (...args: unknown[]) => InterruptRemoteSessionMock(...args),
     GetBrowserSessionTrace: (...args: unknown[]) => GetBrowserSessionTraceMock(...args),
+    GetRemoteSession: (...args: unknown[]) => GetRemoteSessionMock(...args),
     InvokeBrowserTool: (...args: unknown[]) => InvokeBrowserToolMock(...args),
 }));
 
@@ -69,6 +71,7 @@ describe('RemoteSessionConsole AskUserQuestion UI', () => {
         CaptureRemoteWindowScreenshotMock.mockResolvedValue(undefined);
         InterruptRemoteSessionMock.mockResolvedValue(undefined);
         GetBrowserSessionTraceMock.mockResolvedValue(null);
+        GetRemoteSessionMock.mockResolvedValue(null);
         InvokeBrowserToolMock.mockResolvedValue('{}');
         ClipboardSetTextMock.mockResolvedValue(undefined);
         vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
@@ -163,6 +166,41 @@ describe('RemoteSessionConsole AskUserQuestion UI', () => {
         const input = screen.getByDisplayValue('hi again') as HTMLInputElement;
         expect(input.disabled).toBe(false);
     });
+
+    it('loads complete output on demand and refreshes it with the preview sequence', async () => {
+        const summary = buildSession({
+            preview: { preview_lines: ['short preview'], output_seq: 1, updated_at: 10 },
+            raw_output_lines: undefined,
+            output_images: undefined,
+        });
+        GetRemoteSessionMock.mockResolvedValueOnce(buildSession({
+            preview: summary.preview,
+            raw_output_lines: ['first full line'],
+            output_images: [{ image_id: 'image-1', media_type: 'image/png', data: 'cG5n', after_line_idx: 0 }],
+        })).mockResolvedValueOnce(buildSession({
+            preview: { preview_lines: ['short preview'], output_seq: 2, updated_at: 20 },
+            raw_output_lines: ['first full line', 'second full line'],
+        }));
+        const props = {
+            remoteInputDrafts: {},
+            setRemoteInputDrafts: vi.fn(),
+            killRemoteSession: vi.fn().mockResolvedValue(undefined),
+            refreshSessionsOnly: vi.fn().mockResolvedValue(undefined),
+            onClose: vi.fn(),
+        };
+        const { rerender } = render(<RemoteSessionConsole {...props} session={summary} />);
+
+        expect(await screen.findByText('first full line')).toBeTruthy();
+        expect(screen.getByRole('img').getAttribute('src')).toBe('data:image/png;base64,cG5n');
+        expect(GetRemoteSessionMock).toHaveBeenCalledWith('sess-1');
+
+        rerender(<RemoteSessionConsole
+            {...props}
+            session={{ ...summary, preview: { preview_lines: ['short preview'], output_seq: 2, updated_at: 20 } }}
+        />);
+        expect(await screen.findByText('first full line second full line')).toBeTruthy();
+        expect(GetRemoteSessionMock).toHaveBeenCalledTimes(2);
+    });
 });
 
 describe('RemoteSessionConsole browser sessions', () => {
@@ -175,6 +213,7 @@ describe('RemoteSessionConsole browser sessions', () => {
         CaptureRemoteWindowScreenshotMock.mockResolvedValue(undefined);
         InterruptRemoteSessionMock.mockResolvedValue(undefined);
         GetBrowserSessionTraceMock.mockResolvedValue(null);
+        GetRemoteSessionMock.mockResolvedValue(null);
         InvokeBrowserToolMock.mockResolvedValue('{}');
         ClipboardSetTextMock.mockResolvedValue(undefined);
         vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {

@@ -849,6 +849,11 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	if strings.TrimSpace(loopCtx.UserID) == "" {
 		loopCtx.UserID = msg.UserID
 	}
+	// The epoch at this turn's ingress. A retry of the same payload enters
+	// here again after its own cancel bumped the epoch, so refresh it on
+	// every prepare; only a newer message arriving during the turn leaves
+	// it stale, and that turn must not arm a continuation.
+	loopCtx.sessionRoundEpochAtStart = h.sessionRoundEpoch(loopCtx.UserID)
 	loopCtx.CodingTaskIngressToken = strings.TrimSpace(msg.CodingTaskIngressToken)
 	if strings.TrimSpace(loopCtx.Lang) == "" {
 		loopCtx.Lang = msg.Lang

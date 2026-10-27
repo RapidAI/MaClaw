@@ -77,6 +77,14 @@ func (h *IMMessageHandler) beginSessionRoundContinuation(ctx *LoopContext, userI
 	if userID == "" {
 		return nil, false
 	}
+	// A newer user message arrived while this turn ran. Resuming the old
+	// work would compete with the request the user just made, so the newer
+	// turn owns the next round. An unprepared context (0) keeps the old
+	// behavior for workers and tests.
+	if ctx.sessionRoundEpochAtStart != 0 && h.sessionRoundEpoch(userID) != ctx.sessionRoundEpochAtStart {
+		log.Printf("[session-round] newer user turn superseded this one; not arming user=%s", userID)
+		return nil, false
+	}
 	if h != nil && h.memory != nil {
 		h.createMaxRoundsUnfinishedSlot(userID, history)
 	}

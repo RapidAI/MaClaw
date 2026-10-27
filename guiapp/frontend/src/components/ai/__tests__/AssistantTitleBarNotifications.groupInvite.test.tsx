@@ -4,12 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantTitleBarNotifications } from "../AssistantTitleBarNotifications";
 import { overlayTheme } from "../aiAssistantPanelTheme";
 
+const eventHandlers = new Map<string, (payload: unknown) => void>();
+
 vi.mock("../../../../wailsjs/runtime", () => ({
     BrowserOpenURL: vi.fn(),
-    EventsOn: vi.fn(() => vi.fn()),
+    EventsOn: vi.fn((name: string, handler: (payload: unknown) => void) => {
+        eventHandlers.set(name, handler);
+        return () => eventHandlers.delete(name);
+    }),
     EventsOff: vi.fn(),
 }));
 
+function emitRuntimeEvent(name: string, payload: unknown) {
+    eventHandlers.get(name)?.(payload);
+}
 const invite = {
     id: "cg_0123456789abcdef0123456789abcdef",
     name: "论文组",
@@ -169,5 +177,65 @@ describe("AssistantTitleBarNotifications group invites", () => {
         expect((await screen.findByTestId("notification-group-invite-list-error")).textContent).toBe("暂时无法连接云端");
         expect(screen.getByText("系统维护")).toBeTruthy();
         expect(screen.queryByText("入群邀请")).toBeNull();
+    });
+
+    it("refreshes the invite list when a pushed invitation arrives", async () => {
+        list.mockResolvedValue([]);
+        renderBell();
+        await waitFor(() => expect(list).toHaveBeenCalled());
+        expect(screen.queryByTestId(`notification-item-companion-group:${invite.id}`)).toBeNull();
+
+        // A push from the Hub says an invitation was just created. The row must
+        // appear without waiting for the 30s poll.
+        list.mockResolvedValue([invite]);
+        await act(async () => {
+            emitRuntimeEvent("notification:new", { source: "companion_group_invite", source_id: `${invite.id}:user-1` });
+        });
+        // One unread Hub notice plus the invitation that just arrived.
+        fireEvent.click(await screen.findByRole("button", { name: "2 条未读通知" }));
+        expect(await screen.findByTestId(`notification-item-companion-group:${invite.id}`)).toBeTruthy();
+    });
+
+    it("refreshes the invite list when a reconnect pulls an invitation notice", async () => {
+        list.mockResolvedValue([]);
+        renderBell();
+        await waitFor(() => expect(list).toHaveBeenCalled());
+        expect(screen.queryByTestId(`notification-item-companion-group:${invite.id}`)).toBeNull();
+
+        // After a reconnect the Hub push is gone; the pulled unread list is what
+        // reports the invitation, so the row must appear from that signal.
+        list.mockResolvedValue([invite]);
+        await act(async () => {
+            emitRuntimeEvent("notification:sync", [
+                hubNotice,
+                { id: "n1", title: "入群邀请", content: "x", category: "custom", priority: "important", is_read: false, created_at: new Date().toISOString(), source: "companion_group_invite", source_id: `${invite.id}:user-1` },
+            ]);
+        });
+        fireEvent.click(await screen.findByRole("button", { name: "2 条未读通知" }));
+        expect(await screen.findByTestId(`notification-item-companion-group:${invite.id}`)).toBeTruthy();
+        expect(screen.getByText("系统维护")).toBeTruthy();
+    });
+
+    it("does not list an invite twice when its delivery notice is also unread", async () => {
+        // The Hub sends both the invite row and the notification that carried
+        // it. Only the actionable row belongs in the bell.
+        const notice = {
+            id: "notice-invite",
+            title: "入群邀请",
+            content: "owner@example.com 邀请你加入阅读群组「论文组」。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "companion_group_invite",
+            source_id: `${invite.id}:user-1`,
+        };
+        (window as unknown as { go: { main: { App: Record<string, unknown> } } }).go.main.App.GetUnreadNotifications =
+            async () => [notice, hubNotice];
+        renderBell();
+        fireEvent.click(await screen.findByRole("button", { name: "2 条未读通知" }));
+        expect(await screen.findByTestId(`notification-item-companion-group:${invite.id}`)).toBeTruthy();
+        expect(screen.queryByTestId("notification-item-notice-invite")).toBeNull();
+        expect(screen.getByText("系统维护")).toBeTruthy();
     });
 });

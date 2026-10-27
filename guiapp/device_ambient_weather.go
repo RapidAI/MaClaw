@@ -63,6 +63,9 @@ func (a *App) deviceAmbientWeatherLoop(ctx context.Context) {
 }
 
 func (a *App) pushDeviceAmbientWeather(weather deviceAmbientWeather) error {
+	// The USB companion shares the same resolved weather and must not depend on
+	// Hub connectivity, so forward before the Hub gate.
+	a.setBuddyWeather(weather.Summary, weather.Location, weather.TemperatureC)
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
 		return fmt.Errorf("Hub not connected")

@@ -1190,8 +1190,11 @@ func (s *IdentityService) BoundPhoneNumberForUser(ctx context.Context, user *sto
 }
 
 // ViewerContacts lists the addresses a signed-in reader can be invited or
-// shared with: the account email, the user id, and a verified phone.
-// The phone comes from a verified identity, not from the request.
+// shared with: the account email, the user id, and every verified email and
+// phone identity. An account registered by phone keeps a synthesized account
+// email such as "phone:1709...", so the address someone invites or shares with
+// is usually an identity, not the account email. Identities only count when
+// verified: that is what proves the address belongs to this account.
 func (s *IdentityService) ViewerContacts(ctx context.Context, principal *ViewerPrincipal) []string {
 	if principal == nil {
 		return nil
@@ -1213,6 +1216,21 @@ func (s *IdentityService) ViewerContacts(ctx context.Context, principal *ViewerP
 		user, err := s.users.GetByID(ctx, principal.UserID)
 		if err == nil && user != nil {
 			add(user.Email)
+			if identities, idErr := s.users.ListIdentitiesByUser(ctx, user.TenantID, user.ID); idErr == nil {
+				for _, identity := range identities {
+					if identity == nil || !identity.Verified {
+						continue
+					}
+					switch strings.ToLower(strings.TrimSpace(identity.Type)) {
+					case "email":
+						add(normalizeEmail(identity.Value))
+					case "phone":
+						add(normalizePhoneIdentityValue(identity.Value))
+					}
+				}
+			}
+			// Keeps the pre-identity-verification path working for a phone that
+			// was bound without an identity row.
 			if phone, phoneErr := s.BoundPhoneNumberForUser(ctx, user); phoneErr == nil {
 				add(phone)
 			}

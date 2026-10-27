@@ -19,6 +19,20 @@ const yoloModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download
 // yoloDownloadMu prevents concurrent YOLO model downloads.
 var yoloDownloadMu sync.Mutex
 
+var yoloModelStatusCache struct {
+	sync.Mutex
+	valid  bool
+	path   string
+	exists bool
+	size   int64
+}
+
+func invalidateYOLOModelStatusCache() {
+	yoloModelStatusCache.Lock()
+	yoloModelStatusCache.valid = false
+	yoloModelStatusCache.Unlock()
+}
+
 // yoloModelPath returns the full path to the YOLO model file.
 // Uses the same active models directory as the embedding model.
 func yoloModelPath() string {
@@ -48,6 +62,7 @@ func (a *App) SetScreenParsingEnabled(enabled bool) error {
 	if _, err := a.PatchConfigFields(map[string]interface{}{"screen_parsing_enabled": enabled}); err != nil {
 		return err
 	}
+	invalidateYOLOModelStatusCache()
 
 	if enabled {
 		go a.backgroundPreloadYOLOModel()
@@ -124,11 +139,7 @@ func (a *App) GetComputerUseStatus() map[string]interface{} {
 	if e := a.GetComputerUseLastError(); len(e) > 0 {
 		status["last_error"] = e
 	}
-	if hist := a.GetComputerUseObserveHistory(); len(hist) > 0 {
-		if sum, ok := hist["summary"].(map[string]interface{}); ok {
-			status["observe_history_summary"] = sum
-		}
-	}
+	status["observe_history_summary"] = a.getComputerUseObserveHistorySummary()
 	if e2e := a.GetComputerUseLastE2E(); len(e2e) > 0 {
 		status["last_e2e"] = map[string]interface{}{
 			"ok":                e2e["ok"],
@@ -160,11 +171,20 @@ func (a *App) CheckYOLOModel() map[string]interface{} {
 	if p == "" {
 		return map[string]interface{}{"exists": false, "path": "", "size": int64(0)}
 	}
-	fi, err := os.Stat(p)
-	if err != nil {
-		return map[string]interface{}{"exists": false, "path": p, "size": int64(0)}
+	yoloModelStatusCache.Lock()
+	defer yoloModelStatusCache.Unlock()
+	if yoloModelStatusCache.valid && yoloModelStatusCache.path == p {
+		return map[string]interface{}{"exists": yoloModelStatusCache.exists, "path": p, "size": yoloModelStatusCache.size}
 	}
-	return map[string]interface{}{"exists": true, "path": p, "size": fi.Size()}
+	yoloModelStatusCache.path = p
+	yoloModelStatusCache.exists = false
+	yoloModelStatusCache.size = 0
+	if fi, err := os.Stat(p); err == nil {
+		yoloModelStatusCache.exists = true
+		yoloModelStatusCache.size = fi.Size()
+	}
+	yoloModelStatusCache.valid = true
+	return map[string]interface{}{"exists": yoloModelStatusCache.exists, "path": p, "size": yoloModelStatusCache.size}
 }
 
 // DownloadYOLOModel downloads the YOLO model for screen parsing.
@@ -175,6 +195,8 @@ func (a *App) DownloadYOLOModel() error {
 		return nil // already downloading
 	}
 	defer yoloDownloadMu.Unlock()
+	invalidateYOLOModelStatusCache()
+	defer invalidateYOLOModelStatusCache()
 
 	dir, err := embeddingModelsDir()
 	if err != nil {
@@ -225,6 +247,8 @@ func (a *App) backgroundPreloadYOLOModel() {
 		return
 	}
 	defer yoloDownloadMu.Unlock()
+	invalidateYOLOModelStatusCache()
+	defer invalidateYOLOModelStatusCache()
 
 	log.Println("[yolo] background preload: starting silent download")
 

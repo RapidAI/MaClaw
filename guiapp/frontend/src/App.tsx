@@ -163,6 +163,7 @@ import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNaviga
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen, type TaskContextMenu } from './components/layout/SidebarTaskManagement';
+import { buildBuddySnapshot } from './components/layout/buddySnapshot';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
@@ -5029,6 +5030,36 @@ function App() {
         timer = window.setTimeout(pushWhenReady, 500);
         return () => window.clearTimeout(timer);
     }, [taskbarInProgress, mainWindowReadyForOverlays]);
+
+    // USB companion display: mirror the same census the sidebar shows. Both
+    // sides call the identical helpers (taskStatusBucketFor / live-running
+    // signals), so the device cannot drift from the task list.
+    const buddySnapshot = useMemo(
+        () => buildBuddySnapshot(taskItems, { busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask }),
+        [taskItems, busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask],
+    );
+    useEffect(() => {
+        const payload = JSON.stringify(buddySnapshot);
+        let tries = 0;
+        let timer = 0;
+        const push = () => {
+            const bridge = (globalThis as any).window?.go?.main?.App;
+            if (!bridge || typeof bridge.BuddyPushSnapshot !== 'function') {
+                if (++tries < 10) timer = window.setTimeout(push, 500);
+                return;
+            }
+            try {
+                const result = bridge.BuddyPushSnapshot(payload);
+                if (result && typeof result.catch === 'function') result.catch(() => {});
+            } catch {
+                // Binding absent in embedded or test shells.
+            }
+        };
+        // Coalesce bursts of task updates into one push; the Go runner adds
+        // its own 200ms flush window on top of this debounce.
+        timer = window.setTimeout(push, 250);
+        return () => window.clearTimeout(timer);
+    }, [buddySnapshot]);
 
     // Show onboarding only after the environment-check completion path has
     // resized and painted the main workbench. The wizard is portaled to

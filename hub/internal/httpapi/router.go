@@ -816,6 +816,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/mobile/documents/shares", CompanionDocumentSharesHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/shares", CompanionDocumentSharesHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/shares/{token}", CompanionDocumentShareHandler(identity))
+	mux.HandleFunc("PATCH /api/mobile/documents/shares/{token}", CompanionDocumentShareUpdateHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/import", CompanionDocumentShareImportHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/sync", CompanionDocumentShareSyncHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/notes", CompanionDocumentShareNotesHandler(identity))
@@ -830,6 +831,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/documents/groups/{id}/leave", CompanionDocumentGroupLeaveHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/groups/{id}/accept", CompanionDocumentGroupAcceptHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/groups/{id}/decline", CompanionDocumentGroupDeclineHandler(identity))
+	mux.HandleFunc("POST /api/mobile/documents/groups/{id}/ignore", CompanionDocumentGroupIgnoreHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/upload", MobileDocumentUploadHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/upload/duplicate", MobileDocumentUploadDuplicateHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/upload/claim", MobileDocumentUploadClaimHandler(identity))
@@ -1396,6 +1398,9 @@ func NewRouter(
 		}
 		notifSvc := notification.NewService(notifStore, notifPusher, nil)
 		notifHandler := NewNotificationHandler(notifSvc)
+		// Reading-group invitations ride this notification system so an invitee
+		// who is offline still receives them on the next connect.
+		ConfigureCompanionGroupInviteNotifier(identity, notifSvc)
 
 		// Admin routes (requireAdmin)
 		mux.HandleFunc("POST /api/v1/admin/notifications", requireAdmin(notifHandler.HandleCreateNotification))

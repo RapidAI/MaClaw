@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1656,5 +1657,67 @@ func TestListRemoteSessionsCoalescesConcurrentRefreshes(t *testing.T) {
 	results[0] = results[0][:0]
 	if len(results[1]) != 1 {
 		t.Fatal("concurrent callers share the same result slice")
+	}
+}
+
+func TestRemoteSessionSummariesOmitOutputAndDetailPreservesIt(t *testing.T) {
+	app := &App{}
+	now := time.Now()
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.remoteSessions.sessions["sess-output"] = &RemoteSession{
+		ID:             "sess-output",
+		Tool:           "claude",
+		Title:          "output demo",
+		ProjectPath:    `D:\workprj\demo`,
+		Status:         SessionBusy,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		Summary:        SessionSummary{SessionID: "sess-output", CurrentTask: "stream output"},
+		Preview:        SessionPreview{SessionID: "sess-output", OutputSeq: 7, PreviewLines: []string{"short preview"}},
+		Events:         []ImportantEvent{{EventID: "event-1", SessionID: "sess-output", Title: "completed"}},
+		RawOutputLines: []string{"first\x00 line", "second line"},
+		OutputImages:   []SessionOutputImage{{ImageID: "image-1", MediaType: "image/png", Data: "cG5n", AfterLineIdx: 0}},
+	}
+
+	summaries := app.ListRemoteSessionSummaries()
+	if len(summaries) != 1 {
+		t.Fatalf("got %d summaries, want 1", len(summaries))
+	}
+	summary := summaries[0]
+	if summary.Events != nil || summary.RawOutputLines != nil || summary.OutputImages != nil {
+		t.Fatalf("summary contains output fields: %#v", summary)
+	}
+	if summary.Preview.OutputSeq != 7 || len(summary.Preview.PreviewLines) != 1 || summary.Preview.PreviewLines[0] != "short preview" {
+		t.Fatalf("summary preview changed: %#v", summary.Preview)
+	}
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	for _, field := range []string{"events", "raw_output_lines", "output_images"} {
+		if _, exists := fields[field]; exists {
+			t.Errorf("summary JSON contains %s: %s", field, encoded)
+		}
+	}
+
+	detail, err := app.GetRemoteSession("sess-output")
+	if err != nil {
+		t.Fatalf("GetRemoteSession() error = %v", err)
+	}
+	if len(detail.RawOutputLines) != 2 || detail.RawOutputLines[0] != "first line" || detail.RawOutputLines[1] != "second line" {
+		t.Fatalf("detail raw output changed: %#v", detail.RawOutputLines)
+	}
+	if len(detail.Events) != 1 || detail.Events[0].EventID != "event-1" {
+		t.Fatalf("detail events changed: %#v", detail.Events)
+	}
+	if len(detail.OutputImages) != 1 || detail.OutputImages[0].Data != "cG5n" || detail.OutputImages[0].AfterLineIdx != 0 {
+		t.Fatalf("detail images changed: %#v", detail.OutputImages)
+	}
+	if detail.Preview.OutputSeq != summary.Preview.OutputSeq {
+		t.Fatalf("detail output seq = %d, summary = %d", detail.Preview.OutputSeq, summary.Preview.OutputSeq)
 	}
 }

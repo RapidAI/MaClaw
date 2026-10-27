@@ -775,6 +775,119 @@ func (a *App) ShareFileCompanionDocument(path, visibility, password, target, hig
 	}, nil
 }
 
+// UpdateFileCompanionShare changes who can see one of this person's shares and
+// how long it lasts. The document, its highlights, and the readers' notes stay
+// as they are. An empty password keeps the one already on the link, and a
+// negative days keeps the expiry the link already has.
+func (a *App) UpdateFileCompanionShare(token, visibility, password, target string, days int) (FileCompanionShareResult, error) {
+	if a == nil {
+		return FileCompanionShareResult{}, errors.New("app unavailable")
+	}
+	token = strings.TrimSpace(token)
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return FileCompanionShareResult{}, errors.New("分享链接不存在")
+	}
+	visibility = strings.TrimSpace(visibility)
+	switch visibility {
+	case "public", "private", "person", "group":
+	default:
+		return FileCompanionShareResult{}, errors.New("请选择分享对象")
+	}
+	password = strings.TrimSpace(password)
+	target = strings.TrimSpace(target)
+	switch visibility {
+	case "private":
+		if n := len([]rune(password)); n != 0 && (n < 4 || n > 64) {
+			return FileCompanionShareResult{}, errors.New("分享密码需为 4–64 个字符")
+		}
+	case "person":
+		password = ""
+		target = normalizeFileCompanionContact(target)
+		if target == "" {
+			return FileCompanionShareResult{}, errors.New("请填写邮箱或手机号")
+		}
+	case "group":
+		password = ""
+		if !fileCompanionGroupIDMatch.MatchString(target) {
+			return FileCompanionShareResult{}, errors.New("请选择群组")
+		}
+	default:
+		password = ""
+		target = ""
+	}
+	if days > 3660 {
+		return FileCompanionShareResult{}, errors.New("分享时间不正确")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return FileCompanionShareResult{}, err
+	}
+	body := map[string]any{
+		"visibility": visibility,
+		"password":   password,
+		"target":     target,
+	}
+	// A negative days is "leave the expiry alone". Sending 0 instead would
+	// make an edit that only changes the audience turn a dated link permanent.
+	if days >= 0 {
+		body["days"] = days
+	}
+	payload, _ := json.Marshal(body)
+	raw, err := a.fileCompanionHubJSON(http.MethodPatch, hub+"/api/mobile/documents/shares/"+token, viewer, payload)
+	if err != nil {
+		// An old hub has no route for this at all. Its plain 404 or 405 reads
+		// better when the message says what to do about it.
+		return FileCompanionShareResult{}, staleHubUpdateError(err)
+	}
+	var view fileCompanionShareView
+	if json.Unmarshal(raw, &view) != nil || view.Token != token {
+		// A reply for another share would write a second row under a token the
+		// caller never asked about, and the edited link would look unchanged.
+		return FileCompanionShareResult{}, errors.New("云端没有返回分享信息")
+	}
+	result := FileCompanionShareResult{
+		URL:        strings.TrimSpace(view.URL),
+		Name:       strings.TrimSpace(view.Name),
+		ExpiresAt:  strings.TrimSpace(view.ExpiresAt),
+		Visibility: strings.TrimSpace(view.Visibility),
+		Permanent:  view.Permanent || strings.TrimSpace(view.ExpiresAt) == "",
+		Token:      view.Token,
+		Revision:   view.Revision,
+	}
+	if result.URL == "" {
+		result.URL = strings.TrimRight(hub, "/") + "/hub/documents/shares/" + token
+	}
+	item := libraryItemsFromShares([]fileCompanionShareView{view}, true, hub)
+	if len(item) == 0 {
+		return result, nil
+	}
+	// Rewrite the row this machine already has. A row deleted while the edit
+	// was in flight is not brought back.
+	if _, err := a.updateFileCompanionCloudRow(item[0]); err != nil {
+		return FileCompanionShareResult{}, err
+	}
+	return result, nil
+}
+
+// staleHubUpdateError turns the answer an old hub gives for the 修改 route into
+// one message the reader can act on. Anything else — including a hub that knows
+// the route and refused — keeps the message it sent.
+func staleHubUpdateError(err error) error {
+	var status *fileCompanionShareStatus
+	if !errors.As(err, &status) || status == nil {
+		return err
+	}
+	if strings.TrimSpace(status.message) != "" {
+		return err
+	}
+	switch status.status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return errors.New("云端还不支持修改分享，需要更新 Hub")
+	default:
+		return err
+	}
+}
+
 func postFileCompanionShare(hub, viewer, name, visibility, password, target string, days int, raw io.Reader) (fileCompanionShareView, error) {
 	pipeReader, pipeWriter := io.Pipe()
 	writer := multipart.NewWriter(pipeWriter)
@@ -929,6 +1042,48 @@ func (a *App) ImportFileCompanionShare(link, password string) (FileCompanionLibr
 		return FileCompanionLibraryItem{}, err
 	}
 	return item, nil
+}
+
+// updateFileCompanionCloudRow rewrites one existing cloud row in place and
+// leaves everything else alone. A row that is gone stays gone: an edit that
+// finishes after the reader deleted the project must not bring it back.
+func (a *App) updateFileCompanionCloudRow(item FileCompanionLibraryItem) (bool, error) {
+	if a == nil || item.Token == "" {
+		return false, nil
+	}
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	if !ok {
+		return false, errors.New("文档列表无法读取")
+	}
+	found := false
+	for index, current := range items {
+		if current.Source != "cloud" || current.Token != item.Token {
+			continue
+		}
+		found = true
+		// The row keeps the file this machine reads and the notes a reader
+		// posted while the edit was in flight.
+		item.Path = current.Path
+		item.OpenedAt = current.OpenedAt
+		if item.OpenedAt == "" {
+			item.OpenedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+		if current.NotesRevision > item.NotesRevision {
+			item.Notes = current.Notes
+			item.NotesRevision = current.NotesRevision
+		}
+		items[index] = item
+		break
+	}
+	if !found {
+		return false, nil
+	}
+	if err := a.writeFileCompanionLibraryLocked(items); err != nil {
+		return false, errors.New("文档列表无法保存")
+	}
+	return true, nil
 }
 
 func (a *App) upsertFileCompanionCloud(item FileCompanionLibraryItem) error {

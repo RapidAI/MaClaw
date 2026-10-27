@@ -23,6 +23,10 @@ export interface AdminNotification {
   created_at: string; // ISO8601
   /** Set for a reading-group invite merged into the bell. Not a Hub notice id. */
   groupInviteId?: string;
+  /** Hub subsystem that raised this notice, e.g. "companion_group_invite". */
+  source?: string;
+  /** Identifier of the raising record within that subsystem. */
+  source_id?: string;
 }
 
 interface NotificationState {
@@ -124,6 +128,8 @@ function normalizeNotification(raw: unknown): AdminNotification | null {
     priority: priority as AdminNotification["priority"],
     is_read: Boolean(record.is_read ?? record.IsRead),
     created_at: asString(record.created_at) || asString(record.CreatedAt),
+    source: asString(record.source) || asString(record.Source) || undefined,
+    source_id: asString(record.source_id) || asString(record.SourceID) || undefined,
   };
 }
 

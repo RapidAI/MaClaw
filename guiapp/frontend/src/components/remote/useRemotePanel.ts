@@ -1,6 +1,6 @@
 import { EventsOff, EventsOn } from '../../../wailsjs/runtime';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivateRemote, CheckToolsStatus, ClearRemoteActivation, GetLastRemoteSmokeReport, GetRemoteActivationStatus, GetRemoteConnectionStatus, GetRemotePTYProbe, GetRemoteToolLaunchProbe, GetRemoteToolReadiness, InstallToolOnDemand, InterruptRemoteSession as InterruptRemoteSessionAPI, KillRemoteSession as KillRemoteSessionAPI, ListRemoteSessions, ListRemoteToolMetadata, ListValidProviders, LoadConfig, PatchConfigFields, ProbeRemoteHub, ReconnectRemoteHub, RunRemoteToolSmoke, SendRemoteSessionInput, StartRemoteHandoffSession, StartRemoteSession, VerifyRemoteActivation } from '../../../wailsjs/go/main/App';
+import { ActivateRemote, CheckToolsStatus, ClearRemoteActivation, GetLastRemoteSmokeReport, GetRemoteActivationStatus, GetRemoteConnectionStatus, GetRemotePTYProbe, GetRemoteToolLaunchProbe, GetRemoteToolReadiness, InstallToolOnDemand, InterruptRemoteSession as InterruptRemoteSessionAPI, KillRemoteSession as KillRemoteSessionAPI, ListRemoteSessionSummaries, ListRemoteToolMetadata, ListValidProviders, LoadConfig, PatchConfigFields, ProbeRemoteHub, ReconnectRemoteHub, RunRemoteToolSmoke, SendRemoteSessionInput, StartRemoteHandoffSession, StartRemoteSession, VerifyRemoteActivation } from '../../../wailsjs/go/main/App';
 import { corelib, main } from '../../../wailsjs/go/models';
 import {
     buildRemoteToolMetaByName,
@@ -275,7 +275,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     // Lightweight refresh: only fetches session list (used for high-frequency events)
     const refreshSessionsOnly = useCallback(async () => {
         try {
-            const sessions = await ListRemoteSessions();
+            const sessions = await ListRemoteSessionSummaries();
             const sessionList = Array.isArray(sessions) ? sessions : [];
             for (const id of killedSessionIdsRef.current) {
                 const s = sessionList.find((sess: RemoteSessionView) => sess.id === id);
@@ -318,7 +318,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             const [activation, connection, sessions, smokeSnapshot] = await Promise.all([
                 GetRemoteActivationStatus(),
                 GetRemoteConnectionStatus(),
-                ListRemoteSessions(),
+                ListRemoteSessionSummaries(),
                 GetLastRemoteSmokeReport(),
             ]);
             setRemoteActivationStatus(activation);

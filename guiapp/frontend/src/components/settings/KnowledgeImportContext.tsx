@@ -11,6 +11,7 @@ import {
 import { KnowledgeImportJobStatus } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { openSettingsTab } from '../../utils/settingsNavigation';
+import { startVisibleInterval } from '../../utils/visibleInterval';
 import {
     KnowledgeImportFloatingBar,
     isKnowledgeImportJobActive,
@@ -120,10 +121,11 @@ export function KnowledgeImportProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         const id = String(job?.id || '').trim();
         if (!id || !isKnowledgeImportJobActive(job)) return;
-        const handle = window.setInterval(() => {
+        let cancelled = false;
+        const stopPolling = startVisibleInterval(() => {
             void KnowledgeImportJobStatus(id)
                 .then(j => {
-                    if (!j) return;
+                    if (!j || cancelled) return;
                     setJob(prev => {
                         if (String(prev?.id || '') !== id) return prev;
                         return j as ImportJob;
@@ -131,7 +133,10 @@ export function KnowledgeImportProvider({ children }: { children: ReactNode }) {
                 })
                 .catch(() => {});
         }, 2000);
-        return () => window.clearInterval(handle);
+        return () => {
+            cancelled = true;
+            stopPolling();
+        };
     }, [job?.id, job?.status]);
 
     const showFloat = useMemo(() => {

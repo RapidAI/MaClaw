@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { localizeText } from "./aiAssistantI18n";
 import type { AdminNotification } from "./useNotifications";
 
-const IGNORED_KEY = "maclaw.companion-group-invite.ignored";
-
 type GroupInvite = {
     id: string;
     name: string;
     owner: string;
     contact: string;
     invitedAt: string;
+    // The Hub notification that delivered this invitation. It is what a client
+    // that was offline when the invite was sent pulls on reconnect.
+    notificationId: string;
 };
 
 export type GroupInviteAction = "accept" | "decline" | "ignore";
@@ -92,7 +93,8 @@ function readInvites(raw: unknown): GroupInvite[] {
         const owner = String(row.owner ?? row.Owner ?? "").trim() || "一位用户";
         const contact = String(row.contact ?? row.Contact ?? "").trim();
         const invitedAt = String(row.invited_at ?? row.InvitedAt ?? row.invitedAt ?? "").trim();
-        out.push({ id, name, owner, contact, invitedAt });
+        const notificationId = String(row.notification_id ?? row.NotificationID ?? row.notificationId ?? "").trim();
+        out.push({ id, name, owner, contact, invitedAt, notificationId });
     }
     // The hub walks a map, so the payload order changes between polls.
     // Newest invitation first; the id breaks ties.
@@ -109,7 +111,7 @@ function compareInvites(a: GroupInvite, b: GroupInvite): number {
 function sameInvites(prev: GroupInvite[], next: GroupInvite[]): boolean {
     if (prev.length !== next.length) return false;
     for (let i = 0; i < prev.length; i += 1) {
-        if (prev[i].id !== next[i].id || prev[i].name !== next[i].name || prev[i].owner !== next[i].owner || prev[i].contact !== next[i].contact || prev[i].invitedAt !== next[i].invitedAt) return false;
+        if (prev[i].id !== next[i].id || prev[i].name !== next[i].name || prev[i].owner !== next[i].owner || prev[i].contact !== next[i].contact || prev[i].invitedAt !== next[i].invitedAt || prev[i].notificationId !== next[i].notificationId) return false;
     }
     return true;
 }
@@ -119,71 +121,20 @@ function inviteError(err: unknown, fallback: string): string {
     return raw.trim() || fallback;
 }
 
-function readIgnored(): Set<string> {
-    try {
-        const raw = JSON.parse(localStorage.getItem(IGNORED_KEY) || "[]");
-        if (!Array.isArray(raw)) return new Set();
-        return new Set(raw.filter((item) => typeof item === "string" && item.trim()));
-    } catch {
-        return new Set();
-    }
-}
-
-function writeIgnored(ids: Set<string>): boolean {
-    try {
-        localStorage.setItem(IGNORED_KEY, JSON.stringify([...ids]));
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-function ignoreKey(invite: Pick<GroupInvite, "contact" | "id" | "invitedAt">): string {
+// inviteKey identifies one invitation for the first-seen timestamp. Two
+// invitations to the same group are distinguished by their invited_at.
+function inviteKey(invite: Pick<GroupInvite, "contact" | "id" | "invitedAt">): string {
     return `${invite.contact}\t${invite.id}\t${invite.invitedAt}`;
-}
-
-// Older builds stored the group id, or the id plus invited_at, with no account.
-// An empty contact is the same shape written before the hub sent one.
-// A key that already names a contact belongs to that account and is never rewritten.
-function isLegacyIgnore(key: string, invite: GroupInvite): boolean {
-    if (key === invite.id) return true;
-    if (key === `${invite.id}\t${invite.invitedAt}`) return true;
-    return key === `\t${invite.id}\t${invite.invitedAt}`;
-}
-
-// Drop an ignore only when this signed-in contact's list proves that invitation is gone.
-// An empty list is also what we get when nobody is logged in, so it must not forget ignores.
-function syncIgnored(ignored: Set<string>, next: GroupInvite[]): boolean {
-    let changed = false;
-    if (next.length === 0) return changed;
-    for (const item of next) {
-        const canon = ignoreKey(item);
-        for (const key of [...ignored]) {
-            if (key === canon || !isLegacyIgnore(key, item)) continue;
-            ignored.delete(key);
-            ignored.add(canon);
-            changed = true;
-        }
-    }
-    const contacts = new Set(next.map((item) => item.contact).filter(Boolean));
-    const live = new Set(next.map(ignoreKey));
-    for (const key of [...ignored]) {
-        const contact = key.split("\t")[0];
-        if (!contact || !contacts.has(contact) || key.split("\t").length < 3 || live.has(key)) continue;
-        ignored.delete(key);
-        changed = true;
-    }
-    return changed;
 }
 
 function stampInvites(invites: GroupInvite[]) {
     const now = new Date().toISOString();
-    const live = new Set(invites.map(ignoreKey));
+    const live = new Set(invites.map(inviteKey));
     for (const key of seenAt.keys()) {
         if (!live.has(key)) seenAt.delete(key);
     }
     for (const invite of invites) {
-        const key = ignoreKey(invite);
+        const key = inviteKey(invite);
         if (!seenAt.has(key)) seenAt.set(key, now);
     }
 }
@@ -223,10 +174,9 @@ async function refreshInvites() {
     try {
         const next = readInvites(await list());
         if (seen !== epoch || ticket !== refreshTicket) return;
-        const ignored = readIgnored();
-        if (syncIgnored(ignored, next)) writeIgnored(ignored);
-        const filtered = next.filter((item) => !ignored.has(ignoreKey(item)));
-        const invites = sameInvites(store.invites, filtered) ? store.invites : filtered;
+        // The Hub already leaves out invitations this account ignored, so the
+        // list is shown exactly as returned.
+        const invites = sameInvites(store.invites, next) ? store.invites : next;
         stampInvites(invites);
         // A decision error belongs to a row. Once that invitation is gone, the
         // sentence would have nothing to point at.
@@ -269,27 +219,50 @@ function decideGroupInvite(groupId: string, action: GroupInviteAction) {
     if (!id || busyGuard.current) return;
     if (action === "ignore") {
         const current = store.invites.find((item) => item.id === id);
-        if (!current) return;
-        const ignored = readIgnored();
-        ignored.add(ignoreKey(current));
-        if (!writeIgnored(ignored)) {
+        const ignore = appBinding("IgnoreFileCompanionGroupInvite");
+        if (!ignore) {
             publish({
                 ...store,
                 error: {
                     id,
-                    name: current.name,
+                    name: current?.name || "",
                     message: localizeText(langRef.current, "Couldn't ignore this invitation", "暂时无法忽略邀请", "暫時無法忽略邀請"),
                 },
             });
             return;
         }
-        epoch += 1;
-        seenAt.delete(ignoreKey(current));
-        publish({
-            ...store,
-            error: store.error?.id === id ? null : store.error,
-            invites: store.invites.filter((item) => item.id !== id),
-        });
+        const ticket = ++flight;
+        busyGuard.current = id;
+        publish({ ...store, busyId: id, error: null });
+        void (async () => {
+            try {
+                await ignore(id);
+                if (ticket !== flight) return;
+                // The Hub muted the invitation for this account, so the list
+                // will not return it again on any device.
+                epoch += 1;
+                if (current) seenAt.delete(inviteKey(current));
+                publish({
+                    ...store,
+                    error: store.error?.id === id ? null : store.error,
+                    invites: store.invites.filter((item) => item.id !== id),
+                });
+            } catch (err) {
+                if (ticket !== flight) return;
+                publish({
+                    ...store,
+                    error: {
+                        id,
+                        name: current?.name || "",
+                        message: inviteError(err, localizeText(langRef.current, "Couldn't ignore this invitation", "暂时无法忽略邀请", "暫時無法忽略邀請")),
+                    },
+                });
+            } finally {
+                if (ticket !== flight) return;
+                busyGuard.current = "";
+                if (store.busyId === id) publish({ ...store, busyId: "" });
+            }
+        })();
         return;
     }
     const ticket = ++flight;
@@ -304,7 +277,7 @@ function decideGroupInvite(groupId: string, action: GroupInviteAction) {
             await call(id);
             if (ticket !== flight) return;
             epoch += 1;
-            if (current) seenAt.delete(ignoreKey(current));
+            if (current) seenAt.delete(inviteKey(current));
             publish({
                 ...store,
                 error: store.error?.id === id ? null : store.error,
@@ -319,6 +292,13 @@ function decideGroupInvite(groupId: string, action: GroupInviteAction) {
             if (store.busyId === id) publish({ ...store, busyId: "" });
         }
     })();
+}
+
+// refreshCompanionGroupInvites re-reads the pending list. A pushed invitation
+// notification calls this so the row appears without waiting for the next poll.
+export function refreshCompanionGroupInvites() {
+    if (pollers <= 0) return;
+    void refreshInvites();
 }
 
 // Pending reading-group invites for the main-window notification bell.
@@ -341,7 +321,7 @@ export function useCompanionGroupInvites(active: boolean, lang = "zh") {
         };
     }, [active]);
     const notices = useMemo(
-        () => snapshot.invites.map((invite) => toNotice(invite, seenAt.get(ignoreKey(invite)) || "", lang || "zh")),
+        () => snapshot.invites.map((invite) => toNotice(invite, seenAt.get(inviteKey(invite)) || "", lang || "zh")),
         [snapshot.invites, lang],
     );
     const decide = useCallback((groupId: string, action: GroupInviteAction) => {

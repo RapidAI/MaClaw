@@ -69,6 +69,11 @@ const (
 	StatusRevoked   Status = "revoked"
 )
 
+// SourceCompanionGroupInvite marks the delivery notice for a reading-group
+// invitation. It is raised by the companion module rather than by an admin, so
+// the admin console excludes it.
+const SourceCompanionGroupInvite = "companion_group_invite"
+
 // Notification is the core domain model for an admin notification.
 type Notification struct {
 	ID           string       `json:"id"`
@@ -101,6 +106,10 @@ type CreateRequest struct {
 	CreatedBy    string       `json:"created_by"`
 	PublishAt    *time.Time   `json:"publish_at,omitempty"`
 	ExpireAt     *time.Time   `json:"expire_at,omitempty"`
+	// Source and SourceID tag a notice raised by another Hub subsystem instead
+	// of by an admin. They default to "hub" and "" for admin notices.
+	Source   string `json:"source,omitempty"`
+	SourceID string `json:"source_id,omitempty"`
 }
 
 // CascadeRequest is the input from HubCenter cascade push.
@@ -119,6 +128,10 @@ type ClientNotification struct {
 	Priority  string `json:"priority"`
 	IsRead    bool   `json:"is_read"`
 	CreatedAt string `json:"created_at"`
+	// Source and SourceID let a client recognize a notice raised by a Hub
+	// subsystem, such as a reading-group invitation, and act on it.
+	Source   string `json:"source,omitempty"`
+	SourceID string `json:"source_id,omitempty"`
 }
 
 // NotificationPushPayload is the payload for WebSocket notification.push envelope.
@@ -141,4 +154,7 @@ type ListFilter struct {
 	Category Category
 	Offset   int
 	Limit    int
+	// ExcludeSources hides notices raised by a Hub subsystem. The admin console
+	// lists admin-created notices only.
+	ExcludeSources []string
 }

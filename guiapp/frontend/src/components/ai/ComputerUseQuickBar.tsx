@@ -4,7 +4,7 @@
  * so the console does not linger after use. A new CU task re-opens it — the
  * backend lifts the stale stop on fresh activation.
  */
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
     ComputerUsePause,
     ComputerUseReset,
@@ -50,6 +50,8 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
     );
     const [st, setSt] = useState<CUState>(empty);
     const [busy, setBusy] = useState(false);
+    const visibleRef = useRef(false);
+    visibleRef.current = st.visible;
 
     const refresh = useCallback(async () => {
         try {
@@ -86,16 +88,23 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
     }, [tr]);
 
     useEffect(() => {
-        void refresh();
-        const id = window.setInterval(() => void refresh(), 4000);
-        EventsOn(EVENT_COMPUTER_USE_OBSERVE, () => void refresh());
-        EventsOn(EVENT_COMPUTER_USE_ACTION, () => void refresh());
-        EventsOn(EVENT_COMPUTER_USE_CONTROL, () => void refresh());
+        const refreshWhenVisible = () => {
+            if (!document.hidden) void refresh();
+        };
+        refreshWhenVisible();
+        const id = window.setInterval(() => {
+            if (!document.hidden && visibleRef.current) void refresh();
+        }, 4000);
+        EventsOn(EVENT_COMPUTER_USE_OBSERVE, refreshWhenVisible);
+        EventsOn(EVENT_COMPUTER_USE_ACTION, refreshWhenVisible);
+        EventsOn(EVENT_COMPUTER_USE_CONTROL, refreshWhenVisible);
+        document.addEventListener("visibilitychange", refreshWhenVisible);
         return () => {
             window.clearInterval(id);
             EventsOff(EVENT_COMPUTER_USE_OBSERVE);
             EventsOff(EVENT_COMPUTER_USE_ACTION);
             EventsOff(EVENT_COMPUTER_USE_CONTROL);
+            document.removeEventListener("visibilitychange", refreshWhenVisible);
         };
     }, [refresh]);
 

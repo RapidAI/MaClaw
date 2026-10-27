@@ -794,6 +794,197 @@ func TestFileCompanionShareStatusUsesTheHubMessage(t *testing.T) {
 	}
 }
 
+// UpdateFileCompanionShare changes the link the reader already published: the
+// same token comes back, the row keeps its local path, and a blank password
+// leaves the stored one alone.
+func TestUpdateFileCompanionShareChangesTheExistingLink(t *testing.T) {
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	var patchedPath, patchedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/mobile/documents/shares":
+			_, _ = io.WriteString(w, `{"token":"`+token+`","name":"论文.pdf","visibility":"public","permanent":true,"url":"https://hub.example/hub/documents/shares/`+token+`","created_at":"2026-10-25T00:00:00Z","owner":"me@example.com","size":5,"revision":1}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			_, _ = io.WriteString(w, `{"mine":[{"token":"`+token+`","name":"论文.pdf","visibility":"public","permanent":true,"url":"https://hub.example/hub/documents/shares/`+token+`","created_at":"2026-10-25T00:00:00Z","owner":"me@example.com","size":5}],"received":[]}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/mobile/documents/shares/"+token:
+			raw, _ := io.ReadAll(r.Body)
+			patchedPath = r.URL.Path
+			patchedBody = string(raw)
+			_, _ = io.WriteString(w, `{"token":"`+token+`","name":"论文.pdf","visibility":"private","permanent":false,"expires_at":"2026-11-24T00:00:00Z","url":"https://hub.example/hub/documents/shares/`+token+`","created_at":"2026-10-25T00:00:00Z","owner":"me@example.com","size":5,"revision":3}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	app := &App{
+		testHomeDir:      home,
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	source := filepath.Join(home, "论文.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.FileCompanionOpen(source); err != nil {
+		t.Fatal(err)
+	}
+	// Publish first: the cloud row keeps the local path it was shared from,
+	// and 修改 must not lose that path.
+	if _, err := app.ShareFileCompanionDocument(source, "public", "", "", "[]", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := app.UpdateFileCompanionShare(token, "private", "secret", "", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patchedPath != "/api/mobile/documents/shares/"+token {
+		t.Fatalf("patched %q", patchedPath)
+	}
+	if !strings.Contains(patchedBody, `"visibility":"private"`) || !strings.Contains(patchedBody, `"password":"secret"`) || !strings.Contains(patchedBody, `"days":30`) {
+		t.Fatalf("body = %s", patchedBody)
+	}
+	if updated.Token != token || updated.Visibility != "private" || updated.Permanent || updated.ExpiresAt == "" {
+		t.Fatalf("updated = %#v", updated)
+	}
+
+	row, ok := fileCompanionCloudRow(t, app, token)
+	if !ok {
+		t.Fatal("the cloud row disappeared")
+	}
+	canonical, canonErr := fileCompanionCanonicalPath(source)
+	if canonErr != nil {
+		t.Fatal(canonErr)
+	}
+	if row.Path != canonical || row.Visibility != "private" || row.ExpiresAt == "" {
+		t.Fatalf("row = %#v", row)
+	}
+
+	// A blank password is how 修改 keeps the stored one; it still has to be
+	// allowed through validation.
+	if _, err := app.UpdateFileCompanionShare(token, "private", "", "", 0); err != nil {
+		t.Fatalf("blank password = %v", err)
+	}
+	if _, err := app.UpdateFileCompanionShare(token, "private", "ab", "", 0); err == nil || !strings.Contains(err.Error(), "分享密码需为 4–64 个字符") {
+		t.Fatalf("short password = %v", err)
+	}
+	if _, err := app.UpdateFileCompanionShare(token, "group", "", "not-a-group", 0); err == nil || !strings.Contains(err.Error(), "请选择群组") {
+		t.Fatalf("group = %v", err)
+	}
+	if _, err := app.UpdateFileCompanionShare(token, "public", "", "", 3661); err == nil || !strings.Contains(err.Error(), "分享时间不正确") {
+		t.Fatalf("days = %v", err)
+	}
+	// A negative days means "leave the expiry as it is", so the request must
+	// not carry a days field at all.
+	patchedBody = ""
+	if _, err := app.UpdateFileCompanionShare(token, "public", "", "", -1); err != nil {
+		t.Fatalf("keep expiry = %v", err)
+	}
+	if strings.Contains(patchedBody, `"days"`) {
+		t.Fatalf("a kept expiry was sent as days: %s", patchedBody)
+	}
+	if _, err := app.UpdateFileCompanionShare("not-a-token", "public", "", "", 0); err == nil || !strings.Contains(err.Error(), "分享链接不存在") {
+		t.Fatalf("token = %v", err)
+	}
+}
+
+// An edit that finishes after the reader deleted the project must not put the
+// row back into 文档管理.
+func TestUpdateFileCompanionShareDoesNotRestoreADeletedRow(t *testing.T) {
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/mobile/documents/shares":
+			_, _ = io.WriteString(w, `{"token":"`+token+`","name":"论文.pdf","visibility":"public","permanent":true,"url":"https://hub.example/hub/documents/shares/`+token+`","created_at":"2026-10-25T00:00:00Z","owner":"me@example.com","size":5,"revision":1}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/mobile/documents/shares/"+token:
+			_, _ = io.WriteString(w, `{"token":"`+token+`","name":"论文.pdf","visibility":"private","permanent":true,"url":"https://hub.example/hub/documents/shares/`+token+`","created_at":"2026-10-25T00:00:00Z","owner":"me@example.com","size":5,"revision":2}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	app := &App{
+		testHomeDir:      home,
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	source := filepath.Join(home, "论文.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.FileCompanionOpen(source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ShareFileCompanionDocument(source, "public", "", "", "[]", 0); err != nil {
+		t.Fatal(err)
+	}
+	// The reader deletes the project while the edit is on its way to the hub.
+	if _, err := app.DeleteFileCompanionProject(token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UpdateFileCompanionShare(token, "private", "secret", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fileCompanionCloudRow(t, app, token); ok {
+		t.Fatal("the edit put the deleted share back into the library")
+	}
+}
+
+func TestStaleHubUpdateErrorNamesTheMissingRoute(t *testing.T) {
+	const staleHub = http.StatusNotFound
+	// A 404 with no message is an old hub that has no 修改 route at all.
+	for _, code := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented} {
+		got := staleHubUpdateError(&fileCompanionShareStatus{status: code})
+		if got.Error() != "云端还不支持修改分享，需要更新 Hub" {
+			t.Fatalf("%d: %q", code, got.Error())
+		}
+	}
+	// A hub that answered keeps its own message, even on a 404.
+	missing := staleHubUpdateError(&fileCompanionShareStatus{status: staleHub, message: "分享链接不存在"})
+	if missing.Error() != "分享链接不存在" {
+		t.Fatalf("missing share = %q", missing.Error())
+	}
+	forbidden := staleHubUpdateError(&fileCompanionShareStatus{status: http.StatusForbidden, message: "只有分享者可以修改分享"})
+	if forbidden.Error() != "只有分享者可以修改分享" {
+		t.Fatalf("forbidden = %q", forbidden.Error())
+	}
+	offline := staleHubUpdateError(errors.New("暂时无法连接云端"))
+	if offline.Error() != "暂时无法连接云端" {
+		t.Fatalf("offline = %q", offline.Error())
+	}
+}
+
+// fileCompanionCloudRow is the test's window onto the stored library: the
+// production code only ever rewrites a row it already has.
+func fileCompanionCloudRow(t *testing.T, app *App, token string) (FileCompanionLibraryItem, bool) {
+	t.Helper()
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	items, ok := app.readFileCompanionLibraryLocked()
+	if !ok {
+		return FileCompanionLibraryItem{}, false
+	}
+	for _, item := range items {
+		if item.Source == "cloud" && item.Token == token {
+			return item, true
+		}
+	}
+	return FileCompanionLibraryItem{}, false
+}
+
 func TestSyncFileCompanionShareDropsAShareTheHubNoLongerKeeps(t *testing.T) {
 	const (
 		expired  = "cd_0123456789abcdef0123456789abcdef"

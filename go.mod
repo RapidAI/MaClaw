@@ -55,8 +55,10 @@ require (
 require (
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.4.0 // indirect
+	github.com/creack/goselect v0.1.2 // indirect
 	github.com/raitucarp/epub v0.5.1 // indirect
 	github.com/unitedrhino/go-cad v0.0.0-20261001090957-ddd91eea9618 // indirect
+	go.bug.st/serial v1.6.2
 )
 
 require (

@@ -1,141 +1,251 @@
-/* Cloud workspace management dialog. Scoped to the portaled overview panel. */
+/* Cloud workspace management dialogs.
+ *
+ * Two portaled surfaces share this sheet: the workspace manager
+ * (.mc-cloud-overview) and its file browser (.mc-cloud-files). Both follow the
+ * app shell's dialog language: one radius-xl surface, a tinted header, a
+ * hairline divider, and theme tokens only — so light/dark switch together.
+ */
+
 .mc-cloud-overview.modal-content,
 .mc-cloud-overview.modal-content * {
     box-sizing: border-box;
 }
 
+.mc-cloud-overview.modal-content,
+.mc-cloud-files.modal-content {
+    /* The shared .modal-content shell is painted by a global !important rule
+       with --office-panel, which is #ffffff in light but #1d2030 in dark while
+       --theme-surface is #101010. Deriving every nested surface from the same
+       token keeps the shell and its cards on one plane in both themes. */
+    --mc-cloud-shell: var(--office-panel, var(--theme-surface));
+    /* Tinted toward the accent, like the app's --theme-surface-muted, so a well
+       reads as a recess in light and as a lift in dark. A text-colour mix left
+       the light well at ~2% luminance off the shell, i.e. invisible. */
+    --mc-cloud-well: color-mix(in srgb, var(--theme-primary) 5%, var(--mc-cloud-shell));
+    --mc-cloud-line: color-mix(in srgb, var(--theme-text-primary) 12%, var(--mc-cloud-shell));
+    /* --theme-danger-bg is a translucent red meant to sit on --theme-surface.
+       Over the dark shell (#1d2030) it reads violet, so status blocks tint the
+       shell itself and stay on the shell's own hue. 4% is the strongest tint
+       that still clears AA for danger ink on both shells (4.62 light / 5.22
+       dark); a deeper tint darkens the light one past the threshold. */
+    --mc-cloud-danger-bg: color-mix(in srgb, var(--theme-danger) 4%, var(--mc-cloud-shell));
+    --mc-cloud-warning-bg: color-mix(in srgb, var(--theme-warning, #aa5d05) 9%, var(--mc-cloud-shell));
+}
+
 .mc-cloud-overview.modal-content {
-    width: min(780px, 94vw);
-    min-height: min(440px, 80vh);
-    max-height: min(80vh, 640px);
+    width: min(940px, 94vw);
+    height: min(78vh, 720px);
+    min-height: min(520px, 78vh);
     display: flex;
     flex-direction: column;
-    padding: 16px 16px 14px;
+    padding: 0;
     overflow: hidden;
     text-align: left;
     outline: none;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-xl);
+    background: var(--mc-cloud-shell);
+    box-shadow: var(--shadow-xl);
 }
 
-.mc-cloud-overview .modal-header {
+/* ---- Header ---------------------------------------------------------- */
+
+.mc-cloud-overview__head,
+.mc-cloud-files__head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
     flex: 0 0 auto;
-    margin-bottom: 12px;
-    padding-bottom: 10px;
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--mc-cloud-line);
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--theme-primary) 6%, var(--mc-cloud-shell)),
+        var(--mc-cloud-shell)
+    );
 }
 
-.mc-cloud-overview .modal-header h3 {
-    font-size: 0.98rem;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-}
-
-.mc-cloud-overview .btn-close {
-    width: 28px;
-    height: 28px;
+.mc-cloud-overview__head-icon,
+.mc-cloud-files__head-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 26%, var(--theme-border));
     border-radius: var(--radius-md);
-    font-size: 0.95rem;
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
 }
 
-.mc-cloud-overview .btn-close:hover {
-    background: var(--theme-surface-muted);
+.mc-cloud-overview__head-copy,
+.mc-cloud-files__head-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1 1 auto;
+    min-width: 0;
 }
+
+.mc-cloud-overview__head-copy h3,
+.mc-cloud-files__head-copy h3 {
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 1.02rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.mc-cloud-overview__head-sub,
+.mc-cloud-files__head-sub {
+    margin: 0;
+    /* Informational copy, so it must clear AA on the shell; --theme-text-muted
+       only reaches ~3.9:1 on the dark shell. */
+    color: var(--theme-text-secondary);
+    font-size: 0.74rem;
+    line-height: 1.4;
+}
+
+.mc-cloud-overview__close,
+.mc-cloud-files__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--theme-text-muted);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.mc-cloud-overview__close:hover,
+.mc-cloud-files__close:hover {
+    border-color: var(--theme-border);
+    background: var(--mc-cloud-well);
+    color: var(--theme-text-primary);
+}
+
+.mc-cloud-overview__close:focus-visible,
+.mc-cloud-files__close:focus-visible {
+    /* A global rule paints the ring for .modal-content buttons; only the inset
+       is ours. The header has padding, so an outward ring is not clipped here. */
+    outline-offset: 1px;
+}
+
+/* ---- Body ------------------------------------------------------------ */
 
 .mc-cloud-overview__body {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    min-height: 0;
+    gap: 12px;
     flex: 1 1 auto;
-    margin-bottom: 0;
-    overflow: auto;
+    min-height: 0;
+    margin: 0;
+    padding: 14px 20px 18px;
+    overflow: hidden;
 }
 
 .mc-cloud-overview__banner,
 .mc-cloud-overview__error {
-    padding: 8px 10px;
+    flex: 0 0 auto;
+    padding: 9px 12px;
     border-radius: var(--radius-md);
-    font-size: 0.72rem;
+    font-size: 0.76rem;
     line-height: 1.45;
 }
 
 .mc-cloud-overview__banner {
-    border: 1px solid color-mix(in srgb, var(--theme-warning, #aa5d05) 48%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-warning, #aa5d05) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--theme-warning, #aa5d05) 40%, var(--theme-border));
+    background: var(--mc-cloud-warning-bg);
     color: color-mix(in srgb, var(--theme-warning, #aa5d05) 82%, var(--theme-text-primary));
 }
 
 .mc-cloud-overview__status {
-    font-size: 0.72rem;
+    flex: 0 0 auto;
     color: var(--theme-text-secondary);
+    font-size: 0.76rem;
     line-height: 1.45;
 }
 
 .mc-cloud-overview__error {
     border: 1px solid color-mix(in srgb, var(--theme-danger, #dc1f25) 35%, var(--theme-border));
-    background: var(--theme-danger-bg, color-mix(in srgb, var(--theme-danger, #dc1f25) 10%, transparent));
+    background: var(--mc-cloud-danger-bg);
     color: var(--theme-danger, #dc1f25);
 }
+
+/* ---- Summary strip --------------------------------------------------- */
 
 .mc-cloud-overview__summary {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    min-height: 32px;
+    /* The " · " separator lives inside each stat, so the column gap only needs
+       to top up the space around that dot; a full 8px doubled the gap. */
+    gap: 4px 6px;
+    flex: 0 0 auto;
+    min-height: 36px;
+    padding: 7px 12px;
+    border: 1px solid var(--mc-cloud-line);
+    border-radius: var(--radius-lg);
+    background: var(--mc-cloud-well);
 }
 
 .mc-cloud-overview__stat {
-    position: relative;
     display: inline-flex;
     align-items: center;
     max-width: 100%;
-    padding: 4px 9px;
-    border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-pill);
-    background: var(--theme-surface-muted);
     color: var(--theme-text-secondary);
-    font-size: 0.68rem;
-    font-weight: 650;
-    line-height: 1.35;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
 }
 
 .mc-cloud-overview__stat-sep {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
+    /* The summary gap already spaces the stats; the separator is the visible
+       " · " only, so it must not add its own trailing space. */
+    color: var(--theme-text-muted);
+    opacity: 0.6;
 }
 
 .mc-cloud-overview__quota {
-    flex: 0 0 72px;
-    height: 4px;
+    flex: 0 0 120px;
+    height: 6px;
     margin-left: auto;
     overflow: hidden;
     border-radius: var(--radius-pill);
-    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 14%, var(--theme-border));
 }
 
 .mc-cloud-overview__quota > span {
     display: block;
     height: 100%;
     border-radius: inherit;
-    background: var(--theme-primary);
+    background: linear-gradient(
+        90deg,
+        var(--theme-primary),
+        color-mix(in srgb, var(--theme-primary) 62%, var(--mc-cloud-shell))
+    );
+    transition: width var(--dur-med) var(--ease-out);
 }
+
+/* ---- Two-column layout ----------------------------------------------- */
 
 .mc-cloud-overview__split {
     display: grid;
-    grid-template-columns: minmax(220px, 252px) minmax(0, 1fr);
-    gap: 12px;
+    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+    gap: 14px;
     align-items: stretch;
     flex: 1 1 auto;
-    min-height: 220px;
+    min-height: 0;
     min-width: 0;
     overflow: hidden;
 }
@@ -149,7 +259,7 @@
 .mc-cloud-overview__list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     overflow: hidden;
 }
 
@@ -164,31 +274,44 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: 8px;
     width: 100%;
     flex: 0 0 auto;
-    border: 1px dashed color-mix(in srgb, var(--theme-primary) 55%, var(--theme-border));
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--theme-primary);
+    padding: 10px 12px;
+    border: 1px dashed color-mix(in srgb, var(--theme-primary) 46%, var(--theme-border));
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--theme-primary) 4%, transparent);
+    color: var(--theme-primary-strong);
     cursor: pointer;
-    padding: 8px 10px;
-    font-size: 0.74rem;
-    font-weight: 700;
+    font-size: 0.8rem;
+    font-weight: 650;
+    transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
 }
 
 .mc-cloud-overview__new:hover:not(:disabled) {
     border-style: solid;
+    border-color: var(--theme-primary);
     background: var(--theme-primary-soft);
 }
 
+.mc-cloud-overview__new:active:not(:disabled) {
+    transform: scale(0.995);
+}
+
 .mc-cloud-overview__new:disabled {
-    opacity: 0.5;
+    opacity: 0.55;
     cursor: default;
 }
 
 .mc-cloud-overview__new-mark {
-    font-size: 0.95rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: var(--radius-pill);
+    background: color-mix(in srgb, var(--theme-primary) 16%, transparent);
+    font-size: 0.9rem;
     font-weight: 500;
     line-height: 1;
 }
@@ -196,69 +319,112 @@
 .mc-cloud-overview__list-scroll {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
+    padding-right: 2px;
 }
 
 .mc-cloud-overview__rows {
     display: flex;
     flex-direction: column;
+    gap: 6px;
     flex: 0 0 auto;
-    overflow: hidden;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
-    background: var(--theme-surface);
 }
 
 .mc-cloud-overview__empty-list {
-    padding: 4px 2px;
-    color: var(--theme-text-muted);
-    font-size: 0.7rem;
-    line-height: 1.45;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 22px 12px;
+    border: 1px dashed var(--mc-cloud-line);
+    border-radius: var(--radius-lg);
+    /* Real copy ("No cloud workspace yet."), not a label, so it needs AA on
+       the shell; --theme-text-muted stops at ~3.9:1 in dark. */
+    color: var(--theme-text-secondary);
+    font-size: 0.76rem;
+    line-height: 1.5;
+    text-align: center;
 }
 
+.mc-cloud-overview__empty-list svg {
+    color: color-mix(in srgb, var(--theme-text-muted) 70%, transparent);
+}
+
+/* Workspace row: icon tile + name/meta + trailing chevron. */
 .mc-cloud-overview__row {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     width: 100%;
-    border: 0;
-    border-bottom: 1px solid var(--theme-border-subtle);
-    border-radius: 0;
-    background: transparent;
+    padding: 10px 12px;
+    border: 1px solid var(--mc-cloud-line);
+    border-radius: var(--radius-lg);
+    background: var(--mc-cloud-shell);
     color: inherit;
     text-align: left;
     cursor: pointer;
-    padding: 10px 12px;
-}
-
-.mc-cloud-overview__row:last-child {
-    border-bottom: 0;
+    transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .mc-cloud-overview__row:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface));
+    border-color: color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 4%, var(--mc-cloud-shell));
 }
 
 .mc-cloud-overview__row[aria-pressed='true'] {
+    border-color: color-mix(in srgb, var(--theme-primary) 52%, var(--theme-border));
     background: var(--theme-primary-soft);
-    box-shadow: inset 3px 0 0 var(--theme-primary);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-primary) 32%, transparent);
 }
 
 .mc-cloud-overview__row:disabled {
     cursor: default;
 }
 
+.mc-cloud-overview__new:focus-visible,
 .mc-cloud-overview.modal-content button.mc-cloud-overview__row:focus-visible {
-    outline-offset: -3px !important;
+    /* The list and its scroll box clip overflow, and a global rule paints a 3px
+       ring at +2px offset that would be cut off at the row edges. Pull the ring
+       inside the control instead, as the file-browser rows already do. */
+    outline-offset: -3px;
+}
+
+.mc-cloud-overview__row-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--mc-cloud-line);
+    border-radius: var(--radius-md);
+    background: var(--mc-cloud-well);
+    color: var(--theme-text-secondary);
+}
+
+.mc-cloud-overview__row[aria-pressed='true'] .mc-cloud-overview__row-icon {
+    border-color: color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 12%, var(--mc-cloud-shell));
+    color: var(--theme-primary-strong);
+}
+
+.mc-cloud-overview__row-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .mc-cloud-overview__row-name {
     display: block;
     overflow: hidden;
     color: var(--theme-text-primary);
-    font-size: 0.78rem;
-    font-weight: 700;
+    font-size: 0.85rem;
+    font-weight: 650;
     line-height: 1.35;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -270,27 +436,69 @@
 
 .mc-cloud-overview__row-meta {
     display: block;
-    margin-top: 2px;
-    color: var(--theme-text-muted);
-    font-size: 0.68rem;
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
     line-height: 1.35;
+    font-variant-numeric: tabular-nums;
 }
 
 .mc-cloud-overview__row[aria-pressed='true'] .mc-cloud-overview__row-meta {
-    color: var(--theme-primary);
+    /* Reads as the accent tone, but pinned to primary-strong so it clears AA
+       on the tinted selected row in both schemes. */
+    color: var(--theme-primary-strong);
 }
+
+.mc-cloud-overview__row-chevron {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    margin-left: 2px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    border-radius: 1px;
+    color: var(--theme-text-muted);
+    transform: rotate(-45deg);
+    opacity: 0.7;
+}
+
+.mc-cloud-overview__row[aria-pressed='true'] .mc-cloud-overview__row-chevron {
+    color: var(--theme-primary);
+    opacity: 1;
+}
+
+/* Lease / reconcile notes inside a row read as a warning chip. */
+.mc-cloud-overview__row .stsm-lease-note {
+    display: inline-flex;
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 1px 7px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning, #aa5d05) 34%, var(--theme-border));
+    border-radius: var(--radius-pill);
+    background: var(--mc-cloud-warning-bg);
+    color: color-mix(in srgb, var(--theme-warning, #aa5d05) 84%, var(--theme-text-primary));
+    font-size: 0.66rem;
+    font-weight: 600;
+    line-height: 1.35;
+}
+
+/* ---- Recently deleted ------------------------------------------------ */
 
 .mc-cloud-overview__deleted {
     display: flex;
     flex-direction: column;
     gap: 6px;
     flex: 0 0 auto;
+    padding-top: 4px;
 }
 
 .mc-cloud-overview__section-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--theme-text-secondary);
-    font-size: 0.7rem;
+    font-size: 0.72rem;
     font-weight: 700;
+    letter-spacing: 0.01em;
     line-height: 1.3;
 }
 
@@ -300,10 +508,10 @@
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 8px;
-    padding: 7px 8px;
+    padding: 9px 10px;
     border: 1px dashed var(--theme-border);
     border-radius: var(--radius-md);
-    background: var(--theme-surface-muted);
+    background: var(--mc-cloud-well);
 }
 
 .mc-cloud-overview__deleted-copy {
@@ -316,22 +524,24 @@
     display: block;
     overflow: hidden;
     color: var(--theme-text-primary);
-    font-size: 0.72rem;
+    font-size: 0.78rem;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .mc-cloud-overview__deleted-hint {
     display: block;
-    color: var(--theme-text-muted);
-    font-size: 0.68rem;
+    margin-top: 1px;
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
 }
 
 .mc-cloud-overview__deleted-progress {
     display: block;
     width: 130px;
     height: 3px;
-    margin-top: 4px;
+    margin-top: 5px;
     overflow: hidden;
     border-radius: var(--radius-pill);
     background: color-mix(in srgb, var(--theme-danger, #dc1f25) 18%, transparent);
@@ -354,47 +564,90 @@
     justify-content: flex-end;
 }
 
+/* ---- Detail pane ----------------------------------------------------- */
+
 .mc-cloud-overview__detail {
     display: flex;
     flex-direction: column;
     overflow: auto;
-    border: 1px solid var(--theme-border);
+    border: 1px solid var(--mc-cloud-line);
     border-radius: var(--radius-lg);
-    background: var(--theme-surface);
+    background: var(--mc-cloud-shell);
 }
 
 .mc-cloud-overview__placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
     margin: auto;
-    padding: 28px 18px;
-    color: var(--theme-text-muted);
-    font-size: 0.74rem;
+    padding: 32px 20px;
+    /* "Select a workspace to manage it." is the pane's only instruction, so it
+       carries AA in both schemes rather than the muted tone. */
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
     line-height: 1.5;
     text-align: center;
+}
+
+.mc-cloud-overview__placeholder svg {
+    color: color-mix(in srgb, var(--theme-text-muted) 60%, transparent);
 }
 
 .mc-cloud-overview__detail-head {
     position: sticky;
     top: 0;
     z-index: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     flex: 0 0 auto;
-    padding: 14px 14px 12px;
-    border-bottom: 1px solid var(--theme-border-subtle);
-    background: color-mix(in srgb, var(--theme-surface-muted) 72%, var(--theme-surface));
+    padding: 16px;
+    border-bottom: 1px solid var(--mc-cloud-line);
+    background: var(--mc-cloud-shell);
+}
+
+.mc-cloud-overview__detail-hero {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.mc-cloud-overview__detail-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 42px;
+    height: 42px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+
+.mc-cloud-overview__detail-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
 }
 
 .mc-cloud-overview__detail-title {
     color: var(--theme-text-primary);
-    font-size: 0.92rem;
+    font-size: 1rem;
     font-weight: 700;
     line-height: 1.35;
+    letter-spacing: -0.01em;
     overflow-wrap: anywhere;
 }
 
 .mc-cloud-overview__detail-meta {
-    margin-top: 4px;
-    color: var(--theme-text-muted);
-    font-size: 0.68rem;
+    color: var(--theme-text-secondary);
+    font-size: 0.74rem;
     line-height: 1.4;
+    font-variant-numeric: tabular-nums;
 }
 
 .mc-cloud-overview__actions,
@@ -404,19 +657,18 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    margin-top: 10px;
 }
 
 .mc-cloud-overview__rename-input {
-    flex: 1 1 140px;
+    flex: 1 1 160px;
     min-width: 0;
-    padding: 5px 8px;
+    padding: 7px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: var(--theme-surface);
+    border-radius: var(--radius-md);
+    background: var(--mc-cloud-shell);
     color: var(--theme-text-primary);
     font: inherit;
-    font-size: 0.76rem;
+    font-size: 0.8rem;
 }
 
 .mc-cloud-overview__rename-input:focus {
@@ -425,49 +677,66 @@
     box-shadow: 0 0 0 3px var(--theme-primary-soft);
 }
 
-.mc-cloud-overview .btn-primary,
-.mc-cloud-overview .btn-secondary,
 .mc-cloud-overview__action {
-    padding: 4px 10px;
-    border-radius: var(--radius-sm);
-    font-size: 0.68rem;
-    font-weight: 650;
-    line-height: 1.3;
-}
-
-.mc-cloud-overview__action {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px;
     border: 1px solid var(--theme-border);
-    background: var(--theme-surface);
+    border-radius: var(--radius-md);
+    background: var(--mc-cloud-shell);
     color: var(--theme-text-secondary);
     cursor: pointer;
+    font-size: 0.76rem;
+    font-weight: 650;
+    line-height: 1.3;
+    transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 }
 
 .mc-cloud-overview__action:hover:not(:disabled) {
     border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border));
+    background: var(--mc-cloud-well);
     color: var(--theme-primary);
 }
 
-.mc-cloud-overview__action--primary {
+.mc-cloud-overview__action--accent {
     border-color: color-mix(in srgb, var(--theme-primary) 36%, var(--theme-border));
-    color: var(--theme-primary);
-}
-
-.mc-cloud-overview__action--primary:hover:not(:disabled) {
-    border-color: var(--theme-primary);
     background: var(--theme-primary-soft);
     color: var(--theme-primary-strong);
 }
 
+.mc-cloud-overview__action--accent:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--mc-cloud-shell));
+    color: var(--theme-primary-strong);
+}
+
 .mc-cloud-overview__action--danger {
-    border-color: color-mix(in srgb, var(--theme-danger) 34%, var(--theme-border));
-    background: var(--theme-surface);
+    border-color: color-mix(in srgb, var(--theme-danger) 30%, var(--theme-border));
+    background: var(--mc-cloud-shell);
     color: var(--theme-danger);
 }
 
 .mc-cloud-overview__action--danger:hover:not(:disabled) {
     border-color: var(--theme-danger);
-    background: var(--theme-danger-bg);
+    background: var(--mc-cloud-danger-bg);
     color: var(--theme-danger);
+}
+
+.mc-cloud-overview__action--confirm-danger {
+    border-color: var(--theme-danger);
+    background: var(--theme-danger);
+    color: var(--theme-on-primary);
+}
+
+.mc-cloud-overview__action--confirm-danger:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-danger) 86%, #000);
+    background: color-mix(in srgb, var(--theme-danger) 86%, #000);
+    color: var(--theme-on-primary);
+}
+
+[data-ai-theme='dark'] .mc-cloud-overview__action--confirm-danger {
+    color: #1c1212;
 }
 
 .mc-cloud-overview__action:disabled,
@@ -479,69 +748,60 @@
 .mc-cloud-overview__confirm {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-top: 10px;
-    padding: 8px 10px;
+    gap: 8px;
+    padding: 10px 12px;
     border: 1px solid color-mix(in srgb, var(--theme-danger) 24%, var(--theme-border));
     border-radius: var(--radius-md);
-    background: var(--theme-danger-bg);
+    background: var(--mc-cloud-danger-bg);
     color: var(--theme-text-secondary);
-    font-size: 0.68rem;
-    line-height: 1.45;
-}
-
-.mc-cloud-overview__confirm-actions {
-    margin-top: 0;
+    font-size: 0.76rem;
+    line-height: 1.5;
 }
 
 .mc-cloud-overview__confirm--note {
-    border-color: color-mix(in srgb, var(--theme-text-muted) 35%, var(--theme-border));
-    background: var(--theme-surface);
+    border-color: color-mix(in srgb, var(--theme-text-muted) 32%, var(--theme-border));
+    background: var(--mc-cloud-well);
 }
 
-.mc-cloud-overview.modal-content .mc-cloud-overview__confirm .btn-primary {
-    background: var(--theme-danger);
-    border-color: var(--theme-danger);
-    color: var(--theme-on-primary);
-}
-
-.mc-cloud-overview.modal-content .mc-cloud-overview__confirm .btn-primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--theme-danger) 86%, #000);
-    border-color: color-mix(in srgb, var(--theme-danger) 86%, #000);
-    color: var(--theme-on-primary);
-}
-
-[data-ai-theme='dark'] .mc-cloud-overview.modal-content .mc-cloud-overview__confirm .btn-primary,
-[data-ai-theme='dark'] .mc-cloud-overview.modal-content .mc-cloud-overview__confirm .btn-primary:hover:not(:disabled) {
-    background: var(--theme-danger);
-    border-color: var(--theme-danger);
-    color: #1c1212;
-}
+/* ---- Linked tasks ---------------------------------------------------- */
 
 .mc-cloud-overview__tasks {
     display: flex;
     flex-direction: column;
     gap: 6px;
     flex: 0 0 auto;
-    padding: 12px 14px 14px;
+    padding: 14px 16px 16px;
 }
 
 .mc-cloud-overview__tasks-empty {
-    padding: 8px 2px 4px;
-    color: var(--theme-text-muted);
-    font-size: 0.7rem;
-    line-height: 1.45;
+    padding: 14px 12px;
+    border: 1px dashed var(--mc-cloud-line);
+    border-radius: var(--radius-md);
+    color: var(--theme-text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    text-align: center;
 }
 
 .mc-cloud-overview__task {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 8px 8px 8px 10px;
-    border: 1px solid var(--theme-border-subtle);
+    gap: 10px;
+    padding: 9px 10px 9px 12px;
+    border: 1px solid var(--mc-cloud-line);
     border-radius: var(--radius-md);
-    background: var(--theme-surface-muted);
+    background: var(--mc-cloud-well);
+    transition: border-color var(--transition-fast);
+}
+
+.mc-cloud-overview__task:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border));
+}
+
+.mc-cloud-overview__task-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    color: var(--theme-text-muted);
 }
 
 .mc-cloud-overview__task-name {
@@ -550,8 +810,8 @@
     min-width: 0;
     overflow: hidden;
     color: var(--theme-text-primary);
-    font-size: 0.76rem;
-    font-weight: 700;
+    font-size: 0.8rem;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -564,14 +824,17 @@
     background: transparent;
     color: var(--theme-danger);
     cursor: pointer;
-    font-size: 0.68rem;
+    font-size: 0.72rem;
     font-weight: 650;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .mc-cloud-overview__task-delete:hover:not(:disabled) {
     border-color: color-mix(in srgb, var(--theme-danger) 28%, var(--theme-border));
-    background: var(--theme-danger-bg);
+    background: var(--mc-cloud-danger-bg);
 }
+
+/* ---- File browser dialog --------------------------------------------- */
 
 .mc-cloud-files.modal-content,
 .mc-cloud-files.modal-content * {
@@ -579,91 +842,67 @@
 }
 
 .mc-cloud-files.modal-content {
-    width: min(720px, 94vw);
-    height: min(72vh, 640px);
-    min-height: min(420px, 72vh);
+    width: min(860px, 94vw);
+    height: min(76vh, 700px);
+    min-height: min(440px, 76vh);
     display: flex;
     flex-direction: column;
-    padding: 16px 16px 14px;
+    padding: 0;
     overflow: hidden;
     text-align: left;
     outline: none;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-xl);
+    background: var(--mc-cloud-shell);
+    box-shadow: var(--shadow-xl);
     /* The file menu is position:fixed. A leftover slideUp transform would
        trap and clip it inside this panel. */
     animation: none;
 }
 
-.mc-cloud-files .btn-close {
-    width: 28px;
-    height: 28px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-md);
-    font-size: 0.95rem;
-}
-
-.mc-cloud-files .btn-close:hover {
-    background: var(--theme-surface-muted);
-}
-
-.mc-cloud-files .modal-header {
-    flex: 0 0 auto;
-    margin-bottom: 8px;
-    padding-bottom: 8px;
-}
-
-.mc-cloud-files__header-actions {
+.mc-cloud-files__head-actions {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 4px;
     flex: 0 0 auto;
 }
 
 .mc-cloud-files__refresh {
-    appearance: none;
-    border: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--theme-border);
     border-radius: var(--radius-md);
-    background: transparent;
+    background: var(--mc-cloud-shell);
     color: var(--theme-text-secondary);
     cursor: pointer;
     font: inherit;
-    font-size: 0.72rem;
+    font-size: 0.76rem;
     font-weight: 650;
     line-height: 1;
-    padding: 6px 8px;
+    transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .mc-cloud-files__refresh:hover {
-    background: var(--theme-surface-muted);
-    color: var(--theme-text-primary);
+    border-color: color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border));
+    background: var(--mc-cloud-well);
+    color: var(--theme-primary);
 }
 
 .mc-cloud-files__refresh[aria-busy='true'] {
     opacity: 0.6;
 }
 
-.mc-cloud-files .modal-header h3 {
-    min-width: 0;
-    font-size: 0.98rem;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    overflow-wrap: anywhere;
-}
-
-.mc-cloud-files__hint {
-    flex: 0 0 auto;
-    margin: 0 0 10px;
-    color: var(--theme-text-muted);
-    font-size: 0.72rem;
-    line-height: 1.45;
-}
-
 .mc-cloud-files__refresh-error {
     flex: 0 0 auto;
-    margin: -4px 0 10px;
+    margin: 0 20px 8px;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 32%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: var(--mc-cloud-danger-bg);
     color: var(--theme-danger);
-    font-size: 0.72rem;
+    font-size: 0.76rem;
     line-height: 1.45;
 }
 
@@ -672,10 +911,11 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
+    margin: 14px 20px 18px;
+    border: 1px solid var(--mc-cloud-line);
+    border-radius: var(--radius-lg);
     overflow: hidden;
-    background: var(--theme-surface);
+    background: var(--mc-cloud-shell);
 }
 
 .mc-cloud-files__body > [data-testid="code-preview-workspace"] {
@@ -729,30 +969,40 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
-    padding: 16px;
+    padding: 20px;
     color: var(--theme-text-secondary);
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     line-height: 1.45;
 }
 
 @media (max-width: 720px) {
+    .mc-cloud-overview.modal-content,
     .mc-cloud-files.modal-content {
-        height: min(86vh, 640px);
+        width: 94vw;
+        height: min(86vh, 720px);
         min-height: 0;
     }
 
-    .mc-cloud-overview.modal-content {
-        min-height: 0;
+    .mc-cloud-overview__body {
+        padding: 12px 14px 16px;
         overflow: auto;
+    }
+
+    .mc-cloud-overview__head,
+    .mc-cloud-files__head {
+        padding: 14px 14px 12px;
+    }
+
+    .mc-cloud-files__body {
+        margin: 12px 14px 14px;
+    }
+
+    .mc-cloud-files__refresh-error {
+        margin-inline: 14px;
     }
 
     .mc-cloud-overview__split,
     .mc-cloud-overview__list {
-        overflow: visible;
-    }
-
-    .mc-cloud-overview__list-scroll {
-        flex: none;
         overflow: visible;
     }
 
@@ -761,13 +1011,42 @@
         min-height: 0;
     }
 
+    .mc-cloud-overview__list-scroll {
+        flex: none;
+        overflow: visible;
+        padding-right: 0;
+    }
+
     .mc-cloud-overview__rows {
-        max-height: 220px;
+        max-height: 240px;
         overflow: auto;
     }
 
     .mc-cloud-overview__detail {
-        min-height: 180px;
+        min-height: 200px;
+    }
+
+    .mc-cloud-overview__quota {
+        flex-basis: 90px;
+    }
+}
+
+/* Short windows (small laptop heights, not widths): the two-column split keeps
+   its own scroll areas, but the panel can get shorter than the header + summary
+   + split minimum. Let the body scroll so the detail actions stay reachable
+   instead of being clipped by its own overflow: hidden. */
+@media (max-height: 620px) and (min-width: 721px) {
+    .mc-cloud-overview.modal-content {
+        height: min(92vh, 720px);
+        min-height: 0;
+    }
+
+    .mc-cloud-overview__body {
+        overflow: auto;
+    }
+
+    .mc-cloud-overview__split {
+        min-height: 300px;
     }
 }
 
@@ -780,7 +1059,10 @@
     .mc-cloud-overview__new,
     .mc-cloud-overview__row,
     .mc-cloud-overview__action,
-    .mc-cloud-overview__task-delete {
+    .mc-cloud-overview__task,
+    .mc-cloud-overview__task-delete,
+    .mc-cloud-files__refresh,
+    .mc-cloud-overview__quota > span {
         transition: none;
     }
 }

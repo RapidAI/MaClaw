@@ -47,8 +47,11 @@ func TestSessionRoundContinuationSchedulesTheNextWave(t *testing.T) {
 	if strings.Contains(resp.Text, "Send another message") || strings.Contains(resp.Text, "请继续发送") {
 		t.Fatalf("response asked the user to continue: %q", resp.Text)
 	}
-	if !strings.Contains(resp.Text, "自动继续") {
-		t.Fatalf("response = %q, want the automatic continuation note", resp.Text)
+	// Without the desktop bot the host falls back to its minimal line, which
+	// says the same task keeps going; a model-written line may name the
+	// automatic continuation instead.
+	if !strings.Contains(resp.Text, "自动继续") && !strings.Contains(resp.Text, "接着做") {
+		t.Fatalf("response = %q, want the continuation note", resp.Text)
 	}
 	h.sessionRounds.mu.Lock()
 	armed := h.sessionRounds.timers["desktop-user"] != nil
@@ -127,6 +130,26 @@ func TestSessionRoundContinuationSupersededFireDoesNotStart(t *testing.T) {
 	h.sessionRounds.mu.Unlock()
 	if armed || waves != 0 {
 		t.Fatalf("superseded fire armed=%v waves=%d", armed, waves)
+	}
+}
+
+func TestSessionRoundContinuationDropsAfterANewerTurn(t *testing.T) {
+	h := newSessionRoundHandler(t)
+	ctx := NewLoopContext("chat", 30, nil)
+	// A prior user turn bumps the epoch; this turn starts at that value.
+	h.cancelSessionRoundContinuation("desktop-user")
+	ctx.sessionRoundEpochAtStart = h.sessionRoundEpoch("desktop-user")
+	// A newer user turn bumps it again while this turn runs.
+	h.cancelSessionRoundContinuation("desktop-user")
+	resp := h.maxRoundsAgentLoopExit(ctx, sessionRoundExitOptions("把这批论文做成综述", 4))
+	if resp == nil || resp.sessionRoundContinue || resp.Text != sessionRoundManualContinueText {
+		t.Fatalf("response = %#v, want the manual stop after a newer turn", resp)
+	}
+	h.sessionRounds.mu.Lock()
+	armed := h.sessionRounds.timers["desktop-user"] != nil
+	h.sessionRounds.mu.Unlock()
+	if armed {
+		t.Fatal("a superseded turn left a wave queued")
 	}
 }
 

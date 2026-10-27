@@ -8185,6 +8185,55 @@ describe('useAIAssistant property tests', () => {
         expect(messageContents(result.current.messages)).not.toContain('stale project after cancel');
     });
 
+    it('cancelSession cancels the round an explicit session key names, not the tab session', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+            }));
+        (CancelAIAssistantSessionForSession as any).mockResolvedValueOnce('');
+
+        const workspaceKey = 'desktop-user:D:/tasks/indra/workspace';
+        const taskFolderKey = 'desktop-user:D:/tasks/indra/workspace/.maclaw/data/tasks/qnuni';
+        const { result } = renderHook(() => useAIAssistant({ activeSessionKey: workspaceKey }));
+
+        await act(async () => {
+            void result.current.sendMessage('task folder round', { project_path: 'D:/tasks/indra/workspace/.maclaw/data/tasks/qnuni' });
+            await Promise.resolve();
+        });
+        await act(async () => {
+            void result.current.sendMessage('workspace round', { project_path: 'D:/tasks/indra/workspace' });
+            await Promise.resolve();
+        });
+
+        // The workspace send owns the foreground; the task-folder round keeps
+        // painting the same transcript from the detached map.
+        expect(result.current.busySessionKeys).toContain(taskFolderKey);
+        expect(result.current.busySessionKeys).toContain(workspaceKey);
+
+        await act(async () => {
+            await result.current.cancelSession(taskFolderKey);
+        });
+
+        expect(CancelAIAssistantSessionForSession).toHaveBeenCalledWith(taskFolderKey);
+        const cancelled = result.current.messages.filter(message => message.content.includes(CANCELED_BY_USER_LINE));
+        expect(cancelled).toHaveLength(1);
+        expect(cancelled[0]?.sessionKey).toBe(taskFolderKey);
+        expect(result.current.busySessionKeys).toContain(workspaceKey);
+    });
+
     it('removes reassigned synchronous request from detached round tracking', async () => {
         (SendAIAssistantMessage as any).mockImplementationOnce(async () => ({
             text: 'sync done',

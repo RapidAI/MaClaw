@@ -69,6 +69,10 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 	}
 
 	now := time.Now().UTC()
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "hub"
+	}
 	n := &Notification{
 		ID:           uuid.New().String(),
 		Title:        req.Title,
@@ -79,8 +83,8 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 		AudienceIDs:  req.AudienceIDs,
 		Status:       StatusDraft,
 		IMPush:       req.IMPush,
-		Source:       "hub",
-		SourceID:     "",
+		Source:       source,
+		SourceID:     strings.TrimSpace(req.SourceID),
 		CreatedBy:    req.CreatedBy,
 		PublishAt:    req.PublishAt,
 		ExpireAt:     req.ExpireAt,
@@ -251,9 +255,22 @@ func (s *Service) GetUnreadForMachine(ctx context.Context, machineID string, lim
 			Priority:  string(n.Priority),
 			IsRead:    false,
 			CreatedAt: n.CreatedAt.UTC().Format(time.RFC3339),
+			Source:    n.Source,
+			SourceID:  n.SourceID,
 		})
 	}
 	return result, nil
+}
+
+// FindBySource returns the notification raised by a Hub subsystem under
+// source/source_id, or nil when it does not exist.
+func (s *Service) FindBySource(ctx context.Context, source, sourceID string) (*Notification, error) {
+	source = strings.TrimSpace(source)
+	sourceID = strings.TrimSpace(sourceID)
+	if source == "" || sourceID == "" {
+		return nil, nil
+	}
+	return s.store.FindBySource(ctx, source, sourceID)
 }
 
 // ---------------------------------------------------------------------------

@@ -348,20 +348,6 @@ button.knowledge-chip:disabled {
     text-align: left;
 }
 
-.knowledge-raw-pre {
-    margin: 0;
-    max-height: 260px;
-    overflow: auto;
-    border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-md);
-    padding: 10px 12px;
-    background: var(--theme-surface-muted);
-    color: var(--theme-text-primary);
-    font-size: 0.76rem;
-    line-height: 1.45;
-    text-align: left;
-    white-space: pre-wrap;
-}
 
 /* --- Knowledge Search Hero --- */
 .knowledge-search-hero {

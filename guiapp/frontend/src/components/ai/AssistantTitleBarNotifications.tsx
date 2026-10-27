@@ -1,22 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { EventsOn } from "../../../wailsjs/runtime";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { NotificationBell } from "./NotificationBell";
 import { asNotificationCategory, NotificationPanel, stripMarkdownPreview } from "./NotificationPanel";
-import { useCompanionGroupInvites, type GroupInviteError } from "./CompanionGroupInvites";
+import { refreshCompanionGroupInvites, useCompanionGroupInvites } from "./CompanionGroupInvites";
 import { useNotifications, type AdminNotification } from "./useNotifications";
 import { IconRecord } from "./WorkbenchIcons";
-
-function groupInviteElsewhereText(error: GroupInviteError, lang: string): string {
-    const name = error.name.trim();
-    if (!name) return error.message;
-    return localizeText(
-        lang,
-        `Couldn't handle “${name}”: ${error.message}`,
-        `「${name}」未处理：${error.message}`,
-        `「${name}」未處理：${error.message}`,
-    );
-}
+import { COMPANION_GROUP_INVITE_SOURCE, groupInviteElsewhereText, groupInviteGroupID } from "./AssistantTitleBarNotifications.groupInvite";
 
 export function AssistantTitleBarNotifications({
     active = true,
@@ -31,7 +22,6 @@ export function AssistantTitleBarNotifications({
 }) {
     const {
         notifications,
-        unreadCount,
         panelOpen,
         categoryFilter,
         togglePanel,
@@ -42,9 +32,66 @@ export function AssistantTitleBarNotifications({
         dismissUrgentToast,
     } = useNotifications();
     const { notices: groupInvites, decide: decideGroupInvite, busyId: groupInviteBusyId, error: groupInviteError, listError: groupInviteListError } = useCompanionGroupInvites(active, lang);
+    // A pushed invitation notice means the pending list changed. Refreshing it
+    // here is what makes an invitation appear without waiting for the poll. A
+    // reconnect pulls the list's notices too, so the sync event counts as well.
+    useEffect(() => {
+        if (!active) return;
+        const onNew = (payload: unknown) => {
+            const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+            if (record.source === COMPANION_GROUP_INVITE_SOURCE || record.Source === COMPANION_GROUP_INVITE_SOURCE) {
+                refreshCompanionGroupInvites();
+            }
+        };
+        const onSync = (payload: unknown) => {
+            const items = Array.isArray(payload) ? payload : [];
+            const hasInvite = items.some((item) => {
+                const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+                return record.source === COMPANION_GROUP_INVITE_SOURCE || record.Source === COMPANION_GROUP_INVITE_SOURCE;
+            });
+            if (hasInvite) refreshCompanionGroupInvites();
+        };
+        const unsubscribeNew = EventsOn("notification:new", onNew);
+        const unsubscribeSync = EventsOn("notification:sync", onSync);
+        return () => {
+            if (typeof unsubscribeNew === "function") unsubscribeNew();
+            if (typeof unsubscribeSync === "function") unsubscribeSync();
+        };
+    }, [active]);
+    // An invite notice is redundant only while its invite row is on screen. If
+    // the list could not be read, the notice is the only copy left: keep it and
+    // make it actionable so the person can still answer from here.
+    const hubNotifications = useMemo(() => {
+        const shownGroups = new Set(groupInvites.map((invite) => invite.groupInviteId || ""));
+        const out: AdminNotification[] = [];
+        for (const notice of notifications) {
+            const groupID = groupInviteGroupID(notice);
+            if (groupID && shownGroups.has(groupID)) continue;
+            out.push(groupID ? { ...notice, groupInviteId: groupID } : notice);
+        }
+        return out;
+    }, [groupInvites, notifications]);
     const notificationsWithInvites = useMemo(
-        () => [...groupInvites, ...notifications],
-        [groupInvites, notifications],
+        () => [...groupInvites, ...hubNotifications],
+        [groupInvites, hubNotifications],
+    );
+    // The badge counts what the bell actually lists, once per invitation group.
+    // Taking the group set from both sources keeps the number steady while the
+    // pending list and the delivery notice arrive at different moments.
+    const inviteCount = useMemo(() => {
+        const groups = new Set<string>();
+        for (const invite of groupInvites) {
+            if (invite.groupInviteId) groups.add(invite.groupInviteId);
+        }
+        for (const notice of notifications) {
+            const groupID = groupInviteGroupID(notice);
+            if (groupID) groups.add(groupID);
+        }
+        return groups.size;
+    }, [groupInvites, notifications]);
+    const hubUnreadCount = useMemo(
+        () => hubNotifications.filter((notice) => !notice.is_read && !groupInviteGroupID(notice)).length,
+        [hubNotifications],
     );
     const [selectedNotification, setSelectedNotification] = useState<AdminNotification | null>(null);
     const handleSelectNotification = useCallback((notification: AdminNotification) => {
@@ -111,7 +158,7 @@ export function AssistantTitleBarNotifications({
         <>
             <div data-notification-anchor="true" className="atbn-anchor">
                 <NotificationBell
-                    unreadCount={unreadCount + groupInvites.length}
+                    unreadCount={hubUnreadCount + inviteCount}
                     onClick={handleTogglePanel}
                     theme={t}
                     inline={inline}

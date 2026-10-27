@@ -1,0 +1,12 @@
+# ESP-IDF build outputs and generated configuration.
+firmware/build/
+firmware/build.log
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+
+# Device backups are large binaries produced per board.
+tools/backup/
+
+# IDF component manager lock produced from the vendored component manifests.
+firmware/dependencies.lock

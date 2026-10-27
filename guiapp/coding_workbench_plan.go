@@ -2108,6 +2108,12 @@ func sentenceDotCount(text string) int {
 // restatement, so the next turn started over. A continue head with no new
 // requirement is the same resume. Residual work ("继续完善界面") is not.
 func codingWorkbenchContinueCue(userText string) bool {
+	// A host session wave repeats the same session task after its round
+	// budget ended. Its header is not a new request; the unfinished
+	// checklist is the requirement.
+	if isSessionRoundContinuation(userText) {
+		return true
+	}
 	if semanticBareContinueQuery(userText) {
 		return true
 	}
@@ -2793,10 +2799,13 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	if userText == "" {
 		userText = "执行编程任务"
 	}
+	// A host session wave carries a continuation header, not a user request.
+	// Titles, planning, and goal text use the task the wave repeats.
+	requestText := sessionRoundCodingTask(userText)
 	single := []*v2.TaskItem{{
 		Index:       1,
-		Title:       truncateRunesV2(userText, 80),
-		Description: userText,
+		Title:       truncateRunesV2(requestText, 80),
+		Description: requestText,
 	}}
 	fallbackSingle := func(reason string) ([]*v2.TaskItem, string, bool) {
 		if reason != "" {
@@ -2847,10 +2856,10 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// understanding over.
 	if execute, ok := selectIncompleteCodingPlanTasks(userText, sessionMem); ok {
 		log.Printf("[coding-plan] resume incomplete plan user=%s steps=%d", userID, len(execute))
-		if md := codingChecklistResumePlanMarkdown(userText, sessionMem); md != "" {
+		if md := codingChecklistResumePlanMarkdown(requestText, sessionMem); md != "" {
 			sessionMem.ExecutionPlan = md
 		}
-		if text, replace := codingPlanResumeUnderstanding(userText, sessionMem); replace {
+		if text, replace := codingPlanResumeUnderstanding(requestText, sessionMem); replace {
 			sessionMem.RequirementRestatement = text
 		}
 		h.reopenIncompleteCodingPlanSteps(userID, sessionMem, execute)
@@ -2858,6 +2867,12 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 			onProgress(fmt.Sprintf("继续未完成的计划：剩余 %d 步", len(execute)))
 		}
 		return execute, strings.TrimSpace(sessionMem.ExecutionPlan), true
+	}
+	// A host session wave repeats work whose round budget ended. Running the
+	// same request again as one task continues it; planning again would open
+	// an approval gate nobody asked for and stop the automatic round.
+	if isSessionRoundContinuation(userText) {
+		return fallbackSingle("host session round")
 	}
 	// Plan mode off: never multi-step.
 	planMode := normalizeCodingPlanMode(sessionMem.PlanMode)
@@ -2878,26 +2893,26 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	}
 	// Short follow-ups in an ongoing session usually mean "continue/fix", not replan.
 	// A short rewrite ("改为图形界面版") is still a new product-level change.
-	if sessionMem.TurnCount > 0 && utf8.RuneCountInString(userText) < 80 && numberedStepCount(userText) < 2 && !codingRequestLooksModeratelyComplex(userText) {
+	if sessionMem.TurnCount > 0 && utf8.RuneCountInString(requestText) < 80 && numberedStepCount(requestText) < 2 && !codingRequestLooksModeratelyComplex(requestText) {
 		return fallbackSingle("short follow-up")
 	}
 
 	// Prefer steps already written by the user (numbered / T1 list) — no LLM needed.
-	if userPlan := extractUserProvidedCodingPlan(userText); len(userPlan) >= codingWorkbenchPlanMinTasks {
+	if userPlan := extractUserProvidedCodingPlan(requestText); len(userPlan) >= codingWorkbenchPlanMinTasks {
 		tasks = userPlan
 		log.Printf("[coding-plan] using user-provided steps user=%s steps=%d", userID, len(tasks))
-	} else if codingRestatementFallbackIsSpecific(userText, sessionMem) {
+	} else if codingRestatementFallbackIsSpecific(requestText, sessionMem) {
 		// Rewrite follow-ups already have a host restatement. Do not wait on a
 		// planner LLM that usually falls back to the same two-step plan.
-		tasks = defaultModerateCodingPlan(userText, sessionMem.RequirementRestatement)
+		tasks = defaultModerateCodingPlan(requestText, sessionMem.RequirementRestatement)
 		log.Printf("[coding-plan] host rewrite plan user=%s steps=%d", userID, len(tasks))
 	} else {
 		if onProgress != nil {
 			onProgress("复杂编程任务：正在自动规划步骤…")
 		}
-		_, tasks = h.planCodingWorkbenchTasks(userID, userText, projectPath, sessionMem)
-		if len(tasks) < codingWorkbenchPlanMinTasks && codingRequestLooksModeratelyComplex(userText) {
-			tasks = defaultModerateCodingPlan(userText, sessionMem.RequirementRestatement)
+		_, tasks = h.planCodingWorkbenchTasks(userID, requestText, projectPath, sessionMem)
+		if len(tasks) < codingWorkbenchPlanMinTasks && codingRequestLooksModeratelyComplex(requestText) {
+			tasks = defaultModerateCodingPlan(requestText, sessionMem.RequirementRestatement)
 			log.Printf("[coding-plan] host fallback moderate plan user=%s steps=%d", userID, len(tasks))
 		}
 		if len(tasks) < codingWorkbenchPlanMinTasks {
@@ -2907,7 +2922,7 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	if len(tasks) > codingWorkbenchPlanMaxTasks {
 		tasks = tasks[:codingWorkbenchPlanMaxTasks]
 	}
-	goalText := codingPlanGoalText(userText, sessionMem.RequirementRestatement)
+	goalText := codingPlanGoalText(requestText, sessionMem.RequirementRestatement)
 	tasks = finalizeCodingWorkbenchTasks(tasks, goalText)
 	// Allow independent explore-only steps to run in parallel waves (TaskRunner MaxParallel).
 	tasks = softenExploreOnlyPlanDeps(tasks)
@@ -2924,8 +2939,8 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 			if codingSessionContextLooksGeneric(sessionSeed) {
 				sessionSeed = ""
 			}
-			if sessionSeed == "" && !codingSessionContextLooksGeneric(userText) && utf8.RuneCountInString(userText) >= 12 {
-				sessionSeed = truncateRunesV2(userText, 400)
+			if sessionSeed == "" && !codingSessionContextLooksGeneric(requestText) && utf8.RuneCountInString(requestText) >= 12 {
+				sessionSeed = truncateRunesV2(requestText, 400)
 			}
 		}
 		h.persistCodingWorkbenchPlans(userID, planMarkdown, sessionSeed)
@@ -2939,7 +2954,7 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// fast-execution override.
 	if planMode == codingPlanModeAuto || planMode == codingPlanModeApprove {
 		if userID != "" {
-			h.storeStickyPendingCodingPlan(userID, userText, planMarkdown, tasks)
+			h.storeStickyPendingCodingPlan(userID, requestText, planMarkdown, tasks)
 		}
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("已规划 %d 个执行步骤，等待批准后执行", len(tasks)))

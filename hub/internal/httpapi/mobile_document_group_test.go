@@ -689,9 +689,12 @@ func postCompanionInviteDecision(t *testing.T, identity *auth.IdentityService, t
 	req.SetPathValue("id", groupID)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-	if action == "accept" {
+	switch action {
+	case "accept":
 		CompanionDocumentGroupAcceptHandler(identity).ServeHTTP(rec, req)
-	} else {
+	case "ignore":
+		CompanionDocumentGroupIgnoreHandler(identity).ServeHTTP(rec, req)
+	default:
 		CompanionDocumentGroupDeclineHandler(identity).ServeHTTP(rec, req)
 	}
 	if rec.Code != http.StatusOK {

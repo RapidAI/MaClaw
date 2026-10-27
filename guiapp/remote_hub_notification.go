@@ -28,6 +28,12 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		a.notifCache.Add(push.Notification)
 		// Notify frontend of the new notification.
 		emitNotificationFrontendEvent(a, "notification:new", push.Notification)
+		// An invitation also needs the operating system's notice: the bell is
+		// only visible on the assistant panel. This re-reads the invite list, so
+		// it must not hold up the WebSocket read loop.
+		if isCompanionGroupInviteNotification(push.Notification.Source) {
+			go a.announceCompanionGroupInviteNotice(push.Notification.ID, push.Notification.SourceID, push.Notification.Content)
+		}
 		// Urgent notifications get an additional toast event.
 		if push.Notification.Priority == "urgent" {
 			emitNotificationFrontendEvent(a, "notification:urgent-toast", push.Notification)

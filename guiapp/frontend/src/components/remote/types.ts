@@ -100,6 +100,7 @@ export interface RemoteSessionView {
     runtime_status?: string;
     pid?: number;
     current_url?: string;
+    updated_at?: string;
     latest_refs?: BrowserSessionRefView[];
     summary?: RemoteSessionSummaryView;
     preview?: SessionPreviewView;

@@ -4626,10 +4626,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [notifyForegroundIdle]);
 
     const findInFlightRoundBySession = useCallback((sessionKey: string) => {
-        const normalizedSessionKey = sessionKey || 'desktop-user';
+        // Normalize both sides: an agent-view round keeps the module key as
+        // written, while an event or transcript key is already normalized.
+        const normalizedSessionKey = normalizeRuntimeSessionKey(sessionKey || 'desktop-user');
         for (const round of inFlightRoundsByRequestRef.current.values()) {
             if (round.phase === 'idle') continue;
-            if ((round.sessionKey || 'desktop-user') === normalizedSessionKey) return round;
+            if (normalizeRuntimeSessionKey(round.sessionKey || 'desktop-user') === normalizedSessionKey) return round;
         }
         return null;
     }, []);
@@ -7017,37 +7019,51 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
     }, []);
 
-    const cancelSession = useCallback(async (): Promise<CancelAIAssistantResult> => {
-        const sessionKeyAtCancel = activeSessionKeyForEvents() || 'desktop-user';
+    // requestedSessionKey lets the panel stop the round that paints the open
+    // transcript when it owns another key than the tab (goal stages and the
+    // coding workbench keep the task-folder key while the tab may use the
+    // workspace path). Without it, the stop control was dead for that round:
+    // the lookup under the tab key found nothing and left the work running.
+    const cancelSession = useCallback(async (requestedSessionKey?: string): Promise<CancelAIAssistantResult> => {
+        const explicitSessionKey = String(requestedSessionKey || '').trim();
+        const sessionKeyAtCancel = explicitSessionKey || activeSessionKeyForEvents() || 'desktop-user';
+        const lookupSessionKey = normalizeRuntimeSessionKey(sessionKeyAtCancel);
         const activeRoundAtCancel = activeRoundRef.current;
         const activeRoundSessionKey = activeRoundAtCancel.sessionKey || 'desktop-user';
-        const detachedRoundAtCancel = activeRoundSessionKey === sessionKeyAtCancel
+        const activeRoundOwnsSession = normalizeRuntimeSessionKey(activeRoundSessionKey) === lookupSessionKey;
+        const detachedRoundAtCancel = activeRoundOwnsSession
             ? null
-            : findInFlightRoundBySession(sessionKeyAtCancel);
-        const canceledRound = detachedRoundAtCancel || activeRoundAtCancel;
+            : findInFlightRoundBySession(lookupSessionKey);
+        // An explicit owner must never cancel a round parked under another
+        // session. Without one, keep the old fallback to whichever round the
+        // panel still tracks.
+        const fallbackRound = explicitSessionKey && !activeRoundOwnsSession ? null : activeRoundAtCancel;
+        const canceledRound = detachedRoundAtCancel || fallbackRound;
         const cancelingDetachedRound = !!detachedRoundAtCancel;
         const pendingTaskAtCancel = findPendingTaskBySession(sessionKeyAtCancel, activeRoundSessionKey);
-        const nextGeneration = canceledRound.generation + 1;
-        if (!canceledRound.assistantMessageId && isRoundIdle(canceledRound) && !pendingTaskAtCancel) {
+        const nextGeneration = (canceledRound?.generation ?? activeRoundAtCancel.generation) + 1;
+        if (!canceledRound?.assistantMessageId && (!canceledRound || isRoundIdle(canceledRound)) && !pendingTaskAtCancel) {
             return { canceledText: "" };
         }
         console.info('[useAIAssistant] cancel foreground session', {
             sessionKey: sessionKeyAtCancel || 'desktop-user',
-            requestId: canceledRound.requestId,
+            requestId: canceledRound?.requestId || '',
             detached: cancelingDetachedRound,
             hasPendingTask: !!pendingTaskAtCancel,
         });
-        if (canceledRound.assistantMessageId) {
+        if (canceledRound?.assistantMessageId) {
             flushStreamTokenBuffer(canceledRound.requestId);
             resetStreamTokenBuffer(canceledRound.requestId);
             setMessages(prev => markRoundCancelled(prev, canceledRound.assistantMessageId, canceledRound.requestId));
         }
-        stopResponseTimeout(canceledRound.requestId);
         // Do NOT resetActiveRound here — keep the spinner/lock visible until
         // the backend confirms the loop has fully exited (state.mu released).
         // Otherwise the user sees an unlocked input box but state.mu is still
         // held by the dying goroutine, causing "系统正在恢复中" on next send.
-        forgetInFlightRound(canceledRound.requestId);
+        if (canceledRound) {
+            stopResponseTimeout(canceledRound.requestId);
+            forgetInFlightRound(canceledRound.requestId);
+        }
         if (pendingTaskAtCancel) {
             clearPendingTaskForRequest(pendingTaskAtCancel.requestId);
         }
@@ -7058,7 +7074,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     await CancelAIAssistantTask(pendingTaskAtCancel.sessionID);
                     return { canceledText: "" };
                 }
-                if (!canceledRound.assistantMessageId) {
+                if (!canceledRound?.assistantMessageId) {
                     const lastSessionMessage = [...latestMessagesRef.current]
                         .reverse()
                         .find((message) => message.role === 'system' && /session_id:\s*/i.test(message.content));
@@ -7082,7 +7098,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const result = await cancelBackend;
         // Backend confirmed loop exit — NOW it's safe to reset the round
         // (stop spinner, unlock input box). The state.mu is released.
-        if (!cancelingDetachedRound) {
+        if (canceledRound === activeRoundAtCancel) {
             resetActiveRound(nextGeneration);
             clearTransientProgress();
         }

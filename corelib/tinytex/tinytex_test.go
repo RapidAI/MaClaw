@@ -137,3 +137,29 @@ func TestFindDistRootAndVerifiedStamp(t *testing.T) {
 		t.Fatalf("scheme=%s bundle=%s", Scheme, Bundle)
 	}
 }
+
+func TestFindEngineChecksCurrentPlatformDirectory(t *testing.T) {
+	platform := enginePlatformDir(runtime.GOOS, runtime.GOARCH)
+	if platform == "" {
+		t.Skip("unsupported test platform")
+	}
+	dist := t.TempDir()
+	engineName := "xelatex"
+	if runtime.GOOS == "windows" {
+		engineName = "xelatex.exe"
+	}
+	want := filepath.Join(dist, "bin", platform, engineName)
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FindEngine(dist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("engine = %q, want %q", got, want)
+	}
+}

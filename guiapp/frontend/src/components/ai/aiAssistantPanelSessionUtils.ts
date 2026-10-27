@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { buildOutgoingMessageMulti, type ChatMessage } from "./useAIAssistant";
 import { expertTabId } from "./expertTypes";
 import { cloudWorkspaceIdFromPath } from "./codingTaskMode";
@@ -382,6 +382,70 @@ export function sessionKeyListHas(keys: Iterable<string> | undefined | null, ses
         if (key === sessionKey || (normalized && normalizeAssistantSessionKey(key) === normalized)) return true;
     }
     return false;
+}
+
+/**
+ * Normalized session key of a live round that paints the visible transcript tail.
+ *
+ * The open tab's key and the round's key can differ while both describe the
+ * same task: goal stages and the coding workbench keep the task-folder key
+ * while the tab may use the workspace path. Matching only the tab key left
+ * the composer idle and the header badge on a stale interrupted snapshot
+ * while the visible thought kept streaming. A steer injection or a later
+ * follow-up user row can sit above that assistant row, so only assistant rows
+ * count and the scan stays bounded. A busy key can only match a row of the
+ * round that is writing it now; an older row with the same owner still names
+ * the same work.
+ */
+export function transcriptLiveWorkSessionKey(
+    messages: readonly { role?: string; sessionKey?: string | null }[] | null | undefined,
+    busySessionKeys: readonly string[] | null | undefined,
+): string {
+    const busy = new Set<string>();
+    for (const key of busySessionKeys || []) {
+        const normalized = normalizeAssistantSessionKey(key);
+        if (normalized) busy.add(normalized);
+    }
+    if (busy.size === 0) return "";
+    const rows = Array.isArray(messages) ? messages : [];
+    const floor = Math.max(0, rows.length - 24);
+    for (let index = rows.length - 1; index >= floor; index -= 1) {
+        const message = rows[index];
+        if (!message || message.role !== "assistant") continue;
+        const owner = normalizeAssistantSessionKey(message.sessionKey);
+        if (owner && busy.has(owner)) return owner;
+    }
+    return "";
+}
+
+/**
+ * Live-work state for the open transcript, including a round that owns another
+ * session key. The panel used to read only the tab's own sending/streaming
+ * flags, so such a round left the composer idle and the badge on a stale
+ * interrupted snapshot while the visible thought kept streaming.
+ * `sessionKey` is the busy round's normalized key (passed to cancel).
+ */
+export function useTranscriptLiveWork(input: {
+    messages: readonly { role?: string; sessionKey?: string | null }[] | null | undefined;
+    busySessionKeys?: readonly string[] | null;
+    streamingSessionKeys?: readonly string[] | null;
+    busy: boolean;
+    streaming: boolean;
+}): { sessionKey: string; active: boolean; streaming: boolean } {
+    const { messages, busySessionKeys, streamingSessionKeys, busy, streaming } = input;
+    const busyKey = useMemo(
+        () => transcriptLiveWorkSessionKey(messages, busySessionKeys),
+        [busySessionKeys, messages],
+    );
+    const streamingKey = useMemo(
+        () => transcriptLiveWorkSessionKey(messages, streamingSessionKeys),
+        [messages, streamingSessionKeys],
+    );
+    return useMemo(() => ({
+        sessionKey: busyKey,
+        active: busy || streaming || !!busyKey,
+        streaming: streaming || !!streamingKey,
+    }), [busy, busyKey, streaming, streamingKey]);
 }
 
 /**

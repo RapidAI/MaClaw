@@ -11,6 +11,7 @@ import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
+import { GlyphCloudDrive, GlyphClose, GlyphFolder } from './cloudDriveGlyphs';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
 import { TaskWorkspaceTransferDialog, type TaskTransferCloudWorkspace, type TaskTransferDirection, type TaskTransferTarget } from './TaskWorkspaceTransferDialog';
 import './cloudOverview.css';
@@ -1943,7 +1944,7 @@ const CloudDeletedWorkspaceRow = ({
                         ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
                         : textForLang(lang, 'Restore', '恢复', '恢復')}
                     onClick={() => { if (id) onRestore(id); }}
-                    className="mc-cloud-overview__action mc-cloud-overview__action--primary"
+                    className="mc-cloud-overview__action mc-cloud-overview__action--accent"
                 >
                     {textForLang(lang, 'Restore', '恢复', '恢復')}
                 </button>
@@ -5468,20 +5469,30 @@ export const SidebarTaskManagement = ({
                     onMouseDown={e => e.stopPropagation()}
                     onClick={e => e.stopPropagation()}
                 >
-                    <div className="modal-header">
-                        <h3 id="task-cloud-overview-title">
-                            {textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')}
-                        </h3>
+                    <div className="mc-cloud-overview__head">
+                        <span className="mc-cloud-overview__head-icon" aria-hidden="true">
+                            <CloudComputingIcon size={20} />
+                        </span>
+                        <div className="mc-cloud-overview__head-copy">
+                            <h3 id="task-cloud-overview-title">
+                                {textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')}
+                            </h3>
+                            <p className="mc-cloud-overview__head-sub">
+                                {textForLang(lang, 'Continue on another PC — files sync automatically', '换台电脑也能继续，文件自动同步', '換台電腦也能繼續，檔案自動同步')}
+                            </p>
+                        </div>
                         <button
                             type="button"
-                            className="btn-close"
+                            className="mc-cloud-overview__close"
                             data-testid="task-cloud-overview-close"
                             aria-label={textForLang(lang, 'Close', '关闭', '關閉')}
                             title={textForLang(lang, 'Close', '关闭', '關閉')}
                             onClick={closeCloudOverview}
-                        >X</button>
+                        >
+                            <GlyphClose size={16} />
+                        </button>
                     </div>
-                    <div className="modal-body mc-cloud-overview__body">
+                    <div className="mc-cloud-overview__body">
                         {cloudEntitlement?.hub_unavailable ? (
                             <div
                                 role="status"
@@ -5547,6 +5558,7 @@ export const SidebarTaskManagement = ({
                                 <div className="mc-cloud-overview__list-scroll">
                                 {cloudWorkspaces.length === 0 ? (
                                     <div className="mc-cloud-overview__empty-list" data-testid={cloudEntitlement == null ? 'task-cloud-overview-checking' : undefined}>
+                                        <GlyphCloudDrive size={26} />
                                         {cloudEntitlement == null
                                             ? cloudDeniedReason
                                             : textForLang(lang, 'No cloud workspace yet.', '暂无云端工作区。', '暫無雲端工作區。')}
@@ -5570,13 +5582,19 @@ export const SidebarTaskManagement = ({
                                                     onClick={() => { setManageWorkspaceId(id); resetCloudWorkspaceEditors(); }}
                                                     className="mc-cloud-overview__row"
                                                 >
-                                                    <span className="mc-cloud-overview__row-name">{row.name || id}</span>
-                                                    <span className="mc-cloud-overview__row-meta">
-                                                        {bound
-                                                            ? textForLang(lang, `${linked.length} linked task${linked.length === 1 ? '' : 's'}`, `${linked.length} 个关联任务`, `${linked.length} 個關聯任務`)
-                                                            : textForLang(lang, 'No linked tasks', '无关联任务', '無關聯任務')}
+                                                    <span className="mc-cloud-overview__row-icon" aria-hidden="true">
+                                                        <GlyphCloudDrive size={17} />
                                                     </span>
-                                                    <CloudWorkspaceLeaseNote row={row} lang={lang} />
+                                                    <span className="mc-cloud-overview__row-main">
+                                                        <span className="mc-cloud-overview__row-name">{row.name || id}</span>
+                                                        <span className="mc-cloud-overview__row-meta">
+                                                            {bound
+                                                                ? textForLang(lang, `${linked.length} linked task${linked.length === 1 ? '' : 's'}`, `${linked.length} 个关联任务`, `${linked.length} 個關聯任務`)
+                                                                : textForLang(lang, 'No linked tasks', '无关联任务', '無關聯任務')}
+                                                        </span>
+                                                        <CloudWorkspaceLeaseNote row={row} lang={lang} />
+                                                    </span>
+                                                    <span className="mc-cloud-overview__row-chevron" aria-hidden="true" />
                                                 </button>
                                             );
                                         })}
@@ -5608,9 +5626,12 @@ export const SidebarTaskManagement = ({
                                 {(() => {
                                     const selected = cloudWorkspaces.find(row => (row.id || '').trim() === overviewSelectionId);
                                     if (!selected) {
-                                        return <div className="mc-cloud-overview__placeholder">{cloudEntitlement == null
-                                            ? cloudDeniedReason
-                                            : textForLang(lang, 'Select a workspace to manage it.', '选择一个工作区进行管理。', '選擇一個工作區進行管理。')}</div>;
+                                        return <div className="mc-cloud-overview__placeholder">
+                                            <GlyphCloudDrive size={30} />
+                                            <span>{cloudEntitlement == null
+                                                ? cloudDeniedReason
+                                                : textForLang(lang, 'Select a workspace to manage it.', '选择一个工作区进行管理。', '選擇一個工作區進行管理。')}</span>
+                                        </div>;
                                     }
                                     const id = (selected.id || '').trim();
                                     const linked = tasksForCloudWorkspace(visibleTasks, id);
@@ -5622,20 +5643,30 @@ export const SidebarTaskManagement = ({
                                     return (
                                         <>
                                             <div className="mc-cloud-overview__detail-head">
-                                                <div className="mc-cloud-overview__detail-title">{selected.name || id}</div>
-                                                <div className="mc-cloud-overview__detail-meta">{[lastUsed, sizeText].filter(Boolean).join(' · ')}</div>
-                                                <CloudWorkspaceLeaseNote row={selected} lang={lang} />
+                                                <div className="mc-cloud-overview__detail-hero">
+                                                    <span className="mc-cloud-overview__detail-icon" aria-hidden="true">
+                                                        <GlyphCloudDrive size={22} />
+                                                    </span>
+                                                    <div className="mc-cloud-overview__detail-copy">
+                                                        <div className="mc-cloud-overview__detail-title">{selected.name || id}</div>
+                                                        <div className="mc-cloud-overview__detail-meta">{[lastUsed, sizeText].filter(Boolean).join(' · ')}</div>
+                                                        <CloudWorkspaceLeaseNote row={selected} lang={lang} />
+                                                    </div>
+                                                </div>
                                                 {renaming ? (
                                                     <div className="mc-cloud-overview__rename">
                                                         <input autoFocus className="mc-cloud-overview__rename-input" value={renameCloudWorkspaceValue} onChange={e => setRenameCloudWorkspaceValue(e.target.value)} disabled={cloudWorkspaceBusy} aria-label={textForLang(lang, 'Workspace name', '工作区名称', '工作區名稱')} onKeyDown={e => { if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.keyCode === 229) return; e.preventDefault(); if (!cloudWorkspaceBusy && renameCloudWorkspaceValue.trim()) void renameSelectedCloudWorkspace(id); }} />
-                                                        <button type="button" className="btn-primary" disabled={cloudWorkspaceBusy || !renameCloudWorkspaceValue.trim()} onClick={() => { void renameSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Save', '保存', '儲存')}</button>
-                                                        <button type="button" className="btn-secondary" disabled={cloudWorkspaceBusy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
+                                                        <button type="button" className="mc-cloud-overview__action mc-cloud-overview__action--accent" disabled={cloudWorkspaceBusy || !renameCloudWorkspaceValue.trim()} onClick={() => { void renameSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Save', '保存', '儲存')}</button>
+                                                        <button type="button" className="mc-cloud-overview__action" disabled={cloudWorkspaceBusy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
                                                     </div>
                                                 ) : (
                                                     <div className="mc-cloud-overview__actions">
+                                                        <button type="button" className="mc-cloud-overview__action mc-cloud-overview__action--accent" data-testid="task-cloud-overview-files" disabled={busy} onClick={() => { resetCloudWorkspaceEditors(); setCloudFilesWorkspace({ id, name: selected.name || id }); }}>
+                                                            <GlyphFolder size={14} />
+                                                            {textForLang(lang, 'View files', '查看文件', '檢視檔案')}
+                                                        </button>
                                                         <button type="button" className="mc-cloud-overview__action" data-testid="task-cloud-overview-rename" disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(id); setRenameCloudWorkspaceValue(selected.name || ''); setDeleteConfirmCloudWorkspaceId(''); }}>{textForLang(lang, 'Rename', '重命名', '重命名')}</button>
                                                         <button type="button" className="mc-cloud-overview__action mc-cloud-overview__action--danger" data-testid={linked.length ? 'task-cloud-overview-delete-blocked' : 'task-cloud-overview-blank-delete'} disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(''); setDeleteConfirmCloudWorkspaceId(prev => prev === id ? '' : id); }}>{textForLang(lang, 'Delete', '删除', '刪除')}</button>
-                                                        <button type="button" className="mc-cloud-overview__action" data-testid="task-cloud-overview-files" disabled={busy} onClick={() => { resetCloudWorkspaceEditors(); setCloudFilesWorkspace({ id, name: selected.name || id }); }}>{textForLang(lang, 'View', '查看', '檢視')}</button>
                                                     </div>
                                                 )}
                                                 {confirmingDelete ? (
@@ -5650,8 +5681,8 @@ export const SidebarTaskManagement = ({
                                                                     {textForLang(lang, 'Deleted workspaces can be restored from Recently deleted within 7 days.', '删除后 7 天内可从「最近删除」恢复。', '刪除後 7 天內可從「最近刪除」恢復。')}
                                                                 </span>
                                                                 <div className="mc-cloud-overview__confirm-actions">
-                                                                    <button type="button" className="btn-primary" disabled={busy} onClick={() => { void deleteSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Delete', '确认删除', '確認刪除')}</button>
-                                                                    <button type="button" className="btn-secondary" disabled={busy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
+                                                                    <button type="button" className="mc-cloud-overview__action mc-cloud-overview__action--confirm-danger" disabled={busy} onClick={() => { void deleteSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Delete', '确认删除', '確認刪除')}</button>
+                                                                    <button type="button" className="mc-cloud-overview__action" disabled={busy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
                                                                 </div>
                                                             </>
                                                         )}
@@ -5670,6 +5701,9 @@ export const SidebarTaskManagement = ({
                                                     const linkedTitle = listedTaskTitle(task) || task.name || task.project_path;
                                                     return (
                                                     <div key={task.project_path} data-testid="task-cloud-overview-task" className="mc-cloud-overview__task">
+                                                        <span className="mc-cloud-overview__task-icon" aria-hidden="true">
+                                                            <GlyphFolder size={15} />
+                                                        </span>
                                                         <span className="mc-cloud-overview__task-name" title={linkedTitle}>{linkedTitle}</span>
                                                         <button
                                                             type="button"

@@ -2033,3 +2033,22 @@ body:has(
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* Danger zone: a contained destructive action surface (knowledge base reset). */
+.knowledge-danger-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 32%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-danger) 5%, var(--theme-surface));
+}
+
+.knowledge-danger-row .knowledge-muted-line {
+    min-width: 0;
+    flex: 1 1 320px;
+    color: var(--theme-text-primary);
+}

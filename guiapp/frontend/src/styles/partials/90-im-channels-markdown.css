@@ -3157,6 +3157,11 @@
 
 /* WorkflowDocPreview.tsx */
 .wdp-diagram { margin: 8px 0; overflow: auto; }
+/* Same defect as the chat diagram, from the other direction: this surface has
+   no zoom, but Mermaid still caps the svg at its own pixel width, so a compact
+   drawing sits in the left of a wide preview column. Block + auto margins
+   centres it; the cap alone would keep it at that size and off-centre. */
+.wdp-diagram > svg { display: block; margin-left: auto; margin-right: auto; }
 .wdp-measure-host { position: absolute; width: 0; height: 0; overflow: hidden; }
 .wdp-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .wdp-progress-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -3784,8 +3789,13 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .amd-source { margin: 8px 0 0; max-height: 240px; overflow: auto; }
 .amd-measure-host { position: absolute; left: 0; top: 0; width: 100%; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .amd-diagram { max-width: 100%; overflow: auto; contain: content; }
+/* The zoom is the root svg's width as a percentage of this box, so a zoomed-out
+   diagram is narrower than the column. Auto margins centre that narrower
+   drawing instead of leaving it pinned to the left edge. Once the zoom is past
+   100% the box is over-constrained, the auto margins resolve to 0, and the
+   overflow scrolls from the left as before. */
 .mc-conversation-body .amd-diagram > svg,
-.amd-diagram > svg { display: block; max-width: none; height: auto; }
+.amd-diagram > svg { display: block; max-width: none; height: auto; margin-left: auto; margin-right: auto; }
 .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:has(.amd-figure),
 [data-testid='file-companion-message-assistant']:has(.amd-figure) { width: 100%; }
 /* Mermaid nests its stylesheet under the svg id. A matching copy is written

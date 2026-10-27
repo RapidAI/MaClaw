@@ -8044,6 +8044,111 @@ describe('AIAssistantPanel property tests', () => {
         expect(sendMessage).not.toHaveBeenCalled();
     });
 
+    it('keeps the header and composer live when the running round paints this tab under another session key', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const projectPath = 'D:/tasks/indra-live';
+        const tabKey = `desktop-user:${projectPath}`;
+        // Goal stages and the coding workbench keep the task-folder key while
+        // the tab key stays the workspace path.
+        const roundKey = `${tabKey}/.maclaw/data/tasks/qnuni/workspace`;
+        loadProjectTabConversationMock.mockResolvedValue([
+            { id: 'live-user', role: 'user', content: 'continue the indra work', sessionKey: roundKey, timestamp: 10 },
+            {
+                id: 'live-assistant',
+                role: 'assistant',
+                content: '',
+                reasoning: 'measuring ncnn against our kernels',
+                sessionKey: roundKey,
+                timestamp: 11,
+                unfinishedSlot: {
+                    slotID: 'slot-indra',
+                    title: 'Resume the indra work',
+                    status: 'interrupted',
+                    actions: [{ label: 'Resume previous task', command: '__resume_unfinished__ slot-indra' }],
+                },
+            },
+        ]);
+        const onHandled = vi.fn();
+        const cancelSession = vi.fn<(sessionKey?: string) => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Indra live',
+                autoSend: false,
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: false,
+                busySessionKeys: [roundKey],
+                streaming: false,
+                streamingSessionKeys: [roundKey],
+                ready: true,
+            },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true), cancelSession },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(loadProjectTabConversationMock).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('task-execution-header').textContent || '').toContain('进行中'));
+        // The interrupted marker belongs to the turn this round continued.
+        expect(getByTestId('task-execution-header').textContent || '').not.toContain('已中断');
+        // Tokens from that round drive the same live label as the tab's own stream.
+        await waitFor(() => expect(document.body.textContent || '').toContain('正在思考'));
+        // The composer follows the same live round instead of looking idle.
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+        // Stop must target the round that paints this transcript. A bare
+        // lookup by the tab key finds nothing and leaves the work running.
+        await waitFor(() => expect(cancelSession).toHaveBeenCalledWith(roundKey));
+        expect(tabKey).not.toBe(roundKey);
+    });
+
+    it('queues a follow-up while a task-folder round paints this tab', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const projectPath = 'D:/tasks/indra-live-queue';
+        const tabKey = `desktop-user:${projectPath}`;
+        const roundKey = `${tabKey}/.maclaw/data/tasks/qnuni/workspace`;
+        loadProjectTabConversationMock.mockResolvedValue([
+            { id: 'queue-user', role: 'user', content: 'continue the indra work', sessionKey: roundKey, timestamp: 10 },
+            { id: 'queue-assistant', role: 'assistant', content: '', reasoning: 'measuring ncnn', sessionKey: roundKey, timestamp: 11 },
+        ]);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Indra live queue',
+                autoSend: false,
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: false,
+                busySessionKeys: [roundKey],
+                streaming: false,
+                streamingSessionKeys: [roundKey],
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(loadProjectTabConversationMock).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('task-execution-header').textContent || '').toContain('进行中'));
+
+        // A visible live round owns the turn: typing queues instead of
+        // interleaving a second send into the same transcript.
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'queue this follow-up' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(document.body.textContent || '').toContain('queue this follow-up'));
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
     it('shows thinking only for the project tab whose detached session is streaming', async () => {
         const sendMessage = vi.fn().mockResolvedValue(true);
         const onHandled = vi.fn();

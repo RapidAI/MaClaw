@@ -1,0 +1,30 @@
+# MaClaw Buddy firmware defaults (ESP32-S3 / EchoEar-2ST, 16MB flash).
+#
+# The USB-Serial/JTAG port carries the buddy protocol. ESP-IDF's console is
+# disabled on both the primary and secondary channel so no log line can ever
+# interleave with a JSON frame; device diagnostics travel as protocol "log"
+# messages instead.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+CONFIG_ESP_CONSOLE_NONE=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+
+CONFIG_FREERTOS_HZ=1000
+
+# The device never needs Wi-Fi, Bluetooth or audio; keeping them out of the
+# image is what makes the 1.5MB packed CJK font fit the 3.625MB app partition.
+CONFIG_BT_ENABLED=n
+CONFIG_ESP_WIFI_ENABLED=n

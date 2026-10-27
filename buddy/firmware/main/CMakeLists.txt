@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS "main.c"
+         "buddy_state.c"
+         "buddy_font.c"
+         "buddy_display.c"
+         "buddy_ui.c"
+         "buddy_protocol.c"
+         "buddy_touch.c"
+    INCLUDE_DIRS "."
+    REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_driver_i2c
+             esp_lcd esp_lcd_st77916 esp_driver_usb_serial_jtag nvs_flash esp_timer esp_psram cjson
+)
+
+# Packed 24x24 CJK fallback (U+4E00-U+9FFF) copied from iot-agentos, plus the
+# generated punctuation/full-width extension.
+target_add_binary_data(${COMPONENT_LIB} "cjk24_cjk.bin" BINARY)
+target_add_binary_data(${COMPONENT_LIB} "cjk24_ext.bin" BINARY)

@@ -7,6 +7,7 @@ import { scrubCloudWorkspaceError } from '../ai/codingTaskMode';
 import { CodePreviewWorkspace } from '../ai/CodePreviewWorkspace';
 import type { CodePreviewTheme } from '../ai/FileTabBar';
 import { extractErrorMessage } from '../ai/participantAddError';
+import { GlyphCloudDrive, GlyphClose, GlyphRefresh } from './cloudDriveGlyphs';
 import './cloudOverview.css';
 
 const lightFileTheme: CodePreviewTheme = {
@@ -205,9 +206,17 @@ export function CloudWorkspaceFilesDialog({
                 tabIndex={-1}
                 {...dialogProps}
             >
-                <div className="modal-header">
-                    <h3 id="task-cloud-overview-files-title">{title}</h3>
-                    <div className="mc-cloud-files__header-actions">
+                <div className="mc-cloud-files__head">
+                    <span className="mc-cloud-files__head-icon" aria-hidden="true">
+                        <GlyphCloudDrive size={20} />
+                    </span>
+                    <div className="mc-cloud-files__head-copy">
+                        <h3 id="task-cloud-overview-files-title">{title}</h3>
+                        <p className="mc-cloud-files__head-sub">
+                            {textForLang(lang, 'Right-click a file or folder to delete it. Deletion also removes the cloud copy.', '右键文件或文件夹可以删除，删除会同时移除云端副本。', '右鍵檔案或資料夾可以刪除，刪除會同時移除雲端副本。')}
+                        </p>
+                    </div>
+                    <div className="mc-cloud-files__head-actions">
                         {!loading && !error ? (
                             <button
                                 type="button"
@@ -217,15 +226,21 @@ export function CloudWorkspaceFilesDialog({
                                 aria-busy={syncing || treeRefreshing}
                                 onClick={refreshCloudFiles}
                             >
+                                <GlyphRefresh size={14} />
                                 {textForLang(lang, 'Refresh', '刷新', '重新整理')}
                             </button>
                         ) : null}
-                        <button type="button" className="btn-close" aria-label={textForLang(lang, 'Close', '关闭', '關閉')} onClick={onClose}>X</button>
+                        <button
+                            type="button"
+                            className="mc-cloud-files__close"
+                            aria-label={textForLang(lang, 'Close', '关闭', '關閉')}
+                            title={textForLang(lang, 'Close', '关闭', '關閉')}
+                            onClick={onClose}
+                        >
+                            <GlyphClose size={16} />
+                        </button>
                     </div>
                 </div>
-                <p className="mc-cloud-files__hint">
-                    {textForLang(lang, 'Right-click a file or folder to delete it. Deletion also removes the cloud copy.', '右键文件或文件夹可以删除，删除会同时移除云端副本。', '右鍵檔案或資料夾可以刪除，刪除會同時移除雲端副本。')}
-                </p>
                 {!loading && !error && refreshError ? (
                     <p className="mc-cloud-files__refresh-error" role="alert" data-testid="task-cloud-overview-files-refresh-error">{refreshError}</p>
                 ) : null}

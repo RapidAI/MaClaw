@@ -36,6 +36,10 @@ type ClientNotification struct {
 	Priority  string `json:"priority"`
 	IsRead    bool   `json:"is_read"`
 	CreatedAt string `json:"created_at"`
+	// Source and SourceID identify a notice raised by a Hub subsystem rather
+	// than an admin, such as a reading-group invitation.
+	Source   string `json:"source,omitempty"`
+	SourceID string `json:"source_id,omitempty"`
 }
 
 // NotificationPushPayload is the payload for WebSocket notification.push envelope.
@@ -54,6 +58,8 @@ type PushNotificationDTO struct {
 	Category  string `json:"category"`
 	Priority  string `json:"priority"`
 	CreatedAt string `json:"created_at"`
+	Source    string `json:"source,omitempty"`
+	SourceID  string `json:"source_id,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +94,8 @@ func (nc *notificationCache) Add(n *PushNotificationDTO) {
 		Priority:  n.Priority,
 		IsRead:    false,
 		CreatedAt: n.CreatedAt,
+		Source:    n.Source,
+		SourceID:  n.SourceID,
 	}
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
@@ -302,6 +310,9 @@ func (a *App) replaceUnreadNotifications(items []ClientNotification) {
 		return
 	}
 	a.notifCache.Replace(items)
+	// Unread notifications pulled after connecting are how an invitation
+	// reaches a machine that was offline when it was sent.
+	a.announceCompanionGroupInviteNotices(items)
 	emitNotificationFrontendEvent(a, "notification:sync", items)
 }
 

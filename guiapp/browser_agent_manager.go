@@ -176,6 +176,14 @@ func (m *BrowserAgentManager) applyStateLocked(view *BrowserSessionView, state b
 }
 
 func (m *BrowserAgentManager) List() []BrowserSessionView {
+	return m.list(true)
+}
+
+func (m *BrowserAgentManager) ListSummaries() []BrowserSessionView {
+	return m.list(false)
+}
+
+func (m *BrowserAgentManager) list(includeOutput bool) []BrowserSessionView {
 	m.syncFromCore()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -185,9 +193,16 @@ func (m *BrowserAgentManager) List() []BrowserSessionView {
 			continue
 		}
 		cp := *view
-		cp.Events = append([]ImportantEvent(nil), view.Events...)
-		cp.RawOutputLines = append([]string(nil), view.RawOutputLines...)
-		cp.OutputImages = append([]SessionOutputImage(nil), view.OutputImages...)
+		cp.Preview.PreviewLines = append([]string(nil), view.Preview.PreviewLines...)
+		if includeOutput {
+			cp.Events = append([]ImportantEvent(nil), view.Events...)
+			cp.RawOutputLines = append([]string(nil), view.RawOutputLines...)
+			cp.OutputImages = append([]SessionOutputImage(nil), view.OutputImages...)
+		} else {
+			cp.Events = nil
+			cp.RawOutputLines = nil
+			cp.OutputImages = nil
+		}
 		out = append(out, cp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })

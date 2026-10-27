@@ -1,5 +1,5 @@
 import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ClipboardEvent, type DragEvent } from "react";
-import { type ChatMessage } from "./useAIAssistant";
+import { type CancelAIAssistantResult, type ChatMessage } from "./useAIAssistant";
 import { attachmentInfoFromFilePath, buildAttachmentDisplayText, findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
 import { userTurnDisplayOptions, stripUserTurnPromptArtifacts } from "./userTurnDisplay";
 import { useVoiceInput } from "./useVoiceInput";
@@ -99,7 +99,7 @@ import { CodingAgentProcessTimeline } from "./CodingAgentProcessTimeline";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionKey, formatGoalChecklistFromRecord, isACPAssistantSessionKey, logAIPanelDiagnostic, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionKey, formatGoalChecklistFromRecord, isACPAssistantSessionKey, logAIPanelDiagnostic, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
 import { expertTabId } from "./expertTypes";
 import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
@@ -108,7 +108,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, codingChecklistAllDone, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
@@ -4406,6 +4406,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return { task: activeTask, raw };
     }, [activeTab?.projectPath, codingStepStatuses, taskListProp, workflowAwaitingReview, workflowCurrentPhaseStatus, workflowState.active]);
     const codingChecklistSteps = useMemo(() => presentCodingAgentChecklist(codingExecutionPlan, codingStepStatuses), [codingExecutionPlan, codingStepStatuses]);
+    // The checklist retirement condition (codingChecklistAllDone): once every
+    // row closed successfully the card has nothing left to report, and pinning
+    // a finished list above the composer would cover a session that is no
+    // longer working on it. A failed row is not "closed", so it keeps the card.
+    const codingChecklistRetired = !codingPendingApproval && codingChecklistSteps.length > 0 && codingChecklistAllDone(codingChecklistSteps);
     const { workspace: remoteWorkspace, label: remoteWorkspaceLabel } = resolveRemoteWorkspaceDisplay({ isRemoteCodingDev: isRemoteCodingDevEnvironment, isLive: remoteReconnectStatusPath === activeRemoteProjectPath, liveHost: remoteReconnect.host, liveWorkDir: remoteReconnect.workDir, livePort: remoteReconnect.port, tabHost: activeTab.remoteHost, tags: activeTaskExecutionSnapshot.task?.tags });
     const activeTaskSnapshotRunning = useMemo(() => executionSnapshotRawIsRunning(activeTaskExecutionSnapshot.raw), [activeTaskExecutionSnapshot]);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
@@ -4420,8 +4425,27 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         : streaming && (streamingSessionKey
             ? sessionKeysMatch(streamingSessionKey, activeSessionKey)
             : (isProjectTabActive ? hasForegroundRoundForActiveProject : ((isLocalTabActive || isExpertTabActive) && !hasForegroundProjectRound)));
-    activeSessionStreamingRef.current = activeSessionIsStreaming;
     const isBusy = (hasExplicitBusySessionList ? activeSessionIsSending : hasActiveDetachedProjectRound || activeSessionIsSending);
+    // The round painting this transcript can own a different key than the open
+    // tab (goal stages and the coding workbench keep the task-folder key while
+    // the tab may use the workspace path). Follow that live round too, so the
+    // badge, the composer, and the live thought all agree with the tokens
+    // still arriving for it.
+    const liveWork = useTranscriptLiveWork({ messages: displayMessages, busySessionKeys, streamingSessionKeys, busy: isBusy, streaming: activeSessionIsStreaming });
+    const liveWorkSessionKey = liveWork.sessionKey;
+    const liveWorkActive = liveWork.active;
+    const liveWorkStreaming = liveWork.streaming;
+    activeSessionStreamingRef.current = liveWorkStreaming;
+    // Stop the work the user can see. When that round owns another session key,
+    // a bare cancel would look up the tab key, find nothing, and leave the
+    // spinner running with no way to stop it.
+    const cancelLiveWork = useCallback(async (): Promise<CancelAIAssistantResult> => {
+        if (!cancelSession) return { canceledText: '' };
+        const target = liveWorkSessionKey && !sessionKeysMatch(liveWorkSessionKey, activeSessionKey)
+            ? liveWorkSessionKey
+            : undefined;
+        return cancelSession(target);
+    }, [activeSessionKey, cancelSession, liveWorkSessionKey]);
     useEffect(() => {
         if (!workflowFormGeneratingPhaseID) return;
         if (
@@ -4453,13 +4477,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         streamingSessionKeys,
         sendingSessionKey,
         inFlightSessionKeys: panelSendInFlightSessionKeys,
-        activeExecutionBusy: isBusy || activeSessionIsStreaming || activeTaskSnapshotRunning,
+        activeExecutionBusy: liveWorkActive || activeTaskSnapshotRunning,
         activeAwaitingUser: workflowAwaitingForm || workflowAwaitingReview || workflowFormGeneratingDocument || !!scopeApprovalPending,
         scopeApprovalProjectPath: scopeApprovalPending?.projectPath || "",
         getTabState,
         closeTab: closeTabWithProjectCleanup,
     };
-    const activeSessionHasWork = isBusy || activeSessionIsStreaming;
+    const activeSessionHasWork = liveWorkActive;
     const displayProgressMessages = activeSessionHasWork ? progressMessages : EMPTY_PROGRESS_MESSAGES;
     useEffect(() => {
         if (!(sending || streaming) || isBusy || activeSessionIsStreaming) return;
@@ -4535,7 +4559,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         handleDropBase(event);
     }, [handleDropBase, recordingActive]);
     const isACPMirrorTabActive = activeTab.type === "project" && isACPAssistantSessionKey(activeTab.sessionKey);
-    const inputLocked = isBusy || cancelPending || !codingTaskReadyForIntents || recordingActive || isACPMirrorTabActive;
+    const inputLocked = liveWorkActive || cancelPending || !codingTaskReadyForIntents || recordingActive || isACPMirrorTabActive;
     // Busy agent allows type-ahead queue; live mic does not — keep submitLocked true
     // for lock UI, but send paths hard-return when recordingActive.
     const submitLocked = inputLocked;
@@ -4549,9 +4573,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const latestShowChatUIRef = useRef(showChatUI);
     latestSubmitLockedRef.current = submitLocked;
     latestShowChatUIRef.current = showChatUI;
-    const showThinkingState = activeSessionIsStreaming;
+    const showThinkingState = liveWorkStreaming;
     const showProcessingState = workflowAwaitingForm || workflowFormGeneratingDocument || (isBusy && (!activeSessionIsStreaming || hasActiveDetachedProjectRound));
-    const inputVisualBusy = isBusy || activeTaskSnapshotRunning || workflowAwaitingForm || workflowFormGeneratingDocument;
+    const inputVisualBusy = liveWorkActive || activeTaskSnapshotRunning || workflowAwaitingForm || workflowFormGeneratingDocument;
     const showBusySpinner = inputVisualBusy;
     const headerProgressMessages = useMemo<ChatMessage[]>(
         () => progressMessagesForStage(displayProgressMessages, displayMessages, activeSessionKey),
@@ -4589,7 +4613,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         embeddedToolCall: null as { name?: string; action?: string } | null,
     });
     const liveAssistantCue = useMemo(() => {
-        const embedded = isBusy || activeSessionIsStreaming;
+        const embedded = liveWorkActive;
         let next = {
             messageId: "",
             reasoningText: "",
@@ -4660,10 +4684,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         liveAssistantCueRef.current = next;
         return next;
-    }, [activeSessionIsStreaming, displayMessages, isBusy, isPureCodingEnvironment]);
+    }, [displayMessages, isPureCodingEnvironment, liveWorkActive]);
     const liveReasoningKind = useMemo(() => resolveAssistantLiveActivity({
-        streaming: activeSessionIsStreaming,
-        busy: isBusy,
+        streaming: liveWorkStreaming,
+        busy: liveWorkActive,
         hasReasoning: liveAssistantCue.hasReasoning,
         reasoningText: liveAssistantCue.reasoningText,
         progressMessages: headerProgressMessages,
@@ -4671,7 +4695,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         latestToolCall: liveAssistantCue.embeddedToolCall,
         answerStarted: liveAssistantCue.answerStarted,
         thoughtIsCurrent: liveAssistantCue.thoughtIsCurrent,
-    }), [activeSessionIsStreaming, headerProgressMessages, isBusy, liveAssistantCue, liveCodingProgress]);
+    }), [headerProgressMessages, liveAssistantCue, liveCodingProgress, liveWorkActive, liveWorkStreaming]);
     const liveHeader = useMemo(() => {
         if (!liveReasoningKind) return undefined;
         const providers = (availableProviders || []) as SidebarLLMProviderSummary[];
@@ -4708,7 +4732,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         };
     }, [projectSearch.openWithQuery, projectSearch.close]);
     const handleProjectSearchSwitch = useCallback(async (msg: string) => {
-        if (isBusy && cancelSession) {
+        if (liveWorkActive && cancelSession) {
             const ok = await showConfirm(
                 localizeText(lang, "A task is running. Stop it and switch tasks?", "\u5f53\u524d\u6709\u4efb\u52a1\u6b63\u5728\u6267\u884c\u3002\u662f\u5426\u4e2d\u6b62\u5f53\u524d\u4efb\u52a1\u5e76\u5207\u6362\uff1f"),
                 localizeText(lang, "Stop current task?", "\u4e2d\u6b62\u5f53\u524d\u4efb\u52a1\uff1f"),
@@ -4719,10 +4743,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 },
             );
             if (!ok) return;
-            await cancelSession();
+            await cancelLiveWork();
         }
         await sendMessageForTab(msg);
-    }, [cancelSession, isBusy, lang, sendMessageForTab, showConfirm]);
+    }, [cancelLiveWork, cancelSession, lang, liveWorkActive, sendMessageForTab, showConfirm]);
     const deriveTaskNameFromMessages = useCallback(() => {
         const firstUser = messages.find((m: ChatMessage) => m.role === "user");
         // Task names come from what the user said. The first message of older
@@ -4934,7 +4958,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         raw: activeTaskExecutionSnapshot.raw,
         pendingReview: !!activeTaskExecutionSnapshot.task?.active_workflow?.pending_review || workflowAwaitingReview,
         cancelPending,
-        busy: isBusy || activeProjectPreparing || workflowCurrentPhaseRunning,
+        busy: liveWorkActive || activeProjectPreparing || workflowCurrentPhaseRunning,
         hasOutput: activeTaskExecutionSnapshot.task?.has_output === true,
         hasMessages: displayMessages.length > 0,
         workflowActive: workflowState.active,
@@ -4944,7 +4968,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pendingUnfinishedStatus,
         turnIncomplete: assistantTurnIncomplete,
         openChatWork,
-    }), [activeProjectPreparing, activeTaskExecutionSnapshot, assistantTurnIncomplete, cancelPending, codingStepStatuses, displayMessages.length, openChatWork, pendingUnfinishedStatus, isBusy, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
+    }), [activeProjectPreparing, activeTaskExecutionSnapshot, assistantTurnIncomplete, cancelPending, codingStepStatuses, displayMessages.length, liveWorkActive, openChatWork, pendingUnfinishedStatus, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
     // Report the live running signal so the sidebar task stats can merge it with
     // the durable snapshot (a pure agent loop run leaves no running snapshot).
     useEffect(() => {
@@ -5797,7 +5821,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             } catch {
                 /* ignore CU stop failures */
             }
-            const { canceledText } = await cancelSession();
+            const { canceledText } = await cancelLiveWork();
             if (cancelRestoreSeqRef.current !== restoreSeq) return;
             if (draftInputValue === previousInputValue) {
                 updateInputValue(canceledText);
@@ -5810,7 +5834,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             setCancelPending(false);
         }
-    }, [activeSessionKey, agentView, cancelPending, cancelSession, draftInputValue, dismissAgentView, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue, workflowAwaitingForm, workflowCurrentPhaseID, workflowState.workflowID]);
+    }, [activeSessionKey, agentView, cancelLiveWork, cancelPending, cancelSession, draftInputValue, dismissAgentView, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue, workflowAwaitingForm, workflowCurrentPhaseID, workflowState.workflowID]);
     const panelSubmitAgentView = useCallback((viewId: string | undefined, data: Record<string, unknown>) => {
         if (typeof viewId === "string" && viewId.startsWith("workflow:form:")) {
             const submittedPhaseID = typeof data?._workflow_phase === "string" && data._workflow_phase.trim()
@@ -5910,7 +5934,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 
     const lastAssistantIdx = useMemo(() => findLastIndex(transcriptMessages, m => m.role === 'assistant'), [transcriptMessages]);
     const lastAssistantMessage = transcriptMessages[lastAssistantIdx];
-    const lastAssistantOwnsLiveActivity = assistantMessageOwnsLiveActivityAt(transcriptMessages, lastAssistantIdx, activeSessionIsStreaming, isPureCodingEnvironment && isBusy);
+    const lastAssistantOwnsLiveActivity = assistantMessageOwnsLiveActivityAt(transcriptMessages, lastAssistantIdx, liveWorkStreaming, isPureCodingEnvironment && liveWorkActive);
     const lastAssistantTimeline = isPureCodingEnvironment && lastAssistantMessage?.role === "assistant" ? codingTimelineForDisplay(lastAssistantMessage) : undefined;
     const codingTimelineOwnsLiveThought = codingTimelineLiveThoughtIndex(lastAssistantTimeline, !!codingShownLiveLabel(lastAssistantOwnsLiveActivity, liveReasoningLabel, liveReasoningKind, lastAssistantMessage), liveReasoningKind) >= 0;
     const bubbleHostsLiveTitle = isPureCodingEnvironment && !(lastAssistantTimeline?.length) && !!lastAssistantMessage && codingBubbleHostsLiveTitle(lastAssistantMessage, assistantMessageHasVisibleBody(lastAssistantMessage), lastAssistantOwnsLiveActivity, liveReasoningKind);
@@ -5984,7 +6008,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // shrinks back to the earlier baseline, so whenever the text
             // actually changes the sample changes with it. The settled rows
             // below keep the full-text key.
-            const liveStreamingTail = messageOwnsLive && activeSessionIsStreaming && msg.role === 'assistant';
+            const liveStreamingTail = messageOwnsLive && liveWorkStreaming && msg.role === 'assistant';
             const shownLiveLabel = isPureCodingEnvironment ? codingShownLiveLabel(messageOwnsLive, liveReasoningLabel, liveReasoningKind, msg) : (messageOwnsLive ? liveReasoningLabel : undefined);
             const codingTimeline = isPureCodingEnvironment && msg.role === "assistant" ? codingTimelineForDisplay(msg) : undefined;
             const fieldKey = msg.fields?.length
@@ -6009,7 +6033,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     savedFileLabel,
                     lang,
                     isLast && activeSessionHasWork,
-                    messageOwnsLive && activeSessionIsStreaming && msg.content
+                    messageOwnsLive && liveWorkStreaming && msg.content
                         ? bindStreamingMarkdown(incrementalStateRef.current, msg.id, t)
                         : undefined,
                     handleRecordingComplete,
@@ -6056,7 +6080,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const reasoningFingerprint = msg.reasoning
                 ? `${msg.reasoning.length}:${msg.reasoning.slice(-48)}`
                 : '';
-            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && activeSessionIsStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
+            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -6072,7 +6096,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // freeze-the-stable-part treatment to keep flushes cheap.
             const longStreamingContent = !!(msg.content && streamingMarkdownUsesIncremental(msg.content.length));
             const longStreamingReasoning = !!(msg.reasoning && streamingMarkdownUsesIncremental(msg.reasoning.length));
-            if (messageOwnsLive && activeSessionIsStreaming && msg.role === 'assistant' && (longStreamingContent || longStreamingReasoning)) {
+            if (messageOwnsLive && liveWorkStreaming && msg.role === 'assistant' && (longStreamingContent || longStreamingReasoning)) {
                 node = renderMessage(
                     suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, true,
                     bindStreamingMarkdown(incrementalStateRef.current, msg.id, t),
@@ -6083,7 +6107,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             } else {
                 // Reset incremental state when streaming ends
                 // so the final render is a clean full parse (100% correct).
-                if (isLast && msg.role === 'assistant' && !activeSessionIsStreaming) {
+                if (isLast && msg.role === 'assistant' && !liveWorkStreaming) {
                     if (incrementalStateRef.current.messageId === msg.id) {
                         incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                     }
@@ -6091,7 +6115,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                     }
                 }
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, messageOwnsLive && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, shownLiveLabel, liveObjectForMessage, isLast && activeSessionHasWork, isLatexExpertId(activeTab.expertId));
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, messageOwnsLive && liveWorkStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, shownLiveLabel, liveObjectForMessage, isLast && activeSessionHasWork, isLatexExpertId(activeTab.expertId));
             }
             cache.set(msg.id, { contentKey, node, message: isLast ? undefined : msg });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
@@ -6133,7 +6157,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         if (coveredNodes.length > 0) coveredOtherNodesRef.current = coveredNodes;
         return coveredNodes;
-    }, [transcriptMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
+    }, [transcriptMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, liveWorkStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
     // Only rows already on the live assistant's timeline leave the feed.
     // A previous answer's timeline must not hide the next continuation.
     const renderedProgressMessages = useMemo(() => {
@@ -6887,7 +6911,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         onDismiss={handleWelcomeTemplateOfferDismiss}
                     />
                 )}
-                {!showWelcomeView && isPureCodingEnvironment && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement) && (
+                {!showWelcomeView && isPureCodingEnvironment && !codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement) && (
                     <CodingAgentPlanChecklist
                         lang={lang}
                         theme={t}

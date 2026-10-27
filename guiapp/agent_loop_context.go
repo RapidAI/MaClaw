@@ -241,6 +241,10 @@ type LoopContext struct {
 	OfferChatTaskDispatch bool
 	// ChatTaskID is set when this loop is itself a background chat task.
 	ChatTaskID string
+	// sessionRoundEpochAtStart is the session-round epoch this turn observed
+	// when it entered. A newer user message bumps the epoch; this turn must
+	// not arm a continuation that would resume work the user moved past.
+	sessionRoundEpochAtStart uint64
 	// WorkLiveAtStart is true when this chat turn opened while a task, a
 	// desktop run, or another foreground loop was still going. The stop-claim
 	// guard reads it after the reply is written.

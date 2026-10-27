@@ -1,0 +1,62 @@
+/* USB companion display (buddy) settings. */
+
+.settings-hardware-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.buddy-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.buddy-settings__title {
+    margin: 0;
+    color: var(--theme-text-primary);
+}
+
+.buddy-settings__hint {
+    margin: 6px 0 0;
+    color: var(--theme-text-secondary);
+    font-size: 13px;
+}
+
+.buddy-settings__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--theme-text-primary);
+}
+
+.buddy-settings__select {
+    min-width: 240px;
+}
+
+.buddy-settings__status {
+    font-size: 13px;
+    color: var(--theme-text-secondary);
+}
+
+.buddy-settings__note {
+    font-size: 13px;
+    color: var(--theme-text-muted);
+}
+
+.buddy-settings__warn {
+    font-size: 13px;
+    color: var(--theme-warning);
+}
+
+.buddy-settings__error {
+    font-size: 13px;
+    color: var(--theme-danger);
+    word-break: break-all;
+}
+
+.buddy-settings__footnote {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 12px;
+}

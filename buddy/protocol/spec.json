@@ -1,0 +1,16 @@
+{
+  "proto": 2,
+  "max_line_bytes": 1024,
+  "max_current_tasks": 5,
+  "max_title_bytes": 64,
+  "heartbeat_ms": 3000,
+  "offline_ms": 10000,
+  "stale_ms": 60000,
+  "weather_refresh_ms": 1800000,
+  "weather_stale_ms": 7200000,
+  "display": { "width": 360, "height": 360, "round": true },
+  "types": {
+    "host_to_device": ["hello", "state", "ambient", "pet", "heartbeat", "asset_chunk", "clock"],
+    "device_to_host": ["hello", "state_ack", "heartbeat", "log"]
+  }
+}

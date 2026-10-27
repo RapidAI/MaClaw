@@ -276,22 +276,15 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
         return () => { cleanup(); };
     }, [job?.id]);
 
-    // Polling fallback (5s)
+    // The global provider owns polling; consume its snapshots without starting
+    // a second request loop in the dialog.
     useEffect(() => {
-        const id = job?.id;
-        const status = (job?.status || '').toLowerCase();
-        if (!id || !['queued', 'running', 'pending', 'indexing'].includes(status)) return;
-        const handle = window.setInterval(() => {
-            void KnowledgeImportJobStatus(id).then(j => {
-                if (j) {
-                    setJob(j as ImportJob);
-                    if (j.status === 'completed' || j.status === 'failed') setStep('done');
-                    else if (j.status === 'indexing') setStep('progress');
-                }
-            }).catch(() => {});
-        }, 5000);
-        return () => window.clearInterval(handle);
-    }, [job?.id, job?.status]);
+        if (!restoreJob) return;
+        const restoreId = String(restoreJob.id || '').trim();
+        if (!restoreId || (job?.id && String(job.id) !== restoreId) || restoreJob === job) return;
+        setJob(restoreJob);
+        setStep(isKnowledgeImportJobTerminal(restoreJob) ? 'done' : 'progress');
+    }, [restoreJob]);
 
     const handleClose = () => {
         // Include indexing so closing during background post-work minimizes (does not reset).

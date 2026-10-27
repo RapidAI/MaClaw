@@ -122,6 +122,13 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]*Notification, e
 		clauses = append(clauses, "category = ?")
 		args = append(args, string(filter.Category))
 	}
+	if len(filter.ExcludeSources) > 0 {
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(filter.ExcludeSources)), ",")
+		clauses = append(clauses, "source NOT IN ("+placeholders+")")
+		for _, source := range filter.ExcludeSources {
+			args = append(args, source)
+		}
+	}
 
 	query := "SELECT id, title, content, category, priority, audience_type, audience_ids, status, im_push, source, source_id, created_by, publish_at, expire_at, created_at, updated_at FROM admin_notifications"
 	if len(clauses) > 0 {
@@ -196,9 +203,12 @@ func (s *Store) FindBySource(ctx context.Context, source, sourceID string) (*Not
 	if sourceID == "" {
 		return nil, nil
 	}
+	// A key can briefly hold a settled row plus its replacement while a feature
+	// re-raises the same notice. The newest row is the live one.
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, title, content, category, priority, audience_type, audience_ids, status, im_push, source, source_id, created_by, publish_at, expire_at, created_at, updated_at
-		 FROM admin_notifications WHERE source = ? AND source_id = ?`,
+		 FROM admin_notifications WHERE source = ? AND source_id = ?
+		 ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
 		source, sourceID)
 	return scanNotification(row)
 }

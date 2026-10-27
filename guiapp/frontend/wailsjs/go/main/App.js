@@ -1437,6 +1437,10 @@ export function ShareFileCompanionDocument(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['ShareFileCompanionDocument'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function UpdateFileCompanionShare(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateFileCompanionShare'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function ImportFileCompanionShare(arg1, arg2) {
   return window['go']['main']['App']['ImportFileCompanionShare'](arg1, arg2);
 }
@@ -1487,6 +1491,10 @@ export function ListFileCompanionGroupInvites() {
 
 export function AcceptFileCompanionGroupInvite(arg1) {
   return window['go']['main']['App']['AcceptFileCompanionGroupInvite'](arg1);
+}
+
+export function IgnoreFileCompanionGroupInvite(arg1) {
+  return window['go']['main']['App']['IgnoreFileCompanionGroupInvite'](arg1);
 }
 
 export function DeclineFileCompanionGroupInvite(arg1) {
@@ -2191,6 +2199,10 @@ export function GetRemoteRegistrationAuth(arg1, arg2) {
 
 export function GetRemoteRegistrationProfile() {
   return window['go']['main']['App']['GetRemoteRegistrationProfile']();
+}
+
+export function GetRemoteSession(arg1) {
+  return window['go']['main']['App']['GetRemoteSession'](arg1);
 }
 
 export function GetRemoteSessions() {
@@ -3691,6 +3703,10 @@ export function ListRemoteHubs(arg1, arg2) {
 
 export function ListRemoteLaunchProjects() {
   return window['go']['main']['App']['ListRemoteLaunchProjects']();
+}
+
+export function ListRemoteSessionSummaries() {
+  return window['go']['main']['App']['ListRemoteSessionSummaries']();
 }
 
 export function ListRemoteSessions() {
@@ -6150,4 +6166,32 @@ export function GetHubConnectionState() {
 
 export function ReconnectHub(arg1) {
   return window['go']['main']['App']['ReconnectHub'](arg1);
+}
+
+export function BuddyListPorts() {
+  return window['go']['main']['App']['BuddyListPorts']();
+}
+
+export function BuddyStart(arg1) {
+  return window['go']['main']['App']['BuddyStart'](arg1);
+}
+
+export function BuddyStop() {
+  return window['go']['main']['App']['BuddyStop']();
+}
+
+export function BuddyGetStatus() {
+  return window['go']['main']['App']['BuddyGetStatus']();
+}
+
+export function BuddyPushSnapshot(arg1) {
+  return window['go']['main']['App']['BuddyPushSnapshot'](arg1);
+}
+
+export function BuddyPushWeather(arg1, arg2, arg3) {
+  return window['go']['main']['App']['BuddyPushWeather'](arg1, arg2, arg3);
+}
+
+export function BuddyRefreshWeather() {
+  return window['go']['main']['App']['BuddyRefreshWeather']();
 }

@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -586,8 +588,49 @@ func readLogTail(path string, limit int) []string {
 		return nil
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	size := info.Size()
+	window := int64(64 * 1024)
+	for {
+		if window > size {
+			window = size
+		}
+		start := size - window
+		if _, err := f.Seek(start, io.SeekStart); err != nil {
+			return nil
+		}
+		data := make([]byte, int(window))
+		n, readErr := io.ReadFull(f, data)
+		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+			return nil
+		}
+		data = data[:n]
+		if start > 0 {
+			newline := bytes.IndexByte(data, '\n')
+			if newline < 0 {
+				data = nil
+			} else {
+				data = data[newline+1:]
+			}
+		}
+		lines := scanLogTailWindow(data, limit)
+		if len(lines) >= limit || start == 0 {
+			return lines
+		}
+		if window > size/2 {
+			window = size
+		} else {
+			window *= 2
+		}
+	}
+}
+
+func scanLogTailWindow(data []byte, limit int) []string {
 	lines := make([]string, 0, limit)
-	s := bufio.NewScanner(f)
+	s := bufio.NewScanner(bytes.NewReader(data))
 	for s.Scan() {
 		line := strings.TrimSpace(s.Text())
 		if line == "" {
@@ -595,7 +638,7 @@ func readLogTail(path string, limit int) []string {
 		}
 		lines = append(lines, line)
 		if len(lines) > limit {
-			lines = append([]string(nil), lines[len(lines)-limit:]...)
+			lines = lines[len(lines)-limit:]
 		}
 	}
 	return lines

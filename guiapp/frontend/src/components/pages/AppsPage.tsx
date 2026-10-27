@@ -1,4 +1,4 @@
-import { CSSProperties, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { approvalEscalationDataAttr, approvalEscalationExhaustedText, approvalEscalationRetryText } from './approvalEscalationDisplay';
 import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DecideMaclawAppApprovalInstance, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallMixedSkill, InstallSelectedMaclawAppPackageFromHub, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, LoadMaclawAppsPanelState, OpenFileOrShowInFolder, OpenMaclawAppApprovalWorkspace, OpenMaclawAppBusinessWorkspace, OpenMaclawAppWorkspaceFromInstall, OpenSkillRunArtifact, PlanMaclawAppInstall, ReconcileMaclawAppApprovalProjections, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunEvidenceForSkill, RecordMaclawAppRunHistory, RevealSkillRunArtifact, ReviewMaclawAppPackage, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SaveMaclawAppsPanelState, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
@@ -9290,8 +9290,8 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     const tileMenuUpdate = tileMenuApp ? appUpdateCandidateFor(tileMenuApp, updateCandidates) : undefined;
     const updateCount = Array.from(new Set(apps.map((app) => appUpdateCandidateFor(app, updateCandidates)?.app.id).filter(Boolean))).length;
     const activeRunSessions = useMemo(() => loadActiveAppRunSessions(), [activeRunRevision]);
-    const openTabApps = openTabs.map((id) => apps.find((app) => app.id === id)).filter((app): app is AppEntry => !!app);
-    const activeApp = apps.find((app) => app.id === activeTabId) ?? openTabApps[0];
+    const openTabApps = useMemo(() => openTabs.map((id) => apps.find((app) => app.id === id)).filter((app): app is AppEntry => !!app), [apps, openTabs]);
+    const activeApp = useMemo(() => apps.find((app) => app.id === activeTabId) ?? openTabApps[0], [apps, activeTabId, openTabApps]);
     const hiddenApps = initialApps.filter((app) => !apps.some((item) => item.id === app.id));
 
     // The return affordance only makes sense while its repair workspace is
@@ -9346,34 +9346,39 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
         }
     };
 
-    const openOperation = (operation: AppOperation, options?: { appId?: string }) => {
+    const activeOperationRef = useRef(activeOperation);
+    activeOperationRef.current = activeOperation;
+    const openOperation = useCallback((operation: AppOperation, options?: { appId?: string }) => {
         setTileMenu(null);
-        if (activeOperation === operation && !options?.appId) {
+        if (activeOperationRef.current === operation && !options?.appId) {
+            activeOperationRef.current = null;
             setActiveOperation(null);
             return;
         }
+        activeOperationRef.current = operation;
         setStudioOpen(false);
         setActiveOperation(operation);
         if (operation === 'approval_status') setApprovalInitialAppFilter(options?.appId || 'all');
-    };
+    }, []);
+    const openApprovalManager = useCallback((appId?: string) => openOperation('approval_status', { appId }), [openOperation]);
 
-    const markAppUsed = (appId: string) => {
+    const markAppUsed = useCallback((appId: string) => {
         recentUseSequence += 1;
         const usedAt = `${Date.now().toString().padStart(13, '0')}-${recentUseSequence.toString().padStart(6, '0')}`;
         setApps((current) => current.map((app) => app.id === appId ? { ...app, recentUsedAt: usedAt } : app));
-    };
+    }, []);
 
-    const closeAppTab = (appId: string) => {
+    const closeAppTab = useCallback((appId: string) => {
 		setPublishReturnAppId((current) => current === appId ? '' : current);
         setOpenTabs((current) => {
             const index = current.indexOf(appId);
             const next = current.filter((id) => id !== appId);
-            if (activeTabId === appId) {
-                setActiveTabId(next[Math.max(0, index - 1)] || next[0] || '');
-            }
+            setActiveTabId((currentActive) => currentActive === appId
+                ? next[Math.max(0, index - 1)] || next[0] || ''
+                : currentActive);
             return next;
         });
-    };
+    }, []);
 
     const togglePin = (appId: string) => {
         setApps((current) => {
@@ -9594,9 +9599,9 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     // Evidence-only patch from the publish pane (dependency verification).
     // Unlike updateApp it must not bump the version or mark the submission
     // modified — the app definition (and its fingerprint) stays untouched.
-    const updateAppEvidence = (appId: string, patch: Partial<AppEntry>) => {
+    const updateAppEvidence = useCallback((appId: string, patch: Partial<AppEntry>) => {
         setApps((current) => current.map((app) => app.id === appId ? { ...app, ...patch } : app));
-    };
+    }, []);
 	const installDependenciesFromPublish = (appId: string) => {
 		const app = apps.find((item) => item.id === appId);
 		if (!app) return;
@@ -9954,12 +9959,10 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                         tabs={openTabApps}
                         activeApp={activeApp}
                         lang={lang}
-                        onActivate={(appId) => {
-                            setActiveTabId(appId);
-                        }}
+                        onActivate={setActiveTabId}
                         onClose={closeAppTab}
                         onUse={markAppUsed}
-                        onOpenApprovalManager={(appId) => openOperation('approval_status', { appId })}
+                        onOpenApprovalManager={openApprovalManager}
                         onActiveRunChange={notifyActiveRunChanged}
                         onUpdateAppEvidence={updateAppEvidence}
                         onRunEvidenceRecorded={notifyRunEvidenceRecorded}
@@ -10828,7 +10831,7 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
         </section>
     );
 };
-const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, onRunEvidenceRecorded }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void; onActiveRunChange?: () => void; onUpdateAppEvidence?: (appId: string, patch: Partial<AppEntry>) => void; onRunEvidenceRecorded?: (appId: string) => void }) => {
+const AppPreview = memo(({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, onRunEvidenceRecorded }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void; onActiveRunChange?: () => void; onUpdateAppEvidence?: (appId: string, patch: Partial<AppEntry>) => void; onRunEvidenceRecorded?: (appId: string) => void }) => {
     const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [fileName, setFileName] = useState('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -12597,7 +12600,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             </div>
         </>
     );
-};
+});
 
 const approvalLanes = (text: typeof labels.zh) => [
     { key: 'my_requests', label: text.myRequests },

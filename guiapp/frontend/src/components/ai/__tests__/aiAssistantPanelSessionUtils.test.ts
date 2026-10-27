@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -38,6 +38,49 @@ describe("aiAssistantPanelSessionUtils", () => {
             panelInFlightKeys: [sessionKey],
             busySessionKeys: [],
         })).toBe(true);
+    });
+
+    it("finds the live round painting this transcript under another session key", () => {
+        const tabKey = "desktop-user:D:/tasks/indra-live";
+        const roundKey = "desktop-user:D:/tasks/indra-live/.maclaw/data/tasks/qnuni/workspace";
+        const rows: Array<Pick<ChatMessage, "role" | "sessionKey">> = [
+            { role: "user", sessionKey: roundKey },
+            { role: "assistant", sessionKey: roundKey },
+        ];
+        expect(transcriptLiveWorkSessionKey(rows, [roundKey])).toBe(roundKey);
+        // The same row under the tab key is the ordinary case.
+        expect(transcriptLiveWorkSessionKey(rows, [tabKey])).toBe("");
+        expect(transcriptLiveWorkSessionKey(rows, [])).toBe("");
+    });
+
+    it("still finds the live assistant row when a steer or follow-up user row sits above it", () => {
+        const liveKey = "desktop-user:D:/tasks/indra-live";
+        const rows: Array<Pick<ChatMessage, "role" | "sessionKey">> = [
+            { role: "user", sessionKey: liveKey },
+            { role: "assistant", sessionKey: liveKey },
+            // A steer injection and a later follow-up append user rows after
+            // the assistant row that the running round is still painting.
+            { role: "user", sessionKey: liveKey },
+            { role: "user", sessionKey: "desktop-user:D:/tasks/other-tab" },
+        ];
+        expect(transcriptLiveWorkSessionKey(rows, [liveKey])).toBe(liveKey);
+    });
+
+    it("ignores assistant rows whose session is not running", () => {
+        const rows: Array<Pick<ChatMessage, "role" | "sessionKey">> = [
+            { role: "user", sessionKey: "desktop-user:D:/tasks/finished" },
+            { role: "assistant", sessionKey: "desktop-user:D:/tasks/finished" },
+        ];
+        expect(transcriptLiveWorkSessionKey(rows, ["desktop-user:D:/tasks/running"])).toBe("");
+    });
+
+    it("does not scan past the bounded tail window", () => {
+        const liveKey = "desktop-user:D:/tasks/old";
+        const rows: Array<Pick<ChatMessage, "role" | "sessionKey">> = [
+            { role: "assistant", sessionKey: liveKey },
+            ...Array.from({ length: 24 }, () => ({ role: "assistant" as const, sessionKey: "desktop-user:D:/tasks/other" })),
+        ];
+        expect(transcriptLiveWorkSessionKey(rows, [liveKey])).toBe("");
     });
 
     it("persists an async guide-injection marker and its session owner", () => {

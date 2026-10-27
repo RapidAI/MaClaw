@@ -249,12 +249,38 @@ func FindBin(dist string, names ...string) (string, error) {
 	return "", fmt.Errorf("missing %s under %s", strings.Join(names, "|"), binRoot)
 }
 
+func enginePlatformDir(goos, goarch string) string {
+	switch goos {
+	case "windows":
+		return "windows"
+	case "darwin":
+		return "universal-darwin"
+	case "linux":
+		switch goarch {
+		case "amd64":
+			return "x86_64-linux"
+		case "arm64":
+			return "aarch64-linux"
+		}
+	}
+	return ""
+}
+
 // FindEngine returns the xelatex binary used for the install check.
 func FindEngine(dist string) (string, error) {
+	names := []string{"xelatex"}
 	if runtime.GOOS == "windows" {
-		return FindBin(dist, "xelatex.exe", "xelatex")
+		names = []string{"xelatex.exe", "xelatex"}
 	}
-	return FindBin(dist, "xelatex")
+	if platform := enginePlatformDir(runtime.GOOS, runtime.GOARCH); platform != "" {
+		for _, name := range names {
+			path := filepath.Join(dist, "bin", platform, name)
+			if st, err := os.Stat(path); err == nil && !st.IsDir() {
+				return path, nil
+			}
+		}
+	}
+	return FindBin(dist, names...)
 }
 
 // FindTlmgr returns the TeX Live package manager shipped in TinyTeX-0.

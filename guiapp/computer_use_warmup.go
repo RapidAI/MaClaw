@@ -91,49 +91,57 @@ func (a *App) GetComputerUseLastObserveMetrics() map[string]interface{} {
 	return cloneStringAnyMap(cuLastObserveMetrics)
 }
 
+func computerUseObserveHistorySummaryLocked() map[string]interface{} {
+	summary := map[string]interface{}{
+		"count":        len(cuObserveHistory),
+		"ok_count":     0,
+		"fail_count":   0,
+		"avg_total_ms": int64(0),
+		"min_total_ms": int64(0),
+		"max_total_ms": int64(0),
+	}
+	var sum int64
+	totalN := 0
+	for _, it := range cuObserveHistory {
+		if ok, _ := it["ok"].(bool); ok {
+			summary["ok_count"] = summary["ok_count"].(int) + 1
+		}
+		if ms := cuAnyToInt64(it["total_ms"]); ms > 0 {
+			if totalN == 0 || ms < summary["min_total_ms"].(int64) {
+				summary["min_total_ms"] = ms
+			}
+			if totalN == 0 || ms > summary["max_total_ms"].(int64) {
+				summary["max_total_ms"] = ms
+			}
+			sum += ms
+			totalN++
+		}
+	}
+	okN := summary["ok_count"].(int)
+	summary["fail_count"] = len(cuObserveHistory) - okN
+	if totalN > 0 {
+		summary["avg_total_ms"] = sum / int64(totalN)
+	}
+	return summary
+}
+
+func (a *App) getComputerUseObserveHistorySummary() map[string]interface{} {
+	cuLastObserveMu.Lock()
+	defer cuLastObserveMu.Unlock()
+	return computerUseObserveHistorySummaryLocked()
+}
+
 // GetComputerUseObserveHistory returns the last N observe metrics plus summary stats.
 func (a *App) GetComputerUseObserveHistory() map[string]interface{} {
 	cuLastObserveMu.Lock()
 	defer cuLastObserveMu.Unlock()
 	items := make([]map[string]interface{}, 0, len(cuObserveHistory))
-	var totals []int64
-	okN := 0
 	for _, it := range cuObserveHistory {
 		items = append(items, cloneStringAnyMap(it))
-		if ok, _ := it["ok"].(bool); ok {
-			okN++
-		}
-		if ms := cuAnyToInt64(it["total_ms"]); ms > 0 {
-			totals = append(totals, ms)
-		}
-	}
-	summary := map[string]interface{}{
-		"count":        len(items),
-		"ok_count":     okN,
-		"fail_count":   len(items) - okN,
-		"avg_total_ms": int64(0),
-		"min_total_ms": int64(0),
-		"max_total_ms": int64(0),
-	}
-	if len(totals) > 0 {
-		var sum int64
-		min, max := totals[0], totals[0]
-		for _, v := range totals {
-			sum += v
-			if v < min {
-				min = v
-			}
-			if v > max {
-				max = v
-			}
-		}
-		summary["avg_total_ms"] = sum / int64(len(totals))
-		summary["min_total_ms"] = min
-		summary["max_total_ms"] = max
 	}
 	return map[string]interface{}{
 		"items":   items,
-		"summary": summary,
+		"summary": computerUseObserveHistorySummaryLocked(),
 		"max":     cuObserveHistoryMax,
 	}
 }
