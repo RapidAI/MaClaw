@@ -54,12 +54,13 @@ type pageScriptReport struct {
 // pageScriptFlagSet is the person-handoff check made at the end of the same
 // script, so a finished script does not walk the page a second time.
 type pageScriptFlagSet struct {
-	LoginWall      bool `json:"login_wall"`
-	LoginQR        bool `json:"login_qr"`
-	MFA            bool `json:"mfa"`
-	CaptchaWidget  bool `json:"captcha_widget"`
-	PaymentConfirm bool `json:"payment_confirm"`
-	ConsentDialog  bool `json:"consent_dialog"`
+	LoginWall      bool   `json:"login_wall"`
+	LoginQR        bool   `json:"login_qr"`
+	MFA            bool   `json:"mfa"`
+	CaptchaWidget  bool   `json:"captcha_widget"`
+	PaymentConfirm bool   `json:"payment_confirm"`
+	ConsentDialog  bool   `json:"consent_dialog"`
+	BlockingNotice string `json:"blocking_notice"`
 }
 
 func (f pageScriptFlagSet) browserFlags() BrowserPageFlags {
@@ -70,6 +71,7 @@ func (f pageScriptFlagSet) browserFlags() BrowserPageFlags {
 		CaptchaWidget:  f.CaptchaWidget,
 		PaymentConfirm: f.PaymentConfirm,
 		ConsentDialog:  f.ConsentDialog,
+		BlockingNotice: f.BlockingNotice,
 	}
 }
 
@@ -630,10 +632,10 @@ func wrapPageScript(script, siteHost string) string {
     const text = pageText();
     const nodes = queryAll('input,iframe,frame,[role="dialog"],[aria-modal="true"],[class*="captcha"],[id*="captcha"],[class*="cookie"],[id*="cookie"]');
     let password = false, card = false, captchaEl = false, dialog = false;
-    const srcs = [];
+    const srcs = [], capSrcs = [];
     for (const el of nodes) {
       const tag = String(el.tagName || '').toLowerCase();
-      if (tag === 'iframe' || tag === 'frame') { srcs.push(String(el.src || '').toLowerCase()); continue; }
+      if (tag === 'iframe' || tag === 'frame') { const src = String(el.src || '').toLowerCase(); srcs.push(src); if (visible(el) && !/size=invisible/.test(src)) capSrcs.push(src); continue; }
       if (tag === 'input') {
         const type = String((el.getAttribute && (el.getAttribute('type') || el.type)) || '').toLowerCase();
         const ac = String((el.getAttribute && el.getAttribute('autocomplete')) || '').toLowerCase();
@@ -645,7 +647,9 @@ func wrapPageScript(script, siteHost string) string {
       const role = String((el.getAttribute && el.getAttribute('role')) || '').toLowerCase();
       if ((role === 'dialog' || (el.getAttribute && el.getAttribute('aria-modal') === 'true')) && visible(el)) dialog = true;
       const idc = String((el.id || '') + ' ' + (typeof el.className === 'string' ? el.className : '')).toLowerCase();
-      if (idc.indexOf('captcha') >= 0) captchaEl = true;
+      // A captcha class alone is no challenge (Bilibili marks <body> of
+      // every creator page "risk-captcha-adapt"): it must be a visible box.
+      if (idc.indexOf('captcha') >= 0 && tag !== 'body' && tag !== 'html' && visible(el)) { const r = el.getBoundingClientRect(); if (r.width >= 100 && r.height >= 40) captchaEl = true; }
     }
     const frameSrc = srcs.join(' ');
     const payFrameSrc = srcs.filter(u => !/js\.stripe\.com\/v3\/(m-outer|m-inner|controller|metrics)/.test(String(u).toLowerCase())).join(' ');
@@ -665,7 +669,8 @@ func wrapPageScript(script, siteHost string) string {
       login_wall: !signedIn && typeable,
       login_qr: !signedIn && qr && !typeable,
       mfa: /verification code|2fa|one-time|otp|authenticator|验证码/.test(text),
-      captcha_widget: text.indexOf('拖动滑块') >= 0 || /recaptcha|hcaptcha|funcaptcha/.test(frameSrc) || (captchaEl && frameSrc.indexOf('captcha') >= 0),
+      captcha_widget: text.indexOf('拖动滑块') >= 0 || /recaptcha|hcaptcha|funcaptcha/.test(capSrcs.join(' ')) || (captchaEl && capSrcs.join(' ').indexOf('captcha') >= 0),
+      blocking_notice: (function () { try { return ` + blockingNoticeFnJS + `().join(' | '); } catch (e) { return ''; } })(),
       payment_confirm: card || /js\.stripe\.com|paypal\.com/.test(payFrameSrc) || payFrameSrc.indexOf('checkout') >= 0,
       consent_dialog: dialog && /consent|隐私政策|privacy policy|同意并继续/.test(text) && !cookieAccept
     };

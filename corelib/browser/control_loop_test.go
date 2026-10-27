@@ -31,14 +31,14 @@ func TestCaptchaWidgetFromSignals(t *testing.T) {
 	if !captchaWidgetFromSignals(nil, "请拖动滑块完成验证", false) {
 		t.Fatal("slider text should be widget")
 	}
-	if captchaWidgetFromSignals(nil, "请输入验证码", true) {
-		t.Fatal("class*=captcha plus OTP text must not be widget")
+	if captchaWidgetFromSignals(nil, "请输入验证码", false) {
+		t.Fatal("OTP text without a visible challenge must not be widget")
 	}
-	if captchaWidgetFromSignals(nil, "captcha-passed badge", true) {
-		t.Fatal("class*=captcha alone must not be widget")
+	if captchaWidgetFromSignals([]string{"https://cdn.example/captcha/frame.html"}, "captcha-passed badge", false) {
+		t.Fatal("a bare captcha frame is the soft flag, not a widget")
 	}
-	if !captchaWidgetFromSignals([]string{"https://cdn.example/captcha/frame.html"}, "", true) {
-		t.Fatal("generic captcha iframe plus class should be widget")
+	if !captchaWidgetFromSignals(nil, "", true) {
+		t.Fatal("a visible interactive captcha box should be widget")
 	}
 }
 

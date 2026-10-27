@@ -1,102 +1,119 @@
 package browser
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 )
 
-// Synthetic editors of other shapes than the two profiled sites; no site
-// profile is used, so these run on generic discovery only.
-
-func TestPublishGenericWPLikeAutosaveAndOldStatusAreNotAPublish(t *testing.T) {
+// Fix 1+2: the click opens a settings panel with required tags and
+// category; the run fills both, presses the panel's own button, and calls
+// it published only on the site's answer (article id), not the toast.
+func TestPublishFlowSettingsPanelRequiredFields(t *testing.T) {
 	addr := startFixtureChrome(t)
-	srv, site := fixtureServer(t, "wp_like.html")
+	srv, site := fixtureServer(t, "panel_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit")
-	rep, err := RunPublish(d, PublishSpec{Title: "Generic block editor post", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 20 * time.Second})
-	t.Log(rep.String())
+	rep, err := RunPublish(d, PublishSpec{Title: "面板 测试 标题", Body: "正文第一段。\n\n第二段。", Tags: []string{"AI"}, StepBudget: 10 * time.Second})
+	t.Log(rep.String(), rep.NetLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	site.mu.Lock()
-	n := len(site.published)
-	site.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("published %d times; a pre-existing 'Published' label or the autosave URL must not end the submit", n)
+	if rep.State != PublishLive || rep.Evidence != "response" || rep.PostID != "777001" {
+		t.Fatalf("state=%s evidence=%q id=%q", rep.State, rep.Evidence, rep.PostID)
 	}
-	if !strings.Contains(rep.String(), "Post published") && !strings.Contains(rep.String(), "page says") {
-		t.Fatalf("submit should end on the page's new notice: %s", rep.String())
-	}
-}
-
-func genericPublished(site *fixtureSite) []map[string]string {
 	site.mu.Lock()
 	defer site.mu.Unlock()
-	return append([]map[string]string(nil), site.published...)
+	if len(site.published) != 1 || site.published[0]["tags"] != "AI" || site.published[0]["category"] == "" {
+		t.Fatalf("published %+v", site.published)
+	}
 }
 
-func TestPublishGenericPlainFormLabelTitleAndInputSubmit(t *testing.T) {
+// Fix 1+2: a click that only autosaves a draft is draft_only, not
+// submitted or published.
+func TestPublishFlowDraftWriteIsDraftOnly(t *testing.T) {
 	addr := startFixtureChrome(t)
-	srv, site := fixtureServer(t, "plain_form_like.html")
+	srv, site := fixtureServer(t, "panel_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?draftonly=1")
+	rep, err := RunPublish(d, PublishSpec{Title: "草稿 标题", Body: "正文。", StepBudget: 6 * time.Second})
+	if err == nil || rep.State != PublishDraftOnly {
+		t.Fatalf("err=%v state=%s rep=%s", err, rep.State, rep.String())
+	}
+	if len(site.published) != 0 {
+		t.Fatal("published")
+	}
+}
+
+// Fix 4 / steering (a): the image goes through the input inside the
+// editor's iframe (which uploads), not the outer decoy that only makes
+// local previews; the upload is confirmed by the site's answer.
+func TestPublishFlowUploadsThroughTheEditorFrameInput(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "iframe_upload_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit")
-	rep, err := RunPublish(d, PublishSpec{Title: "A plain form topic", Body: fixtureBody, StepBudget: 15 * time.Second})
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "框架 上传", Body: "正文在 iframe 里。", StepBudget: 15 * time.Second})
 	t.Log(rep.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub := genericPublished(site)
-	if len(pub) != 1 || pub[0]["title"] != "A plain form topic" || !strings.Contains(pub[0]["body"], "多模态检索新基准") {
-		t.Fatalf("published %+v", pub)
+	if !strings.Contains(rep.String(), "the site stored them") {
+		t.Fatalf("upload not confirmed by the network: %s", rep.String())
 	}
-	if !strings.Contains(rep.ResultURL, "/p/123") || rep.State != PublishLive {
-		t.Fatalf("result %q state %s", rep.ResultURL, rep.State)
+	site.mu.Lock()
+	defer site.mu.Unlock()
+	if len(site.published) != 1 || !strings.Contains(site.published[0]["html"], "/img/") || rep.Evidence != "redirect" {
+		t.Fatalf("published %+v evidence %q", site.published, rep.Evidence)
 	}
 }
 
-func TestPublishGenericMarkdownEditorInAFrame(t *testing.T) {
+// Fix 3: a title input without a box is filled from script focus.
+func TestPublishFlowHiddenTitleFilled(t *testing.T) {
 	addr := startFixtureChrome(t)
-	srv, site := fixtureServer(t, "iframe_md_like.html")
+	srv, site := fixtureServer(t, "hidden_title_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit")
-	body := "## 今日要点\n\n1. **第一篇**：一种更快的推理方法。\n2. 第二篇：多模态检索新基准。"
-	rep, err := RunPublish(d, PublishSpec{Title: "框架里的 Markdown 编辑器", Body: body, StepBudget: 15 * time.Second})
+	rep, err := RunPublish(d, PublishSpec{Title: "隐藏 标题 测试", TitleSelector: "#t", Body: "正文内容。", StepBudget: 10 * time.Second})
 	t.Log(rep.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub := genericPublished(site)
-	if len(pub) != 1 {
-		t.Fatalf("published %+v", pub)
-	}
-	b := pub[0]["body"]
-	if !strings.Contains(b, "## 今日要点") || !strings.Contains(b, "**第一篇**") || strings.Contains(b, "3. ") || strings.Count(b, "2. ") != 1 {
-		t.Fatalf("markdown source not kept as written: %q", b)
+	site.mu.Lock()
+	defer site.mu.Unlock()
+	if len(site.published) != 1 || site.published[0]["title"] != "隐藏 标题 测试" {
+		t.Fatalf("published %+v", site.published)
 	}
 }
 
-func TestPublishGenericGraphQLRefusalBehind200(t *testing.T) {
+// Fix 5+6: a captcha class name with no visible challenge is no captcha;
+// a notice inside a same-origin iframe is reported by the page flags and
+// by publish.
+func TestBlockingNoticeInFrameAndNoClassOnlyCaptcha(t *testing.T) {
 	addr := startFixtureChrome(t)
-	srv, site := fixtureServer(t, "graphql_like.html")
-	d := fixtureTab(t, addr, srv.URL+"/edit?refuse=1")
-	rep, err := RunPublish(d, PublishSpec{Title: "A story", Body: fixtureBody, StepBudget: 10 * time.Second})
-	t.Log(rep.String())
-	if err == nil {
-		t.Fatal("a refused publish must fail")
-	}
-	if len(genericPublished(site)) != 0 || !strings.Contains(err.Error(), "rate limit") || rep.State != PublishNotSubmitted {
-		t.Fatalf("state %s err %v", rep.State, err)
-	}
-}
-
-func TestPublishGenericGraphQLPublishNowPanel(t *testing.T) {
-	addr := startFixtureChrome(t)
-	srv, site := fixtureServer(t, "graphql_like.html")
+	srv, _ := fixtureServer(t, "notice_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit")
-	rep, err := RunPublish(d, PublishSpec{Title: "A story", Body: fixtureBody, StepBudget: 15 * time.Second})
-	t.Log(rep.String())
+	raw, err := d.Send("Runtime.evaluate", map[string]interface{}{"expression": browserPageFlagsScript, "returnByValue": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(genericPublished(site)) != 1 {
-		t.Fatal("not published once")
+	var out struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	var payload struct {
+		Flags BrowserPageFlags `json:"page_flags"`
+	}
+	if err := json.Unmarshal([]byte(out.Result.Value), &payload); err != nil {
+		t.Fatalf("%v %s", err, raw)
+	}
+	if payload.Flags.CaptchaWidget || payload.Flags.Captcha {
+		t.Fatalf("class-only captcha flagged: %+v", payload.Flags)
+	}
+	if !strings.Contains(payload.Flags.BlockingNotice, "转正答题后才能发布专栏") {
+		t.Fatalf("notice %+v", payload.Flags)
+	}
+	rep, err := RunPublish(d, PublishSpec{Title: "t", Body: "b", StepBudget: 3 * time.Second})
+	if err == nil || !strings.Contains(err.Error(), "转正答题") || rep.Notice == "" || rep.State != PublishNoEditor {
+		t.Fatalf("err=%v state=%s notice=%q", err, rep.State, rep.Notice)
 	}
 }

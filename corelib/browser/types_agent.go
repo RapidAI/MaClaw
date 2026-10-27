@@ -120,6 +120,9 @@ type BrowserPageFlags struct {
 	PaymentConfirm bool `json:"payment_confirm,omitempty"`
 	ConsentDialog  bool `json:"consent_dialog,omitempty"`
 	VisionUsed     bool `json:"vision_used,omitempty"`
+	// BlockingNotice: visible lines saying the account may not act yet
+	// ("…才能发布"), read in every same-origin frame.
+	BlockingNotice string `json:"blocking_notice,omitempty"`
 }
 
 // ExpectSpec is an optional post-condition for navigate/click/type/select.

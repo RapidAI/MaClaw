@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>写文章 (hidden title fixture)</title>
+<!-- The real title input has no box (zero size); a visible div mirrors it. -->
+<style>#t{width:0;height:0;border:0;padding:0;position:absolute;overflow:hidden} #shown{font-size:22px;min-height:30px} textarea{width:690px;height:300px}</style></head><body>
+<input id="t"><div id="shown">请输入标题</div>
+<textarea id="b" placeholder="正文"></textarea>
+<button id="pub">发布</button>
+<script>
+const t = document.getElementById('t');
+t.addEventListener('input', () => { document.getElementById('shown').textContent = t.value; });
+document.getElementById('pub').addEventListener('click', async ev => {
+  if (!ev.isTrusted) return;
+  const r = await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t.value, body: document.getElementById('b').value})});
+  location.href = await r.text();
+});
+</script></body></html>

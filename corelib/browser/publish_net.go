@@ -3,6 +3,7 @@ package browser
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,8 @@ type netTracker struct {
 	last     time.Time
 	failures []netFailure
 	writes   int
+	// reading: answers of finished writes still being read.
+	reading int
 	// fetched: last XHR/fetch of any method (an editor polls an upload's
 	// processing state with reads after the write finished).
 	fetched time.Time
@@ -42,6 +45,52 @@ type netWrite struct {
 	id     string
 	what   string
 	answer string
+	// path is the URL without query; kind classifies the write (see
+	// netWriteKind); done/ok: the request finished, with a 2xx/3xx answer.
+	path string
+	kind string
+	done bool
+	ok   bool
+	// postID/postURL: an id or link the JSON answer carries (evidence of a
+	// created post when the write is a publish, see evidenceSince).
+	postID, postURL string
+}
+
+// Write kinds. upload: a file/picture going to the site; draft: a draft or
+// autosave; write: anything else (a publish, a settings change).
+const (
+	netKindUpload = "upload"
+	netKindDraft  = "draft"
+	netKindWrite  = "write"
+)
+
+var (
+	netUploadRe = regexp.MustCompile(`(?i)upload|(^|[/_.-])(images?|imgs?|pics?|photos?|pictures?|files?|media|bfs)([/_.-]|$)`)
+	netDraftRe  = regexp.MustCompile(`(?i)draft|auto_?-?save|save_?cache`)
+)
+
+// netWriteKind classifies a writing request from its URL and headers. A
+// multipart body is an upload; a URL naming a draft or autosave is a draft.
+func netWriteKind(u string, headers map[string]any) string {
+	ct := ""
+	for k, v := range headers {
+		if strings.EqualFold(k, "content-type") {
+			ct, _ = v.(string)
+		}
+	}
+	path := u
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	switch {
+	case strings.Contains(strings.ToLower(ct), "multipart/form-data"), strings.HasPrefix(strings.ToLower(ct), "image/"):
+		return netKindUpload
+	case netDraftRe.MatchString(path):
+		return netKindDraft
+	case netUploadRe.MatchString(path):
+		return netKindUpload
+	}
+	return netKindWrite
 }
 
 type netFailure struct {
@@ -81,8 +130,9 @@ func (t *netTracker) on(ev CDPEvent) {
 	var p struct {
 		RequestID string `json:"requestId"`
 		Request   struct {
-			Method string `json:"method"`
-			URL    string `json:"url"`
+			Method  string         `json:"method"`
+			URL     string         `json:"url"`
+			Headers map[string]any `json:"headers"`
 		} `json:"request"`
 		Response struct {
 			Status   int    `json:"status"`
@@ -106,11 +156,18 @@ func (t *netTracker) on(ev CDPEvent) {
 			t.open[p.RequestID] = p.Request.Method + " " + clipRunes(p.Request.URL, 120)
 			t.writes++
 			t.starts = append(t.starts, time.Now())
-			t.log = append(t.log, netWrite{at: time.Now(), id: p.RequestID, what: t.open[p.RequestID], answer: "no answer yet"})
+			path := p.Request.URL
+			if i := strings.IndexAny(path, "?#"); i >= 0 {
+				path = path[:i]
+			}
+			t.log = append(t.log, netWrite{at: time.Now(), id: p.RequestID, what: t.open[p.RequestID], answer: "no answer yet", path: path, kind: netWriteKind(p.Request.URL, p.Request.Headers)})
 			t.last = time.Now()
 		}
 	case "Network.responseReceived":
 		t.answer(p.RequestID, "HTTP "+itoa(p.Response.Status))
+		if w := t.find(p.RequestID); w != nil {
+			w.ok = p.Response.Status > 0 && p.Response.Status < 400
+		}
 		if _, ok := t.open[p.RequestID]; ok && strings.Contains(p.Response.MimeType, "json") && p.Response.Status < 400 {
 			t.json[p.RequestID] = true
 		}
@@ -121,9 +178,18 @@ func (t *netTracker) on(ev CDPEvent) {
 		if what, ok := t.open[p.RequestID]; ok {
 			delete(t.open, p.RequestID)
 			t.last = time.Now()
+			if w := t.find(p.RequestID); w != nil {
+				w.done = true
+			}
 			if t.json[p.RequestID] && t.d != nil {
 				delete(t.json, p.RequestID)
-				go t.readAnswer(p.RequestID, what)
+				t.reading++
+				go func(id, what string) {
+					t.readAnswer(id, what)
+					t.mu.Lock()
+					t.reading--
+					t.mu.Unlock()
+				}(p.RequestID, what)
 			}
 		}
 	case "Network.loadingFailed":
@@ -131,6 +197,9 @@ func (t *netTracker) on(ev CDPEvent) {
 			delete(t.open, p.RequestID)
 			t.last = time.Now()
 			t.answer(p.RequestID, "failed: "+p.ErrorText)
+			if w := t.find(p.RequestID); w != nil {
+				w.done, w.ok = true, false
+			}
 			if !p.Canceled {
 				t.failures = append(t.failures, netFailure{time.Now(), what + " → " + p.ErrorText})
 			}
@@ -206,6 +275,16 @@ func (t *netTracker) wroteSince(since time.Time) bool {
 	return false
 }
 
+// find is the log entry of a request (nil when it is not a tracked write).
+func (t *netTracker) find(id string) *netWrite {
+	for i := len(t.log) - 1; i >= 0; i-- {
+		if t.log[i].id == id {
+			return &t.log[i]
+		}
+	}
+	return nil
+}
+
 func (t *netTracker) answer(id, a string) {
 	for i := len(t.log) - 1; i >= 0; i-- {
 		if t.log[i].id == id {
@@ -260,7 +339,200 @@ func (t *netTracker) readAnswer(id, what string) {
 		t.refusals = append(t.refusals, netFailure{time.Now(), what + " → " + why})
 		t.answer(id, "refused: "+why)
 		t.mu.Unlock()
+		return
 	}
+	pid, purl := jsonPostRef(r.Body)
+	if pid == "" && purl == "" {
+		return
+	}
+	t.mu.Lock()
+	if w := t.find(id); w != nil {
+		w.postID, w.postURL = pid, purl
+		w.answer += " (id " + pid + " " + purl + ")"
+	}
+	t.mu.Unlock()
+}
+
+// jsonPostRefKeys: field names that carry a created object's id or link in
+// a JSON answer, in order of preference (generic, no site names).
+var (
+	jsonPostIDKeys  = []string{"article_id", "articleId", "post_id", "postId", "note_id", "noteId", "aid", "cvid", "id"}
+	jsonPostURLKeys = []string{"url", "link", "article_url", "articleUrl", "share_url", "shareUrl", "post_url", "postUrl"}
+	jsonPostIDRe    = regexp.MustCompile(`^[0-9A-Za-z_-]{4,40}$`)
+)
+
+// jsonPostRef finds an id and an http(s) link in a JSON answer: top level
+// or under data/result/article/post (two levels).
+func jsonPostRef(body string) (string, string) {
+	var v any
+	if json.Unmarshal([]byte(body), &v) != nil {
+		return "", ""
+	}
+	var id, link string
+	var walk func(x any, depth int)
+	walk = func(x any, depth int) {
+		m, ok := x.(map[string]any)
+		if !ok || depth > 2 {
+			return
+		}
+		for _, k := range jsonPostIDKeys {
+			if id != "" {
+				break
+			}
+			switch val := m[k].(type) {
+			case string:
+				if jsonPostIDRe.MatchString(val) && strings.Trim(val, "0") != "" {
+					id = val
+				}
+			case float64:
+				if val >= 1000 {
+					id = strconv.FormatInt(int64(val), 10)
+				}
+			}
+		}
+		for _, k := range jsonPostURLKeys {
+			if s, ok := m[k].(string); ok && link == "" && (strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "//")) {
+				link = s
+			}
+		}
+		for _, k := range []string{"data", "result", "article", "post", "note"} {
+			walk(m[k], depth+1)
+		}
+	}
+	walk(v, 0)
+	return id, link
+}
+
+// uploadStats counts upload-kind writes started after since: started,
+// finished with a good answer, failed, and still open.
+func (t *netTracker) uploadStats(since time.Time) (started, ok, failed, open int) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, w := range t.log {
+		if w.kind != netKindUpload || !w.at.After(since) {
+			continue
+		}
+		started++
+		switch {
+		case !w.done:
+			open++
+		case w.ok:
+			ok++
+		default:
+			failed++
+		}
+	}
+	return
+}
+
+// pathsBefore: URL paths of writes sent before t (the editor's own saves).
+func (t *netTracker) pathsBefore(at time.Time) map[string]bool {
+	out := map[string]bool{}
+	if t == nil {
+		return out
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, w := range t.log {
+		if !w.at.After(at) {
+			out[w.path] = true
+		}
+	}
+	return out
+}
+
+// submitWritesSince lists the writes after since that can be a submission:
+// not an upload, not a draft/autosave, and not to an endpoint the editor
+// was already writing to before since (its periodic draft save).
+func (t *netTracker) submitWritesSince(since time.Time) []netWrite {
+	if t == nil {
+		return nil
+	}
+	before := t.pathsBefore(since)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []netWrite
+	for _, w := range t.log {
+		if w.at.After(since) && w.kind == netKindWrite && !before[w.path] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// draftWritesSince counts writes after since that only saved a draft.
+func (t *netTracker) draftWritesSince(since time.Time) int {
+	if t == nil {
+		return 0
+	}
+	before := t.pathsBefore(since)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for _, w := range t.log {
+		if w.at.After(since) && (w.kind == netKindDraft || (w.kind == netKindWrite && before[w.path])) {
+			n++
+		}
+	}
+	return n
+}
+
+// settleAnswers waits up to max for submission writes since since to finish
+// and for their answers to be read (the page reacts to an answer before
+// the tracker has read its body).
+func (t *netTracker) settleAnswers(since time.Time, max time.Duration) {
+	if t == nil {
+		return
+	}
+	end := time.Now().Add(max)
+	for time.Now().Before(end) {
+		busy := false
+		for _, w := range t.submitWritesSince(since) {
+			if !w.done {
+				busy = true
+			}
+		}
+		t.mu.Lock()
+		if t.reading > 0 {
+			busy = true
+		}
+		t.mu.Unlock()
+		if !busy {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// evidenceSince: the id or link a submission write's answer carried.
+func (t *netTracker) evidenceSince(since time.Time) (string, string) {
+	for _, w := range t.submitWritesSince(since) {
+		if w.ok && (w.postID != "" || w.postURL != "") {
+			return w.postID, w.postURL
+		}
+	}
+	return "", ""
+}
+
+// logLines is the write log for the publish record, newest last, clipped.
+func (t *netTracker) logLines(max int) []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	start := 0
+	if len(t.log) > max {
+		start = len(t.log) - max
+	}
+	var out []string
+	for _, w := range t.log[start:] {
+		out = append(out, w.at.Format("15:04:05")+" "+w.kind+" "+clipRunes(w.what+" → "+w.answer, 200))
+	}
+	return out
 }
 
 // jsonRefusal: a JSON answer that says the write failed ("" otherwise).

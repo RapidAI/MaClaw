@@ -158,6 +158,9 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"verify_url":      map[string]any{"type": "string", "description": "publish: page to open after submit where the new post must be listed"},
 				"editor_url":      map[string]any{"type": "string", "description": "publish: the site's editor page; publish opens it itself (known sites need none)"},
 				"edit_url":        map[string]any{"type": "string", "description": "publish: edit page of a published post ({url} = post URL), used to put back a lost picture"},
+				"verify_api":      map[string]any{"type": "string", "description": "publish: JSON endpoint listing the account's posts (read with the page's session); the title found there is publish evidence"},
+				"tags":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "publish: tags for a publish settings panel that requires them"},
+				"category":        map[string]any{"type": "string", "description": "publish: category for a publish settings panel that requires one"},
 				"plan":            map[string]any{"type": "array", "description": "batch: desktop steps run in order in one call, each an object with its own action (script, rich_fill, navigate, probe, click, type, press, wait) and that action's fields; stops at the first failure", "items": map[string]any{"type": "object"}},
 				"offers":          desktopShopOffersSchema(),
 				"steps":           map[string]any{"type": "array", "description": "task_run or app_run steps. Browser step: {action, params:{url,ref,text,key}}. App step: {action, ...} with action focus{name|id}, type{text}, key{key, repeat}, click{x,y | id, button left|right|middle, clicks 1-3, modifiers \"ctrl+shift\"}, right_click, double_click, triple_click, middle_click, move{x,y}, mouse_down, mouse_up, drag{from_x,from_y,to_x,to_y}, scroll{x,y,direction up|down|left|right, amount}, cursor_position, wait{duration}, hold_key{key,duration}, paste{text} (clipboard + Ctrl+V, best for long or Chinese text), set_text{id,text}, screenshot, zoom{region:[x0,y0,x1,y1]}. x,y are pixels of the last screenshot.", "items": map[string]any{"type": "object"}},
@@ -1796,6 +1799,9 @@ func appendDesktopPageFlags(text string, data map[string]interface{}) string {
 	}
 	if flags.ConsentDialog {
 		names = append(names, "consent_dialog")
+	}
+	if flags.BlockingNotice != "" {
+		names = append(names, "blocking_notice="+strconv.Quote(flags.BlockingNotice))
 	}
 	if len(names) == 0 {
 		return text

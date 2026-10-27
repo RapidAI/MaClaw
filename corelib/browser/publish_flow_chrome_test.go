@@ -223,6 +223,16 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		site.mu.Unlock()
 		fmt.Fprint(w, `{"data":{"publish":{"id":"123"}}}`)
 	})
+	mux.HandleFunc("/api/publish", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var m map[string]string
+		_ = json.Unmarshal(b, &m)
+		site.mu.Lock()
+		site.published = append(site.published, m)
+		site.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"code":0,"data":{"article_id":"777001","url":"/p/123"}}`)
+	})
 	mux.HandleFunc("/refuse", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "content rejected", 422) })
 	mux.HandleFunc("/publish", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)

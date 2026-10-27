@@ -3,6 +3,7 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -512,6 +513,9 @@ func formatObserveDisplay(snapshot BrowserSnapshot) string {
 		display += fmt.Sprintf(" (showing %d)", compactRefLimit)
 	}
 	flags := []string{}
+	if snapshot.PageFlags.BlockingNotice != "" {
+		flags = append(flags, "blocking_notice="+strconv.Quote(clipRunes(snapshot.PageFlags.BlockingNotice, 120)))
+	}
 	if snapshot.PageFlags.CaptchaWidget {
 		flags = append(flags, "captcha_widget")
 	}

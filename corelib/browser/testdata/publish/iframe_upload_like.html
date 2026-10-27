@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>写专栏 (iframe editor fixture)</title>
+<!-- The editor lives in a same-origin iframe with its own image input,
+     which uploads to /upload and shows the stored picture. The outer page
+     has a decoy file input that only makes local previews (no request). -->
+<style>iframe{width:760px;height:460px;border:0}</style></head><body>
+<input id="title" placeholder="请输入标题">
+<input type="file" id="outer" accept="image/*" multiple style="display:none">
+<div id="localprev"></div>
+<iframe id="ed" srcdoc='<!doctype html><meta charset="utf-8"><style>#ed{min-height:300px;width:690px;border:1px solid #ccc} img{width:200px}</style><div id="ed" contenteditable="true"></div><div id="gallery"></div><input type="file" id="inner" accept="image/*" multiple><script>document.getElementById("inner").addEventListener("change", e => { let n = 0; for (const f of e.target.files) { n++; fetch("/upload?n=" + n, {method: "POST", body: f}).then(r => r.text()).then(u => { const i = document.createElement("img"); i.src = u; document.getElementById("gallery").appendChild(i); }); } });</script>'></iframe>
+<button id="pub">发布</button>
+<script>
+document.getElementById('outer').addEventListener('change', e => { for (const f of e.target.files) { const i = document.createElement('img'); i.src = URL.createObjectURL(f); document.getElementById('localprev').appendChild(i); } });
+document.getElementById('pub').addEventListener('click', async ev => {
+  if (!ev.isTrusted) return;
+  const d = document.getElementById('ed').contentDocument;
+  const r = await fetch('/publish', {method: 'POST', body: JSON.stringify({title: document.getElementById('title').value, body: d.getElementById('ed').innerText, html: d.getElementById('ed').innerHTML + d.getElementById('gallery').innerHTML})});
+  location.href = await r.text();
+});
+</script></body></html>

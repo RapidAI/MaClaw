@@ -1,0 +1,41 @@
+<!doctype html><html><head><meta charset="utf-8"><title>写文章 (settings panel fixture)</title>
+<!-- Generic "publish settings" fixture: the first publish click opens a
+     modal that requires tags (added through a "+ 添加文章标签" button that
+     reveals an input; Enter adds a chip) and a category (radio). Its own
+     "发布文章" button posts JSON to /api/publish, which answers with the
+     article id; the page stays on the editor and shows a toast. Typing
+     autosaves to /draft. ?draftonly=1: the publish click only autosaves
+     (no panel, no publish). -->
+<style>#body{min-height:300px;width:690px;border:1px solid #ccc} .modal{display:none;position:fixed;top:40px;left:40px;width:520px;height:320px;background:#fff;border:1px solid #888} .modal.open{display:block} .tag-input{display:none} .tag-input.open{display:inline-block}</style></head><body>
+<input id="title" placeholder="请输入文章标题">
+<div id="body" contenteditable="true"></div>
+<button id="pub">发布文章</button>
+<div class="modal" id="panel">
+  <div class="form-item"><label>*文章标签</label><span class="tags"></span><button class="add" id="add">+ 添加文章标签</button><input class="tag-input" id="tagin" placeholder="Enter键入可添加自定义标签"></div>
+  <div class="form-item"><label>*分类</label><label><input type="radio" name="c" value="原创">原创</label><label><input type="radio" name="c" value="转载">转载</label></div>
+  <div id="err"></div>
+  <button id="cancel">取消</button><button id="go">发布文章</button>
+</div>
+<script>
+const q = new URLSearchParams(location.search);
+const body = document.getElementById('body');
+let tm; const autosave = () => { clearTimeout(tm); tm = setTimeout(() => fetch('/draft', {method: 'POST', body: body.innerHTML}), 400); };
+body.addEventListener('input', autosave);
+document.getElementById('title').addEventListener('input', autosave);
+const tags = [];
+document.getElementById('add').addEventListener('click', () => { const i = document.getElementById('tagin'); i.classList.add('open'); i.focus(); });
+document.getElementById('tagin').addEventListener('keydown', e => { if (e.key !== 'Enter') return; const v = e.target.value.trim(); if (!v) return; tags.push(v); const s = document.createElement('span'); s.className = 'tag-chip'; s.textContent = v; document.querySelector('.tags').appendChild(s); e.target.value = ''; });
+document.getElementById('pub').addEventListener('click', () => {
+  if (q.get('draftonly')) { fetch('/draft', {method: 'POST', body: body.innerHTML}); return; }
+  document.getElementById('panel').classList.add('open');
+});
+document.getElementById('go').addEventListener('click', async ev => {
+  if (!ev.isTrusted) return;
+  const c = document.querySelector('input[name=c]:checked');
+  if (!tags.length || !c) { document.getElementById('err').textContent = '请添加标签并选择分类'; return; }
+  const r = await fetch('/api/publish', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: document.getElementById('title').value, body: body.innerText, tags: tags.join(','), category: c.value})});
+  const j = await r.json();
+  document.getElementById('panel').classList.remove('open');
+  const t = document.createElement('div'); t.textContent = '发布成功'; document.body.appendChild(t); setTimeout(() => t.remove(), 1500);
+});
+</script></body></html>

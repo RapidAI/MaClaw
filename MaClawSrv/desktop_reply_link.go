@@ -43,7 +43,7 @@ func desktopReplyTemplate(r desktopPublishRecord) string {
 		return "已发布" + title + "，但不完整：" + r.Missing + "\n链接：" + r.URL
 	case browser.PublishSubmitted:
 		// Not found in the post list: no link, the URL is still the editor.
-		return "已提交发布" + title + "，但在帖子列表里没找到它，没能确认已上线。"
+		return "已提交发布" + title + "，但没有拿到发布成功的证据（站点没有返回文章 id 或地址，帖子列表里也没找到），没能确认已上线。"
 	}
 	return ""
 }

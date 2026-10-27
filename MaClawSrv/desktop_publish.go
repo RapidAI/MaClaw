@@ -44,6 +44,9 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		ConfirmTexts:   desktopStrList(args, "confirm_texts"),
 		VerifyURL:      desktopArg(args, "verify_url"),
 		EditURL:        desktopArg(args, "edit_url"),
+		VerifyAPI:      desktopArg(args, "verify_api"),
+		Tags:           desktopStrList(args, "tags"),
+		Category:       desktopArg(args, "category"),
 		StepBudget:     30 * time.Second,
 		// The pipeline owns the time: it ends with its own report before
 		// the hard step limit (ZN-21 was cut off at 300s mid-read-back).
@@ -74,11 +77,18 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() {
 		return desktopPublishRecordText(r), nil
 	}
+	// The pictures a run planned stay planned: a retry that passes fewer
+	// files would publish without them (BILI-cv53625427 dropped all three
+	// on its third call and passed read-back).
+	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.PlannedImages > len(spec.Files) {
+		return "", fmt.Errorf("publish refused: an earlier publish call in this run planned %d picture(s) and this one passes %d; pass every planned picture file again (nothing was filled or posted)", r.PlannedImages, len(spec.Files))
+	}
+	spec.MinImages = len(spec.Files)
 	if len(spec.Files) > 0 {
 		session.Policy.AllowUpload = true
 	}
 	rep, err := browser.RunPublish(session.PublishDriver(), spec)
-	rec := desktopRecordPublish(scope, spec, rep)
+	rec := desktopRecordPublish(scope, spec, rep, err)
 	out := ""
 	if rep != nil {
 		out = rep.String()

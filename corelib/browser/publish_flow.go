@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -62,6 +63,16 @@ type PublishSpec struct {
 	// PlainBold renders bold/heading runs in a plain body ($1 = the text).
 	PlainBold  string
 	StepBudget time.Duration
+	// Tags and Category fill a publish settings panel's required fields
+	// (empty: tags come from the body's #hashtags, then the title).
+	Tags     []string
+	Category string
+	// VerifyAPI: a JSON endpoint (read with the page's own session) that
+	// lists the account's posts; a post whose title is in it is published.
+	VerifyAPI string
+	// MinImages: pictures the post must carry (the task's plan); fewer in
+	// the editor fails readback instead of publishing without them.
+	MinImages int
 }
 
 type PublishStep struct {
@@ -82,6 +93,13 @@ type PublishReport struct {
 	// observed (see PublishState). Missing names what a live post lacks.
 	State   PublishState `json:"state"`
 	Missing string       `json:"missing,omitempty"`
+	// Evidence names what proved the post published (response id, redirect,
+	// post list, list API); empty unless State is published.
+	Evidence string `json:"evidence,omitempty"`
+	// NetLog is the page's writing requests with their answers (clipped).
+	NetLog []string `json:"net_log,omitempty"`
+	// Notice: a blocking notice the page showed ("…才能发布"), any frame.
+	Notice string `json:"notice,omitempty"`
 }
 
 // PublishState is the outcome of a publish run.
@@ -91,11 +109,15 @@ const (
 	// PublishNotSubmitted: stopped before the submit went out; nothing is
 	// on the site and running the publish again is safe.
 	PublishNotSubmitted PublishState = "not_submitted"
-	// PublishSubmitted: the submit went out but the post was not confirmed;
-	// it may be live. Never submit again for the same content.
-	PublishSubmitted PublishState = "submitted"
-	// PublishLive: the post was found and read back as filled.
-	PublishLive PublishState = "live"
+	// PublishSubmitted: a submission write went out but no evidence of a
+	// post came back; it may be live. Never submit again for the same content.
+	PublishSubmitted PublishState = "submitted_unconfirmed"
+	// PublishDraftOnly: the click only saved a draft (every write after it
+	// was a draft/autosave); nothing is published.
+	PublishDraftOnly PublishState = "draft_only"
+	// PublishLive: published, with evidence (an id or link in the site's
+	// answer, a redirect to the post, or the post in the account's list).
+	PublishLive PublishState = "published"
 	// PublishLiveIncomplete: the post is live but lacks something (Missing).
 	PublishLiveIncomplete PublishState = "live_incomplete"
 	// PublishNoEditor: no editor to write in (wrong page or signed out).
@@ -197,36 +219,87 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		if strings.HasPrefix(st.name, "fill_") || st.name == "paste_images" {
 			p.lastEdit = time.Now()
 		}
-		if r.err != nil && st.name == "submit" && p.submitClicked.Load() && spec.VerifyURL != "" {
-			// The click went out but the page gave no sign: the account's
-			// post list decides (XHS-33 left the bot guessing).
+		if r.err != nil && st.name == "submit" && p.submitClicked.Load() && (spec.VerifyURL != "" || spec.VerifyAPI != "" || p.hasNetEvidence()) {
+			// The click went out but the page gave no sign: the site's own
+			// answer or the account's post list decides (XHS-33 left the
+			// bot guessing).
 			if vout, verr := p.verify(); verr == nil {
 				p.rep.Steps = append(p.rep.Steps, PublishStep{Name: "verify_result", OK: true, Detail: "submit gave no sign; " + vout})
 				p.rep.State = PublishLive
+				p.rep.NetLog = p.net.logLines(publishNetLogMax)
 				return p.rep, nil
 			}
 		}
 		if r.err != nil {
 			p.rep.Stuck = st.name
-			p.rep.State = PublishNotSubmitted
-			switch {
-			case p.incomplete.Load() != nil:
-				p.rep.State, p.rep.Missing = PublishLiveIncomplete, p.incomplete.Load().(string)
-			case p.submitClicked.Load() && p.net != nil && len(p.net.writesSince(p.clickedAt)) == 0 && spec.VerifyURL != "":
-				// The click sent nothing and the post list lacks the post:
-				// nothing went out, so the run may fix the cause and retry.
-			case p.submitClicked.Load() && p.net != nil && len(p.net.refusedSince(p.clickedAt)) > 0 && len(p.net.refusedSince(p.clickedAt)) == len(p.net.writesSince(p.clickedAt)):
-				// Every write the click sent was refused in its answer.
-			case p.submitClicked.Load():
-				p.rep.State = PublishSubmitted
-			case p.noEditor:
-				p.rep.State = PublishNoEditor
+			p.rep.State = p.failedState()
+			p.rep.NetLog = p.net.logLines(publishNetLogMax)
+			err := r.err
+			if n := p.blockingNotices(); n != "" {
+				p.rep.Notice = n
+				if !strings.Contains(err.Error(), n) {
+					err = fmt.Errorf("%v; the page shows a blocking notice: %s", err, n)
+				}
 			}
-			return p.rep, fmt.Errorf("publish step %s failed: %v", st.name, r.err)
+			return p.rep, fmt.Errorf("publish step %s failed: %v", st.name, err)
 		}
+	}
+	p.rep.NetLog = p.net.logLines(publishNetLogMax)
+	if p.rep.Evidence == "" {
+		// verify only succeeds with evidence; this is a safety net.
+		p.rep.State = PublishSubmitted
+		return p.rep, fmt.Errorf("publish ended without evidence of the post")
 	}
 	p.rep.State = PublishLive
 	return p.rep, nil
+}
+
+// publishNetLogMax: writes kept in the report for the publish record.
+const publishNetLogMax = 40
+
+func (p *publishRun) hasNetEvidence() bool {
+	id, u := p.net.evidenceSince(p.clickedAt)
+	return id != "" || u != ""
+}
+
+// failedState names the outcome of a run that stopped at a failed step,
+// from what the page sent: "submitted" needs a submission write after the
+// click (not an upload, not a draft/autosave).
+func (p *publishRun) failedState() PublishState {
+	switch {
+	case p.incomplete.Load() != nil:
+		p.rep.Missing = p.incomplete.Load().(string)
+		return PublishLiveIncomplete
+	case !p.submitClicked.Load():
+		if p.noEditor {
+			return PublishNoEditor
+		}
+		return PublishNotSubmitted
+	case p.net == nil:
+		return PublishSubmitted
+	}
+	sub := p.net.submitWritesSince(p.clickedAt)
+	refused := p.net.refusedSince(p.clickedAt)
+	failed := p.net.failedSince(p.clickedAt)
+	if len(sub) > 0 && len(refused)+len(failed) < len(sub) {
+		return PublishSubmitted
+	}
+	if len(sub) > 0 {
+		// Every submission write was refused or failed in its answer.
+		return PublishNotSubmitted
+	}
+	if p.net.draftWritesSince(p.clickedAt) > 0 {
+		if p.panelConfirmed || p.toastSeen != "" {
+			// The site publishes through its draft endpoint and said or
+			// was told to publish: it may be out.
+			return PublishSubmitted
+		}
+		return PublishDraftOnly
+	}
+	if p.toastSeen != "" || p.clickHung {
+		return PublishSubmitted
+	}
+	return PublishNotSubmitted
 }
 
 type publishRun struct {
@@ -256,6 +329,12 @@ type publishRun struct {
 	// pasteLater: no file input showed the images; paste them into the
 	// body editor after the text (paste_images step).
 	pasteLater bool
+	// panelConfirmed: a publish settings panel opened by the click was
+	// filled and its own publish button pressed; toastSeen: a success text.
+	panelConfirmed bool
+	// clickHung: the page froze inside the submit click (outcome unknown).
+	clickHung bool
+	toastSeen string
 	// doc is the structured body; richFilled when it went into a rich editor
 	// as formatted text, imagesPlaced pictures at their anchors.
 	doc          richDoc
@@ -376,7 +455,15 @@ func (p *publishRun) observe() (string, error) {
 	}
 	if err != nil {
 		p.noEditor = true
+		if n := p.blockingNotices(); n != "" {
+			p.rep.Notice = n
+			return detail, fmt.Errorf("no editor on this page (%v); the page shows a blocking notice: %s", err, n)
+		}
 		return detail, fmt.Errorf("no editor on this page (%v); it may need a sign-in — open the site's editor or ask for a takeover", err)
+	}
+	if n := p.blockingNotices(); n != "" {
+		p.rep.Notice = n
+		detail += "; the page shows a notice: " + n
 	}
 	return detail, nil
 }
@@ -446,30 +533,70 @@ func uploadReflectedFor(before, after uploadState, images bool) bool {
 	return !images && after.Nodes > before.Nodes+20
 }
 
+// publishFileInputsJS ranks the page's file inputs (every same-origin
+// frame) for the files and marks them data-mc-file=<rank>: the declared
+// selector first, then inputs in the same document as the body editor (an
+// editor in an iframe uploads through its own input; an input in the outer
+// page may only make local previews), then accept match, then multiple.
+func (p *publishRun) publishFileInputsJS() string {
+	return "(() => {" + publishHelpersJS + ` const sel = ` + jsq(p.spec.UploadSelector) + `; const ext = ` + jsq(strings.ToLower(fileExt(p.spec.Files))) + `;
+  const ok = e => !e.accept || !ext || e.accept.toLowerCase().split(',').some(a => { a = a.trim(); return a === ext || a === '*/*' || (a.endsWith('/*') && /^(\.(png|jpe?g|webp|gif|avif|heic)$)/.test(ext) && a.startsWith('image')) || (a.startsWith('image/') && ('.' + a.slice(6)) === ext) || (a === 'image/jpeg' && ext === '.jpg'); });
+  let body = null; try { body = __body(` + jsq(p.spec.BodySelector) + `, null); } catch (e) {}
+  const bdoc = body ? body.ownerDocument : null;
+  const c = __all('input[type=file]').filter(e => e.id !== '__pub_picker' && ok(e));
+  let pick = null; if (sel) { const e = document.querySelector(sel); if (e && e.type === 'file') pick = e; }
+  const score = e => (e === pick ? 100 : 0) + (bdoc && e.ownerDocument === bdoc ? 10 : 0) + (e.accept ? 2 : 0) + (e.multiple ? 1 : 0);
+  c.sort((a, b) => score(b) - score(a));
+  __all('[data-mc-file]').forEach(e => e.removeAttribute('data-mc-file'));
+  c.slice(0, 4).forEach((e, i) => e.setAttribute('data-mc-file', String(i)));
+  return String(Math.min(c.length, 4));
+})()`
+}
+
+// uploadWait is how long a set file input gets to start an upload request.
+const uploadStartWait = 8 * time.Second
+
+// upload sets the files on the best file input and follows the page's
+// network until the site's upload requests completed. Local previews alone
+// are not an upload (BILI-cv53625427: the outer page's input made image
+// blocks and no request; the post went out without its pictures).
 func (p *publishRun) upload() (string, error) {
-	before := p.state()
-	inputExpr := "(() => {" + publishHelpersJS + ` const sel = ` + jsq(p.spec.UploadSelector) + `; if (sel) { const e = document.querySelector(sel); if (e && e.type === 'file') return e; } const ext = ` + jsq(strings.ToLower(fileExt(p.spec.Files))) + `; const c = __all('input[type=file]'); const ok = e => !e.accept || !ext || e.accept.toLowerCase().split(',').some(a => { a = a.trim(); return a === ext || a === '*/*' || (a.endsWith('/*') && /^(\.(png|jpe?g|webp|gif|avif|heic)$)/.test(ext) && a.startsWith('image')) || (a.startsWith('image/') && ('.' + a.slice(6)) === ext) || (a === 'image/jpeg' && ext === '.jpg'); }); return c.find(e => ok(e) && e.multiple) || c.find(ok) || null; })()`
-	how := ""
-	obj, err := p.element(inputExpr)
-	if err != nil {
+	n := 0
+	if v, err := p.eval(p.publishFileInputsJS()); err == nil {
+		n, _ = strconv.Atoi(v)
+	} else {
 		return "", err
 	}
-	if obj == "" && isImageExt(fileExt(p.spec.Files)) {
+	if n == 0 && isImageExt(fileExt(p.spec.Files)) {
 		// Editors with media tabs (video first) only mount the image input
 		// once the image tab is chosen; pick it once and look again.
 		if v, _ := p.eval(publishImageTabJS(p.spec.ImageTabTexts)); v == "clicked" {
 			time.Sleep(1500 * time.Millisecond)
-			if obj, err = p.element(inputExpr); err != nil {
-				return "", err
+			if v, err := p.eval(p.publishFileInputsJS()); err == nil {
+				n, _ = strconv.Atoi(v)
 			}
 		}
 	}
-	if obj != "" {
-		if _, err := p.send("DOM.setFileInputFiles", map[string]interface{}{"objectId": obj, "files": p.spec.Files}); err != nil {
-			return "", fmt.Errorf("setFileInputFiles: %v", err)
+	images := isImageExt(fileExt(p.spec.Files))
+	var tried []string
+	for i := 0; i < n; i++ {
+		obj, err := p.element("(() => {" + publishHelpersJS + " return __all('[data-mc-file=\"" + strconv.Itoa(i) + "\"]')[0] || null; })()")
+		if err != nil || obj == "" {
+			continue
 		}
-		how = "file input"
-	} else if p.spec.UploadTrigger != "" {
+		before := p.state()
+		t0 := time.Now()
+		if _, err := p.send("DOM.setFileInputFiles", map[string]interface{}{"objectId": obj, "files": p.spec.Files}); err != nil {
+			tried = append(tried, fmt.Sprintf("input %d: setFileInputFiles %v", i+1, err))
+			continue
+		}
+		out, done, err := p.waitUpload(t0, before, images, fmt.Sprintf("file input %d", i+1))
+		if done {
+			return out, err
+		}
+		tried = append(tried, out)
+	}
+	if p.spec.UploadTrigger != "" {
 		// A chooser opened on a detached input cannot deliver its change
 		// event; keep such inputs in the document (hidden) before the click.
 		_, _ = p.eval(publishAttachInputsJS)
@@ -477,6 +604,8 @@ func (p *publishRun) upload() (string, error) {
 			return "", err
 		}
 		defer p.d.DisarmChooser()
+		before := p.state()
+		t0 := time.Now()
 		if err := p.clickText([]string{p.spec.UploadTrigger}, false); err != nil {
 			return "", err
 		}
@@ -484,28 +613,73 @@ func (p *publishRun) upload() (string, error) {
 		if !ok || err != nil {
 			return "", fmt.Errorf("clicking %q opened no file chooser (err=%v)", p.spec.UploadTrigger, err)
 		}
-		how = "intercepted chooser"
-	} else if p.canPasteImages() {
+		out, done, err := p.waitUpload(t0, before, images, "intercepted chooser")
+		if done {
+			return out, err
+		}
+		tried = append(tried, out)
+	}
+	if p.canPasteImages() {
 		p.pasteLater = true
-		return "no image file input; will paste the images into the body editor after the text", nil
-	} else {
+		if len(tried) == 0 {
+			return "no image file input; will paste the images into the body editor after the text", nil
+		}
+		return strings.Join(tried, "; ") + "; will paste the images into the body editor after the text", nil
+	}
+	if len(tried) == 0 {
 		return "", fmt.Errorf("no matching file input; pass upload_selector or upload_trigger")
 	}
-	deadline := time.Now().Add(minDur(p.spec.StepBudget, 15*time.Second))
+	return "", fmt.Errorf("%s; nothing was submitted. Use the editor's own image/upload button as upload_trigger (its visible text) and run publish again", strings.Join(tried, "; "))
+}
+
+// waitUpload follows one file hand-over. done=false means this input did
+// nothing (the caller may try another); out then says what was seen.
+func (p *publishRun) waitUpload(t0 time.Time, before uploadState, images bool, how string) (string, bool, error) {
+	want := len(p.spec.Files)
+	deadline := time.Now().Add(maxDur(p.spec.StepBudget, 20*time.Second))
+	startBy := time.Now().Add(uploadStartWait)
 	for {
+		time.Sleep(300 * time.Millisecond)
 		after := p.state()
-		if uploadReflectedFor(before, after, isImageExt(fileExt(p.spec.Files))) {
-			return fmt.Sprintf("uploaded %d file(s) via %s; page shows it (files=%d previews=%d imgs %d->%d)", len(p.spec.Files), how, after.Files, after.Blobs+after.Bg, before.Imgs, after.Imgs), nil
+		shown := uploadReflectedFor(before, after, images)
+		if p.net == nil {
+			if shown {
+				return fmt.Sprintf("uploaded %d file(s) via %s; page shows it (files=%d previews=%d imgs %d->%d)", want, how, after.Files, after.Blobs+after.Bg, before.Imgs, after.Imgs), true, nil
+			}
+			if time.Now().After(startBy) {
+				return how + " showed nothing", false, nil
+			}
+			continue
+		}
+		started, ok, failed, open := p.net.uploadStats(t0)
+		if failed > 0 {
+			return "", true, fmt.Errorf("the site's upload via %s failed (%d of %d request(s)): %s; nothing was submitted", how, failed, started, strings.Join(p.net.failedSince(t0), "; "))
+		}
+		if started > 0 && open == 0 && ok >= minInt(want, 1) && (ok >= want || time.Now().After(startBy)) {
+			return fmt.Sprintf("uploaded %d file(s) via %s; the site stored them (%d upload request(s) answered ok; imgs %d->%d)", want, how, ok, before.Imgs, after.Imgs), true, nil
+		}
+		if started == 0 && time.Now().After(startBy) {
+			if shown {
+				// Some editors keep the files and send them with the post
+				// (multipart). The ranking already chose the input in the
+				// editor's own document, and a rich body's read-back fails
+				// on pictures that stay local; another input would only
+				// add the pictures twice.
+				return fmt.Sprintf("set %d file(s) via %s; page shows them locally and sent no upload request in %s (the site may send them with the post)", want, how, uploadStartWait), true, nil
+			}
+			return how + " showed nothing and sent no upload request", false, nil
 		}
 		if time.Now().After(deadline) {
-			if p.canPasteImages() {
-				p.pasteLater = true
-				return fmt.Sprintf("files set via %s showed nothing; will paste the images into the body editor after the text", how), nil
-			}
-			return "", fmt.Errorf("files set via %s but the page shows no file, preview or image for them; nothing was submitted. Use the editor's own image/upload button as upload_trigger (its visible text) and run publish again", how)
+			return "", true, fmt.Errorf("the site's upload via %s did not finish (%d of %d request(s) still open); nothing was submitted", how, open, started)
 		}
-		time.Sleep(300 * time.Millisecond)
 	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 const publishAttachInputsJS = `(() => { if (window.__pubAttach) return 1; window.__pubAttach = true; const keep = function () { if ((this.type || '').toLowerCase() === 'file' && !this.isConnected) { this.style.display = 'none'; document.body.appendChild(this); } }; for (const m of ['click', 'showPicker']) { const o = HTMLInputElement.prototype[m]; if (!o) continue; HTMLInputElement.prototype[m] = function () { keep.call(this); return o.apply(this, arguments); }; } return 1; })()`
@@ -529,10 +703,16 @@ func minDur(a, b time.Duration) time.Duration {
 }
 
 // focusAndClear focuses the element with a real click at its centre, then
-// selects everything in it with a real Ctrl+A and deletes it.
+// selects everything in it with a real Ctrl+A and deletes it. A field
+// without a box (zero-size or hidden title proxies: "Could not compute box
+// model") is focused and selected from script instead; the typed keys go
+// to the focused element either way.
 func (p *publishRun) focusAndClear(obj string) error {
 	if err := p.clickObject(obj); err != nil {
-		return err
+		if _, ferr := p.call(obj, publishFocusSelectFn); ferr != nil {
+			return fmt.Errorf("%v; script focus failed too: %v", err, ferr)
+		}
+		return p.key("Backspace", "Backspace", 8, 0, nil)
 	}
 	_, _ = p.call(obj, `function(){ this.focus(); }`)
 	if err := p.key("a", "KeyA", 65, 2, []string{"selectAll"}); err != nil {
@@ -540,6 +720,15 @@ func (p *publishRun) focusAndClear(obj string) error {
 	}
 	return p.key("Backspace", "Backspace", 8, 0, nil)
 }
+
+// publishFocusSelectFn focuses an element from script and selects its
+// whole content (value or editable contents).
+const publishFocusSelectFn = `function(){ try { this.scrollIntoView({block: 'center'}); } catch (e) {} this.focus(); if (this.select && (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA')) { this.select(); return 'value'; } const d = this.ownerDocument; const s = d.getSelection(); const r = d.createRange(); r.selectNodeContents(this); s.removeAllRanges(); s.addRange(r); return 'range'; }`
+
+// publishSetValueFn writes a value the way a framework-bound field accepts
+// from script: the native value setter plus input/change events, or an
+// editing command in a contenteditable.
+const publishSetValueFn = `function(v){ if (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA') { const proto = this.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype; const set = Object.getOwnPropertyDescriptor(proto, 'value').set; set.call(this, v); this.dispatchEvent(new Event('input', {bubbles: true})); this.dispatchEvent(new Event('change', {bubbles: true})); return 'setter'; } this.focus(); const d = this.ownerDocument; const s = d.getSelection(); const r = d.createRange(); r.selectNodeContents(this); s.removeAllRanges(); s.addRange(r); d.execCommand('insertText', false, v); return 'command'; }`
 
 func (p *publishRun) key(key, code string, vk, mods int, commands []string) error {
 	down := map[string]interface{}{"type": "rawKeyDown", "key": key, "code": code, "windowsVirtualKeyCode": vk, "modifiers": mods}
@@ -613,19 +802,41 @@ func (p *publishRun) fill(name, expr, text string, multiline bool) (string, erro
 	if obj == "" {
 		return "", fmt.Errorf("no %s field found; pass %s_selector", name, name)
 	}
+	// Same element throughout; only the input method changes: trusted
+	// typing twice, then the script setter (fields that ignore synthetic
+	// keys while hidden or zero-size).
 	var got string
-	for attempt := 0; attempt < 2; attempt++ {
-		if err := p.focusAndClear(obj); err != nil {
-			return "", err
-		}
-		if err := p.typeText(text, multiline); err != nil {
-			return "", err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		how := "typed"
+		if attempt < 2 {
+			if err := p.focusAndClear(obj); err != nil {
+				lastErr = err
+				continue
+			}
+			if err := p.typeText(text, multiline); err != nil {
+				lastErr = err
+				continue
+			}
+		} else {
+			v := text
+			if !multiline {
+				v = strings.Join(strings.Fields(strings.ReplaceAll(text, "\n", " ")), " ")
+			}
+			if _, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishSetValueFn, "arguments": []map[string]interface{}{{"value": v}}, "returnByValue": true}); err != nil {
+				lastErr = err
+				continue
+			}
+			how = "set from script"
 		}
 		time.Sleep(200 * time.Millisecond)
 		got, _ = p.call(obj, readValueFn)
 		if holds(got, text) {
-			return fmt.Sprintf("%s holds %d chars, starts %q", name, len([]rune(got)), clipRunes(got, 24)), nil
+			return fmt.Sprintf("%s holds %d chars (%s), starts %q", name, len([]rune(got)), how, clipRunes(got, 24)), nil
 		}
+	}
+	if lastErr != nil && got == "" {
+		return "", fmt.Errorf("%s could not be filled: %v", name, lastErr)
 	}
 	return "", fmt.Errorf("%s read back %d chars (%q) instead of the text", name, len([]rune(got)), clipRunes(got, 24))
 }
@@ -700,29 +911,80 @@ func (p *publishRun) markdownText() string {
 	return strings.TrimSpace(imgAnchorRe.ReplaceAllString(p.spec.Body, ""))
 }
 
-// fillMarkdown writes the Markdown source in one insert: a code editor
-// continues lists and closes brackets on typed keys, which would double them.
+// fillMarkdown writes the Markdown source into the markdown editor, first
+// through the editor's own API (CodeMirror 5/6 hold the document; no key
+// handling runs), else one trusted insert (typed keys would continue lists
+// and quotes), else a text paste. A read-back that holds the text but
+// gained quote lines (a "> " carried onto every following line) or lost
+// picture links counts as a failed method. The editor stays the same.
 func (p *publishRun) fillMarkdown() (string, error) {
 	text := p.markdownText()
 	obj, err := p.element(p.bodyExpr())
 	if err != nil || obj == "" {
 		return "", fmt.Errorf("no body field found; pass body_selector")
 	}
-	var got string
-	for attempt := 0; attempt < 2; attempt++ {
-		if err := p.focusAndClear(obj); err != nil {
-			return "", err
-		}
-		if _, err := p.send("Input.insertText", map[string]interface{}{"text": text}); err != nil {
-			return "", err
+	var got, why string
+	for _, how := range []string{"api", "insert", "paste"} {
+		switch how {
+		case "api":
+			v, _ := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishMarkdownAPIFn, "arguments": []map[string]interface{}{{"value": text}}, "returnByValue": true})
+			if !strings.Contains(string(v), "set") {
+				continue
+			}
+		case "insert":
+			if err := p.focusAndClear(obj); err != nil {
+				why = err.Error()
+				continue
+			}
+			if _, err := p.send("Input.insertText", map[string]interface{}{"text": text}); err != nil {
+				why = err.Error()
+				continue
+			}
+		case "paste":
+			if err := p.focusAndClear(obj); err != nil {
+				why = err.Error()
+				continue
+			}
+			_ = p.pasteHTML(obj, "", text)
 		}
 		time.Sleep(300 * time.Millisecond)
 		got, _ = p.call(obj, readValueFn)
-		if holds(got, text) {
-			return fmt.Sprintf("markdown body holds %d chars", len([]rune(got))), nil
+		if !holds(got, text) {
+			why = fmt.Sprintf("read back %d chars (%q)", len([]rune(got)), clipRunes(got, 24))
+			continue
 		}
+		if bad := markdownDrift(text, got); bad != "" {
+			why = bad
+			continue
+		}
+		return fmt.Sprintf("markdown body holds %d chars (%s)", len([]rune(got)), how), nil
 	}
-	return "", fmt.Errorf("markdown body read back %d chars (%q) instead of the text", len([]rune(got)), clipRunes(got, 24))
+	return "", fmt.Errorf("markdown body: %s", why)
+}
+
+// publishMarkdownAPIFn sets a CodeMirror document through its API.
+const publishMarkdownAPIFn = `function(v){ let e = this; for (let i = 0; e && i < 4; i++, e = e.parentElement) { if (e.CodeMirror && e.CodeMirror.setValue) { e.CodeMirror.setValue(v); return 'set5'; } if (e.cmView && e.cmView.view) { const view = e.cmView.view; view.dispatch({changes: {from: 0, to: view.state.doc.length, insert: v}}); return 'set6'; } } return 'none'; }`
+
+// markdownDrift names what an editor added or dropped while taking the
+// source: more quote lines, or fewer picture links than written.
+func markdownDrift(want, got string) string {
+	q := func(s string) int {
+		n := 0
+		for _, ln := range strings.Split(s, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(ln), ">") {
+				n++
+			}
+		}
+		return n
+	}
+	if gq, wq := q(got), q(want); gq > wq+1 {
+		return fmt.Sprintf("the editor turned %d line(s) into quotes (the text has %d)", gq, wq)
+	}
+	im := regexp.MustCompile(`!\[[^\]]*\]\(`)
+	if g, w := len(im.FindAllString(got, -1)), len(im.FindAllString(want, -1)); g < w {
+		return fmt.Sprintf("the editor kept %d of %d picture link(s)", g, w)
+	}
+	return ""
 }
 
 // bodyWant is the text the body editor must hold.
@@ -794,6 +1056,13 @@ func (p *publishRun) readback() (string, error) {
 			return "", fmt.Errorf("body no longer holds the text (%d chars)", len([]rune(got)))
 		}
 		parts = append(parts, fmt.Sprintf("body %d chars", len([]rune(got))))
+		if want := p.wantImages(); want > 0 {
+			if n := p.imgCount(obj); n < want {
+				return "", fmt.Errorf("the body shows %d of the %d planned picture(s): pictures were dropped; nothing was submitted", n, want)
+			} else {
+				parts = append(parts, fmt.Sprintf("%d/%d picture(s)", n, want))
+			}
+		}
 		if p.richFilled {
 			sum, err := p.checkStructure(obj, "editor")
 			if err != nil {
@@ -806,6 +1075,20 @@ func (p *publishRun) readback() (string, error) {
 		}
 	}
 	return strings.Join(parts, ", ") + " verified", nil
+}
+
+// wantImages is how many pictures the body must show before the submit:
+// every file that went into the body (anchors or paste), and never fewer
+// than the plan's MinImages. Gallery pictures are checked at upload.
+func (p *publishRun) wantImages() int {
+	want := 0
+	if !p.gallery && (p.imagesPlaced > 0 || p.pasteLater) {
+		want = len(p.spec.Files)
+	}
+	if p.spec.MinImages > want && !p.gallery {
+		want = p.spec.MinImages
+	}
+	return want
 }
 
 // domNode is the part of a CDP DOM node the text search needs.
@@ -1058,14 +1341,21 @@ func (p *publishRun) submit() (string, error) {
 	// Toasts ("published") can live for a second or two, shorter than one
 	// poll that also waits on hasEditor: record text added after the click.
 	_, _ = p.eval(publishToastWatchJS)
+	_, _ = p.evalWithin(publishPanelMarkJS, 3*time.Second)
 	p.submitClicked.Store(true)
 	clickedAt := time.Now()
 	p.clickedAt = clickedAt
 	if err := p.clickSubmit(); err != nil {
+		if strings.Contains(err.Error(), "timeout") {
+			// The page froze inside the click handler: the click went
+			// in and its outcome is unknown, so it may not be repeated.
+			p.clickHung = true
+		}
 		return "", err
 	}
 	confirmed := false
-	reclicks := 0
+	reclicks, panels := 0, 0
+	panelNote := ""
 	lastClick := time.Now()
 	deadline := time.Now().Add(2*p.spec.StepBudget - 5*time.Second)
 	for time.Now().Before(deadline) {
@@ -1078,6 +1368,7 @@ func (p *publishRun) submit() (string, error) {
 			}
 		}
 		if m := p.toastSays(); m != "" {
+			p.toastSeen = m
 			return "page says " + m, nil
 		}
 		url := p.pageURL()
@@ -1097,6 +1388,7 @@ func (p *publishRun) submit() (string, error) {
 		}
 		txt, _ := p.evalWithin("document.body ? document.body.innerText.slice(0, 20000) : ''", 3*time.Second)
 		if m := saysAny(newText(before, txt), p.spec.SuccessTexts); m != "" {
+			p.toastSeen = m
 			return "page says " + m, nil
 		}
 		if !confirmed && len(p.spec.ConfirmTexts) > 0 {
@@ -1105,11 +1397,23 @@ func (p *publishRun) submit() (string, error) {
 				lastClick = time.Now()
 			}
 		}
-		// Many sites answer the first click with a settings panel whose
-		// own button carries the same text; press the newest one again.
-		// A click that already sent a write was taken: pressing again
-		// would post twice, so only a click with no write is repeated.
-		if reclicks < 2 && time.Since(lastClick) > 3*time.Second && (p.net == nil || !p.net.wroteSince(clickedAt)) {
+		// Many sites answer the first click with a settings panel holding
+		// required fields and its own publish button: fill and confirm it.
+		if panels < 3 && time.Since(lastClick) > 1500*time.Millisecond {
+			if d, ok := p.handlePanel(); d != "" {
+				panelNote = d
+				if ok {
+					panels++
+					p.panelConfirmed = true
+					lastClick = time.Now()
+					continue
+				}
+			}
+		}
+		// A click that sent no write and opened no panel may have hit a
+		// button that was not ready: press it again. A click that sent a
+		// write was taken: pressing again could post twice.
+		if reclicks < 2 && !p.panelConfirmed && panelNote == "" && time.Since(lastClick) > 3*time.Second && (p.net == nil || (len(p.net.submitWritesSince(clickedAt)) == 0 && p.net.draftWritesSince(clickedAt) == 0)) {
 			reclicks++
 			lastClick = time.Now()
 			_ = p.clickSubmit()
@@ -1124,6 +1428,12 @@ func (p *publishRun) submit() (string, error) {
 	}
 	if closed != "" {
 		state = "before the click: " + closed + "; " + state
+	}
+	if panelNote != "" {
+		state = panelNote + "; " + state
+	}
+	if n := p.blockingNotices(); n != "" {
+		state = "the page shows a blocking notice: " + n + "; " + state
 	}
 	if said := newLines(before, after); said != "" {
 		return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published; after the click it showed: %q; %s", clipRunes(said, 200), state)
@@ -1196,30 +1506,127 @@ func (p *publishRun) navigate(url string) error {
 	return fmt.Errorf("verify page did not load")
 }
 
+// verify finds evidence that the post is published, in this order: an id
+// or link in the answer to the submission write, the page the submit
+// landed on being the post (a new URL without the editor, or the profile's
+// success_url), the account's post list API (verify_api), the account's
+// post list page (verify_url). A page that still shows the editor is never
+// the post. Without any of them the run is not called published.
 func (p *publishRun) verify() (string, error) {
 	key := clipRunes(p.spec.Title, 12)
 	if key == "" {
 		key = clipRunes(p.spec.Body, 12)
 	}
-	// The page the submit landed on is the post itself on many sites
-	// (/p/<id>); when it shows the title and is not an editor, that is the
-	// result. Otherwise open verify_url, where the post must be listed.
-	if out, err := p.checkResult(key, 6*time.Second, false); err == nil {
-		if ed, _ := p.hasEditor(3 * time.Second); !ed || p.spec.VerifyURL == "" {
+	p.net.settleAnswers(p.clickedAt, 5*time.Second)
+	if id, link := p.net.evidenceSince(p.clickedAt); id != "" || link != "" {
+		p.rep.PostID = id
+		if link != "" {
+			p.rep.ResultURL = strings.SplitN(link, "#", 2)[0]
+			if strings.HasPrefix(p.rep.ResultURL, "//") {
+				p.rep.ResultURL = "https:" + p.rep.ResultURL
+			}
+		}
+		p.rep.Evidence = "response"
+		return fmt.Sprintf("the site answered the submit with post id %q %s", id, link), nil
+	}
+	if u := p.pageURL(); u != "" {
+		success := false
+		if p.spec.SuccessURL != "" {
+			if re, err := regexp.Compile(p.spec.SuccessURL); err == nil && re.MatchString(u) {
+				success = true
+			}
+		}
+		ed, err := p.hasEditor(3 * time.Second)
+		if success || (err == nil && !ed && !p.seen[u]) {
+			if out, cerr := p.checkResult(key, 6*time.Second, false); cerr == nil {
+				p.rep.Evidence = "redirect"
+				return out, nil
+			}
+		}
+	}
+	if p.spec.VerifyAPI != "" {
+		out, err := p.checkAPI(key)
+		if err == nil {
+			p.rep.Evidence = "list_api"
 			return out, nil
+		}
+		if p.spec.VerifyURL == "" {
+			return "", err
 		}
 	}
 	if p.spec.VerifyURL == "" {
-		out, err := p.checkResult(key, minDur(p.spec.StepBudget, 20*time.Second), false)
-		if err != nil && publishSubmittedURL.MatchString(err.Error()) {
-			return "", fmt.Errorf("%v. The site confirmed the submit in its URL, so the post IS submitted: do NOT publish again. Read it back once from the account's own post list (pass verify_url next time) and reply with its link; a post still under review may not open publicly yet", err)
+		u := p.pageURL()
+		if publishSubmittedURL.MatchString(u) {
+			return "", fmt.Errorf("the site confirmed the submit in its URL (%s), so the post IS submitted: do NOT publish again. It is not confirmed yet: read it back once from the account's own post list (the site profile's verify_url) and reply with its link; a post still under review may not open publicly yet", u)
 		}
-		return out, err
+		return "", fmt.Errorf("no evidence of the post: the site's answer carried no id, the page %s did not become the post, and no post list (verify_url / verify_api) is known for this site", u)
 	}
 	if err := p.navigate(p.spec.VerifyURL); err != nil {
 		return "", err
 	}
-	return p.checkResult(key, minDur(p.spec.StepBudget, 25*time.Second), true)
+	out, err := p.checkResult(key, minDur(p.spec.StepBudget, 25*time.Second), true)
+	if err == nil {
+		p.rep.Evidence = "list"
+	}
+	return out, err
+}
+
+// publishAPIFindJS fetches a JSON list with the page's session and finds
+// the object whose string fields hold the title key; it returns the id and
+// link fields of that object.
+const publishAPIFindJS = `(async (url, key) => {
+  const n = s => String(s || '').replace(/\s+/g, '');
+  let j;
+  try { const r = await fetch(url, {credentials: 'include'}); j = await r.json(); } catch (e) { return JSON.stringify({err: String(e).slice(0, 120)}); }
+  const idKeys = ['article_id','articleId','post_id','postId','note_id','noteId','aid','cvid','id'];
+  const urlKeys = ['url','link','article_url','share_url','post_url'];
+  let hit = null;
+  const walk = (x, d) => {
+    if (hit || !x || typeof x !== 'object' || d > 8) return;
+    if (!Array.isArray(x)) {
+      for (const v of Object.values(x)) if (typeof v === 'string' && n(v).includes(key) && v.length < 400) { hit = x; return; }
+    }
+    for (const v of Object.values(x)) walk(v, d + 1);
+  };
+  walk(j, 0);
+  if (!hit) return JSON.stringify({found: false});
+  let id = '', link = '';
+  for (const k of idKeys) if (!id && (typeof hit[k] === 'string' || typeof hit[k] === 'number') && String(hit[k]).length >= 3) id = String(hit[k]);
+  for (const k of urlKeys) if (!link && typeof hit[k] === 'string' && /^(https?:)?\/\//.test(hit[k])) link = hit[k];
+  return JSON.stringify({found: true, id, link});
+})`
+
+// checkAPI reads the profile's post list API for the title.
+func (p *publishRun) checkAPI(key string) (string, error) {
+	deadline := time.Now().Add(minDur(p.spec.StepBudget, 25*time.Second))
+	for {
+		out, err := p.evalWithin(publishAPIFindJS+"("+jsq(p.spec.VerifyAPI)+", "+jsq(normText(key))+")", 10*time.Second)
+		var o struct {
+			Found bool   `json:"found"`
+			ID    string `json:"id"`
+			Link  string `json:"link"`
+			Err   string `json:"err"`
+		}
+		_ = json.Unmarshal([]byte(out), &o)
+		if err == nil && o.Found {
+			p.rep.PostID = o.ID
+			if o.Link != "" {
+				if strings.HasPrefix(o.Link, "//") {
+					o.Link = "https:" + o.Link
+				}
+				p.rep.ResultURL = o.Link
+			}
+			return fmt.Sprintf("post list API lists %q (id %s)", key, o.ID), nil
+		}
+		if time.Now().After(deadline) {
+			why := o.Err
+			if err != nil {
+				why = err.Error()
+			}
+			return "", fmt.Errorf("post list API %s does not list %q %s", p.spec.VerifyAPI, key, why)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // A landing URL that itself says the submit went through (?published=true).
@@ -1312,27 +1719,37 @@ func (p *publishRun) pasteImages() (string, error) {
 	if _, err := p.loadPicker(); err != nil {
 		return "", err
 	}
+	var b int
+	fmt.Sscan(before, &b)
+	t0 := time.Now()
 	pasted := 0
+	var fails []string
 	for k := range p.spec.Files {
-		if err := p.pasteFile(obj, k); err != nil {
-			return "", fmt.Errorf("pasted %d of %d: %v; nothing was submitted", pasted, len(p.spec.Files), err)
+		// One retry per picture: an editor busy with the previous upload
+		// can drop a paste.
+		err := p.pasteFile(obj, k)
+		if err != nil {
+			time.Sleep(time.Second)
+			err = p.pasteFile(obj, k)
+		}
+		if err != nil {
+			fails = append(fails, err.Error())
+			continue
 		}
 		pasted++
 	}
-	deadline := time.Now().Add(minDur(p.spec.StepBudget, 20*time.Second))
-	for {
-		after, _ := p.call(obj, count)
-		var a, b int
-		fmt.Sscan(after, &a)
-		fmt.Sscan(before, &b)
-		if a > b {
-			return fmt.Sprintf("pasted %d image(s) into the body; editor imgs %d->%d", pasted, b, a), nil
-		}
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("pasted %d image(s) but the editor shows no new image (imgs %d); nothing was submitted", pasted, a)
-		}
-		time.Sleep(500 * time.Millisecond)
+	a := p.imgCount(obj)
+	if a-b < len(p.spec.Files) {
+		return "", fmt.Errorf("pasted %d picture(s) but the editor shows %d new of %d (%s); nothing was submitted", pasted, a-b, len(p.spec.Files), strings.Join(fails, "; "))
 	}
+	if p.net != nil {
+		started, ok, failed, _ := p.net.uploadStats(t0)
+		if failed > 0 {
+			return "", fmt.Errorf("pasted %d picture(s) but the site's upload failed (%s); nothing was submitted", pasted, strings.Join(p.net.failedSince(t0), "; "))
+		}
+		return fmt.Sprintf("pasted %d image(s) into the body; editor imgs %d->%d; upload requests %d (ok %d)", pasted, b, a, started, ok), nil
+	}
+	return fmt.Sprintf("pasted %d image(s) into the body; editor imgs %d->%d", pasted, b, a), nil
 }
 
 // newLines is the text lines that appear in after but not in before.

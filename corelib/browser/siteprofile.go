@@ -33,6 +33,13 @@ type SiteProfile struct {
 	EditorURL string `json:"editor_url"`
 	// VerifyURL lists the account's posts (where a new post must appear).
 	VerifyURL string `json:"verify_url"`
+	// VerifyAPI is a JSON endpoint listing the account's posts, read with
+	// the page's session; the post's title found in it is publish evidence.
+	VerifyAPI string `json:"verify_api,omitempty"`
+	// Tags and Category fill a publish settings panel's required fields
+	// when the request names none.
+	Tags     []string `json:"tags,omitempty"`
+	Category string   `json:"category,omitempty"`
 	// EditURL opens a published post for editing; {url} is the post URL.
 	EditURL string `json:"edit_url"`
 	// PostURL builds a post's public URL from an id the list reports ({id}).
@@ -241,6 +248,9 @@ func (p *SiteProfile) Apply(s *PublishSpec) {
 	}
 	str(&s.EditorURL, p.EditorURL)
 	str(&s.VerifyURL, p.VerifyURL)
+	str(&s.VerifyAPI, p.VerifyAPI)
+	str(&s.Category, p.Category)
+	list(&s.Tags, p.Tags)
 	str(&s.EditURL, p.EditURL)
 	str(&s.TitleSelector, p.TitleSelector)
 	str(&s.BodySelector, p.BodySelector)

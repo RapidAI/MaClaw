@@ -15,16 +15,67 @@ const browserPageFlagsCollectJS = `
   const fullText = pageText();
   const excerptLimit = 1200;
   const lower = fullText.toLowerCase();
-  const widgetIframe = anyIframeSrc('recaptcha') || anyIframeSrc('hcaptcha') || anyIframeSrc('funcaptcha');
+  // A captcha counts only with visible, interactive challenge evidence: a
+  // sized challenge frame, a slider prompt, or a visible captcha box holding
+  // something to act on. A class name alone is not one: Bilibili puts
+  // "risk-captcha-adapt" on <body> of every creator page.
+  function __capVisible(el, minW, minH) {
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width < minW || r.height < minH) return false;
+      const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+        const st = view.getComputedStyle(n);
+        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity || 1) < 0.05) return false;
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+  function __capFrame(re) {
+    function scan(d) {
+      for (const f of queryIframes(d)) {
+        try {
+          const src = String(f.src || '').toLowerCase();
+          if (re.test(src) && !/size=invisible/.test(src) && __capVisible(f, 60, 40)) return true;
+          if (f.contentDocument && scan(f.contentDocument)) return true;
+        } catch (e) {}
+      }
+      return false;
+    }
+    return scan(document);
+  }
+  function __capBox() {
+    function scan(d) {
+      let els = [];
+      try { els = queryAllDeep(d, '[class*="captcha" i], [id*="captcha" i]'); } catch (e) {}
+      for (const el of els) {
+        const tag = String(el.tagName || '').toLowerCase();
+        if (tag === 'html' || tag === 'body') continue;
+        if (!__capVisible(el, 100, 40)) continue;
+        let act = null;
+        try { act = el.matches('iframe,canvas') ? el : el.querySelector('iframe,canvas,img,input:not([type=hidden]),[role=slider],[draggable=true]'); } catch (e) {}
+        if (act && __capVisible(act, 20, 16)) return true;
+      }
+      for (const f of queryIframes(d)) {
+        try { if (f.contentDocument && scan(f.contentDocument)) return true; } catch (e) {}
+      }
+      return false;
+    }
+    return scan(document);
+  }
+  const widgetIframe = __capFrame(/recaptcha|hcaptcha|funcaptcha/);
   const slider = /拖动滑块/.test(fullText);
-  const classCaptcha = anySelector('[class*="captcha"], [id*="captcha"]');
-  const genericCaptchaIframe = anyIframeSrc('captcha');
-  const captchaWidget = widgetIframe || slider || (classCaptcha && genericCaptchaIframe);
+  const classCaptcha = __capBox();
+  const genericCaptchaIframe = __capFrame(/captcha/);
+  const captchaWidget = widgetIframe || slider || classCaptcha;
   const qrLogin = /扫码登录|扫描二维码|扫一扫登录|请用.{0,8}扫码|scan (the )?qr code|qr code to (log in|sign in)/i.test(fullText);
   const signedInChrome = /退出登录|已登录/.test(fullText);
   const phoneEntry = anySelector('input[type=tel], input[autocomplete="tel"], input[name*="phone" i], input[name*="mobile" i], input[id*="phone" i], input[id*="mobile" i]');
   const typeableLogin = (anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower)) || (phoneEntry && /登录|login|sign in|手机/.test(lower));
+  let blockingNotice = '';
+  try { blockingNotice = ` + blockingNoticeFnJS + `().join(' | '); } catch (e) {}
   const pageFlags = {
+    blocking_notice: blockingNotice,
     captcha_widget: captchaWidget,
     captcha: /captcha|verify you are human|unusual traffic|安全验证|人机验证/.test(lower) || genericCaptchaIframe || classCaptcha,
     login_wall: !signedInChrome && typeableLogin,
@@ -146,7 +197,10 @@ func captchaAskUserRequest(ctx string) *agent.AskUserRequest {
 	}
 }
 
-func captchaWidgetFromSignals(iframeSrcs []string, pageText string, classOrIDCaptcha bool) bool {
+// captchaWidgetFromSignals mirrors the page script. iframeSrcs are visible,
+// sized frames only; visibleChallenge is a visible captcha box with something
+// to act on (a class or id substring alone never sets it).
+func captchaWidgetFromSignals(iframeSrcs []string, pageText string, visibleChallenge bool) bool {
 	slider := strings.Contains(pageText, "拖动滑块")
 	widgetIframe := false
 	genericCaptchaIframe := false
@@ -159,10 +213,8 @@ func captchaWidgetFromSignals(iframeSrcs []string, pageText string, classOrIDCap
 			genericCaptchaIframe = true
 		}
 	}
-	if widgetIframe || slider {
-		return true
-	}
-	return classOrIDCaptcha && genericCaptchaIframe
+	_ = genericCaptchaIframe // a bare captcha frame is the soft "captcha" flag only
+	return widgetIframe || slider || visibleChallenge
 }
 
 // paymentConfirmFromSignals is true only for a card field or an external
