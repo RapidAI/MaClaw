@@ -161,6 +161,7 @@ var desktopReportStateKinds = map[string]string{
 	"blocked":       "blocked",
 	"failed":        "blocked",
 	"waiting_human": "question",
+	"needs_login":   "blocked",
 }
 
 // desktopRemoteInbox is set by tests; production posts to Hub.

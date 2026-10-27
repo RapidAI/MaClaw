@@ -26,6 +26,9 @@ const assignmentHopLimit = 32
 var reportStates = map[string]string{
 	"progress": "progress", "completed": "done", "blocked": "blocked",
 	"waiting_human": "question", "failed": "blocked",
+	// needs_login: the site asks the person to sign in; the bot stops and
+	// never types a password itself.
+	"needs_login": "blocked",
 }
 
 func assignmentsEnabled() bool {
@@ -90,17 +93,20 @@ func (p noteProtocol) apply(n *BotCrossNote) {
 
 // Assignment is one delegate note read as a work item.
 type Assignment struct {
-	ID           string   `json:"id"`
-	OwnerBot     string   `json:"owner_bot"`
-	TargetBot    string   `json:"target_bot"`
-	Task         string   `json:"task"`
-	State        string   `json:"state"` // queued, running, held, waiting_human, blocked, completed, failed, accepted, returned
-	RunID        string   `json:"run_id,omitempty"`
-	ParentID     string   `json:"parent_id,omitempty"`
-	RootID       string   `json:"root_id,omitempty"`
-	CreatedAt    string   `json:"created_at"`
-	LastReport   string   `json:"last_report,omitempty"`
-	Artifacts    []string `json:"artifacts,omitempty"`
+	ID         string   `json:"id"`
+	OwnerBot   string   `json:"owner_bot"`
+	TargetBot  string   `json:"target_bot"`
+	Task       string   `json:"task"`
+	State      string   `json:"state"` // queued, running, held, waiting_human, blocked, completed, failed, accepted, returned
+	RunID      string   `json:"run_id,omitempty"`
+	ParentID   string   `json:"parent_id,omitempty"`
+	RootID     string   `json:"root_id,omitempty"`
+	CreatedAt  string   `json:"created_at"`
+	LastReport string   `json:"last_report,omitempty"`
+	Artifacts  []string `json:"artifacts,omitempty"`
+	// ArtifactRefs name files stored on Hub ("file:<sha256>/<name>"), so a
+	// reviewer or the main bot fetches the same bytes the worker shared.
+	ArtifactRefs []string `json:"artifact_refs,omitempty"`
 	ResultNoteID string   `json:"result_note_id,omitempty"`
 	OpenQuestion string   `json:"open_question,omitempty"`
 	Review       string   `json:"review,omitempty"`
@@ -134,6 +140,9 @@ func assignmentsOf(notes []BotCrossNote, userID string) []Assignment {
 			}
 			a.LastReport = n.Text
 			a.Artifacts = append(a.Artifacts, n.Artifacts...)
+			for _, f := range n.Files {
+				a.ArtifactRefs = append(a.ArtifactRefs, "file:"+f.SHA+"/"+f.Name)
+			}
 			st := n.State
 			if st == "" {
 				switch n.Topic {
@@ -157,7 +166,7 @@ func assignmentsOf(notes []BotCrossNote, userID string) []Assignment {
 				}
 			}
 			switch st {
-			case "completed", "failed", "blocked", "waiting_human":
+			case "completed", "failed", "blocked", "waiting_human", "needs_login":
 				a.State = st
 				if st == "completed" || st == "failed" {
 					a.ResultNoteID = n.ID
@@ -168,6 +177,8 @@ func assignmentsOf(notes []BotCrossNote, userID string) []Assignment {
 		}
 		if a.Review != "" {
 			a.State = a.Review
+		} else if a.State == "completed" && a.Reviewer != "" && a.Reviewer != a.OwnerBot {
+			a.State = "awaiting_review"
 		}
 		out = append(out, a)
 	}
@@ -277,6 +288,11 @@ func (s *Service) ReviewAssignment(ctx context.Context, tenantID, userID, review
 		s.mu.Unlock()
 		return Assignment{}, err
 	}
+	primary := primaryBotID(rec, userID)
+	if reviewer != primary {
+		_, _, _ = s.reportLocked(&rec, userID, reviewer, BotCrossNote{Target: primary, Topic: "info", Text: "审核 / review " + verdict + " " + d.ID + ": " + firstNonEmptyString(strings.TrimSpace(note), "-"), ReplyTo: d.ID, Key: "reviewed-" + d.ID + "-" + verdict})
+		_ = s.save(ctx, tenantID, rec)
+	}
 	s.mu.Unlock()
 	if verdict == "returned" {
 		order := "上次的结果被退回 / returned: " + firstNonEmptyString(strings.TrimSpace(note), "please redo") + "\n原任务 / task: " + task
@@ -285,14 +301,4 @@ func (s *Service) ReviewAssignment(ctx context.Context, tenantID, userID, review
 		}
 	}
 	return a, nil
-}
-
-// assignmentReviewer picks the peer reviewer of a new delegate: the one the
-// main bot named, else (S4) one chosen by peer-review policy. "" is none.
-var assignmentReviewer = func(rec record, userID, from, target, task, named string) string {
-	named = resolveParticipant(rec, userID, strings.TrimSpace(named))
-	if named != "" && named != target && botOwned(rec.Bots, userID, named) {
-		return named
-	}
-	return ""
 }

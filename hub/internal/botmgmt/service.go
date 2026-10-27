@@ -97,10 +97,12 @@ type record struct {
 	LocalBots []LocalBot `json:"local_bots,omitempty"`
 	// Styles is each bot's owner-written character, memory and prompt
 	// part overrides with their history, keyed by bot id (bot_style.go).
-	Styles  map[string]*botStyleRecord `json:"styles,omitempty"`
-	Grants  []Grant                    `json:"grants,omitempty"`
-	Desktop *desktopStateRecord        `json:"desktop,omitempty"`
-	LLM     llmSettings                `json:"llm,omitempty"`
+	Styles map[string]*botStyleRecord `json:"styles,omitempty"`
+	// Rooms are group conversations between the person and their bots.
+	Rooms   map[string]*BotRoom `json:"rooms,omitempty"`
+	Grants  []Grant             `json:"grants,omitempty"`
+	Desktop *desktopStateRecord `json:"desktop,omitempty"`
+	LLM     llmSettings         `json:"llm,omitempty"`
 	// SystemFreeCreditsUsed is the credits each bot owner has spent on
 	// system-free, keyed by hub user id. It is independent of new-user benefits.
 	SystemFreeCreditsUsed map[string]float64 `json:"system_free_credits_used,omitempty"`

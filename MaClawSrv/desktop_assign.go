@@ -24,7 +24,7 @@ func desktopAssignmentToolHint() string {
 	if !desktopAssignmentsOn() {
 		return ""
 	}
-	return " action=report with state (progress, completed, blocked, failed, waiting_human), message, reply_to=<assignment id> is how a teammate reports; with expects_reply=true end the turn after it. action=list_assignments shows who is doing what. The main bot (or the named reviewer) checks a result and calls action=accept_result or action=return_result with assignment_id and note."
+	return " action=report with state (progress, completed, blocked, failed, waiting_human), message, reply_to=<assignment id> is how a teammate reports; with expects_reply=true end the turn after it. action=list_assignments shows who is doing what. The main bot (or the named reviewer) checks a result and calls action=accept_result or action=return_result with assignment_id and note. If a site asks the person to sign in, report state=needs_login and stop; never type a password." + desktopSayHint()
 }
 
 // desktopRemoteAssign is set by tests; production posts to Hub.
@@ -101,4 +101,69 @@ func desktopAssignmentAction(ctx context.Context, request agentruntime.TurnReque
 	}
 	raw, _ := json.Marshal(map[string]any{"id": out["id"], "state": out["state"]})
 	return "REVIEWED " + string(raw), nil
+}
+
+func desktopSayOn() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_BOT_SAY"))) {
+	case "off", "0", "false", "no":
+		return false
+	}
+	return true
+}
+
+func desktopSayHint() string {
+	if !desktopSayOn() {
+		return ""
+	}
+	return " action=say with message (and room for a group room) speaks to the person directly; say only what is new to them (Hub refuses a repeat of what another bot already said)."
+}
+
+func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[string]any) (string, error) {
+	if !desktopSayOn() {
+		return "", fmt.Errorf("say is turned off on this server")
+	}
+	text := strings.TrimSpace(firstNonEmptyString(desktopArg(args, "message"), desktopArg(args, "text")))
+	if text == "" {
+		return "", fmt.Errorf("say needs message")
+	}
+	inst, ok := turnInstance(request)
+	if !ok {
+		return "", fmt.Errorf("say: this run has no bot instance")
+	}
+	user := strings.TrimSpace(inst.Metadata["hub_user_id"])
+	if user == "" {
+		return "", fmt.Errorf("say: this bot is not a Hub bot")
+	}
+	runKey := inst.ID + "|" + firstNonEmptyString(strings.TrimSpace(request.Scope.RunID), strings.TrimSpace(request.Scope.SessionID))
+	room := strings.TrimSpace(desktopArg(args, "room"))
+	body := map[string]any{
+		"tenant_id":   strings.TrimSpace(inst.Metadata["hub_tenant_id"]),
+		"user_id":     user,
+		"instance_id": inst.ID,
+		"room":        room,
+		"text":        text,
+		"key":         desktopMessageKey(runKey, "say", room, text),
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var out map[string]any
+	var err error
+	if desktopRemoteAssign != nil {
+		out, err = desktopRemoteAssign(cctx, "/api/v1/desktop-services/say", body)
+	} else if client := desktopHubClientFromEnv(); client != nil {
+		out = map[string]any{}
+		err = client.post(cctx, "/api/v1/desktop-services/say", body, &out)
+	} else {
+		err = fmt.Errorf("Hub is not configured on this server")
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "ALREADY_SAID") || strings.Contains(err.Error(), "409") {
+			return "SKIPPED already_said: another bot already told the person this. Stay silent on it.", nil
+		}
+		return "", fmt.Errorf("say failed: %v", err)
+	}
+	if dup, _ := out["duplicate"].(bool); dup {
+		return "SKIPPED duplicate: you already said this.", nil
+	}
+	return "SAID", nil
 }

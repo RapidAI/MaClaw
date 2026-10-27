@@ -40,7 +40,7 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode"}
 
 var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode"}
 
@@ -129,7 +129,8 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"target":          map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id."},
 				"paths":           map[string]any{"type": "array", "description": "notify_main: desktop file paths you hand over.", "items": map[string]any{"type": "string"}},
 				"reply_to":        map[string]any{"type": "string", "description": "notify_main/report: id of the message (or assignment) you answer."},
-				"state":           map[string]any{"type": "string", "description": "report: progress, completed, blocked, failed or waiting_human.", "enum": []string{"progress", "completed", "blocked", "failed", "waiting_human"}},
+				"state":           map[string]any{"type": "string", "description": "report: progress, completed, blocked, failed, waiting_human, or needs_login (the site wants the person to sign in).", "enum": []string{"progress", "completed", "blocked", "failed", "waiting_human", "needs_login"}},
+				"room":            map[string]any{"type": "string", "description": "say: room id to speak in; empty speaks to the person directly."},
 				"expects_reply":   map[string]any{"type": "boolean", "description": "report: true when you need an answer; then end the turn."},
 				"answer_to":       map[string]any{"type": "string", "description": "report: id of the question you answer."},
 				"assignment_id":   map[string]any{"type": "string", "description": "accept_result/return_result: the assignment id from list_assignments."},
@@ -221,6 +222,9 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	}
 	if a := strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))); a == "notify_main" || a == "report" {
 		return desktopNotifyMain(ctx, request, args)
+	}
+	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "say") {
+		return desktopSay(ctx, request, args)
 	}
 	if a := strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))); a == "list_assignments" || a == "accept_result" || a == "return_result" {
 		return desktopAssignmentAction(ctx, request, a, args)

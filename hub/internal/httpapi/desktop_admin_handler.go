@@ -1023,3 +1023,42 @@ func writeAssignmentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "assignment request failed")
 	}
 }
+
+// PostDesktopSayHandler POST /api/v1/desktop-services/say: a bot (main or
+// sub) speaks to the person directly, or into a room. 409 ALREADY_SAID
+// when another bot already said the same there.
+func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if bots == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID   string `json:"tenant_id"`
+			UserID     string `json:"user_id"`
+			InstanceID string `json:"instance_id"`
+			Room       string `json:"room"`
+			Text       string `json:"text"`
+			Key        string `json:"key"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid say request")
+			return
+		}
+		note, err := bots.SayFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Room, in.Text, in.Key)
+		var said *botmgmt.AlreadySaidError
+		switch {
+		case errors.As(err, &said):
+			writeJSON(w, http.StatusConflict, map[string]any{"code": "ALREADY_SAID", "message": "ALREADY_SAID by " + said.By, "by": said.By, "id": said.NoteID})
+		case errors.Is(err, botmgmt.ErrRateLimited):
+			writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", err.Error())
+		case err != nil:
+			writeAssignmentError(w, err)
+		default:
+			writeJSON(w, http.StatusOK, note)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -62,5 +63,26 @@ func TestDesktopAssignmentActions(t *testing.T) {
 	t.Setenv("MACLAW_ASSIGNMENTS", "off")
 	if _, err := desktopAssignmentAction(context.Background(), assignReq("r"), "list_assignments", nil); err == nil || desktopAssignmentToolHint() != "" {
 		t.Fatal("kill switch")
+	}
+}
+
+func TestDesktopSayPostsAndSkipsRepeat(t *testing.T) {
+	calls := 0
+	desktopRemoteAssign = func(_ context.Context, path string, body map[string]any) (map[string]any, error) {
+		calls++
+		if path != "/api/v1/desktop-services/say" || body["text"] == "" {
+			t.Fatalf("path=%s body=%#v", path, body)
+		}
+		if calls == 2 {
+			return nil, fmt.Errorf("ALREADY_SAID by bot_main")
+		}
+		return map[string]any{"id": "s1"}, nil
+	}
+	defer func() { desktopRemoteAssign = nil }()
+	if out, err := desktopSay(context.Background(), assignReq("r"), map[string]any{"message": "好了"}); err != nil || out != "SAID" {
+		t.Fatalf("%q %v", out, err)
+	}
+	if out, err := desktopSay(context.Background(), assignReq("r"), map[string]any{"message": "好了!"}); err != nil || !strings.Contains(out, "already_said") {
+		t.Fatalf("%q %v", out, err)
 	}
 }

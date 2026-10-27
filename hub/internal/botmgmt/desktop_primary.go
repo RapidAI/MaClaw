@@ -428,6 +428,7 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 	rec.CrossNotes = append(rec.CrossNotes, note)
 	rec.CrossNotes = capReportNotes(rec.CrossNotes, userID)
 	rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+	s.requestPeerReviewLocked(rec, userID, note)
 	return note, true, nil
 }
 
