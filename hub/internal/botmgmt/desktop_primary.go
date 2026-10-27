@@ -84,6 +84,9 @@ type BotCrossNote struct {
 	// Reviewer is the peer bot that must check this delegate's result
 	// before the main bot reports it (S4 peer review).
 	Reviewer string `json:"reviewer,omitempty"`
+	// AnsweredBy is set only on a room say's response: the bots that had
+	// already spoken since the person last wrote. Never stored.
+	AnsweredBy []string `json:"answered_by,omitempty"`
 }
 
 // keyedNote is the stored note this sender already filed under key.

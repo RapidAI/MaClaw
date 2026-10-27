@@ -143,11 +143,16 @@ func (s *Service) Say(ctx context.Context, tenantID, userID, from, room, text, k
 		return BotCrossNote{}, ErrRateLimited
 	}
 	note := BotCrossNote{ID: newCrossNoteID(), Owner: userID, From: from, Target: target, Kind: "say", Key: strings.TrimSpace(key), Text: text, CreatedAt: now.UTC().Format(time.RFC3339)}
+	var answered []string
+	if room != "" {
+		answered = RoomAnsweredBy(rec.CrossNotes, userID, target)
+	}
 	rec.CrossNotes = append(rec.CrossNotes, note)
 	rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
 	if err := s.save(ctx, tenantID, rec); err != nil {
 		return BotCrossNote{}, err
 	}
+	note.AnsweredBy = answered
 	return note, nil
 }
 

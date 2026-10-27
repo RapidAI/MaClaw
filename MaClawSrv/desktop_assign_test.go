@@ -86,3 +86,17 @@ func TestDesktopSayPostsAndSkipsRepeat(t *testing.T) {
 		t.Fatalf("%q %v", out, err)
 	}
 }
+
+func TestDesktopSayInRoomReportsAlreadyAnswered(t *testing.T) {
+	desktopRemoteAssign = func(_ context.Context, path string, body map[string]any) (map[string]any, error) {
+		if body["room"] != "room_1" {
+			t.Fatalf("body = %#v", body)
+		}
+		return map[string]any{"id": "s", "answered_by": []any{"bot_b"}}, nil
+	}
+	defer func() { desktopRemoteAssign = nil }()
+	out, err := desktopSay(context.Background(), assignReq("r"), map[string]any{"message": "我补充一点", "room": "room_1"})
+	if err != nil || !strings.Contains(out, "already_answered_by=bot_b") {
+		t.Fatalf("%q %v", out, err)
+	}
+}

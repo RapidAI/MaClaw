@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 )
@@ -91,5 +92,64 @@ func BotSaidHandler(svc *botmgmt.Service, identity botAuthenticator) http.Handle
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// BotRoomsHandler manages group rooms between the person and their bots:
+//
+//	GET    /api/v1/bot-rooms                  list
+//	POST   /api/v1/bot-rooms                  {"name","members","attention"}
+//	PUT    /api/v1/bot-rooms/{rid}            same fields; omitted = unchanged
+//	DELETE /api/v1/bot-rooms/{rid}
+//	POST   /api/v1/bot-rooms/{rid}/messages   {"text"} the person writes
+//
+// The conversation is GET /api/v1/bots/said?room=<rid>.
+func BotRoomsHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		rid := r.PathValue("rid")
+		var (
+			out any
+			err error
+		)
+		switch {
+		case r.Method == http.MethodGet:
+			var rooms []botmgmt.BotRoom
+			rooms, err = svc.ListRooms(r.Context(), principal.TenantID, principal.UserID)
+			out = map[string]any{"items": rooms}
+		case r.Method == http.MethodDelete:
+			err = svc.DeleteRoom(r.Context(), principal.TenantID, principal.UserID, rid)
+			out = map[string]bool{"ok": true}
+		case strings.HasSuffix(r.URL.Path, "/messages"):
+			var in struct {
+				Text string `json:"text"`
+			}
+			if derr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); derr != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_BOT_ROOM", "invalid room message")
+				return
+			}
+			var msg botmgmt.BotCrossNote
+			var woken []string
+			msg, woken, err = svc.PostRoomMessage(r.Context(), principal.TenantID, principal.UserID, rid, in.Text)
+			out = map[string]any{"message": msg, "woken": woken}
+		default:
+			var in botmgmt.RoomInput
+			if derr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); derr != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_BOT_ROOM", "invalid room")
+				return
+			}
+			out, err = svc.SaveRoom(r.Context(), principal.TenantID, principal.UserID, rid, in)
+		}
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }

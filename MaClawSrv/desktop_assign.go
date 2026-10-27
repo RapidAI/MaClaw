@@ -165,5 +165,12 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 	if dup, _ := out["duplicate"].(bool); dup {
 		return "SKIPPED duplicate: you already said this.", nil
 	}
+	if list, ok := out["answered_by"].([]any); ok && len(list) > 0 {
+		names := make([]string, 0, len(list))
+		for _, x := range list {
+			names = append(names, fmt.Sprint(x))
+		}
+		return "SAID already_answered_by=" + strings.Join(names, ",") + ": others had already replied in this room; do not add more unless it is new.", nil
+	}
 	return "SAID", nil
 }
