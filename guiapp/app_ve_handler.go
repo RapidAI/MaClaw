@@ -44,7 +44,13 @@ type VEMessageHandler struct {
 	// Hub upload does; the next message must not start until that upload's
 	// stream_end has been sent.
 	turnMu sync.Mutex
-	turns  map[string]*sync.Mutex
+	turns  map[string]*veSessionTurn
+}
+
+type veSessionTurn struct {
+	mu     sync.Mutex
+	refs   int
+	closed bool
 }
 
 type veActivityNotice struct {
@@ -477,12 +483,18 @@ func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.Group
 	}
 
 	h.mu.Lock()
+	current, ok := h.activeSessions[sessionID]
+	if !ok || current != session {
+		h.mu.Unlock()
+		return
+	}
 	session.LastActivity = time.Now()
 	sessionCtx := session.ctx
+	turn := h.retainActiveSessionTurn(sessionID)
 	h.mu.Unlock()
 
 	// Process in background goroutine to not block the WebSocket reader
-	go h.processAndRespond(sessionCtx, sessionID, msg)
+	go h.processAndRespond(sessionCtx, sessionID, msg, turn)
 }
 
 func (h *VEMessageHandler) shouldIgnoreIncomingVEMessage(msg a2a.GroupDiscussionMessage) bool {
@@ -502,27 +514,53 @@ func (h *VEMessageHandler) shouldIgnoreIncomingVEMessage(msg a2a.GroupDiscussion
 	return localID != "" && veGroupParticipantIdentityMatches(fromID, localID)
 }
 
+func (h *VEMessageHandler) sessionTurnLocked(sessionID string) *veSessionTurn {
+	if h.turns == nil {
+		h.turns = make(map[string]*veSessionTurn)
+	}
+	turn := h.turns[sessionID]
+	if turn == nil {
+		turn = &veSessionTurn{}
+		h.turns[sessionID] = turn
+	}
+	return turn
+}
+
+func (h *VEMessageHandler) retainActiveSessionTurn(sessionID string) *veSessionTurn {
+	h.turnMu.Lock()
+	defer h.turnMu.Unlock()
+	turn := h.sessionTurnLocked(sessionID)
+	turn.closed = false
+	turn.refs++
+	return turn
+}
+
 // lockSessionTurn blocks until this session's previous reply has finished
-// sending, including the Hub stream_end. The mutex stays in the map so a
-// turn that is still waiting cannot miss a replacement lock.
+// sending, including the Hub stream_end.
 func (h *VEMessageHandler) lockSessionTurn(sessionID string) func() {
 	h.turnMu.Lock()
-	if h.turns == nil {
-		h.turns = make(map[string]*sync.Mutex)
-	}
-	mu := h.turns[sessionID]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		h.turns[sessionID] = mu
-	}
+	turn := h.sessionTurnLocked(sessionID)
+	turn.refs++
 	h.turnMu.Unlock()
-	mu.Lock()
-	return mu.Unlock
+	return h.lockRetainedSessionTurn(sessionID, turn)
+}
+
+func (h *VEMessageHandler) lockRetainedSessionTurn(sessionID string, turn *veSessionTurn) func() {
+	turn.mu.Lock()
+	return func() {
+		turn.mu.Unlock()
+		h.turnMu.Lock()
+		turn.refs--
+		if turn.refs == 0 && turn.closed && h.turns[sessionID] == turn {
+			delete(h.turns, sessionID)
+		}
+		h.turnMu.Unlock()
+	}
 }
 
 // processAndRespond runs the AI agent on the incoming message and sends the final response back.
-func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, sessionID string, msg a2a.GroupDiscussionMessage) {
-	unlock := h.lockSessionTurn(sessionID)
+func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, sessionID string, msg a2a.GroupDiscussionMessage, turn *veSessionTurn) {
+	unlock := h.lockRetainedSessionTurn(sessionID, turn)
 	defer unlock()
 
 	// Derive a per-message context from the session context so that
@@ -1841,6 +1879,14 @@ func (h *VEMessageHandler) CloseSession(sessionID string) {
 		}
 		delete(h.activeSessions, sessionID)
 	}
+	h.turnMu.Lock()
+	if turn := h.turns[sessionID]; turn != nil {
+		turn.closed = true
+		if turn.refs == 0 {
+			delete(h.turns, sessionID)
+		}
+	}
+	h.turnMu.Unlock()
 }
 
 // ActiveSessionCount returns the number of active VE sessions.

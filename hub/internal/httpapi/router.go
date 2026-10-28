@@ -835,6 +835,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/import", CompanionDocumentShareImportHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/sync", CompanionDocumentShareSyncHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/notes", CompanionDocumentShareNotesHandler(identity))
+	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/notes/{noteID}/review", CompanionDocumentShareNoteReviewHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/host", CompanionDocumentShareHostHandler(identity))
 	mux.HandleFunc("DELETE /api/mobile/documents/shares/{token}/host", CompanionDocumentShareHostHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/shares/{token}/host/accept", CompanionDocumentShareHostAcceptHandler(identity))

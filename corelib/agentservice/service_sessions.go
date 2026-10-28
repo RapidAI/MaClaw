@@ -3,6 +3,8 @@ package agentservice
 import (
 	"context"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func (s *Service) CreateSession(ctx context.Context, p Principal, instanceID string, in CreateSessionInput) (*Session, error) {
@@ -166,11 +168,34 @@ func (s *Service) DeleteSession(ctx context.Context, p Principal, instanceID, se
 	if busy {
 		return ErrSessionBusy
 	}
+	botIDs := make(map[string]struct{})
+	if messages, listErr := s.store.ListMessages(sessionID); listErr == nil {
+		for _, message := range messages {
+			if botID := strings.TrimSpace(message.Metadata["bot_id"]); botID != "" {
+				botIDs[botID] = struct{}{}
+			}
+		}
+	}
 	if err := s.store.DeleteSession(p.TenantID, p.UserID, instanceID, sessionID); err != nil {
 		return err
 	}
+	for botID := range botIDs {
+		agent.DropConversationPrefix(botID, sessionID)
+	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "session.deleted", ResourceType: "session", ResourceID: sessionID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID}})
 	return nil
+}
+
+func (s *Service) GetMessage(ctx context.Context, p Principal, instanceID, sessionID, messageID string) (*Message, error) {
+	_ = ctx
+	if _, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sessionID); err != nil {
+		return nil, err
+	}
+	message, err := s.store.GetMessage(sessionID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	return &message, nil
 }
 
 func (s *Service) ListMessages(ctx context.Context, p Principal, instanceID, sessionID string, in ListMessagesInput) ([]Message, error) {

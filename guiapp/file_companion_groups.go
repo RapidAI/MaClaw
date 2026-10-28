@@ -244,22 +244,29 @@ func fileCompanionGroupCallError(err error) error {
 	}
 }
 
-func (a *App) fileCompanionHubJSON(method, url, viewer string, payload []byte) ([]byte, error) {
+func (a *App) fileCompanionHubJSON(method, endpoint, viewer string, payload []byte) ([]byte, error) {
+	return a.fileCompanionHubJSONAs(method, endpoint, viewer, "", payload, false)
+}
+
+func (a *App) fileCompanionHubJSONAs(method, endpoint, viewer, grant string, payload []byte, foreign bool) ([]byte, error) {
 	var reader io.Reader
 	if payload != nil {
 		reader = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequest(method, url, reader)
+	req, err := http.NewRequest(method, endpoint, reader)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
+	fileCompanionShareAuthorize(req, viewer, grant)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := fileCompanionDirectClient(20 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
+		if foreign {
+			return nil, errors.New("暂时无法连接分享所在的 Hub")
+		}
 		return nil, errors.New("暂时无法连接云端")
 	}
 	defer resp.Body.Close()

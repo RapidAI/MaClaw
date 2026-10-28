@@ -203,6 +203,185 @@ describe("companion pdf reader", () => {
         expect(getPage).not.toHaveBeenCalledWith(3);
     });
 
+    it("shows the current page and total above the PDF and jumps without scrolling the window", async () => {
+        const getPage = pdfWithPages(5, "OnlyOne");
+        const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+        render(<CompanionPdfReader absPath="C:/docs/long.pdf" theme={theme} lang="zh-Hans" />);
+        expect(await screen.findByText("OnlyOne")).toBeTruthy();
+
+        const pager = screen.getByTestId("companion-pdf-pager");
+        const scroller = screen.getByTestId("companion-pdf-scroll");
+        expect(pager.getAttribute("aria-label")).toBe("PDF 页码，第 1 页，共 5 页");
+        expect(pager.textContent).toContain("/ 5 页");
+        expect(scroller.contains(pager)).toBe(false);
+        expect(pager.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(pager.compareDocumentPosition(screen.getByTestId("pdf-draw")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        const input = screen.getByTestId("companion-pdf-goto") as HTMLInputElement;
+        expect(input.value).toBe("1");
+        expect((screen.getByTestId("companion-pdf-page-prev") as HTMLButtonElement).disabled).toBe(true);
+        expect(getPage).not.toHaveBeenCalledWith(3);
+
+        scroller.getBoundingClientRect = () => clientRect(0, 40, 300, 400);
+        const page3 = screen.getByTestId("companion-pdf-page-3");
+        page3.getBoundingClientRect = () => clientRect(0, 900 - scroller.scrollTop, 300, 400) as DOMRect;
+        fireEvent.change(input, { target: { value: "3a" } });
+        expect(input.value).toBe("3");
+        fireEvent.submit(pager);
+        expect(input.value).toBe("3");
+        expect(scroller.scrollTop).toBe(860);
+        expect(scrolled).not.toHaveBeenCalled();
+        fireEvent.pointerDown(scroller);
+        fireEvent.pointerUp(scroller);
+        expect(scroller.scrollTop).toBe(860);
+        expect(input.value).toBe("3");
+        await waitFor(() => expect(getPage).toHaveBeenCalledWith(3));
+        expect(getPage).not.toHaveBeenCalledWith(5);
+
+        const next = screen.getByTestId("companion-pdf-page-next");
+        fireEvent.mouseDown(next);
+        fireEvent.click(next, { detail: 1 });
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("4");
+        fireEvent.click(next, { detail: 0 });
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("5");
+        fireEvent.mouseDown(screen.getByTestId("companion-pdf-page-prev"));
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("4");
+        fireEvent.change(screen.getByTestId("companion-pdf-goto"), { target: { value: "1" } });
+        fireEvent.mouseDown(screen.getByTestId("companion-pdf-page-next"));
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("5");
+        expect((screen.getByTestId("companion-pdf-page-next") as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.mouseDown(screen.getByTestId("companion-pdf-page-prev"));
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("4");
+        fireEvent.change(screen.getByTestId("companion-pdf-goto"), { target: { value: "2" } });
+        fireEvent.mouseDown(screen.getByTestId("companion-pdf-goto-go"));
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("2");
+        fireEvent.change(screen.getByTestId("companion-pdf-goto"), { target: { value: "99" } });
+        fireEvent.mouseDown(screen.getByTestId("companion-pdf-goto-go"));
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("5");
+        expect((screen.getByTestId("companion-pdf-page-next") as HTMLButtonElement).disabled).toBe(true);
+        await waitFor(() => expect(getPage).toHaveBeenCalledWith(5));
+
+        fireEvent.change(screen.getByTestId("companion-pdf-goto"), { target: { value: "" } });
+        fireEvent.submit(screen.getByTestId("companion-pdf-pager"));
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("5");
+    });
+
+    it("follows the page at the top of the reader while scrolling and keeps a typed page", async () => {
+        pdfWithPages(3, "OnlyOne");
+        render(<CompanionPdfReader absPath="C:/docs/long.pdf" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        const scroller = screen.getByTestId("companion-pdf-scroll");
+        Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 400 });
+        scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+        const rects = [
+            clientRect(0, -400, 300, 390),
+            clientRect(0, 0, 300, 390),
+            clientRect(0, 400, 300, 390),
+        ];
+        for (let page = 1; page <= 3; page += 1) {
+            screen.getByTestId(`companion-pdf-page-${page}`).getBoundingClientRect = () => rects[page - 1] as DOMRect;
+        }
+        await act(async () => {
+            fireEvent.scroll(scroller);
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        const input = screen.getByTestId("companion-pdf-goto") as HTMLInputElement;
+        expect(input.value).toBe("2");
+
+        fireEvent.focus(input);
+        fireEvent.change(input, { target: { value: "3" } });
+        rects[1] = clientRect(0, -20, 300, 390);
+        await act(async () => {
+            fireEvent.scroll(scroller);
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(input.value).toBe("3");
+        fireEvent.blur(input);
+        expect(input.value).toBe("3");
+        expect(screen.getByTestId("companion-pdf-pager").getAttribute("aria-label")).toContain("第 3 页");
+
+        input.focus();
+        fireEvent.change(input, { target: { value: "" } });
+        fireEvent.submit(screen.getByTestId("companion-pdf-pager"));
+        expect(input.value).toBe("3");
+        rects[1] = clientRect(0, 0, 300, 390);
+        rects[2] = clientRect(0, 400, 300, 390);
+        await act(async () => {
+            fireEvent.scroll(scroller);
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(input.value).toBe("3");
+        fireEvent.blur(input);
+        expect(input.value).toBe("2");
+    });
+
+    it("turns the page from what is on screen when the label is a frame behind", async () => {
+        pdfWithPages(3, "OnlyOne");
+        render(<CompanionPdfReader absPath="C:/docs/long.pdf" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        const scroller = screen.getByTestId("companion-pdf-scroll");
+        Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 400 });
+        scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+        const tops = [-400, 0, 400];
+        for (let page = 1; page <= 3; page += 1) {
+            const top = tops[page - 1];
+            screen.getByTestId(`companion-pdf-page-${page}`).getBoundingClientRect = () => clientRect(0, top - scroller.scrollTop, 300, 390) as DOMRect;
+        }
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("1");
+        fireEvent.mouseDown(screen.getByTestId("companion-pdf-page-next"));
+        expect((screen.getByTestId("companion-pdf-goto") as HTMLInputElement).value).toBe("3");
+    });
+
+    it("holds a jumped page while its height changes and keeps a later scroll", async () => {
+        const callbacks: ResizeObserverCallback[] = [];
+        class MockResizeObserver {
+            constructor(cb: ResizeObserverCallback) { callbacks.push(cb); }
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+        const prior = globalThis.ResizeObserver;
+        vi.stubGlobal("ResizeObserver", MockResizeObserver);
+        try {
+            pdfWithPages(5, "OnlyOne");
+            render(<CompanionPdfReader absPath="C:/docs/long.pdf" theme={theme} lang="zh-Hans" />);
+            await screen.findByText("OnlyOne");
+            const scroller = screen.getByTestId("companion-pdf-scroll");
+            scroller.getBoundingClientRect = () => clientRect(0, 40, 300, 400);
+            let shift = 0;
+            const page3 = screen.getByTestId("companion-pdf-page-3");
+            page3.getBoundingClientRect = () => clientRect(0, 900 - scroller.scrollTop + shift, 300, 400) as DOMRect;
+            fireEvent.change(screen.getByTestId("companion-pdf-goto"), { target: { value: "3" } });
+            fireEvent.submit(screen.getByTestId("companion-pdf-pager"));
+            expect(scroller.scrollTop).toBe(860);
+
+            shift = 120;
+            act(() => { callbacks.forEach((cb) => cb([], {} as ResizeObserver)); });
+            expect(scroller.scrollTop).toBe(980);
+
+            fireEvent.pointerDown(scroller);
+            fireEvent.pointerUp(scroller);
+            shift = 200;
+            act(() => { callbacks.forEach((cb) => cb([], {} as ResizeObserver)); });
+            expect(scroller.scrollTop).toBe(1060);
+
+            // A wheel that does not move the PDF, such as one over the translation
+            // card, must not drop the hold. The card has its own scroller.
+            fireEvent.wheel(scroller, { deltaY: 40 });
+            shift = 280;
+            act(() => { callbacks.forEach((cb) => cb([], {} as ResizeObserver)); });
+            expect(scroller.scrollTop).toBe(1140);
+
+            scroller.scrollTop += 40;
+            fireEvent.scroll(scroller);
+            shift = 400;
+            act(() => { callbacks.forEach((cb) => cb([], {} as ResizeObserver)); });
+            expect(scroller.scrollTop).toBe(1180);
+        } finally {
+            if (prior) vi.stubGlobal("ResizeObserver", prior);
+            else Reflect.deleteProperty(globalThis, "ResizeObserver");
+        }
+    });
+
     it("translates only the selected text and keeps the Chinese popover", async () => {
         pdfWithPages(1);
         let release: (value: string) => void = () => undefined;
@@ -580,6 +759,10 @@ describe("companion pdf reader", () => {
 
             const layer = screen.getByTestId("pdf-drawing-layer-1");
             expect(layer.getAttribute("class")).toContain("--active");
+            expect(layer.getAttribute("class")).toContain("companion-pdf-drawings--pen");
+            const drawCss = readFileSync(resolve("src/styles/partials/110-mc-app-shell.css"), "utf8");
+            expect(drawCss).toMatch(/\.companion-pdf-drawings--active\s*\{[^}]*cursor:\s*crosshair/);
+            expect(drawCss).toMatch(/\.companion-pdf-drawings--pen\s*\{[^}]*cursor:\s*url\([^)]*\)\s*4\s+28,\s*crosshair/);
             box(layer, 200, 400);
             fireEvent.mouseDown(layer, { button: 0, clientX: 10, clientY: 20 });
             fireEvent.mouseMove(window, { clientX: 60, clientY: 80 });
@@ -628,6 +811,8 @@ describe("companion pdf reader", () => {
         expect(screen.getByTestId("pdf-draw-box").getAttribute("aria-pressed")).toBe("true");
         expect(screen.getByTestId("pdf-draw-color-blue").getAttribute("aria-pressed")).toBe("true");
         const layer = screen.getByTestId("pdf-drawing-layer-1");
+        expect(layer.getAttribute("class")).toContain("companion-pdf-drawings--active");
+        expect(layer.getAttribute("class")).not.toContain("companion-pdf-drawings--pen");
         box(layer, 200, 400);
         fireEvent.mouseDown(layer, { button: 0, clientX: 20, clientY: 40 });
         fireEvent.mouseMove(window, { clientX: 80, clientY: 100 });
@@ -726,6 +911,7 @@ describe("companion pdf reader", () => {
             expect((screen.getByTestId("pdf-draw-color-yellow") as HTMLButtonElement).disabled).toBe(true);
             const layer = screen.getByTestId("pdf-drawing-layer-1");
             expect(layer.getAttribute("class")).toContain("companion-pdf-drawings--eraser");
+            expect(layer.getAttribute("class")).not.toContain("companion-pdf-drawings--pen");
             box(layer, 200, 400);
 
             // The marquee covers the local line and the host box, but not the
@@ -760,6 +946,7 @@ describe("companion pdf reader", () => {
             fireEvent.click(screen.getByTestId("pdf-draw-eraser"));
             expect(screen.getByTestId("pdf-draw-eraser").getAttribute("aria-pressed")).toBe("false");
             expect(screen.getByTestId("pdf-draw-line").getAttribute("aria-pressed")).toBe("true");
+            expect(screen.getByTestId("pdf-drawing-layer-1").getAttribute("class")).toContain("companion-pdf-drawings--pen");
             expect((screen.getByTestId("pdf-draw-color-yellow") as HTMLButtonElement).disabled).toBe(false);
         } finally {
             window.removeEventListener(PDF_DRAWINGS_CHANGED_EVENT, changed);

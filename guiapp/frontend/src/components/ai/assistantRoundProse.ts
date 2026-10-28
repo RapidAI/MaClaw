@@ -1,4 +1,5 @@
 import { contentHasAssistantToolCall } from "./assistantToolCall";
+import { noteNonAppendStreamText } from "./streamTextRevision";
 
 /**
  * Clear the previous round's answer draft when the first token of a later
@@ -29,16 +30,17 @@ export function isRejectedRoundContentToken(delta: string): boolean {
  * after the round's prose clear and before its content tokens. A missing
  * baseline clears the bubble. The first round's baseline is "".
  */
-export function rejectStreamedAssistantContent<T extends { content?: string }>(
+export function rejectStreamedAssistantContent<T extends { id?: string; content?: string }>(
     message: T,
     baseline?: string | null,
 ): T {
     const next = baseline == null ? "" : baseline;
     if ((message.content ?? "") === next) return message;
+    noteNonAppendStreamText(message, { content: next });
     return { ...message, content: next };
 }
 
-export function clearAssistantRoundProse<T extends { content?: string; reasoning?: string }>(message: T): T {
+export function clearAssistantRoundProse<T extends { id?: string; content?: string; reasoning?: string }>(message: T): T {
     const reasoning = message.reasoning;
     const separated = reasoning && !reasoning.endsWith("\n") ? `${reasoning}\n` : reasoning;
     const keep = (message.content?.length ?? 0) >= ROUND_PROSE_PRESERVE_MIN_CHARS
@@ -47,5 +49,6 @@ export function clearAssistantRoundProse<T extends { content?: string; reasoning
     // blank line between rounds keeps markdown blocks from gluing together
     // (the original wipe design needed no separator because content was "" ).
     const content = keep ? ((message.content?.endsWith("\n\n") ?? false) ? message.content : `${message.content ?? ""}\n\n`) : "";
+    noteNonAppendStreamText(message, { content, reasoning: separated });
     return { ...message, content, reasoning: separated };
 }

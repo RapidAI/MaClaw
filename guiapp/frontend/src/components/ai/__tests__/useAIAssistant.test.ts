@@ -21,6 +21,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ClearAIAssistantUIState: vi.fn(async () => { mockUIState = { messages: [], prompts: [] }; }),
     LoadAIAssistantUIState: vi.fn(async () => mockUIState),
     SaveAIAssistantUIState: vi.fn(async (state: any) => { mockUIState = state; }),
+    SendBtwQuery: vi.fn(async () => ({ text: 'btw ok', error: '' })),
     IsAIAssistantReady: vi.fn(async () => true),
     GetAIAssistantInitStatus: vi.fn(async () => 'ready'),
     GetTrialReflectEnabled: vi.fn(async () => false),
@@ -53,7 +54,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, applyIncomingStreamDelta, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, SendBtwQuery, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
     return renderHook(() => useAIAssistant(options));
@@ -120,6 +121,8 @@ function resetAppMocks() {
     (LoadAIAssistantUIState as any).mockImplementation(async () => mockUIState);
     (SaveAIAssistantUIState as any).mockReset();
     (SaveAIAssistantUIState as any).mockImplementation(async (state: any) => { mockUIState = state; });
+    (SendBtwQuery as any).mockReset();
+    (SendBtwQuery as any).mockImplementation(async () => ({ text: 'btw ok', error: '' }));
     (IsAIAssistantReady as any).mockReset();
     (IsAIAssistantReady as any).mockImplementation(async () => true);
     (GetAIAssistantInitStatus as any).mockReset();
@@ -3021,6 +3024,59 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.map(message => message.content)).toContain('未能分解任务');
         expect(result.current.messages.find(message => message.content === '未能分解任务')?.role).toBe('error');
         expect(result.current.sending).toBe(false);
+    });
+
+    it('persists the buffered continuation tail when unmounting before the coalescer timer', async () => {
+        const { result, unmount } = renderAssistantHook();
+        const requestId = 'continuation-unmount-tail';
+
+        await act(async () => {
+            emitRuntimeEvent('ai-continuation', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                kind: 'token',
+                text: 'painted prefix ',
+            });
+            emitRuntimeEvent('ai-continuation', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                kind: 'token',
+                text: 'buffered tail',
+            });
+        });
+        expect(assistantMessages(result.current.messages)[0]?.content).toBe('painted prefix ');
+
+        unmount();
+
+        await waitFor(() => {
+            const saved = (SaveAIAssistantUIState as any).mock.calls.at(-1)?.[0];
+            expect(saved?.messages?.find((message: any) => message.requestId === requestId)?.content).toBe('painted prefix buffered tail');
+        });
+    });
+
+    it('persists a buffered /btw tail when unmounting before the query finishes', async () => {
+        const pending = deferred<{ text: string; error: string }>();
+        (SendBtwQuery as any).mockImplementationOnce(() => pending.promise);
+        const { result, unmount } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendBtwMessage('side query');
+            await Promise.resolve();
+        });
+        const requestId = (SendBtwQuery as any).mock.calls[0]?.[1] as string;
+        expect(requestId).toBeTruthy();
+        await act(async () => {
+            emitRuntimeEvent('ai-btw-token', { request_id: requestId, text: 'painted prefix ' });
+            emitRuntimeEvent('ai-btw-token', { request_id: requestId, text: 'buffered tail' });
+        });
+        expect(assistantMessages(result.current.messages)[0]?.content).toBe('painted prefix ');
+
+        unmount();
+
+        await waitFor(() => {
+            const saved = (SaveAIAssistantUIState as any).mock.calls.at(-1)?.[0];
+            expect(saved?.messages?.find((message: any) => message.requestId === requestId)?.content).toBe('painted prefix buffered tail');
+        });
     });
 
     it('treats stream-done as activity for the foreground timeout window', async () => {

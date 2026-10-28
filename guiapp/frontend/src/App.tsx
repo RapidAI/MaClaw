@@ -127,6 +127,7 @@ import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureT
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode, writeStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
+import { publishUIAppearance } from './components/ai/uiAppearanceSync';
 import { agentModeFromTaskTags, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
 import { normalizeCodingTaskLaunch, type CodingTaskLaunch } from './components/ai/codingTaskLaunch';
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
@@ -1476,6 +1477,15 @@ function App() {
         document.body.style.setProperty('--theme-page-bg', shellPageBg);
         document.documentElement.style.backgroundColor = '';
         document.body.style.backgroundColor = '';
+    }, [aiThemeMode, aiDarkSchemeId, aiLightSchemeId]);
+    // The companion window is another process with its own WebView profile, so
+    // it cannot see this localStorage. Publish the same choice beside config.json.
+    useEffect(() => {
+        publishUIAppearance({
+            themeMode: aiThemeMode,
+            darkSchemeId: aiDarkSchemeId,
+            lightSchemeId: aiLightSchemeId,
+        });
     }, [aiThemeMode, aiDarkSchemeId, aiLightSchemeId]);
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';

@@ -1535,11 +1535,11 @@
 
 /* Shared modal overlay tokens keep secondary pages and remote dialogs on the
    same surface language as the workbench. */
-:where(#App, .app-viewport, [data-portal-theme]) {
+:where(#App, .app-viewport, [data-portal-theme], .file-companion-window) {
   --theme-overlay-color: #0f172a;
   --theme-overlay: rgba(15, 23, 42, 0.48);
 }
-:where(#App, .app-viewport, [data-portal-theme])[data-ai-theme='dark'] {
+:where(#App, .app-viewport, [data-portal-theme], .file-companion-window)[data-ai-theme='dark'] {
   --theme-overlay-color: #020817;
   --theme-overlay: rgba(2, 8, 23, 0.72);
 }

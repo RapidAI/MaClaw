@@ -92,9 +92,11 @@ type workflowStartupSnapshot struct {
 	// listing error it holds the suspension pass's original fallback list.
 	userIDs []string
 	// states maps userID -> loaded state from a single store.Load per user.
-	// A nil state means the user has no loadable state (or the load failed),
-	// which both passes treat the same way they treated a failed Load before.
+	// A nil state means no row only when the corresponding loadErr is nil.
 	states map[string]*v2.WorkflowState
+	// loadErr preserves per-user Load failures so the suspension pass can
+	// retry them instead of confusing a transient error with missing state.
+	loadErr map[string]error
 	// listErr reports that listing failed. The projection repair pass skips
 	// entirely (its original behavior), while the suspension pass falls back
 	// to userIDs and re-reads state per user.
@@ -109,7 +111,10 @@ type workflowStartupSnapshot struct {
 // loadWorkflowStartupSnapshot lists every stored user once and loads each
 // workflow state once, for shared use by the startup recovery passes.
 func (a *App) loadWorkflowStartupSnapshot(st *workflowV2State) *workflowStartupSnapshot {
-	snap := &workflowStartupSnapshot{states: map[string]*v2.WorkflowState{}}
+	snap := &workflowStartupSnapshot{
+		states:  map[string]*v2.WorkflowState{},
+		loadErr: map[string]error{},
+	}
 	userIDs, err := st.machine.ListAllStoredUserIDs()
 	if err != nil {
 		log.Printf("[workflow-v2] startup: failed to list stored workflows: %v", err)
@@ -120,8 +125,9 @@ func (a *App) loadWorkflowStartupSnapshot(st *workflowV2State) *workflowStartupS
 	}
 	snap.userIDs = userIDs
 	for _, userID := range userIDs {
-		state, _ := st.store.Load(userID)
+		state, loadErr := st.store.Load(userID)
 		snap.states[userID] = state
+		snap.loadErr[userID] = loadErr
 	}
 	return snap
 }
@@ -172,13 +178,11 @@ func (a *App) cancelStaleWorkflowsOnStartup(machine *v2.StateMachine, snap *work
 
 	suspended := false
 	for _, userID := range snap.userIDs {
-		// GetActive equivalent over the snapshot: no loadable state or a
-		// non-active workflow is skipped. Users the repair pass rewrote after
-		// the snapshot (and users never snapshotted, e.g. the listing-error
-		// fallback) get a fresh GetActive read so suspension sees post-repair
-		// state exactly as the pre-merge code did.
+		// GetActive equivalent over the snapshot: a successfully loaded missing
+		// row or a non-active workflow is skipped. Failed loads, users the repair
+		// pass rewrote, and users never snapshotted get a fresh GetActive read.
 		state, ok := snap.states[userID]
-		if !ok || snap.repaired[userID] {
+		if !ok || snap.loadErr[userID] != nil || snap.repaired[userID] {
 			state = machine.GetActive(userID)
 		} else if state != nil && state.Status != v2.StatusActive {
 			state = nil

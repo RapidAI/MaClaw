@@ -15,6 +15,7 @@ var (
 	ErrUserConfigNotFound = errors.New("user config not found")
 	ErrInstanceNotFound   = errors.New("instance not found")
 	ErrSessionNotFound    = errors.New("session not found")
+	ErrMessageNotFound    = errors.New("message not found")
 	ErrRunNotFound        = errors.New("run not found")
 	ErrSnapshotNotFound   = errors.New("snapshot not found")
 	ErrRecordNotFound     = errors.New("record not found")

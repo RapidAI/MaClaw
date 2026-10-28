@@ -16,6 +16,7 @@ import {
     type RecordingCompleteResult,
 } from "./RecordingSessionCard";
 import { bindStreamingMarkdown, createIncrementalRenderState, streamingMarkdownUsesIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
+import { streamTextRevision } from "./streamTextRevision";
 import { matchTaskSnapshotForProject, buildExecutionSnapshotRaw, executionSnapshotRawIsRunning } from "./taskExecutionSnapshot";
 import { formFieldInputStyle, formFieldLabelColor, maximizedInlineStyle, overlayStyle, primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
@@ -169,12 +170,10 @@ type PendingScopeApproval = {
     maintenance: boolean;
 };
 
-// Length + a short tail sample of a streaming text field: O(1) to build and
-// changes on every append (the length grows). Used for the live streaming
-// tail's render-cache key, where copying the whole text every 33ms flush
-// dominated the frame budget on long replies.
-function liveTextFingerprint(text: string | undefined): string {
-    return text ? `${text.length}:${text.slice(-48)}` : '';
+// Length + a short tail sample keeps appends O(1). The producer-owned revision
+// distinguishes replacements whose length and sampled tail stay unchanged.
+function liveTextFingerprint(text: string | undefined, revision: number): string {
+    return `${revision}:${text ? `${text.length}:${text.slice(-48)}` : ''}`;
 }
 
 // The interactive cards are drawn from the message, so their content belongs
@@ -6207,14 +6206,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const settled = cache.get(msg.id);
             if (!isLast && settled?.message === msg) return settled.node;
             const messageOwnsLive = isLast && lastAssistantOwnsLiveActivity;
-            // The actively-streaming tail gets an O(1) cache key. Its content,
-            // reasoning, and result text are fingerprinted as length + a short
-            // tail sample instead of being copied whole into the key string on
-            // every 33ms flush: an append grows the length, a retry or in-place
-            // correction clears the prose first, and a rejected-round restore
-            // shrinks back to the earlier baseline, so whenever the text
-            // actually changes the sample changes with it. The settled rows
-            // below keep the full-text key.
+            // Appends use an O(1) length/tail fingerprint. Replacement paths
+            // increment the message's external revision, covering corrections
+            // that keep both the length and sampled tail unchanged. Settled
+            // rows below retain the full-text key.
             const liveStreamingTail = messageOwnsLive && liveWorkStreaming && msg.role === 'assistant';
             const shownLiveLabel = isPureCodingEnvironment ? codingShownLiveLabel(messageOwnsLive, liveReasoningLabel, liveReasoningKind, msg) : (messageOwnsLive ? liveReasoningLabel : undefined);
             const codingTimeline = isPureCodingEnvironment && msg.role === "assistant" ? codingTimelineForDisplay(msg) : undefined;
@@ -6233,7 +6228,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 // Cards are part of the bubble: a final round can keep the
                 // streamed text and only add actions or a question card, and a
                 // key without them reuses the pre-card node.
-                const replyKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? "")}|${fieldKey}|${shownLiveLabel ?? ""}|${messageOwnsLive ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${replyCardFingerprint(msg)}`;
+                const replyKey = `${liveStreamingTail ? liveTextFingerprint(msg.content, streamTextRevision(msg.id)) : (msg.content ?? "")}|${fieldKey}|${shownLiveLabel ?? ""}|${messageOwnsLive ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${replyCardFingerprint(msg)}`;
                 const replyCached = cache.get(replyCacheId);
                 const reply = replyCached?.contentKey === replyKey ? replyCached.node : renderMessage(
                     suppressWorkflowReviewActions(msg),
@@ -6281,16 +6276,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // tail fingerprints its text instead (see liveStreamingTail above),
             // so its key drops the full copies here.
             const liveObjectForMessage = shownLiveLabel ? liveReasoningObject : undefined;
-            // The cache key must change when reasoning changes, but it must not
-            // copy the whole trail into a string on every render: a single
-            // megabyte reasoning trail made this concatenation the most
-            // expensive line in the transcript. Length plus a short tail sample
-            // distinguishes every append (which grows the string) while staying
-            // O(1) in the trail size.
-            const reasoningFingerprint = msg.reasoning
-                ? `${msg.reasoning.length}:${msg.reasoning.slice(-48)}`
-                : '';
-            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${replyCardFingerprint(msg)}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
+            // Live reasoning uses the same O(1) append fingerprint and explicit
+            // replacement revision as the visible answer and result text.
+            const reasoningFingerprint = liveStreamingTail
+                ? liveTextFingerprint(msg.reasoning, streamTextRevision(msg.id))
+                : (msg.reasoning ?? '');
+            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content, streamTextRevision(msg.id)) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText, streamTextRevision(msg.id)) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${replyCardFingerprint(msg)}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;

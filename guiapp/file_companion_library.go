@@ -34,6 +34,7 @@ var (
 	fileCompanionLibraryRefreshMu sync.Mutex
 	fileCompanionShareTokenMatch  = regexp.MustCompile(`^cd_[0-9a-f]{32}$`)
 	fileCompanionShareTokenFind   = regexp.MustCompile(`cd_[0-9a-f]{32}`)
+	fileCompanionReaderGrantMatch = regexp.MustCompile(`^cgr_[0-9a-f]{32}$`)
 	fileCompanionSessionDirMatch  = regexp.MustCompile(`^fc_[0-9a-f]{32}$`)
 	// fileCompanionShareEpoch advances when a share is dismissed or brought
 	// back. A download captures the value before its HTTP call and publishes
@@ -44,13 +45,17 @@ var (
 
 // FileCompanionLibraryItem is one row in 文档管理.
 type FileCompanionLibraryItem struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Path       string `json:"path,omitempty"`
-	Source     string `json:"source"`
-	OpenedAt   string `json:"openedAt,omitempty"`
-	Owner      string `json:"owner,omitempty"`
-	ShareURL   string `json:"shareUrl,omitempty"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Path     string `json:"path,omitempty"`
+	Source   string `json:"source"`
+	OpenedAt string `json:"openedAt,omitempty"`
+	Owner    string `json:"owner,omitempty"`
+	ShareURL string `json:"shareUrl,omitempty"`
+	// HubOrigin is the other Hub a public or private link was imported from.
+	// Empty means this share lives on the Hub the reader is logged into, even
+	// when ShareURL advertises a different public host for that same Hub.
+	HubOrigin  string `json:"hubOrigin,omitempty"`
 	ExpiresAt  string `json:"expiresAt,omitempty"`
 	Visibility string `json:"visibility,omitempty"`
 	Size       int64  `json:"size,omitempty"`
@@ -102,7 +107,8 @@ type FileCompanionLibraryItem struct {
 
 // FileCompanionShareNote is one reader's discussion on a shared paper.
 // Host marks the share owner's notes, including the owner agent's answers.
-// ReplyTo names the reader note a host note answers.
+// ReplyTo names the reader note a host note answers. Decision is the host's
+// review of a reader note: pending, approved, or ignored.
 type FileCompanionShareNote struct {
 	ID        string `json:"id"`
 	Author    string `json:"author"`
@@ -110,6 +116,7 @@ type FileCompanionShareNote struct {
 	CreatedAt string `json:"createdAt,omitempty"`
 	Host      bool   `json:"host,omitempty"`
 	ReplyTo   string `json:"replyTo,omitempty"`
+	Decision  string `json:"decision,omitempty"`
 }
 
 // FileCompanionLibraryList is the local history plus cloud shares.
@@ -118,9 +125,18 @@ type FileCompanionLibraryList struct {
 	Notice  string                     `json:"notice,omitempty"`
 	Updates []FileCompanionShareUpdate `json:"updates,omitempty"`
 	Removed []string                   `json:"removed,omitempty"`
+	// RemovedHosts names whom a reader should ask about each path in Removed:
+	// the current host, or the admin when this machine holds the host seat.
+	// The window shows it before closing the tab. A row written before the
+	// host label existed has no entry, and the window falls back to a generic
+	// note.
+	RemovedHosts map[string]string `json:"removedHosts,omitempty"`
 	// NotesReply is true when the Hub records host replies. The window keeps a
 	// participant's own turn only when the Hub cannot carry the answer back.
 	NotesReply bool `json:"notesReply"`
+	// NotesReview is true when a reader note waits for the host to pass or
+	// ignore it before the host agent sees it.
+	NotesReview bool `json:"notesReview"`
 }
 
 // FileCompanionShareResult is the link created for the open file.
@@ -184,6 +200,7 @@ type fileCompanionNoteWire struct {
 	Created   string `json:"createdAt"`
 	Host      bool   `json:"host"`
 	ReplyTo   string `json:"reply_to"`
+	Decision  string `json:"decision"`
 }
 
 type fileCompanionShareStatus struct {
@@ -350,6 +367,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	notice := ""
 	var updates []FileCompanionShareUpdate
 	var removed []string
+	var removedHosts map[string]string
 	hub, viewer, loginErr := a.fileCompanionHubLogin()
 	if loginErr != nil {
 		notice = "登录后可以查看云端分享"
@@ -358,7 +376,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 		// the revision the first refresh already stored, instead of downloading
 		// the same project twice and writing an older library over the newer one.
 		fileCompanionLibraryRefreshMu.Lock()
-		remote, notesReply, _, err := a.fetchFileCompanionShareList(hub, viewer)
+		remote, notesReply, notesReview, _, err := a.fetchFileCompanionShareList(hub, viewer)
 		if err != nil {
 			fileCompanionLibraryRefreshMu.Unlock()
 			var status *fileCompanionShareStatus
@@ -369,6 +387,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 			}
 		} else {
 			a.fileCompanionNotesReply.Store(notesReply)
+			a.fileCompanionNotesReview.Store(notesReview)
 			// A received link can disappear from the list because the host
 			// deleted it, or because it expired. Ask the Hub which one before
 			// the merge keeps a downloaded copy forever. No library lock is
@@ -377,7 +396,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 			probeSnapshot := append([]FileCompanionLibraryItem(nil), items...)
 			dismissedForProbe := a.readDismissedShareTokensLocked()
 			fileCompanionLibraryMu.Unlock()
-			revoked := a.probeRevokedFileCompanionShares(hub, viewer, probeSnapshot, remote, dismissedForProbe)
+			revoked, foreignViews := a.probeRevokedFileCompanionShares(hub, viewer, probeSnapshot, remote, dismissedForProbe)
 			fileCompanionLibraryMu.Lock()
 			fresh, freshOK := a.readFileCompanionLibraryLocked()
 			if freshOK {
@@ -393,10 +412,11 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 			}
 			dismissedNow := a.readDismissedShareTokensLocked()
 			items = mergeFileCompanionSharesWithRevoked(items, remote, hub, dismissedNow, revoked)
+			items = applyForeignCompanionShares(items, foreignViews)
 			fileCompanionLibraryMu.Unlock()
 			removedTokens := map[string]bool{}
 			var purgePaths []string
-			removed, purgePaths = a.dropRevokedFileCompanionShares(items, previous, remote, revoked, removedTokens, epochs)
+			removed, purgePaths, removedHosts = a.dropRevokedFileCompanionShares(items, previous, remote, revoked, removedTokens, epochs)
 			updates = a.pullNewerFileCompanionShares(hub, viewer, items, previous)
 			fileCompanionLibraryMu.Lock()
 			if fresh, freshOK = a.readFileCompanionLibraryLocked(); freshOK {
@@ -435,6 +455,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 					}
 					removed = keptRemoved
 				}
+				removedHosts = onlyRemovedFileCompanionHosts(removed, removedHosts)
 				updates = withoutDismissedShareUpdates(updates, dismissedNow)
 			}
 			_ = a.writeFileCompanionLibraryLocked(items)
@@ -461,7 +482,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 			items[i].Expired = fileCompanionShareExpiredAt(items[i].ExpiresAt, expiredNow)
 		}
 	}
-	return FileCompanionLibraryList{Items: items, Notice: notice, Updates: updates, Removed: removed, NotesReply: a.fileCompanionNotesReply.Load()}, nil
+	return FileCompanionLibraryList{Items: items, Notice: notice, Updates: updates, Removed: removed, RemovedHosts: removedHosts, NotesReply: a.fileCompanionNotesReply.Load(), NotesReview: a.fileCompanionNotesReview.Load()}, nil
 }
 
 // fileCompanionShareExpiredAt reports whether an RFC3339 expiry has passed.
@@ -575,6 +596,61 @@ func mergeFileCompanionSharesWithRevoked(items, remote []FileCompanionLibraryIte
 	return trimFileCompanionLibrary(kept, fileCompanionLibraryCap)
 }
 
+// applyForeignCompanionShares copies a live snapshot from another Hub onto
+// the row that was imported from that Hub. The home Hub list does not know
+// this token. Notes and revision still have to move, or the reader never sees
+// a new highlight or a host reply.
+func applyForeignCompanionShares(items []FileCompanionLibraryItem, views map[string]fileCompanionShareView) []FileCompanionLibraryItem {
+	if len(views) == 0 {
+		return items
+	}
+	for i := range items {
+		item := &items[i]
+		if item.Source != "cloud" || item.HubOrigin == "" {
+			continue
+		}
+		view, ok := views[item.Token]
+		if !ok {
+			continue
+		}
+		if name := strings.TrimSpace(view.Name); name != "" {
+			item.Name = name
+		}
+		if owner := strings.TrimSpace(view.Owner); owner != "" {
+			item.Owner = owner
+		}
+		if visibility := strings.TrimSpace(view.Visibility); visibility != "" {
+			item.Visibility = visibility
+		}
+		if label := strings.TrimSpace(view.HostLabel); label != "" {
+			item.HostLabel = label
+		}
+		if view.ExpiresAt != "" {
+			item.ExpiresAt = strings.TrimSpace(view.ExpiresAt)
+			item.Permanent = false
+		} else if view.Permanent {
+			item.ExpiresAt = ""
+			item.Permanent = true
+		}
+		if view.Revision > item.Revision {
+			item.Revision = view.Revision
+		}
+		if view.Notes != nil {
+			notes := notesFromCompanionShareView(view)
+			revision := 0
+			if view.NotesRevision != nil {
+				revision = *view.NotesRevision
+			}
+			if revision >= item.NotesRevision {
+				item.Notes = notes
+				item.NotesRevision = revision
+				item.NotesKnown = true
+			}
+		}
+	}
+	return items
+}
+
 func fileCompanionLibraryFileExists(path string) bool {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -677,47 +753,142 @@ func (a *App) fileCompanionHubLogin() (string, string, error) {
 	return hub, viewer, nil
 }
 
+func (a *App) fileCompanionReaderLabel() string {
+	if a == nil {
+		return ""
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.RemoteEmail)
+}
+
+// fileCompanionHubOrigin is scheme://host[:port] for an absolute http(s) URL.
+// Default ports are dropped so a pasted link and the saved Hub URL compare equal.
+func fileCompanionHubOrigin(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil {
+		return ""
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	port := parsed.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		return scheme + "://" + host + ":" + port
+	}
+	return scheme + "://" + host
+}
+
+// fileCompanionShareOrigin reports the Hub in a pasted share link when that
+// Hub is not the one this machine is logged into. A bare token, a maclaw
+// address, or a link on the logged-in Hub stays local.
+func fileCompanionShareOrigin(link, homeHub string) (string, bool) {
+	origin := fileCompanionHubOrigin(link)
+	if origin == "" {
+		return "", false
+	}
+	home := fileCompanionHubOrigin(homeHub)
+	if home == "" || origin == home {
+		return "", false
+	}
+	return origin, true
+}
+
+func fileCompanionSameSite(left, right *url.URL) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	return strings.EqualFold(left.Hostname(), right.Hostname()) && left.Hostname() != ""
+}
+
+// fileCompanionDirectClient follows a redirect only when it stays on the same
+// host. A share request must not carry a reader grant, or the home Hub token,
+// across to some other site.
+func fileCompanionDirectClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) == 0 || len(via) >= 3 || req == nil || req.URL == nil || req.URL.User != nil {
+				return http.ErrUseLastResponse
+			}
+			if !fileCompanionSameSite(via[len(via)-1].URL, req.URL) {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+}
+
+const fileCompanionReaderGrantHeader = "X-Companion-Reader-Grant"
+
+func fileCompanionShareAuthorize(req *http.Request, viewer, grant string) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(viewer) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(viewer))
+	}
+	if fileCompanionReaderGrantMatch.MatchString(strings.TrimSpace(grant)) {
+		req.Header.Set(fileCompanionReaderGrantHeader, strings.TrimSpace(grant))
+	}
+}
+
 func (a *App) fetchFileCompanionShares(hub, viewer string) ([]FileCompanionLibraryItem, error) {
-	items, _, _, err := a.fetchFileCompanionShareList(hub, viewer)
+	items, _, _, _, err := a.fetchFileCompanionShareList(hub, viewer)
 	return items, err
 }
 
 // fetchFileCompanionShareList also reports whether the Hub records host
-// replies, and the Hub's own clock. An older Hub omits notes_reply, and the
-// owner machine then leaves the discussion to its owner instead of answering
-// every note as if new. The server time keeps the discussion watermark on the
-// same clock as the note timestamps; comparing a Hub-created note with a
-// locally created install time can skip live notes when the clocks disagree.
-func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLibraryItem, bool, time.Time, error) {
+// replies and whether reader notes wait for host review, plus the Hub's own
+// clock. An older Hub omits both flags, and the owner machine then leaves the
+// discussion to its owner instead of answering every note as if new. The
+// server time keeps the discussion watermark on the same clock as the note
+// timestamps; comparing a Hub-created note with a locally created install time
+// can skip live notes when the clocks disagree.
+func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLibraryItem, bool, bool, time.Time, error) {
 	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares", nil)
 	if err != nil {
-		return nil, false, time.Time{}, err
+		return nil, false, false, time.Time{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, false, time.Time{}, err
+		return nil, false, false, time.Time{}, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, false, time.Time{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+		return nil, false, false, time.Time{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 	}
 	var payload struct {
-		Mine       []fileCompanionShareView `json:"mine"`
-		Received   []fileCompanionShareView `json:"received"`
-		NotesReply bool                     `json:"notes_reply"`
-		ServerTime string                   `json:"server_time"`
+		Mine        []fileCompanionShareView `json:"mine"`
+		Received    []fileCompanionShareView `json:"received"`
+		NotesReply  bool                     `json:"notes_reply"`
+		NotesReview bool                     `json:"notes_review"`
+		ServerTime  string                   `json:"server_time"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
-		return nil, false, time.Time{}, errors.New("云端分享记录无法读取")
+		return nil, false, false, time.Time{}, errors.New("云端分享记录无法读取")
 	}
 	serverTime, _ := time.Parse(time.RFC3339, strings.TrimSpace(payload.ServerTime))
 	out := make([]FileCompanionLibraryItem, 0, len(payload.Mine)+len(payload.Received))
 	out = append(out, libraryItemsFromShares(payload.Mine, true, hub)...)
 	out = append(out, libraryItemsFromShares(payload.Received, false, hub)...)
-	return out, payload.NotesReply, serverTime, nil
+	return out, payload.NotesReply, payload.NotesReview, serverTime, nil
 }
 
 func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub string) []FileCompanionLibraryItem {
@@ -802,6 +973,7 @@ func notesFromCompanionShareView(view fileCompanionShareView) []FileCompanionSha
 			CreatedAt: created,
 			Host:      note.Host,
 			ReplyTo:   strings.TrimSpace(note.ReplyTo),
+			Decision:  strings.TrimSpace(note.Decision),
 		})
 	}
 	return out
@@ -1368,16 +1540,40 @@ func (a *App) ImportFileCompanionShare(link, password string) (FileCompanionLibr
 	if err != nil {
 		return FileCompanionLibraryItem{}, err
 	}
-	payload, _ := json.Marshal(map[string]string{"password": strings.TrimSpace(password)})
-	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/import", bytes.NewReader(payload))
+	origin, foreign := fileCompanionShareOrigin(link, hub)
+	target := hub
+	auth := viewer
+	grant := ""
+	body := map[string]string{"password": strings.TrimSpace(password)}
+	if foreign {
+		// The home session is not a login on the Hub that owns the link, and
+		// sending it there would hand that Hub the reader's credential.
+		target = origin
+		auth = ""
+		grant = a.fileCompanionShareGrant(token)
+		if label := a.fileCompanionReaderLabel(); label != "" {
+			body["reader_label"] = label
+		}
+		if grant != "" {
+			body["reader_grant"] = grant
+		}
+	}
+	payload, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, target+"/api/mobile/documents/shares/"+token+"/import", bytes.NewReader(payload))
 	if err != nil {
 		return FileCompanionLibraryItem{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
+	fileCompanionShareAuthorize(req, auth, grant)
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 3 * time.Minute}
+	// The body is the project itself. Leaving Accept-Encoding unset makes the
+	// transport ask for gzip, and a proxy may buffer the whole file to compress it.
+	req.Header.Set("Accept-Encoding", "identity")
+	client := fileCompanionDirectClient(3 * time.Minute)
 	resp, err := client.Do(req)
 	if err != nil {
+		if foreign {
+			return FileCompanionLibraryItem{}, errors.New("暂时无法连接分享所在的 Hub")
+		}
 		return FileCompanionLibraryItem{}, errors.New("暂时无法连接云端")
 	}
 	defer resp.Body.Close()
@@ -1406,6 +1602,14 @@ func (a *App) ImportFileCompanionShare(link, password string) (FileCompanionLibr
 	if !strings.HasPrefix(strings.ToLower(shareURL), "http://") && !strings.HasPrefix(strings.ToLower(shareURL), "https://") {
 		shareURL = hub + "/hub/documents/shares/" + token
 	}
+	if fresh := strings.TrimSpace(resp.Header.Get(fileCompanionReaderGrantHeader)); fileCompanionReaderGrantMatch.MatchString(fresh) {
+		grant = fresh
+	}
+	if foreign && grant != "" {
+		if err := a.saveFileCompanionShareGrant(token, grant); err != nil {
+			return FileCompanionLibraryItem{}, errors.New("文档列表无法保存")
+		}
+	}
 	item := FileCompanionLibraryItem{
 		ID:         token,
 		Token:      token,
@@ -1414,6 +1618,7 @@ func (a *App) ImportFileCompanionShare(link, password string) (FileCompanionLibr
 		OpenedAt:   time.Now().UTC().Format(time.RFC3339),
 		Owner:      strings.TrimSpace(resp.Header.Get("X-Companion-Document-Owner")),
 		ShareURL:   shareURL,
+		HubOrigin:  origin,
 		ExpiresAt:  expires,
 		Visibility: visibility,
 		Size:       int64(len(raw)),
@@ -1532,6 +1737,7 @@ func (a *App) retireFileCompanionShare(token string) {
 	fileCompanionLibraryMu.Lock()
 	defer fileCompanionLibraryMu.Unlock()
 	_, _ = a.dismissFileCompanionShareLocked(token)
+	a.forgetFileCompanionShareGrantLocked(token)
 	a.dropFileCompanionCloudTokenLocked(token)
 }
 
@@ -1645,6 +1851,88 @@ func fileCompanionLibraryItemMatches(item FileCompanionLibraryItem, id string) b
 		return true
 	}
 	return item.Source == "cloud" && item.Token != "" && item.Token == id
+}
+
+func (a *App) fileCompanionShareGrantPath() string {
+	if a == nil {
+		return ""
+	}
+	root := strings.TrimSpace(a.GetDataDir())
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "file-companion", "share-grants.json")
+}
+
+func (a *App) readFileCompanionShareGrantsLocked() map[string]string {
+	out := map[string]string{}
+	path := a.fileCompanionShareGrantPath()
+	if path == "" {
+		return out
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	var stored map[string]string
+	if json.Unmarshal(raw, &stored) != nil {
+		return out
+	}
+	for token, grant := range stored {
+		token = strings.TrimSpace(token)
+		grant = strings.TrimSpace(grant)
+		if fileCompanionShareTokenMatch.MatchString(token) && fileCompanionReaderGrantMatch.MatchString(grant) {
+			out[token] = grant
+		}
+	}
+	return out
+}
+
+func (a *App) writeFileCompanionShareGrantsLocked(grants map[string]string) error {
+	path := a.fileCompanionShareGrantPath()
+	if path == "" {
+		return errors.New("library path is empty")
+	}
+	body, err := json.Marshal(grants)
+	if err != nil {
+		return err
+	}
+	return fileCompanionWriteAtomicFile(path, body, 0o600)
+}
+
+func (a *App) fileCompanionShareGrant(token string) string {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(token) {
+		return ""
+	}
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	return a.readFileCompanionShareGrantsLocked()[token]
+}
+
+func (a *App) saveFileCompanionShareGrant(token, grant string) error {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(token) || !fileCompanionReaderGrantMatch.MatchString(grant) {
+		return nil
+	}
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	grants := a.readFileCompanionShareGrantsLocked()
+	if grants[token] == grant {
+		return nil
+	}
+	grants[token] = grant
+	return a.writeFileCompanionShareGrantsLocked(grants)
+}
+
+func (a *App) forgetFileCompanionShareGrantLocked(token string) {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(token) {
+		return
+	}
+	grants := a.readFileCompanionShareGrantsLocked()
+	if _, ok := grants[token]; !ok {
+		return
+	}
+	delete(grants, token)
+	_ = a.writeFileCompanionShareGrantsLocked(grants)
 }
 
 func (a *App) fileCompanionDismissedSharePath() string {

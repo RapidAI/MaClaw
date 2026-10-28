@@ -132,6 +132,10 @@ func (s *FileStore) SaveMessage(v Message) error {
 	return s.mutate(func() error { return s.inner.SaveMessage(v) })
 }
 
+func (s *FileStore) GetMessage(sessionID, messageID string) (Message, error) {
+	return s.inner.GetMessage(sessionID, messageID)
+}
+
 func (s *FileStore) ListMessages(sessionID string) ([]Message, error) {
 	return s.inner.ListMessages(sessionID)
 }

@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -110,6 +111,7 @@ type fileCompanionShareStage struct {
 	drawings    json.RawMessage
 	messages    []FileCompanionMessage
 	paper       []byte
+	paperPath   string
 	paperTurn   int
 	project     bool
 }
@@ -159,22 +161,38 @@ func (a *App) stageFileCompanionShare(token, fallbackName string, raw []byte) (*
 	if a == nil || !fileCompanionShareTokenMatch.MatchString(token) {
 		return nil, errors.New("分享链接不存在")
 	}
-	manifest, document, paper, project := readFileCompanionShareProject(raw)
-	if !project {
-		document = raw
-	}
-	if len(document) == 0 {
+	if len(raw) == 0 {
 		return nil, errors.New("文件是空的")
 	}
 	dir, err := a.makeFileCompanionPullStageDir(token)
 	if err != nil {
 		return nil, err
 	}
+	manifest, documentFile, paperFile, project := classifyFileCompanionShareZip(raw)
 	name := fileCompanionShareDocumentName(fallbackName, manifest, project)
 	path := filepath.Join(dir, name)
-	if err := fileCompanionWriteAtomicFile(path, document, 0o644); err != nil {
-		a.removeFileCompanionPullStage(dir)
-		return nil, err
+	var paperPath string
+	if project {
+		// Inflate straight onto disk. Buffering the document and writing it
+		// afterwards keeps the import spinner up for a second full copy.
+		if err := writeZipEntry(documentFile, path, fileCompanionProjectMaxDoc); err != nil {
+			project = false
+			_ = os.Remove(path)
+		}
+	}
+	if project && paperFile != nil && manifest.PaperTurn > 0 {
+		stagedPaper := filepath.Join(dir, ".paper", "body")
+		if writeZipEntry(paperFile, stagedPaper, fileCompanionProjectMaxSidecar) == nil {
+			paperPath = stagedPaper
+		}
+	}
+	if !project {
+		name = fileCompanionShareDocumentName(fallbackName, fileCompanionProjectManifest{}, false)
+		path = filepath.Join(dir, name)
+		if err := fileCompanionWriteAtomicFile(path, raw, 0o644); err != nil {
+			a.removeFileCompanionPullStage(dir)
+			return nil, err
+		}
 	}
 	stage := &fileCompanionShareStage{
 		dir:      dir,
@@ -189,7 +207,7 @@ func (a *App) stageFileCompanionShare(token, fallbackName string, raw []byte) (*
 		stage.annotations = manifest.Annotations
 		stage.drawings = manifest.Drawings
 		stage.messages = manifest.Messages
-		stage.paper = paper
+		stage.paperPath = paperPath
 		stage.paperTurn = manifest.PaperTurn
 	}
 	return stage, nil
@@ -274,7 +292,9 @@ func (a *App) publishStagedFileCompanionShareLocked(stage *fileCompanionShareSta
 			published.restore()
 			return fileCompanionShareInstall{}, err
 		}
-		if len(stage.paper) > 0 && stage.paperTurn > 0 {
+		if stage.paperPath != "" && stage.paperTurn > 0 {
+			_ = installFileCompanionSharePaperFile(a, sessionID, stage.paperPath, stage.paperTurn)
+		} else if len(stage.paper) > 0 && stage.paperTurn > 0 {
 			_ = installFileCompanionSharePaper(a, sessionID, stage.paper, stage.paperTurn)
 		}
 	}
@@ -371,6 +391,24 @@ func (a *App) commitLockedFileCompanionShare(stage *fileCompanionShareStage, epo
 }
 
 func readFileCompanionShareProject(raw []byte) (fileCompanionProjectManifest, []byte, []byte, bool) {
+	manifest, documentFile, paperFile, ok := classifyFileCompanionShareZip(raw)
+	if !ok {
+		return fileCompanionProjectManifest{}, nil, nil, false
+	}
+	document, err := readZipEntry(documentFile, fileCompanionProjectMaxDoc)
+	if err != nil || len(document) == 0 {
+		return fileCompanionProjectManifest{}, nil, nil, false
+	}
+	var paper []byte
+	if paperFile != nil && manifest.PaperTurn > 0 {
+		paper, _ = readZipEntry(paperFile, fileCompanionProjectMaxSidecar)
+	}
+	return manifest, document, paper, true
+}
+
+// classifyFileCompanionShareZip reports the project pieces without reading
+// the document body. The returned files stay readable while raw is alive.
+func classifyFileCompanionShareZip(raw []byte) (fileCompanionProjectManifest, *zip.File, *zip.File, bool) {
 	var manifest fileCompanionProjectManifest
 	if len(raw) < 4 || raw[0] != 'P' || raw[1] != 'K' {
 		return manifest, nil, nil, false
@@ -412,15 +450,41 @@ func readFileCompanionShareProject(raw []byte) (fileCompanionProjectManifest, []
 	if err != nil {
 		return fileCompanionProjectManifest{}, nil, nil, false
 	}
-	document, err := readZipEntry(documentFile, fileCompanionProjectMaxDoc)
-	if err != nil || len(document) == 0 {
-		return fileCompanionProjectManifest{}, nil, nil, false
+	return manifest, documentFile, paperFile, true
+}
+
+func writeZipEntry(file *zip.File, dest string, limit int64) error {
+	if file == nil || file.UncompressedSize64 > uint64(limit) {
+		return errors.New("文件过大")
 	}
-	var paper []byte
-	if paperFile != nil && manifest.PaperTurn > 0 {
-		paper, _ = readZipEntry(paperFile, fileCompanionProjectMaxSidecar)
+	rc, err := file.Open()
+	if err != nil {
+		return err
 	}
-	return manifest, document, paper, true
+	defer rc.Close()
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	tmp := dest + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	n, copyErr := io.Copy(out, io.LimitReader(rc, limit+1))
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil || n > limit || n == 0 {
+		_ = os.Remove(tmp)
+		if n == 0 && copyErr == nil && closeErr == nil {
+			return errors.New("文件是空的")
+		}
+		return errors.New("文件过大")
+	}
+	_ = os.Remove(dest)
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func readZipEntry(file *zip.File, limit int64) ([]byte, error) {
@@ -437,6 +501,45 @@ func readZipEntry(file *zip.File, limit int64) ([]byte, error) {
 		return nil, errors.New("文件过大")
 	}
 	return raw, nil
+}
+
+func installFileCompanionSharePaperFile(a *App, sessionID, src string, turn int) error {
+	if a == nil || src == "" {
+		return nil
+	}
+	dir := filepath.Join(a.GetDataDir(), "file-companion", "results", sessionID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	pdfPath := filepath.Join(dir, "论文解读.pdf")
+	_ = os.Remove(pdfPath)
+	if err := os.Rename(src, pdfPath); err != nil {
+		in, openErr := os.Open(src)
+		if openErr != nil {
+			return openErr
+		}
+		defer in.Close()
+		out, createErr := os.OpenFile(pdfPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if createErr != nil {
+			return createErr
+		}
+		_, copyErr := io.Copy(out, in)
+		closeErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		_ = os.Remove(src)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "latest.txt"), []byte(pdfPath), 0o644); err != nil {
+		return err
+	}
+	if turn < 1 {
+		turn = 1
+	}
+	return os.WriteFile(filepath.Join(dir, "latest-turn.txt"), []byte(itoaPositive(turn)), 0o644)
 }
 
 func installFileCompanionSharePaper(a *App, sessionID string, paper []byte, turn int) error {
@@ -461,7 +564,7 @@ func installFileCompanionSharePaper(a *App, sessionID string, paper []byte, turn
 }
 
 func (a *App) dropRevokedGroupCopies(previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, dropped map[string]bool, epochs map[string]uint64) []string {
-	removed, _ := a.dropRevokedFileCompanionShares(nil, previous, remote, nil, dropped, epochs)
+	removed, _, _ := a.dropRevokedFileCompanionShares(nil, previous, remote, nil, dropped, epochs)
 	return removed
 }
 
@@ -473,7 +576,7 @@ func (a *App) dropRevokedGroupCopies(previous map[string]FileCompanionLibraryIte
 // source file and reading data; only the cloud row goes away. live is the
 // merged library without the revoked rows; when another row still uses the
 // path, the file and its reader data must stay.
-func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, revoked map[string]bool, dropped map[string]bool, epochs map[string]uint64) (removed []string, purgePaths []string) {
+func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, revoked map[string]bool, dropped map[string]bool, epochs map[string]uint64) (removed []string, purgePaths []string, removedHosts map[string]string) {
 	seen := map[string]bool{}
 	for _, item := range remote {
 		if item.Token != "" {
@@ -482,6 +585,9 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 	}
 	removed = make([]string, 0)
 	purgePaths = make([]string, 0)
+	removedHosts = make(map[string]string)
+	// One entry per path: the window counts articles and keys tab closes by path.
+	removedSeen := map[string]bool{}
 	root := filepath.Join(a.GetDataDir(), "file-companion", "library-files")
 	for token, prev := range previous {
 		if seen[token] || !fileCompanionShareTokenMatch.MatchString(token) {
@@ -505,6 +611,7 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 		if fileCompanionLibraryUsesPath(live, prev.Path) {
 			if !groupGone {
 				_, _ = a.dismissFileCompanionShareLocked(token)
+				a.forgetFileCompanionShareGrantLocked(token)
 			}
 			fileCompanionLibraryMu.Unlock()
 			if dropped != nil {
@@ -521,6 +628,7 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 			// Group shares are not dismissed: rejoining the group can make the
 			// same token visible again.
 			_, _ = a.dismissFileCompanionShareLocked(token)
+			a.forgetFileCompanionShareGrantLocked(token)
 		}
 		_ = os.RemoveAll(dir)
 		fileCompanionLibraryMu.Unlock()
@@ -529,13 +637,51 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 		}
 		if closeTab {
 			path := strings.TrimSpace(prev.Path)
-			removed = append(removed, path)
+			if !removedSeen[path] {
+				removedSeen[path] = true
+				removed = append(removed, path)
+			}
+			if label := fileCompanionShareHostName(prev); label != "" {
+				removedHosts[path] = label
+			}
 			if !prev.Mine && path != "" {
 				purgePaths = append(purgePaths, path)
 			}
 		}
 	}
-	return removed, purgePaths
+	return removed, purgePaths, removedHosts
+}
+
+// fileCompanionShareHostName is whom a withdrawn share tells the reader to
+// contact. HostLabel follows a transferred seat; Owner is the label on a row
+// written before the host seat existed. A reader who holds the host seat is
+// told to ask the admin who revoked the link, not to contact themselves.
+func fileCompanionShareHostName(item FileCompanionLibraryItem) string {
+	if fileCompanionItemIsHost(item) {
+		return strings.TrimSpace(item.Owner)
+	}
+	if label := strings.TrimSpace(item.HostLabel); label != "" {
+		return label
+	}
+	return strings.TrimSpace(item.Owner)
+}
+
+// onlyRemovedFileCompanionHosts drops labels for paths this refresh no longer
+// closes (another row kept the file, or an import superseded the revoke).
+func onlyRemovedFileCompanionHosts(removed []string, hosts map[string]string) map[string]string {
+	if len(removed) == 0 || len(hosts) == 0 {
+		return nil
+	}
+	kept := make(map[string]string, len(removed))
+	for _, path := range removed {
+		if label := strings.TrimSpace(hosts[path]); label != "" {
+			kept[path] = label
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 // withoutSupersededRevokePaths drops tab closes for shares an import took
@@ -624,14 +770,25 @@ func (a *App) pullNewerFileCompanionShares(hub, viewer string, items []FileCompa
 }
 
 func (a *App) pullFileCompanionShare(hub, viewer string, item FileCompanionLibraryItem, epoch uint64) (FileCompanionShareUpdate, error) {
-	payload := []byte(`{"password":""}`)
-	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+item.Token+"/import", bytes.NewReader(payload))
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	body := map[string]string{"password": ""}
+	if foreign {
+		if label := a.fileCompanionReaderLabel(); label != "" {
+			body["reader_label"] = label
+		}
+		if grant != "" {
+			body["reader_grant"] = grant
+		}
+	}
+	payload, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, target+"/api/mobile/documents/shares/"+item.Token+"/import", bytes.NewReader(payload))
 	if err != nil {
 		return FileCompanionShareUpdate{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
+	fileCompanionShareAuthorize(req, auth, grant)
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 3 * time.Minute}
+	req.Header.Set("Accept-Encoding", "identity")
+	client := fileCompanionDirectClient(3 * time.Minute)
 	resp, err := client.Do(req)
 	if err != nil {
 		return FileCompanionShareUpdate{}, err
@@ -640,6 +797,9 @@ func (a *App) pullFileCompanionShare(hub, viewer string, item FileCompanionLibra
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return FileCompanionShareUpdate{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+	}
+	if fresh := strings.TrimSpace(resp.Header.Get(fileCompanionReaderGrantHeader)); foreign && fileCompanionReaderGrantMatch.MatchString(fresh) {
+		_ = a.saveFileCompanionShareGrant(item.Token, fresh)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, mobileDocumentOriginalMaxBytes+1))
 	if err != nil || int64(len(raw)) > mobileDocumentOriginalMaxBytes || len(raw) == 0 {
@@ -846,11 +1006,59 @@ func (a *App) addFileCompanionShareNoteByToken(token, text, replyTo string) (Fil
 	if err != nil {
 		return FileCompanionShareNotesResult{}, err
 	}
+	item, _ := a.fileCompanionCloudByToken(token)
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return FileCompanionShareNotesResult{}, errors.New("请重新导入分享链接")
+	}
 	payload, err := json.Marshal(map[string]string{"text": text, "reply_to": strings.TrimSpace(replyTo)})
 	if err != nil {
 		return FileCompanionShareNotesResult{}, errors.New("无法保存批注")
 	}
-	body, err := a.fileCompanionHubJSON(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/notes", viewer, payload)
+	body, err := a.fileCompanionHubJSONAs(http.MethodPost, target+"/api/mobile/documents/shares/"+token+"/notes", auth, grant, payload, foreign)
+	if err != nil {
+		return FileCompanionShareNotesResult{}, err
+	}
+	notes, revision, err := decodeFileCompanionShareNotes(body)
+	if err != nil {
+		return FileCompanionShareNotesResult{}, err
+	}
+	if stored, storedRevision, ok := a.storeFileCompanionShareNotes(token, notes, revision); ok {
+		notes, revision = stored, storedRevision
+	}
+	return FileCompanionShareNotesResult{Notes: notes, NotesRevision: revision}, nil
+}
+
+// ReviewFileCompanionShareNote lets the host pass or ignore one reader note.
+// A note only reaches the host agent after it is approved. The Hub enforces the
+// seat, so a participant calling this gets a forbidden error.
+func (a *App) ReviewFileCompanionShareNote(token, noteID, decision string) (FileCompanionShareNotesResult, error) {
+	if a == nil {
+		return FileCompanionShareNotesResult{}, errors.New("app unavailable")
+	}
+	token = strings.TrimSpace(token)
+	noteID = strings.TrimSpace(noteID)
+	switch strings.TrimSpace(strings.ToLower(decision)) {
+	case "approve", "approved":
+		decision = "approve"
+	case "ignore", "ignored":
+		decision = "ignore"
+	default:
+		return FileCompanionShareNotesResult{}, errors.New("请选择通过或忽略")
+	}
+	if token == "" || noteID == "" {
+		return FileCompanionShareNotesResult{}, errors.New("批注不存在")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return FileCompanionShareNotesResult{}, err
+	}
+	payload, err := json.Marshal(map[string]string{"decision": decision})
+	if err != nil {
+		return FileCompanionShareNotesResult{}, errors.New("无法保存审核结果")
+	}
+	endpoint := hub + "/api/mobile/documents/shares/" + url.PathEscape(token) + "/notes/" + url.PathEscape(noteID) + "/review"
+	body, err := a.fileCompanionHubJSON(http.MethodPost, endpoint, viewer, payload)
 	if err != nil {
 		return FileCompanionShareNotesResult{}, err
 	}
@@ -920,6 +1128,34 @@ func decodeFileCompanionShareNotes(body []byte) ([]FileCompanionShareNote, int, 
 		notes = []FileCompanionShareNote{}
 	}
 	return notes, payload.NotesRevision, nil
+}
+
+// fileCompanionShareCall picks the Hub that owns this row. A share imported
+// from another Hub keeps that origin and never sends the home login there.
+func (a *App) fileCompanionShareCall(homeHub, homeViewer string, item FileCompanionLibraryItem) (target, viewer, grant string, foreign bool) {
+	origin := fileCompanionHubOrigin(item.HubOrigin)
+	if origin != "" && origin != fileCompanionHubOrigin(homeHub) {
+		return strings.TrimRight(origin, "/"), "", a.fileCompanionShareGrant(item.Token), true
+	}
+	return strings.TrimRight(homeHub, "/"), homeViewer, "", false
+}
+
+func (a *App) fileCompanionCloudByToken(token string) (FileCompanionLibraryItem, bool) {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(token) {
+		return FileCompanionLibraryItem{}, false
+	}
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	if !ok {
+		return FileCompanionLibraryItem{}, false
+	}
+	for _, item := range items {
+		if item.Source == "cloud" && item.Token == token {
+			return item, true
+		}
+	}
+	return FileCompanionLibraryItem{}, false
 }
 
 func (a *App) fileCompanionShareByPath(canonical string) (FileCompanionLibraryItem, bool) {

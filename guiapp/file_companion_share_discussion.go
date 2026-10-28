@@ -153,7 +153,7 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	items, replySupported, serverTime, err := a.fetchFileCompanionShareList(hub, viewer)
+	items, replySupported, reviewSupported, serverTime, err := a.fetchFileCompanionShareList(hub, viewer)
 	if err != nil {
 		return 0, err
 	}
@@ -188,6 +188,15 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 			break
 		}
 		pending := fileCompanionPendingShareNotes(item.Notes, since[item.Token])
+		if reviewSupported {
+			// With host review the watermark does not apply to an approved
+			// note: the host looked at it and chose to answer it, even if it
+			// was written before this machine installed the feature.
+			// A reply cached while the note was approved must not survive an
+			// ignore: the next poll would otherwise publish it after a reopen.
+			forgetFileCompanionShareDiscussionUnlessApproved(item.Token, item.Notes)
+			pending = fileCompanionApprovedShareNotes(item.Notes)
+		}
 		if len(pending) == 0 {
 			continue
 		}
@@ -205,8 +214,13 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 					continue
 				}
 				if _, postErr := a.addFileCompanionShareNoteByToken(item.Token, ready.Text, note.ID); postErr != nil {
-					fileCompanionShareDiscussionFailures[failureKey] = time.Now()
 					release()
+					if fileCompanionShareDiscussionPostClosed(postErr) {
+						dropFileCompanionShareDiscussionAttempt(failureKey)
+						logFileCompanion("share discussion reply dropped token=%s note=%s", item.Token, note.ID)
+						continue
+					}
+					fileCompanionShareDiscussionFailures[failureKey] = time.Now()
 					logFileCompanion("share discussion reply retry failed token=%s note=%s", item.Token, note.ID)
 					continue
 				}
@@ -233,10 +247,28 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 			// Another process on this account already took the note.
 			continue
 		}
+		context := item.Notes
+		if reviewSupported {
+			// The list above can be minutes old: an earlier note in this poll
+			// may still be in the model. Ask again before spending a turn, so
+			// an ignore that landed in that window never reaches the agent.
+			freshNote, freshNotes, still := a.refreshFileCompanionApprovedNote(hub, viewer, item.Token, note.ID, note, item.Notes)
+			if !still {
+				dropFileCompanionShareDiscussionAttempt(failureKey)
+				release()
+				continue
+			}
+			note = freshNote
+			// A note the host has not passed never reaches the model, not even
+			// as thread context: ignoring a note must also keep its text out of
+			// the prompt, or the host's review would only hide it from readers.
+			context = fileCompanionReviewVisibleNotes(freshNotes)
+		}
 		// Count the attempt, not only the success: a provider error must not
-		// let one share spend unbounded model turns across retries.
+		// let one share spend unbounded model turns across retries. A note the
+		// host withdrew before this point does not count.
 		fileCompanionShareDiscussionReplies[item.Token] = append(fileCompanionShareDiscussionReplies[item.Token], time.Now())
-		reply, answerErr := a.runFileCompanionShareDiscussionTurn(canonical, item.Token, note, item.Notes)
+		reply, answerErr := a.runFileCompanionShareDiscussionTurn(canonical, item.Token, note, context)
 		if answerErr != nil || reply == "" {
 			fileCompanionShareDiscussionFailures[failureKey] = time.Now()
 			release()
@@ -244,9 +276,14 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 			continue
 		}
 		if _, postErr := a.addFileCompanionShareNoteByToken(item.Token, reply, note.ID); postErr != nil {
+			release()
+			if fileCompanionShareDiscussionPostClosed(postErr) {
+				dropFileCompanionShareDiscussionAttempt(failureKey)
+				logFileCompanion("share discussion reply dropped token=%s note=%s", item.Token, note.ID)
+				continue
+			}
 			fileCompanionShareDiscussionFailures[failureKey] = time.Now()
 			fileCompanionShareDiscussionReady[failureKey] = fileCompanionShareDiscussionReadyReply{Text: reply, At: time.Now()}
-			release()
 			logFileCompanion("share discussion reply failed token=%s note=%s", item.Token, note.ID)
 			continue
 		}
@@ -281,6 +318,109 @@ func fileCompanionPendingShareNotes(notes []FileCompanionShareNote, since time.T
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out
+}
+
+// fileCompanionApprovedShareNotes returns the notes the host passed and that
+// have no host answer yet, oldest first. Only an explicit approval counts:
+// pending and ignored notes never reach the agent.
+func fileCompanionApprovedShareNotes(notes []FileCompanionShareNote) []FileCompanionShareNote {
+	answered := map[string]bool{}
+	for _, note := range notes {
+		if note.Host && strings.TrimSpace(note.ReplyTo) != "" {
+			answered[strings.TrimSpace(note.ReplyTo)] = true
+		}
+	}
+	out := make([]FileCompanionShareNote, 0, len(notes))
+	for _, note := range notes {
+		id := strings.TrimSpace(note.ID)
+		if note.Host || id == "" || strings.TrimSpace(note.Text) == "" || answered[id] {
+			continue
+		}
+		if strings.TrimSpace(strings.ToLower(note.Decision)) != "approved" {
+			continue
+		}
+		out = append(out, note)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
+	return out
+}
+
+// fileCompanionReviewVisibleNotes keeps the lines the host let through: host
+// notes and approved reader notes. Pending and ignored reader lines never reach
+// the model, not even as thread context.
+func fileCompanionReviewVisibleNotes(notes []FileCompanionShareNote) []FileCompanionShareNote {
+	out := make([]FileCompanionShareNote, 0, len(notes))
+	for _, note := range notes {
+		if !note.Host && strings.TrimSpace(strings.ToLower(note.Decision)) != "approved" {
+			continue
+		}
+		if strings.TrimSpace(note.ID) == "" || strings.TrimSpace(note.Text) == "" {
+			continue
+		}
+		out = append(out, note)
+	}
+	return out
+}
+
+// fileCompanionShareDiscussionPostClosed reports a Hub refusal that will not
+// change on retry: the host ignored the note, or it is no longer approved.
+// A transient save error is not closed; that reply is kept and posted again.
+func fileCompanionShareDiscussionPostClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "已被忽略") || strings.Contains(msg, "还没有通过审核")
+}
+
+func dropFileCompanionShareDiscussionAttempt(key string) {
+	delete(fileCompanionShareDiscussionReady, key)
+	delete(fileCompanionShareDiscussionFailures, key)
+}
+
+// forgetFileCompanionShareDiscussionUnlessApproved drops a cached answer once
+// the host has taken the note back. Re-approving it later starts a new turn
+// instead of publishing the reply from the withdrawn one.
+func forgetFileCompanionShareDiscussionUnlessApproved(token string, notes []FileCompanionShareNote) {
+	approved := map[string]bool{}
+	for _, note := range fileCompanionApprovedShareNotes(notes) {
+		approved[strings.TrimSpace(note.ID)] = true
+	}
+	prefix := token + "|"
+	for key := range fileCompanionShareDiscussionReady {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if approved[strings.TrimPrefix(key, prefix)] {
+			continue
+		}
+		dropFileCompanionShareDiscussionAttempt(key)
+	}
+}
+
+// refreshFileCompanionApprovedNote re-reads one note before the model turn.
+// still is false when the host no longer wants it answered. A failed read
+// keeps the snapshot from this poll; the Hub still refuses the reply if the
+// note was ignored while the turn ran.
+func (a *App) refreshFileCompanionApprovedNote(hub, viewer, token, noteID string, fallback FileCompanionShareNote, fallbackNotes []FileCompanionShareNote) (FileCompanionShareNote, []FileCompanionShareNote, bool) {
+	items, _, reviewOn, _, err := a.fetchFileCompanionShareList(hub, viewer)
+	if err != nil || !reviewOn {
+		return fallback, fallbackNotes, true
+	}
+	token = strings.TrimSpace(token)
+	noteID = strings.TrimSpace(noteID)
+	for _, item := range items {
+		if strings.TrimSpace(item.Token) != token {
+			continue
+		}
+		for _, note := range fileCompanionApprovedShareNotes(item.Notes) {
+			if strings.TrimSpace(note.ID) == noteID {
+				return note, item.Notes, true
+			}
+		}
+		return FileCompanionShareNote{}, nil, false
+	}
+	return FileCompanionShareNote{}, nil, false
 }
 
 // fileCompanionShareDiscussionState is the persisted watermark. InstalledAt is

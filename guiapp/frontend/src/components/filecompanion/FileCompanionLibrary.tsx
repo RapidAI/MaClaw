@@ -75,9 +75,11 @@ export type CompanionShareNote = {
     text: string;
     createdAt: string;
     // host marks the share owner's notes, including the owner agent's answer.
-    // replyTo names the reader note that answer belongs to.
+    // replyTo names the reader note that answer belongs to. decision is the
+    // host's review of a reader note: pending, approved, or ignored.
     host?: boolean;
     replyTo?: string;
+    decision?: string;
 };
 
 export type CompanionShareBinding = {
@@ -408,13 +410,50 @@ function readUpdates(raw: unknown): CompanionShareUpdate[] {
     }).filter((item): item is CompanionShareUpdate => item !== null);
 }
 
-export function companionLibrarySync(raw: unknown): { updates: CompanionShareUpdate[]; removed: string[] } {
-    if (!raw || typeof raw !== "object") return { updates: [], removed: [] };
+export function companionLibrarySync(raw: unknown): { updates: CompanionShareUpdate[]; removed: string[]; removedHosts: Record<string, string> } {
+    if (!raw || typeof raw !== "object") return { updates: [], removed: [], removedHosts: {} };
     const record = raw as Record<string, unknown>;
+    const removed = readRemoved(record.removed ?? record.Removed);
     return {
         updates: readUpdates(record.updates ?? record.Updates),
-        removed: readRemoved(record.removed ?? record.Removed),
+        removed,
+        removedHosts: readRemovedHosts(record.removedHosts ?? record.RemovedHosts, removed),
     };
+}
+
+// companionWithdrawnNotice is what a participant sees before an opened article
+// closes because the host cancelled the share. The host name is who to ask
+// for another copy. With no name, the sentence still says to ask the host.
+export function companionWithdrawnNotice(articleCount: number, hosts: string[]): string {
+    const withdrawn = articleCount > 1 ? "这些文章已经取消分享" : "该文章已经取消分享";
+    const names: string[] = [];
+    for (const host of hosts) {
+        const name = host.trim();
+        if (name && !names.includes(name)) names.push(name);
+    }
+    const ask = names.length > 0 ? `请联系主持人 ${names.join("、")}` : "请联系分享的主持人";
+    return `${withdrawn}，如果需要继续阅读，${ask}`;
+}
+
+// readRemovedHosts names the host of each withdrawn path, so the window can
+// tell a reader whom to ask when the tab closes. Only paths that actually
+// closed keep a name; a stale or extra entry is ignored. The library path and
+// the host map can disagree on slash direction or drive-letter case. Older
+// backends send only the path list.
+function readRemovedHosts(raw: unknown, removed: string[]): Record<string, string> {
+    if (!raw || typeof raw !== "object" || removed.length === 0) return {};
+    const byKey = new Map<string, string>();
+    for (const path of removed) {
+        const key = companionSharePathKey(path);
+        if (key && !byKey.has(key)) byKey.set(key, path);
+    }
+    const out: Record<string, string> = {};
+    for (const [path, label] of Object.entries(raw as Record<string, unknown>)) {
+        const canonical = byKey.get(companionSharePathKey(path));
+        if (!canonical || typeof label !== "string" || label.trim() === "") continue;
+        if (!out[canonical]) out[canonical] = label.trim();
+    }
+    return out;
 }
 
 function readNote(raw: unknown): CompanionShareNote | null {
@@ -430,6 +469,7 @@ function readNote(raw: unknown): CompanionShareNote | null {
         createdAt: textOf(record, "createdAt", "CreatedAt") || textOf(record, "created_at", "created_at"),
         host: boolOf(record, "host", "Host"),
         replyTo: textOf(record, "replyTo", "ReplyTo") || textOf(record, "reply_to", "reply_to"),
+        decision: textOf(record, "decision", "Decision"),
     };
 }
 
@@ -502,9 +542,16 @@ export function companionShareNotes(raw: unknown): CompanionShareBinding[] {
     return out;
 }
 
+// readRemoved lists the paths this refresh withdrew. A path appears once:
+// the notice counts articles, and the tab close is keyed by path.
 function readRemoved(raw: unknown): string[] {
     if (!Array.isArray(raw)) return [];
-    return raw.filter((item): item is string => typeof item === "string" && item !== "");
+    const out: string[] = [];
+    for (const item of raw) {
+        if (typeof item !== "string" || item === "" || out.includes(item)) continue;
+        out.push(item);
+    }
+    return out;
 }
 
 // companionMineShares reads the cloud rows this person created. A document
@@ -1032,6 +1079,9 @@ export function CompanionLibraryView({
         const busy = rowBusy[item.id];
         const marks = item.path ? (markCounts.get(pdfMarkPathKey(item.path)) ?? 0) : 0;
         const notes = item.source === "cloud" ? item.notes.length : 0;
+        const pendingReviews = item.source === "cloud" && item.host
+            ? item.notes.filter((note) => !note.host && (note.decision ?? "") === "pending").length
+            : 0;
         const meta = [
             item.source === "cloud"
                 ? (item.mine ? "我的分享" : (item.owner || "别人的分享"))
@@ -1081,6 +1131,7 @@ export function CompanionLibraryView({
                         <span className="file-companion-badge">{whenLabel(item)}</span>
                         {marks > 0 ? <span className="file-companion-badge" data-tone="mark">标注 {marks}</span> : null}
                         {notes > 0 ? <span className="file-companion-badge" data-tone="note">讨论 {notes}</span> : null}
+                        {pendingReviews > 0 ? <span className="file-companion-badge" data-tone="pending" data-testid={`file-companion-library-pending-${item.id}`}>待审核 {pendingReviews}</span> : null}
                         <span className="file-companion-project-facts">{meta}</span>
                     </p>
                     {item.shareUrl && !item.expired ? <small className="file-companion-project-url" data-testid={`file-companion-library-url-${item.id}`}>{item.shareUrl}</small> : null}
@@ -2265,20 +2316,21 @@ export function CompanionImportDialog({
                 });
             }
             showToast("已导入文档库", "success", 6000);
-            try {
-                const started = libraryDeleteGen?.current ?? 0;
-                const listed = await ListFileCompanionLibrary();
-                if (!libraryDeleteGen || libraryDeleteGen.current === started) listedRef.current?.(listed);
-            } catch {
-                // The import toast already reported success; the next refresh lands the row.
-            }
             if (imported?.path) onOpen(imported.path);
-            onClose();
+            // The file is already on disk. A library refresh also re-reads every
+            // other share, and a link from another Hub waits on that Hub again.
+            // That must not keep 正在导入 up; the next poll fills the row in.
+            const started = libraryDeleteGen?.current ?? 0;
+            void ListFileCompanionLibrary().then((listed) => {
+                if (!libraryDeleteGen || libraryDeleteGen.current === started) listedRef.current?.(listed);
+            }).catch(() => undefined);
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
+            return;
         } finally {
             setImportBusy(false);
         }
+        onClose();
     };
 
     const cardRef = useDialogFocus<HTMLDivElement>("input");

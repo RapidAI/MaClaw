@@ -130,6 +130,9 @@ type fileCompanionRuntime struct {
 	// webSessions maps a web playback session id to its normalized page URL.
 	// Those tabs have no filesystem grant.
 	webSessions map[string]string
+	// appearanceWatch is set once the companion process is watching the shared
+	// UI appearance file. The main process writes that file; this process does not.
+	appearanceWatch bool
 }
 
 type recordedCompanionEvent struct {
@@ -774,6 +777,7 @@ func (a *App) fileCompanionStartup(ctx context.Context) {
 		logFileCompanion("linux desktop register: %v", err)
 	}
 	a.startFileCompanionConfigWatcher()
+	a.startFileCompanionAppearanceWatcher()
 	a.prepareFileCompanionHub()
 	// A host may have only the companion window open (Open with). The window
 	// still answers reader notes on its own shares; the Hub claim link keeps

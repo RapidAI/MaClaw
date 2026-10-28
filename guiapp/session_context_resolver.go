@@ -1,30 +1,50 @@
 package guiapp
 
 import (
+	"container/list"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/reposcanner"
+	"golang.org/x/sync/singleflight"
 )
+
+const maxCachedRepoOverviews = 32
+
+type overviewCacheKey struct {
+	projectPath string
+	tokenBudget int
+}
+
+type overviewCacheEntry struct {
+	key      overviewCacheKey
+	markdown string
+}
+
+type repoOverviewScanner func(string, reposcanner.ScanConfig) (*reposcanner.ScanResult, error)
 
 // SessionContextResolver 自动推断会话启动参数
 type SessionContextResolver struct {
 	app *App
 
-	// Cached repo overviews keyed by project path.
-	overviewCache map[string]string
+	overviewCache map[overviewCacheKey]*list.Element
+	overviewLRU   *list.List
 	overviewMu    sync.Mutex
+	overviewSF    singleflight.Group
+	scanOverview  repoOverviewScanner
 }
 
 // NewSessionContextResolver creates a new SessionContextResolver.
 func NewSessionContextResolver(app *App) *SessionContextResolver {
 	return &SessionContextResolver{
 		app:           app,
-		overviewCache: make(map[string]string),
+		overviewCache: make(map[overviewCacheKey]*list.Element),
+		overviewLRU:   list.New(),
 	}
 }
 
@@ -160,7 +180,7 @@ func (r *SessionContextResolver) isToolAvailable(toolName string, toolManager *T
 
 // ResolveRepoOverview returns a compressed markdown overview of the project
 // at the given path, suitable for LLM context injection. Results are cached
-// per project path. Returns empty string if the path is empty or scanning fails.
+// per project path and token budget. Returns empty string if the path is empty or scanning fails.
 func (r *SessionContextResolver) ResolveRepoOverview(projectPath string, tokenBudget int) string {
 	if projectPath == "" {
 		return ""
@@ -168,30 +188,71 @@ func (r *SessionContextResolver) ResolveRepoOverview(projectPath string, tokenBu
 	if tokenBudget <= 0 {
 		tokenBudget = 3000
 	}
-
-	// Fast path: check cache without blocking.
-	r.overviewMu.Lock()
-	if cached, ok := r.overviewCache[projectPath]; ok {
-		r.overviewMu.Unlock()
+	key := overviewCacheKey{projectPath: projectPath, tokenBudget: tokenBudget}
+	if cached, ok := r.cachedOverview(key); ok {
 		return cached
 	}
-	// Hold lock during scan to prevent duplicate work for the same path.
-	// Scan is I/O-bound but typically completes in <1s for most projects.
+
+	flightKey := projectPath + "\x00" + strconv.Itoa(tokenBudget)
+	value, _, _ := r.overviewSF.Do(flightKey, func() (any, error) {
+		if cached, ok := r.cachedOverview(key); ok {
+			return cached, nil
+		}
+		cfg := reposcanner.DefaultScanConfig()
+		cfg.TokenBudget = tokenBudget
+		cfg.DeepMode = false
+
+		scan := r.scanOverview
+		if scan == nil {
+			scan = func(path string, cfg reposcanner.ScanConfig) (*reposcanner.ScanResult, error) {
+				return reposcanner.Scan(path, cfg, nil)
+			}
+		}
+		result, err := scan(projectPath, cfg)
+		markdown := ""
+		if err == nil && result != nil {
+			markdown = result.CompressedMD
+		}
+		r.cacheOverview(key, markdown)
+		return markdown, nil
+	})
+	markdown, _ := value.(string)
+	return markdown
+}
+
+func (r *SessionContextResolver) cachedOverview(key overviewCacheKey) (string, bool) {
+	r.overviewMu.Lock()
 	defer r.overviewMu.Unlock()
-
-	cfg := reposcanner.DefaultScanConfig()
-	cfg.TokenBudget = tokenBudget
-	cfg.DeepMode = false
-
-	result, err := reposcanner.Scan(projectPath, cfg, nil)
-	if err != nil || result == nil {
-		// Cache empty string to avoid re-scanning on every call.
-		r.overviewCache[projectPath] = ""
-		return ""
+	element, ok := r.overviewCache[key]
+	if !ok {
+		return "", false
 	}
+	r.overviewLRU.MoveToFront(element)
+	return element.Value.(*overviewCacheEntry).markdown, true
+}
 
-	r.overviewCache[projectPath] = result.CompressedMD
-	return result.CompressedMD
+func (r *SessionContextResolver) cacheOverview(key overviewCacheKey, markdown string) {
+	r.overviewMu.Lock()
+	defer r.overviewMu.Unlock()
+	if r.overviewCache == nil {
+		r.overviewCache = make(map[overviewCacheKey]*list.Element)
+	}
+	if r.overviewLRU == nil {
+		r.overviewLRU = list.New()
+	}
+	if element, ok := r.overviewCache[key]; ok {
+		element.Value.(*overviewCacheEntry).markdown = markdown
+		r.overviewLRU.MoveToFront(element)
+		return
+	}
+	element := r.overviewLRU.PushFront(&overviewCacheEntry{key: key, markdown: markdown})
+	r.overviewCache[key] = element
+	for len(r.overviewCache) > maxCachedRepoOverviews {
+		oldest := r.overviewLRU.Back()
+		entry := oldest.Value.(*overviewCacheEntry)
+		delete(r.overviewCache, entry.key)
+		r.overviewLRU.Remove(oldest)
+	}
 }
 
 // fileExists returns true if the path exists and is not a directory.

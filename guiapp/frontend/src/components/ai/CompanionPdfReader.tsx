@@ -1017,6 +1017,11 @@ function PdfDrawingLayer({
 
     const shapes = draft ? [...drawings, draft] : drawings;
     const erasing = active && tool === "eraser";
+    const cursorClass = erasing
+        ? " companion-pdf-drawings--eraser"
+        : active && tool === "line"
+            ? " companion-pdf-drawings--pen"
+            : "";
     const doomed = tool === "eraser" && eraseRect
         ? new Set(
             drawings
@@ -1028,7 +1033,7 @@ function PdfDrawingLayer({
         <svg
             ref={surfaceRef}
             className={active
-                ? `companion-pdf-drawings companion-pdf-drawings--active${erasing ? " companion-pdf-drawings--eraser" : ""}`
+                ? `companion-pdf-drawings companion-pdf-drawings--active${cursorClass}`
                 : "companion-pdf-drawings"}
             data-testid={`pdf-drawing-layer-${pageNumber}`}
             viewBox="0 0 1 1"
@@ -1622,6 +1627,308 @@ function PdfPageView({
     );
 }
 
+/** Digits only. A blank or zero does not jump; a page past the end lands on the last page. */
+function parsePdfGoto(raw: string, total: number): number | null {
+    const text = raw.trim();
+    if (!/^\d+$/.test(text)) return null;
+    const page = Number(text);
+    if (!Number.isFinite(page) || page < 1 || total < 1) return null;
+    return Math.min(total, page);
+}
+
+/**
+ * The page that owns the top of the scroller. A few pixels of the previous
+ * page still peeking under the bar do not count. Binary search: pages stack
+ * in order, so a long file does not measure every page on each scroll.
+ * Returns 0 when the scroller has not been laid out yet.
+ */
+function pdfPageAtScrollerTop(scroller: HTMLElement, pages: ArrayLike<HTMLElement>): number {
+    if (scroller.clientHeight < 1) return 0;
+    const count = pages.length;
+    if (count === 0) return 0;
+    const edge = scroller.getBoundingClientRect().top + 8;
+    let lo = 0;
+    let hi = count - 1;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (pages[mid].getBoundingClientRect().bottom <= edge) lo = mid + 1;
+        else hi = mid;
+    }
+    const chosen = pages[lo];
+    const page = Number(chosen.dataset.pdfPage);
+    if (!(page > 0)) return 0;
+    // Shells that have not been laid out share a zero box. Reporting the last
+    // one would flash the final page before the first layout.
+    const box = chosen.getBoundingClientRect();
+    if (box.width < 1 && box.height < 1) return 0;
+    return page;
+}
+
+/** Move only this scroller. scrollIntoView also scrolls the companion window. */
+function scrollPdfPageToTop(scroller: HTMLElement, el: HTMLElement) {
+    const delta = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    if (Math.abs(delta) < 1) return;
+    scroller.scrollTop += delta;
+}
+
+function PdfPager({
+    isZh,
+    total,
+    scrollerRef,
+    pagesBoxRef,
+    onReveal,
+}: {
+    isZh: boolean;
+    total: number;
+    scrollerRef: React.RefObject<HTMLDivElement | null>;
+    pagesBoxRef: React.RefObject<HTMLDivElement | null>;
+    onReveal: (page: number) => void;
+}) {
+    const inputRef = useRef<HTMLInputElement>(null);
+    const [current, setCurrent] = useState(1);
+    const [draft, setDraft] = useState("1");
+    const currentRef = useRef(1);
+    const pinPage = useRef(0);
+    const pagesRef = useRef<NodeListOf<HTMLElement> | null>(null);
+    const scrollLock = useRef(false);
+    const editing = useRef(false);
+    const draftAtFocus = useRef("1");
+    const draftRef = useRef("1");
+    draftRef.current = draft;
+
+    const jumpToPage = (page: number) => {
+        const next = parsePdfGoto(String(page), total);
+        if (!next) return;
+        currentRef.current = next;
+        pinPage.current = next;
+        editing.current = false;
+        const shown = String(next);
+        draftAtFocus.current = shown;
+        draftRef.current = shown;
+        setCurrent(next);
+        setDraft(shown);
+        onReveal(next);
+        const scroller = scrollerRef.current;
+        const el = scroller?.querySelector<HTMLElement>(`[data-pdf-page="${next}"]`);
+        if (scroller && el) {
+            scrollLock.current = true;
+            scrollPdfPageToTop(scroller, el);
+            scrollLock.current = false;
+        }
+        // Drop focus after the draft matches the destination, so blur does not
+        // commit whatever was typed before this turn.
+        inputRef.current?.blur();
+    };
+
+    const commitGoto = (raw: string) => {
+        const next = parsePdfGoto(raw, total);
+        if (!next) {
+            const shown = String(currentRef.current);
+            draftAtFocus.current = shown;
+            draftRef.current = shown;
+            // The field keeps focus after a rejected Enter or 前往. Leave the
+            // edit open so a scroll does not rewrite the box under the caret.
+            editing.current = inputRef.current === document.activeElement;
+            setDraft(shown);
+            return;
+        }
+        jumpToPage(next);
+    };
+
+    const stepPage = (delta: number) => {
+        // The label trails a fling by a frame. Step from the page on screen, or
+        // the click lands behind the scroll. A jump that is still settling uses
+        // its own page: the shells above it may not have their real height yet.
+        let base = currentRef.current;
+        if (!pinPage.current) {
+            const scroller = scrollerRef.current;
+            const pages = pagesRef.current;
+            if (scroller && pages) base = pdfPageAtScrollerTop(scroller, pages) || base;
+        }
+        const next = parsePdfGoto(String(base + delta), total);
+        if (next) jumpToPage(next);
+    };
+
+    // A real click is press then, later, click. Acting on both turns two pages
+    // once the mouse is held past the next task. Mouse acts on press. A keyboard
+    // click has detail 0 and no press, so it still turns once.
+    const press = (event: React.MouseEvent, act: () => void) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        act();
+    };
+    const activate = (event: React.MouseEvent, act: () => void) => {
+        if (event.detail !== 0) return;
+        act();
+    };
+
+    useEffect(() => {
+        const scroller = scrollerRef.current;
+        const pagesBox = pagesBoxRef.current;
+        if (!scroller) return undefined;
+        // Page shells are already mounted. Reuse the list so a scroll frame does
+        // not walk the document again.
+        const pages = scroller.querySelectorAll<HTMLElement>("[data-pdf-page]");
+        pagesRef.current = pages;
+        let frame = 0;
+        let pointerDown = false;
+        let aligning = false;
+        const readPage = () => {
+            frame = 0;
+            const next = pdfPageAtScrollerTop(scroller, pages);
+            if (!next || next === currentRef.current) return;
+            currentRef.current = next;
+            setCurrent(next);
+            if (!editing.current) {
+                draftRef.current = String(next);
+                setDraft(String(next));
+            }
+        };
+        // Only a size change pulls a jump back to the top of its page. A scroll
+        // must not, or a short wheel flick is undone on the next frame.
+        const realign = () => {
+            const pinned = pinPage.current;
+            const el = pinned ? pages[pinned - 1] : undefined;
+            if (!el || aligning) return;
+            aligning = true;
+            scrollLock.current = true;
+            scrollPdfPageToTop(scroller, el);
+            scrollLock.current = false;
+            aligning = false;
+        };
+        const scheduleRead = () => {
+            if (frame) return;
+            frame = requestAnimationFrame(readPage);
+        };
+        const onScroll = () => {
+            if (scrollLock.current) return;
+            // A click does not scroll. A drag is the pointer still being down.
+            if (pointerDown) pinPage.current = 0;
+            else if (pinPage.current) {
+                const el = pages[pinPage.current - 1];
+                // Measure now, not on the next frame. A translation card scrolls
+                // during layout, and the resize observer runs before that frame.
+                // Waiting would let the observer pull the jumped page back on top
+                // of the card. Normal reading has no pin, so this does not run
+                // on every scroll.
+                if (el && Math.abs(el.getBoundingClientRect().top - scroller.getBoundingClientRect().top) >= 1) {
+                    pinPage.current = 0;
+                }
+            }
+            scheduleRead();
+        };
+        const onPointerDown = () => { pointerDown = true; };
+        const onPointerUp = () => { pointerDown = false; };
+        scroller.addEventListener("scroll", onScroll, { passive: true });
+        scroller.addEventListener("pointerdown", onPointerDown);
+        window.addEventListener("pointerup", onPointerUp);
+        window.addEventListener("pointercancel", onPointerUp);
+        const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+            // scrollTop can change the scrollbar and re-enter this callback.
+            if (aligning) return;
+            realign();
+            if (!pinPage.current || pinPage.current !== currentRef.current) scheduleRead();
+        });
+        resize?.observe(pagesBox ?? scroller);
+        return () => {
+            pagesRef.current = null;
+            scroller.removeEventListener("scroll", onScroll);
+            scroller.removeEventListener("pointerdown", onPointerDown);
+            window.removeEventListener("pointerup", onPointerUp);
+            window.removeEventListener("pointercancel", onPointerUp);
+            resize?.disconnect();
+            if (frame) cancelAnimationFrame(frame);
+        };
+    }, [pagesBoxRef, scrollerRef, total]);
+
+    return (
+        <form
+            className="companion-pdf-pager"
+            data-testid="companion-pdf-pager"
+            aria-label={isZh ? `PDF 页码，第 ${current} 页，共 ${total} 页` : `PDF pages, page ${current} of ${total}`}
+            onSubmit={(event) => {
+                event.preventDefault();
+                commitGoto(draftRef.current);
+            }}
+            onContextMenu={(event) => event.stopPropagation()}
+        >
+            <button
+                type="button"
+                data-testid="companion-pdf-page-prev"
+                aria-label={isZh ? "前一页" : "Previous page"}
+                title={isZh ? "前一页" : "Previous page"}
+                disabled={current <= 1}
+                onMouseDown={(event) => press(event, () => stepPage(-1))}
+                onClick={(event) => activate(event, () => stepPage(-1))}
+            >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M14 6 8 12l6 6" />
+                    <path d="M8 6v12" />
+                </svg>
+            </button>
+            <label className="companion-pdf-pager-field">
+                {isZh ? <span>第</span> : null}
+                <input
+                    ref={inputRef}
+                    className="companion-pdf-pager-input"
+                    data-testid="companion-pdf-goto"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-label={isZh ? "跳转到页码" : "Go to page"}
+                    title={isZh ? "输入页码，回车或点前往" : "Type a page, then press Enter or Go"}
+                    value={draft}
+                    onChange={(event) => {
+                        const value = event.target.value.replace(/\D/g, "").slice(0, 6);
+                        editing.current = true;
+                        draftRef.current = value;
+                        setDraft(value);
+                    }}
+                    onFocus={(event) => {
+                        editing.current = true;
+                        draftAtFocus.current = event.currentTarget.value;
+                        event.currentTarget.select();
+                    }}
+                    onBlur={() => {
+                        editing.current = false;
+                        if (draftRef.current.trim() === draftAtFocus.current.trim()) {
+                            setDraft(String(currentRef.current));
+                            return;
+                        }
+                        commitGoto(draftRef.current);
+                    }}
+                />
+                <span data-testid="companion-pdf-page-total">/ {total}{isZh ? " 页" : ""}</span>
+            </label>
+            <button
+                type="button"
+                className="companion-pdf-pager-go"
+                data-testid="companion-pdf-goto-go"
+                aria-label={isZh ? "前往" : "Go"}
+                title={isZh ? "前往该页" : "Go to this page"}
+                onMouseDown={(event) => press(event, () => commitGoto(draftRef.current))}
+                onClick={(event) => activate(event, () => commitGoto(draftRef.current))}
+            >
+                {isZh ? "前往" : "Go"}
+            </button>
+            <button
+                type="button"
+                data-testid="companion-pdf-page-next"
+                aria-label={isZh ? "后一页" : "Next page"}
+                title={isZh ? "后一页" : "Next page"}
+                disabled={current >= total}
+                onMouseDown={(event) => press(event, () => stepPage(1))}
+                onClick={(event) => activate(event, () => stepPage(1))}
+            >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="m10 6 6 6-6 6" />
+                    <path d="M16 6v12" />
+                </svg>
+            </button>
+        </form>
+    );
+}
+
 /**
  * Companion-only PDF reader. Marks are stored beside the file, never inside it.
  * Other previews keep the iframe viewer.
@@ -1635,6 +1942,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     const [pdf, setPdf] = useState<PdfDocument | null>(null);
     const [width, setWidth] = useState(0);
     const [seen, setSeen] = useState<Record<number, boolean>>({ 1: true });
+    const pagesBoxRef = useRef<HTMLDivElement>(null);
     const [marks, setMarks] = useState<PdfMark[]>(() => loadPdfMarks(absPath));
     const [translations, setTranslations] = useState<PdfTranslation[]>(() => loadPdfTranslations(absPath));
     const [drawings, setDrawings] = useState<PdfDrawing[]>(() => loadPdfDrawings(absPath));
@@ -1656,6 +1964,10 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     const translateBusyRef = useRef(loadPdfTranslationDrafts(absPath).length > 0);
     const pathRef = useRef(absPath);
     pathRef.current = absPath;
+
+    const revealPage = useCallback((page: number) => {
+        setSeen((current) => (current[page] ? current : { ...current, [page]: true }));
+    }, []);
 
     const applyStoredTranslations = useCallback((path: string) => {
         const drafts = loadPdfTranslationDrafts(path);
@@ -2152,9 +2464,17 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
 
     return (
         <div className="companion-pdf-reader" data-testid="companion-pdf-reader" style={fill} onContextMenu={onContextMenu}>
+            <PdfPager
+                isZh={isZh}
+                total={pdf.numPages}
+                scrollerRef={scrollerRef}
+                pagesBoxRef={pagesBoxRef}
+                onReveal={revealPage}
+            />
             {translateError ? (
                 <p className="companion-pdf-translate-error" role="status" data-testid="pdf-translate-error">{translateError}</p>
             ) : null}
+            <div className="companion-pdf-stage">
             <div
                 className="companion-pdf-draw"
                 data-testid="pdf-draw"
@@ -2259,6 +2579,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                 ) : null}
             </div>
             <div className="companion-pdf-scroll" ref={scrollerRef} data-testid="companion-pdf-scroll">
+                <div ref={pagesBoxRef}>
                 {pages.map((page) => (
                     <PdfPageView
                         key={page}
@@ -2280,6 +2601,8 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                         active={page === 1 || seen[page] === true}
                     />
                 ))}
+                </div>
+            </div>
             </div>
             {menu ? (
                 <PdfSelectionMenu

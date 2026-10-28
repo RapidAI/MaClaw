@@ -1469,6 +1469,10 @@ export function AddFileCompanionShareNote(arg1, arg2) {
   return window['go']['main']['App']['AddFileCompanionShareNote'](arg1, arg2);
 }
 
+export function ReviewFileCompanionShareNote(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ReviewFileCompanionShareNote'](arg1, arg2, arg3);
+}
+
 export function ListFileCompanionGroups() {
   return window['go']['main']['App']['ListFileCompanionGroups']();
 }

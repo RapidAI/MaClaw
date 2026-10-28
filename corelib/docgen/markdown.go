@@ -1684,6 +1684,119 @@ func PresentFormula(latex string) string {
 	return transformMathText(strings.TrimSpace(latex))
 }
 
+type mathStringReplacement struct {
+	old string
+	new string
+}
+
+type mathReplacementPattern struct {
+	pattern string
+	repl    string
+}
+
+type mathRegexpReplacement struct {
+	re   *regexp.Regexp
+	repl string
+}
+
+type mathEnvironmentReplacement struct {
+	re   *regexp.Regexp
+	kind string
+}
+
+func compileMathReplacements(patterns []mathReplacementPattern) []mathRegexpReplacement {
+	compiled := make([]mathRegexpReplacement, len(patterns))
+	for i, item := range patterns {
+		compiled[i] = mathRegexpReplacement{re: regexp.MustCompile(item.pattern), repl: item.repl}
+	}
+	return compiled
+}
+
+var mathPrefixReplacements = compileMathReplacements([]mathReplacementPattern{
+	{`\\sqrt\[([^\[\]]+)\]\{([^{}]+)\}`, `root($1, $2)`},
+	{`\\pmod\{([^{}]+)\}`, `(mod $1)`},
+})
+
+var mathCommandReplacements = []mathStringReplacement{
+	{`\Longleftrightarrow`, `⇔`}, {`\Longrightarrow`, `⇒`}, {`\leftrightarrow`, `↔`}, {`\leftarrow`, `←`}, {`\gets`, `←`},
+	{`\hookrightarrow`, `↪`}, {`\hookleftarrow`, `↩`}, {`\twoheadrightarrow`, `↠`}, {`\twoheadleftarrow`, `↞`},
+	{`\leftharpoonup`, `↼`}, {`\rightharpoonup`, `⇀`}, {`\leftharpoondown`, `↽`}, {`\rightharpoondown`, `⇁`},
+	{`\leftrightharpoons`, `⇋`}, {`\rightleftharpoons`, `⇌`}, {`\curvearrowleft`, `↶`}, {`\curvearrowright`, `↷`},
+	{`\circlearrowleft`, `↺`}, {`\circlearrowright`, `↻`}, {`\rightsquigarrow`, `⇝`}, {`\leadsto`, `⇝`},
+	{`\updownarrow`, `↕`}, {`\nearrow`, `↗`}, {`\searrow`, `↘`}, {`\swarrow`, `↙`}, {`\nwarrow`, `↖`}, {`\mapsto`, `↦`},
+	{`\setminus`, `∖`}, {`\oplus`, `⊕`}, {`\otimes`, `⊗`}, {`\ominus`, `⊖`}, {`\propto`, `∝`}, {`\perp`, `⊥`},
+	{`\ni`, `∋`}, {`\models`, `⊨`}, {`\top`, `⊤`}, {`\preceq`, `≼`}, {`\succeq`, `≽`}, {`\trianglelefteq`, `⊴`}, {`\trianglerighteq`, `⊵`},
+	{`\leqslant`, `⩽`}, {`\geqslant`, `⩾`}, {`\nleqslant`, `⩽̸`}, {`\ngeqslant`, `⩾̸`}, {`\nleq`, `≰`}, {`\ngeq`, `≱`},
+	{`\precsim`, `≾`}, {`\succsim`, `≿`}, {`\curlyeqprec`, `⋞`}, {`\curlyeqsucc`, `⋟`}, {`\npreceq`, `⪯̸`}, {`\nsucceq`, `⪰̸`},
+	{`\precapprox`, `⪷`}, {`\succapprox`, `⪸`}, {`\leftthreetimes`, `⋋`}, {`\rightthreetimes`, `⋌`}, {`\lesssim`, `≲`}, {`\gtrsim`, `≳`},
+	{`\lessgtr`, `≶`}, {`\gtrless`, `≷`}, {`\lessapprox`, `⪅`}, {`\gtrapprox`, `⪆`}, {`\circeq`, `≗`}, {`\eqcirc`, `≖`},
+	{`\triangleq`, `≜`}, {`\doteq`, `≐`}, {`\fallingdotseq`, `≒`}, {`\risingdotseq`, `≓`}, {`\eqsim`, `≂`}, {`\bumpeq`, `≏`}, {`\Bumpeq`, `≎`},
+	{`\blacktriangleleft`, `◂`}, {`\blacktriangleright`, `▸`}, {`\vartriangleleft`, `⊲`}, {`\vartriangleright`, `⊳`}, {`\multimap`, `⊸`}, {`\pitchfork`, `⋔`},
+	{`\backsimeq`, `⋍`}, {`\backsim`, `∽`}, {`\triangleleft`, `◃`}, {`\triangleright`, `▹`}, {`\angle`, `∠`}, {`\triangle`, `△`},
+	{`\not\subseteq`, `⊈`}, {`\not\supseteq`, `⊉`}, {`\nsubseteq`, `⊈`}, {`\nsupseteq`, `⊉`}, {`\not\subset`, `⊄`}, {`\not\supset`, `⊅`},
+	{`\nsubset`, `⊄`}, {`\nsupset`, `⊅`}, {`\not\leq`, `≰`}, {`\not\geq`, `≱`}, {`\not\equiv`, `≢`}, {`\not\sim`, `≁`}, {`\not\cong`, `≇`},
+	{`\nsim`, `≁`}, {`\ncong`, `≇`}, {`\not\approx`, `≉`}, {`\not=`, `≠`},
+}
+
+var mathOperatorReplacements = compileMathReplacements([]mathReplacementPattern{
+	{`\\bmod`, `mod`}, {`\\mod`, `mod`}, {`\\limsup`, `limsup`}, {`\\liminf`, `liminf`}, {`\\gcd`, `gcd`}, {`\\det`, `det`}, {`\\dim`, `dim`}, {`\\ker`, `ker`}, {`\\Pr`, `Pr`}, {`\\mathbb\{E\}`, `bb(E)`},
+})
+
+var mathStyleReplacements = compileMathReplacements([]mathReplacementPattern{
+	{`\\mathbb\{([^{}]+)\}`, `bb($1)`}, {`\\mathbf\{([^{}]+)\}`, `bf($1)`}, {`\\mathrm\{([^{}]+)\}`, `$1`}, {`\\mathcal\{([^{}]+)\}`, `cal($1)`},
+	{`\\textbf\{([^{}]+)\}`, `bold($1)`}, {`\\textit\{([^{}]+)\}`, `italic($1)`}, {`\\emph\{([^{}]+)\}`, `emph($1)`}, {`\\text\{([^{}]+)\}`, `$1`},
+})
+
+var mathEnvironmentReplacements = []mathEnvironmentReplacement{
+	{regexp.MustCompile(`\\begin\{cases\}([\s\S]*?)\\end\{cases\}`), "cases"},
+	{regexp.MustCompile(`\\begin\{aligned\}([\s\S]*?)\\end\{aligned\}`), "aligned"},
+	{regexp.MustCompile(`\\begin\{align\*?\}([\s\S]*?)\\end\{align\*?\}`), "aligned"},
+	{regexp.MustCompile(`\\begin\{eqnarray\}([\s\S]*?)\\end\{eqnarray\}`), "aligned"},
+	{regexp.MustCompile(`\\begin\{eqnarray\*\}([\s\S]*?)\\end\{eqnarray\*\}`), "aligned"},
+	{regexp.MustCompile(`\\begin\{array\}(?:\{[^{}]*\})?([\s\S]*?)\\end\{array\}`), "array"},
+	{regexp.MustCompile(`\\begin\{vmatrix\}([\s\S]*?)\\end\{vmatrix\}`), "determinant"},
+	{regexp.MustCompile(`\\begin\{Vmatrix\}([\s\S]*?)\\end\{Vmatrix\}`), "norm"},
+	{regexp.MustCompile(`\\begin\{bmatrix\}([\s\S]*?)\\end\{bmatrix\}`), "matrix"},
+	{regexp.MustCompile(`\\begin\{matrix\}([\s\S]*?)\\end\{matrix\}`), "plainMatrix"},
+	{regexp.MustCompile(`\\begin\{smallmatrix\}([\s\S]*?)\\end\{smallmatrix\}`), "smallMatrix"},
+	{regexp.MustCompile(`\\begin\{pmatrix\}([\s\S]*?)\\end\{pmatrix\}`), "parenMatrix"},
+	{regexp.MustCompile(`\\begin\{Bmatrix\}([\s\S]*?)\\end\{Bmatrix\}`), "braceMatrix"},
+}
+
+var mathFractionRe = regexp.MustCompile(`\\(?:d|t)?frac\{([^{}]+)\}\{([^{}]+)\}`)
+
+var mathDecorationReplacements = compileMathReplacements([]mathReplacementPattern{
+	{`\\overbrace\{([^{}]+)\}(?:\^\{([^{}]+)\})?`, `overbrace($1, $2)`},
+	{`\\underbrace\{([^{}]+)\}(?:_\{([^{}]+)\})?`, `underbrace($1, $2)`},
+	{`\\overparen\{([^{}]+)\}`, `overparen($1)`}, {`\\underparen\{([^{}]+)\}`, `underparen($1)`}, {`\\binom\{([^{}]+)\}\{([^{}]+)\}`, `binom($1, $2)`},
+	{`\\overline\{([^{}]+)\}`, `overline($1)`}, {`\\underline\{([^{}]+)\}`, `underline($1)`}, {`\\hat\{([^{}]+)\}`, `hat($1)`}, {`\\tilde\{([^{}]+)\}`, `tilde($1)`},
+	{`\\ddot\{([^{}]+)\}`, `ddot($1)`}, {`\\dot\{([^{}]+)\}`, `dot($1)`}, {`\\cancel\{([^{}]+)\}`, `cancel($1)`}, {`\\boxed\{([^{}]+)\}`, `boxed($1)`},
+	{`\\overset\{([^{}]+)\}\{([^{}]+)\}`, `overset($1, $2)`}, {`\\underset\{([^{}]+)\}\{([^{}]+)\}`, `underset($1, $2)`},
+	{`\\operatorname\*\{([^{}]+)\}`, `$1`}, {`\\operatorname\{([^{}]+)\}`, `$1`}, {`\\xmapsto\{([^{}]+)\}`, `xmapsto($1)`},
+	{`\\xleftrightarrow\{([^{}]+)\}`, `xleftrightarrow($1)`}, {`\\xrightarrow\{([^{}]+)\}`, `xrightarrow($1)`}, {`\\xleftarrow\{([^{}]+)\}`, `xleftarrow($1)`},
+	{`\{([^{}]+)\\choose([^{}]+)\}`, `choose($1, $2)`}, {`\\overleftrightarrow\{([^{}]+)\}`, `overleftrightarrow($1)`}, {`\\underrightarrow\{([^{}]+)\}`, `underrightarrow($1)`},
+	{`\\underleftarrow\{([^{}]+)\}`, `underleftarrow($1)`}, {`\\overrightarrow\{([^{}]+)\}`, `overrightarrow($1)`}, {`\\overleftarrow\{([^{}]+)\}`, `overleftarrow($1)`},
+	{`\\bar\{([^{}]+)\}`, `bar($1)`}, {`\\vec\{([^{}]+)\}`, `vec($1)`}, {`\\sqrt\[([^\[\]]+)\]\{([^{}]+)\}`, `root($1, $2)`}, {`\\sqrt\{([^{}]+)\}`, `√($1)`},
+	{`\\(?:d|t)?frac\{([^{}]+)\}\{([^{}]+)\}`, `($1)/($2)`}, {`\\(?:big|Big|bigg|Bigg)(l|r|m)?`, ``}, {`\\(?:displaystyle|textstyle|scriptstyle|scriptscriptstyle)`, ``},
+})
+
+var mathSpacingReplacements = []mathStringReplacement{{`\,`, " "}, {`\!`, ""}, {`\;`, " "}, {`\:`, " "}, {`\quad`, " "}, {`\qquad`, " "}}
+
+var mathScriptReplacements = compileMathReplacements([]mathReplacementPattern{
+	{`(argmin|argmax|min|max)_\{([^{}]+)\}`, `$1<sub>$2</sub>`}, {`(argmin|argmax|min|max)_([A-Za-z0-9α-ωΑ-Ω]+)`, `$1<sub>$2</sub>`}, {`\\lim_\{([^{}]+)\}`, `lim<sub>$1</sub>`},
+	{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_\{([^{}]+)\}\^\{([^{}]+)\}`, `$1<sub>$2</sub><sup>$3</sup>`},
+	{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_([A-Za-z0-9α-ωΑ-Ω]+)\^([A-Za-z0-9α-ωΑ-Ω+\-])`, `$1<sub>$2</sub><sup>$3</sup>`},
+	{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_\{([^{}]+)\}\^([A-Za-z0-9α-ωΑ-Ω+\-])`, `$1<sub>$2</sub><sup>$3</sup>`},
+	{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_([A-Za-z0-9α-ωΑ-Ω]+)\^\{([^{}]+)\}`, `$1<sub>$2</sub><sup>$3</sup>`},
+	{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_\{([^{}]+)\}`, `$1<sub>$2</sub>`}, {`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_([A-Za-z0-9α-ωΑ-Ω]+)`, `$1<sub>$2</sub>`},
+	{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)\^\{([^{}]+)\}`, `$1<sup>$2</sup>`}, {`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)\^([A-Za-z0-9α-ωΑ-Ω+\-])`, `$1<sup>$2</sup>`},
+	{`\|\|([^|\s][^|]*?[^|\s]|[^|\s])\|\|`, `norm($1)`}, {`\|([^|\s][^|]*?[^|\s]|[^|\s])\|`, `abs($1)`}, {`([A-Za-z0-9α-ωΑ-Ω∑∏∫√\)\]\}])\^\{([^{}]+)\}`, `$1<sup>$2</sup>`},
+	{`([A-Za-z0-9α-ωΑ-Ω∑∏∫√\)\]\}])_\{([^{}]+)\}`, `$1<sub>$2</sub>`}, {`([A-Za-z0-9α-ωΑ-Ω∑∏∫√\)\]\}])\^([A-Za-z0-9α-ωΑ-Ω+\-])`, `$1<sup>$2</sup>`}, {`([A-Za-z0-9α-ωΑ-Ω∑∏∫√])_([A-Za-z0-9α-ωΑ-Ω])`, `$1<sub>$2</sub>`},
+})
+
+var mathCleanupReplacements = []mathStringReplacement{{`&=`, `=`}, {` , `, `, `}, {`\\,`, " "}, {`\\`, `\`}, {`{`, ``}, {`}`, ``}}
+var mathWhitespaceRe = regexp.MustCompile(`\s{2,}`)
+
 func transformMathText(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -1695,34 +1808,14 @@ func transformMathText(text string) string {
 	text = strings.ReplaceAll(text, `\[`, `[`)
 	text = strings.ReplaceAll(text, `\]`, `]`)
 	text = strings.ReplaceAll(text, `\|`, `|`)
-	text = regexp.MustCompile(`\\sqrt\[([^\[\]]+)\]\{([^{}]+)\}`).ReplaceAllString(text, `root($1, $2)`)
-	text = regexp.MustCompile(`\\pmod\{([^{}]+)\}`).ReplaceAllString(text, `(mod $1)`)
-	for _, pair := range []struct{ old, new string }{
-		{`\Longleftrightarrow`, `⇔`}, {`\Longrightarrow`, `⇒`}, {`\leftrightarrow`, `↔`}, {`\leftarrow`, `←`}, {`\gets`, `←`},
-		{`\hookrightarrow`, `↪`}, {`\hookleftarrow`, `↩`}, {`\twoheadrightarrow`, `↠`}, {`\twoheadleftarrow`, `↞`},
-		{`\leftharpoonup`, `↼`}, {`\rightharpoonup`, `⇀`}, {`\leftharpoondown`, `↽`}, {`\rightharpoondown`, `⇁`},
-		{`\leftrightharpoons`, `⇋`}, {`\rightleftharpoons`, `⇌`}, {`\curvearrowleft`, `↶`}, {`\curvearrowright`, `↷`},
-		{`\circlearrowleft`, `↺`}, {`\circlearrowright`, `↻`}, {`\rightsquigarrow`, `⇝`}, {`\leadsto`, `⇝`},
-		{`\updownarrow`, `↕`}, {`\nearrow`, `↗`}, {`\searrow`, `↘`}, {`\swarrow`, `↙`}, {`\nwarrow`, `↖`}, {`\mapsto`, `↦`},
-		{`\setminus`, `∖`}, {`\oplus`, `⊕`}, {`\otimes`, `⊗`}, {`\ominus`, `⊖`}, {`\propto`, `∝`}, {`\perp`, `⊥`},
-		{`\ni`, `∋`}, {`\models`, `⊨`}, {`\top`, `⊤`}, {`\preceq`, `≼`}, {`\succeq`, `≽`}, {`\trianglelefteq`, `⊴`}, {`\trianglerighteq`, `⊵`},
-		{`\leqslant`, `⩽`}, {`\geqslant`, `⩾`}, {`\nleqslant`, `⩽̸`}, {`\ngeqslant`, `⩾̸`}, {`\nleq`, `≰`}, {`\ngeq`, `≱`},
-		{`\precsim`, `≾`}, {`\succsim`, `≿`}, {`\curlyeqprec`, `⋞`}, {`\curlyeqsucc`, `⋟`}, {`\npreceq`, `⪯̸`}, {`\nsucceq`, `⪰̸`},
-		{`\precapprox`, `⪷`}, {`\succapprox`, `⪸`}, {`\leftthreetimes`, `⋋`}, {`\rightthreetimes`, `⋌`}, {`\lesssim`, `≲`}, {`\gtrsim`, `≳`},
-		{`\lessgtr`, `≶`}, {`\gtrless`, `≷`}, {`\lessapprox`, `⪅`}, {`\gtrapprox`, `⪆`}, {`\circeq`, `≗`}, {`\eqcirc`, `≖`},
-		{`\triangleq`, `≜`}, {`\doteq`, `≐`}, {`\fallingdotseq`, `≒`}, {`\risingdotseq`, `≓`}, {`\eqsim`, `≂`}, {`\bumpeq`, `≏`}, {`\Bumpeq`, `≎`},
-		{`\blacktriangleleft`, `◂`}, {`\blacktriangleright`, `▸`}, {`\vartriangleleft`, `⊲`}, {`\vartriangleright`, `⊳`}, {`\multimap`, `⊸`}, {`\pitchfork`, `⋔`},
-		{`\backsimeq`, `⋍`}, {`\backsim`, `∽`}, {`\triangleleft`, `◃`}, {`\triangleright`, `▹`}, {`\angle`, `∠`}, {`\triangle`, `△`},
-		{`\not\subseteq`, `⊈`}, {`\not\supseteq`, `⊉`}, {`\nsubseteq`, `⊈`}, {`\nsupseteq`, `⊉`}, {`\not\subset`, `⊄`}, {`\not\supset`, `⊅`},
-		{`\nsubset`, `⊄`}, {`\nsupset`, `⊅`}, {`\not\leq`, `≰`}, {`\not\geq`, `≱`}, {`\not\equiv`, `≢`}, {`\not\sim`, `≁`}, {`\not\cong`, `≇`},
-		{`\nsim`, `≁`}, {`\ncong`, `≇`}, {`\not\approx`, `≉`}, {`\not=`, `≠`},
-	} {
+	for _, re := range mathPrefixReplacements {
+		text = re.re.ReplaceAllString(text, re.repl)
+	}
+	for _, pair := range mathCommandReplacements {
 		text = strings.ReplaceAll(text, pair.old, pair.new)
 	}
-	for _, re := range []struct{ pattern, repl string }{
-		{`\\bmod`, `mod`}, {`\\mod`, `mod`}, {`\\limsup`, `limsup`}, {`\\liminf`, `liminf`}, {`\\gcd`, `gcd`}, {`\\det`, `det`}, {`\\dim`, `dim`}, {`\\ker`, `ker`}, {`\\Pr`, `Pr`}, {`\\mathbb\{E\}`, `bb(E)`},
-	} {
-		text = regexp.MustCompile(re.pattern).ReplaceAllString(text, re.repl)
+	for _, re := range mathOperatorReplacements {
+		text = re.re.ReplaceAllString(text, re.repl)
 	}
 	text = strings.ReplaceAll(text, `\sup_`, `sup_`)
 	text = strings.ReplaceAll(text, `\sup{`, `sup{`)
@@ -1732,78 +1825,57 @@ func transformMathText(text string) string {
 	text = strings.ReplaceAll(text, `\inf `, `inf `)
 	text = latexSymbolReplacer.Replace(text)
 	text = latexFunctionReplacer.Replace(text)
-	for _, re := range []struct{ pattern, repl string }{
-		{`\\mathbb\{([^{}]+)\}`, `bb($1)`}, {`\\mathbf\{([^{}]+)\}`, `bf($1)`}, {`\\mathrm\{([^{}]+)\}`, `$1`}, {`\\mathcal\{([^{}]+)\}`, `cal($1)`},
-		{`\\textbf\{([^{}]+)\}`, `bold($1)`}, {`\\textit\{([^{}]+)\}`, `italic($1)`}, {`\\emph\{([^{}]+)\}`, `emph($1)`}, {`\\text\{([^{}]+)\}`, `$1`},
-	} {
-		text = regexp.MustCompile(re.pattern).ReplaceAllString(text, re.repl)
+	for _, re := range mathStyleReplacements {
+		text = re.re.ReplaceAllString(text, re.repl)
 	}
-	for _, env := range []struct {
-		pattern string
-		fn      func(string) string
-	}{
-		{`\\begin\{cases\}([\s\S]*?)\\end\{cases\}`, transformCasesEnvironment},
-		{`\\begin\{aligned\}([\s\S]*?)\\end\{aligned\}`, transformAlignedEnvironment},
-		{`\\begin\{align\*?\}([\s\S]*?)\\end\{align\*?\}`, transformAlignedEnvironment},
-		{`\\begin\{eqnarray\}([\s\S]*?)\\end\{eqnarray\}`, transformAlignedEnvironment},
-		{`\\begin\{eqnarray\*\}([\s\S]*?)\\end\{eqnarray\*\}`, transformAlignedEnvironment},
-		{`\\begin\{array\}(?:\{[^{}]*\})?([\s\S]*?)\\end\{array\}`, transformArrayEnvironment},
-		{`\\begin\{vmatrix\}([\s\S]*?)\\end\{vmatrix\}`, transformDeterminantEnvironment},
-		{`\\begin\{Vmatrix\}([\s\S]*?)\\end\{Vmatrix\}`, transformNormEnvironment},
-		{`\\begin\{bmatrix\}([\s\S]*?)\\end\{bmatrix\}`, transformMatrixEnvironment},
-		{`\\begin\{matrix\}([\s\S]*?)\\end\{matrix\}`, transformPlainMatrixEnvironment},
-		{`\\begin\{smallmatrix\}([\s\S]*?)\\end\{smallmatrix\}`, transformSmallMatrixEnvironment},
-		{`\\begin\{pmatrix\}([\s\S]*?)\\end\{pmatrix\}`, transformParenMatrixEnvironment},
-		{`\\begin\{Bmatrix\}([\s\S]*?)\\end\{Bmatrix\}`, transformBraceMatrixEnvironment},
-	} {
-		text = regexp.MustCompile(env.pattern).ReplaceAllStringFunc(text, env.fn)
+	for _, env := range mathEnvironmentReplacements {
+		var fn func(string) string
+		switch env.kind {
+		case "cases":
+			fn = transformCasesEnvironment
+		case "aligned":
+			fn = transformAlignedEnvironment
+		case "array":
+			fn = transformArrayEnvironment
+		case "determinant":
+			fn = transformDeterminantEnvironment
+		case "norm":
+			fn = transformNormEnvironment
+		case "matrix":
+			fn = transformMatrixEnvironment
+		case "plainMatrix":
+			fn = transformPlainMatrixEnvironment
+		case "smallMatrix":
+			fn = transformSmallMatrixEnvironment
+		case "parenMatrix":
+			fn = transformParenMatrixEnvironment
+		case "braceMatrix":
+			fn = transformBraceMatrixEnvironment
+		}
+		text = env.re.ReplaceAllStringFunc(text, fn)
 	}
 	text = replaceFractions(text)
-	for _, re := range []struct{ pattern, repl string }{
-		{`\\overbrace\{([^{}]+)\}(?:\^\{([^{}]+)\})?`, `overbrace($1, $2)`},
-		{`\\underbrace\{([^{}]+)\}(?:_\{([^{}]+)\})?`, `underbrace($1, $2)`},
-		{`\\overparen\{([^{}]+)\}`, `overparen($1)`}, {`\\underparen\{([^{}]+)\}`, `underparen($1)`}, {`\\binom\{([^{}]+)\}\{([^{}]+)\}`, `binom($1, $2)`},
-		{`\\overline\{([^{}]+)\}`, `overline($1)`}, {`\\underline\{([^{}]+)\}`, `underline($1)`}, {`\\hat\{([^{}]+)\}`, `hat($1)`}, {`\\tilde\{([^{}]+)\}`, `tilde($1)`},
-		{`\\ddot\{([^{}]+)\}`, `ddot($1)`}, {`\\dot\{([^{}]+)\}`, `dot($1)`}, {`\\cancel\{([^{}]+)\}`, `cancel($1)`}, {`\\boxed\{([^{}]+)\}`, `boxed($1)`},
-		{`\\overset\{([^{}]+)\}\{([^{}]+)\}`, `overset($1, $2)`}, {`\\underset\{([^{}]+)\}\{([^{}]+)\}`, `underset($1, $2)`},
-		{`\\operatorname\*\{([^{}]+)\}`, `$1`}, {`\\operatorname\{([^{}]+)\}`, `$1`}, {`\\xmapsto\{([^{}]+)\}`, `xmapsto($1)`},
-		{`\\xleftrightarrow\{([^{}]+)\}`, `xleftrightarrow($1)`}, {`\\xrightarrow\{([^{}]+)\}`, `xrightarrow($1)`}, {`\\xleftarrow\{([^{}]+)\}`, `xleftarrow($1)`},
-		{`\{([^{}]+)\\choose([^{}]+)\}`, `choose($1, $2)`}, {`\\overleftrightarrow\{([^{}]+)\}`, `overleftrightarrow($1)`}, {`\\underrightarrow\{([^{}]+)\}`, `underrightarrow($1)`},
-		{`\\underleftarrow\{([^{}]+)\}`, `underleftarrow($1)`}, {`\\overrightarrow\{([^{}]+)\}`, `overrightarrow($1)`}, {`\\overleftarrow\{([^{}]+)\}`, `overleftarrow($1)`},
-		{`\\bar\{([^{}]+)\}`, `bar($1)`}, {`\\vec\{([^{}]+)\}`, `vec($1)`}, {`\\sqrt\[([^\[\]]+)\]\{([^{}]+)\}`, `root($1, $2)`}, {`\\sqrt\{([^{}]+)\}`, `√($1)`},
-		{`\\(?:d|t)?frac\{([^{}]+)\}\{([^{}]+)\}`, `($1)/($2)`}, {`\\(?:big|Big|bigg|Bigg)(l|r|m)?`, ``}, {`\\(?:displaystyle|textstyle|scriptstyle|scriptscriptstyle)`, ``},
-	} {
-		text = regexp.MustCompile(re.pattern).ReplaceAllString(text, re.repl)
+	for _, re := range mathDecorationReplacements {
+		text = re.re.ReplaceAllString(text, re.repl)
 	}
-	for _, pair := range []struct{ old, new string }{{`\,`, " "}, {`\!`, ""}, {`\;`, " "}, {`\:`, " "}, {`\quad`, " "}, {`\qquad`, " "}} {
+	for _, pair := range mathSpacingReplacements {
 		text = strings.ReplaceAll(text, pair.old, pair.new)
 	}
-	for _, re := range []struct{ pattern, repl string }{
-		{`(argmin|argmax|min|max)_\{([^{}]+)\}`, `$1<sub>$2</sub>`}, {`(argmin|argmax|min|max)_([A-Za-z0-9α-ωΑ-Ω]+)`, `$1<sub>$2</sub>`}, {`\\lim_\{([^{}]+)\}`, `lim<sub>$1</sub>`},
-		{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_\{([^{}]+)\}\^\{([^{}]+)\}`, `$1<sub>$2</sub><sup>$3</sup>`},
-		{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_([A-Za-z0-9α-ωΑ-Ω]+)\^([A-Za-z0-9α-ωΑ-Ω+\-])`, `$1<sub>$2</sub><sup>$3</sup>`},
-		{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_\{([^{}]+)\}\^([A-Za-z0-9α-ωΑ-Ω+\-])`, `$1<sub>$2</sub><sup>$3</sup>`},
-		{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_([A-Za-z0-9α-ωΑ-Ω]+)\^\{([^{}]+)\}`, `$1<sub>$2</sub><sup>$3</sup>`},
-		{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_\{([^{}]+)\}`, `$1<sub>$2</sub>`}, {`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)_([A-Za-z0-9α-ωΑ-Ω]+)`, `$1<sub>$2</sub>`},
-		{`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)\^\{([^{}]+)\}`, `$1<sup>$2</sup>`}, {`(∑|∏|∐|⋃|⋂|⨁|⨂|⨀|⋁|⋀|⨆|∭|∬|∮|∫)\^([A-Za-z0-9α-ωΑ-Ω+\-])`, `$1<sup>$2</sup>`},
-		{`\|\|([^|\s][^|]*?[^|\s]|[^|\s])\|\|`, `norm($1)`}, {`\|([^|\s][^|]*?[^|\s]|[^|\s])\|`, `abs($1)`}, {`([A-Za-z0-9α-ωΑ-Ω∑∏∫√\)\]\}])\^\{([^{}]+)\}`, `$1<sup>$2</sup>`},
-		{`([A-Za-z0-9α-ωΑ-Ω∑∏∫√\)\]\}])_\{([^{}]+)\}`, `$1<sub>$2</sub>`}, {`([A-Za-z0-9α-ωΑ-Ω∑∏∫√\)\]\}])\^([A-Za-z0-9α-ωΑ-Ω+\-])`, `$1<sup>$2</sup>`}, {`([A-Za-z0-9α-ωΑ-Ω∑∏∫√])_([A-Za-z0-9α-ωΑ-Ω])`, `$1<sub>$2</sub>`},
-	} {
-		text = regexp.MustCompile(re.pattern).ReplaceAllString(text, re.repl)
+	for _, re := range mathScriptReplacements {
+		text = re.re.ReplaceAllString(text, re.repl)
 	}
-	for _, pair := range []struct{ old, new string }{{`&=`, `=`}, {` , `, `, `}, {`\\,`, " "}, {`\\`, `\`}, {`{`, ``}, {`}`, ``}} {
+	for _, pair := range mathCleanupReplacements {
 		text = strings.ReplaceAll(text, pair.old, pair.new)
 	}
-	text = regexp.MustCompile(`\s{2,}`).ReplaceAllString(text, " ")
+	text = mathWhitespaceRe.ReplaceAllString(text, " ")
 	text = escapeHTML(text)
 	text = strings.ReplaceAll(text, "&lt;span style=\"white-space:nowrap\"&gt;", `<span style="white-space:nowrap">`)
 	return restoreMathHTML(strings.TrimSpace(text))
 }
 
 func replaceFractions(text string) string {
-	fractionRe := regexp.MustCompile(`\\(?:d|t)?frac\{([^{}]+)\}\{([^{}]+)\}`)
 	for {
-		next := fractionRe.ReplaceAllString(text, `<span style="white-space:nowrap">($1)/($2)</span>`)
+		next := mathFractionRe.ReplaceAllString(text, `<span style="white-space:nowrap">($1)/($2)</span>`)
 		if next == text {
 			return text
 		}

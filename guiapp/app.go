@@ -190,10 +190,13 @@ type App struct {
 	// stays false until a list request succeeds on a Hub that supports them,
 	// so an updated desktop talking to an older Hub keeps answering locally.
 	fileCompanionNotesReply atomic.Bool
-	installingNode          bool      // Flag to prevent concurrent Node.js installation
-	installingGit           bool      // Flag to prevent concurrent Git installation
-	nodeInstallDone         chan bool // Channel to signal Node.js installation completion
-	installMutex            sync.Mutex
+	// fileCompanionNotesReview caches whether reader notes wait for host
+	// review. The discussion watcher only answers approved notes there.
+	fileCompanionNotesReview atomic.Bool
+	installingNode           bool      // Flag to prevent concurrent Node.js installation
+	installingGit            bool      // Flag to prevent concurrent Git installation
+	nodeInstallDone          chan bool // Channel to signal Node.js installation completion
+	installMutex             sync.Mutex
 	// legacyInstallResults stores the latest structured outcome for the
 	// compatibility InstallSkill API. The Wails method historically returns
 	// only error, so the result is exposed through InstallSkillDetailed while

@@ -586,6 +586,91 @@ func TestSessionTurnsDoNotOverlap(t *testing.T) {
 	}
 }
 
+func TestCloseSessionRemovesIdleTurnLock(t *testing.T) {
+	handler := NewVEMessageHandler(&App{})
+	unlock := handler.lockSessionTurn("session-a")
+	unlock()
+	handler.CloseSession("session-a")
+
+	handler.turnMu.Lock()
+	_, exists := handler.turns["session-a"]
+	handler.turnMu.Unlock()
+	if exists {
+		t.Fatal("idle turn lock survived session close")
+	}
+}
+
+func TestCloseAndReopenSessionSharesTurnLockUntilLastReferenceExits(t *testing.T) {
+	handler := NewVEMessageHandler(&App{})
+	sessionID := "session-a"
+	oldCtx, oldCancel := context.WithCancel(context.Background())
+	defer oldCancel()
+	handler.activeSessions[sessionID] = &veSession{SessionID: sessionID, Cancel: oldCancel, ctx: oldCtx}
+	firstUnlock := handler.lockSessionTurn(sessionID)
+	secondDone := make(chan struct{})
+	go func() {
+		unlock := handler.lockSessionTurn(sessionID)
+		unlock()
+		close(secondDone)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		handler.turnMu.Lock()
+		turn := handler.turns[sessionID]
+		refs := 0
+		if turn != nil {
+			refs = turn.refs
+		}
+		handler.turnMu.Unlock()
+		if refs == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second turn did not register as a waiter")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	handler.turnMu.Lock()
+	oldTurn := handler.turns[sessionID]
+	handler.turnMu.Unlock()
+	handler.CloseSession(sessionID)
+	handler.turnMu.Lock()
+	closedTurn := handler.turns[sessionID]
+	handler.turnMu.Unlock()
+	if closedTurn != oldTurn || !closedTurn.closed {
+		t.Fatal("close replaced or prematurely removed a turn lock with waiters")
+	}
+
+	newCtx, newCancel := context.WithCancel(context.Background())
+	defer newCancel()
+	handler.mu.Lock()
+	handler.activeSessions[sessionID] = &veSession{SessionID: sessionID, Cancel: newCancel, ctx: newCtx}
+	newTurn := handler.retainActiveSessionTurn(sessionID)
+	handler.mu.Unlock()
+	if newTurn != oldTurn {
+		t.Fatal("reopened session received a different mutex while an old turn was waiting")
+	}
+
+	firstUnlock()
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("old waiter did not exit after the first turn finished")
+	}
+	newUnlock := handler.lockRetainedSessionTurn(sessionID, newTurn)
+	handler.CloseSession(sessionID)
+	newUnlock()
+
+	handler.turnMu.Lock()
+	_, exists := handler.turns[sessionID]
+	handler.turnMu.Unlock()
+	if exists {
+		t.Fatal("turn lock survived the last reference after the reopened session closed")
+	}
+}
+
 // --- Streaming response construction tests ---
 
 func TestVEStreamingResponse_ChunkSequence(t *testing.T) {

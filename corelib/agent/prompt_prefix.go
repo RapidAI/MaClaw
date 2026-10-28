@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Segment order is frozen: tools, system, memory snapshot, first message.
@@ -110,8 +111,82 @@ type PromptPrefixPin struct {
 	HistorySeen  bool
 }
 
+const (
+	promptPrefixPinTTL           = 24 * time.Hour
+	promptPrefixPinSweepInterval = 5 * time.Minute
+)
+
+type promptPrefixPinEntry struct {
+	pin        *PromptPrefixPin
+	lastAccess time.Time
+}
+
+type promptPrefixPinStore struct {
+	mu        sync.Mutex
+	pins      map[string]*promptPrefixPinEntry
+	lastSweep time.Time
+}
+
+func (s *promptPrefixPinStore) getOrCreate(key string, meta PromptPrefixMeta, now time.Time) *PromptPrefixPin {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(now)
+	if entry, ok := s.pins[key]; ok && now.Before(entry.lastAccess.Add(promptPrefixPinTTL)) {
+		entry.lastAccess = now
+		return entry.pin
+	}
+	pin := &PromptPrefixPin{
+		ConversationID: meta.ConversationID,
+		BotID:          meta.BotID,
+		Order:          promptPrefixOrder(),
+	}
+	if s.pins == nil {
+		s.pins = make(map[string]*promptPrefixPinEntry)
+	}
+	s.pins[key] = &promptPrefixPinEntry{pin: pin, lastAccess: now}
+	return pin
+}
+
+func (s *promptPrefixPinStore) lookup(key string, now time.Time) (*PromptPrefixPin, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(now)
+	entry, ok := s.pins[key]
+	if !ok || !now.Before(entry.lastAccess.Add(promptPrefixPinTTL)) {
+		delete(s.pins, key)
+		return nil, false
+	}
+	entry.lastAccess = now
+	return entry.pin, true
+}
+
+func (s *promptPrefixPinStore) drop(key string) {
+	s.mu.Lock()
+	delete(s.pins, key)
+	s.mu.Unlock()
+}
+
+func (s *promptPrefixPinStore) reset() {
+	s.mu.Lock()
+	s.pins = make(map[string]*promptPrefixPinEntry)
+	s.lastSweep = time.Time{}
+	s.mu.Unlock()
+}
+
+func (s *promptPrefixPinStore) sweepLocked(now time.Time) {
+	if !s.lastSweep.IsZero() && now.Sub(s.lastSweep) < promptPrefixPinSweepInterval {
+		return
+	}
+	s.lastSweep = now
+	for key, entry := range s.pins {
+		if !now.Before(entry.lastAccess.Add(promptPrefixPinTTL)) {
+			delete(s.pins, key)
+		}
+	}
+}
+
 var (
-	promptPrefixPins       sync.Map // botID + NUL + conversationID -> *PromptPrefixPin
+	promptPrefixPins       promptPrefixPinStore
 	promptPrefixUnexpected sync.Map // segment + NUL + provider + NUL + model -> *atomic.Int64
 	agentsMDPathValue      atomic.Value
 )
@@ -274,27 +349,20 @@ func PrepareConversationPrefix(meta PromptPrefixMeta, in PromptPrefixInput) Prom
 		return decidePromptPrefix(pin, meta, in)
 	}
 	key := meta.BotID + "\x00" + meta.ConversationID
-	actual, _ := promptPrefixPins.LoadOrStore(key, &PromptPrefixPin{
-		ConversationID: meta.ConversationID,
-		BotID:          meta.BotID,
-		Order:          promptPrefixOrder(),
-	})
-	return decidePromptPrefix(actual.(*PromptPrefixPin), meta, in)
+	pin := promptPrefixPins.getOrCreate(key, meta, time.Now())
+	return decidePromptPrefix(pin, meta, in)
 }
 
 // DropConversationPrefix forgets one conversation's pin. A new conversation
 // (/new, a new session) calls this so the next turn may pin again.
 func DropConversationPrefix(botID, conversationID string) {
-	promptPrefixPins.Delete(strings.TrimSpace(botID) + "\x00" + strings.TrimSpace(conversationID))
+	promptPrefixPins.drop(strings.TrimSpace(botID) + "\x00" + strings.TrimSpace(conversationID))
 }
 
 // ResetPromptPrefixPins clears every pin and counter. Tests use it so cases
 // do not share a conversation.
 func ResetPromptPrefixPins() {
-	promptPrefixPins.Range(func(key, _ any) bool {
-		promptPrefixPins.Delete(key)
-		return true
-	})
+	promptPrefixPins.reset()
 	promptPrefixUnexpected.Range(func(key, _ any) bool {
 		promptPrefixUnexpected.Delete(key)
 		return true
@@ -536,11 +604,10 @@ func promptPrefixCounterKey(segment, provider, model string) string {
 // replays them. A missing pin returns false.
 func PinnedPrefix(botID, conversationID string) (PromptPrefixSegments, bool) {
 	key := strings.TrimSpace(botID) + "\x00" + strings.TrimSpace(conversationID)
-	v, ok := promptPrefixPins.Load(key)
+	pin, ok := promptPrefixPins.lookup(key, time.Now())
 	if !ok {
 		return PromptPrefixSegments{}, false
 	}
-	pin := v.(*PromptPrefixPin)
 	pin.mu.Lock()
 	defer pin.mu.Unlock()
 	if !prefixHasPin(pin) {

@@ -94,13 +94,13 @@ export function CompanionFigureStrip({ figures, messageId }: { figures: Companio
 
     return (
         <div style={{ marginTop: 10 }} data-testid={`file-companion-figures-${messageId}`}>
-            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 6 }}>{heading}</div>
+            <div style={{ fontSize: 12, color: "var(--theme-text-muted, #64748b)", marginBottom: 6 }}>{heading}</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {figures.map((figure) => {
                     const dataURL = loaded[figure.path] || figureDataURLs.get(figure.path) || "";
                     const title = [figure.label, figure.caption, figure.path].filter(Boolean).join(" · ");
                     return (
-                        <figure key={figure.path} style={{ margin: 0, width: 168, border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden", background: "#f8fafc" }}>
+                        <figure key={figure.path} style={{ margin: 0, width: 168, border: "1px solid var(--theme-border, #e2e8f0)", borderRadius: 8, overflow: "hidden", background: "var(--theme-surface-muted, #f8fafc)" }}>
                             {dataURL ? (
                                 <button
                                     type="button"
@@ -116,11 +116,11 @@ export function CompanionFigureStrip({ figures, messageId }: { figures: Companio
                                     />
                                 </button>
                             ) : (
-                                <div style={{ height: 112, display: "grid", placeItems: "center", color: "#94a3b8", fontSize: 12 }}>
+                                <div style={{ height: 112, display: "grid", placeItems: "center", color: "var(--theme-text-muted, #94a3b8)", fontSize: 12 }}>
                                     {failed[figure.path] ? "无法取图" : "正在取图…"}
                                 </div>
                             )}
-                            <figcaption style={{ padding: "4px 6px", fontSize: 11, color: "#475569", lineHeight: 1.4, overflowWrap: "anywhere" }}>
+                            <figcaption style={{ padding: "4px 6px", fontSize: 11, color: "var(--theme-text-secondary, #475569)", lineHeight: 1.4, overflowWrap: "anywhere" }}>
                                 {figure.label ? `${figure.label}` : ""}{figure.caption ? ` ${figure.caption}` : ""}
                             </figcaption>
                         </figure>

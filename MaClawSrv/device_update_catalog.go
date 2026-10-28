@@ -84,9 +84,17 @@ type srvDeviceUpdateCatalogDocument struct {
 // this file only after checking an allow-listed, signed .clawfw manifest.
 // Until that verifier exists in Hub, the catalog is fail-closed: malformed,
 // untrusted or missing data simply yields no update notification.
+type srvDeviceUpdateCatalogCache struct {
+	size     int64
+	modTime  time.Time
+	document srvDeviceUpdateCatalogDocument
+}
+
 type srvDeviceUpdateCatalog struct {
-	path string
-	mu   sync.Mutex
+	path      string
+	replaceMu sync.Mutex
+	mu        sync.Mutex
+	cache     *srvDeviceUpdateCatalogCache
 }
 
 func newSrvDeviceUpdateCatalog(dataRoot string) *srvDeviceUpdateCatalog {
@@ -97,9 +105,7 @@ func (c *srvDeviceUpdateCatalog) latestFor(identity coreim.FirmwareIdentity) (sr
 	if c == nil || !validSrvFirmwareIdentity(identity) {
 		return srvDeviceUpdateRelease{}, false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	document, ok := c.documentLocked()
+	document, ok := c.document()
 	if !ok || !srvCatalogDocumentFresh(document, time.Now().UTC()) {
 		return srvDeviceUpdateRelease{}, false
 	}
@@ -123,12 +129,18 @@ func (c *srvDeviceUpdateCatalog) document() (srvDeviceUpdateCatalogDocument, boo
 	if c == nil {
 		return srvDeviceUpdateCatalogDocument{}, false
 	}
+	info, err := os.Stat(c.path)
+	if err != nil || info.Size() <= 0 || info.Size() > 1024*1024 {
+		return srvDeviceUpdateCatalogDocument{}, false
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.documentLocked()
-}
+	if cache := c.cache; cache != nil && cache.size == info.Size() && cache.modTime.Equal(info.ModTime()) {
+		document := cache.document
+		c.mu.Unlock()
+		return document, true
+	}
+	c.mu.Unlock()
 
-func (c *srvDeviceUpdateCatalog) documentLocked() (srvDeviceUpdateCatalogDocument, bool) {
 	raw, err := os.ReadFile(c.path)
 	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 {
 		return srvDeviceUpdateCatalogDocument{}, false
@@ -136,6 +148,11 @@ func (c *srvDeviceUpdateCatalog) documentLocked() (srvDeviceUpdateCatalogDocumen
 	var document srvDeviceUpdateCatalogDocument
 	if err := json.Unmarshal(raw, &document); err != nil || document.SchemaVersion != srvDeviceUpdateCatalogSchemaVersion {
 		return srvDeviceUpdateCatalogDocument{}, false
+	}
+	if after, statErr := os.Stat(c.path); statErr == nil && after.Size() == info.Size() && after.ModTime().Equal(info.ModTime()) {
+		c.mu.Lock()
+		c.cache = &srvDeviceUpdateCatalogCache{size: after.Size(), modTime: after.ModTime(), document: document}
+		c.mu.Unlock()
 	}
 	return document, true
 }
@@ -151,8 +168,8 @@ func (c *srvDeviceUpdateCatalog) replaceTrusted(document srvDeviceUpdateCatalogD
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.replaceMu.Lock()
+	defer c.replaceMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(c.path), 0700); err != nil {
 		return err
 	}
@@ -164,6 +181,9 @@ func (c *srvDeviceUpdateCatalog) replaceTrusted(document srvDeviceUpdateCatalogD
 		_ = os.Remove(tmp)
 		return err
 	}
+	c.mu.Lock()
+	c.cache = nil
+	c.mu.Unlock()
 	return nil
 }
 

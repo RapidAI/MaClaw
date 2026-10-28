@@ -135,3 +135,61 @@ func TestDeviceBindingStoreTransfersDeviceToNewPairingOwner(t *testing.T) {
 		t.Fatalf("credential epoch did not advance: before=%d after=%d", firstEpoch, got)
 	}
 }
+
+func TestDeviceUpdateCatalogCachesDocumentAndDetectsExternalReplacement(t *testing.T) {
+	root := t.TempDir()
+	catalog := newSrvDeviceUpdateCatalog(root)
+	path := filepath.Join(root, srvDeviceUpdateCatalogFile)
+	marshal := func(tag string) []byte {
+		raw, err := json.Marshal(srvDeviceUpdateCatalogDocument{SchemaVersion: srvDeviceUpdateCatalogSchemaVersion, ReleaseTag: tag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	firstRaw := marshal("v1")
+	if err := os.WriteFile(path, firstRaw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	first, ok := catalog.document()
+	if !ok || first.ReleaseTag != "v1" {
+		t.Fatalf("first document = %#v, %v", first, ok)
+	}
+	catalog.mu.Lock()
+	cached := catalog.cache
+	catalog.mu.Unlock()
+	if cached == nil {
+		t.Fatal("parsed document was not cached")
+	}
+	if _, ok := catalog.document(); !ok {
+		t.Fatal("cached document was not returned")
+	}
+	catalog.mu.Lock()
+	cacheReused := catalog.cache == cached
+	catalog.mu.Unlock()
+	if !cacheReused {
+		t.Fatal("unchanged metadata did not reuse the parsed cache")
+	}
+
+	secondRaw := marshal("v2")
+	if len(secondRaw) != len(firstRaw) {
+		t.Fatal("test replacement must preserve file size")
+	}
+	if err := os.WriteFile(path, secondRaw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	changed := time.Now().Add(5 * time.Second)
+	if err := os.Chtimes(path, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	second, ok := catalog.document()
+	if !ok || second.ReleaseTag != "v2" {
+		t.Fatalf("replacement document = %#v, %v", second, ok)
+	}
+	catalog.mu.Lock()
+	cacheReplaced := catalog.cache != cached
+	catalog.mu.Unlock()
+	if !cacheReplaced {
+		t.Fatal("changed metadata retained the old parsed cache")
+	}
+}

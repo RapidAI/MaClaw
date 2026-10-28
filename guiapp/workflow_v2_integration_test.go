@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -563,5 +564,49 @@ func TestLocalCodingPlanStepReqCtxRenumbersMissingStepIndex(t *testing.T) {
 	status, _ := maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, ctx, codingSubAgentQualityMissing, "no verify")
 	if status != codingSubAgentQualityNotNeeded {
 		t.Fatalf("verification status = %v, want NotNeeded", status)
+	}
+}
+
+type transientWorkflowLoadStore struct {
+	v2.WorkflowStore
+	loads int
+}
+
+func (s *transientWorkflowLoadStore) Load(userID string) (*v2.WorkflowState, error) {
+	s.loads++
+	if s.loads == 1 {
+		return nil, errors.New("transient load failure")
+	}
+	return s.WorkflowStore.Load(userID)
+}
+
+func TestWorkflowStartupSuspensionRetriesFailedSnapshotLoad(t *testing.T) {
+	base := v2.NewMemoryStore()
+	state := &v2.WorkflowState{
+		ID:        "workflow-transient-load",
+		UserID:    "user-transient-load",
+		Status:    v2.StatusActive,
+		UpdatedAt: time.Now(),
+	}
+	if err := base.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	store := &transientWorkflowLoadStore{WorkflowStore: base}
+	machine := v2.NewStateMachine(store, nil)
+	app := &App{}
+	snap := app.loadWorkflowStartupSnapshot(&workflowV2State{machine: machine, store: store})
+	if snap.loadErr[state.UserID] == nil {
+		t.Fatal("snapshot discarded the per-user load error")
+	}
+
+	if !app.cancelStaleWorkflowsOnStartup(machine, snap) {
+		t.Fatal("suspension pass skipped the user after a transient snapshot load failure")
+	}
+	got, err := base.Load(state.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !got.Suspended {
+		t.Fatalf("workflow was not suspended after the retry: %#v", got)
 	}
 }

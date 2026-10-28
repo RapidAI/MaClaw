@@ -12,6 +12,7 @@ import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_TASK_
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
 import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
 import { projectSessionKey } from '../aiAssistantPanelSessionUtils';
+import { noteNonAppendStreamText } from '../streamTextRevision';
 
 const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, loadProjectTabConversationMock, loadProjectTabIndexMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, resumeCloudWorkspaceTaskMock, createTaskUnifiedMock, listManagedIndustryExpertsMock, listPendingScopeApprovalsMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
@@ -2487,6 +2488,34 @@ describe('AIAssistantPanel property tests', () => {
 
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
         expect(container.textContent).toContain('final final');
+    });
+
+    it('re-renders a same-length streaming replacement with an unchanged tail', () => {
+        const user = makeMsg({ role: 'user', content: 'Correct the report' });
+        const sharedTail = `shared tail ${'z'.repeat(60)}`;
+        const initialContent = `old-${'a'.repeat(2600)}${sharedTail}`;
+        const replacementContent = `new-${'b'.repeat(2600)}${sharedTail}`;
+        expect(replacementContent).toHaveLength(initialContent.length);
+        const assistant = makeMsg({ id: 'a-same-length-replacement', role: 'assistant', content: initialContent });
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true },
+        };
+        const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+        expect(container.textContent).toContain('old-');
+        expect(container.textContent).not.toContain('new-');
+
+        noteNonAppendStreamText(assistant, { content: replacementContent });
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, messages: [user, { ...assistant, content: replacementContent }] }}
+            />,
+        );
+
+        expect(container.textContent).toContain('new-');
+        expect(container.textContent).not.toContain('old-');
     });
 
     it('renders a long streaming reasoning trail incrementally and cleanly re-renders it after the stream ends', () => {

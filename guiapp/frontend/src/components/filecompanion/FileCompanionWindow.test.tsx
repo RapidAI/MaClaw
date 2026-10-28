@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import FileCompanionWindow, {
     clampCompanionChatWidth,
     clampCompanionTabScroll,
+    companionLibraryPollFast,
+    companionMessageReview,
     companionOpenSetPaths,
     companionTabEndsFromBoxes,
     companionTabNudgeDelta,
@@ -78,7 +80,7 @@ const playerHide = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const discardWeb = vi.fn();
 const getBrandInfo = vi.fn();
 const clipboardWrite = vi.fn();
-type ListLibraryResult = { items: Array<Record<string, unknown>>; notice: string; updates?: Array<Record<string, unknown>>; removed?: string[]; notesReply?: boolean };
+type ListLibraryResult = { items: Array<Record<string, unknown>>; notice: string; updates?: Array<Record<string, unknown>>; removed?: string[]; removedHosts?: Record<string, string>; notesReply?: boolean; notesReview?: boolean };
 const listLibrary = vi.fn<(args: unknown[]) => Promise<ListLibraryResult>>(async () => ({ items: [], notice: "" }));
 const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true }));
 const importShare = vi.fn(async (..._args: any[]): Promise<{ id: string; name: string; path: string; source: string; highlights?: string; chatMarks?: string; annotations?: string; drawings?: string }> => ({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" }));
@@ -89,6 +91,7 @@ const updateShare = vi.fn(async (..._args: unknown[]) => ({ url: "https://hub.ex
 // { notes, notesRevision } object; companionNotePost accepts both.
 type AddShareNoteResult = Array<Record<string, unknown>> | { notes?: Array<Record<string, unknown>>; notesRevision?: number };
 const addShareNote = vi.fn(async (): Promise<AddShareNoteResult> => []);
+const reviewShareNote = vi.fn(async (): Promise<AddShareNoteResult> => []);
 const createGroup = vi.fn(async (name: string) => ({ id: "cg_0123456789abcdef0123456789abcdef", name, admin: true, members: [] as Array<Record<string, unknown>> }));
 const addGroupMember = vi.fn(async () => ({ id: "cg_0123456789abcdef0123456789abcdef", name: "论文组", admin: true, members: [] as Array<Record<string, unknown>> }));
 const removeGroupMember = vi.fn(async () => ({ id: "cg_0123456789abcdef0123456789abcdef", name: "论文组", admin: true, members: [] as Array<Record<string, unknown>> }));
@@ -148,6 +151,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ListFileCompanionGroups: (...args: Parameters<typeof listGroups>) => listGroups(...args),
     SyncFileCompanionShare: (...args: Parameters<typeof syncShare>) => syncShare(...args),
     AddFileCompanionShareNote: (...args: Parameters<typeof addShareNote>) => addShareNote(...args),
+    ReviewFileCompanionShareNote: (...args: Parameters<typeof reviewShareNote>) => reviewShareNote(...args),
     CreateFileCompanionGroup: (...args: Parameters<typeof createGroup>) => createGroup(...args),
     AddFileCompanionGroupMember: (...args: Parameters<typeof addGroupMember>) => addGroupMember(...args),
     RemoveFileCompanionGroupMember: (...args: Parameters<typeof removeGroupMember>) => removeGroupMember(...args),
@@ -266,6 +270,10 @@ function doc(path: string, extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+    localStorage.removeItem("ai_assistant_theme_mode");
+    localStorage.removeItem("maclaw.ai.themeMode");
+    localStorage.removeItem("maclaw.ai.darkScheme");
+    localStorage.removeItem("maclaw.ai.lightScheme");
     boot.mockReset();
     resume.mockReset();
     resume.mockResolvedValue([]);
@@ -333,6 +341,8 @@ beforeEach(() => {
     updateShare.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" });
     addShareNote.mockReset();
     addShareNote.mockResolvedValue([]);
+    reviewShareNote.mockReset();
+    reviewShareNote.mockResolvedValue([]);
     createGroup.mockReset();
     createGroup.mockImplementation(async (name: string) => ({ id: "cg_0123456789abcdef0123456789abcdef", name, admin: true, members: [] }));
     addGroupMember.mockReset();
@@ -518,6 +528,37 @@ describe("companion tab nudges", () => {
 });
 
 describe("FileCompanionWindow", () => {
+    it("follows the main window dark theme", () => {
+        localStorage.setItem("ai_assistant_theme_mode", "dark");
+        localStorage.setItem("maclaw.ai.darkScheme", "violet");
+        installRuntime();
+        renderWindow();
+        const win = screen.getByTestId("file-companion-window");
+        expect(win.getAttribute("data-ai-theme")).toBe("dark");
+        expect(win.getAttribute("data-ai-dark-scheme")).toBe("violet");
+        expect(document.documentElement.getAttribute("data-ai-theme")).toBe("dark");
+        expect(document.documentElement.getAttribute("data-ai-dark-scheme")).toBe("violet");
+        expect(document.documentElement.style.backgroundColor).toBe("");
+        expect(document.documentElement.style.getPropertyValue("--theme-page-bg")).toBe("#0e0a18");
+        expect(document.documentElement.style.colorScheme).toBe("dark");
+    });
+
+    it("switches to dark when the shared appearance changes", () => {
+        const runtime = installRuntime();
+        renderWindow();
+        expect(screen.getByTestId("file-companion-window").getAttribute("data-ai-theme")).toBe("light");
+        act(() => {
+            runtime.emit("ui-appearance:changed", { themeMode: "dark", darkScheme: "ember", lightScheme: "fluent" });
+        });
+        const win = screen.getByTestId("file-companion-window");
+        expect(win.getAttribute("data-ai-theme")).toBe("dark");
+        expect(win.getAttribute("data-ai-dark-scheme")).toBe("ember");
+        expect(document.documentElement.getAttribute("data-ai-dark-scheme")).toBe("ember");
+        expect(document.documentElement.style.backgroundColor).toBe("");
+        expect(document.documentElement.style.getPropertyValue("--theme-page-bg")).toBe("#140e0a");
+        expect(localStorage.getItem("ai_assistant_theme_mode")).toBe("dark");
+    });
+
     it("switching tabs changes the visible chat and the input target", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("a.md") ? "alpha" : "beta" }));
@@ -1974,6 +2015,38 @@ describe("FileCompanionWindow", () => {
         // 导出项目 is per project, not per open tab.
         fireEvent.click(screen.getByTestId("file-companion-library-export-local:a"));
         await waitFor(() => expect(exportProject).toHaveBeenCalledWith("C:/notes/a.md", expect.any(String)));
+    });
+
+    it("the library counts only reader notes still waiting for the host", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        listLibrary.mockResolvedValue({
+            items: [{
+                id: token,
+                token,
+                name: "shared.pdf",
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                owner: "me@example.com",
+                visibility: "group",
+                permanent: true,
+                mine: true,
+                notesRevision: 3,
+                notes: [
+                    { id: "cn_pending", author: "reader@example.com", text: "待审核", createdAt: "2026-10-25T00:00:00Z", decision: "pending" },
+                    { id: "cn_approved", author: "reader@example.com", text: "已通过", createdAt: "2026-10-25T00:01:00Z", decision: "approved" },
+                    { id: "cn_ignored", author: "reader@example.com", text: "已忽略", createdAt: "2026-10-25T00:02:00Z", decision: "ignored" },
+                    { id: "cn_host", author: "me@example.com", text: "主持人回答", createdAt: "2026-10-25T00:03:00Z", host: true, replyTo: "cn_approved" },
+                ],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-empty");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+        expect((await screen.findByTestId(`file-companion-library-pending-${token}`)).textContent).toContain("待审核 1");
     });
 
     it("marks an already shared cloud project instead of offering 分享 again, and edits that link", async () => {
@@ -3919,6 +3992,226 @@ describe("FileCompanionWindow", () => {
         expect((screen.getByTestId("file-companion-annotation-cn_host")).textContent).toContain("主持人");
     });
 
+    it("the host can pass a reader note before the agent answers it", async () => {
+        const note = { id: "cn_pending", author: "reader@example.com", text: "这条批注需要主持人审核", createdAt: "2026-10-25T00:00:00Z", decision: "pending" };
+        reviewShareNote.mockResolvedValue({
+            notesRevision: 2,
+            notes: [{ ...note, decision: "approved" }],
+        });
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: true,
+                notesRevision: 1,
+                notes: [note],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这条批注需要主持人审核");
+        expect(screen.getByTestId("file-companion-annotations").textContent).toContain("待审核 1");
+        fireEvent.click(screen.getByTestId("file-companion-annotation-approve-cn_pending"));
+        await waitFor(() => expect(reviewShareNote).toHaveBeenCalledWith("cd_0123456789abcdef0123456789abcdef", "cn_pending", "approve"));
+        expect((await screen.findByTestId("file-companion-annotation-approved-cn_pending")).textContent).toContain("已通过");
+        expect(screen.queryByTestId("file-companion-annotation-approve-cn_pending")).toBeNull();
+    });
+
+    it("the host can ignore a reader note and the participant sees the marker", async () => {
+        const note = { id: "cn_ignored", author: "me@example.com", text: "这条会被忽略", createdAt: "2026-10-25T00:00:00Z", decision: "pending" };
+        reviewShareNote.mockResolvedValue({
+            notesRevision: 2,
+            notes: [{ ...note, decision: "ignored" }],
+        });
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: true,
+                notesRevision: 1,
+                notes: [note],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这条会被忽略");
+        fireEvent.click(screen.getByTestId("file-companion-annotation-ignore-cn_ignored"));
+        await waitFor(() => expect(reviewShareNote).toHaveBeenCalledWith("cd_0123456789abcdef0123456789abcdef", "cn_ignored", "ignore"));
+        expect((await screen.findByTestId("file-companion-annotation-ignored-cn_ignored")).textContent).toContain("已忽略");
+
+        // The same decision is what a participant receives on the next list.
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notesRevision: 3,
+                notes: [{ ...note, decision: "ignored" }],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        expect((await screen.findByTestId("file-companion-annotation-ignored-cn_ignored")).textContent).toContain("主持人已忽略");
+        expect(screen.queryByTestId("file-companion-annotation-approve-cn_ignored")).toBeNull();
+    });
+
+    it("the host can take an ignored note back before the agent answers", async () => {
+        const note = { id: "cn_reopen", author: "reader@example.com", text: "先忽略再通过", createdAt: "2026-10-25T00:00:00Z", decision: "ignored" };
+        reviewShareNote.mockResolvedValue({
+            notesRevision: 3,
+            notes: [{ ...note, decision: "approved" }],
+        });
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: true,
+                notesRevision: 2,
+                notes: [note],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("先忽略再通过");
+        expect(screen.getByTestId("file-companion-annotation-ignored-cn_reopen")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("file-companion-annotation-reopen-cn_reopen"));
+        await waitFor(() => expect(reviewShareNote).toHaveBeenCalledWith("cd_0123456789abcdef0123456789abcdef", "cn_reopen", "approve"));
+        expect((await screen.findByTestId("file-companion-annotation-approved-cn_reopen")).textContent).toContain("已通过");
+        expect(screen.queryByTestId("file-companion-annotation-reopen-cn_reopen")).toBeNull();
+        expect(screen.queryByTestId("file-companion-annotation-ignored-cn_reopen")).toBeNull();
+    });
+
+    it("the host can withdraw an approval before the agent answers", async () => {
+        const note = { id: "cn_pass", author: "reader@example.com", text: "先通过再忽略", createdAt: "2026-10-25T00:00:00Z", decision: "approved" };
+        reviewShareNote.mockResolvedValue({
+            notesRevision: 3,
+            notes: [{ ...note, decision: "ignored" }],
+        });
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: true,
+                notesRevision: 2,
+                notes: [note],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("先通过再忽略");
+        expect(screen.getByTestId("file-companion-annotations").textContent).not.toMatch(/待审核 [1-9]/);
+        fireEvent.click(screen.getByTestId("file-companion-annotation-withdraw-cn_pass"));
+        await waitFor(() => expect(reviewShareNote).toHaveBeenCalledWith("cd_0123456789abcdef0123456789abcdef", "cn_pass", "ignore"));
+        expect((await screen.findByTestId("file-companion-annotation-ignored-cn_pass")).textContent).toContain("已忽略");
+        expect(screen.queryByTestId("file-companion-annotation-withdraw-cn_pass")).toBeNull();
+    });
+
+    it("a participant sees the ignore mark on the line they sent", async () => {
+        const note = { id: "cn_line", author: "me@example.com", text: "这段先不要回答", createdAt: "2026-10-25T00:00:00Z", decision: "pending" };
+        addShareNote.mockResolvedValue({
+            notesRevision: 2,
+            notes: [note],
+        });
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notesRevision: 1,
+                notes: [],
+            }],
+            notice: "",
+            notesReply: true,
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-input");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "这段先不要回答" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        expect((await screen.findByTestId("file-companion-message-review-cn_line")).textContent).toContain("等待主持人审核");
+
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notesRevision: 3,
+                notes: [{ ...note, decision: "ignored" }],
+            }],
+            notice: "",
+            notesReply: true,
+            notesReview: true,
+        });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        expect((await screen.findByTestId("file-companion-message-review-cn_line")).textContent).toContain("主持人已忽略");
+        expect((await screen.findByTestId("file-companion-annotation-ignored-cn_line")).textContent).toContain("主持人已忽略");
+    });
+
+    it("polls an open host share quickly so a new reader note is not stuck on the slow timer", () => {
+        expect(companionLibraryPollFast([{ shareToken: "cd_abc", shareMine: true }])).toBe(true);
+        expect(companionLibraryPollFast([{ shareToken: "cd_abc", shareMine: false }])).toBe(true);
+        expect(companionLibraryPollFast([{ shareMine: true }])).toBe(false);
+        const used = new Set<string>();
+        expect(companionMessageReview("这段先不要回答", [
+            { id: "cn_line", author: "me", text: "这段先不要回答", createdAt: "2026-10-28T00:00:00Z", decision: "ignored" },
+        ], used)?.label).toContain("已忽略");
+        expect(companionMessageReview("这段先不要回答", [
+            { id: "cn_line", author: "me", text: "这段先不要回答", createdAt: "2026-10-28T00:00:00Z", decision: "ignored" },
+        ], used)).toBeNull();
+    });
+
+    it("a participant waits for host review instead of answering locally", async () => {
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notesRevision: 1,
+                notes: [{ id: "cn_wait", author: "me@example.com", text: "我的问题", createdAt: "2026-10-25T00:00:00Z", decision: "pending" }],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("我的问题");
+        expect((await screen.findByTestId("file-companion-annotation-pending-cn_wait")).textContent).toContain("等待主持人审核");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "我的问题" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(addShareNote).toHaveBeenCalledWith("C:/library/shared.pdf", "我的问题"));
+        expect(send).not.toHaveBeenCalled();
+    });
+
     it("keeps the reader's own answer when the Hub cannot record host replies", async () => {
         send.mockResolvedValue(undefined);
         addShareNote.mockResolvedValue([
@@ -4212,16 +4505,27 @@ describe("FileCompanionWindow", () => {
         expect(screen.getByTestId("file-companion-tab-shared.pdf")).toBeTruthy();
     });
 
-    it("a removed copy closes the open tab and clears its reader state", async () => {
+    it("a removed copy closes the open tab and names the host it already saw", async () => {
         const path = "C:/library/shared.pdf";
         savePdfMarks(path, [{ id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "重点" }]);
         saveChatMarks(path, [{ message: 0, color: "yellow" as const, start: 0, end: 2, text: "hi" }]);
         boot.mockResolvedValue({ paths: [path] });
         open.mockImplementation(async (filePath: string) => doc(filePath));
-        listLibrary.mockResolvedValue({ items: [], notice: "" });
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:\\library\\shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                hostLabel: "王老师",
+                notes: [],
+            }],
+            notice: "",
+        });
         installRuntime();
         renderWindow();
         await screen.findByTestId("file-companion-tab-shared.pdf");
+        await waitFor(() => expect(screen.getByTestId("file-companion-tab-share-shared.pdf").getAttribute("data-state")).toBe("received"));
         listLibrary.mockResolvedValue({
             items: [],
             notice: "",
@@ -4232,7 +4536,133 @@ describe("FileCompanionWindow", () => {
         // A revoked share is withdrawn like a local delete, not just hidden.
         expect(loadPdfMarks(path)).toEqual([]);
         expect(loadChatMarks(path)).toEqual([]);
-        expect(screen.getByRole("alert").textContent).toContain("已被撤回");
+        const notice = screen.getByRole("alert").textContent ?? "";
+        expect(notice).toContain("该文章已经取消分享");
+        expect(notice).toContain("如果需要继续阅读");
+        expect(notice).toContain("王老师");
+        expect(notice).not.toContain("本地副本");
+    });
+
+    it("a removed copy names the host carried by the revocation list", async () => {
+        const path = "C:/library/shared.pdf";
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (filePath: string) => doc(filePath));
+        listLibrary.mockResolvedValue({ items: [], notice: "" });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-shared.pdf");
+        listLibrary.mockResolvedValue({
+            items: [],
+            notice: "",
+            removed: ["C:\\library\\shared.pdf"],
+            removedHosts: { "C:\\library\\shared.pdf": "李老师" },
+        });
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-shared.pdf")).toBeNull());
+        expect(screen.getByRole("alert").textContent ?? "").toContain("李老师");
+    });
+
+    it("a revoked active tab hands the reader to the next tab", async () => {
+        boot.mockResolvedValue({ paths: ["C:/library/first.pdf", "C:/library/second.pdf", "C:/library/third.pdf"] });
+        open.mockImplementation(async (filePath: string) => doc(filePath));
+        listLibrary.mockResolvedValue({ items: [], notice: "" });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-third.pdf");
+        expect(screen.getByTestId("file-companion-tab-first.pdf").getAttribute("aria-selected")).toBe("true");
+        listLibrary.mockResolvedValue({
+            items: [],
+            notice: "",
+            removed: ["C:\\library\\first.pdf"],
+            removedHosts: { "C:\\library\\first.pdf": "王老师" },
+        });
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-first.pdf")).toBeNull());
+        // Even without a write in flight, the reader lands on a neighbouring
+        // document instead of an empty window.
+        expect(screen.getByTestId("file-companion-tab-second.pdf").getAttribute("aria-selected")).toBe("true");
+        expect(screen.getByTestId("file-companion-tab-third.pdf").getAttribute("aria-selected")).toBe("false");
+    });
+
+    it("one refresh names every host of the articles it closes", async () => {
+        boot.mockResolvedValue({ paths: ["C:/library/first.pdf", "C:/library/second.pdf", "C:/library/third.pdf"] });
+        open.mockImplementation(async (filePath: string) => doc(filePath));
+        listLibrary.mockResolvedValue({ items: [], notice: "" });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-third.pdf");
+        listLibrary.mockResolvedValue({
+            items: [],
+            notice: "",
+            removed: ["C:\\library\\first.pdf", "C:\\library\\second.pdf"],
+            removedHosts: { "C:\\library\\first.pdf": "王老师", "C:\\library\\second.pdf": "李老师" },
+        });
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-first.pdf")).toBeNull());
+        expect(screen.queryByTestId("file-companion-tab-second.pdf")).toBeNull();
+        const notice = screen.getByRole("alert").textContent ?? "";
+        expect(notice).toContain("这些文章已经取消分享");
+        expect(notice).toContain("王老师");
+        expect(notice).toContain("李老师");
+        expect(screen.getByTestId("file-companion-tab-third.pdf").getAttribute("aria-selected")).toBe("true");
+    });
+
+    it("a removed copy without a known host still explains what happened", async () => {
+        const path = "C:/library/shared.pdf";
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (filePath: string) => doc(filePath));
+        listLibrary.mockResolvedValue({ items: [], notice: "" });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-shared.pdf");
+        listLibrary.mockResolvedValue({ items: [], notice: "", removed: ["C:\\library\\shared.pdf"] });
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-shared.pdf")).toBeNull());
+        const notice = screen.getByRole("alert").textContent ?? "";
+        expect(notice).toContain("该文章已经取消分享");
+        expect(notice).toContain("如果需要继续阅读，请联系分享的主持人");
+    });
+
+    it("does not toast when the cancelled article is not an open tab", async () => {
+        boot.mockResolvedValue({ paths: ["C:/library/other.pdf"] });
+        open.mockImplementation(async (filePath: string) => doc(filePath));
+        listLibrary.mockResolvedValue({
+            items: [],
+            notice: "",
+            removed: ["C:\\library\\shared.pdf"],
+            removedHosts: { "C:\\library\\shared.pdf": "王老师" },
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-other.pdf");
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(1));
+        expect(screen.queryByRole("alert")).toBeNull();
+        expect(screen.getByTestId("file-companion-tab-other.pdf")).toBeTruthy();
+    });
+
+    it("closes a tab that finishes opening after the share was already withdrawn", async () => {
+        const path = "C:/library/shared.pdf";
+        let releaseOpen: (value: unknown) => void = () => undefined;
+        open.mockImplementation((filePath: string) => new Promise((resolve) => {
+            releaseOpen = () => resolve(doc(filePath));
+        }));
+        boot.mockResolvedValue({ paths: [path] });
+        listLibrary.mockResolvedValue({
+            items: [],
+            notice: "",
+            removed: ["C:\\library\\shared.pdf"],
+            removedHosts: { "C:\\library\\shared.pdf": "王老师" },
+        });
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(listLibrary).toHaveBeenCalled());
+        await act(async () => { releaseOpen(undefined); });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-shared.pdf")).toBeNull());
+        const notice = screen.getByRole("alert").textContent ?? "";
+        expect(notice).toContain("该文章已经取消分享");
+        expect(notice).toContain("如果需要继续阅读");
+        expect(notice).toContain("王老师");
     });
 
     it("a line sent before any library list survives an empty list", async () => {

@@ -38,5 +38,22 @@ const header = `/* GENERATED FILE - do not edit directly.
 const body = parts.map((p) => p.replace(/\n+$/, '')).join('\n\n') + '\n'
 const out = resolve(root, 'src/App.css')
 mkdirSync(dirname(out), {recursive: true})
-writeFileSync(out, header + body)
-console.log(`assembled ${out} (${(header + body).length} bytes from ${parts.length} parts)`)
+
+// Another editor (or a concurrent build) can hold App.css open for a moment;
+// Windows then fails the write outright. Retry briefly instead of aborting.
+const payload = header + body
+const writeWithRetry = (attempts = 8, delayMs = 250) => {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            writeFileSync(out, payload)
+            return
+        } catch (err) {
+            if (attempt >= attempts) throw err
+            const wait = delayMs * attempt
+            console.warn(`assemble-app-css: write busy (attempt ${attempt}/${attempts}), retrying in ${wait}ms: ${err.code || err.message}`)
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait)
+        }
+    }
+}
+writeWithRetry()
+console.log(`assembled ${out} (${payload.length} bytes from ${parts.length} parts)`)

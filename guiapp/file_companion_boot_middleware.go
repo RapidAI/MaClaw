@@ -16,6 +16,9 @@ func fileCompanionBootMiddleware(app *App, next http.Handler) http.Handler {
 		cap := &fileCompanionHTMLCapture{ResponseWriter: w, code: http.StatusOK}
 		next.ServeHTTP(cap, r)
 		body := injectFileCompanionBootFlag(cap.buf.Bytes())
+		if appearance, ok := app.readUIAppearance(); ok {
+			body = injectFileCompanionAppearance(body, appearance)
+		}
 		header := w.Header()
 		header.Del("Content-Length")
 		w.WriteHeader(cap.code)

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -285,6 +286,93 @@ func TestSkillArtifactRegistryUpdatesRemoteCache(t *testing.T) {
 	}
 	if _, err := app.UpdateSkillRunArtifactCacheForOwner("other-owner", "run-cache", "remote-doc", localPath, ""); err == nil {
 		t.Fatal("expected owner mismatch")
+	}
+}
+
+func TestSkillArtifactRegistryShortIDCacheUpdateInvalidatesFingerprint(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	status := &SkillRunStatus{
+		RunID:   "run-short-id-cache",
+		OwnerID: "owner-cache",
+		Artifacts: []SkillRunArtifact{{
+			ID:            "remote-doc",
+			RemoteURL:     "https://hub.example/artifacts/remote.docx",
+			Checksum:      "sha256:old",
+			DownloadState: "remote",
+		}},
+	}
+	app.registerSkillRunArtifacts(status)
+	localPath := filepath.Join(t.TempDir(), "remote.docx")
+	if err := os.WriteFile(localPath, []byte("docx"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UpdateSkillRunArtifactCacheForOwner("owner-cache", status.RunID, "remote-doc", localPath, "sha256:new"); err != nil {
+		t.Fatal(err)
+	}
+
+	app.registerSkillRunArtifacts(status)
+	entry, err := app.GetSkillRunArtifactForOwner("owner-cache", status.RunID, "remote-doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.DownloadState != "remote" || entry.Path != "" || entry.Checksum != "sha256:old" {
+		t.Fatalf("unchanged registration was skipped after short-ID cache update: %#v", entry)
+	}
+}
+
+func TestSkillArtifactRegistryConcurrentWritesKeepFingerprintInSync(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	artifactPath := filepath.Join(t.TempDir(), "report.txt")
+	const writers = 32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			app.registerSkillRunArtifacts(&SkillRunStatus{
+				RunID:   "run-concurrent",
+				OwnerID: "owner-concurrent",
+				Artifacts: []SkillRunArtifact{{
+					ID:       "report",
+					Name:     fmt.Sprintf("snapshot-%02d.txt", i),
+					Path:     artifactPath,
+					MimeType: "text/plain",
+				}},
+			})
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	entry, err := app.GetSkillRunArtifactForOwner("owner-concurrent", "run-concurrent", "report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprintKey := skillArtifactRegistryFingerprintKey(app.skillArtifactRegistryDBPath(), entry.URI)
+	cached, ok := skillArtifactRegistryWriteFingerprints.Load(fingerprintKey)
+	if !ok {
+		t.Fatal("successful concurrent registrations left no fingerprint")
+	}
+	databaseFingerprint := skillArtifactRegistryRecordFingerprint(skillArtifactRegistryRecord{
+		URI:           entry.URI,
+		RunID:         entry.RunID,
+		OwnerID:       entry.OwnerID,
+		Skill:         entry.Skill,
+		ArtifactID:    entry.ArtifactID,
+		Name:          entry.Name,
+		Path:          entry.Path,
+		MimeType:      entry.MimeType,
+		SizeBytes:     entry.SizeBytes,
+		RemoteURL:     entry.RemoteURL,
+		Checksum:      entry.Checksum,
+		DownloadState: entry.DownloadState,
+		Status:        entry.Status,
+		Presentation:  entry.Presentation,
+	})
+	if cached != databaseFingerprint {
+		t.Fatalf("database and fingerprint cache diverged: cached=%v database=%s entry=%#v", cached, databaseFingerprint, entry)
 	}
 }
 

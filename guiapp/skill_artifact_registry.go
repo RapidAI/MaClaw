@@ -140,9 +140,21 @@ func acquireSkillArtifactRegistryDB(dbPath string) (*sql.DB, error) {
 // artifacts can skip redundant writes. It is in-memory only: after a process
 // restart the first registration writes as before.
 var skillArtifactRegistryWriteFingerprints sync.Map // dbPath+"\x00"+uri -> string
+var skillArtifactRegistryWriteLocks sync.Map        // dbPath+"\x00"+uri -> *sync.Mutex
 
 func skillArtifactRegistryFingerprintKey(dbPath, uri string) string {
 	return dbPath + "\x00" + uri
+}
+
+// lockSkillArtifactRegistryWrite serializes the fingerprint check, database
+// write, and cache update for one artifact. Callers acquire the DB pool first;
+// its mutex is never held while waiting for this lock.
+func lockSkillArtifactRegistryWrite(dbPath, uri string) func() {
+	key := skillArtifactRegistryFingerprintKey(dbPath, uri)
+	gate, _ := skillArtifactRegistryWriteLocks.LoadOrStore(key, &sync.Mutex{})
+	mutex := gate.(*sync.Mutex)
+	mutex.Lock()
+	return mutex.Unlock
 }
 
 // skillArtifactRegistryRecordFingerprint hashes every column the upsert would
@@ -267,8 +279,10 @@ func (a *App) registerSkillRunArtifacts(status *SkillRunStatus) {
 		}
 		fingerprintKey := skillArtifactRegistryFingerprintKey(dbPath, record.URI)
 		fingerprint := skillArtifactRegistryRecordFingerprint(record)
+		unlock := lockSkillArtifactRegistryWrite(dbPath, record.URI)
 		if !finalSync {
 			if cached, ok := skillArtifactRegistryWriteFingerprints.Load(fingerprintKey); ok && cached == fingerprint {
+				unlock()
 				continue
 			}
 		}
@@ -293,6 +307,7 @@ func (a *App) registerSkillRunArtifacts(status *SkillRunStatus) {
 			record.URI, record.RunID, record.OwnerID, record.Skill, record.ArtifactID, record.Name, record.Path, record.MimeType, record.SizeBytes, record.RemoteURL, record.Checksum, record.DownloadState, record.Status, record.Presentation, now, record.UpdatedAt); err == nil {
 			skillArtifactRegistryWriteFingerprints.Store(fingerprintKey, fingerprint)
 		}
+		unlock()
 	}
 }
 
@@ -369,13 +384,14 @@ func (a *App) UpdateSkillRunArtifactCacheForOwner(ownerID, runID, artifactRef, l
 	}
 	artifactID := skillRunArtifactIDFromRef(artifactRef)
 	uri := artifactRef
-	if uri == "" && runID != "" && artifactID != "" {
+	if !strings.HasPrefix(strings.ToLower(uri), "artifact://") {
 		uri = skillRunArtifactURI(runID, artifactID)
 	}
-	if uri == "" && (runID == "" || artifactID == "") {
+	if uri == "" {
 		return nil, fmt.Errorf("artifact reference is required")
 	}
-	db, err := acquireSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
+	dbPath := a.skillArtifactRegistryDBPath()
+	db, err := acquireSkillArtifactRegistryDB(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -391,6 +407,7 @@ func (a *App) UpdateSkillRunArtifactCacheForOwner(ownerID, runID, artifactRef, l
 	if ownerID != "" && strings.TrimSpace(artifactOwner) != "" && ownerID != strings.TrimSpace(artifactOwner) {
 		return nil, fmt.Errorf("artifact owner mismatch")
 	}
+	unlock := lockSkillArtifactRegistryWrite(dbPath, uri)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if strings.HasPrefix(strings.ToLower(uri), "artifact://") {
 		_, err = db.ExecContext(context.Background(), `UPDATE skill_run_artifacts SET path = ?, checksum = CASE WHEN ? <> '' THEN ? ELSE checksum END, download_state = 'downloaded', updated_at = ? WHERE uri = ?`, localPath, checksum, checksum, now, uri)
@@ -398,12 +415,14 @@ func (a *App) UpdateSkillRunArtifactCacheForOwner(ownerID, runID, artifactRef, l
 		_, err = db.ExecContext(context.Background(), `UPDATE skill_run_artifacts SET path = ?, checksum = CASE WHEN ? <> '' THEN ? ELSE checksum END, download_state = 'downloaded', updated_at = ? WHERE run_id = ? AND artifact_id = ?`, localPath, checksum, checksum, now, runID, artifactID)
 	}
 	if err != nil {
+		unlock()
 		return nil, err
 	}
 	// The row changed outside registerSkillRunArtifacts; drop the write
-	// fingerprint so the next registration re-applies the run record instead
-	// of mistaking the row for already-in-sync content.
-	skillArtifactRegistryWriteFingerprints.Delete(skillArtifactRegistryFingerprintKey(a.skillArtifactRegistryDBPath(), uri))
+	// fingerprint under the same lock so the next registration re-applies the
+	// run record instead of mistaking the row for already-in-sync content.
+	skillArtifactRegistryWriteFingerprints.Delete(skillArtifactRegistryFingerprintKey(dbPath, uri))
+	unlock()
 	return a.GetSkillRunArtifactForOwner(ownerID, runID, artifactRef)
 }
 

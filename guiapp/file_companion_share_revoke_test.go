@@ -60,6 +60,46 @@ func newShareRevokeTestApp(t *testing.T, handler http.Handler) *App {
 	}
 }
 
+func TestFileCompanionShareHostNameNamesThePersonToAsk(t *testing.T) {
+	cases := []struct {
+		name string
+		item FileCompanionLibraryItem
+		want string
+	}{
+		{"participant asks the current host", FileCompanionLibraryItem{HostLabel: "王老师", Owner: "管理员"}, "王老师"},
+		{"legacy row falls back to the owner", FileCompanionLibraryItem{Owner: "管理员"}, "管理员"},
+		{"host seat holder asks the admin", FileCompanionLibraryItem{HostKnown: true, Host: true, HostLabel: "me@example.com", Owner: "管理员"}, "管理员"},
+		{"no label", FileCompanionLibraryItem{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fileCompanionShareHostName(tc.item); got != tc.want {
+				t.Fatalf("host name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOnlyRemovedFileCompanionHostsDropsPathsThatStayOpen(t *testing.T) {
+	closed := `C:\library\closed.pdf`
+	kept := `C:\library\kept.pdf`
+	hosts := onlyRemovedFileCompanionHosts([]string{closed}, map[string]string{
+		closed:                 "王老师",
+		kept:                   "李老师",
+		`C:\library\other.pdf`: "赵老师",
+	})
+	if len(hosts) != 1 || hosts[closed] != "王老师" {
+		t.Fatalf("hosts = %v", hosts)
+	}
+	// A blank label is not a name; the window has its own generic notice.
+	if got := onlyRemovedFileCompanionHosts([]string{closed}, map[string]string{closed: "  "}); got != nil {
+		t.Fatalf("blank label kept: %v", got)
+	}
+	if got := onlyRemovedFileCompanionHosts(nil, map[string]string{closed: "王老师"}); got != nil {
+		t.Fatalf("no closed path kept a label: %v", got)
+	}
+}
+
 func TestListFileCompanionLibraryDropsADeletedReceivedShare(t *testing.T) {
 	resetFileCompanionShareProbeCache()
 	const token = "cd_66666666666666666666666666666666"
@@ -81,6 +121,7 @@ func TestListFileCompanionLibraryDropsADeletedReceivedShare(t *testing.T) {
 	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
 		ID: token, Token: token, Name: "shared.pdf", Path: downloaded,
 		Source: "cloud", Mine: false, Visibility: "public", Revision: 1,
+		HostLabel: "王老师",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +136,9 @@ func TestListFileCompanionLibraryDropsADeletedReceivedShare(t *testing.T) {
 	}
 	if len(listed.Removed) != 1 || !strings.EqualFold(listed.Removed[0], downloaded) {
 		t.Fatalf("removed = %v", listed.Removed)
+	}
+	if label := listed.RemovedHosts[listed.Removed[0]]; label != "王老师" {
+		t.Fatalf("removed host = %q, want 王老师", label)
 	}
 	if _, err := os.Stat(filepath.Dir(downloaded)); !os.IsNotExist(err) {
 		t.Fatalf("the downloaded copy is still present: %v", err)

@@ -46,8 +46,9 @@ type CommandRunner func(ctx context.Context, stdin io.Reader, args ...string) (o
 // Service runs one Docker host. userGates are per-user RWMutex gates: the
 // exclusive side keeps a user's stop from overlapping the next start (the
 // stop writes the website login, and a start in the middle would open a
-// second browser), while the shared side lets concurrent execs — screenshot,
-// click, reads, install, status — run without queueing behind each other.
+// second browser), while the shared side lets concurrent screenshot, click,
+// read, and status execs run without queueing behind each other. installGates
+// separately serialize each user's complete apt/dpkg sequence.
 type Service struct {
 	// botOwners: see stopOwnerOnlyWhileBotsBusy.
 	botOwners     sync.Map
@@ -87,8 +88,9 @@ type Service struct {
 	// pulls tracks in-flight registry pulls by image: concurrent desktop
 	// requests join one pull and a failed registry is not re-hit on every
 	// request (imagePullRetryAfter backoff, see image_source.go).
-	pulls     imagePulls
-	userGates sync.Map
+	pulls        imagePulls
+	userGates    sync.Map
+	installGates sync.Map
 	// activity counts apt and bash still inside this process. Sleep and the
 	// historical reaper both leave that user running.
 	activity sync.Map
@@ -563,8 +565,9 @@ func (s *Service) Open(ctx context.Context, tenantID, userID, display, program s
 	return out, nil
 }
 
-// Install runs apt-get update, apt-get -f install, and apt-get install in
-// the user's desktop container. Package names are argv, not a shell command.
+// Install runs the dpkg repair and apt-get sequence in the user's desktop
+// container. One user's installs are serialized without blocking that user's
+// screenshots or status reads. Package names are argv, not a shell command.
 func (s *Service) Install(ctx context.Context, tenantID, userID string, packages []string) (string, error) {
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
@@ -582,20 +585,22 @@ func (s *Service) Install(ctx context.Context, tenantID, userID string, packages
 	var output string
 	release := s.holdWork(spec.TenantID, spec.UserID)
 	defer release()
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
-		// ensure() starts apt-mirror in the background and returns before
-		// that process takes the lock. The wait either blocks until the
-		// probe has written the sources, or holds the lock and writes
-		// them itself. A wait failure still falls through to apt-get.
-		_, _ = s.docker(ctx, desktop.AptMirrorWaitArgs(container)...)
-		if stop := desktop.InstallStopError(ctx); stop != nil {
-			return stop
-		}
-		text, runErr := desktop.RunPackageInstall(ctx, func(args []string) (string, error) {
-			return s.docker(ctx, args...)
-		}, container, names)
-		output = text
-		return runErr
+	err = s.withUserInstall(spec.TenantID, spec.UserID, func() error {
+		return s.withUserRead(spec.TenantID, spec.UserID, func() error {
+			// ensure() starts apt-mirror in the background and returns before
+			// that process takes the lock. The wait either blocks until the
+			// probe has written the sources, or holds the lock and writes
+			// them itself. A wait failure still falls through to apt-get.
+			_, _ = s.docker(ctx, desktop.AptMirrorWaitArgs(container)...)
+			if stop := desktop.InstallStopError(ctx); stop != nil {
+				return stop
+			}
+			text, runErr := desktop.RunPackageInstall(ctx, func(args []string) (string, error) {
+				return s.docker(ctx, args...)
+			}, container, names)
+			output = text
+			return runErr
+		})
 	})
 	if err != nil {
 		// A deadline kills apt-get mid-log. The tail of that log is
@@ -737,6 +742,19 @@ func (s *Service) withUserRead(tenantID, userID string, fn func() error) error {
 	gate, _ := s.userGates.LoadOrStore(key, &sync.RWMutex{})
 	gate.(*sync.RWMutex).RLock()
 	defer gate.(*sync.RWMutex).RUnlock()
+	return fn()
+}
+
+// withUserInstall serializes the whole apt/dpkg sequence for one user. It is
+// acquired before withUserRead so a queued install holds neither user gate.
+func (s *Service) withUserInstall(tenantID, userID string, fn func() error) error {
+	if s == nil {
+		return fn()
+	}
+	key := tenantID + "\x00" + userID
+	gate, _ := s.installGates.LoadOrStore(key, &sync.Mutex{})
+	gate.(*sync.Mutex).Lock()
+	defer gate.(*sync.Mutex).Unlock()
 	return fn()
 }
 

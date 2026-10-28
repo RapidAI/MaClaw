@@ -44,6 +44,7 @@ import {
     SetFileCompanionOpenSet,
     SetMainWindowScreenPosition,
     AddFileCompanionShareNote,
+    ReviewFileCompanionShareNote,
     SendFileCompanionMessage,
     SendFileCompanionWebMessage,
     SyncFileCompanionShare,
@@ -51,7 +52,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionHostShares, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, sameCompanionMineShare, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionHostShares, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionWithdrawnNotice, sameCompanionMineShare, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -74,7 +75,7 @@ import { CompanionFileCard, type CompanionFile } from "./CompanionFileCard";
 import { NoteResultCard } from "./NoteResultCard";
 import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps } from "../../utils/windowDrag";
-import type { CodePreviewTheme } from "../ai/FileTabBar";
+import { CompanionAppearanceProvider, useCompanionAppearance } from "./useCompanionAppearance";
 import { loadPdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks } from "./pdfMarks";
 import { loadPdfAnnotations, loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, savePdfTranslations } from "./pdfTranslations";
 import { loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT, savePdfDrawings } from "./pdfDrawings";
@@ -89,16 +90,15 @@ const CLOUD_DISABLE_BYTES = 400 * 1024 * 1024;
 // Asked once when a new document has no transcript. A selection is not sent:
 // the host would write the reply back into the file.
 const FILE_COMPANION_INTRO = "这篇文档是什么？";
-// A participant's window polls the library often enough that the host's new
-// line shows up while the discussion is still going. A window with no received
-// share keeps the slow cadence: the hub has nothing new for a document this
-// person hosts, and the list costs a hub round trip. The tick stays short
-// because a share can arrive while the window is already open.
+// An open share polls often enough that a new reader note, a host decision,
+// and the host agent's reply show up while the discussion is still going.
+// A window with no share keeps the slow cadence. The tick stays short because
+// a share can arrive while the window is already open.
 const COMPANION_POLL_TICK_MS = 5000;
 const COMPANION_POLL_SLOW_TICKS = 12;
 
-function companionLibraryPollFast(tabs: { shareToken?: string; shareMine?: boolean }[]): boolean {
-    return tabs.some((tab) => Boolean(tab.shareToken) && !tab.shareMine);
+export function companionLibraryPollFast(tabs: { shareToken?: string; shareMine?: boolean }[]): boolean {
+    return tabs.some((tab) => Boolean(tab.shareToken));
 }
 
 // A cleared chat bumps the session generation. Events bound to an older
@@ -227,30 +227,6 @@ export function companionTabNudgeDelta(port: CompanionTabBox, tabs: CompanionTab
     const target = sliver && index > 0 ? tabs[index - 1] : item;
     return Math.max(0, port.left - target.left);
 }
-
-const companionPreviewTheme: CodePreviewTheme = {
-    bg: "#ffffff",
-    text: "#1e293b",
-    textMuted: "#64748b",
-    border: "#e2e8f0",
-    lineNumBg: "#f8fafc",
-    lineNumText: "#94a3b8",
-    tabBg: "#f1f5f9",
-    tabActiveBg: "#ffffff",
-    tabActiveText: "#0f172a",
-    tabHoverBg: "#e2e8f0",
-    diffAddBg: "#dcfce7",
-    diffAddText: "#166534",
-    diffDeleteBg: "#fee2e2",
-    diffDeleteText: "#991b1b",
-    syntaxKeyword: "#7c3aed",
-    syntaxString: "#047857",
-    syntaxComment: "#94a3b8",
-    syntaxNumber: "#b45309",
-    syntaxFunction: "#1d4ed8",
-    syntaxType: "#0f766e",
-    syntaxOperator: "#334155",
-};
 
 type CompanionDoc = {
     path?: string;
@@ -677,9 +653,10 @@ function isAtxHeading(line: string): boolean {
 }
 
 const AtxHeadingLine = memo(function AtxHeadingLine({ line, index, onActivate }: { line: string; index: number; onActivate: (index: number) => void }) {
+    const { previewTheme } = useCompanionAppearance();
     return (
         <div onClick={() => onActivate(index)} data-testid="file-companion-atx-line">
-            <MarkdownPreview content={line} theme={companionPreviewTheme} />
+            <MarkdownPreview content={line} theme={previewTheme} />
         </div>
     );
 });
@@ -927,7 +904,7 @@ function MarkdownSourceEditor({
                                 setActiveLine(segment.start + lineCount);
                             }
                         }}
-                        style={{ width: "100%", minHeight: segments.length === 1 ? 220 : Math.max(44, count * 22), border: "1px solid #e2e8f0", borderRadius: 8, padding: 12, font: "14px/1.5 ui-monospace, monospace", resize: "vertical" }}
+                        style={{ width: "100%", minHeight: segments.length === 1 ? 220 : Math.max(44, count * 22), border: "1px solid var(--theme-border, #e2e8f0)", borderRadius: 8, padding: 12, font: "14px/1.5 ui-monospace, monospace", resize: "vertical", background: "var(--theme-surface, #ffffff)", color: "var(--theme-text-primary, #1e293b)" }}
                     />
                 );
             })}
@@ -1545,12 +1522,13 @@ function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, o
     streaming: boolean;
     onBlocked: (sentence: string) => void;
 }) {
+    const { assistantTheme } = useCompanionAppearance();
     const blocks = noteAnswerBlocks(text);
     if (!blocks.some((block) => block.kind === "stamp")) {
         return (
             <MessageContentRenderer
                 content={text}
-                theme={lightTheme}
+                theme={assistantTheme}
                 isUser={false}
                 isStreaming={streaming}
                 messageId={messageId}
@@ -1565,7 +1543,7 @@ function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, o
                         <MessageContentRenderer
                             key={`${messageId}-${index}`}
                             content={block.text}
-                            theme={lightTheme}
+                            theme={assistantTheme}
                             isUser={false}
                             isStreaming={false}
                             messageId={`${messageId}-${index}`}
@@ -1593,7 +1571,7 @@ function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, o
                         >
                             {stamp.label}
                         </button>
-                        {stamp.rest ? <span>{" "}{renderInlineMarkdown(stamp.rest, lightTheme)}</span> : null}
+                        {stamp.rest ? <span>{" "}{renderInlineMarkdown(stamp.rest, assistantTheme)}</span> : null}
                     </div>
                 );
             })}
@@ -1601,11 +1579,38 @@ function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, o
     );
 }
 
+// companionMessageReview labels the chat line a participant just sent, once
+// the shared note comes back. The note may carry the selected passage after
+// the question; each note is claimed once, in chat order.
+export function companionMessageReview(messageText: string, notes: CompanionShareNote[] | undefined, used: Set<string>): { noteId: string; tone: "pending" | "ignored" | "approved"; label: string } | null {
+    const text = messageText.trim();
+    if (!text || !notes) return null;
+    for (const note of notes) {
+        if (note.host || used.has(note.id)) continue;
+        const body = note.text.trim();
+        if (body !== text && !body.startsWith(`${text}\n\n选中的原文：`)) continue;
+        used.add(note.id);
+        const answered = notes.some((other) => other.host && other.replyTo === note.id);
+        const decision = note.decision || "";
+        if (decision === "ignored") return { noteId: note.id, tone: "ignored", label: "主持人已忽略这条批注" };
+        if (decision === "approved" && !answered) return { noteId: note.id, tone: "approved", label: "已通过，等待主持人 Agent 回复" };
+        if (answered) return null;
+        return { noteId: note.id, tone: "pending", label: "等待主持人审核" };
+    }
+    return null;
+}
+
+function companionPendingReviewCount(notes: CompanionShareNote[] | undefined): number {
+    const list = notes ?? [];
+    return list.filter((note) => !note.host && ((note.decision ?? "") === "pending" || (note.decision ?? "") === "") && !list.some((other) => other.host && other.replyTo === note.id)).length;
+}
+
 function sameShareNotes(left: CompanionShareNote[], right: CompanionShareNote[]): boolean {
     if (left.length !== right.length) return false;
     for (let i = 0; i < left.length; i++) {
         if (left[i].id !== right[i].id || left[i].text !== right[i].text || left[i].author !== right[i].author) return false;
         if (Boolean(left[i].host) !== Boolean(right[i].host) || (left[i].replyTo ?? "") !== (right[i].replyTo ?? "")) return false;
+        if ((left[i].decision ?? "") !== (right[i].decision ?? "")) return false;
     }
     return true;
 }
@@ -1826,7 +1831,8 @@ function companionArxivPage(raw: unknown): CompanionArxivPage {
     };
 }
 
-export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: boolean } = {}) {
+function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } = {}) {
+    const appearance = useCompanionAppearance();
     const [tabs, setTabs] = useState<CompanionTab[]>([]);
     const [active, setActive] = useState("");
     // Highlights the reader painted on the agent's answers, keyed by the
@@ -1955,6 +1961,23 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // Who hosts each shared file: the share's creator. A host badge marks the
     // document here and on every participant's screen at the same place.
     const [shareHosts, setShareHosts] = useState<Map<string, CompanionShareHost>>(() => new Map());
+    // The Hub reviews reader notes before the host agent sees them. The
+    // approval buttons only appear when the list said this Hub supports it.
+    const [notesReview, setNotesReview] = useState(false);
+    const [reviewingNoteID, setReviewingNoteID] = useState("");
+    // A second click can land before React re-renders the disabled buttons, so
+    // the guard also keeps the note in a ref.
+    const reviewingNoteRef = useRef("");
+    // The revocation notice reads this before the list that removes the share
+    // replaces the map, so it can still name the host.
+    const shareHostsRef = useRef(shareHosts);
+    shareHostsRef.current = shareHosts;
+    // Shares the host cancelled during this window. The library refresh can
+    // arrive before boot has put the article on screen; the key stays so that
+    // later open still closes, and told keeps the notice to the first close.
+    const withdrawnSharesRef = useRef(new Map<string, { host: string; told: boolean }>());
+    const closeWithdrawnOpenTabsRef = useRef<() => void>(() => undefined);
+    const refuseWithdrawnShareRef = useRef<(path: string) => boolean>(() => false);
     // A host's new chat line and its answer reach the hub without a manual
     // 同步. One upload per burst, and a line that arrives mid-upload is sent
     // again after it, so the newest transcript always lands last.
@@ -2160,6 +2183,63 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         const messages = messagesFromDoc({ messages: update.messages } as CompanionDoc);
         setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === updateKey ? { ...tab, messages, status: "", previewEpoch: tab.previewEpoch + 1 } : tab));
     };
+    const rememberWithdrawnShare = (path: string, host: string) => {
+        const key = companionSharePathKey(path);
+        if (!key) return;
+        const prev = withdrawnSharesRef.current.get(key);
+        const name = host.trim();
+        withdrawnSharesRef.current.set(key, { host: name || prev?.host || "", told: prev?.told ?? false });
+    };
+    // The revocation list and the previous share badge can name the host under
+    // different spellings of the same path. Either one is enough to tell the
+    // reader whom to ask.
+    const withdrawnHostLabel = (path: string, hosts: Record<string, string>) => {
+        const direct = hosts[path];
+        if (typeof direct === "string" && direct.trim()) return direct.trim();
+        const key = companionSharePathKey(path);
+        for (const [candidate, label] of Object.entries(hosts)) {
+            if (typeof label === "string" && label.trim() && companionSharePathKey(candidate) === key) return label.trim();
+        }
+        return (shareHostsRef.current.get(key)?.owner || "").trim();
+    };
+    // Toast first, then drop the tab. A share cancelled before its tab was on
+    // screen stays in the book; the open that follows takes the same path.
+    closeWithdrawnOpenTabsRef.current = () => {
+        const book = withdrawnSharesRef.current;
+        if (book.size === 0) return;
+        const before = tabsRef.current;
+        const closing = before.filter((tab) => book.has(companionSharePathKey(tab.path)));
+        if (closing.length === 0) return;
+        const keys = [...new Set(closing.map((tab) => companionSharePathKey(tab.path)))];
+        const pending = keys.filter((key) => book.get(key)?.told !== true);
+        for (const key of pending) {
+            const row = book.get(key);
+            if (row) row.told = true;
+        }
+        if (pending.length > 0) {
+            showToast(companionWithdrawnNotice(pending.length, pending.map((key) => book.get(key)?.host ?? "")), "info", 6000);
+        }
+        const gone = new Set(keys);
+        const rest = before.filter((tab) => !gone.has(companionSharePathKey(tab.path)));
+        const closingAt = before.findIndex((tab) => companionSharePathKey(tab.path) === companionSharePathKey(activeRef.current));
+        setTabs((current) => current.filter((tab) => !gone.has(companionSharePathKey(tab.path))));
+        setActive((current) => {
+            if (!gone.has(companionSharePathKey(current))) return current;
+            if (rest.length === 0) return "";
+            return rest[Math.max(0, Math.min(closingAt, rest.length - 1))]?.path ?? "";
+        });
+    };
+    refuseWithdrawnShareRef.current = (path: string) => {
+        const key = companionSharePathKey(path);
+        const row = key ? withdrawnSharesRef.current.get(key) : undefined;
+        if (!row) return false;
+        closeWithdrawnOpenTabsRef.current();
+        if (!row.told) {
+            row.told = true;
+            showToast(companionWithdrawnNotice(1, row.host ? [row.host] : []), "info", 6000);
+        }
+        return true;
+    };
     // The window poll and 文档管理 both read the library. One apply keeps notes,
     // the sharer's transcript, and a removed copy on the same path key.
     applyLibraryListRef.current = (listed) => {
@@ -2169,6 +2249,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         const listedRecord = listed && typeof listed === "object" ? listed as Record<string, unknown> : null;
         const notesReply = listedRecord ? (listedRecord.notesReply ?? listedRecord.NotesReply) : undefined;
         if (typeof notesReply === "boolean") notesReplyRef.current = notesReply;
+        const notesReviewFlag = listedRecord ? (listedRecord.notesReview ?? listedRecord.NotesReview) : undefined;
+        if (typeof notesReviewFlag === "boolean") setNotesReview((current) => current === notesReviewFlag ? current : notesReviewFlag);
         // 文档管理 paints this same snapshot. The window poll lands here too,
         // so an expiry or a share made elsewhere reaches an open library list.
         // A closed library does not need it, and skipping it keeps a poll from
@@ -2178,15 +2260,28 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         for (const update of synced.updates) applyShareUpdateRef.current(update);
         applyShareNotesRef.current(listed);
         if (synced.removed.length === 0) return;
-        // A revoked share is withdrawn like a local delete: its highlights,
-        // translations, and answer marks must not outlive the copy. The host
-        // side already removed the transcript and generated files.
+        // The host is read before the next render replaces shareHosts. The
+        // notice waits until an open tab is about to close, so a document that
+        // was only in the library does not interrupt the article on screen.
         for (const path of synced.removed) {
             if (!path) continue;
-            savePdfMarks(path, []);
-            savePdfTranslations(path, []);
-            savePdfDrawings(path, []);
-            saveChatMarks(path, []);
+            rememberWithdrawnShare(path, withdrawnHostLabel(path, synced.removedHosts));
+        }
+        closeWithdrawnOpenTabsRef.current();
+        // A revoked share is withdrawn like a local delete: its highlights,
+        // translations, and answer marks must not outlive the copy. The host
+        // side already removed the transcript and generated files. If storage
+        // refuses a write, the tab close above still stands.
+        for (const path of synced.removed) {
+            if (!path) continue;
+            try {
+                savePdfMarks(path, []);
+                savePdfTranslations(path, []);
+                savePdfDrawings(path, []);
+                saveChatMarks(path, []);
+            } catch {
+                // Nothing else can be done without storage; keep withdrawing.
+            }
             const held = sharePushTimerRef.current.get(path);
             if (held !== undefined) {
                 window.clearTimeout(held);
@@ -2197,13 +2292,6 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             pendingShareMarksRef.current.delete(path);
             forgetIntro(path);
         }
-        showToast("这份分享已被撤回，本地副本与阅读记录已清除", "info", 6000);
-        const gone = new Set(synced.removed.map(companionSharePathKey));
-        setTabs((current) => {
-            const left = current.filter((tab) => !gone.has(companionSharePathKey(tab.path)));
-            setActive((active) => gone.has(companionSharePathKey(active)) ? (left[0]?.path ?? "") : active);
-            return left;
-        });
     };
     // The host's own line and its answer reach the hub as they happen; the
     // 同步 button stays for an explicit re-upload. One upload per burst, and a
@@ -2310,9 +2398,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 reading = false;
             });
         };
-        // The tick is short so a received share can pick up the host's next
-        // line quickly. A window without a received share only reads the hub
-        // on the old slow cadence; the empty ticks cost nothing.
+        // The tick is short so an open share picks up a new note, a host
+        // decision, or the agent's reply while the discussion is still going.
+        // A window with nothing shared only reads the hub on the slow cadence.
         const schedule = () => {
             if (stopped) return;
             timer = window.setTimeout(() => {
@@ -2350,6 +2438,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             });
             return changed ? next : current;
         });
+    }, [openTabPaths]);
+    // A cancelled share can be recorded before boot puts its file on screen.
+    // The next path list is what closes that tab, after the notice.
+    useEffect(() => {
+        closeWithdrawnOpenTabsRef.current();
     }, [openTabPaths]);
     // Each open file is its own agent. This set is which of those turns are
     // still in flight. It is not a window-wide lock.
@@ -2466,7 +2559,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
 
     const openPath = async (path: string, fromDrop: boolean, keepDirty = false, refresh = 0, focus = false) => {
         const trimmed = path.trim();
-        if (!trimmed) return;
+        if (!trimmed || refuseWithdrawnShareRef.current(trimmed)) return;
         opensInFlight.current += 1;
         try {
             const serial = openSerial.current + 1;
@@ -2513,6 +2606,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 }
             }
             const resolved = next.path || trimmed;
+            if (refuseWithdrawnShareRef.current(resolved)) return;
             if (refresh < 1 && (saveEpoch.current.get(resolved) ?? 0) !== (epochsAtStart.get(resolved) ?? 0)) {
                 void openPath(resolved, fromDrop, keepDirty, 1, focus);
                 return;
@@ -2528,7 +2622,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             }
             setDropMessage("");
             tabCommittedRef.current = true;
+            const openedKey = companionSharePathKey(next.path);
             setTabs((current) => {
+                if (withdrawnSharesRef.current.has(openedKey)) return current;
                 const previous = current.find((tab) => tab.path === next.path);
                 // A brand-new tab with an empty transcript asks once. Reloads
                 // take the branch below and keep the chat. StrictMode may run
@@ -2562,7 +2658,14 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     };
                 });
             });
-            setActive((current) => (fromDrop || focus || !current ? next.path : current));
+            setActive((current) => {
+                if (withdrawnSharesRef.current.has(openedKey)) return current;
+                return (fromDrop || focus || !current ? next.path : current);
+            });
+            queueMicrotask(() => {
+                if (!refuseWithdrawnShareRef.current(next.path)) return;
+                if (tabsRef.current.length === 0) tabCommittedRef.current = false;
+            });
         } finally {
             opensInFlight.current -= 1;
         }
@@ -3173,6 +3276,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 };
             });
     }, [activeTab?.shareToken, activeTab?.shareMine, activeTab?.notes]);
+    // One note labels one chat line. The set lives for this render only.
+    const messageReviewUsed = new Set<string>();
+    const pendingReviewCount = activeTab?.shareMine && notesReview ? companionPendingReviewCount(activeTab.notes) : 0;
     // Marks only apply to the document they were painted on.
     const chatMarks = chatMarksState.path === active ? chatMarksState.marks : NO_CHAT_MARKS;
     const chatMarksRef = useRef(chatMarks);
@@ -3868,6 +3974,33 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             return false;
         });
     };
+    const reviewShareNote = async (noteID: string, decision: "approve" | "ignore") => {
+        if (reviewingNoteRef.current) return;
+        const key = companionSharePathKey(activeRef.current);
+        const bind = shareByPathRef.current.get(key);
+        const part = bind?.parts.find((item) => item.notes.some((note) => note.id === noteID));
+        if (!part) return;
+        reviewingNoteRef.current = noteID;
+        setReviewingNoteID(noteID);
+        try {
+            const raw = await ReviewFileCompanionShareNote(part.token, noteID, decision);
+            const posted = companionNotePost(raw);
+            const current = shareByPathRef.current.get(key);
+            const target = current?.parts.find((item) => item.token === part.token);
+            if (!current || !target || !companionNotesRevisionWins(target.revision, posted.revision)) return;
+            const revision = Math.max(target.revision, posted.revision);
+            const stored = shareBindFromParts(current.parts.map((item) => item.token === part.token ? { ...item, notes: posted.notes, revision } : item));
+            shareByPathRef.current.set(key, stored);
+            const token = shareBindToken(stored);
+            setTabs((tabsNow) => tabsNow.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
+            showToast(decision === "approve" ? "已通过，主持人 Agent 会处理这条批注" : "已忽略这条批注，参与者会看到忽略标记", "success", 5000);
+        } catch (err) {
+            showToast(turnErrorText(err instanceof Error ? err.message : "审核没有保存"), "error", 6000);
+        } finally {
+            reviewingNoteRef.current = "";
+            setReviewingNoteID("");
+        }
+    };
     flushPendingShareNotesRef.current = () => {
         for (const [key, queued] of pendingShareNotesRef.current) {
             const bind = shareByPathRef.current.get(key);
@@ -3948,7 +4081,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     if (!targeted && notesReplyRef.current) hostThread = true;
                     if (!notePhrase) {
                         void publishShareNoteRef.current(tabPath, shareNoteText).then((posted) => {
-                            if (posted && hostThread) showToast("已发给主持人 Agent，回复会作为批注同步给参与者", "success", 6000);
+                            if (!posted || !hostThread) return;
+                            showToast(notesReview ? "已发给主持人审核，通过后由主持人 Agent 回复" : "已发给主持人 Agent，回复会作为批注同步给参与者", "success", 6000);
                         });
                     }
                 }
@@ -4835,8 +4969,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const arxivNextDisabled = arxivPagerLocked || arxivSearchPage * arxivSearchPageSize >= arxivSearchTotal;
 
     return (
-        <div data-testid="file-companion-window" className="file-companion-window" style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f3f5f7", color: "#1e293b" }}>
-            <div className={openMenu || chatExportDestOpen ? "file-companion-titlebar file-companion-titlebar--menu-open" : "file-companion-titlebar"} data-testid="file-companion-titlebar" {...windowDragHandleProps(true, { display: "flex", gap: 8, padding: 8, alignItems: "center", flexWrap: "nowrap", borderBottom: "1px solid #d9e1ec", background: "#ffffff" })}>
+        <div data-testid="file-companion-window" className="file-companion-window" data-ai-theme={appearance.themeMode} data-ai-dark-scheme={appearance.themeMode === "dark" ? appearance.darkSchemeId : undefined} data-ai-light-scheme={appearance.themeMode === "light" ? appearance.lightSchemeId : undefined} style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            <div className={openMenu || chatExportDestOpen ? "file-companion-titlebar file-companion-titlebar--menu-open" : "file-companion-titlebar"} data-testid="file-companion-titlebar" {...windowDragHandleProps(true, { display: "flex", gap: 8, padding: 8, alignItems: "center", flexWrap: "nowrap" })}>
                 {chatExportDestOpen ? (
                     <div
                         className="file-companion-open-scrim"
@@ -5305,7 +5439,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 {/* runtime WindowHide. App.WindowHide also shows the tray pet. */}
                 <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--close" data-testid="file-companion-close" aria-label="隐藏" title="隐藏窗口，已打开的文件会保留" onClick={() => { windowHiddenRef.current = true; windowRevealRef.current = false; WindowHide(); }}><CompanionActionIcon name="hide" /><span className="file-companion-sr">隐藏</span></button>
             </div>
-            {dropMessage ? <div data-testid="file-companion-drop-error" style={{ padding: "8px 12px", color: "#9a3412" }}>{dropMessage}</div> : null}
+            {dropMessage ? <div data-testid="file-companion-drop-error" style={{ padding: "8px 12px", color: "var(--theme-danger, #9a3412)" }}>{dropMessage}</div> : null}
             {/* The reading view stays mounted under the management screens. A
                 native web player is placed from this subtree's slot; unmounting
                 it would empty the box and unload the page, which stops a note
@@ -5355,7 +5489,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     const picked = selectionFromEditor(el.value, el.selectionStart, el.selectionEnd);
                                     rememberSelection(picked.selection, picked.selectionStart);
                                 }}
-                                style={{ flex: 1, minHeight: 180, border: "1px solid #e2e8f0", borderRadius: 8, padding: 12 }}
+                                style={{ flex: 1, minHeight: 180, border: "1px solid var(--theme-border, #e2e8f0)", borderRadius: 8, padding: 12, background: "var(--theme-surface, #ffffff)", color: "var(--theme-text-primary, #1e293b)" }}
                             />
                         ) : null}
                         {!holdPlayer && activeTab.readOnlyReason === "permission" ? <p data-testid="file-companion-readonly-note">没有写入权限</p> : null}
@@ -5401,7 +5535,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 <FilePreviewView
                                     key={`${activeTab.path}:${activeTab.previewEpoch}`}
                                     file={{ fileName: activeTab.name, filePath: activeTab.path, absPath: activeTab.path, content: activeTab.content, updatedAt: activeTab.previewEpoch }}
-                                    theme={companionPreviewTheme}
+                                    theme={appearance.previewTheme}
                                     lang="zh-Hans"
                                     pdfAnnotate={kind === "pdf"}
                                 />
@@ -5466,7 +5600,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             onContextMenu={onChatContextMenu}
                             style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
                         >
-                            {activeTab.messages.length === 0 && discussionReplies.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "#94a3b8", fontSize: 13 }}>针对当前文件提问</p> : null}
+                            {activeTab.messages.length === 0 && discussionReplies.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "var(--theme-text-muted, #94a3b8)", fontSize: 13 }}>针对当前文件提问</p> : null}
                             {activeTab.messages.map((message, index) => {
                                 const mine = message.role === "user";
                                 const turnLive = Boolean(activeTab.status) || sendingPaths.has(activeTab.path);
@@ -5481,6 +5615,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 // Both controls work on finished Markdown. Mid-stream text would copy a
                                                 // half answer, and the paper reply exports through its own result card.
                                                 const shareable = !mine && !streaming && !message.resultPath && !paperPending && answerText.trim().length > 0;
+                                                const messageReview = mine && !activeTab.shareMine && notesReview
+                                                    ? companionMessageReview(message.text, activeTab.notes, messageReviewUsed)
+                                                    : null;
                                                 return (
                                                     <div key={message.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
                                         <div
@@ -5492,9 +5629,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 minWidth: 0,
                                                 padding: "8px 12px",
                                                 borderRadius: mine ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-                                                background: mine ? "#2f6fbc" : "#ffffff",
-                                                color: mine ? "#ffffff" : "#1e293b",
-                                                border: mine ? "none" : "1px solid #e2e8f0",
+                                                background: mine ? "var(--theme-primary, #2f6fbc)" : "var(--theme-surface, #ffffff)",
+                                                color: mine ? "var(--theme-on-primary, #ffffff)" : "var(--theme-text-primary, #1e293b)",
+                                                border: mine ? "none" : "1px solid var(--theme-border, #e2e8f0)",
                                                 fontSize: 14,
                                                 lineHeight: 1.55,
                                                 overflowWrap: "anywhere",
@@ -5507,11 +5644,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                         defaultOpen={streaming}
                                                     label={streaming ? "正在思考" : "思考过程"}
                                                     lang="zh-Hans"
-                                                    theme={lightTheme}
+                                                    theme={appearance.assistantTheme}
                                                     contentKey={displayReasoning}
                                                     live={streaming}
                                                 >
-                                                    {renderContentWithCodeBlocks(displayReasoning, lightTheme, reasoningTrailMarkdownOptions)}
+                                                    {renderContentWithCodeBlocks(displayReasoning, appearance.assistantTheme, reasoningTrailMarkdownOptions)}
                                                 </AssistantReasoningPanel>
                                                     </div>
                                             ) : null}
@@ -5519,7 +5656,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 {mine || message.resultPath ? (
                                                 <MessageContentRenderer
                                                     content={answerText}
-                                                    theme={lightTheme}
+                                                    theme={appearance.assistantTheme}
                                                     isUser={mine}
                                                     isStreaming={streaming && !message.resultPath}
                                                     messageId={message.id}
@@ -5541,6 +5678,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 {!mine && message.figures && message.figures.length > 0 ? (
                                                     <CompanionFigureStrip figures={message.figures} messageId={message.id} />
                                                 ) : null}
+                                                {messageReview ? (
+                                                    <p data-testid={`file-companion-message-review-${messageReview.noteId}`} data-tone={messageReview.tone} style={{ margin: "6px 0 0", fontSize: 12, lineHeight: 1.4, opacity: 0.92 }}>{messageReview.label}</p>
+                                                ) : null}
                                             </div>
                                         </div>
                                     </div>
@@ -5559,26 +5699,26 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                             minWidth: 0,
                                             padding: "8px 12px",
                                             borderRadius: "14px 14px 14px 4px",
-                                            background: "#ffffff",
-                                            color: "#1e293b",
-                                            border: "1px solid #e2e8f0",
+                                            background: "var(--theme-surface, #ffffff)",
+                                            color: "var(--theme-text-primary, #1e293b)",
+                                            border: "1px solid var(--theme-border, #e2e8f0)",
                                             fontSize: 14,
                                             lineHeight: 1.55,
                                             overflowWrap: "anywhere",
                                         }}
                                     >
                                         <CompanionMessageActions path={activeTab.path} markdown={message.text} messageId={message.id} />
-                                        <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "#64748b" }}>
+                                        <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "var(--theme-text-muted, #64748b)" }}>
                                             主持人回复
                                         </p>
                                         {message.discussion?.question ? (
-                                            <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "#64748b", borderLeft: "2px solid #cbd5e1", paddingLeft: 8 }}>
+                                            <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "var(--theme-text-muted, #64748b)", borderLeft: "2px solid var(--theme-border, #cbd5e1)", paddingLeft: 8 }}>
                                                 回复 {message.discussion.askedBy || "读者"}：{message.discussion.question}
                                             </p>
                                         ) : null}
                                         <MessageContentRenderer
                                             content={message.text}
-                                            theme={lightTheme}
+                                            theme={appearance.assistantTheme}
                                             isUser={false}
                                             isStreaming={false}
                                             messageId={message.id}
@@ -5603,15 +5743,83 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         ) : null}
                         {activeTab.shareToken && (!activeTab.shareMine || (activeTab.notes && activeTab.notes.length > 0)) ? (
                             <div className="file-companion-annotations" data-testid="file-companion-annotations">
-                                <p className="file-companion-annotations-kicker">批注</p>
-                                {activeTab.notes && activeTab.notes.length > 0 ? activeTab.notes.map((note) => (
-                                    <p key={note.id} data-testid={`file-companion-annotation-${note.id}`}>
-                                        <span className="file-companion-annotations-author">
-                                            {note.host ? `主持人${note.author ? ` · ${note.author}` : ""}` : note.author || "读者"}
-                                        </span>
-                                        {note.text}
-                                    </p>
-                                )) : (
+                                <p className="file-companion-annotations-kicker">批注{pendingReviewCount > 0 ? ` · 待审核 ${pendingReviewCount}` : ""}</p>
+                                {activeTab.notes && activeTab.notes.length > 0 ? activeTab.notes.map((note) => {
+                                    const answered = activeTab.notes?.some((other) => other.host && other.replyTo === note.id) ?? false;
+                                    const decision = note.host ? "" : (note.decision ?? "");
+                                    const waitingForReview = !note.host && !answered && (decision === "pending" || decision === "");
+                                    const canReview = Boolean(activeTab.shareMine) && notesReview && waitingForReview;
+                                    // A mistaken ignore can be taken back while no answer exists;
+                                    // the Hub refuses once a reply was posted.
+                                    const canReopen = Boolean(activeTab.shareMine) && notesReview && !note.host && decision === "ignored" && !answered;
+                                    // An accidental pass can be taken back until the agent has
+                                    // posted. After that the Hub rejects another review.
+                                    const canWithdraw = Boolean(activeTab.shareMine) && notesReview && !note.host && decision === "approved" && !answered;
+                                    return (
+                                        <div key={note.id} className="file-companion-annotation-row" data-testid={`file-companion-annotation-${note.id}`}>
+                                            <p>
+                                                <span className="file-companion-annotations-author">
+                                                    {note.host ? `主持人${note.author ? ` · ${note.author}` : ""}` : note.author || "读者"}
+                                                </span>
+                                                {note.text}
+                                            </p>
+                                            {!note.host && decision === "ignored" ? (
+                                                <span className="file-companion-annotation-status" data-tone="ignored" data-testid={`file-companion-annotation-ignored-${note.id}`}>主持人已忽略这条批注</span>
+                                            ) : null}
+                                            {!note.host && decision === "approved" && !answered ? (
+                                                <span className="file-companion-annotation-status" data-tone="approved" data-testid={`file-companion-annotation-approved-${note.id}`}>已通过，等待主持人 Agent 回复</span>
+                                            ) : null}
+                                            {!note.host && waitingForReview && !activeTab.shareMine && notesReview ? (
+                                                <span className="file-companion-annotation-status" data-tone="pending" data-testid={`file-companion-annotation-pending-${note.id}`}>等待主持人审核</span>
+                                            ) : null}
+                                            {canReview ? (
+                                                <span className="file-companion-annotation-actions">
+                                                    <span className="file-companion-annotation-status" data-tone="pending">待审核</span>
+                                                    <button
+                                                        type="button"
+                                                        className="file-companion-annotation-action"
+                                                        data-tone="approve"
+                                                        data-testid={`file-companion-annotation-approve-${note.id}`}
+                                                        disabled={Boolean(reviewingNoteID)}
+                                                        onClick={() => { void reviewShareNote(note.id, "approve"); }}
+                                                    >通过</button>
+                                                    <button
+                                                        type="button"
+                                                        className="file-companion-annotation-action"
+                                                        data-tone="ignore"
+                                                        data-testid={`file-companion-annotation-ignore-${note.id}`}
+                                                        disabled={Boolean(reviewingNoteID)}
+                                                        onClick={() => { void reviewShareNote(note.id, "ignore"); }}
+                                                    >忽略</button>
+                                                </span>
+                                            ) : null}
+                                            {canReopen ? (
+                                                <span className="file-companion-annotation-actions">
+                                                    <button
+                                                        type="button"
+                                                        className="file-companion-annotation-action"
+                                                        data-tone="approve"
+                                                        data-testid={`file-companion-annotation-reopen-${note.id}`}
+                                                        disabled={Boolean(reviewingNoteID)}
+                                                        onClick={() => { void reviewShareNote(note.id, "approve"); }}
+                                                    >改为通过</button>
+                                                </span>
+                                            ) : null}
+                                            {canWithdraw ? (
+                                                <span className="file-companion-annotation-actions">
+                                                    <button
+                                                        type="button"
+                                                        className="file-companion-annotation-action"
+                                                        data-tone="ignore"
+                                                        data-testid={`file-companion-annotation-withdraw-${note.id}`}
+                                                        disabled={Boolean(reviewingNoteID)}
+                                                        onClick={() => { void reviewShareNote(note.id, "ignore"); }}
+                                                    >改为忽略</button>
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                    );
+                                }) : (
                                     <p className="file-companion-annotations-empty">你的讨论会成为批注，同步给能看到这份分享的人。</p>
                                 )}
                             </div>
@@ -5981,5 +6189,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 </div>
             ) : null}
         </div>
+    );
+}
+
+export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: boolean } = {}) {
+    return (
+        <CompanionAppearanceProvider>
+            <FileCompanionWindowBody askOnOpen={askOnOpen} />
+        </CompanionAppearanceProvider>
     );
 }

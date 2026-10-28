@@ -33543,6 +33543,12 @@ input.cwshare-url {
      an open document are both targets. Without it WebView2 still resolves
      the path, then the runtime discards the callback and nothing opens. */
   --wails-drop-target: drop;
+  background: var(--theme-page-bg, #f3f5f7);
+  color: var(--theme-text-primary, #1e293b);
+  color-scheme: light;
+}
+.file-companion-window[data-ai-theme='dark'] {
+  color-scheme: dark;
 }
 .file-companion-titlebar {
   min-width: 0;
@@ -33556,6 +33562,9 @@ input.cwshare-url {
      stacking context here the open menu — which hangs below the bar — is
      painted underneath that frame, so the panel looks like it never opened. */
   z-index: 40;
+  background: var(--theme-surface, #ffffff);
+  border-bottom: 1px solid var(--theme-border, #d9e1ec);
+  color: var(--theme-text-primary, #1e293b);
 }
 /* The bar clips its own row, which would also clip the 打开 menu. Names stay
    clipped by .file-companion-titlebar-files while the menu is open. */
@@ -33747,8 +33756,101 @@ input.cwshare-url {
   cursor: crosshair;
   touch-action: none;
 }
+/* Line tool. The hotspot is the nib tip; a box keeps the crosshair. */
+.companion-pdf-drawings--pen {
+  cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'32'%20height%3D'32'%20viewBox%3D'0%200%2032%2032'%3E%3Cpath%20fill%3D'%23fff'%20d%3D'M4%2028%2010%2020%2012.2%2021.4%2022.4%2010.2%2025.6%206.4%2028.8%209.2%2018.4%2020.4%2014.2%2025.2Z'%2F%3E%3Cpath%20fill%3D'%23243044'%20d%3D'M11.2%2020.6%2021.6%2010.4%2024.6%207.4%2027.2%209.8%2016.6%2020.2%2013.4%2023.8Z'%2F%3E%3Cpath%20fill%3D'%23e2b340'%20d%3D'M4%2028%2010%2020%2012.2%2021.4%2013.4%2023.8%2011.2%2026.2Z'%2F%3E%3Cpath%20fill%3D'%23e8eef4'%20d%3D'M10.2%2019.4%2013.2%2016.4%2015.6%2018.8%2012.6%2021.8Z'%2F%3E%3Cpath%20fill%3D'%231c2430'%20d%3D'M4%2028%206.6%2025.6%205.5%2024.4Z'%2F%3E%3Cpath%20fill%3D'none'%20stroke%3D'%231c2430'%20stroke-width%3D'0.7'%20stroke-linecap%3D'round'%20d%3D'M5.4%2026.2%2010.6%2020.8'%2F%3E%3C%2Fsvg%3E") 4 28, crosshair;
+}
 .companion-pdf-drawings--eraser {
   cursor: cell;
+}
+/* Page count and goto stay in the reader, above the scrolling pages, so the
+   pen and the paper never cover them. */
+.companion-pdf-pager {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--theme-border, #c9ddf6);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #546479);
+  font: 12px/1 "Segoe UI", "Microsoft YaHei", sans-serif;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  z-index: 9;
+  --wails-draggable: no-drag;
+}
+.companion-pdf-pager button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--theme-border, #c9ddf6);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #546479);
+  cursor: pointer;
+}
+.companion-pdf-pager button svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.companion-pdf-pager button:hover:not(:disabled),
+.companion-pdf-pager button:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-pager button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.companion-pdf-pager button.companion-pdf-pager-go {
+  width: auto;
+  min-width: 40px;
+  padding: 0 8px;
+  font: inherit;
+}
+.companion-pdf-pager-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 2px;
+  white-space: nowrap;
+}
+.companion-pdf-pager-input {
+  box-sizing: border-box;
+  width: 6ch;
+  height: 26px;
+  margin: 0;
+  padding: 0 4px;
+  border: 1px solid var(--theme-border, #c9ddf6);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: inherit;
+  text-align: center;
+}
+.companion-pdf-pager-input:focus {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .companion-pdf-scroll {
   flex: 1;
@@ -34539,7 +34641,7 @@ body.companion-pdf-translation-dragging * {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   font: 600 13px/1.35 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
   text-align: left;
   cursor: pointer;
@@ -34689,7 +34791,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-scrim {
   position: absolute;
   inset: 0;
-  background: rgba(15, 23, 42, 0.32);
+  background: var(--theme-overlay, rgba(15, 23, 42, 0.48));
 }
 .file-companion-dialog-card {
   position: relative;
@@ -34702,7 +34804,7 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-lg, 12px);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   box-shadow: var(--shadow-xl, 0 12px 40px -8px rgba(30, 58, 95, 0.22));
   text-align: left;
   overflow: hidden;
@@ -34726,7 +34828,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-heading h2 {
   margin: 0;
   font: 600 15px/1.3 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
 }
 .file-companion-dialog-sub {
   display: flex;
@@ -34764,7 +34866,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-dialog-x:hover {
   background: var(--theme-surface-muted, #f4f7fb);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
 }
 .file-companion-dialog-body {
   flex: 1 1 auto;
@@ -34934,7 +35036,7 @@ body.companion-pdf-translation-dragging * {
   min-width: 0;
   margin: 0;
   font: 500 11.5px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   word-break: break-all;
 }
 .file-companion-dialog-copy {
@@ -35003,7 +35105,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-primary {
   border: 1px solid var(--theme-primary, #2563eb);
   background: var(--theme-primary, #2563eb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
 }
 .file-companion-dialog-primary:hover:not(:disabled) {
   background: var(--theme-primary-strong, #1d4ed8);
@@ -35082,7 +35184,7 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   text-align: left;
   cursor: pointer;
 }
@@ -35171,7 +35273,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-library-group-title strong {
   font-size: 14px;
   font-weight: 600;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   overflow-wrap: anywhere;
 }
 .file-companion-library-group-title small {
@@ -35380,7 +35482,7 @@ body.companion-pdf-translation-dragging * {
   flex: 0 0 auto;
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
 }
 .file-companion-group-glyph {
   width: 18px;
@@ -35475,7 +35577,7 @@ body.companion-pdf-translation-dragging * {
   height: 36px;
   border-radius: 10px;
   background: var(--theme-primary, #2e75cb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
   box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--theme-primary, #2e75cb) 55%, transparent);
 }
 .file-companion-open-hero-text {
@@ -35526,7 +35628,7 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1e293b);
+  color: var(--theme-text-primary, #1e293b);
   font: 400 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
   transition: border-color 0.15s ease;
 }
@@ -35543,7 +35645,7 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-primary, #2e75cb);
   border-radius: var(--radius-md);
   background: var(--theme-primary, #2e75cb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
   font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
   cursor: pointer;
   white-space: nowrap;
@@ -35563,7 +35665,7 @@ body.companion-pdf-translation-dragging * {
   padding: 0 14px;
   border-color: var(--theme-border, #c9ddf6);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1e293b);
+  color: var(--theme-text-primary, #1e293b);
 }
 .file-companion-open-search:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #c9ddf6));
@@ -35672,7 +35774,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-share-password-reveal:hover:not(:disabled) {
   background: var(--theme-surface-muted, #f4f7fb);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
 }
 .file-companion-share-password-reveal:disabled {
   opacity: 0.45;
@@ -35866,7 +35968,7 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   font: 400 13px/1.5 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
   text-align: left;
   cursor: pointer;
@@ -35914,7 +36016,7 @@ body.companion-pdf-translation-dragging * {
   font-weight: 600;
   font-size: 13.5px;
   line-height: 1.45;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   overflow-wrap: anywhere;
 }
 .file-companion-arxiv-hit:hover:not([aria-disabled="true"]) .file-companion-arxiv-hit-title {
@@ -36180,7 +36282,7 @@ body.companion-pdf-translation-dragging * {
   border: none;
   border-radius: var(--radius-md);
   background: var(--theme-primary, #2e75cb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
   font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
   cursor: pointer;
   flex-shrink: 0;
@@ -36190,11 +36292,12 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-send:disabled {
   background: var(--theme-surface-muted);
+  color: var(--theme-text-muted, #94a3b8);
   cursor: default;
 }
 .file-companion-send[aria-busy="true"] {
   background: var(--theme-primary, #2e75cb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
 }
 .file-companion-split {
   flex: 1;
@@ -36277,6 +36380,53 @@ body.companion-pdf-translation-dragging * {
   margin: 0;
   color: var(--theme-text-muted);
   font-size: 12px;
+}
+.file-companion-annotation-row {
+  margin: 0 0 7px;
+}
+.file-companion-annotation-row p {
+  margin: 0;
+}
+.file-companion-annotation-status {
+  display: inline-block;
+  margin: 2px 6px 0 0;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+}
+.file-companion-annotation-status[data-tone="pending"] {
+  color: var(--theme-danger, #dc2626);
+}
+.file-companion-annotation-status[data-tone="ignored"] {
+  color: #b45309;
+}
+.file-companion-annotation-status[data-tone="approved"] {
+  color: var(--theme-primary);
+}
+.file-companion-annotation-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.file-companion-annotation-action {
+  padding: 1px 8px;
+  border: var(--theme-border);
+  border-radius: 999px;
+  background: var(--theme-surface);
+  color: var(--theme-text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.file-companion-annotation-action[data-tone="approve"] {
+  border-color: var(--theme-primary);
+  color: var(--theme-primary);
+}
+.file-companion-annotation-action[data-tone="ignore"] {
+  color: var(--theme-text-muted);
+}
+.file-companion-annotation-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .file-companion-progress {
   padding: 8px 12px;
@@ -38308,11 +38458,11 @@ body.companion-pdf-translation-dragging * {
 
 /* Shared modal overlay tokens keep secondary pages and remote dialogs on the
    same surface language as the workbench. */
-:where(#App, .app-viewport, [data-portal-theme]) {
+:where(#App, .app-viewport, [data-portal-theme], .file-companion-window) {
   --theme-overlay-color: #0f172a;
   --theme-overlay: rgba(15, 23, 42, 0.48);
 }
-:where(#App, .app-viewport, [data-portal-theme])[data-ai-theme='dark'] {
+:where(#App, .app-viewport, [data-portal-theme], .file-companion-window)[data-ai-theme='dark'] {
   --theme-overlay-color: #020817;
   --theme-overlay: rgba(2, 8, 23, 0.72);
 }

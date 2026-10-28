@@ -149,6 +149,30 @@ func TestMissingAgentsMDIsAnEmptySegment(t *testing.T) {
 	}
 }
 
+func TestPromptPrefixIdlePinExpiresAndRebuilds(t *testing.T) {
+	ResetPromptPrefixPins()
+	t.Cleanup(ResetPromptPrefixPins)
+	meta := PromptPrefixMeta{ConversationID: "conv-idle", BotID: "bot-1", Provider: "openai", Model: "m"}
+	input := fullPrefixInput("tools", "system", "memory", "第一句", "user:旧")
+	initial := PrepareConversationPrefix(meta, input)
+	if !initial.Fresh {
+		t.Fatal("first turn did not establish a pin")
+	}
+
+	key := meta.BotID + "\x00" + meta.ConversationID
+	promptPrefixPins.mu.Lock()
+	promptPrefixPins.pins[key].lastAccess = time.Now().Add(-promptPrefixPinTTL - time.Second)
+	promptPrefixPins.lastSweep = time.Time{}
+	promptPrefixPins.mu.Unlock()
+	if _, ok := PinnedPrefix(meta.BotID, meta.ConversationID); ok {
+		t.Fatal("idle pin survived its TTL")
+	}
+	rebuilt := PrepareConversationPrefix(meta, input)
+	if !rebuilt.Fresh || rebuilt.Send != initial.Send {
+		t.Fatalf("expired pin did not rebuild identically: fresh=%v send=%#v want=%#v", rebuilt.Fresh, rebuilt.Send, initial.Send)
+	}
+}
+
 func fullPrefixInput(tools, system, memorySnapshot, first, history string) PromptPrefixInput {
 	return PromptPrefixInput{
 		Segments: PromptPrefixSegments{

@@ -227,7 +227,7 @@ func TestFileCompanionLibraryShareAndImport(t *testing.T) {
 	fileCompanionLibraryMu.Lock()
 	epochBefore := fileCompanionShareEpoch[importedToken]
 	fileCompanionLibraryMu.Unlock()
-	imported, err := app.ImportFileCompanionShare("https://hub.example/hub/documents/shares/"+importedToken, "secret")
+	imported, err := app.ImportFileCompanionShare(server.URL+"/hub/documents/shares/"+importedToken, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2745,4 +2745,120 @@ func TestDeleteDuringSharePublishClearsTheInstalledTranscript(t *testing.T) {
 		t.Fatalf("local transcript = %q %v", got, err)
 	}
 	assertNoFileCompanionPullStage(t, app)
+}
+
+func TestFileCompanionShareOrigin(t *testing.T) {
+	link := "https://other.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef"
+	origin, foreign := fileCompanionShareOrigin(link, "https://home.example")
+	if !foreign || origin != "https://other.example" {
+		t.Fatalf("origin = %q foreign = %v", origin, foreign)
+	}
+	if _, foreign := fileCompanionShareOrigin("https://home.example:443/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", "https://home.example"); foreign {
+		t.Fatal("default port should stay on the logged-in Hub")
+	}
+	if _, foreign := fileCompanionShareOrigin("cd_0123456789abcdef0123456789abcdef", "https://home.example"); foreign {
+		t.Fatal("a bare token stays on the logged-in Hub")
+	}
+	if origin := fileCompanionHubOrigin("https://user:secret@other.example/hub/documents/shares/cd_x"); origin != "" {
+		t.Fatalf("credentials in the link must not be a Hub origin: %s", origin)
+	}
+}
+
+func TestImportFileCompanionShareUsesTheLinkHub(t *testing.T) {
+	const token = "cd_abcdef0123456789abcdef0123456789"
+	var homeImport, foreignAuth, foreignURL string
+	home := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			_, _ = io.WriteString(w, `{"mine":[],"received":[],"notes_reply":true,"notes_review":true}`)
+		case r.URL.Path == "/api/mobile/documents/shares/"+token:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"code":"SHARE_NOT_FOUND","message":"分享链接不存在"}`)
+		default:
+			homeImport = r.Method + " " + r.URL.Path
+			http.NotFound(w, r)
+		}
+	}))
+	defer home.Close()
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/mobile/documents/shares/"+token+"/import":
+			foreignAuth = r.Header.Get("Authorization")
+			if r.Header.Get("X-Companion-Reader-Grant") != "" && foreignAuth != "" {
+				t.Errorf("grant and home session were both sent")
+			}
+			w.Header().Set("X-Companion-Document-Name", "跨hub.pdf")
+			w.Header().Set("X-Companion-Document-Owner", "owner@other.hub")
+			w.Header().Set("X-Companion-Document-Visibility", "public")
+			w.Header().Set("X-Companion-Document-Revision", "1")
+			w.Header().Set("X-Companion-Reader-Grant", "cgr_0123456789abcdef0123456789abcdef")
+			_, _ = w.Write([]byte("%PDF-foreign"))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares/"+token:
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("probe sent home session %q", got)
+			}
+			_, _ = io.WriteString(w, `{"token":"`+token+`","name":"跨hub.pdf","owner":"owner@other.hub","visibility":"public","permanent":true,"revision":1,"url":"`+foreignURL+`/hub/documents/shares/`+token+`","notes":[{"id":"cn_1","author":"owner@other.hub","text":"主持人的批注","created_at":"2026-10-28T00:00:00Z"}],"notes_revision":1}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/mobile/documents/shares/"+token+"/notes":
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("note sent home session %q", got)
+			}
+			if r.Header.Get("X-Companion-Reader-Grant") != "cgr_0123456789abcdef0123456789abcdef" {
+				t.Errorf("note grant = %q", r.Header.Get("X-Companion-Reader-Grant"))
+			}
+			_, _ = io.WriteString(w, `{"notes":[{"id":"cn_2","author":"reader@example.com","text":"跨 hub 的问题","created_at":"2026-10-28T00:00:01Z"}],"notes_revision":2}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer foreign.Close()
+	foreignURL = foreign.URL
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      home.URL,
+			RemoteViewerToken: "home-secret",
+			RemoteEmail:       "reader@example.com",
+		},
+	}
+	imported, err := app.ImportFileCompanionShare(foreign.URL+"/hub/documents/shares/"+token, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if homeImport != "" {
+		t.Fatalf("home Hub was asked for the foreign share: %s", homeImport)
+	}
+	if foreignAuth != "" {
+		t.Fatalf("foreign Hub received the home session: %s", foreignAuth)
+	}
+	if imported.HubOrigin != foreign.URL || imported.Name != "跨hub.pdf" {
+		t.Fatalf("imported = %#v", imported)
+	}
+	if app.fileCompanionShareGrant(token) != "cgr_0123456789abcdef0123456789abcdef" {
+		t.Fatalf("grant = %q", app.fileCompanionShareGrant(token))
+	}
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row FileCompanionLibraryItem
+	for _, item := range list.Items {
+		if item.Token == token {
+			row = item
+		}
+	}
+	if row.Path == "" || row.HubOrigin != foreign.URL {
+		t.Fatalf("list dropped the foreign share: %#v notice %q", list.Items, list.Notice)
+	}
+	if len(row.Notes) != 1 || row.Notes[0].Text != "主持人的批注" {
+		t.Fatalf("notes = %#v", row.Notes)
+	}
+	noted, err := app.addFileCompanionShareNoteByToken(token, "跨 hub 的问题", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noted.NotesRevision != 2 || len(noted.Notes) != 1 || noted.Notes[0].Text != "跨 hub 的问题" {
+		t.Fatalf("noted = %#v", noted)
+	}
 }

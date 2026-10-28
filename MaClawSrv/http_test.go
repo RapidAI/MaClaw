@@ -1063,10 +1063,10 @@ func TestOpenAPIAdminMutationsAreOwnerOnlyUnlessExplicitlyAllowed(t *testing.T) 
 		http.MethodPost + " /api/v1/admin/ai-models/tts/synthesize":                          true,
 		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/validate": true,
 		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/test":     true,
-		http.MethodPost + " /api/v1/admin/sandbox/detect":                          true,
-		http.MethodPost + " /api/v1/admin/sandbox/smoke-test":                      true,
-		http.MethodPost + " /api/v1/admin/sandbox/diagnose":                        true,
-		http.MethodPost + " /api/v1/admin/sandbox/profiles/{profileName}/validate": true,
+		http.MethodPost + " /api/v1/admin/sandbox/detect":                                    true,
+		http.MethodPost + " /api/v1/admin/sandbox/smoke-test":                                true,
+		http.MethodPost + " /api/v1/admin/sandbox/diagnose":                                  true,
+		http.MethodPost + " /api/v1/admin/sandbox/profiles/{profileName}/validate":           true,
 	}
 	for _, route := range openAPIRoutes {
 		if !strings.HasPrefix(route.Path, "/api/v1/admin/") {
@@ -9764,7 +9764,11 @@ func TestDeleteSessionRemovesMessagesAndRuns(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	now := time.Now().UTC()
-	if err := store.SaveMessage(agentservice.Message{ID: "msg_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now}); err != nil {
+	agent.PrepareConversationPrefix(agent.PromptPrefixMeta{ConversationID: sess.ID, BotID: "bot-1"}, agent.PromptPrefixInput{Segments: agent.PromptPrefixSegments{System: "pinned"}, ProvideSystem: true})
+	if _, ok := agent.PinnedPrefix("bot-1", sess.ID); !ok {
+		t.Fatal("expected session prefix pin before deletion")
+	}
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", Metadata: map[string]string{"bot_id": "bot-1"}, CreatedAt: now}); err != nil {
 		t.Fatalf("SaveMessage: %v", err)
 	}
 	if err := store.SaveRun(agentservice.Run{ID: "run_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now}); err != nil {
@@ -9795,6 +9799,9 @@ func TestDeleteSessionRemovesMessagesAndRuns(t *testing.T) {
 	}
 	if _, err := store.GetRun(tenant.ID, user.ID, inst.ID, "run_1"); err == nil {
 		t.Fatalf("expected session runs deleted")
+	}
+	if _, ok := agent.PinnedPrefix("bot-1", sess.ID); ok {
+		t.Fatal("session prefix pin survived deletion")
 	}
 }
 

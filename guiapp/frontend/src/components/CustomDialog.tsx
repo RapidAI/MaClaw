@@ -10,17 +10,25 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
 // Above application overlays; task creation and guided flows reserve higher layers.
 const DIALOG_Z_INDEX = 120000;
 
-/** Read the current theme from the #App element so the dialog inherits dark-mode variables. */
+/** Read the current theme so a portaled dialog inherits dark-mode variables.
+ *  The main window stamps them on #App. The companion window has no #App and
+ *  stamps them on the document element instead. */
+function themeAttribute(name: string): string | undefined {
+    return document.getElementById('App')?.getAttribute(name)
+        || document.documentElement.getAttribute(name)
+        || undefined;
+}
+
 function getCurrentTheme(): string | undefined {
-    return document.getElementById('App')?.getAttribute('data-ai-theme') || undefined;
+    return themeAttribute('data-ai-theme');
 }
 
 function getCurrentDarkScheme(): string | undefined {
-    return document.getElementById('App')?.getAttribute('data-ai-dark-scheme') || undefined;
+    return themeAttribute('data-ai-dark-scheme');
 }
 
 function getCurrentLightScheme(): string | undefined {
-    return document.getElementById('App')?.getAttribute('data-ai-light-scheme') || undefined;
+    return themeAttribute('data-ai-light-scheme');
 }
 
 // ── Types ──

@@ -363,6 +363,19 @@ function applyVEStreamChunkEntry(prev: VEConversationState, entry: VEStreamChunk
     };
 }
 
+function veMessagesForSnapshot(state: VEConversationState): VEMessage[] {
+    if (!state.streamContent && state.streamAttachments.length === 0) return state.messages;
+    return [...state.messages, {
+        id: `stream-snapshot-${state.sessionId || "active"}-${state.streamFromId || "assistant"}`,
+        role: "assistant",
+        content: state.streamContent,
+        timestamp: Date.now(),
+        fromId: state.streamFromId || undefined,
+        fromName: state.streamFromName || undefined,
+        attachments: state.streamAttachments.length ? state.streamAttachments : undefined,
+    }];
+}
+
 /** Create a session with timeout */
 function createSessionWithTimeout<T>(
     promise: Promise<T>,
@@ -608,11 +621,14 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
     // Expose getState() to parent via ref; parent calls this before unmount to snapshot state
     useImperativeHandle(ref, () => ({
-        getState: () => ({
-            messages: stateRef.current.messages,
-            sessionId: stateRef.current.sessionId,
-            inputText: inputTextRef.current,
-        }),
+        getState: () => {
+            streamChunkCoalescerRef.current?.flush("ve");
+            return {
+                messages: veMessagesForSnapshot(stateRef.current),
+                sessionId: stateRef.current.sessionId,
+                inputText: inputTextRef.current,
+            };
+        },
     }), []);
 
     const mountedRef = useRef(true);
@@ -639,18 +655,21 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     // 33ms coalescer for ve:stream_chunk updates. The first chunk of a burst
     // paints immediately; later chunks fold into one state update per flush
     // (terminal events flush eagerly). Created once — the flush callback only
-    // uses the stable setState, so it survives effect re-subscription.
+    // uses stable refs and setState, so it survives effect re-subscription.
+    const publishStreamChunks = useCallback((entries: VEStreamChunkEntry[]) => {
+        if (entries.length === 0) return;
+        const apply = (prev: VEConversationState) => {
+            let next = prev;
+            for (const entry of entries) next = applyVEStreamChunkEntry(next, entry);
+            return next;
+        };
+        stateRef.current = apply(stateRef.current);
+        setState(prev => apply(prev));
+    }, []);
     const streamChunkCoalescerRef = useRef<StreamCoalescer<string, VEStreamChunkEntry> | null>(null);
     if (streamChunkCoalescerRef.current === null) {
         streamChunkCoalescerRef.current = createStreamCoalescer<string, VEStreamChunkEntry>({
-            onFlush: (_key, entries) => {
-                if (entries.length === 0) return;
-                setState((prev) => {
-                    let next = prev;
-                    for (const entry of entries) next = applyVEStreamChunkEntry(next, entry);
-                    return next;
-                });
-            },
+            onFlush: (_key, entries) => publishStreamChunks(entries),
         });
     }
     const authPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1528,7 +1547,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             // so the transcript stays byte-identical to per-chunk writes.
             const entry: VEStreamChunkEntry = { content, senderId, senderName, attachments };
             if (streamChunkCoalescerRef.current?.push("ve", entry)) {
-                setState((prev) => applyVEStreamChunkEntry(prev, entry));
+                publishStreamChunks([entry]);
             }
         };
 
@@ -1651,7 +1670,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (typeof unsub4 === "function") unsub4();
             else EventsOff("ve:session_renewed");
         };
-    }, [attemptReconnect, hideAwaitingReply, refreshSilenceTimer, releaseResponseGate]);
+    }, [attemptReconnect, hideAwaitingReply, publishStreamChunks, refreshSilenceTimer, releaseResponseGate]);
 
     // --- Message Sending ---
 

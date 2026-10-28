@@ -20,6 +20,7 @@ import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTa
 import { takeAssistantStreamToken } from "../bots/visibleDesktopTurn";
 import { codingThoughtDeltaIsChrome, codingThoughtHasOpenFence, codingThoughtTextIsBlank } from "./assistantLiveActivity";
 import { createStreamCoalescer } from "./streamCoalescer";
+import { markStreamTextReplacement, noteNonAppendStreamText } from "./streamTextRevision";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -806,7 +807,9 @@ function appendAssistantToolCall(message: ChatMessage, progressText: string): Ch
     if (dropped.size > 0) {
         content = content.replace(new RegExp(`<!--maclaw-tool:(?:${[...dropped].join('|')})-->`, 'g'), '');
     }
-    return { ...message, content: appendToolCallMarker(content, id), toolCalls: nextCalls };
+    const nextContent = appendToolCallMarker(content, id);
+    noteNonAppendStreamText(message, { content: nextContent });
+    return { ...message, content: nextContent, toolCalls: nextCalls };
 }
 
 function appendProgressToReasoning(message: ChatMessage, progressText: string): ChatMessage {
@@ -828,7 +831,9 @@ function appendProgressToReasoning(message: ChatMessage, progressText: string): 
     // is intentionally not inferred from its content: a model may legitimately
     // write bullets, so trimming by appearance could delete its thinking.
     if (firstModelLine < 0) {
-        return { ...message, reasoning: [...lines, nextLine].slice(-MAX_REASONING_STATUS_MESSAGES).join('\n') };
+        const reasoning = [...lines, nextLine].slice(-MAX_REASONING_STATUS_MESSAGES).join('\n');
+        noteNonAppendStreamText(message, { reasoning });
+        return { ...message, reasoning };
     }
     return { ...message, reasoning: [...lines, nextLine].join('\n') };
 }
@@ -1893,6 +1898,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
             message.id,
             hasLeakedReasoningProtocol(reasoningWindow) ? stripLeakedReasoningProtocol(rawNextReasoning) : rawNextReasoning,
         );
+        if (nextReasoning !== rawNextReasoning) markStreamTextReplacement(message.id);
         if (!reasoningDelta) {
             if (nextReasoning === (message.reasoning || '')) return message;
             return { ...message, reasoning: nextReasoning || undefined };
@@ -1996,11 +2002,14 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
         message.id,
         hasLeakedReasoningProtocol(protocolWindow) ? stripLeakedReasoningProtocol(rawNextContent) : rawNextContent,
     );
-    if (nextContent !== rawNextContent) logRolePrefixDiagnostic('append-token', rawNextContent, nextContent, {
-        messageId: message.id,
-        requestId: message.requestId,
-        deltaLen: contentDelta.length,
-    });
+    if (nextContent !== rawNextContent) {
+        markStreamTextReplacement(message.id);
+        logRolePrefixDiagnostic('append-token', rawNextContent, nextContent, {
+            messageId: message.id,
+            requestId: message.requestId,
+            deltaLen: contentDelta.length,
+        });
+    }
     if (nextContent === message.content) return message;
     return {
         ...message,
@@ -3240,6 +3249,7 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         if (!nextContent && !resultText && !nextReasoning && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextRecordingSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length && !message.codingTimeline?.length) {
             return null;
         }
+        noteNonAppendStreamText(message, { content: nextContent, resultText, reasoning: nextReasoning });
         return {
             ...message,
             content: nextContent,
@@ -3298,9 +3308,11 @@ function isRecoveryChoiceNotice(content: string): boolean {
 function settleUnfinishedSlotMessage(message: ChatMessage, status: 'resumed' | 'dismissed'): ChatMessage {
     const slot = message.unfinishedSlot;
     if (!slot) return message;
+    const content = isRecoveryChoiceNotice(message.content || '') ? '' : message.content;
+    noteNonAppendStreamText(message, { content });
     return {
         ...message,
-        content: isRecoveryChoiceNotice(message.content || '') ? '' : message.content,
+        content,
         unfinishedSlot: {
             ...slot,
             status,
@@ -3369,15 +3381,18 @@ function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: stri
             timestamp: Date.now(),
         }];
     }
-    const replaceWithError = (message: ChatMessage): ChatMessage => ({
-        ...message,
-        role: 'error',
-        content: errorText,
-        codingTimeline: undefined,
-        pendingCodingThoughts: undefined,
-        reasoningStartSequence: undefined,
-        timestamp: Date.now(),
-    });
+    const replaceWithError = (message: ChatMessage): ChatMessage => {
+        noteNonAppendStreamText(message, { content: errorText });
+        return {
+            ...message,
+            role: 'error',
+            content: errorText,
+            codingTimeline: undefined,
+            pendingCodingThoughts: undefined,
+            reasoningStartSequence: undefined,
+            timestamp: Date.now(),
+        };
+    };
     const nextMessages = updateRoundMessage(messages, assistantMessageId, requestId, replaceWithError);
     return hasRoundMessage(messages, assistantMessageId, requestId)
         ? nextMessages
@@ -3407,11 +3422,13 @@ export function markRoundCancelled(messages: ChatMessage[], assistantMessageId: 
         if (content.includes(CANCELED_BY_USER_LINE)) {
             if (!message.toolCalls?.length || message.resultStatus === "incomplete") return message;
             const answer = (message.resultText || "").trim();
+            const resultText = answer && !answer.includes(CANCELED_BY_USER_LINE)
+                ? `${answer}\n\n${CANCELED_BY_USER_LINE}`
+                : message.resultText;
+            noteNonAppendStreamText(message, { resultText });
             return {
                 ...message,
-                resultText: answer && !answer.includes(CANCELED_BY_USER_LINE)
-                    ? `${answer}\n\n${CANCELED_BY_USER_LINE}`
-                    : message.resultText,
+                resultText,
                 resultStatus: "incomplete",
             };
         }
@@ -3422,6 +3439,7 @@ export function markRoundCancelled(messages: ChatMessage[], assistantMessageId: 
         const resultText = message.toolCalls?.length && answer
             ? (answer.includes(CANCELED_BY_USER_LINE) ? answer : `${answer}\n\n${CANCELED_BY_USER_LINE}`)
             : message.resultText;
+        noteNonAppendStreamText(message, { content: nextContent, resultText });
         return {
             ...message,
             content: nextContent,
@@ -5473,6 +5491,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const contextBoundaryMessageIDRef = useRef<string | null>(loadPersistedContextBoundaryMessageID());
     const uiStateLoadedRef = useRef(false);
     const persistQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
+    const sideStreamCoalescersRef = useRef<Set<{ dispose: () => void }>>(new Set());
 
     const persistUIState = useCallback((nextMessages: ChatMessage[], nextHistory: PromptHistoryEntry[], nextBoundary: string | null): Promise<boolean> => {
         const messagesToSave = parseSerializedMessages(serializePersistedMessages(nextMessages));
@@ -5491,6 +5510,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const queued = persistQueueRef.current.then(save, save);
         persistQueueRef.current = queued;
         return queued;
+    }, []);
+
+    useEffect(() => () => {
+        for (const coalescer of sideStreamCoalescersRef.current) coalescer.dispose();
+        sideStreamCoalescersRef.current.clear();
     }, []);
 
     useEffect(() => {
@@ -5980,28 +6004,33 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // into one 33ms flush per request (same cadence as the main chat
         // loop). "final" flushes the pending tail before replacing content,
         // so the transcript stays byte-identical to per-token writes.
+        const appendContinuationToken = (messages: ChatMessage[], requestId: string, delta: string, sessionKey?: string): ChatMessage[] => {
+            const idx = messages.findIndex(m => m.requestId === requestId && m.role === 'assistant');
+            if (idx < 0) {
+                return [...messages, {
+                    id: nextId(),
+                    role: 'assistant' as const,
+                    content: delta,
+                    requestId,
+                    sessionKey: sessionKey || normalizeRuntimeSessionKey('desktop-user'),
+                    timestamp: Date.now(),
+                }];
+            }
+            const updated = { ...messages[idx], content: (messages[idx].content || '') + delta };
+            return [...messages.slice(0, idx), updated, ...messages.slice(idx + 1)];
+        };
+        const publishContinuationToken = (requestId: string, delta: string, sessionKey?: string) => {
+            latestMessagesRef.current = appendContinuationToken(latestMessagesRef.current, requestId, delta, sessionKey);
+            setMessages(prev => appendContinuationToken(prev, requestId, delta, sessionKey));
+        };
         const tokenCoalescer = createStreamCoalescer<string, { delta: string; sessionKey: string }>({
             onFlush: (requestId, items) => {
                 const joined = items.map(item => item.delta).join('');
                 if (!joined) return;
-                const firstSessionKey = items[0]?.sessionKey;
-                setMessages(prev => {
-                    const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
-                    if (idx < 0) {
-                        return [...prev, {
-                            id: nextId(),
-                            role: 'assistant' as const,
-                            content: joined,
-                            requestId,
-                            sessionKey: firstSessionKey || normalizeRuntimeSessionKey('desktop-user'),
-                            timestamp: Date.now(),
-                        }];
-                    }
-                    const updated = { ...prev[idx], content: (prev[idx].content || '') + joined };
-                    return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
-                });
+                publishContinuationToken(requestId, joined, items[0]?.sessionKey);
             },
         });
+        sideStreamCoalescersRef.current.add(tokenCoalescer);
         const handler = (payload: any) => {
             let event: { request_id?: string; session_key?: string; kind?: string; text?: string; as_error?: boolean };
             try {
@@ -6069,21 +6098,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 if (!delta) return;
                 emitPetStateForAssistant('speaking', 'ai:continuation-token', 1800);
                 if (tokenCoalescer.push(requestId, { delta, sessionKey })) {
-                    setMessages(prev => {
-                        const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
-                        if (idx < 0) {
-                            return [...prev, {
-                                id: nextId(),
-                                role: 'assistant' as const,
-                                content: delta,
-                                requestId,
-                                sessionKey,
-                                timestamp: Date.now(),
-                            }];
-                        }
-                        const updated = { ...prev[idx], content: (prev[idx].content || '') + delta };
-                        return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
-                    });
+                    publishContinuationToken(requestId, delta, sessionKey);
                 }
                 return;
             }
@@ -6091,10 +6106,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 const text = String(event.text || '');
                 emitPetStateForAssistant('done', 'ai:continuation-final', 1500);
                 tokenCoalescer.flush(requestId);
-                setMessages(prev => {
-                    const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
+                const applyFinal = (messages: ChatMessage[]): ChatMessage[] => {
+                    const idx = messages.findIndex(m => m.requestId === requestId && m.role === 'assistant');
                     if (idx < 0) {
-                        return [...prev, {
+                        return [...messages, {
                             id: nextId(),
                             role: 'assistant' as const,
                             content: text,
@@ -6103,14 +6118,18 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                             timestamp: Date.now(),
                         }];
                     }
-                    const updated = { ...prev[idx], content: text };
-                    return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
-                });
+                    noteNonAppendStreamText(messages[idx], { content: text });
+                    const updated = { ...messages[idx], content: text };
+                    return [...messages.slice(0, idx), updated, ...messages.slice(idx + 1)];
+                };
+                latestMessagesRef.current = applyFinal(latestMessagesRef.current);
+                setMessages(prev => applyFinal(prev));
             }
         };
         const off = subscribeEvent('ai-continuation', handler);
         return () => {
             tokenCoalescer.dispose();
+            sideStreamCoalescersRef.current.delete(tokenCoalescer);
             off();
         };
     }, [emitPetStateForAssistant]);
@@ -6517,6 +6536,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             sessionKey,
             timestamp: Date.now(),
         };
+        latestMessagesRef.current = [...latestMessagesRef.current, userMsg, placeholderMsg];
         setMessages(prev => [...prev, userMsg, placeholderMsg]);
         emitPetStateForAssistant('thinking', 'ai:btw-send', 10000);
 
@@ -6525,25 +6545,33 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // flush (same cadence as the main chat loop) so a fast burst does not
         // re-render per event. The final/error writes flush the tail first,
         // so message order and text stay byte-identical.
+        const appendBtwToken = (messages: ChatMessage[], delta: string): ChatMessage[] => messages.map(m =>
+            m.id === assistantMsgId ? { ...m, content: m.content + delta } : m
+        );
+        const publishBtwToken = (delta: string) => {
+            latestMessagesRef.current = appendBtwToken(latestMessagesRef.current, delta);
+            setMessages(prev => appendBtwToken(prev, delta));
+        };
+        const replaceBtwContent = (content: string) => {
+            const apply = (messages: ChatMessage[]): ChatMessage[] => messages.map(m => {
+                if (m.id !== assistantMsgId) return m;
+                noteNonAppendStreamText(m, { content });
+                return { ...m, content };
+            });
+            latestMessagesRef.current = apply(latestMessagesRef.current);
+            setMessages(prev => apply(prev));
+        };
         const tokenCoalescer = createStreamCoalescer<string, string>({
-            onFlush: (_key, deltas) => {
-                const joined = deltas.join('');
-                setMessages(prev => prev.map(m =>
-                    m.id === assistantMsgId ? { ...m, content: m.content + joined } : m
-                ));
-            },
+            onFlush: (_key, deltas) => publishBtwToken(deltas.join('')),
         });
+        sideStreamCoalescersRef.current.add(tokenCoalescer);
         const tokenHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
             if (event?.request_id !== requestId) return;
             const delta = event?.text || '';
             if (!delta) return;
             emitPetStateForAssistant('speaking', 'ai:btw-token', 1800);
-            if (tokenCoalescer.push(requestId, delta)) {
-                setMessages(prev => prev.map(m =>
-                    m.id === assistantMsgId ? { ...m, content: m.content + delta } : m
-                ));
-            }
+            if (tokenCoalescer.push(requestId, delta)) publishBtwToken(delta);
         };
         const progressHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
@@ -6560,18 +6588,15 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // Replace placeholder content with the final result.
             // If streaming already populated content, the final text is authoritative.
             tokenCoalescer.flush(requestId);
-            setMessages(prev => prev.map(m =>
-                m.id === assistantMsgId ? { ...m, content: finalText } : m
-            ));
+            replaceBtwContent(finalText);
         } catch (err: any) {
             tokenCoalescer.flush(requestId);
-            setMessages(prev => prev.map(m =>
-                m.id === assistantMsgId ? { ...m, content: `ERROR /btw 查询失败: ${err?.message || String(err)}` } : m
-            ));
+            replaceBtwContent(`ERROR /btw 查询失败: ${err?.message || String(err)}`);
         } finally {
             offBtwToken();
             offBtwProgress();
             tokenCoalescer.dispose();
+            sideStreamCoalescersRef.current.delete(tokenCoalescer);
             emitPetStateForAssistant('done', 'ai:btw-done', 1600);
         }
     }, [activeSessionKeyForEvents, emitPetStateForAssistant]);

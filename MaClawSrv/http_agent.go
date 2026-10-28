@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -639,17 +640,17 @@ func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	lastPayload := ""
+	var lastSnapshot *runStreamSnapshot
 	sendSnapshot := func(eventType string, snap *runStreamSnapshot) bool {
+		if eventType == "snapshot" && reflect.DeepEqual(snap, lastSnapshot) {
+			return true
+		}
 		payload, err := json.Marshal(runStreamEnvelope{Type: eventType, Snapshot: snap})
 		if err != nil {
 			return false
 		}
-		if eventType == "snapshot" && string(payload) == lastPayload {
-			return true
-		}
 		if eventType == "snapshot" {
-			lastPayload = string(payload)
+			lastSnapshot = snap
 		}
 		if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
 			return false
@@ -716,19 +717,24 @@ func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Reques
 
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
+	nextSnapshot := time.Now().Add(time.Second)
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
+		case now := <-ticker.C:
 			if !sendRunEvents() {
 				return
+			}
+			if now.Before(nextSnapshot) {
+				continue
 			}
 			snapshot, err := s.loadRunStreamSnapshot(r.Context(), p, instanceID, runID)
 			if err != nil {
 				writeSSEError(w, flusher, err, s.svc.DataRoot())
 				return
 			}
+			nextSnapshot = time.Now().Add(time.Second)
 			if !sendSnapshot("snapshot", snapshot) {
 				return
 			}

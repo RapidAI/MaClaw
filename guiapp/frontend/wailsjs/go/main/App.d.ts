@@ -735,6 +735,8 @@ export function SyncFileCompanionShare(arg1:string,arg2:string):Promise<Record<s
 
 export function AddFileCompanionShareNote(arg1:string,arg2:string):Promise<Record<string, any>>;
 
+export function ReviewFileCompanionShareNote(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+
 export function ListFileCompanionGroups():Promise<Array<Record<string, any>>>;
 
 export function CreateFileCompanionGroup(arg1:string):Promise<Record<string, any>>;

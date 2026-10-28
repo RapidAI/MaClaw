@@ -27,6 +27,10 @@
     --radius-lg: 12px;
     --radius-xl: 16px;
     --radius-pill: 999px;
+    /* One height for every control on the composer toolbar row, so the icon
+       buttons, permission chip, working-directory chip and model chip sit on
+       the same baseline. Keep in sync with COMPOSER_CONTROL_HEIGHT_PX. */
+    --mc-composer-control-height: 28px;
     --space-1: 4px;
     --space-2: 8px;
     --space-3: 12px;
@@ -7336,6 +7340,402 @@ body:has(
     white-space: nowrap;
 }
 
+/* Danger zone: a contained destructive action surface (knowledge base reset). */
+.knowledge-danger-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 32%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-danger) 5%, var(--theme-surface));
+}
+
+.knowledge-danger-row .knowledge-muted-line {
+    min-width: 0;
+    flex: 1 1 320px;
+    color: var(--theme-text-primary);
+}
+
+/* ── Security policy panel (settings → Security): grouped card layout ── */
+.sec-policy {
+    display: grid;
+    gap: 14px;
+}
+
+.sec-policy__managed {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: var(--theme-info-bg);
+    color: var(--theme-primary-strong);
+    font-size: 0.78rem;
+    line-height: 1.5;
+}
+
+.sec-policy__managed svg { flex: 0 0 auto; margin-top: 2px; }
+
+.sec-policy__group {
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface-muted);
+}
+
+.sec-policy__group--readonly {
+    opacity: 0.65;
+    pointer-events: none;
+}
+
+.sec-policy__group-header {
+    display: grid;
+    gap: 2px;
+}
+
+.sec-policy__group-header strong {
+    color: var(--theme-text-primary);
+    font-size: 0.84rem;
+    letter-spacing: -0.01em;
+}
+
+.sec-policy__group-header span {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+/* Guardrail mode cards */
+.sec-policy__modes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
+    gap: 8px;
+}
+
+/* Two-class specificity: .settings-panel button pins min-height 36px. */
+.sec-policy .sec-policy__mode {
+    display: grid;
+    gap: 3px;
+    align-content: start;
+    min-height: 58px;
+    padding: 9px 11px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
+}
+
+.sec-policy__mode:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 38%, var(--theme-border));
+}
+
+.sec-policy__mode:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 1px;
+}
+
+.sec-policy__mode:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.sec-policy__mode--active {
+    border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 40%, transparent);
+}
+
+.sec-policy__mode--dev:not(.sec-policy__mode--active) {
+    background: color-mix(in srgb, var(--theme-surface-muted) 60%, var(--theme-surface));
+}
+
+.sec-policy__mode-name {
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.sec-policy__mode--active .sec-policy__mode-name {
+    color: var(--theme-primary-strong);
+}
+
+.sec-policy__mode-hint {
+    color: var(--theme-text-muted);
+    font-size: 0.68rem;
+    line-height: 1.4;
+}
+
+.sec-policy__mode-desc {
+    margin: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.74rem;
+    line-height: 1.5;
+}
+
+/* Comparison matrix */
+.sec-policy__table-wrap {
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    /* Nowrap column headers must never push the card wider than its group. */
+    overflow-x: auto;
+}
+
+.sec-policy__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.74rem;
+}
+
+.sec-policy__table thead th {
+    padding: 5px 6px;
+    border-bottom: 1px solid var(--theme-border);
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.sec-policy__table thead th:first-child { text-align: left; }
+
+.sec-policy__table thead th[data-current] {
+    color: var(--theme-primary-strong);
+}
+
+.sec-policy__table thead th.sec-policy__table-dev:not([data-current]) {
+    color: var(--theme-text-muted);
+}
+
+.sec-policy__table tbody th {
+    padding: 6px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+    color: var(--theme-text-primary);
+    font-size: 0.74rem;
+    font-weight: 600;
+    text-align: left;
+}
+
+.sec-policy__table tbody td {
+    padding: 5px 6px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+    text-align: center;
+}
+
+.sec-policy__table tbody td[data-current] {
+    background: color-mix(in srgb, var(--theme-primary) 6%, transparent);
+}
+
+.sec-policy__table tbody tr:last-child th,
+.sec-policy__table tbody tr:last-child td { border-bottom: 0; }
+
+.sec-policy__chip {
+    display: inline-block;
+    min-width: 3.2em;
+    padding: 2px 8px;
+    border-radius: var(--radius-pill);
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1.5;
+}
+
+.sec-policy__chip--allow { background: var(--theme-success-bg); color: var(--theme-success); }
+.sec-policy__chip--audit { background: var(--theme-info-bg); color: var(--theme-primary-strong); }
+.sec-policy__chip--confirm { background: var(--theme-warning-bg); color: var(--theme-warning); }
+.sec-policy__chip--deny { background: var(--theme-danger-bg); color: var(--theme-danger); }
+.sec-policy__chip--yes { background: var(--theme-surface-muted); color: var(--theme-text-secondary); }
+/* text-muted alone already clears AA on the table surface (5.79:1). */
+.sec-policy__chip--no { background: transparent; color: var(--theme-text-muted); }
+
+.sec-policy__table-note {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.7rem;
+    line-height: 1.5;
+}
+
+/* Row lists (selects, switches, allowlist inputs) */
+.sec-policy__rows {
+    display: grid;
+    overflow: hidden;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+}
+
+.sec-policy__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 12px;
+}
+
+.sec-policy__row + .sec-policy__row {
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.sec-policy__row--disabled {
+    opacity: 0.6;
+}
+
+.sec-policy__row--disabled .sec-policy__switch,
+.sec-policy__row--disabled .sec-policy__control {
+    pointer-events: none;
+}
+
+.sec-policy__row-text {
+    display: grid;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 2px;
+}
+
+.sec-policy__row-label {
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.sec-policy__row-desc {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.sec-policy__control {
+    flex: 0 0 auto;
+    min-width: 0;
+    width: 150px;
+    min-height: 32px;
+    padding: 4px 8px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+}
+
+.sec-policy__control--wide { width: 220px; }
+
+.sec-policy__switch {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    cursor: pointer;
+}
+
+.sec-policy__switch input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.sec-policy__switch-track {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-track-off);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.sec-policy__switch-track::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast);
+}
+
+.sec-policy__switch input:checked + .sec-policy__switch-track {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+}
+
+.sec-policy__switch input:checked + .sec-policy__switch-track::after {
+    transform: translateX(16px);
+}
+
+.sec-policy__switch input:focus-visible + .sec-policy__switch-track {
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+
+.sec-policy__switch input:disabled + .sec-policy__switch-track {
+    opacity: 0.55;
+}
+
+/* Audit log footer */
+.sec-policy__group--audit {
+    background: var(--theme-surface);
+}
+
+.sec-policy__audit {
+    display: grid;
+    gap: 5px;
+    color: var(--theme-text-secondary);
+    font-size: 0.76rem;
+    line-height: 1.55;
+}
+
+.sec-policy__audit-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.sec-policy__audit-row code {
+    padding: 2px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+    font-size: 0.72rem;
+}
+
+@media (max-width: 640px) {
+    .sec-policy__row {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .sec-policy__control,
+    .sec-policy__control--wide {
+        width: 100%;
+    }
+
+    .sec-policy__table thead th,
+    .sec-policy__table tbody th,
+    .sec-policy__table tbody td {
+        padding-inline: 3px;
+    }
+}
+
 .knowledge-export-result,
 .knowledge-share-result {
     display: grid;
@@ -7686,20 +8086,6 @@ button.knowledge-chip:disabled {
     text-align: left;
 }
 
-.knowledge-raw-pre {
-    margin: 0;
-    max-height: 260px;
-    overflow: auto;
-    border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-md);
-    padding: 10px 12px;
-    background: var(--theme-surface-muted);
-    color: var(--theme-text-primary);
-    font-size: 0.76rem;
-    line-height: 1.45;
-    text-align: left;
-    white-space: pre-wrap;
-}
 
 /* --- Knowledge Search Hero --- */
 .knowledge-search-hero {
@@ -22580,105 +22966,236 @@ button.tbk-pill {
 
 .im-settings-hardware {
     display: grid;
-    gap: 14px;
+    gap: 12px;
     padding-top: 16px;
     border-top: 1px solid var(--theme-border);
 }
 
-.im-settings-hardware__heading strong,
-.im-settings-hardware__welcome-title strong {
-    color: var(--theme-text-primary);
-    font-size: 0.9rem;
-}
-
-.im-settings-hardware__heading span {
-    display: block;
-    margin-top: 4px;
-    color: var(--theme-text-muted);
-    font-size: 0.75rem;
-}
-
+/* ── Section heading with icon chip + enable switch ── */
 .im-settings-hardware__heading {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
+    align-items: center;
+    gap: 12px;
 }
 
-.im-settings-hardware__heading .im-settings-toggle span { margin-top: 0; }
+.im-settings-hardware__heading-badge {
+    flex: 0 0 auto;
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border-subtle));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface));
+    color: var(--theme-primary-strong);
+}
+
+.im-settings-hardware__heading-text {
+    display: grid;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 2px;
+}
+
+.im-settings-hardware__heading strong {
+    color: var(--theme-text-primary);
+    font-size: 0.92rem;
+    letter-spacing: -0.01em;
+}
+
+.im-settings-hardware__heading-text span {
+    color: var(--theme-text-muted);
+    font-size: 0.75rem;
+    line-height: 1.45;
+}
 
 .im-settings-hardware__mode-note {
-    margin: -6px 0 0;
+    margin: -4px 0 0;
     color: var(--theme-text-secondary);
     font-size: 0.74rem;
     line-height: 1.5;
 }
 
-.im-settings-hardware__weather {
-    display: grid;
+/* ── Track/thumb switch (visually hidden input keeps a11y naming) ── */
+.im-settings-hardware__switch {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
     gap: 8px;
+    cursor: pointer;
 }
 
-.im-settings-hardware__weather > div:first-child {
+.im-settings-hardware__switch input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.im-settings-hardware__switch-track {
+    position: relative;
+    display: inline-block;
+    flex: 0 0 auto;
+    width: 36px;
+    height: 20px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-track-off);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.im-settings-hardware__switch-track::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast);
+}
+
+.im-settings-hardware__switch input:checked + .im-settings-hardware__switch-track {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+}
+
+.im-settings-hardware__switch input:checked + .im-settings-hardware__switch-track::after {
+    transform: translateX(16px);
+}
+
+.im-settings-hardware__switch input:focus-visible + .im-settings-hardware__switch-track {
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+
+.im-settings-hardware__switch input:disabled + .im-settings-hardware__switch-track {
+    opacity: 0.55;
+}
+
+.im-settings-hardware__switch:has(input:disabled) {
+    cursor: not-allowed;
+}
+
+.im-settings-hardware__switch-text {
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+/* ── Preferences: pets toggle + weather city as soft card rows ── */
+.im-settings-hardware__preferences {
     display: grid;
-    gap: 3px;
+    overflow: hidden;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface-muted);
 }
 
-.im-settings-hardware__weather label {
-    color: var(--theme-text-secondary);
-    font-size: 0.78rem;
-    font-weight: 700;
+.im-settings-hardware__preference {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 11px 14px;
 }
 
-.im-settings-hardware__weather small {
+.im-settings-hardware__preference + .im-settings-hardware__preference {
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.im-settings-hardware__preference-text {
+    display: grid;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 2px;
+}
+
+.im-settings-hardware__preference-text > span,
+.im-settings-hardware__preference-text > label {
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.im-settings-hardware__preference-text small {
     color: var(--theme-text-muted);
-    font-size: 0.74rem;
+    font-size: 0.72rem;
     line-height: 1.45;
 }
 
-.im-settings-hardware__weather-controls {
+.im-settings-hardware__weather-side {
     display: grid;
-    grid-template-columns: minmax(10rem, 18rem) auto;
+    flex: 0 1 auto;
+    gap: 4px;
+    justify-items: end;
+}
+
+.im-settings-hardware__weather-controls {
+    display: flex;
+    align-items: center;
     gap: 8px;
-    justify-content: start;
 }
 
 .im-settings-hardware__weather-controls input {
     box-sizing: border-box;
+    width: 13rem;
+    max-width: 100%;
     min-width: 0;
+    min-height: 34px;
+    padding: 5px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
 }
 
-.im-settings-hardware__weather .im-settings-hardware__weather-status { color: var(--theme-success); font-weight: 600; }
-.im-settings-hardware__weather .im-settings-hardware__weather-error { color: var(--theme-danger); font-weight: 600; }
+.im-settings-hardware__weather .im-settings-hardware__weather-status { color: var(--theme-success); font-size: 0.72rem; font-weight: 600; }
+.im-settings-hardware__weather .im-settings-hardware__weather-error { color: var(--theme-danger); font-size: 0.72rem; font-weight: 600; }
 
-.im-settings-hardware__pairing,
-.im-settings-hardware__welcome-title,
-.im-settings-hardware__actions {
+/* ── Pairing code card ── */
+.im-settings-hardware__pairing {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 10px;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 20%, var(--theme-border-subtle));
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--theme-info-bg) 45%, var(--theme-surface));
 }
 
-.im-settings-hardware__pairing {
-    justify-content: space-between;
-    padding: 11px 12px;
-    border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--theme-surface-muted);
-}
-
-.im-settings-hardware__pairing > div:first-child {
+.im-settings-hardware__pairing-badge {
+    flex: 0 0 auto;
     display: grid;
-    gap: 4px;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border-subtle));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface));
+    color: var(--theme-primary-strong);
+}
+
+.im-settings-hardware__pairing-info {
+    display: grid;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 2px;
+}
+
+.im-settings-hardware__pairing-info > span {
     color: var(--theme-text-secondary);
-    font-size: 0.76rem;
+    font-size: 0.72rem;
     font-weight: 700;
 }
 
 .im-settings-hardware__pairing small,
-.im-settings-hardware__welcome p,
-.im-settings-hardware__audio-status {
+.im-settings-hardware__welcome p {
     color: var(--theme-text-muted);
     font-size: 0.74rem;
     line-height: 1.45;
@@ -22687,194 +23204,353 @@ button.tbk-pill {
 .im-settings-pair-code {
     color: var(--theme-primary-strong);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 1.2rem;
+    font-size: 1.3rem;
     font-variant-numeric: tabular-nums;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.18em;
+}
+
+.im-settings-hardware__actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
 }
 
 .im-settings-hardware__actions code {
     max-width: 260px;
+    padding: 4px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+    font-size: 0.72rem;
     overflow-wrap: anywhere;
 }
 
-.im-settings-hardware__devices { display: grid; gap: 9px; }
-.im-settings-hardware__devices-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.im-settings-hardware__device-limit { color: var(--theme-text-secondary); font-size: 0.72rem; font-weight: 700; line-height: 1.4; }
-.im-settings-hardware__device-limit span { white-space: nowrap; }
+/* ── Connected devices ── */
+.im-settings-hardware__devices { display: grid; gap: 10px; }
+
+.im-settings-hardware__devices-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.im-settings-hardware__devices-title { display: grid; gap: 3px; min-width: 0; }
+.im-settings-hardware__devices-title strong { color: var(--theme-text-primary); font-size: 0.86rem; }
+.im-settings-hardware__devices-title span { color: var(--theme-text-muted); font-size: 0.74rem; line-height: 1.45; }
+
+.im-settings-hardware__devices-tools {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.im-settings-hardware__device-limit {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-pill);
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+
 .im-settings-hardware__device-limit strong { color: var(--theme-primary-strong); font-variant-numeric: tabular-nums; }
-.im-settings-hardware__devices-heading > div { display: grid; gap: 3px; }
-.im-settings-hardware__devices-heading strong { color: var(--theme-text-primary); font-size: 0.82rem; }
-.im-settings-hardware__devices-heading span,
+.im-settings-hardware__device-limit[data-at-capacity="true"] {
+    border-color: color-mix(in srgb, var(--theme-warning) 45%, var(--theme-border));
+    background: var(--theme-warning-bg);
+    color: var(--theme-warning);
+}
+.im-settings-hardware__device-limit[data-at-capacity="true"] strong { color: var(--theme-warning); }
+
 .im-settings-hardware__devices-empty,
-.im-settings-hardware__devices-loading,
-.im-settings-hardware__devices-error { color: var(--theme-text-muted); font-size: 0.74rem; line-height: 1.45; }
-.im-settings-hardware__devices-empty,
-.im-settings-hardware__devices-loading,
-.im-settings-hardware__devices-error { padding: 12px; border: 1px dashed var(--theme-border); border-radius: var(--radius-md); }
-.im-settings-hardware__devices-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-style: solid; border-color: var(--theme-danger); background: var(--theme-danger-bg); color: var(--theme-text-primary); }
-.im-settings-hardware__device-list { border-top: 1px solid var(--theme-border-subtle); }
-.im-settings-hardware__device { display: grid; grid-template-columns: 10px minmax(220px, 0.65fr) minmax(0, 2.35fr); align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--theme-border-subtle); }
-.im-settings-hardware__device-details { display: grid; min-width: 0; gap: 2px; }
+.im-settings-hardware__devices-loading {
+    padding: 16px;
+    border: 1px dashed var(--theme-border);
+    border-radius: var(--radius-md);
+    color: var(--theme-text-muted);
+    font-size: 0.76rem;
+    line-height: 1.5;
+}
+
+.im-settings-hardware__devices-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 40%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: var(--theme-danger-bg);
+    color: var(--theme-text-primary);
+    font-size: 0.76rem;
+    line-height: 1.5;
+}
+
+.im-settings-hardware__device-list { display: grid; gap: 10px; }
+
+.im-settings-hardware__device {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    grid-template-areas:
+        "status details commands"
+        "controls controls controls";
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-sm);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.im-settings-hardware__device:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border-subtle));
+    box-shadow: var(--shadow-md);
+}
+
+.im-settings-hardware__device[data-online="false"] {
+    background: color-mix(in srgb, var(--theme-surface-muted) 45%, var(--theme-surface));
+}
+
+.im-settings-hardware__device-status {
+    grid-area: status;
+    width: 9px;
+    height: 9px;
+    margin-top: 6px;
+    border-radius: 50%;
+    background: var(--theme-text-muted);
+}
+
+.im-settings-hardware__device-status[data-online="true"] {
+    background: var(--theme-success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-success) 18%, transparent);
+}
+
+/* display:contents promotes the actions wrapper so adjustments land in the
+   full-width controls row while command buttons stay in the header. */
+.im-settings-hardware__device-actions { display: contents; }
+.im-settings-hardware__device-adjustments {
+    display: flex;
+    grid-area: controls;
+    min-width: 0;
+    flex-flow: row wrap;
+    align-items: start;
+    gap: 12px 16px;
+}
+
+.im-settings-hardware__device-command-actions {
+    display: flex;
+    grid-area: commands;
+    align-items: center;
+    align-self: start;
+    gap: 8px;
+    white-space: nowrap;
+}
+
+.im-settings-hardware__device-command-actions .im-settings-button { flex: 0 0 auto; min-height: 34px; }
+
+.im-settings-hardware__device-details {
+    display: grid;
+    grid-area: details;
+    min-width: 0;
+    gap: 2px;
+    align-content: start;
+}
+
 .im-settings-hardware__device-name { display: flex; min-width: 0; align-items: center; gap: 6px; }
-.im-settings-hardware__device-name strong { min-width: 0; }
+.im-settings-hardware__device-name strong {
+    overflow: hidden;
+    min-width: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.82rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .im-settings-hardware__device-name input { min-width: 0; flex: 1 1 auto; max-width: 220px; padding: 3px 6px; font-size: 0.79rem; font-weight: 700; }
 .im-settings-hardware__device-rename { flex: 0 0 auto; padding: 2px 5px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--theme-primary-strong); font: inherit; font-size: 0.68rem; font-weight: 700; cursor: pointer; }
 .im-settings-hardware__device-rename:hover { background: var(--theme-surface-muted); }
 .im-settings-hardware__device-rename:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 1px; }
 .im-settings-hardware__device-rename:disabled { cursor: not-allowed; opacity: 0.6; }
-.im-settings-hardware__device > .im-settings-hardware__device-actions { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
-.im-settings-hardware__device-adjustments { display: flex; min-width: 0; flex-flow: row wrap; align-items: center; gap: 12px 16px; }
-.im-settings-hardware__device-screen-sleep { flex: 0 1 10.5rem; }
-.im-settings-hardware__device-brightness,
-.im-settings-hardware__device-volume { flex: 1 1 10.5rem; }
-.im-settings-hardware__device-agent { flex: 1 1 14rem; }
-/* Keep reply voice beside AI expert. The optional pet picker is deliberately
-   sent to a new line, so it cannot displace core device controls. */
-.im-settings-hardware__device-pet { flex: 0 1 14rem; order: 1; }
-.im-settings-hardware__device-command-actions { display: flex; align-items: center; align-self: start; gap: 8px; padding-top: 1px; white-space: nowrap; }
-.im-settings-hardware__device-command-actions .im-settings-button { flex: 1 1 0; }
-.im-settings-hardware__device strong { overflow: hidden; color: var(--theme-text-primary); font-size: 0.79rem; text-overflow: ellipsis; white-space: nowrap; }
-.im-settings-hardware__device code { overflow: hidden; color: var(--theme-text-secondary); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
-.im-settings-hardware__device small { color: var(--theme-text-muted); font-size: 0.7rem; }
-.im-settings-hardware__device-volume { display: grid; min-width: 0; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 8px; margin: 0; }
-.im-settings-hardware__device-volume label { display: inline-flex; align-items: baseline; color: var(--theme-text-secondary); font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
-.im-settings-hardware__device-volume label strong { min-width: 3.25ch; color: var(--theme-primary-strong); font-variant-numeric: tabular-nums; text-align: end; }
-.im-settings-hardware__device-volume input { justify-self: start; min-width: 60px; width: 50%; max-width: 140px; accent-color: var(--theme-primary); }
-.im-settings-hardware__device-brightness { display: grid; min-width: 0; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 8px; margin: 0; }
-.im-settings-hardware__device-brightness label { display: inline-flex; align-items: baseline; color: var(--theme-text-secondary); font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
-.im-settings-hardware__device-brightness label strong { min-width: 3.25ch; color: var(--theme-primary-strong); font-variant-numeric: tabular-nums; text-align: end; }
-.im-settings-hardware__device-brightness input { justify-self: start; min-width: 60px; width: 50%; max-width: 140px; accent-color: var(--theme-primary); }
-.im-settings-hardware__device-screen-sleep { display: grid; min-width: 0; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 8px; margin: 0; }
-.im-settings-hardware__device-screen-sleep label { color: var(--theme-text-secondary); font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
-.im-settings-hardware__device-screen-sleep select { justify-self: start; min-width: 6.5rem; width: 33.333%; max-width: 9rem; }
-.im-settings-hardware__device-agent { display: grid; min-width: 0; grid-template-columns: max-content minmax(128px, 1fr); align-items: center; gap: 8px; margin: 0; }
-.im-settings-hardware__device-agent label { color: var(--theme-text-secondary); font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
-.im-settings-hardware__device-agent select { min-width: 0; width: 100%; }
-.im-settings-hardware__custom-pets {
-    display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr);
-    align-items: center;
-    column-gap: 8px;
-}
-.im-settings-hardware__custom-pets small {
-    display: block;
-    min-width: 0;
-    max-width: none;
-    margin-top: 0;
-    color: var(--theme-text-muted);
-    font-size: 0.72rem;
-    font-weight: 400;
-    line-height: 1.4;
+.im-settings-hardware__device code {
+    justify-self: start;
+    max-width: 100%;
+    padding: 1px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-pill);
+    background: var(--theme-surface-muted);
     overflow: hidden;
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.im-settings-hardware__device-pet { position: relative; display: grid; min-width: 132px; grid-template-columns: 24px auto minmax(78px, 1fr); align-items: center; gap: 6px; color: var(--theme-text-secondary); font-size: 0.7rem; font-weight: 700; }
-.im-settings-hardware__device-pet-preview { display: grid; width: 24px; height: 24px; place-items: center; overflow: hidden; border: 1px solid var(--theme-border-subtle); border-radius: var(--radius-sm); background: var(--theme-surface-muted); }
+.im-settings-hardware__device small { color: var(--theme-text-muted); font-size: 0.7rem; line-height: 1.4; }
+.im-settings-hardware__device[data-online="true"] .im-settings-hardware__device-details small { color: var(--theme-success); font-weight: 600; }
+
+/* Per-device controls: label on top, control below, grid wraps naturally. */
+.im-settings-hardware__device-screen-sleep { display: grid; flex: 0 1 11rem; min-width: 0; gap: 4px; margin: 0; }
+.im-settings-hardware__device-brightness,
+.im-settings-hardware__device-volume { display: grid; flex: 1 1 11rem; min-width: 0; gap: 4px; margin: 0; }
+.im-settings-hardware__device-agent { display: grid; flex: 1 1 13rem; min-width: 0; gap: 4px; margin: 0; }
+
+.im-settings-hardware__device-screen-sleep label,
+.im-settings-hardware__device-agent label {
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.im-settings-hardware__device-screen-sleep select,
+.im-settings-hardware__device-agent select {
+    min-width: 0;
+    width: 100%;
+    min-height: 32px;
+}
+
+.im-settings-hardware__device-brightness label,
+.im-settings-hardware__device-volume label {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.im-settings-hardware__device-brightness label strong,
+.im-settings-hardware__device-volume label strong {
+    color: var(--theme-primary-strong);
+    font-variant-numeric: tabular-nums;
+}
+
+.im-settings-hardware__device-brightness input,
+.im-settings-hardware__device-volume input {
+    width: 100%;
+    min-width: 0;
+    margin: 2px 0;
+    accent-color: var(--theme-primary);
+}
+
+/* The optional pet picker joins the controls grid with its own label row. */
+.im-settings-hardware__device-pet { position: relative; display: grid; flex: 0 1 13rem; min-width: 0; gap: 4px; align-content: start; }
+.im-settings-hardware__device-pet-label { color: var(--theme-text-secondary); font-size: 0.7rem; font-weight: 700; }
+.im-settings-hardware__device-pet-field { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.im-settings-hardware__device-pet-preview { flex: 0 0 auto; display: grid; width: 26px; height: 26px; place-items: center; overflow: hidden; border: 1px solid var(--theme-border-subtle); border-radius: var(--radius-sm); background: var(--theme-surface-muted); }
 .im-settings-hardware__device-pet-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
-.im-settings-hardware__device-pet-trigger { display: inline-flex; min-width: 0; width: 100%; min-height: 34px; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; overflow: hidden; color: var(--theme-text-primary); font: inherit; font-weight: 600; text-align: start; text-overflow: ellipsis; white-space: nowrap; }
+.im-settings-hardware__device-pet-trigger { display: inline-flex; min-width: 0; flex: 1 1 auto; min-height: 32px; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; overflow: hidden; color: var(--theme-text-primary); font: inherit; font-size: 0.78rem; font-weight: 600; text-align: start; text-overflow: ellipsis; white-space: nowrap; }
 .im-settings-hardware__device-pet-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .im-settings-hardware__device-pet-trigger:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
 .im-settings-hardware__device-pet-trigger:disabled { cursor: not-allowed; opacity: 0.6; }
-.im-settings-hardware__device-pet-chevron { flex: 0 0 auto; font-size: 1rem; line-height: 1; }
-.im-settings-hardware__device-pet-menu { position: absolute; z-index: 20; top: calc(100% + 4px); right: 0; display: grid; width: max(196px, 100%); max-height: 240px; padding: 4px; overflow-y: auto; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); box-shadow: 0 6px 8px color-mix(in srgb, var(--theme-text-primary) 16%, transparent); }
+.im-settings-hardware__device-pet-chevron {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    margin-right: 2px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    opacity: 0.75;
+}
+.im-settings-hardware__device-pet-menu { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; display: grid; width: max(196px, 100%); max-height: 240px; padding: 4px; overflow-y: auto; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); box-shadow: var(--shadow-lg); }
 .im-settings-hardware__device-pet-option { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--theme-text-primary); font: inherit; font-size: 0.78rem; font-weight: 600; text-align: start; cursor: pointer; }
 .im-settings-hardware__device-pet-option:hover,
 .im-settings-hardware__device-pet-option:focus-visible { background: var(--theme-surface-muted); outline: none; }
 .im-settings-hardware__device-pet-option[aria-selected="true"] { background: color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface)); color: var(--theme-primary-strong); }
 .im-settings-hardware__device-pet-option img { flex: 0 0 auto; width: 28px; height: 28px; object-fit: contain; }
 .im-settings-hardware__device-pet-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.im-settings-hardware__device-status { width: 8px; height: 8px; border-radius: 50%; background: var(--theme-text-muted); }
-.im-settings-hardware__device-status[data-online="true"] { background: var(--theme-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-success) 16%, transparent); }
-.im-settings-hardware__device .im-settings-button { min-height: 36px; }
+.im-settings-hardware__device .im-settings-button { min-height: 34px; }
 
-@media (max-width: 1200px) {
-    .im-settings-hardware__device { grid-template-columns: 10px minmax(0, 1fr); }
-    .im-settings-hardware__device > .im-settings-hardware__device-actions { grid-column: 2; grid-template-columns: minmax(0, 1fr) auto; }
+/* ── Welcome message card ── */
+.im-settings-hardware__welcome {
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface-muted);
 }
 
-@media (max-width: 1080px) {
-	.im-settings-hardware__device-adjustments { gap: 12px; }
+.im-settings-hardware__welcome-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.im-settings-hardware__welcome-title strong { color: var(--theme-text-primary); font-size: 0.86rem; }
+.im-settings-hardware__welcome-title-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.im-settings-hardware__welcome p { margin: 0; }
+.im-settings-hardware__welcome-voice { max-width: 340px; }
+.im-settings-hardware__welcome-voice select { width: 100%; }
+.im-settings-hardware__welcome-voice small { color: var(--theme-text-muted); font-size: 0.72rem; line-height: 1.45; }
+.im-settings-hardware__welcome-controls { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+.im-settings-hardware__welcome-text-field { display: grid; flex: 1 1 260px; gap: 4px; min-width: 0; }
+.im-settings-hardware__welcome-controls textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 64px;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.82rem;
+    resize: vertical;
+}
+.im-settings-hardware__welcome-text-status { color: var(--theme-text-muted); font-size: 0.7rem; line-height: 1.35; }
+.im-settings-hardware__welcome-controls .im-settings-button { margin-top: 1px; }
+.im-settings-hardware__welcome-notes { display: grid; gap: 4px; }
+.im-settings-hardware__welcome-capacity,
+.im-settings-hardware__preview-note { color: var(--theme-text-muted); font-size: 0.72rem; line-height: 1.5; }
+.im-settings-hardware__preview-note { color: var(--theme-text-secondary); }
+.im-settings-hardware__audio-status {
+    justify-self: start;
+    padding: 3px 10px;
+    border: 1px solid color-mix(in srgb, var(--theme-success) 35%, var(--theme-border-subtle));
+    border-radius: var(--radius-pill);
+    background: var(--theme-success-bg);
+    color: var(--theme-success);
+    font-weight: 600;
+}
+
+/* ── Responsive ── */
+@media (max-width: 1200px) {
+    .im-settings-hardware__device {
+        grid-template-columns: 10px minmax(0, 1fr);
+        grid-template-areas:
+            "status details"
+            "commands commands"
+            "controls controls";
+    }
+    .im-settings-hardware__device-command-actions { justify-content: flex-start; align-self: auto; }
 }
 
 @media (max-width: 900px) {
-    .im-settings-hardware__device > .im-settings-hardware__device-actions { grid-template-columns: 1fr; gap: 12px; }
-    .im-settings-hardware__device-command-actions { align-self: auto; justify-content: flex-start; padding-top: 0; }
+    .im-settings-hardware__device-adjustments { gap: 12px; }
 }
 
-@media (max-width: 760px) {
-    .im-settings-hardware__device-screen-sleep,
-    .im-settings-hardware__device-brightness,
-    .im-settings-hardware__device-volume,
-    .im-settings-hardware__device-agent,
-    .im-settings-hardware__device-pet { flex-basis: calc(50% - 6px); }
-}
-
-@media (max-width: 620px) {
+@media (max-width: 640px) {
+    .im-settings-hardware__heading { align-items: flex-start; flex-wrap: wrap; }
+    .im-settings-hardware__preference { align-items: flex-start; flex-direction: column; gap: 10px; }
+    .im-settings-hardware__weather-side { justify-items: stretch; width: 100%; }
+    .im-settings-hardware__weather-controls input { flex: 1 1 auto; width: auto; }
+    .im-settings-hardware__devices-heading { flex-direction: column; }
+    .im-settings-hardware__devices-tools { justify-content: flex-start; }
+    .im-settings-hardware__pairing { align-items: stretch; flex-direction: column; }
     .im-settings-hardware__device-screen-sleep,
     .im-settings-hardware__device-brightness,
     .im-settings-hardware__device-volume,
     .im-settings-hardware__device-agent,
     .im-settings-hardware__device-pet { flex-basis: 100%; }
-}
-
-.im-settings-hardware__volume {
-    display: grid;
-    grid-template-columns: auto minmax(160px, 340px);
-    align-items: center;
-    gap: 8px 14px;
-}
-
-.im-settings-hardware__volume label {
-    color: var(--theme-text-secondary);
-    font-size: 0.78rem;
-    font-weight: 700;
-}
-
-.im-settings-hardware__volume label strong { color: var(--theme-primary-strong); }
-.im-settings-hardware__volume input { accent-color: var(--theme-primary); }
-.im-settings-hardware__volume small { grid-column: 2; }
-.im-settings-hardware__welcome { display: grid; gap: 9px; }
-.im-settings-hardware__welcome-title { justify-content: space-between; }
-.im-settings-hardware__welcome p { margin: 0; }
-.im-settings-hardware__welcome-voice { max-width: 320px; }
-.im-settings-hardware__welcome-voice select { width: 100%; }
-.im-settings-hardware__welcome-controls { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
-.im-settings-hardware__welcome-title-actions { display: flex; align-items: center; gap: 10px; }
-.im-settings-hardware__welcome-text-field { display: grid; flex: 1 1 260px; gap: 4px; min-width: 0; }
-.im-settings-hardware__welcome-controls textarea { width: 100%; min-height: 68px; resize: vertical; box-sizing: border-box; }
-.im-settings-hardware__welcome-text-status { color: var(--theme-text-muted); font-size: 0.72rem; line-height: 1.35; }
-.im-settings-hardware__welcome-controls .im-settings-button { margin-top: 1px; }
-.im-settings-hardware__welcome-capacity { color: var(--theme-text-muted); font-size: 0.74rem; line-height: 1.45; }
-.im-settings-hardware__preview-note {
-    color: var(--theme-text-secondary);
-    line-height: 1.5;
-}
-
-@media (max-width: 640px) {
-    .im-settings-hardware__heading { align-items: stretch; flex-direction: column; }
-    .im-settings-hardware__pairing { align-items: stretch; flex-direction: column; }
-    .im-settings-hardware__actions { align-items: stretch; flex-direction: column; }
-    .im-settings-hardware__devices-heading { align-items: stretch; flex-direction: column; }
-    .im-settings-hardware__devices-error { align-items: stretch; flex-direction: column; }
-	.im-settings-hardware__device { grid-template-columns: 10px minmax(0, 1fr); }
-	.im-settings-hardware__device-name input { max-width: none; }
-	.im-settings-hardware__device > .im-settings-hardware__device-actions { grid-column: 2; grid-template-columns: 1fr; justify-self: stretch; }
-	.im-settings-hardware__device-command-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); white-space: normal; }
-	.im-settings-hardware__device-command-actions .im-settings-button { width: 100%; }
-	.im-settings-hardware__device .im-settings-button { min-height: 44px; }
-    .im-settings-hardware__actions .im-settings-button,
+    .im-settings-hardware__device-command-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); white-space: normal; }
+    .im-settings-hardware__device .im-settings-button { min-height: 40px; }
     .im-settings-hardware__welcome-controls .im-settings-button { width: 100%; }
-	.im-settings-hardware__device-volume { grid-template-columns: auto minmax(72px, 1fr); gap: 8px; }
-	.im-settings-hardware__device-volume input { justify-self: stretch; width: 100%; }
-    .im-settings-hardware__device-brightness { grid-template-columns: auto minmax(72px, 1fr); gap: 8px; }
-    .im-settings-hardware__device-brightness input { justify-self: stretch; width: 100%; }
-	.im-settings-hardware__device-screen-sleep { grid-template-columns: auto minmax(92px, 1fr); gap: 8px; }
-	.im-settings-hardware__device-screen-sleep select { justify-self: stretch; width: 100%; }
-	.im-settings-hardware__device-agent { grid-template-columns: auto minmax(92px, 1fr); gap: 8px; }
-	.im-settings-hardware__device-pet { min-width: 0; grid-template-columns: 22px auto minmax(72px, 1fr); }
-	.im-settings-hardware__device-pet-menu { right: auto; left: 0; }
-    .im-settings-hardware__weather-controls { grid-template-columns: minmax(0, 1fr) auto; }
 }
 
 @media (max-width: 640px) {
@@ -25716,6 +26392,11 @@ button.tbk-pill {
 
 /* WorkflowDocPreview.tsx */
 .wdp-diagram { margin: 8px 0; overflow: auto; }
+/* Same defect as the chat diagram, from the other direction: this surface has
+   no zoom, but Mermaid still caps the svg at its own pixel width, so a compact
+   drawing sits in the left of a wide preview column. Block + auto margins
+   centres it; the cap alone would keep it at that size and off-centre. */
+.wdp-diagram > svg { display: block; margin-left: auto; margin-right: auto; }
 .wdp-measure-host { position: absolute; width: 0; height: 0; overflow: hidden; }
 .wdp-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .wdp-progress-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -26268,7 +26949,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .acb-brand-gen { font-size: 21px; font-weight: 650; color: #7a2330; letter-spacing: 0.04em; }
 
 /* SessionWorkingDirChip.tsx */
-.swdc-placeholder { display: inline-flex; align-items: center; min-height: 24px; box-sizing: border-box; flex-shrink: 0; }
+.swdc-placeholder { display: inline-flex; align-items: center; min-height: var(--mc-composer-control-height, 28px); box-sizing: border-box; flex-shrink: 0; }
 .swdc-placeholder-icon { opacity: 0.35; display: inline-flex; color: var(--theme-text-muted); }
 /* Folder plus expert mark. flex-shrink 0 makes the wrapping toolbar move the
    whole pair to the next line. max-width 100% still ellipsizes a long expert
@@ -26277,7 +26958,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .swdc-root { flex-shrink: 0; min-width: 0; max-width: 100%; }
 .swdc-chip-icon { display: inline-flex; flex-shrink: 0; opacity: 0.8; }
 .swdc-chip-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.swdc-expert { display: inline-flex; align-items: center; gap: 4px; height: 24px; max-width: 11rem; min-width: 0; padding: 0 8px; border: 1px solid var(--mc-line, var(--theme-border)); border-radius: var(--radius-md); box-sizing: border-box; flex: 0 1 auto; overflow: hidden; background: var(--mc-muted-surface, var(--theme-surface)); color: var(--mc-copy, var(--theme-text-secondary)); font-size: 11px; line-height: 1.4; cursor: default; user-select: none; }
+.swdc-expert { display: inline-flex; align-items: center; gap: 4px; height: var(--mc-composer-control-height, 28px); max-width: 11rem; min-width: 0; padding: 0 8px; border: 1px solid var(--mc-line, var(--theme-border)); border-radius: var(--radius-md); box-sizing: border-box; flex: 0 1 auto; overflow: hidden; background: var(--mc-muted-surface, var(--theme-surface)); color: var(--mc-copy, var(--theme-text-secondary)); font-size: 11px; line-height: 1.4; cursor: default; user-select: none; }
 .swdc-expert-icon { flex-shrink: 0; font-size: 13px; line-height: 1; }
 .swdc-expert-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
@@ -26343,8 +27024,13 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .amd-source { margin: 8px 0 0; max-height: 240px; overflow: auto; }
 .amd-measure-host { position: absolute; left: 0; top: 0; width: 100%; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .amd-diagram { max-width: 100%; overflow: auto; contain: content; }
+/* The zoom is the root svg's width as a percentage of this box, so a zoomed-out
+   diagram is narrower than the column. Auto margins centre that narrower
+   drawing instead of leaving it pinned to the left edge. Once the zoom is past
+   100% the box is over-constrained, the auto margins resolve to 0, and the
+   overflow scrolls from the left as before. */
 .mc-conversation-body .amd-diagram > svg,
-.amd-diagram > svg { display: block; max-width: none; height: auto; }
+.amd-diagram > svg { display: block; max-width: none; height: auto; margin-left: auto; margin-right: auto; }
 .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:has(.amd-figure),
 [data-testid='file-companion-message-assistant']:has(.amd-figure) { width: 100%; }
 /* Mermaid nests its stylesheet under the svg id. A matching copy is written
@@ -28556,7 +29242,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-welcome button[type='submit']:hover,
 .mc-input-stack .btn-primary:hover { background: var(--theme-primary-strong) !important; transform: translateY(-1px); }
 
-/* Reference composer utility buttons */
+/* Reference composer utility buttons. This 34px floor is for square icon
+   buttons; the row's text chips (permission, working dir, model, compose)
+   pin their own height inline so they line up at the shared control height. */
 .mc-input-stack button:not(.btn-primary) { min-width: 34px; min-height: 34px; border: 1px solid var(--theme-border) !important; border-radius: var(--radius-md) !important; background: var(--theme-surface) !important; color: var(--theme-text-muted) !important; }
 .mc-input-stack button:not(.btn-primary):hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important; background: var(--theme-primary-soft) !important; color: var(--mc-accent, #2e75cb) !important; }
 .aiti-avatar-wrap { position: relative; width: 14px; height: 14px; flex-shrink: 0; display: inline-flex; }
@@ -32855,6 +33543,12 @@ input.cwshare-url {
      an open document are both targets. Without it WebView2 still resolves
      the path, then the runtime discards the callback and nothing opens. */
   --wails-drop-target: drop;
+  background: var(--theme-page-bg, #f3f5f7);
+  color: var(--theme-text-primary, #1e293b);
+  color-scheme: light;
+}
+.file-companion-window[data-ai-theme='dark'] {
+  color-scheme: dark;
 }
 .file-companion-titlebar {
   min-width: 0;
@@ -32868,6 +33562,9 @@ input.cwshare-url {
      stacking context here the open menu — which hangs below the bar — is
      painted underneath that frame, so the panel looks like it never opened. */
   z-index: 40;
+  background: var(--theme-surface, #ffffff);
+  border-bottom: 1px solid var(--theme-border, #d9e1ec);
+  color: var(--theme-text-primary, #1e293b);
 }
 /* The bar clips its own row, which would also clip the 打开 menu. Names stay
    clipped by .file-companion-titlebar-files while the menu is open. */
@@ -32933,6 +33630,227 @@ input.cwshare-url {
   height: 100%;
   min-height: 0;
   --wails-draggable: no-drag;
+}
+/* 手绘: a yellow pen button floats in the page gutter. Its panel carries the
+   same four swatches as the highlight menu and a 线/框 choice. */
+.companion-pdf-draw {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 8;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: calc(100% - 20px);
+  --wails-draggable: no-drag;
+}
+.companion-pdf-draw-toggle {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #e3b23c;
+  border-radius: 50%;
+  background: #ffe08a;
+  color: #7a5200;
+  cursor: pointer;
+  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.16);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+.companion-pdf-draw-toggle:hover {
+  background: #ffd766;
+}
+.companion-pdf-draw-toggle[aria-pressed="true"] {
+  border-color: #c9931a;
+  background: #f5c542;
+  box-shadow: 0 0 0 3px rgba(245, 197, 66, 0.28), 0 1px 6px rgba(15, 23, 42, 0.16);
+}
+.companion-pdf-draw-toggle svg {
+  width: 19px;
+  height: 19px;
+}
+.companion-pdf-draw-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--theme-border, #c9ddf6);
+  border-radius: var(--radius-lg);
+  background: var(--theme-surface, #fff);
+  box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18));
+}
+.companion-pdf-draw-colors {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.companion-pdf-draw-colors .companion-pdf-menu-color {
+  width: 28px;
+  height: 24px;
+}
+.companion-pdf-draw-colors .companion-pdf-menu-color[aria-pressed="true"] {
+  border-color: var(--theme-primary, #2e75cb);
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+}
+.companion-pdf-draw-colors .companion-pdf-menu-color:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.companion-pdf-draw-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--theme-border-subtle, #dde9fa);
+}
+.companion-pdf-draw-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.companion-pdf-draw-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--theme-border, #c9ddf6);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #546479);
+  cursor: pointer;
+}
+.companion-pdf-draw-tools button svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.companion-pdf-draw-tools button:hover,
+.companion-pdf-draw-tools button:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-draw-tools button[aria-pressed="true"] {
+  border-color: var(--theme-primary, #2e75cb);
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.12));
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-draw-tools button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.companion-pdf-drawings {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.companion-pdf-drawings--active {
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+/* Line tool. The hotspot is the nib tip; a box keeps the crosshair. */
+.companion-pdf-drawings--pen {
+  cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'32'%20height%3D'32'%20viewBox%3D'0%200%2032%2032'%3E%3Cpath%20fill%3D'%23fff'%20d%3D'M4%2028%2010%2020%2012.2%2021.4%2022.4%2010.2%2025.6%206.4%2028.8%209.2%2018.4%2020.4%2014.2%2025.2Z'%2F%3E%3Cpath%20fill%3D'%23243044'%20d%3D'M11.2%2020.6%2021.6%2010.4%2024.6%207.4%2027.2%209.8%2016.6%2020.2%2013.4%2023.8Z'%2F%3E%3Cpath%20fill%3D'%23e2b340'%20d%3D'M4%2028%2010%2020%2012.2%2021.4%2013.4%2023.8%2011.2%2026.2Z'%2F%3E%3Cpath%20fill%3D'%23e8eef4'%20d%3D'M10.2%2019.4%2013.2%2016.4%2015.6%2018.8%2012.6%2021.8Z'%2F%3E%3Cpath%20fill%3D'%231c2430'%20d%3D'M4%2028%206.6%2025.6%205.5%2024.4Z'%2F%3E%3Cpath%20fill%3D'none'%20stroke%3D'%231c2430'%20stroke-width%3D'0.7'%20stroke-linecap%3D'round'%20d%3D'M5.4%2026.2%2010.6%2020.8'%2F%3E%3C%2Fsvg%3E") 4 28, crosshair;
+}
+.companion-pdf-drawings--eraser {
+  cursor: cell;
+}
+/* Page count and goto stay in the reader, above the scrolling pages, so the
+   pen and the paper never cover them. */
+.companion-pdf-pager {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--theme-border, #c9ddf6);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #546479);
+  font: 12px/1 "Segoe UI", "Microsoft YaHei", sans-serif;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  z-index: 9;
+  --wails-draggable: no-drag;
+}
+.companion-pdf-pager button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--theme-border, #c9ddf6);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #546479);
+  cursor: pointer;
+}
+.companion-pdf-pager button svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.companion-pdf-pager button:hover:not(:disabled),
+.companion-pdf-pager button:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-pager button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.companion-pdf-pager button.companion-pdf-pager-go {
+  width: auto;
+  min-width: 40px;
+  padding: 0 8px;
+  font: inherit;
+}
+.companion-pdf-pager-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 2px;
+  white-space: nowrap;
+}
+.companion-pdf-pager-input {
+  box-sizing: border-box;
+  width: 6ch;
+  height: 26px;
+  margin: 0;
+  padding: 0 4px;
+  border: 1px solid var(--theme-border, #c9ddf6);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: inherit;
+  text-align: center;
+}
+.companion-pdf-pager-input:focus {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .companion-pdf-scroll {
   flex: 1;
@@ -33114,6 +34032,21 @@ input.cwshare-url {
   border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #c9ddf6));
   background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
   outline: none;
+}
+/* Highlights on the agent's answers ride the CSS Custom Highlight API: the
+   text nodes stay React's, so streaming and re-renders cannot corrupt the
+   transcript the way wrapped <mark> nodes could. */
+::highlight(companion-chat-yellow) {
+  background-color: #ffe08a;
+}
+::highlight(companion-chat-green) {
+  background-color: #b6e7c3;
+}
+::highlight(companion-chat-blue) {
+  background-color: #b9d4f5;
+}
+::highlight(companion-chat-pink) {
+  background-color: #f6c1d8;
 }
 .companion-pdf-translation {
   position: absolute;
@@ -33584,7 +34517,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-open-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 8px);
   /* Centred on the window: left/right both pinned with an auto margin keeps the
      panel in the middle without a transform, which would create a containing
      block for anything inside it. A PDF iframe lives in this webview, so the
@@ -33595,26 +34528,44 @@ body.companion-pdf-translation-dragging * {
   max-width: calc(100% - 16px);
   z-index: 30;
   box-sizing: border-box;
-  width: 268px;
+  width: 420px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: 12px;
+  padding: 16px;
   border: 1px solid var(--theme-border, #c9ddf6);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   background: var(--theme-surface, #ffffff);
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+  box-shadow:
+    0 24px 48px -12px rgba(15, 23, 42, 0.18),
+    0 8px 20px rgba(15, 23, 42, 0.08);
+  /* Opacity only, for the same reason the panel carries no transform: a
+     transform — even a transient one from a keyframe — would turn this panel
+     into the containing block for fixed descendants. */
+  animation: file-companion-open-menu-in 0.18s ease-out;
 }
 /* The Windows player is its own HWND on the left preview. It paints above
    this webview, so the centred panel sits under the video and the 打开 click
    looks dead. The chat column is this webview and stays at least 280px, so
-   a 268px panel 8px from the right edge clears the player and the 12px
-   split. Hiding the player to reveal the panel would unload the document. */
+   the panel pinned 8px from the right edge must keep the compact width to
+   clear the player and the 12px split. Hiding the player to reveal the panel
+   would unload the document. */
 .file-companion-open-menu--beside-player {
   left: auto;
   right: 8px;
   margin-left: 0;
   margin-right: 0;
+  width: 268px;
+  gap: 10px;
+  padding: 12px;
+}
+@keyframes file-companion-open-menu-in {
+  from { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .file-companion-open-menu {
+    animation: none;
+  }
 }
 /* These two squares share one row, so the title bar's flex gap never
    lands between them. The strip is part of this anchor and stays no-drag. */
@@ -33690,7 +34641,7 @@ body.companion-pdf-translation-dragging * {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   font: 600 13px/1.35 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
   text-align: left;
   cursor: pointer;
@@ -33765,6 +34716,20 @@ body.companion-pdf-translation-dragging * {
   gap: 4px;
   flex: 0 0 auto;
 }
+/* A cloud row is already a share. It carries a mark instead of a button:
+   the only action left on it is 修改, which edits that same link. */
+.file-companion-project-shared {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--theme-primary, #2563eb) 9%, transparent);
+  color: var(--theme-primary, #2563eb);
+  font: 600 11.5px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+}
 .file-companion-project-action {
   display: inline-flex;
   align-items: center;
@@ -33826,7 +34791,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-scrim {
   position: absolute;
   inset: 0;
-  background: rgba(15, 23, 42, 0.32);
+  background: var(--theme-overlay, rgba(15, 23, 42, 0.48));
 }
 .file-companion-dialog-card {
   position: relative;
@@ -33839,7 +34804,7 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-lg, 12px);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   box-shadow: var(--shadow-xl, 0 12px 40px -8px rgba(30, 58, 95, 0.22));
   text-align: left;
   overflow: hidden;
@@ -33863,7 +34828,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-heading h2 {
   margin: 0;
   font: 600 15px/1.3 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
 }
 .file-companion-dialog-sub {
   display: flex;
@@ -33901,7 +34866,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-dialog-x:hover {
   background: var(--theme-surface-muted, #f4f7fb);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
 }
 .file-companion-dialog-body {
   flex: 1 1 auto;
@@ -34071,7 +35036,7 @@ body.companion-pdf-translation-dragging * {
   min-width: 0;
   margin: 0;
   font: 500 11.5px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   word-break: break-all;
 }
 .file-companion-dialog-copy {
@@ -34140,7 +35105,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-primary {
   border: 1px solid var(--theme-primary, #2563eb);
   background: var(--theme-primary, #2563eb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
 }
 .file-companion-dialog-primary:hover:not(:disabled) {
   background: var(--theme-primary-strong, #1d4ed8);
@@ -34219,7 +35184,7 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   text-align: left;
   cursor: pointer;
 }
@@ -34308,7 +35273,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-library-group-title strong {
   font-size: 14px;
   font-weight: 600;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   overflow-wrap: anywhere;
 }
 .file-companion-library-group-title small {
@@ -34517,7 +35482,7 @@ body.companion-pdf-translation-dragging * {
   flex: 0 0 auto;
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
 }
 .file-companion-group-glyph {
   width: 18px;
@@ -34568,9 +35533,75 @@ body.companion-pdf-translation-dragging * {
   opacity: 0.45;
   cursor: default;
 }
+/* The hero row: the primary action reads as a card — icon tile, title,
+   sub-caption — instead of one compact menu line. The export menu keeps the
+   compact .file-companion-open-item look; this class is only the 打开 panel. */
+.file-companion-open-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  min-height: 58px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary, #2e75cb) 24%, var(--theme-border, #c9ddf6));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--theme-primary, #2e75cb) 10%, var(--theme-surface, #ffffff)),
+    color-mix(in srgb, var(--theme-primary, #2e75cb) 3%, var(--theme-surface, #ffffff)));
+  color: var(--theme-primary, #2e75cb);
+  font: 600 14px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.file-companion-open-hero:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 45%, var(--theme-border, #c9ddf6));
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--theme-primary, #2e75cb) 16%, var(--theme-surface, #ffffff)),
+    color-mix(in srgb, var(--theme-primary, #2e75cb) 6%, var(--theme-surface, #ffffff)));
+  box-shadow: 0 8px 18px -8px color-mix(in srgb, var(--theme-primary, #2e75cb) 45%, transparent);
+}
+.file-companion-open-hero:active:not(:disabled) {
+  box-shadow: none;
+}
+.file-companion-open-hero:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.file-companion-open-hero-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--theme-primary, #2e75cb);
+  color: var(--theme-on-primary, #ffffff);
+  box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--theme-primary, #2e75cb) 55%, transparent);
+}
+.file-companion-open-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.file-companion-open-hero-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.file-companion-open-hero-sub {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 400 12px/1.4 "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  color: var(--theme-text-muted, #64748b);
+}
 /* Keyboard focus must stay visible inside the menu (WCAG 2.4.7): the panel is
    opened by keyboard as often as by mouse. */
 .file-companion-open-item:focus-visible,
+.file-companion-open-hero:focus-visible,
 .file-companion-open-go:focus-visible {
   outline: 2px solid var(--theme-primary, #2563eb);
   outline-offset: 2px;
@@ -34586,34 +35617,43 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-open-row {
   display: flex;
-  gap: 6px;
+  gap: 8px;
 }
 .file-companion-open-input {
   flex: 1 1 auto;
   min-width: 0;
   box-sizing: border-box;
-  height: 32px;
-  padding: 0 8px;
+  height: 40px;
+  padding: 0 12px;
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1e293b);
+  color: var(--theme-text-primary, #1e293b);
   font: 400 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+  transition: border-color 0.15s ease;
+}
+.file-companion-open-input:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #c9ddf6));
 }
 .file-companion-open-input:disabled {
   opacity: 0.6;
 }
 .file-companion-open-go {
   flex: 0 0 auto;
-  height: 32px;
-  padding: 0 12px;
+  height: 40px;
+  padding: 0 18px;
   border: 1px solid var(--theme-primary, #2e75cb);
   border-radius: var(--radius-md);
   background: var(--theme-primary, #2e75cb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
   font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
   cursor: pointer;
   white-space: nowrap;
+  transition: filter 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.file-companion-open-go:hover:not(:disabled):not(.file-companion-open-search) {
+  filter: brightness(1.08);
+  box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--theme-primary, #2e75cb) 50%, transparent);
 }
 .file-companion-open-go:disabled {
   opacity: 0.45;
@@ -34622,9 +35662,10 @@ body.companion-pdf-translation-dragging * {
 /* 搜索 sits beside 确定. It stays an outline button so 确定 remains the
    action that opens whatever was typed. */
 .file-companion-open-search {
+  padding: 0 14px;
   border-color: var(--theme-border, #c9ddf6);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1e293b);
+  color: var(--theme-text-primary, #1e293b);
 }
 .file-companion-open-search:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #c9ddf6));
@@ -34634,7 +35675,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-open-hint {
   margin: 0;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--theme-text-muted, #64748b);
 }
 .file-companion-open-hint[data-state="error"] {
@@ -34733,7 +35774,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-share-password-reveal:hover:not(:disabled) {
   background: var(--theme-surface-muted, #f4f7fb);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
 }
 .file-companion-share-password-reveal:disabled {
   opacity: 0.45;
@@ -34927,7 +35968,7 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   font: 400 13px/1.5 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
   text-align: left;
   cursor: pointer;
@@ -34975,7 +36016,7 @@ body.companion-pdf-translation-dragging * {
   font-weight: 600;
   font-size: 13.5px;
   line-height: 1.45;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary, #1f2937);
   overflow-wrap: anywhere;
 }
 .file-companion-arxiv-hit:hover:not([aria-disabled="true"]) .file-companion-arxiv-hit-title {
@@ -35184,13 +36225,64 @@ body.companion-pdf-translation-dragging * {
   white-space: nowrap;
   min-width: 0;
 }
+/* A shared document says so on its own tab, so the reader can tell the cloud
+   state of every open file without selecting it first. */
+.file-companion-tab-share {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--theme-primary, #2e75cb);
+}
+.file-companion-tab-share[data-state="received"] {
+  color: var(--theme-text-muted, #56677c);
+}
+.file-companion-tab-share svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+/* Only the host's own tab carries the seat. A participant's tab stays clean:
+   the title-bar host badge already names the host for the open document. */
+.file-companion-tab-host {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  background: #fff1cf;
+  color: #8a5a00;
+  font: 600 10px/15px "Segoe UI", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.file-companion-host-badge {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 9px;
+  border: 1px solid #f0d59a;
+  border-radius: 999px;
+  background: #fff4d6;
+  color: #8a5a00;
+  font: 600 11px/18px "Segoe UI", "Microsoft YaHei", sans-serif;
+  --wails-draggable: no-drag;
+}
+.file-companion-host-badge[data-state="guest"] {
+  border-color: var(--theme-border, #c9ddf6);
+  background: var(--theme-surface-muted, #eef5ff);
+  color: var(--theme-text-secondary, #546479);
+}
 .file-companion-send {
   height: 36px;
   padding: 0 16px;
   border: none;
   border-radius: var(--radius-md);
   background: var(--theme-primary, #2e75cb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
   font: 600 13px "Segoe UI", "SF Pro Text", system-ui, sans-serif;
   cursor: pointer;
   flex-shrink: 0;
@@ -35200,11 +36292,12 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-send:disabled {
   background: var(--theme-surface-muted);
+  color: var(--theme-text-muted, #94a3b8);
   cursor: default;
 }
 .file-companion-send[aria-busy="true"] {
   background: var(--theme-primary, #2e75cb);
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
 }
 .file-companion-split {
   flex: 1;
@@ -35287,6 +36380,50 @@ body.companion-pdf-translation-dragging * {
   margin: 0;
   color: var(--theme-text-muted);
   font-size: 12px;
+}
+.file-companion-annotation-row {
+  margin: 0 0 7px;
+}
+.file-companion-annotation-row p {
+  margin: 0;
+}
+.file-companion-annotation-status {
+  display: inline-block;
+  margin: 2px 6px 0 0;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+}
+.file-companion-annotation-status[data-tone="ignored"] {
+  color: #b45309;
+}
+.file-companion-annotation-status[data-tone="approved"] {
+  color: var(--theme-primary);
+}
+.file-companion-annotation-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.file-companion-annotation-action {
+  padding: 1px 8px;
+  border: var(--theme-border);
+  border-radius: 999px;
+  background: var(--theme-surface);
+  color: var(--theme-text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.file-companion-annotation-action[data-tone="approve"] {
+  border-color: var(--theme-primary);
+  color: var(--theme-primary);
+}
+.file-companion-annotation-action[data-tone="ignore"] {
+  color: var(--theme-text-muted);
+}
+.file-companion-annotation-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .file-companion-progress {
   padding: 8px 12px;
@@ -35702,6 +36839,83 @@ body.companion-pdf-translation-dragging * {
     text-align: center;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+}
+
+/* USB companion display (buddy) settings. */
+
+.settings-hardware-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.buddy-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.buddy-settings__title {
+    margin: 0;
+    color: var(--theme-text-primary);
+}
+
+.buddy-settings__hint {
+    margin: 6px 0 0;
+    color: var(--theme-text-secondary);
+    font-size: 13px;
+}
+
+.buddy-settings__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--theme-text-primary);
+}
+
+.buddy-settings__select {
+    min-width: 240px;
+}
+
+.buddy-settings__status {
+    font-size: 13px;
+    color: var(--theme-text-secondary);
+}
+
+.buddy-settings__note {
+    font-size: 13px;
+    color: var(--theme-text-muted);
+}
+
+.buddy-settings__warn {
+    font-size: 13px;
+    color: var(--theme-warning);
+}
+
+.buddy-settings__error {
+    font-size: 13px;
+    color: var(--theme-danger);
+    word-break: break-all;
+}
+
+.buddy-settings__footnote {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 12px;
+}
+
+.buddy-settings__group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.buddy-settings__group-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--theme-text-secondary);
 }
 
 /* Backend task monitor: give the page a deliberate breathing space below the
@@ -37241,11 +38455,11 @@ body.companion-pdf-translation-dragging * {
 
 /* Shared modal overlay tokens keep secondary pages and remote dialogs on the
    same surface language as the workbench. */
-:where(#App, .app-viewport, [data-portal-theme]) {
+:where(#App, .app-viewport, [data-portal-theme], .file-companion-window) {
   --theme-overlay-color: #0f172a;
   --theme-overlay: rgba(15, 23, 42, 0.48);
 }
-:where(#App, .app-viewport, [data-portal-theme])[data-ai-theme='dark'] {
+:where(#App, .app-viewport, [data-portal-theme], .file-companion-window)[data-ai-theme='dark'] {
   --theme-overlay-color: #020817;
   --theme-overlay: rgba(2, 8, 23, 0.72);
 }
@@ -37413,8 +38627,8 @@ body.companion-pdf-translation-dragging * {
   min-width: 0 !important;
   width: auto !important;
   max-width: 220px !important;
-  min-height: 24px !important;
-  height: 24px !important;
+  min-height: var(--mc-composer-control-height, 28px) !important;
+  height: var(--mc-composer-control-height, 28px) !important;
   padding: 0 8px !important;
   border-radius: var(--radius-pill) !important;
   display: inline-flex !important;
@@ -37432,7 +38646,7 @@ body.companion-pdf-translation-dragging * {
   color: var(--mc-accent-strong) !important;
 }
 /* The 34px utility-button lock is for square icon buttons. This chip is a
-   text label on the same 24px row as the model chip and the expert mark.
+   text label on the same row as the model chip and the expert mark.
    min-height is not !important on the lock, so this more specific rule
    restores the authored height without a new !important. */
 .mc-input-stack button.mc-working-dir-chip,
@@ -37440,8 +38654,8 @@ body.companion-pdf-translation-dragging * {
   min-width: 0;
   width: auto;
   max-width: 100%;
-  min-height: 24px;
-  height: 24px;
+  min-height: var(--mc-composer-control-height, 28px);
+  height: var(--mc-composer-control-height, 28px);
   padding: 0 8px;
   display: inline-flex;
   align-items: center;
@@ -37538,6 +38752,23 @@ body.companion-pdf-translation-dragging * {
   background: transparent !important;
   border-radius: var(--radius-xs) !important;
   box-shadow: none !important;
+}
+/* The 34px utility-button lock is for square toolbar buttons. The attachment
+   chip's remove mark is a 22px affordance inside a 1-line row. The lock is not
+   force-flagged, so this more specific rule restores the authored size.
+   Touch pointers keep the injected 36px tap target from the panel's static
+   stylesheet, so this must not apply there. */
+@media (pointer: fine) {
+  #App .mc-input-stack button.ai-attachment-remove {
+    min-width: 22px;
+    width: 22px;
+    min-height: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+  }
 }
 /* Full control is the dangerous permission: keep the trigger visibly red
    (warning icon inherits currentColor) despite the neutral composer button

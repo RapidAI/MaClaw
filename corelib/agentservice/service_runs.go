@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -327,19 +328,16 @@ func (s *Service) enrichRun(run Run) (Run, error) {
 	if strings.TrimSpace(run.AssistantMessageID) == "" {
 		return run, nil
 	}
-	messages, err := s.store.ListMessages(run.SessionID)
+	msg, err := s.store.GetMessage(run.SessionID, run.AssistantMessageID)
+	if errors.Is(err, ErrMessageNotFound) {
+		return run, nil
+	}
 	if err != nil {
 		return Run{}, err
 	}
-	for _, msg := range messages {
-		if msg.ID != run.AssistantMessageID {
-			continue
-		}
-		if msg.Metadata != nil {
-			run.ResponseSource = strings.TrimSpace(msg.Metadata[metaResponseSource])
-			run.WaitingForUser = normalizeResponseSourceKind(run.ResponseSource).IsWaitingForUser()
-		}
-		break
+	if msg.Metadata != nil {
+		run.ResponseSource = strings.TrimSpace(msg.Metadata[metaResponseSource])
+		run.WaitingForUser = normalizeResponseSourceKind(run.ResponseSource).IsWaitingForUser()
 	}
 	return run, nil
 }

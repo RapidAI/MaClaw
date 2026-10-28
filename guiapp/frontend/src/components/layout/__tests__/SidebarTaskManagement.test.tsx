@@ -2213,6 +2213,30 @@ describe('SidebarTaskManagement', () => {
         expect(continueWorkflowProject).not.toHaveBeenCalled();
     });
 
+    it('shows a running workflow as in progress without offering continuation', async () => {
+        const continueWorkflowProject = vi.fn();
+        getProjectSceneMock.mockResolvedValue({
+            project_path: baseProject.project_path,
+            name: baseProject.name,
+            active_workflow: {
+                type: 'coding',
+                phase: 'implementation',
+                status: 'running',
+                project_path: 'D:/work/tasks/source-workflow',
+            },
+        });
+        renderTaskManagement({
+            continueWorkflowProject,
+            tasks: [{ ...baseProject, active_workflow: { type: 'coding', phase: 'implementation', status: 'running' } }],
+        });
+
+        expect(screen.getByTestId('task-workflow-status').textContent).toBe('In progress · Implementation');
+        fireEvent.click(screen.getByLabelText('Scene details'));
+        expect((await screen.findByTestId('task-evidence-workflow-state')).textContent).toBe('Workflow in progress');
+        expect(screen.queryByRole('button', { name: 'Continue workflow' })).toBeNull();
+        expect(continueWorkflowProject).not.toHaveBeenCalled();
+    });
+
     it('keeps recovery available while clearly marking a workflow that needs attention', async () => {
         const continueWorkflowProject = vi.fn();
         getProjectSceneMock.mockResolvedValue({

@@ -43,6 +43,17 @@ function workflowEvidenceState(workflow: NonNullable<ProjectSceneDetail['active_
             canContinue: true,
         };
     }
+    // A run that is executing right now has nothing to resume: the row reports
+    // it as in progress, so the panel must not offer a continuation for it.
+    // Only the status counts here — a paused snapshot may still name an
+    // execution phase.
+    if (/^(running|executing|processing)$/.test(rawStatus)) {
+        return {
+            label: textForLang(lang, 'Workflow in progress', '流程进行中', '流程進行中'),
+            color: 'var(--theme-primary)',
+            canContinue: false,
+        };
+    }
     return {
         label: textForLang(lang, 'Original workflow unfinished', '原流程未完成', '原流程未完成'),
         color: 'var(--theme-primary)',

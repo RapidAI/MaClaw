@@ -4824,6 +4824,394 @@ func TestSearchProjectsKeepsActiveWorkflowSnapshotOverCodingRuntimeMerge(t *test
 	}
 }
 
+// A task that is executing right now must not keep the pause/interrupt left by
+// the previous attempt. The sidebar reads only this durable row, so a run that
+// keeps going while another task's tab is open has to say 进行中 here; the
+// visible-tab live signal disappears as soon as the user switches away.
+func TestTaskListRowShowsRunningWhileItsSessionExecutes(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	task := app.CreateRecentTask("Live run keeps its row running")
+	if task.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned empty project path")
+	}
+	ownerID := projectSessionOwnerID(task.ProjectPath)
+	// The app was killed mid-run, so the durable snapshot is a suspended
+	// (interrupted) workflow and the row is filed as pending.
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(ownerID),
+		UserID:      ownerID,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: task.ProjectPath,
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingImplementation,
+			Name:   "Implementation",
+			Status: workflow.PhaseRunning,
+		}},
+		Status:    workflow.StatusActive,
+		Suspended: true,
+	}); err != nil {
+		t.Fatalf("workflowV2 Save failed: %v", err)
+	}
+
+	rowFor := func() *ProjectSearchResult {
+		t.Helper()
+		for _, row := range app.ListTasks(10) {
+			if row.ProjectPath == task.ProjectPath {
+				found := row
+				return &found
+			}
+		}
+		t.Fatalf("ListTasks has no row for %q", task.ProjectPath)
+		return nil
+	}
+
+	if row := rowFor(); row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != string(codingruntime.TaskInterrupted) {
+		t.Fatalf("idle row = %#v, want the interrupted snapshot", row.ActiveWorkflow)
+	}
+
+	// The user resumed the task; its own session now owns a foreground loop.
+	cleanup := app.beginForegroundAgentLoop(ownerID, "req-live-row", "chat")
+	defer cleanup()
+
+	row := rowFor()
+	if row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != string(codingruntime.TaskRunning) {
+		t.Fatalf("running row = %#v, want running while the session executes", row.ActiveWorkflow)
+	}
+	// The task's evidence panel reads the same rule, so it cannot present the
+	// old pause beside a row that says in progress.
+	scene, err := app.GetProjectScene(task.ProjectPath)
+	if err != nil {
+		t.Fatalf("GetProjectScene error = %v", err)
+	}
+	if scene.ActiveWorkflow == nil || scene.ActiveWorkflow.Status != string(codingruntime.TaskRunning) {
+		t.Fatalf("scene ActiveWorkflow = %#v, want running while the session executes", scene.ActiveWorkflow)
+	}
+
+	// The loop ends and the durable outcome is authoritative again.
+	cleanup()
+	if row := rowFor(); row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != string(codingruntime.TaskInterrupted) {
+		t.Fatalf("finished row = %#v, want the interrupted snapshot again", row.ActiveWorkflow)
+	}
+}
+
+// The coding ledger files a dead lease as interrupted and asks for recovery.
+// Once the same task is executing again, that recovery prompt is about the
+// attempt the live run already continued, so the row is in progress.
+func TestTaskListRowShowsRunningOverInterruptedCodingLedger(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+
+	workingDir := filepath.Join(t.TempDir(), "ledger-prog")
+	task := app.CreateTaskWithMode("Interrupted ledger task", workingDir, "coding_dev")
+	if task.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-interrupted", ProjectRef: filepath.Clean(workingDir), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The app died with this lease held, so the attempt is already dead.
+	if _, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: filepath.Clean(workingDir), Mode: "local"}, time.Now().Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExpireLeases(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	statusOf := func() string {
+		t.Helper()
+		for _, item := range app.ListTasks(50) {
+			if item.ProjectPath != task.ProjectPath {
+				continue
+			}
+			if item.ActiveWorkflow == nil {
+				return ""
+			}
+			return item.ActiveWorkflow.Status
+		}
+		t.Fatalf("ListTasks missing %s", task.ProjectPath)
+		return ""
+	}
+	if got := statusOf(); got != string(codingruntime.TaskInterrupted) {
+		t.Fatalf("dead ledger status = %q, want interrupted", got)
+	}
+
+	owner := projectSessionOwnerID(task.ProjectPath)
+	cleanup := app.beginForegroundAgentLoop(owner, "req-ledger-live", "chat")
+	defer cleanup()
+	if got := statusOf(); got != string(codingruntime.TaskRunning) {
+		t.Fatalf("executing task status = %q, want running over the interrupted ledger", got)
+	}
+}
+
+// A live run belongs to its own row. A sibling task that shares nothing with
+// it keeps the outcome of its own last attempt.
+func TestTaskListLiveRunMarksOnlyItsOwnRow(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	running := app.CreateRecentTask("Live row")
+	quiet := app.CreateRecentTask("Quiet row")
+	if running.ProjectPath == "" || quiet.ProjectPath == "" || running.ProjectPath == quiet.ProjectPath {
+		t.Fatalf("task paths running=%q quiet=%q", running.ProjectPath, quiet.ProjectPath)
+	}
+	for _, task := range []ProjectSearchResult{running, quiet} {
+		ownerID := projectSessionOwnerID(task.ProjectPath)
+		if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+			ID:          workflow.GenerateID(ownerID),
+			UserID:      ownerID,
+			Type:        string(workflow.WorkflowCoding),
+			ProjectPath: task.ProjectPath,
+			Phases: []workflow.Phase{{
+				ID:     workflow.PhaseCodingImplementation,
+				Name:   "Implementation",
+				Status: workflow.PhaseRunning,
+			}},
+			Status:    workflow.StatusActive,
+			Suspended: true,
+		}); err != nil {
+			t.Fatalf("workflowV2 Save failed: %v", err)
+		}
+	}
+
+	statusOf := func(path string) string {
+		t.Helper()
+		for _, row := range app.ListTasks(10) {
+			if row.ProjectPath != path {
+				continue
+			}
+			if row.ActiveWorkflow == nil {
+				return ""
+			}
+			return row.ActiveWorkflow.Status
+		}
+		t.Fatalf("ListTasks has no row for %q", path)
+		return ""
+	}
+
+	cleanup := app.beginForegroundAgentLoop(projectSessionOwnerID(running.ProjectPath), "req-own-row", "chat")
+	defer cleanup()
+
+	if got := statusOf(running.ProjectPath); got != string(codingruntime.TaskRunning) {
+		t.Fatalf("executing row status = %q, want running", got)
+	}
+	if got := statusOf(quiet.ProjectPath); got != string(codingruntime.TaskInterrupted) {
+		t.Fatalf("idle sibling status = %q, want its own interrupted snapshot", got)
+	}
+}
+
+// A run that is waiting on the user's approval is not in progress. The row
+// keeps the review request even while the session still owns a loop.
+func TestTaskListLiveRunKeepsWaitingReviewRow(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	task := app.CreateRecentTask("Review waiting row")
+	if task.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned empty project path")
+	}
+	ownerID := projectSessionOwnerID(task.ProjectPath)
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(ownerID),
+		UserID:      ownerID,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: task.ProjectPath,
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingRequirements,
+			Name:   "Requirements",
+			Status: workflow.PhaseWaitingConfirm,
+		}},
+		Status: workflow.StatusActive,
+	}); err != nil {
+		t.Fatalf("workflowV2 Save failed: %v", err)
+	}
+
+	cleanup := app.beginForegroundAgentLoop(ownerID, "req-review-row", "chat")
+	defer cleanup()
+
+	for _, row := range app.ListTasks(10) {
+		if row.ProjectPath != task.ProjectPath {
+			continue
+		}
+		if row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != string(workflow.StatusActive) || !row.ActiveWorkflow.PendingReview {
+			t.Fatalf("review row = %#v, want the waiting-confirm snapshot kept", row.ActiveWorkflow)
+		}
+		return
+	}
+	t.Fatalf("ListTasks has no row for %q", task.ProjectPath)
+}
+
+// A follow-up turn in a task whose workflow already finished is still that
+// task working. The visible row said 进行中 through its live signal while the
+// durable row kept 已完成, so switching tabs flipped a working task to done.
+func TestTaskListLiveRunReplacesCompletedRow(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	task := app.CreateRecentTask("Follow-up after completion")
+	if task.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned empty project path")
+	}
+	ownerID := projectSessionOwnerID(task.ProjectPath)
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(ownerID),
+		UserID:      ownerID,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: task.ProjectPath,
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingImplementation,
+			Name:   "Implementation",
+			Status: workflow.PhaseCompleted,
+		}},
+		Status: workflow.StatusCompleted,
+	}); err != nil {
+		t.Fatalf("workflowV2 Save failed: %v", err)
+	}
+
+	rowFor := func() *ProjectSearchResult {
+		t.Helper()
+		for _, row := range app.ListTasks(10) {
+			if row.ProjectPath == task.ProjectPath {
+				found := row
+				return &found
+			}
+		}
+		t.Fatalf("ListTasks has no row for %q", task.ProjectPath)
+		return nil
+	}
+
+	if row := rowFor(); row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != string(workflow.StatusCompleted) {
+		t.Fatalf("idle row = %#v, want the completed snapshot", row.ActiveWorkflow)
+	}
+
+	cleanup := app.beginForegroundAgentLoop(ownerID, "req-follow-up", "chat")
+	defer cleanup()
+
+	row := rowFor()
+	if row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != string(codingruntime.TaskRunning) {
+		t.Fatalf("follow-up row = %#v, want running while the session executes", row.ActiveWorkflow)
+	}
+	// The evidence panel reads the same rule, so it cannot offer a continuation
+	// for the run in progress.
+	scene, err := app.GetProjectScene(task.ProjectPath)
+	if err != nil {
+		t.Fatalf("GetProjectScene error = %v", err)
+	}
+	if scene.ActiveWorkflow == nil || scene.ActiveWorkflow.Status != string(codingruntime.TaskRunning) {
+		t.Fatalf("scene ActiveWorkflow = %#v, want running while the session executes", scene.ActiveWorkflow)
+	}
+
+	cleanup()
+	if row := rowFor(); row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != string(workflow.StatusCompleted) {
+		t.Fatalf("finished row = %#v, want the completed snapshot again", row.ActiveWorkflow)
+	}
+}
+
+// A snapshot that already reports progress keeps its own phase: the row still
+// says "进行中 · Implementation" instead of a bare status.
+func TestTaskListLiveRunKeepsRunningPhaseDetail(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	task := app.CreateRecentTask("Running phase detail")
+	if task.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned empty project path")
+	}
+	ownerID := projectSessionOwnerID(task.ProjectPath)
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(ownerID),
+		UserID:      ownerID,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: task.ProjectPath,
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingImplementation,
+			Name:   "Implementation",
+			Status: workflow.PhaseRunning,
+		}},
+		Status: workflow.StatusActive,
+	}); err != nil {
+		t.Fatalf("workflowV2 Save failed: %v", err)
+	}
+
+	cleanup := app.beginForegroundAgentLoop(ownerID, "req-phase-detail", "chat")
+	defer cleanup()
+
+	for _, row := range app.ListTasks(10) {
+		if row.ProjectPath != task.ProjectPath {
+			continue
+		}
+		if row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != string(workflow.StatusActive) {
+			t.Fatalf("active row = %#v, want the active snapshot kept", row.ActiveWorkflow)
+		}
+		if !strings.EqualFold(row.ActiveWorkflow.Phase, workflow.PhaseCodingImplementation) {
+			t.Fatalf("active row phase = %q, want %q kept", row.ActiveWorkflow.Phase, workflow.PhaseCodingImplementation)
+		}
+		return
+	}
+	t.Fatalf("ListTasks has no row for %q", task.ProjectPath)
+}
+
+// A live run is the newer answer than the attempt that already ended, so it
+// replaces a pause, an interrupt, and a finished, failed, or cancelled outcome
+// alike. Two snapshots stand: an approval the user still owes, and one that
+// already reports progress with its own phase detail.
+func TestTaskListLiveRunReplacesEndedAttemptSnapshots(t *testing.T) {
+	for _, state := range []*ProjectWorkflowState{
+		nil,
+		{Status: ""},
+		{Status: "pending"},
+		{Status: "paused"},
+		{Status: "paused", Phase: "execute"},
+		{Status: "interrupted"},
+		// The recovery prompt belongs to the attempt the live run continued.
+		{Status: "interrupted", PendingReview: true},
+		{Status: "suspended"},
+		{Status: "completed"},
+		{Status: "completed", Phase: "quality_review"},
+		// A review flag cannot resurrect an outcome: the attempt that set it
+		// already ended.
+		{Status: "completed", PendingReview: true},
+		{Status: "failed"},
+		{Status: "failed", PendingReview: true},
+		{Status: "cancelled"},
+		{Status: "queued"},
+	} {
+		if !liveRunReplacesSnapshot(state) {
+			t.Fatalf("snapshot %#v must be replaced by a live run", state)
+		}
+	}
+	for _, state := range []*ProjectWorkflowState{
+		{Status: "waiting_review", PendingReview: true},
+		{Status: "waiting_approval"},
+		// A V1 workflow keeps "active" while it waits on a review gate.
+		{Status: "active", PendingReview: true},
+		// A review request is a current decision even when the status is vague.
+		{Status: "pending", PendingReview: true},
+		{Status: "running"},
+		{Status: "running", Phase: "implement"},
+		{Status: "active", Phase: "review"},
+	} {
+		if liveRunReplacesSnapshot(state) {
+			t.Fatalf("snapshot %#v must not be replaced by a live run", state)
+		}
+	}
+}
+
 func TestProjectWorkflowSnapshotActiveIgnoresFinishedPhaseNames(t *testing.T) {
 	if projectWorkflowSnapshotActive(&ProjectWorkflowState{Status: "completed", Phase: "execute"}) {
 		t.Fatal("completed execution phase is not a live run")

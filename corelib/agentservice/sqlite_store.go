@@ -1096,6 +1096,11 @@ func (s *SQLiteStore) DeleteSession(t, u, i, id string) error {
 func (s *SQLiteStore) SaveMessage(v Message) error {
 	return s.write(func(m *MemoryStore) error { return m.SaveMessage(v) })
 }
+func (s *SQLiteStore) GetMessage(sessionID, messageID string) (Message, error) {
+	var out Message
+	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetMessage(sessionID, messageID); return e })
+	return out, err
+}
 func (s *SQLiteStore) ListMessages(id string) ([]Message, error) {
 	var out []Message
 	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListMessages(id); return e })

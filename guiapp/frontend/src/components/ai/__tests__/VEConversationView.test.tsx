@@ -1953,6 +1953,37 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("Hello world!");
         });
 
+        it("keeps the buffered stream tail in the persistence snapshot after unmount", async () => {
+            const ref = createRef<VEConversationHandle>();
+            const { unmount } = render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "painted prefix " });
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "buffered tail" });
+            });
+            const handle = ref.current;
+            expect(handle).toBeTruthy();
+            unmount();
+
+            const savedMessages = handle!.getState().messages;
+            expect(savedMessages).toHaveLength(1);
+            expect(savedMessages[0]?.content).toBe("painted prefix buffered tail");
+        });
+
         it("uses legacy chunk when stream content is an empty string", async () => {
             renderConversation();
             await act(async () => { await vi.runAllTimersAsync(); });

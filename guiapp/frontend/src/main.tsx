@@ -3,7 +3,7 @@ import { installFrontendIssueReporting } from './frontendIssueReport'
 import {createRoot} from 'react-dom/client'
 import './style.css'
 import './App.css'
-import { readFileCompanionBootFlag } from './components/filecompanion/fileCompanionBootFlag'
+import { readFileCompanionBootFlag, applyCompanionBootTheme, publishStoredUIAppearance } from './components/filecompanion/fileCompanionBootFlag'
 import { hydrateCompanionReaderState } from './components/filecompanion/companionReaderState'
 import { DialogProvider } from './components/CustomDialog'
 import { ToastProvider } from './components/Toast'
@@ -16,6 +16,12 @@ import { installPerfReporting } from './perfReporting'
 const App = React.lazy(() => import('./App'))
 const FileCompanionWindow = React.lazy(() => import('./components/filecompanion/FileCompanionWindow'))
 const isFileCompanionWindow = readFileCompanionBootFlag()
+// The lazy companion window is behind a loading shell. Stamp the theme first
+// so that shell inherits dark tokens instead of light text on a dark page.
+// The main window publishes the same stored choice now, before its own bundle
+// loads, so a companion opened during that gap does not keep the previous file.
+if (isFileCompanionWindow) applyCompanionBootTheme()
+else publishStoredUIAppearance()
 
 installWindowDragHandler()
 installMermaidPdfRaster()

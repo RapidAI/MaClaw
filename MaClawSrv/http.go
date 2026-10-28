@@ -1738,16 +1738,12 @@ func (s *HTTPServer) loadRunStreamSnapshot(ctx context.Context, p agentservice.P
 	if strings.TrimSpace(run.AssistantMessageID) == "" {
 		return sanitizeRunStreamSnapshotForAPI(s.svc.DataRoot(), snap), nil
 	}
-	messages, err := s.svc.ListMessages(ctx, p, instanceID, run.SessionID, agentservice.ListMessagesInput{})
-	if err != nil {
+	msg, err := s.svc.GetMessage(ctx, p, instanceID, run.SessionID, run.AssistantMessageID)
+	if err != nil && !errors.Is(err, agentservice.ErrMessageNotFound) {
 		return nil, err
 	}
-	for i := range messages {
-		if messages[i].ID == run.AssistantMessageID {
-			msg := messages[i]
-			snap.AssistantMessage = &msg
-			break
-		}
+	if err == nil {
+		snap.AssistantMessage = msg
 	}
 	return sanitizeRunStreamSnapshotForAPI(s.svc.DataRoot(), snap), nil
 }

@@ -33,6 +33,7 @@ type Store interface {
 	ListSessions(string, string, string) ([]Session, error)
 	DeleteSession(string, string, string, string) error
 	SaveMessage(Message) error
+	GetMessage(string, string) (Message, error)
 	ListMessages(string) ([]Message, error)
 	DeleteMessages(string, []string) (int, error)
 	SaveRun(Run) error
@@ -603,6 +604,17 @@ func (s *MemoryStore) ensureUniqueClientMessageLocked(v Message) error {
 		}
 	}
 	return nil
+}
+
+func (s *MemoryStore) GetMessage(sessionID, messageID string) (Message, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, message := range s.messages[sessionID] {
+		if message.ID == messageID {
+			return message, nil
+		}
+	}
+	return Message{}, ErrMessageNotFound
 }
 
 func (s *MemoryStore) ListMessages(sessionID string) ([]Message, error) {

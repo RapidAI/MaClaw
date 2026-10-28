@@ -309,11 +309,12 @@ func (a *App) GetProjectScene(projectPath string) (*ProjectSceneDetail, error) {
 	}
 
 	scene, ok := a.sceneRecordForProjectPath(projectPath, projectSceneMap(a.memoryStore.SceneIndex(100)))
+	liveOwners := taskListLiveOwners()
 	if !ok {
-		return &ProjectSceneDetail{ProjectPath: projectPath, Name: stripTaskDirTimestampSuffix(lastPathComponent(projectPath)), ActiveWorkflow: a.activeWorkflowForRecentTaskPath(projectPath)}, nil
+		return &ProjectSceneDetail{ProjectPath: projectPath, Name: stripTaskDirTimestampSuffix(lastPathComponent(projectPath)), ActiveWorkflow: liveRunningTaskWorkflow(projectPath, a.activeWorkflowForRecentTaskPath(projectPath), liveOwners)}, nil
 	}
 	detail := projectSceneDetailFromRecord(scene)
-	detail.ActiveWorkflow = a.activeWorkflowForRecentTaskPath(projectPath)
+	detail.ActiveWorkflow = liveRunningTaskWorkflow(projectPath, a.activeWorkflowForRecentTaskPath(projectPath), liveOwners)
 	return detail, nil
 }
 
@@ -361,7 +362,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	sharedRefs := codingRuntimeRefShareCounts(records, func(rec memory.ProjectRecord) bool {
 		return !omittedFromTaskSidebar(rec)
 	})
-	ledgerOwners := codingLedgerOwnersForSharedRefs(sharedRefs)
+	liveOwners := taskListLiveOwners()
 
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
@@ -372,7 +373,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, ledgerOwners)
+		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, liveOwners)
 		results = append(results, result)
 		if len(results) == limit {
 			break
@@ -530,7 +531,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		// not make a local task look like it shares a directory.
 		return localCloudWorkspaceID(rec) == ""
 	})
-	ledgerOwners := codingLedgerOwnersForSharedRefs(sharedRefs)
+	liveOwners := taskListLiveOwners()
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
 		if !isTaskManagementRecord(rec) {
@@ -549,7 +550,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, ledgerOwners)
+		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, liveOwners)
 		results = append(results, result)
 	}
 	if strings.TrimSpace(query) == "" {
@@ -4991,33 +4992,115 @@ func (a *App) workflowSnapshotForExecutionPath(executionProjectPath string, v2Ca
 // stays with it even when its project path is the shared working directory.
 // A snapshot or ledger row found only on that directory is kept for the tasks
 // whose sessions are executing there.
-func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath string, v2Cache map[string]*v2.WorkflowState, activeByRef map[string]string, shared map[string]struct{}, owners map[string]struct{}) {
+func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath string, v2Cache map[string]*v2.WorkflowState, activeByRef map[string]string, shared map[string]struct{}, liveOwners map[string]struct{}) {
 	if a == nil || result == nil {
 		return
 	}
 	state := a.workflowSnapshotForPath(workflowPath, v2Cache)
 	if state == nil {
-		if executionProjectPath := a.recentTaskExecutionProjectPath(workflowPath); executionProjectPath != "" && executionProjectPath != normalizeProjectSessionPath(workflowPath) && taskMayUseSharedDirectoryStatus(result.ProjectPath, executionProjectPath, shared, owners) {
+		if executionProjectPath := a.recentTaskExecutionProjectPath(workflowPath); executionProjectPath != "" && executionProjectPath != normalizeProjectSessionPath(workflowPath) && taskMayUseSharedDirectoryStatus(result.ProjectPath, executionProjectPath, shared, liveOwners) {
 			state = a.workflowSnapshotForExecutionPath(executionProjectPath, v2Cache)
 		}
 	}
 	result.ActiveWorkflow = state
-	if projectWorkflowSnapshotActive(result.ActiveWorkflow) {
-		return
-	}
-	if runtimeState := codingLedgerStatusForTask(result.ProjectPath, result.Tags, activeByRef, shared, owners); runtimeState != nil {
-		result.ActiveWorkflow = runtimeState
-	}
-	if result.ActiveWorkflow == nil {
-		if memory := a.currentConversationMemory(); memory != nil {
-			if slot := memory.GetUnfinishedSlot(projectSessionOwnerID(result.ProjectPath)); slot != nil {
-				result.ActiveWorkflow = &ProjectWorkflowState{
-					ID: slot.SlotID, Type: "agent_recovery", Phase: "interrupted",
-					Status: "interrupted", ProjectPath: result.ProjectPath,
+	if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
+		if runtimeState := codingLedgerStatusForTask(result.ProjectPath, result.Tags, activeByRef, shared, liveOwners); runtimeState != nil {
+			result.ActiveWorkflow = runtimeState
+		}
+		if result.ActiveWorkflow == nil {
+			if memory := a.currentConversationMemory(); memory != nil {
+				if slot := memory.GetUnfinishedSlot(projectSessionOwnerID(result.ProjectPath)); slot != nil {
+					result.ActiveWorkflow = &ProjectWorkflowState{
+						ID: slot.SlotID, Type: "agent_recovery", Phase: "interrupted",
+						Status: "interrupted", ProjectPath: result.ProjectPath,
+					}
 				}
 			}
 		}
 	}
+	// A paused, interrupted, or finished row is the attempt that already
+	// ended, not the run in front of the user. When this task's own session has
+	// a foreground agent loop right now (a coding run, a goal wave, or a
+	// session-round continuation), the row is in progress. The sidebar used to
+	// learn that only from the visible tab, so switching away dropped the live
+	// signal and the row fell back to the old status while the work kept
+	// running.
+	result.ActiveWorkflow = liveRunningTaskWorkflow(result.ProjectPath, result.ActiveWorkflow, liveOwners)
+}
+
+// liveRunningTaskWorkflow reports a task that is executing right now as
+// running, even when the snapshot still carries the status of the attempt that
+// ended. Every task-list surface (row, counts, evidence panel) reads the same
+// rule, so they cannot disagree about the same run.
+func liveRunningTaskWorkflow(projectPath string, state *ProjectWorkflowState, liveOwners map[string]struct{}) *ProjectWorkflowState {
+	if !taskSessionIsExecuting(projectPath, liveOwners) || !liveRunReplacesSnapshot(state) {
+		return state
+	}
+	running := &ProjectWorkflowState{
+		Status:      string(codingruntime.TaskRunning),
+		ProjectPath: projectPath,
+	}
+	if state != nil {
+		running.ID = state.ID
+		// The task's type does not change between attempts; the phase does, so
+		// it is left off rather than claiming the ended attempt's phase.
+		running.Type = state.Type
+	}
+	return running
+}
+
+// liveRunReplacesSnapshot reports whether the run in front of the user is the
+// newer answer than this snapshot. Two snapshots stand: one that asks the user
+// for a decision right now (the live run is parked on that gate), and one that
+// already reports progress (it carries the phase detail a bare running status
+// would lose). Everything else — the stopped attempt's pause or interrupt, a
+// finished, failed, or cancelled outcome, or no snapshot at all — belongs to an
+// earlier attempt, so the row shows the live run.
+func liveRunReplacesSnapshot(state *ProjectWorkflowState) bool {
+	if state == nil {
+		return true
+	}
+	return !taskListSnapshotAwaitsUser(state) && !taskListSnapshotReportsProgress(state)
+}
+
+// taskListSnapshotAwaitsUser reports a snapshot that asks the user to confirm
+// or approve something now, which is a current request the live run is parked
+// on. A flag left behind by an attempt that already ended — paused,
+// interrupted, suspended, finished, failed, or cancelled — is not a current
+// request: the live run already continued that attempt.
+func taskListSnapshotAwaitsUser(state *ProjectWorkflowState) bool {
+	if state == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Status)) {
+	case "paused", "pause", "interrupted", "suspended",
+		"completed", "complete", "success", "succeeded", "done", "passed",
+		"failed", "failure", "error", "blocked", "cancelled", "canceled":
+		return false
+	}
+	if state.PendingReview {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Status)) {
+	case "waiting_review", "waiting_approval", "review", "awaiting_review", "awaiting_approval", "pending_review":
+		return true
+	}
+	return false
+}
+
+// taskListSnapshotReportsProgress reports a snapshot that already says the task
+// is executing. Its status decides before its phase name: a paused or
+// interrupted attempt may still name an execution step, and that attempt is not
+// progress.
+func taskListSnapshotReportsProgress(state *ProjectWorkflowState) bool {
+	if state == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Status)) {
+	case "", "pending", "paused", "pause", "interrupted", "suspended":
+		return false
+	}
+	return projectWorkflowSnapshotActive(state)
 }
 
 // projectWorkflowSnapshotActive reports a workflow the task list should keep
@@ -5162,20 +5245,17 @@ func codingRuntimeRefShareCounts(records []memory.ProjectRecord, include func(me
 	return shared
 }
 
-// codingLedgerOwnersForSharedRefs reads the live task sessions only when at
-// least one directory is shared. A unique directory does not need them.
-func codingLedgerOwnersForSharedRefs(shared map[string]struct{}) map[string]struct{} {
-	if len(shared) == 0 {
-		return nil
-	}
-	return activeForegroundTaskPathKeys()
-}
-
-// activeForegroundTaskPathKeys lists task directories that currently have a
-// foreground agent loop.
-func activeForegroundTaskPathKeys() map[string]struct{} {
+// taskListLiveOwners lists the task directories whose own session has a
+// foreground agent loop right now (a coding run, a goal wave, or a
+// session-round continuation). The shared-directory merge and the
+// stale-snapshot check read the same set, so the row, the counts, and the
+// evidence panel always agree about which run is live.
+func taskListLiveOwners() map[string]struct{} {
 	foregroundAgentOwners.mu.Lock()
 	defer foregroundAgentOwners.mu.Unlock()
+	if len(foregroundAgentOwners.counts) == 0 {
+		return nil
+	}
 	out := make(map[string]struct{}, len(foregroundAgentOwners.counts))
 	for owner, count := range foregroundAgentOwners.counts {
 		if count <= 0 {
@@ -5190,9 +5270,9 @@ func activeForegroundTaskPathKeys() map[string]struct{} {
 	return out
 }
 
-// taskOwnsSharedDirectory reports that this task's session is executing.
-// An empty owner set means no session is executing in the shared directory.
-func taskOwnsSharedDirectory(projectPath string, owners map[string]struct{}) bool {
+// taskSessionIsExecuting reports that this task's own session is executing.
+// An empty owner set means no task session is executing.
+func taskSessionIsExecuting(projectPath string, owners map[string]struct{}) bool {
 	if len(owners) == 0 {
 		return false
 	}
@@ -5212,7 +5292,7 @@ func taskMayUseSharedDirectoryStatus(projectPath, directory string, shared map[s
 	if _, ok := shared[ref]; !ok {
 		return true
 	}
-	return taskOwnsSharedDirectory(projectPath, owners)
+	return taskSessionIsExecuting(projectPath, owners)
 }
 
 // codingLedgerStatusForTask returns the directory ledger status for one task.
@@ -5224,7 +5304,7 @@ func codingLedgerStatusForTask(projectPath string, tags []string, activeByRef ma
 	if ref == "" || len(activeByRef) == 0 {
 		return nil
 	}
-	if _, ok := shared[ref]; ok && !taskOwnsSharedDirectory(projectPath, owners) {
+	if _, ok := shared[ref]; ok && !taskSessionIsExecuting(projectPath, owners) {
 		return nil
 	}
 	return activeCodingRuntimeWorkflowForTags(tags, activeByRef)

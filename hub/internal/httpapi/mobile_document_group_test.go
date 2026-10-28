@@ -297,6 +297,19 @@ func TestCompanionDocumentShareHostReplyAnswersOneReaderNote(t *testing.T) {
 		t.Fatalf("reader note was marked as the host's: %s", posted.Body.String())
 	}
 	noteID := readerList.Notes[0].ID
+	if !strings.Contains(posted.Body.String(), `"decision":"pending"`) {
+		t.Fatalf("reader note did not wait for review: %s", posted.Body.String())
+	}
+
+	// A note reaches the host agent only after the host passes it.
+	pendingReply := postCompanionNoteReply(t, identity, ownerToken, token, "还没通过就回答", noteID)
+	if pendingReply.Code != http.StatusForbidden || !strings.Contains(pendingReply.Body.String(), "还没有通过审核") {
+		t.Fatalf("reply before review: %d %s", pendingReply.Code, pendingReply.Body.String())
+	}
+	review := postCompanionNoteReview(t, identity, ownerToken, token, noteID, "approve")
+	if review.Code != http.StatusOK || !strings.Contains(review.Body.String(), `"decision":"approved"`) {
+		t.Fatalf("approve note: %d %s", review.Code, review.Body.String())
+	}
 
 	reply := postCompanionNoteReply(t, identity, ownerToken, token, "可以，补充材料里有完整配置。", noteID)
 	if reply.Code != http.StatusOK {
@@ -315,7 +328,7 @@ func TestCompanionDocumentShareHostReplyAnswersOneReaderNote(t *testing.T) {
 	if err := json.Unmarshal(reply.Body.Bytes(), &replyList); err != nil {
 		t.Fatal(err)
 	}
-	if replyList.NotesRevision != 2 || len(replyList.Notes) != 2 {
+	if replyList.NotesRevision != 3 || len(replyList.Notes) != 2 {
 		t.Fatalf("host reply was not stored: %s", reply.Body.String())
 	}
 	answer := replyList.Notes[1]
@@ -326,7 +339,7 @@ func TestCompanionDocumentShareHostReplyAnswersOneReaderNote(t *testing.T) {
 	// The answer is what every reader who can see the share reads, and the
 	// list tells a desktop that this Hub knows how to link an answer.
 	readerView := listCompanionShares(t, identity, readerToken)
-	if !strings.Contains(readerView, `"notes_reply":true`) || !strings.Contains(readerView, `"server_time":`) || !strings.Contains(readerView, "补充材料里有完整配置") || !strings.Contains(readerView, `"reply_to":"`+noteID+`"`) {
+	if !strings.Contains(readerView, `"notes_reply":true`) || !strings.Contains(readerView, `"notes_review":true`) || !strings.Contains(readerView, `"server_time":`) || !strings.Contains(readerView, "补充材料里有完整配置") || !strings.Contains(readerView, `"reply_to":"`+noteID+`"`) {
 		t.Fatalf("reader view: %s", readerView)
 	}
 
@@ -346,6 +359,16 @@ func TestCompanionDocumentShareHostReplyAnswersOneReaderNote(t *testing.T) {
 		t.Fatalf("duplicate reply bumped the revision to %d", againList.NotesRevision)
 	}
 
+	// An answered note is settled: flipping it to ignored would hide the answer
+	// readers already have.
+	lateReview := postCompanionNoteReview(t, identity, ownerToken, token, noteID, "ignore")
+	if lateReview.Code != http.StatusConflict || !strings.Contains(lateReview.Body.String(), "批注已经回答，不能再审核") {
+		t.Fatalf("review after answer: %d %s", lateReview.Code, lateReview.Body.String())
+	}
+	if view := listCompanionShares(t, identity, readerToken); strings.Contains(view, `"decision":"ignored"`) {
+		t.Fatalf("answered note changed after a late review: %s", view)
+	}
+
 	// A reader's line is not an answer.
 	readerReply := postCompanionNoteReply(t, identity, readerToken, token, "我也答一句", noteID)
 	if readerReply.Code != http.StatusForbidden || !strings.Contains(readerReply.Body.String(), "只有主持人可以回复批注") {
@@ -355,6 +378,146 @@ func TestCompanionDocumentShareHostReplyAnswersOneReaderNote(t *testing.T) {
 	if missing.Code != http.StatusBadRequest || !strings.Contains(missing.Body.String(), "被回复的批注不存在") {
 		t.Fatalf("missing target: %d %s", missing.Code, missing.Body.String())
 	}
+}
+
+func TestCompanionDocumentShareHostCanIgnoreReaderNote(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "ignore-owner@example.com")
+	readerToken, _ := issueViewerToken(t, identity, "ignore-reader@example.com")
+
+	shareRec := postCompanionShareAs(t, identity, ownerToken, "person", "", "0", "ignore-reader@example.com", "忽略.pdf", []byte("%PDF-ignore"))
+	if shareRec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", shareRec.Code, shareRec.Body.String())
+	}
+	var shared map[string]any
+	if err := json.Unmarshal(shareRec.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := shared["token"].(string)
+
+	posted := postCompanionNote(t, identity, readerToken, token, "这是一条不该进入模型的批注")
+	if posted.Code != http.StatusOK {
+		t.Fatalf("reader note: %d %s", posted.Code, posted.Body.String())
+	}
+	var readerList struct {
+		Notes []struct {
+			ID string `json:"id"`
+		} `json:"notes"`
+	}
+	if err := json.Unmarshal(posted.Body.Bytes(), &readerList); err != nil {
+		t.Fatal(err)
+	}
+	noteID := readerList.Notes[0].ID
+
+	// Only the host may review.
+	readerReview := postCompanionNoteReview(t, identity, readerToken, token, noteID, "approve")
+	if readerReview.Code != http.StatusForbidden || !strings.Contains(readerReview.Body.String(), "只有主持人可以审核批注") {
+		t.Fatalf("reader review: %d %s", readerReview.Code, readerReview.Body.String())
+	}
+
+	ignored := postCompanionNoteReview(t, identity, ownerToken, token, noteID, "ignore")
+	if ignored.Code != http.StatusOK || !strings.Contains(ignored.Body.String(), `"decision":"ignored"`) {
+		t.Fatalf("ignore note: %d %s", ignored.Code, ignored.Body.String())
+	}
+	reply := postCompanionNoteReply(t, identity, ownerToken, token, "回答一条已忽略的批注", noteID)
+	if reply.Code != http.StatusForbidden || !strings.Contains(reply.Body.String(), "已被忽略") {
+		t.Fatalf("reply to ignored note: %d %s", reply.Code, reply.Body.String())
+	}
+
+	// The participant sees the host's ignore marker on the next list.
+	view := listCompanionShares(t, identity, readerToken)
+	if !strings.Contains(view, `"decision":"ignored"`) || !strings.Contains(view, "这是一条不该进入模型的批注") {
+		t.Fatalf("reader view: %s", view)
+	}
+
+	// A mistaken ignore can be taken back while no answer exists.
+	reopened := postCompanionNoteReview(t, identity, ownerToken, token, noteID, "approve")
+	if reopened.Code != http.StatusOK || !strings.Contains(reopened.Body.String(), `"decision":"approved"`) {
+		t.Fatalf("reopen ignored note: %d %s", reopened.Code, reopened.Body.String())
+	}
+	replyAgain := postCompanionNoteReply(t, identity, ownerToken, token, "改判之后再回答", noteID)
+	if replyAgain.Code != http.StatusOK {
+		t.Fatalf("reply after reopen: %d %s", replyAgain.Code, replyAgain.Body.String())
+	}
+}
+
+func TestCompanionDocumentShareNoteReviewValidation(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "review-check-owner@example.com")
+	readerToken, _ := issueViewerToken(t, identity, "review-check-reader@example.com")
+
+	shareRec := postCompanionShareAs(t, identity, ownerToken, "public", "", "0", "", "审核校验.pdf", []byte("%PDF-review"))
+	if shareRec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", shareRec.Code, shareRec.Body.String())
+	}
+	var shared map[string]any
+	if err := json.Unmarshal(shareRec.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := shared["token"].(string)
+
+	readerNoteID := companionNoteIDFromPost(t, postCompanionNote(t, identity, readerToken, token, "需要审核的批注"))
+	hostNoteID := companionNoteIDFromPost(t, postCompanionNote(t, identity, ownerToken, token, "主持人的说明"))
+
+	// A decision the Hub does not know is a client bug, not a silent approve.
+	unknown := postCompanionNoteReview(t, identity, ownerToken, token, readerNoteID, "maybe")
+	if unknown.Code != http.StatusBadRequest || !strings.Contains(unknown.Body.String(), "请选择通过或忽略") {
+		t.Fatalf("unknown decision: %d %s", unknown.Code, unknown.Body.String())
+	}
+	missing := postCompanionNoteReview(t, identity, ownerToken, token, "cn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "approve")
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), "批注不存在") {
+		t.Fatalf("missing note: %d %s", missing.Code, missing.Body.String())
+	}
+	// The host's own line is the answer, not a question waiting for one.
+	own := postCompanionNoteReview(t, identity, ownerToken, token, hostNoteID, "approve")
+	if own.Code != http.StatusBadRequest || !strings.Contains(own.Body.String(), "主持人自己的批注不需要审核") {
+		t.Fatalf("host note review: %d %s", own.Code, own.Body.String())
+	}
+
+	// Approving twice is a retry, not a second change: the revision stays put
+	// so a lost response cannot make every participant reload.
+	first := postCompanionNoteReview(t, identity, ownerToken, token, readerNoteID, "approve")
+	firstRevision := companionNotesRevisionFromReview(t, first)
+	second := postCompanionNoteReview(t, identity, ownerToken, token, readerNoteID, "approve")
+	if secondRevision := companionNotesRevisionFromReview(t, second); secondRevision != firstRevision {
+		t.Fatalf("repeated approve bumped revision from %d to %d", firstRevision, secondRevision)
+	}
+}
+
+func companionNoteIDFromPost(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("note: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Notes []struct {
+			ID   string `json:"id"`
+			Host bool   `json:"host"`
+		} `json:"notes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Notes) == 0 {
+		t.Fatalf("note response has no notes: %s", rec.Body.String())
+	}
+	return payload.Notes[len(payload.Notes)-1].ID
+}
+
+func companionNotesRevisionFromReview(t *testing.T, rec *httptest.ResponseRecorder) int {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("review: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		NotesRevision int `json:"notes_revision"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.NotesRevision
 }
 
 func TestCompanionShareNoteIsHostReadsLegacyAuthorID(t *testing.T) {
@@ -374,6 +537,27 @@ func TestCompanionShareNoteIsHostReadsLegacyAuthorID(t *testing.T) {
 	}
 	if !companionShareNoteIsHost(companionShareNote{ID: "cn_3", AuthorID: "owner-1", Host: true}, transferred) {
 		t.Fatal("a line the admin wrote as host stopped being one")
+	}
+}
+
+func TestCompanionShareNoteDecisionReadsLegacyNotes(t *testing.T) {
+	share := companionDocShare{OwnerID: "owner-1"}
+	// Written before review existed and already answered: keep the old answer
+	// visible as approved instead of asking the host to review it again.
+	if got := companionShareNoteDecision(companionShareNote{ID: "cn_answered"}, share, map[string]bool{"cn_answered": true}); got != "approved" {
+		t.Fatalf("answered legacy note = %q", got)
+	}
+	// Written before review existed and never answered: the host still decides.
+	if got := companionShareNoteDecision(companionShareNote{ID: "cn_open"}, share, nil); got != "pending" {
+		t.Fatalf("open legacy note = %q", got)
+	}
+	// A host line is the answer, not a question.
+	if got := companionShareNoteDecision(companionShareNote{ID: "cn_host", AuthorID: "owner-1"}, share, nil); got != "" {
+		t.Fatalf("host note = %q", got)
+	}
+	// A stored decision wins over the derived one.
+	if got := companionShareNoteDecision(companionShareNote{ID: "cn_ignored", Decision: "ignored"}, share, nil); got != "ignored" {
+		t.Fatalf("stored decision = %q", got)
 	}
 }
 
@@ -689,6 +873,21 @@ func postCompanionNoteReply(t *testing.T, identity *auth.IdentityService, viewer
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	rec := httptest.NewRecorder()
 	CompanionDocumentShareNotesHandler(identity).ServeHTTP(rec, req)
+	return rec
+}
+
+func postCompanionNoteReview(t *testing.T, identity *auth.IdentityService, viewer, token, noteID, decision string) *httptest.ResponseRecorder {
+	t.Helper()
+	payload, err := json.Marshal(map[string]string{"decision": decision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/notes/"+noteID+"/review", bytes.NewReader(payload))
+	req.SetPathValue("token", token)
+	req.SetPathValue("noteID", noteID)
+	req.Header.Set("Authorization", "Bearer "+viewer)
+	rec := httptest.NewRecorder()
+	CompanionDocumentShareNoteReviewHandler(identity).ServeHTTP(rec, req)
 	return rec
 }
 

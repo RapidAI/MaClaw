@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 
 func resetCompanionDocShares(t *testing.T) {
 	t.Helper()
+	companionSharePersistWG.Wait()
 	root := t.TempDir()
 	t.Setenv(companionDocSharePathEnv, filepath.Join(root, "shares.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(root, "blobs"))
@@ -28,6 +30,7 @@ func resetCompanionDocShares(t *testing.T) {
 	companionDocShares.Unlock()
 	resetCompanionDocGroups()
 	t.Cleanup(func() {
+		companionSharePersistWG.Wait()
 		companionDocShares.Lock()
 		companionDocShares.loaded = false
 		companionDocShares.items = map[string]companionDocShare{}
@@ -111,6 +114,30 @@ func TestCompanionDocumentSharePublicImportAndPrivatePassword(t *testing.T) {
 	}
 	if importRec.Header().Get("X-Companion-Document-Name") != "论文.pdf" {
 		t.Fatalf("name header: %q", importRec.Header().Get("X-Companion-Document-Name"))
+	}
+	if importRec.Header().Get("Content-Length") != strconv.Itoa(len(payload)) {
+		t.Fatalf("content length: %q", importRec.Header().Get("Content-Length"))
+	}
+	shareIndex := os.Getenv(companionDocSharePathEnv)
+	companionSharePersistWG.Wait()
+	indexBefore, err := os.Stat(shareIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	againReq := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/import", strings.NewReader(`{}`))
+	againReq.SetPathValue("token", token)
+	againReq.Header.Set("Authorization", "Bearer "+otherToken)
+	againRec := httptest.NewRecorder()
+	CompanionDocumentShareImportHandler(identity).ServeHTTP(againRec, againReq)
+	if againRec.Code != http.StatusOK || !bytes.Equal(againRec.Body.Bytes(), payload) {
+		t.Fatalf("repeat import: %d %s", againRec.Code, againRec.Body.String())
+	}
+	indexAfter, err := os.Stat(shareIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !indexBefore.ModTime().Equal(indexAfter.ModTime()) {
+		t.Fatal("repeat import rewrote the share index")
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
@@ -666,4 +693,211 @@ func TestCompanionDocumentShareDeleteRemovesLinkAndBlob(t *testing.T) {
 	if next := companionShareTokenFrom(t, again); next == token {
 		t.Fatalf("re-share reused the deleted token %s", token)
 	}
+}
+
+func TestCompanionDocumentShareCrossTenantPublicAndPrivate(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken := issueViewerTokenForTenant(t, identity, "tenant-a", "owner-cross@example.com")
+	readerToken := issueViewerTokenForTenant(t, identity, "tenant-b", "reader-cross@example.com")
+	created := postCompanionShareWithFields(t, identity, ownerToken, "public", "", "", "0", "公开.pdf", "", []byte("%PDF-public"))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	token := companionShareTokenFrom(t, created)
+
+	imported := postCompanionShareImport(t, identity, readerToken, token, `{}`)
+	if imported.Code != http.StatusOK || string(imported.Body.Bytes()) != "%PDF-public" {
+		t.Fatalf("cross-tenant import: %d %s", imported.Code, imported.Body.String())
+	}
+	if imported.Header().Get(companionReaderGrantHeader) != "" {
+		t.Fatal("an account on this Hub should not be issued a guest grant")
+	}
+	list := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
+	list.Header.Set("Authorization", "Bearer "+readerToken)
+	listRec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(listRec, list)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), token) {
+		t.Fatalf("received: %d %s", listRec.Code, listRec.Body.String())
+	}
+
+	secret := postCompanionShareWithFields(t, identity, ownerToken, "private", "secret", "", "0", "私密.pdf", "", []byte("%PDF-private"))
+	if secret.Code != http.StatusOK {
+		t.Fatalf("private: %d %s", secret.Code, secret.Body.String())
+	}
+	privateToken := companionShareTokenFrom(t, secret)
+	denied := postCompanionShareImport(t, identity, readerToken, privateToken, `{}`)
+	if denied.Code != http.StatusUnauthorized || !strings.Contains(denied.Body.String(), "需要分享密码") {
+		t.Fatalf("private without password: %d %s", denied.Code, denied.Body.String())
+	}
+	opened := postCompanionShareImport(t, identity, readerToken, privateToken, `{"password":"secret"}`)
+	if opened.Code != http.StatusOK || string(opened.Body.Bytes()) != "%PDF-private" {
+		t.Fatalf("private import: %d %s", opened.Code, opened.Body.String())
+	}
+}
+
+func TestCompanionDocumentShareGuestFromAnotherHub(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "owner-guest@example.com")
+	created := postCompanionShareWithFields(t, identity, ownerToken, "public", "", "", "0", "跨hub.pdf", "", []byte("%PDF-guest"))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	token := companionShareTokenFrom(t, created)
+
+	noAuth := postCompanionShareImport(t, identity, "", token, `{"reader_label":"reader@other.hub"}`)
+	if noAuth.Code != http.StatusOK || string(noAuth.Body.Bytes()) != "%PDF-guest" {
+		t.Fatalf("guest import: %d %s", noAuth.Code, noAuth.Body.String())
+	}
+	grant := noAuth.Header().Get(companionReaderGrantHeader)
+	if !companionReaderGrantPattern.MatchString(grant) {
+		t.Fatalf("grant: %q", grant)
+	}
+	if strings.Contains(noAuth.Body.String(), grant) {
+		t.Fatal("grant leaked into the file body")
+	}
+
+	meta := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/"+token, nil)
+	meta.SetPathValue("token", token)
+	metaRec := httptest.NewRecorder()
+	CompanionDocumentShareHandler(identity).ServeHTTP(metaRec, meta)
+	if metaRec.Code != http.StatusOK || strings.Contains(metaRec.Body.String(), `"notes"`) {
+		t.Fatalf("metadata leaked notes: %d %s", metaRec.Code, metaRec.Body.String())
+	}
+
+	note := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/notes", strings.NewReader(`{"text":"其他 Hub 的问题"}`))
+	note.SetPathValue("token", token)
+	note.Header.Set(companionReaderGrantHeader, grant)
+	noteRec := httptest.NewRecorder()
+	CompanionDocumentShareNotesHandler(identity).ServeHTTP(noteRec, note)
+	if noteRec.Code != http.StatusOK || !strings.Contains(noteRec.Body.String(), "reader@other.hub") || !strings.Contains(noteRec.Body.String(), "其他 Hub 的问题") {
+		t.Fatalf("guest note: %d %s", noteRec.Code, noteRec.Body.String())
+	}
+
+	withGrant := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/"+token, nil)
+	withGrant.SetPathValue("token", token)
+	withGrant.Header.Set(companionReaderGrantHeader, grant)
+	withGrantRec := httptest.NewRecorder()
+	CompanionDocumentShareHandler(identity).ServeHTTP(withGrantRec, withGrant)
+	if withGrantRec.Code != http.StatusOK || !strings.Contains(withGrantRec.Body.String(), "其他 Hub 的问题") {
+		t.Fatalf("grant read: %d %s", withGrantRec.Code, withGrantRec.Body.String())
+	}
+
+	ownerList := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
+	ownerList.Header.Set("Authorization", "Bearer "+ownerToken)
+	ownerRec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(ownerRec, ownerList)
+	if !strings.Contains(ownerRec.Body.String(), "其他 Hub 的问题") {
+		t.Fatalf("owner did not see the guest note: %s", ownerRec.Body.String())
+	}
+
+	syncReq := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/sync", nil)
+	syncReq.SetPathValue("token", token)
+	syncReq.Header.Set(companionReaderGrantHeader, grant)
+	syncRec := httptest.NewRecorder()
+	CompanionDocumentShareSyncHandler(identity).ServeHTTP(syncRec, syncReq)
+	if syncRec.Code != http.StatusUnauthorized {
+		t.Fatalf("guest sync: %d %s", syncRec.Code, syncRec.Body.String())
+	}
+
+	bad := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/import", strings.NewReader(`{}`))
+	bad.SetPathValue("token", token)
+	bad.Header.Set("Authorization", "Bearer not-a-session")
+	badRec := httptest.NewRecorder()
+	CompanionDocumentShareImportHandler(identity).ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad session should not become a guest: %d %s", badRec.Code, badRec.Body.String())
+	}
+
+	secret := postCompanionShareWithFields(t, identity, ownerToken, "private", "secret", "", "0", "私密.pdf", "", []byte("%PDF-secret"))
+	if secret.Code != http.StatusOK {
+		t.Fatalf("private: %d %s", secret.Code, secret.Body.String())
+	}
+	privateToken := companionShareTokenFrom(t, secret)
+	needs := postCompanionShareImport(t, identity, "", privateToken, `{}`)
+	if needs.Code != http.StatusUnauthorized || !strings.Contains(needs.Body.String(), "需要分享密码") {
+		t.Fatalf("private guest: %d %s", needs.Code, needs.Body.String())
+	}
+	opened := postCompanionShareImport(t, identity, "", privateToken, `{"password":"secret","reader_label":"reader@other.hub"}`)
+	if opened.Code != http.StatusOK {
+		t.Fatalf("private open: %d %s", opened.Code, opened.Body.String())
+	}
+	privateGrant := opened.Header().Get(companionReaderGrantHeader)
+	shareIndex := os.Getenv(companionDocSharePathEnv)
+	companionSharePersistWG.Wait()
+	indexBefore, err := os.Stat(shareIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := postCompanionShareImport(t, identity, "", privateToken, `{"reader_grant":"`+privateGrant+`"}`)
+	if again.Code != http.StatusOK || string(again.Body.Bytes()) != "%PDF-secret" {
+		t.Fatalf("grant reimport: %d %s", again.Code, again.Body.String())
+	}
+	indexAfter, err := os.Stat(shareIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !indexBefore.ModTime().Equal(indexAfter.ModTime()) {
+		t.Fatal("known guest import rewrote the share index")
+	}
+
+	person := postCompanionShareWithFields(t, identity, ownerToken, "person", "", "person@example.com", "0", "指定.pdf", "", []byte("%PDF-person"))
+	if person.Code != http.StatusOK {
+		t.Fatalf("person: %d %s", person.Code, person.Body.String())
+	}
+	personToken := companionShareTokenFrom(t, person)
+	blocked := postCompanionShareImport(t, identity, "", personToken, `{}`)
+	if blocked.Code != http.StatusUnauthorized || !strings.Contains(blocked.Body.String(), "只能在文档所在的 Hub 打开") {
+		t.Fatalf("person guest: %d %s", blocked.Code, blocked.Body.String())
+	}
+}
+
+func TestCompanionShareOlderSnapshotDoesNotReplaceANewerIndex(t *testing.T) {
+	resetCompanionDocShares(t)
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	companionDocShares.Lock()
+	companionDocShares.loaded = true
+	companionDocShares.items = map[string]companionDocShare{
+		token: {Token: token, Name: "first"},
+	}
+	path, body, gen, err := takeCompanionShareSnapshotLocked()
+	if err != nil || path == "" || gen == 0 || len(body) == 0 {
+		companionDocShares.Unlock()
+		t.Fatalf("snapshot: path=%q gen=%d err=%v", path, gen, err)
+	}
+	current := companionDocShares.items[token]
+	current.Name = "second"
+	companionDocShares.items[token] = current
+	if err := persistCompanionDocSharesLocked(); err != nil {
+		companionDocShares.Unlock()
+		t.Fatal(err)
+	}
+	companionDocShares.Unlock()
+	if err := writeCompanionShareSnapshot(path, body, gen); err != nil {
+		t.Fatal(err)
+	}
+	companionDocShares.Lock()
+	companionDocShares.loaded = false
+	companionDocShares.items = map[string]companionDocShare{}
+	companionDocShares.Unlock()
+	loadCompanionDocShares()
+	companionDocShares.Lock()
+	got := companionDocShares.items[token].Name
+	companionDocShares.Unlock()
+	if got != "second" {
+		t.Fatalf("older snapshot replaced the index: %q", got)
+	}
+}
+
+func postCompanionShareImport(t *testing.T, identity *auth.IdentityService, bearer, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/import", strings.NewReader(body))
+	req.SetPathValue("token", token)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	rec := httptest.NewRecorder()
+	CompanionDocumentShareImportHandler(identity).ServeHTTP(rec, req)
+	return rec
 }
