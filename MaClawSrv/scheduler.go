@@ -348,8 +348,18 @@ func runSrvDelegatedSubtask(ctx context.Context, svc *agentservice.Service, prin
 		}
 		instanceID = inst.ID
 	}
+	// PostMessage needs a real session: an empty id never resolves, so every
+	// delegate_task call failed with "session not found". One fresh session
+	// per subtask keeps child turns from sharing history.
+	sess, err := svc.CreateSession(ctx, principal, instanceID, agentservice.CreateSessionInput{
+		Title:    "Delegated Subtask",
+		Metadata: map[string]string{"purpose": "delegate"},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create delegate session: %w", err)
+	}
 	actionText := fmt.Sprintf("[委派子任务] 这是一次必须在本回合完成的子任务，不会再委派。请直接执行并返回结果：\n%s", task)
-	_, msg, err := svc.PostMessage(ctx, principal, instanceID, "", agentservice.PostMessageInput{
+	_, msg, err := svc.PostMessage(ctx, principal, instanceID, sess.ID, agentservice.PostMessageInput{
 		Content:  actionText,
 		Metadata: map[string]string{"delegate_child": "1"},
 	})
