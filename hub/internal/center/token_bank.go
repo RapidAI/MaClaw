@@ -207,6 +207,16 @@ func (s *Service) RunTokenBankAutoOnce(ctx context.Context) error {
 		return err
 	}
 	var errs []error
+	// One parsed registry serves the whole pass. It is a multi-MB JSON row,
+	// and parsing it twice per user made one pass cost more CPU than the
+	// heartbeat interval (papers: 208 users x 2.3 MB, hub pinned at ~100%).
+	// The snapshot is reloaded only when this pass may have changed it (a
+	// confirm round trip) and always right before a debit, so the debit still
+	// decides on fresh data.
+	reg, err := llmservice.LoadRegistry(ctx, s.settings)
+	if err != nil {
+		return err
+	}
 	for _, user := range users {
 		if user == nil || strings.TrimSpace(user.Email) == "" {
 			continue
@@ -221,20 +231,24 @@ func (s *Service) RunTokenBankAutoOnce(ctx context.Context) error {
 		// inside that call. Reload the registry and the clock afterwards: the
 		// snapshot and timestamp from before the call still say this user has
 		// nothing to spend, so the fresh head would withdraw another share.
-		reg, err := llmservice.LoadRegistry(ctx, s.settings)
-		if err != nil {
-			errs = append(errs, err)
-			return errors.Join(errs...)
-		}
-		seq, ackErr := s.ackDeliveredAutoSeqs(ctx, reg, record.HubID, user.Email, groupID)
+		seq, confirmed, ackErr := s.ackDeliveredAutoSeqsTouched(ctx, reg, record.HubID, user.Email, groupID)
 		if ackErr != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", user.Email, ackErr))
+		}
+		if confirmed {
+			if reg, err = llmservice.LoadRegistry(ctx, s.settings); err != nil {
+				errs = append(errs, err)
+				return errors.Join(errs...)
+			}
 		}
 		if seq < 0 {
 			continue
 		}
-		reg, err = llmservice.LoadRegistry(ctx, s.settings)
-		if err != nil {
+		if !llmservice.UserNeedsTokenBankAutoTopUp(ctx, reg, user.ID, user.Email, time.Now().UTC()) {
+			continue
+		}
+		// About to debit: decide on a fresh registry, not the pass snapshot.
+		if reg, err = llmservice.LoadRegistry(ctx, s.settings); err != nil {
 			errs = append(errs, err)
 			return errors.Join(errs...)
 		}
@@ -246,6 +260,13 @@ func (s *Service) RunTokenBankAutoOnce(ctx context.Context) error {
 			continue
 		}
 		_, pullErr := s.pullAutomaticTokenBank(ctx, user.ID, user.Email, groupID, requestID, cfg.MaxPerWithdrawMicro)
+		// A pull writes the registry. Later users must not see the old snapshot.
+		if fresh, loadErr := llmservice.LoadRegistry(ctx, s.settings); loadErr == nil {
+			reg = fresh
+		} else {
+			errs = append(errs, loadErr)
+			return errors.Join(errs...)
+		}
 		if pullErr != nil {
 			if !errors.Is(pullErr, llmservice.ErrTokenBankNothingToWithdraw) {
 				errs = append(errs, fmt.Errorf("%s: %w", user.Email, pullErr))
@@ -289,10 +310,18 @@ func tokenBankAckSettled(err error) bool {
 // that does not move also stops the walk. A negative sequence means the head
 // could not be read; callers must not debit sequence 0 in that case.
 func (s *Service) ackDeliveredAutoSeqs(ctx context.Context, reg *llmservice.Registry, hubID, email, groupID string) (int64, error) {
+	seq, _, err := s.ackDeliveredAutoSeqsTouched(ctx, reg, hubID, email, groupID)
+	return seq, err
+}
+
+// ackDeliveredAutoSeqsTouched is ackDeliveredAutoSeqs that also reports
+// whether it made a confirm call, i.e. whether the registry may have changed.
+func (s *Service) ackDeliveredAutoSeqsTouched(ctx context.Context, reg *llmservice.Registry, hubID, email, groupID string) (int64, bool, error) {
+	touched := false
 	seq, err := llmservice.TokenBankAutoSeq(ctx, s.settings, email, groupID)
 	if err != nil {
 		// Negative means the head is unknown. Callers must not fund seq 0.
-		return -1, err
+		return -1, false, err
 	}
 	var errs []error
 	for n := 0; n < tokenBankAutoAckWindow; n++ {
@@ -301,23 +330,24 @@ func (s *Service) ackDeliveredAutoSeqs(ctx context.Context, reg *llmservice.Regi
 		if grantID == "" {
 			break
 		}
+		touched = true
 		if err := s.FinishTokenBankGrant(ctx, requestID, grantID, false); err != nil && !tokenBankAckSettled(err) {
 			errs = append(errs, fmt.Errorf("confirm %s: %w", requestID, err))
 			break
 		}
 		if err := llmservice.AdvanceTokenBankAutoSeq(ctx, s.settings, email, groupID, seq); err != nil {
-			return seq, err
+			return seq, touched, err
 		}
 		stored, err := llmservice.TokenBankAutoSeq(ctx, s.settings, email, groupID)
 		if err != nil {
-			return -1, err
+			return -1, touched, err
 		}
 		if stored == seq {
 			break
 		}
 		seq = stored
 	}
-	return seq, errors.Join(errs...)
+	return seq, touched, errors.Join(errs...)
 }
 
 // firstOpenAutoRequest is the first automatic id at or after seq that has no

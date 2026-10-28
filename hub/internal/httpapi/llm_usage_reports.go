@@ -1294,7 +1294,10 @@ func flushLLMUsageReports(ctx context.Context, system store.SystemSettingsReposi
 		return err
 	}
 	storeLLMUsageFlushBase(key, string(data), rep)
-	invalidateLLMUsageReportsCache(system)
+	// No read-cache invalidation here. Flushes run constantly, and dropping
+	// the cache on each one made every /api/llm/service/account hit re-parse
+	// the whole report (25 MB on papers). Buffered usage is already delayed,
+	// so the read TTL is an acceptable staleness bound.
 	return nil
 }
 
