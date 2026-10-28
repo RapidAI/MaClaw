@@ -85,10 +85,10 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 	if strings.Contains(system, "你要当前桌面的截屏") || strings.Contains(system, "本轮只做安排") || strings.Contains(system, "C++ Hello World") {
 		t.Fatal("system prompt still carries a stock sentence")
 	}
-	if strings.Contains(system, "the execute reading is schedule") || !strings.Contains(system, "After they approve, the execute reading is direct") {
+	if strings.Contains(system, "the execute reading is schedule") {
 		t.Fatal("approving an arrangement was still read as a schedule")
 	}
-	if !strings.Contains(system, "pace is direct, confirm, ask, reply, schedule, or status") || !strings.Contains(system, "A clear request is direct") || !strings.Contains(system, "There is no second confirmation") || !strings.Contains(system, "Small talk") || !strings.Contains(system, "even when an earlier job is unfinished") || !strings.Contains(system, "interval_minutes") || !strings.Contains(system, "Do not invent a status") {
+	if !strings.Contains(system, "pace is direct, ask, reply, schedule, or status") || !strings.Contains(system, "A clear request is direct") || !strings.Contains(system, "Never choose confirm") || !strings.Contains(system, "Never ask only for permission to proceed") || !strings.Contains(system, "Small talk") || !strings.Contains(system, "even when an earlier job is unfinished") || !strings.Contains(system, "interval_minutes") || !strings.Contains(system, "Do not invent a status") {
 		t.Fatal("system prompt lost the direct, confirm, ask, and reply split")
 	}
 	if strings.Contains(system, "they do not interrupt each other") || strings.Contains(system, "do not tell them to wait until it finishes") {
@@ -100,8 +100,8 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 	if strings.Contains(system, desktopBotConfirmTask) || strings.Contains(system, "not to make the change on this turn") {
 		t.Fatal("system prompt still treats the stock confirm sentence as approval or tells the worker to wait")
 	}
-	if !strings.Contains(system, "instruction is the concrete work the worker will do after they approve") {
-		t.Fatal("a confirm reading no longer keeps the work order")
+	if !strings.Contains(system, "For direct, leave told empty") || !strings.Contains(system, "do not narrate a plan") {
+		t.Fatal("a direct reading may still narrate a plan before acting")
 	}
 	if strings.Contains(got.Instruction, "现在就执行下面这项安排") {
 		t.Fatal("a confirm-pace order was wrapped in the old lead")
@@ -109,8 +109,8 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 	if strings.Contains(system, "When the request still needs a change") {
 		t.Fatal("system prompt still holds every change for confirmation")
 	}
-	if got.Pace != "confirm" {
-		t.Fatalf("a plan turn without pace was not held for one confirmation: %#v", got)
+	if got.Pace != "direct" {
+		t.Fatalf("a plan turn without pace must start the work, not wait for a confirmation: %#v", got)
 	}
 	if strings.Contains(system, `"told":"..."`) {
 		t.Fatal("system prompt still offers a placeholder object")
@@ -157,8 +157,8 @@ func TestDesktopBotPaceKeepsAnExplicitChoice(t *testing.T) {
 	if got.Pace != "direct" {
 		t.Fatalf("a clear request was held back: %#v", got)
 	}
-	if desktopBotPace("maybe", "plan") != "confirm" || desktopBotPace("", "execute") != "direct" {
-		t.Fatal("an unknown pace took a side")
+	if desktopBotPace("maybe", "plan") != "direct" || desktopBotPace("", "execute") != "direct" {
+		t.Fatal("an unknown pace must start the work, not wait for a confirmation")
 	}
 
 	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {

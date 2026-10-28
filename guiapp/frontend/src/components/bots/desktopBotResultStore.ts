@@ -234,8 +234,11 @@ export function handleDesktopBotReport(payload: unknown) {
     const shotPaths = result.failed ? undefined : shotPathsFrom(data);
     const ask = askFrom(data);
     if (!turnHasVisibleResult(result, ask, images, shotPaths, attached)) return;
-    appendDesktopBotReport(sessionKey.slice(0, split), sessionKey.slice(split + 1), {
-        content: sentenceForTurn(result, ask),
+    const reportUser = sessionKey.slice(0, split);
+    const reportBot = sessionKey.slice(split + 1);
+    const sentence = sentenceForTurn(result, ask);
+    appendDesktopBotReport(reportUser, reportBot, {
+        content: delivery ? deliveryAnswering(sentence, String(data.task || data.Task || ''), messagesForBot(reportUser, reportBot)) : sentence,
         failed: result.failed,
         handoffUrl: screen.userControl || screen.reason ? screen.url : '',
         userControl: screen.userControl,
@@ -311,4 +314,26 @@ export function sentenceForTurn(result: { content: string; failed?: boolean }, a
 
 export function turnHasVisibleResult(result: { silent: boolean }, ask: DesktopBotAsk | undefined, images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }) {
     return !result.silent || askKeepsTurn(ask) || desktopTurnHasAttachment(images, shotPaths, attached);
+}
+
+/**
+ * A delivered result belongs to the run that produced it, not to whatever the
+ * person said last. When its own request is not the latest thing they said,
+ * the result names that request, so a run started elsewhere (another window, a
+ * script, a missed result) never reads as the answer to the newest message.
+ */
+export function deliveryAnswering(sentence: string, task: string, messages: Array<{ role: string; content: string }>): string {
+    const asked = oneLineTask(task);
+    if (!asked || !sentence) return sentence;
+    let lastUser = '';
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') { lastUser = oneLineTask(messages[i].content); break; }
+    }
+    if (lastUser && lastUser === asked) return sentence;
+    const quoted = asked.length > 40 ? `${asked.slice(0, 40)}…` : asked;
+    return `「${quoted}」\n${sentence}`;
+}
+
+function oneLineTask(text: string): string {
+    return (text || '').replace(/\s+/g, ' ').trim();
 }

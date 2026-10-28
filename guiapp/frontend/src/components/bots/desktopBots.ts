@@ -1563,3 +1563,10 @@ export function desktopBotServerRunText(kind: 'wake' | 'delegate', runId: string
     if ((error || '').trim()) return `${head}没做成：${error.trim()}`;
     return `${head}已结束（${status || 'done'}）。`;
 }
+
+// desktopAckWorthSaying decides whether a direct job gets a first line at all.
+// "I'll go check that now" is filler: the status row already shows the work.
+// A line is worth it only when it tells the person something they can act on.
+export function desktopAckWorthSaying(r: { unclear?: string; assumption?: string; options?: number; files?: number; fallback?: boolean }): boolean {
+    return !!((r.unclear || '').trim() || (r.assumption || '').trim() || (r.options || 0) >= 2 || (r.files || 0) > 0 || r.fallback);
+}

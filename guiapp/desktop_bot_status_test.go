@@ -209,7 +209,7 @@ func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 	if err := (&App{}).PullDesktopBotDeliveries(); err != nil {
 		t.Fatal(err)
 	}
-	if len(payloads) != 1 || strings.Contains(payloads[0], "截个图") || strings.Contains(payloads[0], `"error"`) || strings.Contains(payloads[0], `"send_to_user"`) || strings.Contains(payloads[0], `"text"`) {
+	if len(payloads) != 1 || strings.Contains(payloads[0], `"send_to_user":"截个图`) || strings.Contains(payloads[0], `"error"`) || strings.Contains(payloads[0], `"send_to_user"`) || strings.Contains(payloads[0], `"text"`) {
 		t.Fatalf("payload = %#v", payloads)
 	}
 	if !strings.Contains(payloads[0], `"desktop_attachment_ids"`) || !strings.Contains(payloads[0], "shot-1") || strings.Contains(payloads[0], `"desktop_shot_paths"`) || strings.Contains(payloads[0], shot) {
@@ -270,7 +270,22 @@ func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.
 	if _, err := os.Stat(filepath.Join(base, "data", "bot-files")); !os.IsNotExist(err) {
 		t.Fatalf("delivery was written on this machine: %v", err)
 	}
-	if strings.Contains(raw, "截个图") || strings.Contains(raw, `"error"`) || strings.Contains(raw, "过程记录") || strings.Contains(raw, `"text"`) {
+	if strings.Contains(raw, `"send_to_user":"截个图`) || strings.Contains(raw, `"error"`) || strings.Contains(raw, "过程记录") || strings.Contains(raw, `"text"`) {
 		t.Fatalf("payload = %s", raw)
+	}
+}
+
+func TestDesktopBotDeliveryCarriesItsOwnTask(t *testing.T) {
+	var payloads []string
+	desktopBotReportSink = func(raw string) { payloads = append(payloads, raw) }
+	t.Cleanup(func() { desktopBotReportSink = nil })
+	app := &App{}
+	item := desktopBotDelivery{BotID: "bot_1", RunID: "run_tea", Task: "怎么泡茶", Status: "succeeded", Phase: "execute"}
+	item.Reply.SendToUser = "水温80度。"
+	if !app.emitDesktopBotDelivery("local", item) {
+		t.Fatal("emit")
+	}
+	if len(payloads) != 1 || !strings.Contains(payloads[0], `"task":"怎么泡茶"`) || !strings.Contains(payloads[0], `"run_id":"run_tea"`) {
+		t.Fatalf("delivery must name the request it answers: %s", payloads)
 	}
 }

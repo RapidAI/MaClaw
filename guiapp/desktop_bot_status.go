@@ -255,6 +255,12 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 		"run_id":          strings.TrimSpace(item.RunID),
 		"delivery_report": true,
 	}
+	// The run's own request travels with its result. A delivery arrives out of
+	// band — a run started elsewhere, or one this window missed — so without
+	// it the result would read as the answer to whatever was said last.
+	if task := strings.TrimSpace(item.Task); task != "" {
+		payload["task"] = task
+	}
 	// send_to_user is the only sentence. Assistant prose stays off the event.
 	// A real transport error stays on error.
 	if visible.Bubble && !visible.Failed {

@@ -58,3 +58,20 @@ func TestStyleMetaRoundTripAndCharacter(t *testing.T) {
 		t.Fatal(n)
 	}
 }
+
+func TestDefaultStyleHasNoFillerOrBareConfirm(t *testing.T) {
+	voice := Default(Voice)
+	for _, want := range []string{"Lead with the answer", "Do not narrate a plan", "do not restate the request", "no boilerplate openers or closers", "Do not ask permission to proceed"} {
+		if !strings.Contains(voice, want) {
+			t.Fatalf("voice part lacks %q", want)
+		}
+	}
+	for _, want := range []string{"capable friend", "No plan narration", "no restating the request", "no bare"} {
+		if !strings.Contains(DefaultSoul, want) {
+			t.Fatalf("DefaultSoul lacks %q", want)
+		}
+	}
+	if strings.Contains(DefaultSoul, "wait for the owner's go-ahead") {
+		t.Fatal("DefaultSoul still asks for a bare go-ahead")
+	}
+}

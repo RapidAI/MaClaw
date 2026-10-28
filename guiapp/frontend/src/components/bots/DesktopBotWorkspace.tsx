@@ -102,6 +102,7 @@ import {
     desktopBotAskingLabel,
     desktopBotCrossTargetText,
     desktopBotDestructive,
+    desktopAckWorthSaying,
     desktopBotHubStartedText,
     desktopBotReportFeedText,
     desktopBotServerRunText,
@@ -461,11 +462,8 @@ async function readDesktopBotTurn(
     const instruction = String(understood.instruction ?? understood.Instruction ?? '').trim();
     const personaRaw = String(understood.persona ?? understood.Persona ?? '').trim();
     let pace = workPace(understood, phase);
-    // A destructive order on a plan turn still needs the one button, even when
-    // the reading said to start now. The execute turn is that button.
-    if (phase !== 'execute' && pace === 'direct' && desktopBotDestructive(`${instruction}\n${content}`)) {
-        pace = 'confirm';
-    }
+    // No destructive upgrade to a confirm button here: the worker's own gates
+    // (peer review, the payment-password stop) guard consequential calls.
     const decided = emptyOrderPace(pace, instruction, personaRaw, phase, scheduleOf(understood).mode);
     if (decided === 'failed') return { kind: 'unread' };
     return { kind: 'read', told, instruction, persona: personaRaw, pace: decided, understood };
@@ -4748,7 +4746,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         drainIfIdle(botId);
                         return;
                     }
-                    if (pace === 'confirm' && protocolControl(content) !== 'resume') {
+                    // There is no bare "proceed?" step: a confirm reading goes ahead now.
+                    // A real question or real options come back as ask instead.
+                    if (pace === 'confirm' && protocolControl(content) !== 'resume') pace = 'direct';
+                    if (false as boolean) {
                         if (ownerLeft()) {
                             leaveAccount();
                             return;
@@ -4795,10 +4796,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // starts now and a model-written line is placed above the wait
             // bubble when it arrives (WriteDesktopBotAck). A button accept is
             // verbatim and must not grow another bubble.
+            const u = understoodForAck;
+            const str = (a: unknown, b: unknown) => String(a ?? b ?? '').trim();
+            // A plain "I'm on it" line is filler: the status row already shows
+            // the bot working. Speak first only when the line carries something
+            // the person can use: an assumption, real options, files, a fallback.
+            const ackFiles = splitAckMaterials(content).paths;
+            const worthSaying = sendPhase !== 'execute' || desktopAckWorthSaying({
+                unclear: str(u.unclear, u.Unclear), assumption: str(u.assumption, u.Assumption),
+                options: options.length, files: ackFiles.length, fallback: !!str(u.fallback, u.Fallback),
+            });
             const sentence = told.trim();
-            if (!sentence && !verbatim && sendPhase === 'execute') {
-                const u = understoodForAck;
-                const str = (a: unknown, b: unknown) => String(a ?? b ?? '').trim();
+            if (!sentence && !verbatim && sendPhase === 'execute' && worthSaying) {
                 postLaterAck(botId, assistantMessage.id, {
                     kind: 'accept',
                     message: content,
@@ -4809,7 +4818,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     unclear: str(u.unclear, u.Unclear),
                     assumption: str(u.assumption, u.Assumption),
                     options: options.length >= 2 ? options : undefined,
-                    files: splitAckMaterials(content).paths.map(item => item.split('/').pop() || item),
+                    files: ackFiles.map(item => item.split('/').pop() || item),
                     fallback: !!str(u.fallback, u.Fallback),
                 }, options.length >= 2 ? options : undefined);
             }
@@ -5687,7 +5696,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
                             return;
                         }
-                        if (pace === 'confirm' && protocolControl(content) !== 'resume') {
+                        // There is no bare "proceed?" step: a confirm reading goes ahead now.
+                    // A real question or real options come back as ask instead.
+                    if (pace === 'confirm' && protocolControl(content) !== 'resume') pace = 'direct';
+                    if (false as boolean) {
                             if (userIdRef.current !== ownerId || slot.drop) return;
                             const arrangement = told || oneLine(content);
                             const stored = messagesForBot(ownerId, botId);
@@ -5711,7 +5723,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         if (pace === 'reply' || pace === 'ask') {
                             const answer = told || instruction;
                             if (!answer) {
-                                pace = 'confirm';
+                                pace = 'direct';
                             } else {
                                 const stored = messagesForBot(ownerId, botId);
                                 const local: DesktopBotMessage = pace === 'ask'
@@ -5964,6 +5976,63 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         return null;
     })();
+
+    // There is no bare "proceed?" button. A plan the worker arranged goes on
+    // by itself, exactly as the old button did, once nothing newer is still
+    // being read. Consequential calls keep the worker's own gates (peer
+    // review, the payment-password stop); the person can interrupt any time.
+    const runArrangedPlan = () => {
+        if (!confirmMessage) return;
+
+            if (!selected || confirmMessage.disabled) return;
+            const stored = messagesForBot(userId, selected.id);
+            const plan = stored.find(item => item.id === confirmMessage.id);
+            const order = (plan?.workOrder || plan?.content || '').trim();
+            if (!order || order === CONFIRM_COMMAND) return;
+            const noteId = (plan?.crossNoteId || '').trim();
+            const botId = selected.id;
+            const queueOrder = (claimed: boolean) => {
+                const queued = queueRef.current.get(botId) || [];
+                queueRef.current.set(botId, [...queued, { text: order, phase: 'execute', verbatim: true, crossNoteId: noteId || undefined, claimed }]);
+                const current = messagesForBot(userId, botId);
+                const qid = messageID();
+                const qline = desktopBotQueuedSentence(lang);
+                commit(botId, [...current, { id: qid, role: 'assistant', content: qline, ack: true }]);
+                upgradeLine(userId, botId, qid, 'queued', qline, order);
+            };
+            if (!noteId) {
+                if (desktopRunByBotRef.current[botId]) {
+                    queueOrder(false);
+                    return;
+                }
+                void startTask(botId, order, 'execute', 'fromQueue', true);
+                return;
+            }
+            void (async () => {
+                try {
+                    const claim = await ClaimDesktopBotCrossStart(botId, noteId);
+                    if (!claim?.claimed) return;
+                    rememberDesktopBotCrossRun(userId, botId, noteId, String(claim.from || ''));
+                } catch {
+                    return;
+                }
+                if (desktopRunByBotRef.current[botId]) {
+                    queueOrder(true);
+                    return;
+                }
+                try { await ArmDesktopBotCrossRun(botId, noteId); } catch { /* the run id note is best-effort */ }
+                void startTask(botId, order, 'execute', 'fromQueue', true);
+            })();
+            };
+    const continuedPlanRef = useRef<Set<string>>(new Set());
+    useEffect(() => {
+        if (!confirmMessage || confirmMessage.disabled || !selected) return;
+        const key = `${selected.id}\0${confirmMessage.id}`;
+        if (continuedPlanRef.current.has(key)) return;
+        continuedPlanRef.current.add(key);
+        runArrangedPlan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [confirmMessage?.id, confirmMessage?.disabled, selected?.id]);
 
     const personAtKeyboard = liveControl || liveReason !== '' || userHasControl;
     const stageStatusText = agentOperating && personAtKeyboard
@@ -6452,49 +6521,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             onOther={typed => { void pickDesktopBotOption(message.id, typed, typed, true); }}
                                         />
                                     ) : null}
-                                    {confirmMessage && confirmMessage.id === message.id ? (
-                                        <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-confirm" disabled={confirmMessage.disabled} onClick={() => {
-                                            if (!selected || confirmMessage.disabled) return;
-                                            const stored = messagesForBot(userId, selected.id);
-                                            const plan = stored.find(item => item.id === confirmMessage.id);
-                                            const order = (plan?.workOrder || plan?.content || '').trim();
-                                            if (!order || order === CONFIRM_COMMAND) return;
-                                            const noteId = (plan?.crossNoteId || '').trim();
-                                            const botId = selected.id;
-                                            const queueOrder = (claimed: boolean) => {
-                                                const queued = queueRef.current.get(botId) || [];
-                                                queueRef.current.set(botId, [...queued, { text: order, phase: 'execute', verbatim: true, crossNoteId: noteId || undefined, claimed }]);
-                                                const current = messagesForBot(userId, botId);
-                                                const qid = messageID();
-                                                const qline = desktopBotQueuedSentence(lang);
-                                                commit(botId, [...current, { id: qid, role: 'assistant', content: qline, ack: true }]);
-                                                upgradeLine(userId, botId, qid, 'queued', qline, order);
-                                            };
-                                            if (!noteId) {
-                                                if (desktopRunByBotRef.current[botId]) {
-                                                    queueOrder(false);
-                                                    return;
-                                                }
-                                                void startTask(botId, order, 'execute', 'fromQueue', true);
-                                                return;
-                                            }
-                                            void (async () => {
-                                                try {
-                                                    const claim = await ClaimDesktopBotCrossStart(botId, noteId);
-                                                    if (!claim?.claimed) return;
-                                                    rememberDesktopBotCrossRun(userId, botId, noteId, String(claim.from || ''));
-                                                } catch {
-                                                    return;
-                                                }
-                                                if (desktopRunByBotRef.current[botId]) {
-                                                    queueOrder(true);
-                                                    return;
-                                                }
-                                                try { await ArmDesktopBotCrossRun(botId, noteId); } catch { /* the run id note is best-effort */ }
-                                                void startTask(botId, order, 'execute', 'fromQueue', true);
-                                            })();
-                                        }}>{text.confirm}</button>
-                                    ) : null}
+                                    {/* No confirm button: an arranged plan continues on its own (runArrangedPlan). */}
                                     {message.askUser?.options && !message.askResolved && !message.userControl ? (
                                         <div className="desktop-bot-chat__choices">
                                             {message.askUser.options.map((option, index) => (
