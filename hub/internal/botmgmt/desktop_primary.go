@@ -385,6 +385,12 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 		out.Duplicate = true
 		return out, false, nil
 	}
+	if topic != "reply" && topic != "info" && strings.TrimSpace(in.ReplyTo) == "" && strings.TrimSpace(in.ParentID) == "" && strings.TrimSpace(in.AnswerTo) == "" {
+		// A teammate that reports during a delegated run but forgets
+		// reply_to still reports on that assignment; otherwise its question
+		// never reaches the assignment and the run-end "done" closes it.
+		in.ReplyTo = delegateForRun(rec.CrossNotes, userID, fromBotID, in.RunID)
+	}
 	proto, err := assignmentProtocol(rec.CrossNotes, in)
 	if err != nil {
 		return BotCrossNote{}, false, err
@@ -871,4 +877,19 @@ func runFiledOpenState(notes []BotCrossNote, userID, botID, delegateID, runID st
 		}
 	}
 	return false
+}
+
+// delegateForRun returns the delegate order that the bot's run is executing.
+func delegateForRun(notes []BotCrossNote, userID, botID, runID string) string {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ""
+	}
+	for i := len(notes) - 1; i >= 0; i-- {
+		n := notes[i]
+		if n.Owner == userID && n.Kind == "delegate" && n.Target == botID && n.RunID == runID {
+			return n.ID
+		}
+	}
+	return ""
 }
