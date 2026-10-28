@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Reads with no intervening write must not re-parse the state document; a
@@ -72,6 +73,35 @@ func BenchmarkSQLiteStoreQuietRead(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := s.GetTenant("t00042"); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// Two commits in the same clock tick with identical length must not leave a
+// reader on the first one.
+func TestSQLiteStoreSameTickSameLengthWritesAreNotStale(t *testing.T) {
+	fixed := time.Date(2026, 10, 28, 9, 0, 0, 123456789, time.UTC)
+	old := sqliteNow
+	sqliteNow = func() time.Time { return fixed }
+	defer func() { sqliteNow = old }()
+	path := filepath.Join(t.TempDir(), "service.db")
+	a, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	for _, name := range []string{"aaa", "bbb", "ccc"} {
+		if err := a.SaveTenant(Tenant{ID: "t1", Name: name}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := b.GetTenant("t1")
+		if err != nil || got.Name != name {
+			t.Fatalf("reader stale after same-tick write %q: %#v err=%v", name, got, err)
 		}
 	}
 }

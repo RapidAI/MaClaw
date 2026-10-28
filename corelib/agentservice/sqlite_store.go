@@ -40,6 +40,9 @@ type SQLiteStore struct {
 }
 
 type sqliteStateStamp struct {
+	// writeSeq is bumped inside every write transaction, so two commits in
+	// the same clock tick with identical length still differ.
+	writeSeq  int64
 	updatedAt string
 	size      int64
 }
@@ -67,6 +70,10 @@ CREATE TABLE IF NOT EXISTS agentservice_state (
   state_json BLOB NOT NULL,
   updated_at TEXT NOT NULL
 );`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(`ALTER TABLE agentservice_state ADD COLUMN write_seq INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 		_ = db.Close()
 		return nil, err
 	}
@@ -141,7 +148,7 @@ func (s *SQLiteStore) refreshLocked() error {
 	}
 	var version int
 	var stamp sqliteStateStamp
-	if err := s.db.QueryRow(`SELECT schema_version, updated_at, length(state_json) FROM agentservice_state WHERE id=1`).Scan(&version, &stamp.updatedAt, &stamp.size); err != nil {
+	if err := s.db.QueryRow(`SELECT schema_version, write_seq, updated_at, length(state_json) FROM agentservice_state WHERE id=1`).Scan(&version, &stamp.writeSeq, &stamp.updatedAt, &stamp.size); err != nil {
 		return err
 	}
 	if version != sqliteStoreStateVersion {
@@ -152,7 +159,7 @@ func (s *SQLiteStore) refreshLocked() error {
 	}
 	var payload []byte
 	// Same length() expression as the probe, so a TEXT row compares too.
-	if err := s.db.QueryRow(`SELECT schema_version, updated_at, length(state_json), state_json FROM agentservice_state WHERE id=1`).Scan(&version, &stamp.updatedAt, &stamp.size, &payload); err != nil {
+	if err := s.db.QueryRow(`SELECT schema_version, write_seq, updated_at, length(state_json), state_json FROM agentservice_state WHERE id=1`).Scan(&version, &stamp.writeSeq, &stamp.updatedAt, &stamp.size, &payload); err != nil {
 		return err
 	}
 	if version != sqliteStoreStateVersion {
@@ -169,6 +176,9 @@ func (s *SQLiteStore) refreshLocked() error {
 
 // sqliteStateParses counts full state parses on the read path (tests).
 var sqliteStateParses atomic.Int64
+
+// sqliteNow is the write timestamp clock (tests pin it).
+var sqliteNow = time.Now
 
 func (s *SQLiteStore) read(fn func(*MemoryStore) error) error {
 	if s == nil {
@@ -232,8 +242,11 @@ func (s *SQLiteStore) writeOnceLocked(fn func(*MemoryStore) error) error {
 	if err != nil {
 		return err
 	}
-	stamp := sqliteStateStamp{updatedAt: time.Now().UTC().Format(time.RFC3339Nano), size: int64(len(next))}
-	if _, err := tx.Exec(`UPDATE agentservice_state SET schema_version=?, state_json=?, updated_at=? WHERE id=1`, sqliteStoreStateVersion, next, stamp.updatedAt); err != nil {
+	stamp := sqliteStateStamp{updatedAt: sqliteNow().UTC().Format(time.RFC3339Nano), size: int64(len(next))}
+	if _, err := tx.Exec(`UPDATE agentservice_state SET schema_version=?, state_json=?, updated_at=?, write_seq=write_seq+1 WHERE id=1`, sqliteStoreStateVersion, next, stamp.updatedAt); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`SELECT write_seq FROM agentservice_state WHERE id=1`).Scan(&stamp.writeSeq); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
