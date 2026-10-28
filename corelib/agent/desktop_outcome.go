@@ -40,6 +40,7 @@ const DesktopOutcomeEvidenceOmission = "…[核对时略去中间]"
 const desktopOutcomeJudgeSystem = "你只判断这一步的结果是否已经满足用户要求。只回复一个 JSON 对象 {\"ok\":true或false,\"gap\":\"...\"}。\n" +
 	"ok 为 true 只在给出的工具结果或附上的桌面截图本身显示要求已经达成。\n" +
 	"工具报错或画面与要求不符时 ok 为 false。只有要求出现在这台桌面的画面上时，才以截图为准：桌面截图与桌面工具文字不一致时采用截图。没有可看的截图，并且用户消息也没有把最后一条桌面结果里的 screen_vision 标成这次截到的画面时，ok 为 false。看不到图片时，用户消息写明这次判断带着当前截图，或写明最后一条桌面工具结果里的 screen_vision 是这次截到的画面，那段读数才是这一屏：它列出本地 OCR 和 OmniParser 读到的文字和控件。用它确认这是不是用户要的那一屏。更早一条桌面结果里的 screen_vision 不是现在的画面。用户消息写明没有当前截图、且没有把最后一条读数标成这次截到的画面时，那些读数是更早的画面。没有这段读数、也没有可看的截图时，不能把画面算成已经达成。命令打印出来的正文就是该命令的输出，桌面截图不能把这段正文说成缺失或被截断。工具结果里的「" + DesktopOutcomeEvidenceOmission + "」是核对篇幅删掉的，不是命令漏打了这一段，不要据此说输出不完整。ssh 的输出单独判断远程命令：输出写明已经达成时，没有桌面截图也可以 ok 为 true，桌面截图也不能把它判成未达成。\n" +
+	"用户消息附上的回复正文只说明回复里写了什么：要求只是在对话里回答问题、给建议或写一段话给用户看，回复正文已经答到时 ok 为 true，不需要截图；要求涉及桌面、网页、文件或发送时，回复正文不能当作已经做成的证据。\n" +
 	"例外：最后一条桌面结果是浏览器页面本身的读数（script ok: url … 或 probed page …）且要求是网页上的结果时，这段读数就是当前页面，不需要截图。\n" +
 	"gap 用一句中文说明还缺什么。不要写步骤，不要声称已经完成。"
 
@@ -76,12 +77,22 @@ func ApplyDesktopOutcome(content string, decision DesktopOutcomeDecision, room b
 // JudgeDesktopOutcome asks the same model, in a separate call, whether the
 // evidence meets the request. The worker's draft is not part of that call.
 func JudgeDesktopOutcome(ctx context.Context, cfg corelib.MaclawLLMConfig, httpClient *http.Client, userText, evidence string, image *ToolModelImage) (bool, string, error) {
+	return JudgeDesktopOutcomeWithReply(ctx, cfg, httpClient, userText, "", evidence, image)
+}
+
+// JudgeDesktopOutcomeWithReply also shows the check the reply the worker
+// wrote. A request answered in the conversation itself (a chat question, a
+// sentence to show the person) has no desktop result at all; without the
+// reply the check could only say "the answer is not shown" and the person got
+// that verdict instead of the answer (run on 2026-10-28: "适合喝什么茶").
+// The reply proves only what it says, never that something was done.
+func JudgeDesktopOutcomeWithReply(ctx context.Context, cfg corelib.MaclawLLMConfig, httpClient *http.Client, userText, reply, evidence string, image *ToolModelImage) (bool, string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	user := desktopOutcomeUserContent(cfg, userText, evidence, image)
+	user := desktopOutcomeUserContentWithReply(cfg, userText, reply, evidence, image)
 	messages := []interface{}{
 		map[string]interface{}{"role": "system", "content": desktopOutcomeJudgeSystem},
 		map[string]interface{}{"role": "user", "content": user},
@@ -107,7 +118,15 @@ func desktopOutcomeComplete(ctx context.Context, cfg corelib.MaclawLLMConfig, ht
 }
 
 func desktopOutcomeUserContent(cfg corelib.MaclawLLMConfig, userText, evidence string, image *ToolModelImage) interface{} {
-	text := "用户要求：\n" + clipDesktopOutcome(userText, 800) + "\n\n工具结果：\n"
+	return desktopOutcomeUserContentWithReply(cfg, userText, "", evidence, image)
+}
+
+func desktopOutcomeUserContentWithReply(cfg corelib.MaclawLLMConfig, userText, reply, evidence string, image *ToolModelImage) interface{} {
+	text := "用户要求：\n" + clipDesktopOutcome(userText, 800) + "\n\n"
+	if r := strings.TrimSpace(reply); r != "" {
+		text += "要交给用户的回复正文（只说明回复里写了什么；要求本身就是在对话里回答或说一句话时，据此判断；它不能证明桌面上做成了任何事）：\n" + clipDesktopOutcome(r, 1200) + "\n\n"
+	}
+	text += "工具结果：\n"
 	if strings.TrimSpace(evidence) == "" {
 		text += "（没有桌面工具结果）"
 	} else {

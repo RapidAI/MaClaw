@@ -28,9 +28,9 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 	if c == nil || strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" {
 		return agent.DesktopOutcomeDecision{}
 	}
-	// The draft is the report that can claim a result the screen does not
-	// show. The check never reads it.
-	_ = draft
+	// The draft can claim a result the screen does not show, so the check
+	// reads it only as the answer text: a chat answer is judged on it, a
+	// desktop result never is.
 	used, ask, remoteOnly, sawSSH, evidence := desktopOutcomeEvidence(history)
 	if ask {
 		return agent.DesktopOutcomeDecision{}
@@ -47,7 +47,7 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ok, gap, err := agent.JudgeDesktopOutcome(ctx, c.llmCfg, c.httpClient, userText, evidence, image)
+	ok, gap, err := agent.JudgeDesktopOutcomeWithReply(ctx, c.llmCfg, c.httpClient, userText, draft, evidence, image)
 	if err != nil {
 		// A failed or unparseable check says nothing about the result:
 		// keep the worker's reply (seen live: "not json" replaced a

@@ -2266,14 +2266,16 @@ func TestHoldDesktopViewNewerWatchDuringOpenIsNotStopped(t *testing.T) {
 	var once sync.Once
 	desk.openFn = func(context.Context) (string, error) {
 		once.Do(func() { close(entered) })
+		// Wait for the newer poll's own generation. Watching for the hold to
+		// clear and come back missed it whenever the release and the reopen
+		// both landed inside one 1ms sleep (about half the runs).
 		deadline := time.Now().Add(2 * time.Second)
-		sawClear := false
+		key := desktopViewKey("tenant-a", "alice")
 		for time.Now().Before(deadline) {
-			active := svc.userDesktopViewActive("tenant-a", "alice")
-			if !active {
-				sawClear = true
-			}
-			if sawClear && active {
+			svc.mu.Lock()
+			gen := svc.desktopWatchGen[key]
+			svc.mu.Unlock()
+			if gen >= 2 && svc.userDesktopViewActive("tenant-a", "alice") {
 				return desk.url, nil
 			}
 			time.Sleep(time.Millisecond)

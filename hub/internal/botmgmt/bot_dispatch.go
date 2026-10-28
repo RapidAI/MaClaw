@@ -204,7 +204,7 @@ func dispatchDestructive(text string) bool {
 	return dispatchInstallWord.MatchString(lower)
 }
 
-const dispatchWakePrompt = "你的 Hub 信箱里有其他机器人发来的新消息（见说明里的 Messages）。请处理：需要回复就用 action=notify_main kind=reply，需要安排别的机器人就用 action=delegate；处理完就结束本轮，不要做无关的事。/ New messages from teammate bots are in your Hub mailbox (shown in your instructions). Handle them, answer with notify_main kind=reply or hand work on with delegate, then finish."
+const dispatchWakePrompt = "你的 Hub 信箱里有其他机器人发来的新消息（见说明里的 Messages）。请处理：需要回复就用 action=notify_main kind=reply，需要安排别的机器人就用 action=delegate；只是确认、致谢或收尾的消息不用回复。处理完就结束本轮，不要做无关的事。/ New messages from teammate bots are in your Hub mailbox (shown in your instructions). Handle them, answer with notify_main kind=reply or hand work on with delegate, then finish. Do not reply to acknowledgements or thanks."
 
 // dispatchOnce runs at most one job. It reports true when the desktop was
 // busy and the pass must be retried.
@@ -410,6 +410,9 @@ func (s *Service) pickDispatchJob(tenantID, userID string, skip map[string]bool)
 		if age, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil && now.Sub(age) > dispatchMaxAge {
 			continue
 		}
+		if answersOwnReport(rec.CrossNotes, n) {
+			continue
+		}
 		if _, ok := byBot[n.Target]; !ok {
 			order = append(order, n.Target)
 		}
@@ -434,6 +437,23 @@ func (s *Service) pickDispatchJob(tenantID, userID string, skip map[string]bool)
 		return dispatchJob{kind: "wake", botID: bot, noteIDs: ids, content: dispatchWakePrompt, key: "xwake-" + ids[0]}, true
 	}
 	return dispatchJob{}, false
+}
+
+// answersOwnReport reports a mailbox note that answers a report its target
+// sent. Two bots woken by each other's replies thanked and re-confirmed each
+// other for hours (2026-10-28 14:43 to 01:40). Such a note stays unread for
+// the target's next turn; it just does not start one.
+func answersOwnReport(notes []BotCrossNote, n BotCrossNote) bool {
+	parent := strings.TrimSpace(n.ReplyTo)
+	if parent == "" {
+		return false
+	}
+	for _, p := range notes {
+		if p.ID == parent {
+			return mailboxKinds[p.Kind] && p.From == n.Target
+		}
+	}
+	return false
 }
 
 // takeWake bounds server-side wakes per bot, so two bots answering each

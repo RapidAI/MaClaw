@@ -381,3 +381,17 @@ type replaceOutcomeCallbacks struct {
 func (m *replaceOutcomeCallbacks) ReviewDesktopOutcome(string, string, []ConversationEntry, *ToolModelImage) DesktopOutcomeDecision {
 	return DesktopOutcomeDecision{Replace: "终端是空的，游戏没有运行。"}
 }
+
+func TestDesktopOutcomeShowsReplyAsAnswerNotEvidence(t *testing.T) {
+	got, _ := desktopOutcomeUserContentWithReply(corelib.MaclawLLMConfig{}, "今天适合喝什么茶？两三句话", "天凉喝红茶。", "desktop: Desktop screenshot of display :1", nil).(string)
+	if !strings.Contains(got, "天凉喝红茶。") || !strings.Contains(got, "不能证明桌面上做成了任何事") {
+		t.Fatalf("reply must reach the check as answer text only: %q", got)
+	}
+	plain, _ := desktopOutcomeUserContent(corelib.MaclawLLMConfig{}, "打开贪吃蛇", "bash: ok", nil).(string)
+	if strings.Contains(plain, "回复正文（") || !strings.HasPrefix(plain, "用户要求：\n打开贪吃蛇\n\n工具结果：\n") {
+		t.Fatalf("no reply, no reply section: %q", plain)
+	}
+	if !strings.Contains(desktopOutcomeJudgeSystem, "回复正文不能当作已经做成的证据") {
+		t.Fatal("system rule for reply text missing")
+	}
+}

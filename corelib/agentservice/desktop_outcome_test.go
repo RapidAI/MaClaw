@@ -141,7 +141,7 @@ func TestDesktopOutcomeRejectsAReportTheScreenDoesNotSupport(t *testing.T) {
 		t.Fatalf("third=%+v", third)
 	}
 	for _, body := range bodies {
-		if strings.Contains(body, "Score: 10") || !strings.Contains(body, "未找到命令") || !strings.Contains(body, "aaaa") || !strings.Contains(body, "贪吃蛇") {
+		if strings.Count(body, "Score: 10") != 1 || !strings.Contains(body, "不能证明桌面上做成了任何事）：\\nScore: 10") || !strings.Contains(body, "未找到命令") || !strings.Contains(body, "aaaa") || !strings.Contains(body, "贪吃蛇") {
 			t.Fatalf("checker evidence=%s", body)
 		}
 	}

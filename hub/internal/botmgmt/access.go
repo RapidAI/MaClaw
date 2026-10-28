@@ -1736,8 +1736,14 @@ func normalizeGrant(in Grant, existing []Grant) (Grant, error) {
 // its own, so it never resumes an older or cancelled request left in the
 // person's conversation with the bot.
 func desktopSessionKey(botID, clientMessageID string) string {
-	if strings.HasPrefix(clientMessageID, "xdel-") || strings.HasPrefix(clientMessageID, "xwake-") {
+	if hubStartedTurn(clientMessageID) {
 		return botID + "#" + clientMessageID
 	}
 	return botID
+}
+
+// hubStartedTurn reports a turn Hub started itself (a delegate or a mailbox
+// wake) rather than one the person sent from the chat.
+func hubStartedTurn(clientMessageID string) bool {
+	return strings.HasPrefix(clientMessageID, "xdel-") || strings.HasPrefix(clientMessageID, "xwake-")
 }

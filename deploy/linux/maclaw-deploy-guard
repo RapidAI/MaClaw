@@ -1,0 +1,71 @@
+# maclaw-deploy-guard — shared by every deploy script on this host. SOURCE it
+# (". /usr/local/bin/maclaw-deploy-guard") before any restart:
+#   - takes an exclusive lock (/run/maclaw-deploy.lock, held until the
+#     calling script exits) so two deployers never restart concurrently;
+#   - refuses (exit 3) while a run is active: a desktop-run event file
+#     written in the last $MACLAW_DEPLOY_IDLE_MIN minutes (default 5; runs
+#     can think 2-5 min between events), or a run marker in
+#     /run/maclaw-active-runs younger than 90 min (submitters create
+#     /run/maclaw-active-runs/<run_id> and remove it when the run ends), or
+#     a run MaClawSrv itself still records as queued/running. Desktop-bot
+#     runs write no jsonl events and no marker, so only the srv store sees
+#     them (a deploy restart on 2026-10-28 cancelled one that way). A row
+#     older than $MACLAW_DEPLOY_STALE_H hours (default 6) is reported as
+#     stale and does not block.
+# Override only for an emergency: MACLAW_DEPLOY_FORCE=1 (logged).
+# A daemon started by a deploy script can inherit fd 9 and hold the lock
+# forever (top: maclaw-hub held it). A lock held only by non-shell processes
+# is stale: replace the lock file (new inode) and lock that.
+exec 9>/run/maclaw-deploy.lock
+if ! flock -n 9; then
+  _HOLD=$(fuser /run/maclaw-deploy.lock 2>/dev/null | tr -s ' ' '\n' | grep -v "^$$\$" | grep -E '^[0-9]+$')
+  _LIVE=""; for _p in $_HOLD; do case "$(cat /proc/$_p/comm 2>/dev/null)" in bash|sh|dash|flock|python3) _LIVE="$_LIVE $_p";; esac; done
+  if [ -n "$_LIVE" ]; then echo "deploy-guard: another deploy holds /run/maclaw-deploy.lock (pids$_LIVE)"; exit 3; fi
+  echo "deploy-guard: stale lock held by daemon pid(s) $_HOLD; renewing lock file"
+  exec 9>&-; rm -f /run/maclaw-deploy.lock; exec 9>/run/maclaw-deploy.lock
+  flock -n 9 || { echo "deploy-guard: lock busy"; exit 3; }
+fi
+# Daemons this script starts must not inherit the lock: start them with 9>&-.
+_IDLE=${MACLAW_DEPLOY_IDLE_MIN:-5}
+_RECENT=$(find /data/soft/maclaw_srv/data -name '*.jsonl' -mmin -"$_IDLE" 2>/dev/null | wc -l)
+mkdir -p /run/maclaw-active-runs
+find /run/maclaw-active-runs -type f -mmin +90 -delete 2>/dev/null
+_MARK=$(ls /run/maclaw-active-runs 2>/dev/null | wc -l)
+_SRVDB=${MACLAW_SRV_DB:-/data/soft/maclaw_srv/data/state/service.db}
+_LIVE_RUNS=0
+if [ -f "$_SRVDB" ] && command -v python3 >/dev/null; then
+  _LIVE_RUNS=$(python3 - "$_SRVDB" "${MACLAW_DEPLOY_STALE_H:-6}" <<'PY' || echo 0
+import sqlite3, json, sys, datetime
+db, stale_h = sys.argv[1], float(sys.argv[2])
+c = sqlite3.connect('file:' + db + '?mode=ro', uri=True)
+now = datetime.datetime.now(datetime.timezone.utc)
+live = 0
+try:
+    rows = c.execute("select v from as_runs").fetchall()
+except sqlite3.Error:
+    rows = []
+for (v,) in rows:
+    try:
+        j = json.loads(v)
+    except Exception:
+        continue
+    if j.get('status') not in ('queued', 'running'):
+        continue
+    try:
+        age = (now - datetime.datetime.fromisoformat(j.get('started_at', '')[:26] + j.get('started_at', '')[-6:])).total_seconds() / 3600
+    except Exception:
+        age = 0
+    tag = 'stale' if age > stale_h else 'live'
+    sys.stderr.write('deploy-guard: srv run %s %s %s %.1fh\n' % (j.get('id', '?'), j.get('status'), tag, age))
+    if tag == 'live':
+        live += 1
+print(live)
+PY
+)
+fi
+echo "deploy-guard: recent_events=$_RECENT (<${_IDLE}m) active_markers=$_MARK srv_runs=$_LIVE_RUNS by=${DEPLOYER:-$(basename "$0")}"
+if [ "$_RECENT" != 0 ] || [ "$_MARK" != 0 ] || [ "$_LIVE_RUNS" != 0 ]; then
+  if [ "$MACLAW_DEPLOY_FORCE" = 1 ]; then echo "deploy-guard: FORCED"; logger -t maclaw-deploy-guard "forced by ${DEPLOYER:-$0}";
+  else ls /run/maclaw-active-runs 2>/dev/null; echo "deploy-guard: active run; not restarting"; exit 3; fi
+fi
+logger -t maclaw-deploy-guard "deploy by ${DEPLOYER:-$0} recent=$_RECENT markers=$_MARK srv_runs=$_LIVE_RUNS" 2>/dev/null || true

@@ -357,7 +357,10 @@ func (s *Service) PendingDesktopDeliveries(ctx context.Context, tenantID, userID
 			continue
 		}
 		state.mu.Lock()
-		if !state.done || state.delivered || desktopTaskExpired(state.done, state.delivered, state.finished, now) {
+		// A delegate or mailbox wake was not asked in the chat. Its result
+		// goes back through the mailbox; listing it here showed it as the
+		// answer to whatever the person had typed last.
+		if !state.done || state.delivered || hubStartedTurn(state.clientMessageID) || desktopTaskExpired(state.done, state.delivered, state.finished, now) {
 			state.mu.Unlock()
 			continue
 		}
