@@ -33,12 +33,23 @@ find /run/maclaw-active-runs -type f -mmin +90 -delete 2>/dev/null
 _MARK=$(ls /run/maclaw-active-runs 2>/dev/null | wc -l)
 _SRVDB=${MACLAW_SRV_DB:-/data/soft/maclaw_srv/data/state/service.db}
 _LIVE_RUNS=0
-if [ -f "$_SRVDB" ] && command -v python3 >/dev/null; then
-  _LIVE_RUNS=$(python3 - "$_SRVDB" "${MACLAW_DEPLOY_STALE_H:-6}" <<'PY' || echo 0
+# The script is kept in a variable: bash 4.4 (papers) cannot parse a quoted
+# heredoc inside $(...). Python 3.6 has no fromisoformat, so parse by hand.
+read -r -d '' _SRVPY <<'PY' || true
 import sqlite3, json, sys, datetime, re
 db, stale_h = sys.argv[1], float(sys.argv[2])
 c = sqlite3.connect('file:' + db + '?mode=ro', uri=True)
 now = datetime.datetime.now(datetime.timezone.utc)
+pat = re.compile(r'(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?(Z|([+-])(\d\d):(\d\d))$')
+def started(s):
+    m = pat.match(s or '')
+    if not m:
+        return None
+    off = 0
+    if m.group(7) != 'Z':
+        off = (int(m.group(9)) * 60 + int(m.group(10))) * (1 if m.group(8) == '+' else -1)
+    tz = datetime.timezone(datetime.timedelta(minutes=off))
+    return datetime.datetime(*[int(m.group(i)) for i in range(1, 7)], tzinfo=tz)
 live = 0
 try:
     rows = c.execute("select v from as_runs").fetchall()
@@ -51,18 +62,17 @@ for (v,) in rows:
         continue
     if j.get('status') not in ('queued', 'running'):
         continue
-    try:
-        t = re.sub(r'(\.\d{6})\d+', r'\1', j.get('started_at', '').replace('Z', '+00:00'))
-        age = (now - datetime.datetime.fromisoformat(t)).total_seconds() / 3600
-    except Exception:
-        age = 0  # unparseable: treat as live
+    t = started(j.get('started_at', ''))
+    age = (now - t).total_seconds() / 3600 if t else 0  # unparseable: live
     tag = 'stale' if age > stale_h else 'live'
     sys.stderr.write('deploy-guard: srv run %s %s %s %.1fh\n' % (j.get('id', '?'), j.get('status'), tag, age))
     if tag == 'live':
         live += 1
 print(live)
 PY
-)
+if [ -f "$_SRVDB" ] && command -v python3 >/dev/null; then
+  _LIVE_RUNS=$(python3 -c "$_SRVPY" "$_SRVDB" "${MACLAW_DEPLOY_STALE_H:-6}") || _LIVE_RUNS=1
+  case "$_LIVE_RUNS" in ''|*[!0-9]*) _LIVE_RUNS=1;; esac
 fi
 echo "deploy-guard: recent_events=$_RECENT (<${_IDLE}m) active_markers=$_MARK srv_runs=$_LIVE_RUNS by=${DEPLOYER:-$(basename "$0")}"
 if [ "$_RECENT" != 0 ] || [ "$_MARK" != 0 ] || [ "$_LIVE_RUNS" != 0 ]; then
