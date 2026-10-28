@@ -260,12 +260,16 @@ func (s *Service) RunTokenBankAutoOnce(ctx context.Context) error {
 			continue
 		}
 		_, pullErr := s.pullAutomaticTokenBank(ctx, user.ID, user.Email, groupID, requestID, cfg.MaxPerWithdrawMicro)
-		// A pull writes the registry. Later users must not see the old snapshot.
-		if fresh, loadErr := llmservice.LoadRegistry(ctx, s.settings); loadErr == nil {
-			reg = fresh
-		} else {
-			errs = append(errs, loadErr)
-			return errors.Join(errs...)
+		// A pull may write the registry. Later users must not see the old
+		// snapshot. Only a refusal that names an empty or short bank is known
+		// to have written nothing.
+		if !errors.Is(pullErr, llmservice.ErrTokenBankNothingToWithdraw) && !errors.Is(pullErr, llmservice.ErrTokenBankInsufficient) {
+			if fresh, loadErr := llmservice.LoadRegistry(ctx, s.settings); loadErr == nil {
+				reg = fresh
+			} else {
+				errs = append(errs, loadErr)
+				return errors.Join(errs...)
+			}
 		}
 		if pullErr != nil {
 			if !errors.Is(pullErr, llmservice.ErrTokenBankNothingToWithdraw) {
