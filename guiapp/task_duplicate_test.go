@@ -331,6 +331,62 @@ func TestDeleteDefaultWorkspaceCopyKeepsSourceSandbox(t *testing.T) {
 	}
 }
 
+// A task created from the sidebar "新任务" action with the source row's
+// execution_dir runs in that same sandbox. The sandbox belongs to the source
+// task's folder, so the new task must survive deleting the source and the
+// shared directory must only disappear with its last user.
+func TestNewTaskFromTaskSharesSourceSandbox(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	source := app.createTaskRecordWithWorkingDir("未指定目录", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+	}, "", true)
+	if source.ProjectPath == "" {
+		t.Fatal("source task was not created")
+	}
+	sandbox := filepath.Join(source.ProjectPath, "workspace")
+	if err := os.WriteFile(filepath.Join(sandbox, "notes.txt"), []byte("同一目录"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listed := app.ListTasks(50)
+	executionDir := ""
+	for _, item := range listed {
+		if item.ProjectPath == source.ProjectPath {
+			executionDir = item.ExecutionDir
+		}
+	}
+	if normalizeProjectSessionPath(executionDir) != normalizeProjectSessionPath(sandbox) {
+		t.Fatalf("list execution_dir = %q, want the source sandbox %q", executionDir, sandbox)
+	}
+	// This is the wizard's contract: workingDir carries the execution_dir the
+	// sidebar row reported.
+	created, err := app.CreateTaskUnified(TaskCreateOptions{Name: "同目录新任务", WorkingDir: executionDir})
+	if err != nil {
+		t.Fatalf("CreateTaskUnified: %v", err)
+	}
+	if created.ProjectPath == "" {
+		t.Fatalf("CreateTaskUnified returned no project path")
+	}
+	if got := normalizeProjectSessionPath(app.recentTaskWorkingDir(created.ProjectPath)); got != normalizeProjectSessionPath(sandbox) {
+		t.Fatalf("new task working dir = %q, want %q", got, sandbox)
+	}
+	if got := normalizeProjectSessionPath(app.EffectiveWorkingDirForOwner(projectSessionOwnerID(created.ProjectPath))); got != normalizeProjectSessionPath(sandbox) {
+		t.Fatalf("new task executes in %q, want %q", got, sandbox)
+	}
+	if err := app.DeleteTask(source.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask source: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(sandbox, "notes.txt")); err != nil || string(data) != "同一目录" {
+		t.Fatalf("deleting the source removed the shared sandbox: %q err=%v", data, err)
+	}
+	if err := app.DeleteTask(created.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask new task: %v", err)
+	}
+	if _, err := os.Stat(sandbox); !os.IsNotExist(err) {
+		t.Fatalf("shared sandbox remains after the last task is deleted: %v", err)
+	}
+}
+
 func TestDuplicateTaskKeepsRemoteMetadata(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	source := app.createTaskRecordWithWorkingDir("远程巡检", "", []string{

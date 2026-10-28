@@ -353,7 +353,9 @@ func (a *App) invokeExit(code int) {
 		a.processHooks.exitProcess(code)
 		return
 	}
-	os.Exit(code)
+	// The handoff launcher exits outside the Wails loop; route it through the
+	// same hard exit so an injected DLL hook cannot keep this process alive.
+	hardExitProcess(code)
 }
 
 func (a *App) forwardFilesToCompanion(paths []string) error {

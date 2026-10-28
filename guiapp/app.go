@@ -2741,6 +2741,14 @@ func (a *App) startup(ctx context.Context) {
 	// captures the WebView processes created alongside this window.
 	startPerfSampler()
 	a.ctx = ctx
+	// `MaClaw.exe --quit` only reaches OnStartup when no running instance was
+	// there to receive the handoff. The user asked for an exit, so do not open
+	// a window just because there was nothing to quit.
+	if secondInstanceRequestsQuit(os.Args[1:]) {
+		log.Printf("[exit-lifecycle] --quit without a running instance; exiting")
+		requestAppQuit(ctx)
+		return
+	}
 	a.installMermaidPDFRaster()
 	botNoticeApp.Store(a)
 	// Picture PDFs have no text layer. Wire OCR before the first document read
@@ -6825,6 +6833,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	motionChanged := floatingMotionChanged(oldConfig, config)
 	soundChanged := floatingSoundChanged(oldConfig, config)
 	devicePetChanged := !oldConfigLoaded || devicePetProfileChanged(oldConfig, config)
+	buddyPetChanged := !oldConfigLoaded || buddyPetAssetChanged(oldConfig, config)
 	hardwareCustomPetsDisabled := oldConfig.HardwareAllowCustomPets && !config.HardwareAllowCustomPets
 	hardwareWelcomeChanged := !oldConfigLoaded || hardwareWelcomeConfigChanged(oldConfig, config)
 	hardwareVolumeChanged := !oldConfigLoaded || hardwareVolumeChanged(oldConfig, config)
@@ -6898,6 +6907,11 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		go func(cfg corelib.AppConfig) {
 			a.thirdPartyGateway.broadcastPetProfile(a.devicePetProfileForConfig(cfg))
 		}(config)
+	}
+	if buddyPetChanged {
+		// The USB companion always mirrors the GUI pet, independent of the
+		// hardware gateway's custom-pet policy.
+		go a.refreshBuddyPetForConfig(config)
 	}
 	if hubClient != nil {
 		if oldConfigLoaded && oldConfig.RemoteHeartbeatSec != config.RemoteHeartbeatSec {
@@ -9479,6 +9493,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	motionChanged := petChanged && floatingMotionChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
 	devicePetChanged := devicePetProfileChanged(current, cfg)
+	buddyPetChanged := buddyPetAssetChanged(current, cfg)
 	hardwareCustomPetsDisabled := current.HardwareAllowCustomPets && !cfg.HardwareAllowCustomPets
 	hardwareWelcomeChanged := hardwareWelcomeConfigChanged(current, cfg)
 	hardwareVolumeChanged := hardwareVolumeChanged(current, cfg)
@@ -9607,6 +9622,11 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				a.thirdPartyGateway.broadcastPetProfile(a.devicePetProfileForConfig(cfg))
 			}
 		}(cfg)
+	}
+	if buddyPetChanged {
+		// Switching the system pet must update the USB companion even while
+		// the dedicated hardware gateway uses its own custom pet.
+		go a.refreshBuddyPetForConfig(cfg)
 	}
 	if hardwareWelcomeChanged {
 		// PatchConfigFields is also used by non-settings callers. Sync here so

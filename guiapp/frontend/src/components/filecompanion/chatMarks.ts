@@ -116,7 +116,12 @@ export function loadChatMarks(path: string): ChatMark[] {
     return normalizeChatMarks(store[key]) ?? [];
 }
 
-export function saveChatMarks(path: string, value: unknown): ChatMark[] {
+// A reader's own highlight on an answer. The companion window listens and
+// pushes the project to the shares this document hosts; applying a received
+// share must not announce, or two readers' copies would echo updates.
+export const CHAT_MARKS_CHANGED_EVENT = "maclaw:companion-chat-marks-changed";
+
+export function saveChatMarks(path: string, value: unknown, announce = false): ChatMark[] {
     const key = pdfMarkPathKey(path);
     const marks = normalizeChatMarks(value) ?? [];
     if (!key) return marks;
@@ -125,5 +130,12 @@ export function saveChatMarks(path: string, value: unknown): ChatMark[] {
     else store[key] = marks;
     saveRevision += 1;
     saveChatMarksToHost(key, marks);
+    if (announce) {
+        try {
+            window.dispatchEvent(new CustomEvent(CHAT_MARKS_CHANGED_EVENT, { detail: { path } }));
+        } catch {
+            // A non-browser host has no event bus; the host write still ran.
+        }
+    }
     return marks;
 }

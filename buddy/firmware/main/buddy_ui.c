@@ -6,6 +6,7 @@
 
 #include "buddy_display.h"
 #include "buddy_font.h"
+#include "buddy_pet.h"
 
 #define W 360
 #define H 360
@@ -307,54 +308,285 @@ static void draw_pet(uint16_t *fb, int cx, int cy, int64_t now_ms) {
     hline(fb, cx - 6, cx + 6, cy + 24 + bob, COL_BG);
 }
 
+/** Draws a 24x24 1-bit cell rotated around its centre. */
+static void draw_glyph_rotated(uint16_t *fb, int cx, int cy, const uint8_t cell[24 * 24],
+                               float angle, uint16_t fg) {
+    const float ca = cosf(angle);
+    const float sa = sinf(angle);
+    for (int dy = -17; dy <= 17; ++dy) {
+        for (int dx = -17; dx <= 17; ++dx) {
+            const float lx = ca * dx + sa * dy;
+            const float ly = -sa * dx + ca * dy;
+            const int ix = (int)(lx + 12.5f);
+            const int iy = (int)(ly + 12.5f);
+            if (ix < 0 || ix >= 24 || iy < 0 || iy >= 24) continue;
+            if (cell[iy * 24 + ix]) put_px(fb, cx + dx, cy + dy, fg);
+        }
+    }
+}
+
+/** Curved text along the bottom of the dial. Characters are upright at the
+ * bottom centre and rotate with the arc; tops point toward the centre. */
+static void draw_arc_text_bottom(uint16_t *fb, const char *text, int radius, uint16_t fg) {
+    if (!text || !*text || radius <= 0) return;
+    const int width = buddy_font_arc_width(text);
+    if (width <= 0) return;
+    const float span = (float)width / (float)radius;
+    float angle = 1.5707963f + span * 0.5f;
+    int pen = 0;
+    const char *p = text;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = buddy_font_utf8_next(p, &cp);
+        if (len <= 0) break;
+        p += len;
+        const int adv = buddy_font_arc_advance(cp);
+        const float center = angle - (float)(pen + adv / 2) / (float)radius;
+        uint8_t cell[24 * 24];
+        if (!buddy_font_cell(cp, cell)) {
+            memset(cell, 0, sizeof(cell));
+            for (int i = 2; i < 22; ++i) {
+                cell[2 * 24 + i] = 1;
+                cell[21 * 24 + i] = 1;
+                cell[i * 24 + 2] = 1;
+                cell[i * 24 + 21] = 1;
+            }
+        }
+        const int px = W / 2 + (int)lroundf(cosf(center) * (float)radius);
+        const int py = H / 2 + (int)lroundf(sinf(center) * (float)radius);
+        draw_glyph_rotated(fb, px, py, cell, center - 1.5707963f, fg);
+        pen += adv;
+    }
+}
+
+/** Curved text along the top of the dial. Characters are upright at the top
+ * centre and follow the arc; tops point away from the centre. y_offset shifts
+ * the whole ring vertically without changing its radius. */
+static void draw_arc_text_top(uint16_t *fb, const char *text, int radius, int y_offset,
+                              uint16_t fg) {
+    if (!text || !*text || radius <= 0) return;
+    const int width = buddy_font_arc_width(text);
+    if (width <= 0) return;
+    const float span = (float)width / (float)radius;
+    float angle = -1.5707963f - span * 0.5f;
+    int pen = 0;
+    const char *p = text;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = buddy_font_utf8_next(p, &cp);
+        if (len <= 0) break;
+        p += len;
+        const int adv = buddy_font_arc_advance(cp);
+        const float center = angle + (float)(pen + adv / 2) / (float)radius;
+        uint8_t cell[24 * 24];
+        if (!buddy_font_cell(cp, cell)) {
+            memset(cell, 0, sizeof(cell));
+            for (int i = 2; i < 22; ++i) {
+                cell[2 * 24 + i] = 1;
+                cell[21 * 24 + i] = 1;
+                cell[i * 24 + 2] = 1;
+                cell[i * 24 + 21] = 1;
+            }
+        }
+        const int px = W / 2 + (int)lroundf(cosf(center) * (float)radius);
+        const int py = H / 2 + y_offset + (int)lroundf(sinf(center) * (float)radius);
+        draw_glyph_rotated(fb, px, py, cell, center + 1.5707963f, fg);
+        pen += adv;
+    }
+}
+
+/** Scales one 128x128 RGB565+A8 frame to `target` and alpha-blends it. */
+static void draw_pet_asset_frame(uint16_t *fb, int cx, int cy, int target,
+                                 const uint8_t *src) {
+    const int sw = BUDDY_PET_WIDTH;
+    const int sh = BUDDY_PET_HEIGHT;
+    for (int dy = 0; dy < target; ++dy) {
+        const int sy = dy * sh / target;
+        const uint8_t *row = src + (size_t)sy * sw * 3;
+        for (int dx = 0; dx < target; ++dx) {
+            const int sx = dx * sw / target;
+            const uint8_t *p = row + (size_t)sx * 3;
+            const int a = p[2];
+            if (a == 0) continue;
+            const int x = cx - target / 2 + dx;
+            const int y = cy - target / 2 + dy;
+            if (x < 0 || y < 0 || x >= W || y >= H) continue;
+            const uint16_t rgb = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+            if (a >= 255) {
+                fb[y * W + x] = buddy_color_swap(rgb);
+                continue;
+            }
+            const uint16_t dst = buddy_color_swap(fb[y * W + x]);
+            const int dr = (dst >> 11) & 0x1F, dg = (dst >> 5) & 0x3F, db = dst & 0x1F;
+            const int sr = (rgb >> 11) & 0x1F, sg = (rgb >> 5) & 0x3F, sb = rgb & 0x1F;
+            const int r = (sr * a + dr * (255 - a) + 127) / 255;
+            const int g = (sg * a + dg * (255 - a) + 127) / 255;
+            const int b = (sb * a + db * (255 - a) + 127) / 255;
+            fb[y * W + x] = buddy_color_swap((uint16_t)((r << 11) | (g << 5) | b));
+        }
+    }
+}
+
+/** Fits a UTF-8 string to an arc width (ASCII advances 18, CJK 24). */
+static size_t fit_text_arc(char *dst, size_t dst_size, const char *src, int max_px,
+                           bool ellipsis) {
+    if (!dst || dst_size == 0) return 0;
+    dst[0] = '\0';
+    if (!src) return 0;
+    const char *ell = "\xE2\x80\xA6";
+    const int ell_adv = ellipsis ? buddy_font_arc_advance(0x2026) : 0;
+    size_t out = 0;
+    int pen = 0;
+    const char *p = src;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = buddy_font_utf8_next(p, &cp);
+        if (len <= 0) break;
+        const int adv = buddy_font_arc_advance(cp);
+        if (pen + adv > max_px - ell_adv) {
+            if (ellipsis && out + 3 < dst_size) {
+                memcpy(dst + out, ell, 3);
+                out += 3;
+            }
+            dst[out] = '\0';
+            return (size_t)(p - src);
+        }
+        if (out + (size_t)len >= dst_size) break;
+        memcpy(dst + out, p, (size_t)len);
+        out += (size_t)len;
+        pen += adv;
+        p += len;
+    }
+    dst[out] = '\0';
+    return (size_t)(p - src);
+}
+
+/** The clock's date uses ASCII digits, which are 7 px tall at scale 1 next to
+ * the 24 px CJK glyphs for 月/日. Map them to U+FF10..U+FF19 (present in the
+ * ext font) so one line has one visual weight. */
+static void widen_ascii_digits(char *dst, size_t dst_size, const char *src) {
+    size_t out = 0;
+    for (const unsigned char *p = (const unsigned char *)src; *p; ++p) {
+        const bool digit = *p >= '0' && *p <= '9';
+        const size_t need = digit ? 3 : 1;
+        if (out + need >= dst_size) break;
+        if (digit) {
+            dst[out++] = (char)0xEF;
+            dst[out++] = (char)0xBC;
+            dst[out++] = (char)(0x90 + (*p - '0'));
+        } else {
+            dst[out++] = (char)*p;
+        }
+    }
+    dst[out] = '\0';
+}
+
 static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) {
     fill_rect(fb, 0, 0, W, H, COL_BG);
 
-    char date_line[48];
+    char date_line[128];
     if (v->has_clock) {
-        snprintf(date_line, sizeof(date_line), "%s %s", v->date, v->weekday);
+        char wide_date[96];
+        widen_ascii_digits(wide_date, sizeof(wide_date), v->date);
+        snprintf(date_line, sizeof(date_line), "%s %s", wide_date, v->weekday);
+        char date_fit[128];
+        fit_text_arc(date_fit, sizeof(date_fit), date_line, 250, true);
+        draw_arc_text_top(fb, date_fit, 138, -3, COL_TEXT);
     } else {
-        strlcpy(date_line, "MaClaw Buddy", sizeof(date_line));
-    }
-    draw_centered(fb, 48, date_line, COL_TEXT, COL_BG, 1);
-
-    draw_pet(fb, W / 2, 146, now_ms);
-
-    if (v->has_weather) {
-        char summary[64];
-        fit_text(summary, sizeof(summary), v->weather_summary, 1, 230, true);
-        draw_centered(fb, 208, summary, COL_TEXT, COL_BG, 1);
-        char temp[24];
-        snprintf(temp, sizeof(temp), "%d", v->weather_temp);
-        const int temp_w = buddy_font_width(temp, 3, W);
-        const int cx = W / 2;
-        const int temp_x = cx - (temp_w + 22) / 2;
-        draw_text(fb, temp_x, 236, temp, COL_ACCENT, COL_BG, 3, 120);
-        // Draw the degree ring and C with primitives so the unit matches the
-        // digit height; a 24px glyph next to 21px digits looked oversized.
-        fill_circle(fb, temp_x + temp_w + 5, 242, 3, COL_BG);
-        fill_ring(fb, temp_x + temp_w + 5, 242, 3, 2, COL_ACCENT);
-        draw_text(fb, temp_x + temp_w + 10, 238, "C", COL_ACCENT, COL_BG, 2, 24);
-        if (v->weather_stale) {
-            draw_text(fb, 222, 242, "旧", COL_WARN, COL_BG, 1, 40);
-        }
-    } else {
-        draw_centered(fb, 240, "正在获取天气", COL_MUTED, COL_BG, 1);
-    }
-
-    if (v->has_weather && v->weather_location[0]) {
-        // Keep the location inside the circle's lower chord.
-        char loc[64];
-        fit_text(loc, sizeof(loc), v->weather_location, 1, 190, true);
-        draw_centered(fb, 262, loc, COL_MUTED, COL_BG, 1);
+        draw_arc_text_top(fb, "MaClaw Buddy", 138, -3, COL_TEXT);
     }
 
     if (!v->online) {
-        draw_centered(fb, 292, "未连接", COL_MUTED, COL_BG, 1);
+        draw_centered(fb, 61, "未连接", COL_MUTED, COL_BG, 1);
     } else if (v->counts.pending > 0) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "待处理 %d", v->counts.pending);
-        draw_centered(fb, 292, buf, COL_WARN, COL_BG, 1);
+        char raw[32];
+        char buf[64];
+        snprintf(raw, sizeof(raw), "待处理 %d", v->counts.pending);
+        widen_ascii_digits(buf, sizeof(buf), raw);
+        draw_centered(fb, 61, buf, COL_WARN, COL_BG, 1);
+    }
+
+    // Pet: the GUI's animated asset when the host has delivered it, otherwise
+    // the built-in vector mascot. The bottom edge stays at y=258 while the top
+    // moves up, so the larger pet grows into the space freed above it.
+    if (buddy_pet_ready()) {
+        buddy_pet_lock();
+        const int count = buddy_pet_frame_count();
+        const int frame_ms = buddy_pet_frame_ms();
+        const int index = count > 0 ? (int)((now_ms / frame_ms) % count) : 0;
+        const uint8_t *frame = buddy_pet_frame(index);
+        if (frame) {
+            draw_pet_asset_frame(fb, W / 2, 170, 176, frame);
+        } else {
+            draw_pet(fb, W / 2, 170, now_ms);
+        }
+        buddy_pet_unlock();
+    } else {
+        draw_pet(fb, W / 2, 170, now_ms);
+    }
+
+    // Weather and location live on two bottom arcs, leaving the centre free
+    // for the pet.
+    if (v->has_weather) {
+        char wx[96];
+        snprintf(wx, sizeof(wx), "%s%s %d°C", v->weather_stale ? "旧 " : "",
+                 v->weather_summary, v->weather_temp);
+        char wx_fit[96];
+        fit_text_arc(wx_fit, sizeof(wx_fit), wx, 170, true);
+        draw_arc_text_bottom(fb, wx_fit, 142, COL_ACCENT);
+        if (v->weather_location[0]) {
+            char loc[64];
+            fit_text_arc(loc, sizeof(loc), v->weather_location, 150, true);
+            draw_arc_text_bottom(fb, loc, 112, COL_MUTED);
+        }
+    } else {
+        draw_arc_text_bottom(fb, "正在获取天气", 142, COL_MUTED);
+    }
+}
+
+/** Deterministic hash used by the firework particles (no RNG state). */
+static float fw_rand(uint32_t seed) {
+    seed ^= seed >> 16;
+    seed *= 0x7feb352du;
+    seed ^= seed >> 15;
+    seed *= 0x846ca68bu;
+    seed ^= seed >> 16;
+    return (float)(seed & 0xFFFFu) / 65535.0f;
+}
+
+/** Scales a byte-swapped RGB565 colour toward black. */
+static uint16_t dim_swapped(uint16_t swapped, int factor) {
+    if (factor <= 0) return COL_BG;
+    if (factor > 255) factor = 255;
+    const uint16_t v = buddy_color_swap(swapped);
+    int r = (v >> 11) & 0x1F;
+    int g = (v >> 5) & 0x3F;
+    int b = v & 0x1F;
+    r = r * factor / 255;
+    g = g * factor / 255;
+    b = b * factor / 255;
+    return buddy_color_swap((uint16_t)((r << 11) | (g << 5) | b));
+}
+
+/** Bresenham spark trail between two particle positions. */
+static void draw_trail(uint16_t *fb, int x0, int y0, int x1, int y1, uint16_t color) {
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = y1 > y0 ? y0 - y1 : y1 - y0;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (int guard = 0; guard < 400; ++guard) {
+        put_px(fb, x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        const int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
     }
 }
 
@@ -364,50 +596,151 @@ static void draw_celebrate_page(uint16_t *fb, const buddy_view_t *v, int64_t now
     if (elapsed < 0) return;
     if (elapsed > (int64_t)v->celebrate_seconds * 1000) return;
 
-    // Staggered rockets: each rises for 600ms, then bursts into 14 particles.
-    // The schedule covers the whole 5s page with six launches.
+    // Rich firework field: 12 shells of five shapes, each with a rising
+    // rocket, a burst flash, a shock ring and 16-34 particles with drag,
+    // gravity, spark trails and a decaying tail.
     typedef struct {
         int x;
         int y;
         int launch_ms;
-        uint16_t color;
-    } rocket_t;
-    // The colour macros expand to buddy_color(...) calls, so the palette is
-    // copied into locals before the stack array is initialized.
+        uint8_t type;
+        uint8_t palette;
+    } shell_t;
+    enum { FW_PEONY, FW_RING, FW_WILLOW, FW_PALM, FW_DOUBLE };
     const uint16_t c_accent = COL_ACCENT;
     const uint16_t c_success = COL_SUCCESS;
     const uint16_t c_warn = COL_WARN;
     const uint16_t c_cheek = COL_PET_CHEEK;
-    const rocket_t rockets[] = {
-        {110, 150, 0, c_accent},      {250, 130, 450, c_success},
-        {180, 100, 900, c_warn},      {130, 190, 1700, c_cheek},
-        {240, 170, 2150, c_accent},   {180, 140, 2600, c_success},
+    const uint16_t c_text = COL_TEXT;
+    const uint16_t palettes[3][4] = {
+        {c_accent, c_text, c_success, c_warn},
+        {c_cheek, c_warn, c_text, c_accent},
+        {c_success, c_accent, c_text, c_cheek},
     };
-    for (size_t i = 0; i < sizeof(rockets) / sizeof(rockets[0]); ++i) {
-        const rocket_t *r = &rockets[i];
-        const int64_t e = elapsed - r->launch_ms;
+    static const shell_t shells[] = {
+        {112, 148, 0, FW_PEONY, 0},     {248, 126, 320, FW_RING, 1},
+        {180, 96, 640, FW_PEONY, 2},    {92, 196, 1150, FW_WILLOW, 1},
+        {268, 184, 1420, FW_PALM, 0},   {180, 150, 1720, FW_RING, 2},
+        {136, 108, 2300, FW_DOUBLE, 0}, {236, 140, 2520, FW_PEONY, 1},
+        {180, 112, 2920, FW_PALM, 2},   {108, 172, 3320, FW_WILLOW, 0},
+        {252, 168, 3540, FW_RING, 1},   {180, 124, 3840, FW_DOUBLE, 2},
+    };
+
+    // Sparse twinkling star field behind the shells.
+    for (int star = 0; star < 34; ++star) {
+        const int sx = 20 + (int)(fw_rand(0x51u + (uint32_t)star * 7u) * (float)(W - 40));
+        const int sy = 16 + (int)(fw_rand(0x9Au + (uint32_t)star * 13u) * (float)(H - 32));
+        if (((star + (int)(now_ms / 350)) % 7) == 0) continue;
+        put_px(fb, sx, sy, dim_swapped(c_text, 30 + (star * 11) % 45));
+    }
+
+    for (size_t si = 0; si < sizeof(shells) / sizeof(shells[0]); ++si) {
+        const shell_t *shell = &shells[si];
+        const int64_t e = elapsed - shell->launch_ms;
         if (e < 0) continue;
-        if (e < 600) {
-            const float k = (float)e / 600.0f;
-            const int y = 320 - (int)((320 - r->y) * k);
-            fill_rect(fb, r->x - 1, y, 3, 10, r->color);
-            fill_rect(fb, r->x, y + 10, 1, 8, COL_MUTED);
+        const int rise_ms = 500;
+        if (e < rise_ms) {
+            const float k = (float)e / (float)rise_ms;
+            const int y = 320 - (int)((320 - shell->y) * k);
+            fill_rect(fb, shell->x - 1, y, 3, 7, c_text);
+            put_px(fb, shell->x, y - 2, c_warn);
+            for (int tail = 1; tail <= 3; ++tail) {
+                const int ty = y + tail * 9;
+                if (ty < H) {
+                    put_px(fb, shell->x + (tail & 1), ty,
+                           dim_swapped(c_warn, 150 - tail * 35));
+                }
+            }
             continue;
         }
-        const int pe = (int)(e - 600);
-        if (pe > 1300) continue;
-        if (pe < 160) {
-            int radius = 10 - pe / 20;
-            if (radius < 2) radius = 2;
-            fill_circle(fb, r->x, r->y, radius, COL_TEXT);
+
+        const int pe = (int)(e - rise_ms);
+        int life = 1300;
+        if (shell->type == FW_WILLOW) life = 1600;
+        else if (shell->type == FW_PALM) life = 1400;
+        else if (shell->type == FW_RING) life = 1200;
+        if (pe > life) continue;
+
+        if (pe < 140) {
+            const int radius = 16 - pe / 12;
+            if (radius > 0) {
+                fill_circle(fb, shell->x, shell->y, radius,
+                            dim_swapped(c_text, 255 - pe));
+            }
         }
-        for (int p = 0; p < 14; ++p) {
-            const float ang = (float)p * 6.2831853f / 14.0f;
-            const float speed = 40.0f + (float)(p % 4) * 14.0f;
-            const float t = (float)pe / 1000.0f;
-            const int x = r->x + (int)(cosf(ang) * speed * t);
-            const int y = r->y + (int)(sinf(ang) * speed * t + 0.5f * 90.0f * t * t);
-            fill_circle(fb, x, y, pe > 900 ? 1 : 2, r->color);
+        if (pe < 320) {
+            const int rr = 10 + pe / 4;
+            const int inner = rr > 3 ? rr - 3 : 1;
+            fill_ring(fb, shell->x, shell->y, rr, inner,
+                      dim_swapped(palettes[shell->palette][0], 220 - pe / 2));
+        }
+
+        int count = 30;
+        if (shell->type == FW_WILLOW) count = 22;
+        else if (shell->type == FW_PALM) count = 16;
+        else if (shell->type == FW_RING) count = 24;
+        else if (shell->type == FW_DOUBLE) count = 34;
+
+        const float t = (float)pe / 1000.0f;
+        const float drag = shell->type == FW_WILLOW ? 1.2f : 2.0f;
+        const float travel = (1.0f - expf(-drag * t)) / drag;
+        const float tp = t > 0.045f ? t - 0.045f : 0.0f;
+        const float travel_prev = (1.0f - expf(-drag * tp)) / drag;
+        const float gravity = shell->type == FW_WILLOW ? 150.0f
+                              : (shell->type == FW_PALM ? 100.0f : 78.0f);
+        const float life_f = 1.0f - (float)pe / (float)life;
+
+        for (int p = 0; p < count; ++p) {
+            const uint32_t seed = (uint32_t)(si * 97u + (uint32_t)p * 13u +
+                                             (uint32_t)shell->type * 7u + 1u);
+            const float r1 = fw_rand(seed);
+            const float r2 = fw_rand(seed ^ 0x5bd1e995u);
+            float ang;
+            float speed;
+            if (shell->type == FW_RING) {
+                ang = (float)p * 6.2831853f / (float)count;
+                speed = 64.0f + r1 * 8.0f;
+            } else if (shell->type == FW_PALM) {
+                ang = -1.5707963f + (r1 - 0.5f) * 0.7f;
+                speed = 90.0f + r2 * 45.0f;
+            } else if (shell->type == FW_WILLOW) {
+                ang = (float)p * 6.2831853f / (float)count + (r1 - 0.5f) * 0.25f;
+                speed = 38.0f + r2 * 18.0f;
+            } else if (shell->type == FW_DOUBLE) {
+                const int half = count / 2;
+                ang = (float)(p % half) * 6.2831853f / (float)half;
+                speed = (p < half ? 48.0f : 82.0f) + r1 * 6.0f;
+            } else {
+                ang = (float)p * 6.2831853f / (float)count + (r1 - 0.5f) * 0.5f;
+                speed = 55.0f + r2 * 45.0f;
+            }
+            const int x = shell->x + (int)(cosf(ang) * speed * travel);
+            const int y = shell->y +
+                          (int)(sinf(ang) * speed * travel + 0.5f * gravity * t * t);
+            uint16_t color = palettes[shell->palette][p & 3];
+            if (life_f < 0.35f) color = dim_swapped(color, (int)(life_f * 255.0f));
+            if (shell->type == FW_WILLOW || shell->type == FW_PALM) {
+                const int px0 = shell->x + (int)(cosf(ang) * speed * travel_prev);
+                const int py0 = shell->y +
+                                (int)(sinf(ang) * speed * travel_prev +
+                                      0.5f * gravity * tp * tp);
+                draw_trail(fb, px0, py0, x, y, dim_swapped(color, 120));
+            }
+            fill_circle(fb, x, y, life_f > 0.55f ? 2 : 1, color);
+            if (life_f > 0.4f && ((p + (int)(now_ms / 90)) % 5) == 0) {
+                put_px(fb, x + 1, y - 1, c_text);
+            }
+        }
+
+        if (pe > 550 && pe < 950) {
+            for (int crack = 0; crack < 8; ++crack) {
+                const uint32_t seed = (uint32_t)(si * 31u + (uint32_t)crack * 17u + 5u);
+                const float ra = fw_rand(seed) * 6.2831853f;
+                const float rd = 18.0f + fw_rand(seed ^ 0xA5u) * 34.0f;
+                const int cx2 = shell->x + (int)(cosf(ra) * rd);
+                const int cy2 = shell->y + (int)(sinf(ra) * rd);
+                put_px(fb, cx2, cy2, dim_swapped(c_text, 255 - (pe - 550) / 2));
+            }
         }
     }
 

@@ -1461,6 +1461,49 @@ func TestGetCodingWorkbenchDirectoryListsExplicitReadOnlyCache(t *testing.T) {
 	}
 }
 
+func TestGetCodingWorkbenchDirectoryHydratesStaleReadOnlyCache(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{
+		acquired: cloudWorkspaceAcquiredGranted,
+		revision: "rev-lazy",
+		entries: []cloudWorkspaceManifestEntry{{
+			Path: "notes.md", SHA256: strings.Repeat("a", 64), Size: 5,
+		}},
+	}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	t.Cleanup(resetCloudWorkspaceMounts)
+	// A normal shutdown removes the isolated read-only instance directory, but
+	// a restored tab keeps pointing at that old path.
+	stale := filepath.Join(app.GetDataDir(), "cloud-workspaces-readonly", app.cloudWorkspaceTenantID(), "cws_lazy", "cwi_old")
+	if cloudWorkspaceDirExists(stale) {
+		t.Fatalf("stale path unexpectedly exists: %s", stale)
+	}
+	listed, err := app.GetCodingWorkbenchDirectory(stale, "")
+	if err != nil {
+		t.Fatalf("list stale read-only cache: %v", err)
+	}
+	if !codingWorkbenchEntriesContain(listed.Entries, "notes.md") {
+		t.Fatalf("hydrated listing = %+v", listed.Entries)
+	}
+	if cloudWorkspaceDirExists(stale) {
+		t.Fatal("hydration must create the current instance dir, not the stale one")
+	}
+	hub.mu.Lock()
+	firstGets := hub.manifestGets
+	hub.mu.Unlock()
+	if firstGets == 0 {
+		t.Fatal("hydration must fetch the remote manifest once")
+	}
+	if _, err := app.GetCodingWorkbenchDirectory(stale, ""); err != nil {
+		t.Fatalf("list stale read-only cache again: %v", err)
+	}
+	hub.mu.Lock()
+	secondGets := hub.manifestGets
+	hub.mu.Unlock()
+	if secondGets != firstGets {
+		t.Fatalf("second listing must reuse the held mount, manifest GETs %d -> %d", firstGets, secondGets)
+	}
+}
+
 func TestDeleteCodingWorkbenchEntryAcquiresLeaseForBrowseCache(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, revision: "rev-browse"}
 	app := newCloudWorkspaceMountTestApp(t, hub)

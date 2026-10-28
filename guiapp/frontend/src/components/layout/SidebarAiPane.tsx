@@ -86,7 +86,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
         mode?: 'coding_dev' | 'remote_coding_dev',
         remote?: { host: string; port: number; user: string; password: string; workDir: string },
         workspaceId?: string,
-    ) => Promise<void> | void;
+    ) => Promise<{ projectPath?: string } | void> | void;
     /** Expert-task creation path used by the chat task type in the create dialog. */
     onCreateExpertTask?: (expert: ExpertDefinition, options?: LatexExpertTaskOptions) => Promise<void> | void;
     refreshTasks: () => void;

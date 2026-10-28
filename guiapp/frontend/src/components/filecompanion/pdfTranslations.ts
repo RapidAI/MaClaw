@@ -14,6 +14,10 @@ export type PdfTranslationPart = { page: number; rects: PdfMarkRect[] };
 
 export type PdfTranslationPlace = { x: number; y: number; above?: boolean };
 
+// A resized card's outer size, as a fraction of the rendered page. Fractions
+// keep the box proportional when the reader zooms or the window changes.
+export type PdfTranslationSize = { w: number; h: number };
+
 export type PdfTranslation = {
     id: string;
     text: string;
@@ -21,6 +25,13 @@ export type PdfTranslation = {
     parts: PdfTranslationPart[];
     clipped?: boolean;
     place?: PdfTranslationPlace;
+    size?: PdfTranslationSize;
+    // An annotation is a reader's own note on the selection, displayed in the
+    // same card as a translation. The note body is stored in translation.
+    kind?: "annotation";
+    // shared marks an annotation that came from the host's project. A later
+    // host sync replaces exactly these; a reader's own note is kept local.
+    shared?: boolean;
 };
 
 // A draft is the in-flight request. The PDF reader remounts when the tab
@@ -113,6 +124,28 @@ export function subscribePdfTranslations(listener: (key: string) => void): () =>
     };
 }
 
+// A reader's own annotation. The companion window listens and pushes the
+// project to shares this document hosts; received annotations never announce.
+export const PDF_ANNOTATIONS_CHANGED_EVENT = "maclaw:companion-pdf-annotations-changed";
+
+export function notifyPdfAnnotationsChanged(path: string): void {
+    if (!path) return;
+    try {
+        window.dispatchEvent(new CustomEvent(PDF_ANNOTATIONS_CHANGED_EVENT, { detail: { path } }));
+    } catch {
+        // A non-browser host has no event bus.
+    }
+}
+
+function oneSize(value: unknown): PdfTranslationSize | null {
+    if (!value || typeof value !== "object") return null;
+    const raw = value as { w?: unknown; h?: unknown };
+    const w = Number(raw.w);
+    const h = Number(raw.h);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 0.02 || h < 0.02) return null;
+    return { w: Math.min(1, w), h: Math.min(1, h) };
+}
+
 function clipChars(text: string, limit: number): string {
     const chars = Array.from(text);
     if (chars.length <= limit) return text;
@@ -137,7 +170,7 @@ function oneRect(value: unknown): PdfMarkRect | null {
 
 function oneTranslation(value: unknown): PdfTranslation | null {
     if (!value || typeof value !== "object") return null;
-    const raw = value as { id?: unknown; text?: unknown; translation?: unknown; parts?: unknown; clipped?: unknown; place?: unknown };
+    const raw = value as { id?: unknown; text?: unknown; translation?: unknown; parts?: unknown; clipped?: unknown; place?: unknown; size?: unknown; kind?: unknown; shared?: unknown };
     const id = String(raw.id || "").trim().slice(0, 80);
     const text = clipChars(String(raw.text || "").replace(/\s+/g, " ").trim(), MAX_SOURCE);
     const translation = clipChars(String(raw.translation || "").trim(), MAX_TRANSLATION);
@@ -159,7 +192,10 @@ function oneTranslation(value: unknown): PdfTranslation | null {
     }
     if (parts.length === 0) return null;
     const place = onePlace(raw.place);
-    const kept = { id, text, translation, parts, ...(place ? { place } : {}) };
+    const size = oneSize(raw.size);
+    const kept: PdfTranslation = { id, text, translation, parts, ...(place ? { place } : {}), ...(size ? { size } : {}) };
+    if (raw.kind === "annotation") kept.kind = "annotation";
+    if (raw.shared === true) kept.shared = true;
     return raw.clipped === true ? { ...kept, clipped: true } : kept;
 }
 
@@ -187,6 +223,12 @@ export function loadPdfTranslations(path: string): PdfTranslation[] {
     const held = fallback.get(key);
     if (held) return held;
     return normalizePdfTranslations(store[key]);
+}
+
+// Only the host's annotations travel in a share project. Translations are
+// generated answers for this reader and stay local.
+export function loadPdfAnnotations(path: string): PdfTranslation[] {
+    return loadPdfTranslations(path).filter((item) => item.kind === "annotation");
 }
 
 export function savePdfTranslations(path: string, value: unknown): PdfTranslation[] {

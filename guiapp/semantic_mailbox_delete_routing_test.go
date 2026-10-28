@@ -140,6 +140,62 @@ func TestSchedulePayloadPlanningKeepsTheGoverningAct(t *testing.T) {
 	}
 }
 
+// A read-only mailbox turn that the user then authorizes for deletion reaches
+// delete through a petition. Production 2026-10-27: the plan stayed on
+// mailbox_query, the model called mailbox_delete, the unrendered fence asked
+// for a petition, and the name was absent from the petition inventory — the
+// turn answered that delete did not exist while the user was authorizing it.
+func TestMailboxDeleteIsPetitionableFromAReadSurface(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	registerBuiltinTools(h.registry, h)
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-mail-del-petition", "授权删除", "desktop", "root-mail-del-petition", "turn-mail-del-petition",
+		&intent.ClassificationResult{Primary: intent.LabelMailboxRead, Confidence: .92},
+	)
+	if err != nil || !handled || surface == nil || len(defs) == 0 {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	closeSemanticSurface(t, surface)
+	if semanticGrantNameForAdapter(surface, semanticTrustedMailboxDeleteAdapter) != "" {
+		t.Fatal("fixture must start without a delete grant")
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop"}
+	if got := semanticToolsSearchStatus(cb, "mailbox_delete"); got != "[可请愿：直接调用一次]" {
+		t.Fatalf("discovery status=%s", got)
+	}
+	granted, message := cb.PetitionToolCall("mailbox_delete")
+	if !granted || !strings.Contains(message, "mailbox_delete") {
+		t.Fatalf("granted=%v message=%q", granted, message)
+	}
+	if cb.semanticSurface == surface {
+		t.Fatal("petition must publish a child revision")
+	}
+	if !planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityMessageReadMailbox, tool.CapabilityMessageDeleteMailbox) {
+		t.Fatalf("child plan=%#v", cb.semanticSurface.plan.Selections)
+	}
+	if got := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedMailboxDeleteAdapter); got != "mailbox_delete" {
+		t.Fatalf("delete grant name=%q", got)
+	}
+	if cb.semanticSurface.executor == nil {
+		t.Fatal("child surface has no executor")
+	}
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("a delete petition must spend the effectful budget")
+	}
+	// The widened surface must be what the next request renders, not only a
+	// plan entry: otherwise the grant message would send the model back to a
+	// name that is still absent.
+	listed := false
+	for _, def := range cb.BuildToolsForModelRequest("授权删除", 1) {
+		if extractToolName(def) == "mailbox_delete" {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatal("next request surface omitted mailbox_delete")
+	}
+}
+
 func TestMailboxDeleteUtterancePlansFromASubFloorRead(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	registerBuiltinTools(h.registry, h)

@@ -2914,6 +2914,63 @@ describe('SidebarTaskManagement', () => {
         });
     });
 
+    it('reuses the managed execution directory when the source task has no working_dir tag', () => {
+        const seen: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                taskContextMenu: {
+                    x: 10,
+                    y: 20,
+                    projectPath: baseProject.project_path,
+                    name: '中国人奇强',
+                    pinned: false,
+                    tags: ['task_management', 'task_user_created'],
+                    executionDir: 'D:/data/tasks/renqiqiang-1793152750000000000/workspace',
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-new-task'));
+        } finally {
+            window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        }
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({
+            taskType: 'chat',
+            workspace: { kind: 'local', localPath: 'D:/data/tasks/renqiqiang-1793152750000000000/workspace' },
+        });
+    });
+
+    it('prefers the explicit working_dir tag over the managed execution directory', () => {
+        const seen: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                taskContextMenu: {
+                    x: 10,
+                    y: 20,
+                    projectPath: baseProject.project_path,
+                    name: '本地编程任务',
+                    pinned: false,
+                    tags: ['coding_dev'],
+                    workingDir: 'D:/work/coding-project',
+                    executionDir: 'D:/work/tasks/coding-project/workspace',
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-new-task'));
+        } finally {
+            window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+        }
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({
+            taskType: 'coding',
+            workspace: { kind: 'local', localPath: 'D:/work/coding-project' },
+        });
+    });
+
     it('prefills the new-task page with the expert and remote target from a task row', () => {
         const seen: Array<Record<string, unknown>> = [];
         const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
@@ -6760,5 +6817,18 @@ describe('task list folders', () => {
         expect(screen.queryByTestId('task-folder-archive')).toBeNull();
         expect(within(screen.getByTestId('task-folder-session')).getByText('Design a site')).toBeTruthy();
         expect(within(screen.getByTestId('task-folder-coding')).getByText('Coding feature')).toBeTruthy();
+    });
+
+    it('carries the managed execution directory into the row context menu', () => {
+        const setTaskContextMenu = vi.fn();
+        const sandboxTask = { ...chat, execution_dir: 'D:/work/tasks/chat/workspace' };
+        renderTaskManagement({ lang: 'zh', tasks: [sandboxTask], setTaskContextMenu });
+        const row = within(screen.getByTestId('task-folder-session')).getByText('Design a site').closest('.sidebar-task-row') as HTMLElement;
+        fireEvent.contextMenu(row, { clientX: 12, clientY: 16 });
+        expect(setTaskContextMenu).toHaveBeenCalledWith(expect.objectContaining({
+            projectPath: sandboxTask.project_path,
+            workingDir: undefined,
+            executionDir: 'D:/work/tasks/chat/workspace',
+        }));
     });
 });

@@ -8,10 +8,11 @@ idf_component_register(
          "buddy_touch.c"
          "buddy_i2c.c"
          "buddy_sound.c"
+         "buddy_pet.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_driver_i2c
              esp_lcd esp_lcd_st77916 esp_driver_usb_serial_jtag esp_driver_i2s
-             nvs_flash esp_timer esp_psram cjson
+             nvs_flash esp_timer esp_psram cjson mbedtls
 )
 
 # Packed 24x24 CJK fallback (U+4E00-U+9FFF) copied from iot-agentos, plus the

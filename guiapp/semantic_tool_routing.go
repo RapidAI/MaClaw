@@ -5349,6 +5349,18 @@ var semanticPetitionableCapabilities = map[string]tool.CapabilityID{
 	"database":            tool.CapabilityBusinessDataMIS,
 	"database_query":      tool.CapabilityBusinessDataRead,
 	"mailbox_query":       tool.CapabilityMessageReadMailbox,
+	// Mailbox mutations join the petition inventory because the planner can
+	// render all three from their rule labels and each carries its own
+	// deterministic gate: send and delete freeze a draft that only the user's
+	// approval turns into an external effect, while configure only writes the
+	// account the user supplied. Leaving them out stranded a read-only mailbox
+	// turn after the user authorized the action (production 2026-10-27: the
+	// model found mailbox_delete in the directory, called it, and the
+	// unrendered fence had no petition path — the turn answered "no delete
+	// tool" while the user was saying 授权删除).
+	"mailbox_send":      tool.CapabilityMessageSendMailbox,
+	"mailbox_delete":    tool.CapabilityMessageDeleteMailbox,
+	"mailbox_configure": tool.CapabilityMessageConfigureMailbox,
 }
 
 // semanticReadOnlyGovernedLabels are the rule labels whose templates carry no

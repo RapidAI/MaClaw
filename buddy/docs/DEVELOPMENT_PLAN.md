@@ -410,6 +410,19 @@ CONFIG_ESP_CONSOLE_NONE=y                 # USB 口只走协议
   - 设置面板新增音效区；Wails 绑定 `BuddyGetSoundConfig` /
     `BuddySetSoundConfig`，配置写入 `data/buddy.json`。
   - 单测覆盖协议校验与服务下发；固件体积 2.11MB（app 分区 58%）。
+  - **真机实测**：`hello` 上报 `sound_available=true`、`touch=true`；
+    待机↔任务切换与任务完成时设备日志均出现 `sound 1`；
+    `-celebrate-demo` 观察到 `celebrate` 页面并在 5 秒后回到 `standby`。
+- **待机页宠物与环形天气**：复用 GUI 的 `devicePetAssetForConfig` 渲染
+  8 帧 256px RGB565+A8，Go 端按 alpha 加权降到 128×128，经 `asset_chunk`
+  512B 分块下发；固件在 PSRAM 重组（8×49152B）、逐帧 CRC32 校验、450ms 播放。
+  传输中/失败时回退内置矢量宠物。
+  - 天气+温度画在底部外环（r=136），地点画在内环（r=112），字符按弧旋转；
+    宠物居中 156px，为动画留出中心空间。
+  - 设置面板新增「立即发送宠物」按钮（`BuddyRefreshPet`），换肤后可手动重发。
+- **烟花升级**：12 组烟花弹、5 种形态（牡丹/环状/垂柳/棕榈/双层），
+  每组 16–34 粒；带爆心闪光、扩散冲击环、重力+阻尼、拖尾与渐暗、
+  白点闪烁、余烬爆裂，并叠加稀疏星点背景。
 
 ### 9.2 实现偏差（有据可依）
 

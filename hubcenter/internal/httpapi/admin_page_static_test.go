@@ -120,7 +120,7 @@ func TestAdminFeatureIcons(t *testing.T) {
 		`item-title" data-icon="activity" id="routingDiagnosticsTitle"`,
 		`id="llmSubTabProviders" data-icon="spark"`,
 		`admin-responsive.css?v=token-bank-margin-cards-20261004-compact2`,
-		`pro-ui.css?v=feature-icons-20260828-9`,
+		`pro-ui.css?v=modern-polish-20261028-5`,
 	})
 	assertContainsAll(t, css, "hubcenter feature icons css", []string{
 		`--icon-cloud`,
@@ -658,7 +658,7 @@ func TestAdminPageEmbeddingModelRuntimeCard(t *testing.T) {
 		`embeddingRuntimeNeedsPoll`,
 		`st.downloading || st.warming`,
 		`waitEmbedder`,
-		`llmClassHeadViewVisible() && !!(data.ready) && !data.embedder_ready`,
+		`llmClassHeadViewVisible() && !!(data && data.ready) && !data.embedder_ready`,
 		`loadLLMEmbeddingModelRuntime({ silent: true })`,
 		`Sync it above before scoring`,
 	})

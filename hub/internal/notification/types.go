@@ -74,6 +74,15 @@ const (
 // the admin console excludes it.
 const SourceCompanionGroupInvite = "companion_group_invite"
 
+// SourceCompanionShare marks the delivery notice for a document shared with a
+// person or a reading group. SourceID is the share token.
+const SourceCompanionShare = "companion_share"
+
+// SourceCompanionHostTransfer is the actionable request to the nominated host.
+// SourceCompanionHostTransferNotice is the informational copy for participants.
+const SourceCompanionHostTransfer = "companion_host_transfer"
+const SourceCompanionHostTransferNotice = "companion_host_transfer_notice"
+
 // Notification is the core domain model for an admin notification.
 type Notification struct {
 	ID           string       `json:"id"`

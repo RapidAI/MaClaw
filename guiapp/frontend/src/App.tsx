@@ -3929,6 +3929,9 @@ function App() {
                     remotePort: mode === 'remote_coding_dev' ? remotePort : undefined,
                 },
             });
+            // Callers that must address the new task afterwards (a task
+            // transfer carries its chat onto this path) get the identity back.
+            return { projectPath: created.project_path };
         } catch (error) {
             console.error("CreateTask failed:", error);
             // Re-throw so the create dialog can surface the error (e.g. SSH connect failed).

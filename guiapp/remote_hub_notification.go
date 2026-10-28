@@ -34,6 +34,11 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		if isCompanionGroupInviteNotification(push.Notification.Source) {
 			go a.announceCompanionGroupInviteNotice(push.Notification.ID, push.Notification.SourceID, push.Notification.Content)
 		}
+		// A shared document uses the same OS channel: the bell is only visible
+		// on the assistant panel.
+		if isCompanionShareNotification(push.Notification.Source) || isCompanionHostTransferNotification(push.Notification.Source) {
+			go a.announceCompanionShareNotification(push.Notification.ID, push.Notification.Title, push.Notification.Content)
+		}
 		// Urgent notifications get an additional toast event.
 		if push.Notification.Priority == "urgent" {
 			emitNotificationFrontendEvent(a, "notification:urgent-toast", push.Notification)

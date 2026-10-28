@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { AdminNotification } from "./useNotifications";
+import { companionHostTransferToken, companionShareToken } from "./AssistantTitleBarNotifications.companionShare";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -18,6 +19,14 @@ export interface NotificationDetailProps {
   groupInviteHold?: string;
   groupInviteActionError?: string;
   groupInviteError?: string;
+  /** Opens the share delivered by this notice in the companion reader. */
+  onShareOpen?: (token: string) => void;
+  shareOpenBusy?: boolean;
+  shareOpenError?: string;
+  /** Accepts or declines a pending host transfer for this share. */
+  onHostTransfer?: (token: string, decision: "accept" | "decline") => void;
+  hostTransferBusy?: boolean;
+  hostTransferError?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,9 +72,17 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   groupInviteHold = "",
   groupInviteActionError = "",
   groupInviteError = "",
+  onShareOpen,
+  shareOpenBusy = false,
+  shareOpenError = "",
+  onHostTransfer,
+  hostTransferBusy = false,
+  hostTransferError = "",
 }) => {
   const isZh = lang?.startsWith("zh");
   const catLabel = CATEGORY_LABELS[notification.category] || CATEGORY_LABELS.custom;
+  const shareToken = companionShareToken(notification);
+  const hostTransferToken = companionHostTransferToken(notification);
 
   const formattedDate = formatDate(notification.created_at, lang);
   const titleText = (notification.title || "").trim();
@@ -129,7 +146,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           </span>
         </div>
 
-        {notification.groupInviteId && bodyText ? (
+        {(notification.groupInviteId || shareToken || hostTransferToken) && bodyText ? (
           <div data-testid="notification-detail-content" className="ndet-invite-body">
             {bodyText}
           </div>
@@ -195,6 +212,52 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
         ) : null}
         {notification.groupInviteId && groupInviteError ? (
           <p className="ndet-invite-error" data-testid="notification-group-invite-error" role="status">{groupInviteError}</p>
+        ) : null}
+        {shareToken && onShareOpen ? (
+          <div className="ndet-invite-actions">
+            <button
+              type="button"
+              className="ndet-invite-accept"
+              data-testid="notification-share-open"
+              disabled={shareOpenBusy}
+              aria-busy={shareOpenBusy}
+              onClick={() => onShareOpen?.(shareToken)}
+            >
+              {shareOpenBusy
+                ? localizeText(lang, "Opening…", "打开中…", "開啟中…")
+                : localizeText(lang, "Open", "打开", "開啟")}
+            </button>
+          </div>
+        ) : null}
+        {shareToken && shareOpenError.trim() ? (
+          <p className="ndet-invite-error" data-testid="notification-share-error" role="alert">{shareOpenError.trim()}</p>
+        ) : null}
+        {hostTransferToken && onHostTransfer ? (
+          <div className="ndet-invite-actions">
+            <button
+              type="button"
+              className="ndet-invite-accept"
+              data-testid="notification-host-transfer-accept"
+              disabled={hostTransferBusy}
+              aria-busy={hostTransferBusy}
+              onClick={() => onHostTransfer(hostTransferToken, "accept")}
+            >
+              {localizeText(lang, "Accept", "接受", "接受")}
+            </button>
+            <button
+              type="button"
+              className="ndet-invite-decline"
+              data-testid="notification-host-transfer-decline"
+              disabled={hostTransferBusy}
+              aria-busy={hostTransferBusy}
+              onClick={() => onHostTransfer(hostTransferToken, "decline")}
+            >
+              {localizeText(lang, "Decline", "拒绝", "拒絕")}
+            </button>
+          </div>
+        ) : null}
+        {hostTransferToken && hostTransferError.trim() ? (
+          <p className="ndet-invite-error" data-testid="notification-host-transfer-error" role="alert">{hostTransferError.trim()}</p>
         ) : null}
       </div>
     </div>

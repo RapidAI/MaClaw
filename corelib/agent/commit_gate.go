@@ -69,10 +69,11 @@ type CommitGateHost interface {
 	CommitPrepareAsk(fingerprint string) string
 }
 
-// CommitAskResolver is optional. Coding hosts implement it so the person
-// answers inside the same tool call: allow runs that call, deny is remembered.
-// A false result stores nothing. Desktop does not implement this and keeps
-// the ask_user pause. The model cannot supply the decision.
+// CommitAskResolver is optional. A host with an interactive surface implements
+// it so the person answers inside the same tool call: allow runs that call,
+// deny is remembered. A false result stores nothing and lets the gate fall
+// through to the ask_user pause, which is what a host with no dialog (IM,
+// scheduled, headless) still needs. The model cannot supply the decision.
 // subject is the call on the card. It is not part of the fingerprint.
 type CommitAskResolver interface {
 	ResolveCommitAsk(toolName, fingerprint, subject string) (CommitDecision, bool)
@@ -326,9 +327,11 @@ func commitUnapprovedResult(toolName string) ToolExecutionResult {
 }
 
 // CommitAskQuestion is the sentence a person sees before a human-class call.
-// The name is the tool name, not a description of the command.
+// The name is the tool name, not a description of the command. It states that
+// nothing has run yet; the caller supplies the choices (buttons in the desktop
+// dialog, numbered options on a text channel).
 func CommitAskQuestion(toolName string) string {
-	return "执行 " + strings.TrimSpace(toolName) + " 缺少人的批准，这一步先不执行。要允许这一形状的调用吗？"
+	return "执行 " + strings.TrimSpace(toolName) + " 需要你的确认，这一步还没有执行。"
 }
 
 // CommitAskSubject is the call shown beside that sentence. It is not part of

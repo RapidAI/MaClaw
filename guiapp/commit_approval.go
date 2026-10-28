@@ -268,8 +268,8 @@ func codingContractGoal(title, description string) string {
 }
 
 const (
-	commitApprovalAllowHint = "用户允许了这一形状的调用"
-	commitApprovalDenyHint  = "用户拒绝了这一形状的调用"
+	commitApprovalAllowHint = "用户已批准这类调用"
+	commitApprovalDenyHint  = "用户已拒绝这类调用"
 )
 
 // commitApprovalResumePlan keeps a card answer on the paused external call.
@@ -417,6 +417,75 @@ func (c *sharedAgentLoopCallbacks) CommitPrepareAsk(fingerprint string) string {
 		return ""
 	}
 	return prepareCommitAskForApp(commitAppForHandler(c.handler), c.CommitTaskKey(), fingerprint)
+}
+
+// desktopApprovalDialogAvailable reports whether this process can show the
+// approval dialog the panel renders for "subagent-scope-approval". Without the
+// frontend event bus the dialog can never appear, and a resolver that blocked
+// on it would hang the turn until the task was cancelled.
+var desktopApprovalDialogAvailable = func(app *App) bool {
+	return app != nil && app.hasWailsEventsContext()
+}
+
+// ResolveCommitAsk answers a human-class call in the tool call that was
+// blocked, exactly like the coding hosts. The person's allow runs this call
+// with the arguments the model already supplied; nothing is deferred to a
+// later model turn. The ask_user card cannot do that: it pauses the loop, the
+// resumed turn re-plans, and the approved tool name may no longer be on the
+// surface. A turn with no desktop dialog (IM, scheduled, headless) keeps the
+// card by returning false.
+func (c *sharedAgentLoopCallbacks) ResolveCommitAsk(toolName, fingerprint, subject string) (agent.CommitDecision, bool) {
+	if c == nil || c.handler == nil || c.handler.app == nil || c.loopCtx == nil {
+		return "", false
+	}
+	// Only the desktop chat tab owns the panel dialog. A VE group executor, an
+	// IM channel, or a scheduled turn has its own surface (or none) and keeps
+	// the ask card.
+	if !strings.EqualFold(strings.TrimSpace(c.platform), desktopPlatform) {
+		return "", false
+	}
+	if c.handler.unattendedTurn(c.userID) {
+		return "", false
+	}
+	if !desktopApprovalDialogAvailable(c.handler.app) {
+		return "", false
+	}
+	return waitCommitShapeApproval(
+		c.handler,
+		nil,
+		c.loopCtx,
+		c.onProgress,
+		toolName,
+		c.CommitWorkspaceRoot(),
+		subject,
+		fingerprint,
+	)
+}
+
+// CommitFullControlGranted reads the desktop task tab's 完全控制 tier the same
+// way the coding hosts do. The tier authorizes this whole task tab, not only
+// commands, so an external send under it must not open a second card. A stored
+// deny still refuses the call.
+func (c *sharedAgentLoopCallbacks) CommitFullControlGranted() bool {
+	if c == nil || c.handler == nil {
+		return false
+	}
+	// The tier is a desktop composer choice. An IM turn has no tab to read, and
+	// the app-wide coding full-access switch is not an approval for its
+	// outbound sends.
+	if !strings.EqualFold(strings.TrimSpace(c.platform), desktopPlatform) {
+		return false
+	}
+	return codingTaskFullControlGranted(c.handler, c.userID)
+}
+
+// CommitNoteFullControl records a human-class call the full-control tier let
+// through, matching the audit a person's allow answer writes.
+func (c *sharedAgentLoopCallbacks) CommitNoteFullControl(toolName, fingerprint string) {
+	if c == nil || c.handler == nil {
+		return
+	}
+	noteCommitFullControlAudit(c.handler, toolName, fingerprint, c.CommitWorkspaceRoot())
 }
 
 func (c *sharedAgentLoopCallbacks) IterationContract() (string, []string, []string) {
@@ -700,10 +769,12 @@ func waitCommitShapeApproval(handler *IMMessageHandler, execution context.Contex
 		recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
 	case <-cancelC:
 		pendingScopeApprovals.Delete(approvalID)
+		emitScopeApprovalResolvedEvent(handler.app, approvalID)
 		recordScopeApprovalAudit(handler, approvalID, req, ScopeApprovalDeny, "cancelled")
 		return "", false
 	case <-execDone:
 		pendingScopeApprovals.Delete(approvalID)
+		emitScopeApprovalResolvedEvent(handler.app, approvalID)
 		recordScopeApprovalAudit(handler, approvalID, req, ScopeApprovalDeny, "cancelled")
 		return "", false
 	}

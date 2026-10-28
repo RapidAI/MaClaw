@@ -289,7 +289,7 @@
   }
 
   // The check-desktop list is the intersection the backend already computed:
-  // a user 开通范围 covers, and a Docker assignment (user, department chain,
+  // a user enabled scope covers, and a Docker assignment (user, department chain,
   // or everyone) that a desktop call can resolve. Anyone else is omitted.
   function fillUserSelect() {
     var select = byID('desktopUser');

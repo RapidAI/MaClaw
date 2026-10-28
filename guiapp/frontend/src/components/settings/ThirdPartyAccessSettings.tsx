@@ -204,6 +204,26 @@ const welcomeTextCapacityHint = (text: string, isZh: boolean) => {
     return isZh ? `${characters}/80 字` : `${characters}/80 characters`;
 };
 
+// Modern track/thumb switch shell. The input stays the accessible checkbox;
+// the track is presentational so :checked styling works in WKWebView too.
+const HardwareSwitch = ({ ariaLabel, label, checked, disabled, onChange }: {
+    ariaLabel: string;
+    label?: string;
+    checked: boolean;
+    disabled: boolean;
+    onChange: (next: boolean) => void;
+}) => <label className="im-settings-hardware__switch">
+    <input
+        type="checkbox"
+        aria-label={ariaLabel}
+        disabled={disabled}
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+    />
+    <span className="im-settings-hardware__switch-track" aria-hidden="true" />
+    {label ? <span className="im-settings-hardware__switch-text">{label}</span> : null}
+</label>;
+
 export const ThirdPartyAccessSettings = ({
     config,
     setConfig,
@@ -1278,58 +1298,72 @@ export const ThirdPartyAccessSettings = ({
         </>}
 
 		{hardwareOnly && <div className="im-settings-hardware" aria-label={isZh ? '硬件配置' : 'Hardware configuration'} aria-busy={settingsBusy}>
-            <div className="im-settings-hardware__heading">
-                <div>
+            <header className="im-settings-hardware__heading">
+                <span className="im-settings-hardware__heading-badge" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" /><path d="M6.5 1.75v2.75M9.5 1.75v2.75M6.5 11.5v2.75M9.5 11.5v2.75M1.75 6.5h2.75M1.75 9.5h2.75M11.5 6.5h2.75M11.5 9.5h2.75" /></svg>
+                </span>
+                <div className="im-settings-hardware__heading-text">
                     <strong>{isZh ? '硬件配置' : 'Hardware configuration'}</strong>
                     <span>{isZh ? '玛卡龙 ESP32 的配对、欢迎音频与扬声器设置。' : 'Pairing, welcome audio, and speaker settings for Macaron ESP32.'}</span>
                 </div>
-                <label className="im-settings-toggle">
-                    <input type="checkbox" aria-label={isZh ? '启用硬件' : 'Enable hardware'} disabled={settingsBusy} checked={hardwareEnabled} onChange={(e) => void changeHardwareEnabled(e.target.checked)} />
-                    <span>{isZh ? '启用硬件' : 'Enable hardware'}</span>
-                </label>
-            </div>
+                <HardwareSwitch
+                    ariaLabel={isZh ? '启用硬件' : 'Enable hardware'}
+                    label={isZh ? '启用硬件' : 'Enable hardware'}
+                    disabled={settingsBusy}
+                    checked={hardwareEnabled}
+                    onChange={(next) => void changeHardwareEnabled(next)}
+                />
+            </header>
             <p className="im-settings-hardware__mode-note">
                 {isZh ? '硬件连接由系统通过 Hub 管理，不会修改第三方接入的模式或 Token。' : 'Hardware connections are system-managed through Hub and do not change the IM gateway mode or token.'}
             </p>
-			<label className="im-settings-toggle im-settings-hardware__custom-pets">
-				<input
-					type="checkbox"
-					aria-label={isZh ? '允许个性宠物' : 'Allow individual pets'}
-					disabled={settingsBusy}
-					checked={allowCustomHardwarePets}
-					onChange={(event) => void changeAllowCustomHardwarePets(event.target.checked)}
-				/>
-				<span>{isZh ? '允许个性宠物' : 'Allow individual pets'}</span>
-				<small>{isZh ? '开启后可为每台硬件单独选择宠物；关闭时全部跟随系统宠物设置。' : 'When enabled, each device can use its own pet. Otherwise all devices follow the system pet setting.'}</small>
-			</label>
 
-            <div className="im-settings-hardware__weather">
-                <div>
-                    <label htmlFor="hardware-weather-city">{textForLang(lang, 'Hardware weather city', '硬件天气城市', '硬體天氣城市')}</label>
-                    <small>{textForLang(lang, 'Leave blank to detect from the desktop network', '留空时按电脑当前网络位置自动识别', '留空時按電腦目前網路位置自動辨識')}</small>
-                </div>
-                <div className="im-settings-hardware__weather-controls">
-                    <input
-                        id="hardware-weather-city"
-                        type="text"
-                        value={ambientCityDraft !== '' ? ambientCityDraft : (detectedAmbientCity || '')}
-                        disabled={ambientRefreshState === 'refreshing'}
-                        maxLength={32}
-                        placeholder={textForLang(lang, 'e.g. Shanghai', '例如：上海', '例如：上海')}
-                        onChange={(event) => changeAmbientCity(event.target.value)}
+            <div className="im-settings-hardware__preferences">
+                <div className="im-settings-hardware__preference">
+                    <div className="im-settings-hardware__preference-text">
+                        <span>{isZh ? '允许个性宠物' : 'Allow individual pets'}</span>
+                        <small>{isZh ? '开启后可为每台硬件单独选择宠物；关闭时全部跟随系统宠物设置。' : 'When enabled, each device can use its own pet. Otherwise all devices follow the system pet setting.'}</small>
+                    </div>
+                    <HardwareSwitch
+                        ariaLabel={isZh ? '允许个性宠物' : 'Allow individual pets'}
+                        disabled={settingsBusy}
+                        checked={allowCustomHardwarePets}
+                        onChange={(next) => void changeAllowCustomHardwarePets(next)}
                     />
-                    <button type="button" className="im-settings-button" disabled={ambientRefreshState === 'refreshing'} onClick={() => void refreshAmbientWeather()}>
-                        {ambientRefreshState === 'refreshing'
-                            ? textForLang(lang, 'Checking…', '查询中…', '查詢中…')
-                            : textForLang(lang, 'Sync now', '立即同步', '立即同步')}
-                    </button>
                 </div>
-                {ambientRefreshState === 'done' && <small className="im-settings-hardware__weather-status" role="status">{textForLang(lang, 'Weather sent to hardware', '天气已推送到硬件', '天氣已推送到硬體')}</small>}
-                {ambientRefreshState === 'error' && <small className="im-settings-hardware__weather-error" role="alert">{textForLang(lang, 'Weather sync failed; check Hub and network', '天气同步失败，请检查 Hub 与网络连接', '天氣同步失敗，請檢查 Hub 與網路連線')}</small>}
+                <div className="im-settings-hardware__preference im-settings-hardware__weather">
+                    <div className="im-settings-hardware__preference-text">
+                        <label htmlFor="hardware-weather-city">{textForLang(lang, 'Hardware weather city', '硬件天气城市', '硬體天氣城市')}</label>
+                        <small>{textForLang(lang, 'Leave blank to detect from the desktop network', '留空时按电脑当前网络位置自动识别', '留空時按電腦目前網路位置自動辨識')}</small>
+                    </div>
+                    <div className="im-settings-hardware__weather-side">
+                        <div className="im-settings-hardware__weather-controls">
+                            <input
+                                id="hardware-weather-city"
+                                type="text"
+                                value={ambientCityDraft !== '' ? ambientCityDraft : (detectedAmbientCity || '')}
+                                disabled={ambientRefreshState === 'refreshing'}
+                                maxLength={32}
+                                placeholder={textForLang(lang, 'e.g. Shanghai', '例如：上海', '例如：上海')}
+                                onChange={(event) => changeAmbientCity(event.target.value)}
+                            />
+                            <button type="button" className="im-settings-button" disabled={ambientRefreshState === 'refreshing'} onClick={() => void refreshAmbientWeather()}>
+                                {ambientRefreshState === 'refreshing'
+                                    ? textForLang(lang, 'Checking…', '查询中…', '查詢中…')
+                                    : textForLang(lang, 'Sync now', '立即同步', '立即同步')}
+                            </button>
+                        </div>
+                        {ambientRefreshState === 'done' && <small className="im-settings-hardware__weather-status" role="status">{textForLang(lang, 'Weather sent to hardware', '天气已推送到硬件', '天氣已推送到硬體')}</small>}
+                        {ambientRefreshState === 'error' && <small className="im-settings-hardware__weather-error" role="alert">{textForLang(lang, 'Weather sync failed; check Hub and network', '天气同步失败，请检查 Hub 与网络连接', '天氣同步失敗，請檢查 Hub 與網路連線')}</small>}
+                    </div>
+                </div>
             </div>
 
             <div className="im-settings-hardware__pairing">
-                <div>
+                <span className="im-settings-hardware__pairing-badge" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="8" height="8" rx="2" /><path d="M5.5 6V4.5A2.5 2.5 0 0 1 8 2h3.5A2.5 2.5 0 0 1 14 4.5V8a2.5 2.5 0 0 1-2.5 2.5H10" /></svg>
+                </span>
+                <div className="im-settings-hardware__pairing-info">
                     <span>{isZh ? '配对码' : 'Pairing code'}</span>
                     {pairing?.pairCode
                         ? <strong className="im-settings-pair-code">{pairing.pairCode}</strong>
@@ -1359,19 +1393,20 @@ export const ThirdPartyAccessSettings = ({
 
             <div className="im-settings-hardware__devices" aria-label={isZh ? '接入硬件列表' : 'Connected hardware list'}>
                 <div className="im-settings-hardware__devices-heading">
-                    <div>
+                    <div className="im-settings-hardware__devices-title">
                         <strong>{isZh ? '接入硬件' : 'Connected hardware'}</strong>
                         <span>{isZh ? '每台 ESP32 使用独立身份与 Token。解绑后设备须重新配对。' : 'Each ESP32 has its own identity and token. Removed devices must pair again.'}</span>
                     </div>
-					<span className="im-settings-hardware__device-limit" data-at-capacity={hardwareBindingAtCapacity}>
-						{isZh ? '最多绑定' : 'Up to'} <strong>{boundDeviceCount} / {hardwareBindingLimit}</strong>
-						{isZh
-							? (hardwareBindingAtCapacity ? ' 台；已满额，请先解绑再绑定新设备。' : ' 台。')
-							: (hardwareBindingAtCapacity ? '; limit reached — remove a device before binding a new one.' : ' devices.')}
-					</span>
+					<div className="im-settings-hardware__devices-tools">
+						<span className="im-settings-hardware__device-limit" data-at-capacity={hardwareBindingAtCapacity}>
+							{isZh ? '最多绑定 ' : 'Up to '}<strong>{boundDeviceCount} / {hardwareBindingLimit}</strong>{isZh ? ' 台' : ' devices'}{hardwareBindingAtCapacity
+								? (isZh ? '；已满额，请先解绑再绑定新设备。' : '; limit reached — remove a device before binding a new one.')
+								: (isZh ? '。' : '.')}
+						</span>
                     <button type="button" className="im-settings-button" disabled={devicesLoading || hardwareControlsDisabled} onClick={() => void refreshDevices()}>
                         {devicesLoading ? (isZh ? '刷新中…' : 'Refreshing…') : (isZh ? '刷新' : 'Refresh')}
                     </button>
+					</div>
                 </div>
                 {devicesError && devices.length > 0 && <div className="im-settings-hardware__devices-error" role="status">
                     <span>{isZh ? '刷新失败，当前显示上次成功读取的列表。' : 'Refresh failed. Showing the last successfully loaded list.'}</span>
@@ -1406,7 +1441,7 @@ export const ThirdPartyAccessSettings = ({
 									&& selectedExpertID !== ''
 									&& !experts.some((expert) => expert.id === selectedExpertID);
 								const replyVoiceID = device.ttsVoiceId || 'zf_xiaoxiao';
-                                return <div className="im-settings-hardware__device" key={device.clientId}>
+	                                return <div className="im-settings-hardware__device" data-online={Boolean(device.online)} key={device.clientId}>
                                     <span className="im-settings-hardware__device-status" data-online={Boolean(device.online)} aria-hidden="true" />
 									<div className="im-settings-hardware__device-details">
 										<div className="im-settings-hardware__device-name">
@@ -1497,28 +1532,30 @@ export const ThirdPartyAccessSettings = ({
 									</select>
 										</div>
 										{allowCustomHardwarePets && <div className="im-settings-hardware__device-pet" title={devicePet.label} ref={openPetPickerClientId === device.clientId ? petPickerRootRef : undefined}>
-											<span className="im-settings-hardware__device-pet-preview"><img src={devicePet.image} alt="" /></span>
-											<span>{isZh ? '宠物' : 'Pet'}</span>
-											<button
-												id={`hardware-pet-trigger-${device.clientId}`}
-												type="button"
-												className="im-settings-hardware__device-pet-trigger"
-												role="combobox"
-												aria-label={`${isZh ? '宠物' : 'Pet'} ${name}`}
-												aria-controls={`hardware-pet-list-${device.clientId}`}
-												aria-expanded={openPetPickerClientId === device.clientId}
-												aria-haspopup="listbox"
-												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId) || savingPetClientIds.has(device.clientId)}
-												onClick={() => setOpenPetPickerClientId((current) => current === device.clientId ? null : device.clientId)}
-												onKeyDown={(event) => {
-													if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-														event.preventDefault();
-														setOpenPetPickerClientId(device.clientId);
-													}
-												}}
-											>
-												<span>{devicePet.label}</span><span className="im-settings-hardware__device-pet-chevron" aria-hidden="true">⌄</span>
-											</button>
+											<span className="im-settings-hardware__device-pet-label">{isZh ? '宠物' : 'Pet'}</span>
+											<div className="im-settings-hardware__device-pet-field">
+												<span className="im-settings-hardware__device-pet-preview"><img src={devicePet.image} alt="" /></span>
+												<button
+													id={`hardware-pet-trigger-${device.clientId}`}
+													type="button"
+													className="im-settings-hardware__device-pet-trigger"
+													role="combobox"
+													aria-label={`${isZh ? '宠物' : 'Pet'} ${name}`}
+													aria-controls={`hardware-pet-list-${device.clientId}`}
+													aria-expanded={openPetPickerClientId === device.clientId}
+													aria-haspopup="listbox"
+													disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId) || savingPetClientIds.has(device.clientId)}
+													onClick={() => setOpenPetPickerClientId((current) => current === device.clientId ? null : device.clientId)}
+													onKeyDown={(event) => {
+														if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+															event.preventDefault();
+															setOpenPetPickerClientId(device.clientId);
+														}
+													}}
+												>
+													<span>{devicePet.label}</span><span className="im-settings-hardware__device-pet-chevron" aria-hidden="true" />
+												</button>
+											</div>
 											{openPetPickerClientId === device.clientId && <div id={`hardware-pet-list-${device.clientId}`} className="im-settings-hardware__device-pet-menu" role="listbox" aria-label={`${isZh ? '宠物' : 'Pet'} ${name}`}>
 												{availablePetOptions.map((pet) => <button
 													key={pet.id}
@@ -1616,10 +1653,13 @@ export const ThirdPartyAccessSettings = ({
                     <strong>{isZh ? 'Welcome 信息' : 'Welcome message'}</strong>
                     <div className="im-settings-hardware__welcome-title-actions">
                         <WelcomeResetButton disabled={settingsBusy} isZh={isZh} resetting={welcomeAction === 'reset'} onReset={resetWelcomeAudio} />
-                        <label className="im-settings-toggle">
-                            <input type="checkbox" disabled={welcomeEditingDisabled} checked={Boolean((config as any)?.hardware_welcome_enabled)} onChange={(e) => void setWelcomeEnabled(e.target.checked)} />
-                            <span>{isZh ? '启用' : 'Enabled'}</span>
-                        </label>
+                        <HardwareSwitch
+                            ariaLabel={isZh ? '启用' : 'Enabled'}
+                            label={isZh ? '启用' : 'Enabled'}
+                            disabled={welcomeEditingDisabled}
+                            checked={Boolean((config as any)?.hardware_welcome_enabled)}
+                            onChange={(next) => void setWelcomeEnabled(next)}
+                        />
                     </div>
                 </div>
                 <p>{isZh ? '设备每次开机初始化完成后仅播放一次。输入文字生成 WAV，或选择 MP3、WAV、Ogg / Opus 自动转换为硬件可播放的 16 kHz 单声道 WAV。' : 'Plays once after each device boot finishes initializing. Generate WAV from text, or import MP3, WAV, Ogg / Opus and convert it to 16 kHz mono WAV.'}</p>
@@ -1670,9 +1710,11 @@ export const ThirdPartyAccessSettings = ({
                         }
                     })}>{welcomeAction === 'preview-local' ? (isZh ? 'GUI 播放中…' : 'Playing in GUI…') : (isZh ? 'GUI 本地试听' : 'Preview in GUI')}</button>
 	                </div>
-                {welcomeAudioPath && <small className="im-settings-hardware__audio-status">{isZh ? '已准备硬件 WAV：' : 'Hardware WAV ready: '}{welcomeAudioPath.split(/[\\/]/).pop()}</small>}
-				<small className="im-settings-hardware__welcome-capacity">{isZh ? '硬件容量约 3 秒；接近上限时会自动加快语速，仍超出时请缩短欢迎词。' : 'Hardware capacity is roughly 3 seconds. Near the limit, speech is automatically sped up; shorten the message if it still does not fit.'}</small>
-	                <small className="im-settings-hardware__preview-note">{isZh ? 'GUI 本地试听用于检查生成质量；请在上方对应的已绑定硬件旁点击“远程播放”，仅向该 ESP32 下发并等待“播放完成”确认。' : 'GUI preview checks generated audio quality. Use the remote-play button beside a bound device to send only to that ESP32 and wait for its playback receipt.'}</small>
+                <div className="im-settings-hardware__welcome-notes">
+                    {welcomeAudioPath && <small className="im-settings-hardware__audio-status">{isZh ? '已准备硬件 WAV：' : 'Hardware WAV ready: '}{welcomeAudioPath.split(/[\\/]/).pop()}</small>}
+                    <small className="im-settings-hardware__welcome-capacity">{isZh ? '硬件容量约 3 秒；接近上限时会自动加快语速，仍超出时请缩短欢迎词。' : 'Hardware capacity is roughly 3 seconds. Near the limit, speech is automatically sped up; shorten the message if it still does not fit.'}</small>
+                    <small className="im-settings-hardware__preview-note">{isZh ? 'GUI 本地试听用于检查生成质量；请在上方对应的已绑定硬件旁点击“远程播放”，仅向该 ESP32 下发并等待“播放完成”确认。' : 'GUI preview checks generated audio quality. Use the remote-play button beside a bound device to send only to that ESP32 and wait for its playback receipt.'}</small>
+                </div>
             </div>
         </div>}
     </section>;

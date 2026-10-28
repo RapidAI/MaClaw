@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,15 +28,28 @@ const (
 	fileCompanionProjectMaxMarks     = 8 << 20
 	fileCompanionProjectMaxDoc       = 8 << 30
 	fileCompanionProjectMaxSidecar   = 512 << 20
+	// Keep these aligned with normalizePdfDrawings in pdfDrawings.ts.
+	fileCompanionProjectMaxDrawings      = 200
+	fileCompanionProjectMaxDrawingPoints = 1200
 )
 
 var errFileCompanionNotProject = errors.New("不是伴读项目")
 
 type fileCompanionProjectManifest struct {
-	Kind        string                 `json:"kind"`
-	Version     int                    `json:"version"`
-	Name        string                 `json:"name"`
-	Highlights  json.RawMessage        `json:"highlights"`
+	Kind       string          `json:"kind"`
+	Version    int             `json:"version"`
+	Name       string          `json:"name"`
+	Highlights json.RawMessage `json:"highlights"`
+	// ChatMarks are the host's highlights on the chat answers. They are
+	// indices into Messages, so they travel with the transcript they mark.
+	// A legacy project omits the field; nil means "leave the reader's marks".
+	ChatMarks json.RawMessage `json:"chatMarks,omitempty"`
+	// Annotations are the host's placed notes on the paper. Each carries its
+	// page/rects, text, annotation body, and optional card place and size.
+	Annotations json.RawMessage `json:"annotations,omitempty"`
+	// Drawings are the host's freehand strokes and boxes. Points are page
+	// fractions so they keep their place at any zoom.
+	Drawings    json.RawMessage        `json:"drawings,omitempty"`
 	Messages    []FileCompanionMessage `json:"messages"`
 	PaperResult string                 `json:"paperResult,omitempty"`
 	PaperTurn   int                    `json:"paperTurn,omitempty"`
@@ -95,7 +109,7 @@ func (a *App) FileCompanionExportProject(path, highlightsJSON string) (string, e
 	if err != nil || info.IsDir() {
 		return "", errors.New("文件无法读取")
 	}
-	highlights, err := fileCompanionCleanHighlights(highlightsJSON)
+	highlights, chatMarks, annotations, drawings, err := fileCompanionSplitSharePayload(highlightsJSON)
 	if err != nil {
 		return "", err
 	}
@@ -126,7 +140,7 @@ func (a *App) FileCompanionExportProject(path, highlightsJSON string) (string, e
 	if sameFileCompanionExportPath(source, dest) {
 		return "", errors.New("不能覆盖当前文件")
 	}
-	if err := writeFileCompanionProject(dest, source, highlights, messages, paperPath, paperTurn); err != nil {
+	if err := writeFileCompanionProject(dest, source, highlights, chatMarks, annotations, drawings, messages, paperPath, paperTurn); err != nil {
 		return "", err
 	}
 	logFileCompanion("export project")
@@ -177,6 +191,325 @@ func fileCompanionCleanHighlights(raw string) (json.RawMessage, error) {
 		return nil, errors.New("高亮无法保存")
 	}
 	return encoded, nil
+}
+
+// fileCompanionChatMark is one highlight on the agent's answer. Message and
+// the character range refer to the transcript in Messages; Text is the quote
+// that lets a re-rendered answer re-anchor it.
+type fileCompanionChatMark struct {
+	Message int    `json:"message"`
+	Color   string `json:"color"`
+	Start   int    `json:"start"`
+	End     int    `json:"end"`
+	Text    string `json:"text"`
+}
+
+func fileCompanionCleanChatMarks(raw json.RawMessage) (json.RawMessage, error) {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return json.RawMessage("[]"), nil
+	}
+	if len(raw) > fileCompanionProjectMaxMarks {
+		return nil, errors.New("回答标注无法保存")
+	}
+	var incoming []fileCompanionChatMark
+	if err := json.Unmarshal(raw, &incoming); err != nil {
+		return nil, errors.New("回答标注无法保存")
+	}
+	cleaned := make([]fileCompanionChatMark, 0, len(incoming))
+	for _, item := range incoming {
+		if len(cleaned) >= 2000 {
+			break
+		}
+		switch item.Color {
+		case "yellow", "green", "blue", "pink":
+		default:
+			continue
+		}
+		if item.Message < 0 || item.Message > 100000 || item.Start < 0 || item.End <= item.Start {
+			continue
+		}
+		text := strings.TrimSpace(item.Text)
+		if text == "" {
+			continue
+		}
+		if runes := []rune(text); len(runes) > 2000 {
+			text = string(runes[:2000])
+		}
+		item.Text = text
+		cleaned = append(cleaned, item)
+	}
+	encoded, err := json.Marshal(cleaned)
+	if err != nil {
+		return nil, errors.New("回答标注无法保存")
+	}
+	return encoded, nil
+}
+
+// fileCompanionCleanAnnotations validates the host's placed notes before they
+// travel with a project. Translations are never shared; only kind
+// "annotation" survives, and each note must keep a usable page/rect anchor.
+func fileCompanionCleanAnnotations(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return json.RawMessage("[]"), nil
+	}
+	if len(raw) > fileCompanionProjectMaxMarks {
+		return nil, errors.New("批注无法保存")
+	}
+	var incoming []fileCompanionAnnotation
+	if err := json.Unmarshal(raw, &incoming); err != nil {
+		return nil, errors.New("批注无法保存")
+	}
+	cleaned := make([]fileCompanionAnnotation, 0, len(incoming))
+	for _, item := range incoming {
+		if len(cleaned) >= 200 {
+			break
+		}
+		if next, ok := fileCompanionCleanAnnotation(item); ok {
+			cleaned = append(cleaned, next)
+		}
+	}
+	encoded, err := json.Marshal(cleaned)
+	if err != nil {
+		return nil, errors.New("批注无法保存")
+	}
+	return encoded, nil
+}
+
+type fileCompanionAnnotationRect struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+}
+
+type fileCompanionAnnotationPart struct {
+	Page  int                           `json:"page"`
+	Rects []fileCompanionAnnotationRect `json:"rects"`
+}
+
+type fileCompanionAnnotationPlace struct {
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Above bool    `json:"above,omitempty"`
+}
+
+type fileCompanionAnnotationSize struct {
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+}
+
+type fileCompanionAnnotation struct {
+	ID          string                        `json:"id"`
+	Kind        string                        `json:"kind"`
+	Text        string                        `json:"text"`
+	Translation string                        `json:"translation"`
+	Parts       []fileCompanionAnnotationPart `json:"parts"`
+	Place       *fileCompanionAnnotationPlace `json:"place,omitempty"`
+	Size        *fileCompanionAnnotationSize  `json:"size,omitempty"`
+}
+
+func fileCompanionCleanAnnotation(item fileCompanionAnnotation) (fileCompanionAnnotation, bool) {
+	if item.Kind != "annotation" {
+		return fileCompanionAnnotation{}, false
+	}
+	id := strings.TrimSpace(item.ID)
+	if id == "" || len(id) > 80 {
+		return fileCompanionAnnotation{}, false
+	}
+	text := strings.TrimSpace(item.Text)
+	if text == "" {
+		return fileCompanionAnnotation{}, false
+	}
+	if runes := []rune(text); len(runes) > 4000 {
+		text = string(runes[:4000])
+	}
+	body := strings.TrimSpace(item.Translation)
+	if body == "" {
+		return fileCompanionAnnotation{}, false
+	}
+	if runes := []rune(body); len(runes) > 12000 {
+		body = string(runes[:12000])
+	}
+	parts := make([]fileCompanionAnnotationPart, 0, len(item.Parts))
+	for _, part := range item.Parts {
+		if len(parts) >= 30 {
+			break
+		}
+		if part.Page < 1 || part.Page > 100000 {
+			continue
+		}
+		rects := make([]fileCompanionAnnotationRect, 0, len(part.Rects))
+		for _, rect := range part.Rects {
+			if len(rects) >= 160 {
+				break
+			}
+			if !fileCompanionRectOK(rect.X) || !fileCompanionRectOK(rect.Y) || !fileCompanionRectOK(rect.W) || !fileCompanionRectOK(rect.H) {
+				continue
+			}
+			if rect.W < 0.001 || rect.H < 0.001 || rect.X+rect.W > 1.001 || rect.Y+rect.H > 1.001 {
+				continue
+			}
+			rects = append(rects, rect)
+		}
+		if len(rects) > 0 {
+			parts = append(parts, fileCompanionAnnotationPart{Page: part.Page, Rects: rects})
+		}
+	}
+	if len(parts) == 0 {
+		return fileCompanionAnnotation{}, false
+	}
+	next := fileCompanionAnnotation{ID: id, Kind: "annotation", Text: text, Translation: body, Parts: parts}
+	if item.Place != nil && fileCompanionFinite(item.Place.X) && fileCompanionFinite(item.Place.Y) {
+		x := math.Min(4, math.Max(-4, item.Place.X))
+		y := math.Min(4, math.Max(-4, item.Place.Y))
+		if math.Abs(x) >= 0.0005 || math.Abs(y) >= 0.0005 || item.Place.Above {
+			next.Place = &fileCompanionAnnotationPlace{X: x, Y: y, Above: item.Place.Above}
+		}
+	}
+	if item.Size != nil && fileCompanionFinite(item.Size.W) && fileCompanionFinite(item.Size.H) && item.Size.W >= 0.02 && item.Size.H >= 0.02 {
+		next.Size = &fileCompanionAnnotationSize{W: math.Min(1, item.Size.W), H: math.Min(1, item.Size.H)}
+	}
+	return next, true
+}
+
+func fileCompanionFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+type fileCompanionDrawingPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+type fileCompanionDrawing struct {
+	ID     string                      `json:"id"`
+	Page   int                         `json:"page"`
+	Color  string                      `json:"color"`
+	Tool   string                      `json:"tool"`
+	Points []fileCompanionDrawingPoint `json:"points"`
+}
+
+// fileCompanionCleanDrawings validates freehand strokes before they travel
+// with a project. A box keeps two corners; a line keeps its sampled points.
+func fileCompanionCleanDrawings(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return json.RawMessage("[]"), nil
+	}
+	if len(raw) > fileCompanionProjectMaxMarks {
+		return nil, errors.New("手绘无法保存")
+	}
+	var incoming []json.RawMessage
+	if err := json.Unmarshal(raw, &incoming); err != nil {
+		return nil, errors.New("手绘无法保存")
+	}
+	cleaned := make([]fileCompanionDrawing, 0, len(incoming))
+	for _, rawItem := range incoming {
+		if len(cleaned) >= fileCompanionProjectMaxDrawings {
+			break
+		}
+		var item fileCompanionDrawing
+		if err := json.Unmarshal(rawItem, &item); err != nil {
+			continue
+		}
+		if next, ok := fileCompanionCleanDrawing(item); ok {
+			cleaned = append(cleaned, next)
+		}
+	}
+	encoded, err := json.Marshal(cleaned)
+	if err != nil {
+		return nil, errors.New("手绘无法保存")
+	}
+	return encoded, nil
+}
+
+func fileCompanionCleanDrawing(item fileCompanionDrawing) (fileCompanionDrawing, bool) {
+	switch item.Color {
+	case "yellow", "green", "blue", "pink":
+	default:
+		return fileCompanionDrawing{}, false
+	}
+	if item.Tool != "line" && item.Tool != "box" {
+		return fileCompanionDrawing{}, false
+	}
+	if item.Page < 1 || item.Page > 100000 {
+		return fileCompanionDrawing{}, false
+	}
+	id := strings.TrimSpace(item.ID)
+	if id == "" || len(id) > 80 {
+		return fileCompanionDrawing{}, false
+	}
+	points := make([]fileCompanionDrawingPoint, 0, len(item.Points))
+	for _, point := range item.Points {
+		if len(points) >= fileCompanionProjectMaxDrawingPoints {
+			break
+		}
+		if !fileCompanionFinite(point.X) || !fileCompanionFinite(point.Y) {
+			continue
+		}
+		if point.X < 0 || point.X > 1 || point.Y < 0 || point.Y > 1 {
+			continue
+		}
+		points = append(points, point)
+	}
+	if len(points) < 2 {
+		return fileCompanionDrawing{}, false
+	}
+	if item.Tool == "box" {
+		start, end := points[0], points[len(points)-1]
+		if math.Abs(end.X-start.X) < 0.002 && math.Abs(end.Y-start.Y) < 0.002 {
+			return fileCompanionDrawing{}, false
+		}
+		points = []fileCompanionDrawingPoint{start, end}
+	}
+	return fileCompanionDrawing{ID: id, Page: item.Page, Color: item.Color, Tool: item.Tool, Points: points}, true
+}
+
+// fileCompanionSplitSharePayload reads the companion marks payload the window
+// sends with a share or an export:
+// {"highlights":[],"chatMarks":[],"annotations":[],"drawings":[]}.
+// A legacy caller still sends the highlights array alone; that keeps working
+// and leaves the other fields nil, so an old project does not clear a reader's
+// own answer highlights, placed notes, or drawings.
+func fileCompanionSplitSharePayload(raw string) (highlights, chatMarks, annotations, drawings json.RawMessage, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "{") {
+		var payload struct {
+			Highlights  json.RawMessage `json:"highlights"`
+			ChatMarks   json.RawMessage `json:"chatMarks"`
+			Annotations json.RawMessage `json:"annotations"`
+			Drawings    json.RawMessage `json:"drawings"`
+		}
+		if json.Unmarshal([]byte(trimmed), &payload) == nil && len(payload.Highlights) > 0 {
+			highlights, err = fileCompanionCleanHighlights(string(payload.Highlights))
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			if len(payload.ChatMarks) > 0 {
+				chatMarks, err = fileCompanionCleanChatMarks(payload.ChatMarks)
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+			}
+			if len(payload.Annotations) > 0 {
+				annotations, err = fileCompanionCleanAnnotations(payload.Annotations)
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+			}
+			if len(payload.Drawings) > 0 {
+				drawings, err = fileCompanionCleanDrawings(payload.Drawings)
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+			}
+			return highlights, chatMarks, annotations, drawings, nil
+		}
+	}
+	highlights, err = fileCompanionCleanHighlights(raw)
+	return highlights, nil, nil, nil, err
 }
 
 func fileCompanionCleanMark(mark fileCompanionProjectMark) (fileCompanionProjectMark, bool) {
@@ -264,7 +597,7 @@ func fileCompanionProjectSafeName(name string) string {
 	return cleaned
 }
 
-func writeFileCompanionProject(dest, source string, highlights json.RawMessage, messages []FileCompanionMessage, paperPath string, paperTurn int) error {
+func writeFileCompanionProject(dest, source string, highlights, chatMarks, annotations, drawings json.RawMessage, messages []FileCompanionMessage, paperPath string, paperTurn int) error {
 	src, err := os.Open(source)
 	if err != nil {
 		return errors.New("文件无法读取")
@@ -290,11 +623,14 @@ func writeFileCompanionProject(dest, source string, highlights json.RawMessage, 
 	}()
 	zw := zip.NewWriter(out)
 	manifest := fileCompanionProjectManifest{
-		Kind:       fileCompanionProjectKind,
-		Version:    fileCompanionProjectVersion,
-		Name:       filepath.Base(source),
-		Highlights: highlights,
-		Messages:   messages,
+		Kind:        fileCompanionProjectKind,
+		Version:     fileCompanionProjectVersion,
+		Name:        filepath.Base(source),
+		Highlights:  highlights,
+		ChatMarks:   chatMarks,
+		Annotations: annotations,
+		Drawings:    drawings,
+		Messages:    messages,
 	}
 	if paperPath != "" && paperTurn > 0 {
 		manifest.PaperResult = fileCompanionProjectPaperEntry
@@ -400,7 +736,7 @@ func replaceFileCompanionProject(tmp, dest string) error {
 
 func (a *App) fileCompanionOpenProjectZip(path string) (FileCompanionDocument, error) {
 	doc := FileCompanionDocument{Path: path, Name: filepath.Base(path)}
-	extracted, highlights, err := a.importFileCompanionProject(path)
+	imported, err := a.importFileCompanionProject(path)
 	if err != nil {
 		if errors.Is(err, errFileCompanionNotProject) {
 			doc.Error = errFileCompanionNotProject.Error()
@@ -409,26 +745,39 @@ func (a *App) fileCompanionOpenProjectZip(path string) (FileCompanionDocument, e
 		}
 		return doc, nil
 	}
-	opened, err := a.fileCompanionOpen(extracted, false)
+	opened, err := a.fileCompanionOpen(imported.document, false)
 	if err != nil {
 		return opened, err
 	}
 	if opened.Error != "" {
 		return opened, nil
 	}
-	opened.Highlights = highlights
+	opened.Highlights = imported.highlights
+	opened.ChatMarks = imported.chatMarks
+	opened.Annotations = imported.annotations
+	opened.Drawings = imported.drawings
 	opened.Imported = true
 	logFileCompanion("import project")
 	return opened, nil
 }
 
-func (a *App) importFileCompanionProject(path string) (string, json.RawMessage, error) {
+// fileCompanionProjectImport is the document extracted from a project zip
+// plus the reader marks the manifest carried.
+type fileCompanionProjectImport struct {
+	document    string
+	highlights  json.RawMessage
+	chatMarks   json.RawMessage
+	annotations json.RawMessage
+	drawings    json.RawMessage
+}
+
+func (a *App) importFileCompanionProject(path string) (fileCompanionProjectImport, error) {
 	if a == nil {
-		return "", nil, errors.New("应用不可用")
+		return fileCompanionProjectImport{}, errors.New("应用不可用")
 	}
 	reader, err := zip.OpenReader(path)
 	if err != nil {
-		return "", nil, errFileCompanionNotProject
+		return fileCompanionProjectImport{}, errFileCompanionNotProject
 	}
 	defer reader.Close()
 	var manifestFile *zip.File
@@ -440,47 +789,47 @@ func (a *App) importFileCompanionProject(path string) (string, json.RawMessage, 
 			if strings.HasSuffix(file.Name, "/") {
 				continue
 			}
-			return "", nil, errFileCompanionNotProject
+			return fileCompanionProjectImport{}, errFileCompanionNotProject
 		}
 		switch kind {
 		case "manifest":
 			if manifestFile != nil {
-				return "", nil, errFileCompanionNotProject
+				return fileCompanionProjectImport{}, errFileCompanionNotProject
 			}
 			manifestFile = file
 		case "document":
 			if documentFile != nil {
-				return "", nil, errFileCompanionNotProject
+				return fileCompanionProjectImport{}, errFileCompanionNotProject
 			}
 			documentFile = file
 		case "paper":
 			paperFile = file
 		default:
-			return "", nil, errFileCompanionNotProject
+			return fileCompanionProjectImport{}, errFileCompanionNotProject
 		}
 	}
 	if manifestFile == nil || documentFile == nil {
-		return "", nil, errFileCompanionNotProject
+		return fileCompanionProjectImport{}, errFileCompanionNotProject
 	}
 	if manifestFile.UncompressedSize64 > fileCompanionProjectMaxMarks || documentFile.UncompressedSize64 > fileCompanionProjectMaxDoc {
-		return "", nil, errors.New("文件过大")
+		return fileCompanionProjectImport{}, errors.New("文件过大")
 	}
 	manifest, err := readProjectManifest(manifestFile)
 	if err != nil {
-		return "", nil, err
+		return fileCompanionProjectImport{}, err
 	}
 	if manifest.PaperResult != "" && (paperFile == nil || paperFile.Name != fileCompanionProjectPaperEntry) {
-		return "", nil, errFileCompanionNotProject
+		return fileCompanionProjectImport{}, errFileCompanionNotProject
 	}
 	root := filepath.Join(a.GetDataDir(), "file-companion", "projects")
 	tmpDir, err := os.MkdirTemp(root, "incoming-")
 	if err != nil {
 		if mkErr := os.MkdirAll(root, 0o755); mkErr != nil {
-			return "", nil, errors.New("无法打开项目")
+			return fileCompanionProjectImport{}, errors.New("无法打开项目")
 		}
 		tmpDir, err = os.MkdirTemp(root, "incoming-")
 		if err != nil {
-			return "", nil, errors.New("无法打开项目")
+			return fileCompanionProjectImport{}, errors.New("无法打开项目")
 		}
 	}
 	defer os.RemoveAll(tmpDir)
@@ -491,37 +840,43 @@ func (a *App) importFileCompanionProject(path string) (string, json.RawMessage, 
 	tmpFile := filepath.Join(tmpDir, safeName)
 	sum, err := extractProjectFile(documentFile, tmpFile, fileCompanionProjectMaxDoc)
 	if err != nil {
-		return "", nil, err
+		return fileCompanionProjectImport{}, err
 	}
 	finalDir := filepath.Join(root, hex.EncodeToString(sum[:16]))
 	if err := os.MkdirAll(finalDir, 0o755); err != nil {
-		return "", nil, errors.New("无法打开项目")
+		return fileCompanionProjectImport{}, errors.New("无法打开项目")
 	}
 	finalPath := filepath.Join(finalDir, safeName)
 	_ = os.Remove(finalPath)
 	if err := os.Rename(tmpFile, finalPath); err != nil {
 		if copyErr := copyPlainFile(tmpFile, finalPath); copyErr != nil {
-			return "", nil, errors.New("无法打开项目")
+			return fileCompanionProjectImport{}, errors.New("无法打开项目")
 		}
 	}
 	identity, _, idErr := fileCompanionPathIdentity(finalPath)
 	if idErr != nil {
-		return "", nil, errors.New("无法打开项目")
+		return fileCompanionProjectImport{}, errors.New("无法打开项目")
 	}
 	sessionID := fileCompanionSessionID(identity)
 	if err := a.writeFileCompanionProjectSession(sessionID, manifest.Messages); err != nil {
-		return "", nil, err
+		return fileCompanionProjectImport{}, err
 	}
 	if manifest.PaperResult != "" && paperFile != nil && manifest.PaperTurn > 0 {
 		if err := a.installFileCompanionProjectPaper(sessionID, paperFile, manifest.PaperTurn); err != nil {
-			return "", nil, err
+			return fileCompanionProjectImport{}, err
 		}
 	}
 	highlights := manifest.Highlights
 	if len(highlights) == 0 {
 		highlights = json.RawMessage("[]")
 	}
-	return identity, highlights, nil
+	return fileCompanionProjectImport{
+		document:    identity,
+		highlights:  highlights,
+		chatMarks:   manifest.ChatMarks,
+		annotations: manifest.Annotations,
+		drawings:    manifest.Drawings,
+	}, nil
 }
 
 func fileCompanionProjectEntryKind(name string) (string, bool) {

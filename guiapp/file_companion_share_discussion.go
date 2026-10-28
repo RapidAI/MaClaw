@@ -164,7 +164,7 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 	}
 	mine := make([]FileCompanionLibraryItem, 0)
 	for _, item := range items {
-		if item.Mine && item.Source == "cloud" && strings.TrimSpace(item.Token) != "" {
+		if fileCompanionItemIsHost(item) && item.Source == "cloud" && strings.TrimSpace(item.Token) != "" {
 			mine = append(mine, item)
 		}
 	}
@@ -379,7 +379,7 @@ func (a *App) fileCompanionShareDiscussionSince(items []FileCompanionLibraryItem
 	}
 	for _, item := range items {
 		token := strings.TrimSpace(item.Token)
-		if token == "" || item.Source != "cloud" || !item.Mine {
+		if token == "" || item.Source != "cloud" || !fileCompanionItemIsHost(item) {
 			continue
 		}
 		if _, ok := out[token]; ok {
@@ -422,7 +422,7 @@ func (a *App) fileCompanionShareDiscussionPath(token string) string {
 		return ""
 	}
 	for _, item := range items {
-		if item.Source != "cloud" || item.Token != token || !item.Mine {
+		if item.Source != "cloud" || item.Token != token || !fileCompanionItemIsHost(item) {
 			continue
 		}
 		path := strings.TrimSpace(item.Path)

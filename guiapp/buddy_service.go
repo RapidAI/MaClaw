@@ -88,6 +88,21 @@ func (a *App) saveBuddyConfig(cfg buddyConfig) error {
 	return os.WriteFile(a.buddyConfigPath(), raw, 0o644)
 }
 
+// buddyLogPath is the on-disk trace of the serial link and pet refreshes.
+func buddyLogPath() string {
+	return filepath.Join(os.TempDir(), "maclaw-buddy.log")
+}
+
+// logBuddyf mirrors a buddy message to the console and the diagnostic file.
+func logBuddyf(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	log.Printf("[buddy] %s", line)
+	if f, err := os.OpenFile(buddyLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05.000"), line)
+		_ = f.Close()
+	}
+}
+
 // startBuddyService starts the in-process serial runner if enabled.
 func (a *App) startBuddyService() {
 	a.buddyMu.Lock()
@@ -103,8 +118,11 @@ func (a *App) startBuddyService() {
 
 	opts := service.DefaultOptions()
 	opts.HostVersion = "8.1.0"
+	// A windowsgui build has no console, so mirror the link log to a file.
+	// It is the only way to check an asset transfer without stealing COM3.
+	_ = os.Remove(buddyLogPath())
 	opts.Logf = func(format string, args ...any) {
-		log.Printf("[buddy] "+format, args...)
+		logBuddyf(format, args...)
 	}
 
 	var runner *service.Runner
@@ -146,6 +164,9 @@ func (a *App) startBuddyService() {
 	// Resolve weather once in the background; the ambient loop will refresh it
 	// later, and a device reconnect must not wait 45 minutes.
 	go a.pushBuddyWeatherFromAmbient()
+	// Render the GUI pet into device frames in the background; the transfer
+	// starts as soon as the link is up.
+	go a.pushBuddyPetAsset(runner)
 }
 
 func (a *App) stopBuddyService() {

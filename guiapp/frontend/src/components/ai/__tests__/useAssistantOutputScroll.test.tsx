@@ -304,6 +304,65 @@ describe('useAssistantOutputScroll', () => {
         expect(result.current.userScrolledUpRef.current).toBe(false);
     });
 
+    it('clears the follow latch on a forced pin while covered so the uncover pins', () => {
+        const user = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const suspendedRef = { current: false };
+        let forced: ((behavior?: ScrollBehavior, force?: boolean, settleFrames?: number) => void) | null = null;
+        let latched = () => false;
+        function Harness({ suspended }: { suspended: boolean }) {
+            const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({
+                hasConversation: true,
+                messages: [user, assistant],
+                ready: true,
+                suspendedRef,
+            });
+            forced = scrollToBottom;
+            latched = () => userScrolledUpRef.current;
+            return (
+                <div
+                    ref={outputContainerRef}
+                    data-testid="scroll-box"
+                    hidden={suspended || undefined}
+                    onScroll={handleScroll}
+                    onWheel={handleUserScrollIntent}
+                    onTouchMove={handleUserScrollIntent}
+                    onPointerDown={handleUserScrollIntent}
+                >
+                    <div>{assistant.content}</div>
+                    <div
+                        ref={(node) => {
+                            outputEndRef.current = node;
+                            if (node) node.scrollIntoView = scrollIntoViewMock;
+                        }}
+                    />
+                </div>
+            );
+        }
+        const { getByTestId, rerender } = render(<Harness suspended={false} />);
+        const box = getByTestId('scroll-box');
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+        expect(latched()).toBe(true);
+
+        // The new-task cover is up: the pin itself is suspended, but the
+        // forced request still has to drop the latch the user left behind.
+        rerender(<Harness suspended />);
+        scrollIntoViewMock.mockClear();
+        act(() => { forced?.('auto', true); });
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+        expect(latched()).toBe(false);
+
+        rerender(<Harness suspended={false} />);
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+        expect(box.scrollTop).toBe(400);
+    });
+
     it('follows content growth reported by ResizeObserver while pinned', () => {
         const callbacks: Array<() => void> = [];
         class MockResizeObserver {

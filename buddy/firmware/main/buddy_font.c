@@ -15,11 +15,79 @@ extern const uint8_t _binary_cjk24_ext_bin_end[];
 
 static atomic_int s_missing;
 
+// Forward declarations: the curved-text helpers below are defined before the
+// static glyph lookup helpers further down.
+static int utf8_decode(const char *s, uint32_t *out);
+static const uint8_t *glyph5x7(char c);
+static const uint8_t *glyph24(uint32_t cp);
+static bool glyph24_pixel(const uint8_t *bitmap, uint32_t cp, int row, int col);
+
 int buddy_font_missing_total(bool reset) {
     if (reset) {
         return atomic_exchange(&s_missing, 0);
     }
     return atomic_load(&s_missing);
+}
+
+int buddy_font_utf8_next(const char *text, uint32_t *codepoint) {
+    if (!text || !codepoint) return 0;
+    return utf8_decode(text, codepoint);
+}
+
+int buddy_font_arc_advance(uint32_t codepoint) {
+    if (codepoint < 0x80) {
+        return codepoint == ' ' ? 12 : 18;
+    }
+    return 24;
+}
+
+int buddy_font_arc_width(const char *text) {
+    if (!text) return 0;
+    int total = 0;
+    const char *p = text;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = utf8_decode(p, &cp);
+        if (len <= 0) break;
+        total += buddy_font_arc_advance(cp);
+        p += len;
+    }
+    return total;
+}
+
+bool buddy_font_cell(uint32_t codepoint, uint8_t cell[24 * 24]) {
+    if (!cell) return false;
+    memset(cell, 0, 24 * 24);
+    if (codepoint < 0x20 || codepoint == 0x7F) return true;
+    if (codepoint < 0x80) {
+        const uint8_t *rows = glyph5x7((char)codepoint);
+        if (!rows) return false;
+        const int scale = 3;
+        const int ox = (24 - 5 * scale) / 2;
+        const int oy = 24 - 7 * scale;
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if (rows[col] & (1u << row)) {
+                    for (int sy = 0; sy < scale; ++sy) {
+                        for (int sx = 0; sx < scale; ++sx) {
+                            cell[(oy + row * scale + sy) * 24 + ox + col * scale + sx] = 1;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    const uint8_t *bitmap = glyph24(codepoint);
+    if (!bitmap) return false;
+    for (int row = 0; row < 24; ++row) {
+        for (int col = 0; col < 24; ++col) {
+            if (glyph24_pixel(bitmap, codepoint, row, col)) {
+                cell[row * 24 + col] = 1;
+            }
+        }
+    }
+    return true;
 }
 
 static int utf8_decode(const char *s, uint32_t *out) {

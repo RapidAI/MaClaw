@@ -52,6 +52,13 @@ const (
 	// without waiting for a full task-index reload.
 	EventProjectTaskRenamed = "project-task:renamed"
 
+	// EventProjectTaskHistoryUpdated is emitted when a task's durable
+	// transcript was replaced from outside its tab (a task moved to a cloud
+	// workspace or back to local). Payload is the project path. Open tabs
+	// showing no history re-hydrate; a non-empty conversation is never
+	// overwritten.
+	EventProjectTaskHistoryUpdated = "project-task:history-updated"
+
 	// EventExpertTaskDeleted is emitted with the expert id when a durable
 	// expert task is permanently removed. Expert conversation state is keyed
 	// by expert id (not the task workspace path), so the frontend needs this

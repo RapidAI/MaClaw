@@ -471,6 +471,76 @@ func TestFileCompanionDeleteShareReportsOldHub(t *testing.T) {
 	}
 }
 
+// The four host-transfer bindings are the only way the desktop reaches those
+// routes, and the hub reads the decision from the path and the cancel/revoke
+// split from the query. A wiring slip would hand the seat to the wrong call.
+func TestFileCompanionHostTransferBindingsCallTheHubRoutes(t *testing.T) {
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	type call struct {
+		method string
+		path   string
+		query  string
+		body   string
+	}
+	var calls []call
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		calls = append(calls, call{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: strings.TrimSpace(string(raw))})
+		if strings.Contains(r.URL.Path, "/host") {
+			_, _ = io.WriteString(w, `{"token":"`+token+`"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	if err := app.TransferFileCompanionShareHost(token, "reader@example.com"); err != nil {
+		t.Fatalf("transfer: %v", err)
+	}
+	if err := app.RevokeFileCompanionShareHost(token, "cancel"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if err := app.RevokeFileCompanionShareHost(token, "revoke"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := app.AcceptFileCompanionShareHost(token); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if err := app.DeclineFileCompanionShareHost(token); err != nil {
+		t.Fatalf("decline: %v", err)
+	}
+	prefix := "/api/mobile/documents/shares/" + token + "/host"
+	want := []call{
+		{method: http.MethodPost, path: prefix, body: `{"contact":"reader@example.com"}`},
+		{method: http.MethodDelete, path: prefix, query: "action=cancel"},
+		{method: http.MethodDelete, path: prefix, query: "action=revoke"},
+		{method: http.MethodPost, path: prefix + "/accept"},
+		{method: http.MethodPost, path: prefix + "/decline"},
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("calls = %+v", calls)
+	}
+	for i, expected := range want {
+		if calls[i].method != expected.method || calls[i].path != expected.path || calls[i].query != expected.query || calls[i].body != expected.body {
+			t.Fatalf("call %d = %+v, want %+v", i, calls[i], expected)
+		}
+	}
+	// A garbage action must never reach the hub as a half-built request.
+	if err := app.RevokeFileCompanionShareHost(token, "delete"); err == nil {
+		t.Fatal("an unknown action was accepted")
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("an unknown action still called the hub: %+v", calls[len(want):])
+	}
+}
+
 func TestReconcileFileCompanionLibraryKeepsRowsOpenedDuringAPull(t *testing.T) {
 	const kept = "cd_0123456789abcdef0123456789abcdef"
 	const added = "cd_abcdef0123456789abcdef0123456789"
@@ -699,6 +769,79 @@ func TestFileCompanionShareNotePostsTheReadersDiscussion(t *testing.T) {
 	}
 	if _, err := app.AddFileCompanionShareNote(filepath.Join(t.TempDir(), "missing.pdf"), "没有分享"); err == nil {
 		t.Fatal("an unshared file accepted a note")
+	}
+}
+
+func TestShareFileCompanionDocumentAdoptsAnExistingDuplicate(t *testing.T) {
+	const token = "cd_22222222222222222222222222222222"
+	var createdAt, patchedAt, syncedAt time.Time
+	var created, patched, synced bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/mobile/documents/shares":
+			_, _ = io.Copy(io.Discard, r.Body)
+			created = true
+			createdAt = time.Now()
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"code":"SHARE_DUPLICATE","message":"这份文档已经以相同的范围分享过了，请先删除原分享，或修改原分享","token":"`+token+`","share":{"token":"`+token+`","name":"论文.pdf","visibility":"public","permanent":true,"url":"https://hub.example/hub/documents/shares/`+token+`","revision":3,"size":5}}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/mobile/documents/shares/"+token:
+			patched = true
+			patchedAt = time.Now()
+			_, _ = io.WriteString(w, `{"token":"`+token+`","name":"论文.pdf","visibility":"public","permanent":true,"url":"https://hub.example/hub/documents/shares/`+token+`","revision":3,"size":5}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/mobile/documents/shares/"+token+"/sync":
+			synced = true
+			syncedAt = time.Now()
+			_, _ = io.WriteString(w, `{"token":"`+token+`","name":"论文.pdf","visibility":"public","permanent":true,"url":"https://hub.example/hub/documents/shares/`+token+`","revision":9,"size":5}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	source := filepath.Join(t.TempDir(), "论文.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-duplicate-recover"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.FileCompanionOpen(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.ShareFileCompanionDocument(source, "public", "", "", "[]", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || !patched || !synced {
+		t.Fatalf("calls created=%v patched=%v synced=%v", created, patched, synced)
+	}
+	if syncedAt.Before(createdAt) || !patchedAt.Before(syncedAt) {
+		t.Fatalf("duplicate recovery order: create=%v patch=%v sync=%v", createdAt, patchedAt, syncedAt)
+	}
+	if result.Token != token || result.Revision != 9 {
+		t.Fatalf("result = %+v", result)
+	}
+	fileCompanionLibraryMu.Lock()
+	items, _ := app.readFileCompanionLibraryLocked()
+	dismissed := app.readDismissedShareTokensLocked()[token]
+	fileCompanionLibraryMu.Unlock()
+	var row *FileCompanionLibraryItem
+	for i := range items {
+		if items[i].Source == "cloud" && items[i].Token == token {
+			row = &items[i]
+		}
+	}
+	if row == nil || !row.Mine || !strings.EqualFold(row.Path, opened.Path) {
+		t.Fatalf("adopted row = %+v", row)
+	}
+	if dismissed {
+		t.Fatal("the adopted share stayed dismissed")
 	}
 }
 
@@ -1865,7 +2008,7 @@ func fileCompanionProjectZip(t *testing.T, dir string) []byte {
 		t.Fatal(err)
 	}
 	zipPath := filepath.Join(dir, "project.zip")
-	if err := writeFileCompanionProject(zipPath, doc, json.RawMessage("[]"), []FileCompanionMessage{{Role: "assistant", Text: "restored chat"}}, paper, 1); err != nil {
+	if err := writeFileCompanionProject(zipPath, doc, json.RawMessage("[]"), nil, nil, nil, []FileCompanionMessage{{Role: "assistant", Text: "restored chat"}}, paper, 1); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(zipPath)

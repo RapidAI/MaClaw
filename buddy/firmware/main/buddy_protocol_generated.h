@@ -16,6 +16,7 @@
 
 /* Message type strings accepted on the wire. */
 #define BUDDY_MSG_AMBIENT "ambient"
+#define BUDDY_MSG_ASSET_ACK "asset_ack"
 #define BUDDY_MSG_ASSET_CHUNK "asset_chunk"
 #define BUDDY_MSG_CELEBRATE "celebrate"
 #define BUDDY_MSG_CLOCK "clock"

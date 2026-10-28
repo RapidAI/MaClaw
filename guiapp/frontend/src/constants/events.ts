@@ -42,6 +42,14 @@ export const EVENT_PROJECT_TASK_ACTIVATE = "project-task:activate";
 /** Emitted before task-close when the task was permanently deleted. */
 export const EVENT_PROJECT_TASK_DELETED = "project-task:deleted";
 
+/**
+ * Emitted when a task's durable transcript was replaced from outside its tab
+ * (currently: a task moved to a cloud workspace or back to local). Payload is
+ * the project path string. A blank open tab reloads the history; a tab that
+ * already shows turns keeps them.
+ */
+export const EVENT_PROJECT_TASK_HISTORY_UPDATED = "project-task:history-updated";
+
 /** Emitted after a task display name changes; matching open project tabs update immediately. */
 export const EVENT_PROJECT_TASK_RENAMED = "project-task:renamed";
 

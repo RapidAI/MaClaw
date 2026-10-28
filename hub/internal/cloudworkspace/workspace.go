@@ -344,6 +344,21 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 				item.OwnerEmail = strings.TrimSpace(owner.Email)
 			}
 		}
+		// Shared rows carry the owner's task title so a recipient restores the
+		// share with the same task name as the owner instead of the workspace
+		// name. The sidecar/binding is keyed by the owner's tenant and user id.
+		if strings.TrimSpace(item.TaskName) == "" {
+			ownerTenantID := strings.TrimSpace(item.ownerTenantID)
+			if ownerTenantID == "" {
+				ownerTenantID = tenantID
+			}
+			if task := s.taskSidecarFor(ctx, ownerTenantID, item.OwnerUserID, item.ID); task.Name != "" || task.Mode != "" {
+				item.TaskName = task.Name
+				item.TaskMode = task.Mode
+				item.CloudTaskID = task.CloudTaskID
+				item.BindingVersion = task.BindingVersion
+			}
+		}
 		if lease := leases[item.ID]; lease != nil {
 			item.Lease = &EntitlementLease{
 				Held:               !leaseExpired(lease.ExpiresAt, now),

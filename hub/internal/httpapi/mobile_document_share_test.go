@@ -485,6 +485,16 @@ func TestCompanionDocumentShareRejectsDuplicatePaperAndScope(t *testing.T) {
 	if !strings.Contains(duplicate.Body.String(), "已经以相同的范围分享过") {
 		t.Fatalf("duplicate message: %s", duplicate.Body.String())
 	}
+	var duplicatePayload map[string]any
+	if err := json.Unmarshal(duplicate.Body.Bytes(), &duplicatePayload); err != nil {
+		t.Fatalf("duplicate payload: %v", err)
+	}
+	if duplicatePayload["token"] != firstToken {
+		t.Fatalf("duplicate token = %v, want %s", duplicatePayload["token"], firstToken)
+	}
+	if shared, ok := duplicatePayload["share"].(map[string]any); !ok || shared["token"] != firstToken {
+		t.Fatalf("duplicate share = %v", duplicatePayload["share"])
+	}
 
 	// A different audience is a different link.
 	if rec := create(ownerToken, "person", "", "reader@example.com", hash, paper); rec.Code != http.StatusOK {
@@ -647,5 +657,13 @@ func TestCompanionDocumentShareDeleteRemovesLinkAndBlob(t *testing.T) {
 
 	if rec := deleteCompanionShareAs(t, identity, ownerToken, token); rec.Code != http.StatusNotFound {
 		t.Fatalf("second delete: %d %s", rec.Code, rec.Body.String())
+	}
+	// The same paper and audience can go out again after the link is gone.
+	again := postCompanionShareWithFields(t, identity, ownerToken, "public", "", "", "0", "gone.pdf", "", body)
+	if again.Code != http.StatusOK {
+		t.Fatalf("re-share after delete: %d %s", again.Code, again.Body.String())
+	}
+	if next := companionShareTokenFrom(t, again); next == token {
+		t.Fatalf("re-share reused the deleted token %s", token)
 	}
 }

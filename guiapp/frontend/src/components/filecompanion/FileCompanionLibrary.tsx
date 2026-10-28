@@ -15,11 +15,16 @@ import {
     SyncFileCompanionShare,
     UpdateFileCompanionGroup,
     UpdateFileCompanionShare,
+    TransferFileCompanionShareHost,
+    RevokeFileCompanionShareHost,
     FileCompanionExportProject,
 } from "../../../wailsjs/go/main/App";
 import { useDialog } from "../CustomDialog";
 import { loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
+import { loadChatMarks, saveChatMarks } from "./chatMarks";
+import { loadPdfAnnotations } from "./pdfTranslations";
 import { savePdfTranslations } from "./pdfTranslations";
+import { loadPdfDrawings, savePdfDrawings } from "./pdfDrawings";
 
 export type CompanionLibraryItem = {
     id: string;
@@ -34,6 +39,13 @@ export type CompanionLibraryItem = {
     size: number;
     permanent: boolean;
     mine: boolean;
+    // admin is the share creator; host is the current host seat for this
+    // viewer. The creator keeps admin rights after transferring the host seat.
+    admin?: boolean;
+    host?: boolean;
+    hostLabel?: string;
+    pendingHost?: boolean;
+    pendingHostLabel?: string;
     revision: number;
     target: string;
     groupId: string;
@@ -41,6 +53,13 @@ export type CompanionLibraryItem = {
     // keeps the project here but no longer counts as an active share.
     expired: boolean;
     highlights: string;
+    // chatMarks and annotations are set on an import that unpacked a project
+    // carrying answer highlights or placed notes. They are not stored on the
+    // library row.
+    chatMarks?: string;
+    annotations?: string;
+    // drawings is the same import-only value for freehand marks.
+    drawings?: string;
     // Notes are other readers' discussion carried on each cloud row.
     notes: CompanionShareNote[];
     // token is the share identity on the hub. A cloud row's id is the token,
@@ -72,6 +91,17 @@ export type CompanionShareBinding = {
 export type CompanionShareUpdate = {
     path: string;
     highlights: string;
+    // chatMarks is present only when the host's project carries answer
+    // highlights. A legacy project omits it and leaves local marks alone.
+    chatMarks: string;
+    chatMarksKnown: boolean;
+    // annotations is the host's placed notes, also optional for legacy
+    // projects so local notes survive.
+    annotations: string;
+    annotationsKnown: boolean;
+    // drawings is the host's freehand strokes, optional for the same reason.
+    drawings: string;
+    drawingsKnown: boolean;
     messages: unknown[];
     project: boolean;
     replaceMessages: boolean;
@@ -83,6 +113,13 @@ export type CompanionShareRow = {
     path: string;
     token: string;
     mine: boolean;
+    admin: boolean;
+    host: boolean;
+    hostLabel: string;
+    pendingHost: boolean;
+    pendingHostLabel: string;
+    // owner is the share creator's label. hostLabel names the current host.
+    owner: string;
     name: string;
     visibility: string;
     expiresAt: string;
@@ -147,6 +184,20 @@ function numberOf(record: Record<string, unknown>, camel: string, pascal: string
     return typeof value === "number" ? value : 0;
 }
 
+// companionHostFlag reads the host seat the way the desktop does: hostKnown
+// says the Hub answered, so a false host is real and not a missing field. A row
+// written before host transfer existed has neither field, and its creator was
+// the host, so it falls back to mine.
+function companionHostFlag(record: Record<string, unknown>): boolean {
+    if (Object.prototype.hasOwnProperty.call(record, "hostKnown") || Object.prototype.hasOwnProperty.call(record, "HostKnown")) {
+        return boolOf(record, "hostKnown", "HostKnown") && boolOf(record, "host", "Host");
+    }
+    if (Object.prototype.hasOwnProperty.call(record, "host") || Object.prototype.hasOwnProperty.call(record, "Host")) {
+        return boolOf(record, "host", "Host");
+    }
+    return boolOf(record, "mine", "Mine");
+}
+
 function libraryError(err: unknown): string {
     const raw = (err instanceof Error ? err.message : typeof err === "string" ? err : "").trim();
     return raw || "操作失败";
@@ -171,11 +222,19 @@ function readItem(raw: unknown): CompanionLibraryItem | null {
         size: numberOf(record, "size", "Size"),
         permanent: boolOf(record, "permanent", "Permanent"),
         mine: boolOf(record, "mine", "Mine"),
+        admin: boolOf(record, "admin", "Admin") || boolOf(record, "mine", "Mine"),
+        host: companionHostFlag(record),
+        hostLabel: textOf(record, "hostLabel", "HostLabel") || textOf(record, "owner", "Owner"),
+        pendingHost: boolOf(record, "pendingHost", "PendingHost"),
+        pendingHostLabel: textOf(record, "pendingHostLabel", "PendingHostLabel"),
         revision: numberOf(record, "revision", "Revision"),
         target: textOf(record, "target", "Target"),
         groupId: textOf(record, "groupId", "GroupID"),
         expired: boolOf(record, "expired", "Expired"),
         highlights: textOf(record, "highlights", "Highlights"),
+        chatMarks: textOf(record, "chatMarks", "ChatMarks"),
+        annotations: textOf(record, "annotations", "Annotations"),
+        drawings: textOf(record, "drawings", "Drawings"),
         notes: companionNotesFrom(record.notes ?? record.Notes),
         token: textOf(record, "token", "Token") || (id.startsWith("cd_") ? id : ""),
     };
@@ -327,9 +386,21 @@ function readUpdates(raw: unknown): CompanionShareUpdate[] {
         if (!path) return null;
         const hasMessages = Object.prototype.hasOwnProperty.call(record, "messages") || Object.prototype.hasOwnProperty.call(record, "Messages");
         const messages = record.messages ?? record.Messages;
+        const hasChatMarks = Object.prototype.hasOwnProperty.call(record, "chatMarks") || Object.prototype.hasOwnProperty.call(record, "ChatMarks");
+        const chatMarks = record.chatMarks ?? record.ChatMarks;
+        const hasAnnotations = Object.prototype.hasOwnProperty.call(record, "annotations") || Object.prototype.hasOwnProperty.call(record, "Annotations");
+        const annotations = record.annotations ?? record.Annotations;
+        const hasDrawings = Object.prototype.hasOwnProperty.call(record, "drawings") || Object.prototype.hasOwnProperty.call(record, "Drawings");
+        const drawings = record.drawings ?? record.Drawings;
         return {
             path,
             highlights: textOf(record, "highlights", "Highlights"),
+            chatMarks: typeof chatMarks === "string" ? chatMarks : "",
+            chatMarksKnown: hasChatMarks,
+            annotations: typeof annotations === "string" ? annotations : "",
+            annotationsKnown: hasAnnotations,
+            drawings: typeof drawings === "string" ? drawings : "",
+            drawingsKnown: hasDrawings,
             messages: Array.isArray(messages) ? messages : [],
             project: boolOf(record, "project", "Project"),
             replaceMessages: hasMessages,
@@ -416,10 +487,14 @@ export function companionShareNotes(raw: unknown): CompanionShareBinding[] {
         const path = textOf(row, "path", "Path");
         const token = textOf(row, "token", "Token");
         if (!path || !token) continue;
+        // `mine` here means "this machine holds the host seat": a transferred
+        // host answers discussion like the owner, even though the owner keeps
+        // admin rights on the share.
+        const host = companionHostFlag(row);
         out.push({
             path,
             token,
-            mine: boolOf(row, "mine", "Mine"),
+            mine: host,
             notes: companionNotesFrom(row.notes ?? row.Notes),
             revision: numberOf(row, "notesRevision", "NotesRevision"),
         });
@@ -451,6 +526,67 @@ export function companionMineShares(raw: unknown): CompanionShareRow[] {
             path: textOf(row, "path", "Path"),
             token,
             mine: true,
+            admin: true,
+            host: companionHostFlag(row),
+            hostLabel: textOf(row, "hostLabel", "HostLabel") || textOf(row, "owner", "Owner"),
+            pendingHost: boolOf(row, "pendingHost", "PendingHost"),
+            pendingHostLabel: textOf(row, "pendingHostLabel", "PendingHostLabel"),
+            owner: textOf(row, "owner", "Owner"),
+            name: textOf(row, "name", "Name"),
+            visibility: textOf(row, "visibility", "Visibility") || "public",
+            expiresAt: textOf(row, "expiresAt", "ExpiresAt"),
+            shareUrl: textOf(row, "shareUrl", "ShareURL"),
+            target: textOf(row, "target", "Target"),
+            groupId: textOf(row, "groupId", "GroupID"),
+        });
+    }
+    return out;
+}
+
+// sameCompanionMineShare is the title-bar row. The token staying the same is
+// not enough: the host seat and the pending nomination move without a new link.
+export function sameCompanionMineShare(left: CompanionShareRow | undefined, right: CompanionShareRow): boolean {
+    if (!left) return false;
+    return left.token === right.token
+        && left.host === right.host
+        && left.hostLabel === right.hostLabel
+        && left.pendingHost === right.pendingHost
+        && left.pendingHostLabel === right.pendingHostLabel
+        && left.visibility === right.visibility
+        && left.expiresAt === right.expiresAt
+        && left.target === right.target
+        && left.groupId === right.groupId
+        && left.owner === right.owner
+        && left.name === right.name
+        && left.shareUrl === right.shareUrl;
+}
+
+// companionHostShares is the auto-push seat: the current host on this machine.
+// The admin keeps the management row (companionMineShares) but stops pushing
+// automatically after transferring the seat.
+export function companionHostShares(raw: unknown): CompanionShareRow[] {
+    if (!raw || typeof raw !== "object") return [];
+    const record = raw as Record<string, unknown>;
+    const items = Array.isArray(record.items) ? record.items : Array.isArray(record.Items) ? record.Items : [];
+    const out: CompanionShareRow[] = [];
+    for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const row = item as Record<string, unknown>;
+        if (boolOf(row, "expired", "Expired")) continue;
+        const host = companionHostFlag(row);
+        if (!host) continue;
+        const token = textOf(row, "token", "Token") || textOf(row, "id", "ID");
+        if (!token.startsWith("cd_")) continue;
+        out.push({
+            path: textOf(row, "path", "Path"),
+            token,
+            mine: true,
+            admin: boolOf(row, "admin", "Admin") || boolOf(row, "mine", "Mine"),
+            host: true,
+            hostLabel: textOf(row, "hostLabel", "HostLabel") || textOf(row, "owner", "Owner"),
+            pendingHost: boolOf(row, "pendingHost", "PendingHost"),
+            pendingHostLabel: textOf(row, "pendingHostLabel", "PendingHostLabel"),
+            owner: textOf(row, "owner", "Owner"),
             name: textOf(row, "name", "Name"),
             visibility: textOf(row, "visibility", "Visibility") || "public",
             expiresAt: textOf(row, "expiresAt", "ExpiresAt"),
@@ -480,12 +616,12 @@ export function companionShareHosts(raw: unknown): Map<string, CompanionShareHos
         const token = textOf(row, "token", "Token");
         if (!path || !token) continue;
         const key = companionSharePathKey(path);
-        const mine = boolOf(row, "mine", "Mine");
-        const owner = textOf(row, "owner", "Owner");
+        const host = companionHostFlag(row);
+        const label = textOf(row, "hostLabel", "HostLabel") || textOf(row, "owner", "Owner");
         const held = out.get(key);
-        // One file can belong to several shares. The share this person created
-        // is the host seat here; otherwise the first received share answers.
-        if (!held || (mine && !held.mine)) out.set(key, { owner, mine });
+        // One file can belong to several shares. A row where this person is
+        // the current host wins; otherwise the first share answers.
+        if (!held || (host && !held.mine)) out.set(key, { owner: label, mine: host });
     }
     return out;
 }
@@ -578,16 +714,19 @@ function companionRemoveConfirm(item: CompanionLibraryItem, name: string): { mes
             message: `确认删除“${name}”？\n源文件会保留。本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
         };
     }
+    if (item.mine && !item.expired) {
+        // Removing an owner's live cloud row is the share control; it must
+        // revoke the link so every participant drops the copy and closes the
+        // tab. An expired link has no reader to notify and is removed locally.
+        return {
+            title: "取消分享",
+            message: `确认取消分享“${name}”？\n所有参与者会从文档管理移除，并在伴读中关闭该文档。\n本机的文档、高亮、批注和手绘会保留。\n此操作不可撤销。`,
+        };
+    }
     if (item.expired) {
         return {
             title: "移除文档",
             message: `确认从文档管理移除“${name}”？\n源文件会保留；这份分享已过期。\n本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
-        };
-    }
-    if (item.mine) {
-        return {
-            title: "移除文档",
-            message: `确认从文档管理移除“${name}”？\n源文件会保留；云端分享链接不会失效。\n本机的高亮、讨论和阅读记录会被清除；如需让链接失效，请点“修改”后在底部删除分享。\n此操作不可撤销。`,
         };
     }
     return {
@@ -757,7 +896,15 @@ export function CompanionLibraryView({
         });
     };
 
-    const marksJSONOf = (path: string): string => JSON.stringify(loadPdfMarks(path) || []);
+    // Every reader mark travels together: PDF highlights and freehand marks on
+    // the paper, answer highlights on the chat, and placed notes. One payload
+    // keeps them on one revision.
+    const marksJSONOf = (path: string): string => JSON.stringify({
+        highlights: loadPdfMarks(path) || [],
+        chatMarks: loadChatMarks(path),
+        annotations: loadPdfAnnotations(path),
+        drawings: loadPdfDrawings(path),
+    });
 
     const syncRow = async (item: CompanionLibraryItem) => {
         if (!item.path || rowBusy[item.id]) return;
@@ -806,7 +953,11 @@ export function CompanionLibraryView({
                 ok = await showConfirm(
                     confirm.message,
                     confirm.title,
-                    { confirmText: "删除", cancelText: "取消", confirmVariant: "danger" },
+                    {
+                        confirmText: item.source === "cloud" && item.mine && !item.expired ? "取消分享" : "删除",
+                        cancelText: "取消",
+                        confirmVariant: "danger",
+                    },
                 );
             } finally {
                 confirmOpenRef.current = false;
@@ -817,18 +968,29 @@ export function CompanionLibraryView({
             }
             setRowBusy((current) => ({ ...current, [item.id]: "delete" }));
             try {
-                const raw = await DeleteFileCompanionProject(item.id) as Record<string, unknown>;
-                // Any list that started before this delete finished still has the
-                // project. Drop it. The reload below starts after the bump.
-                if (libraryDeleteGen) libraryDeleteGen.current += 1;
-                const path = textOf(raw, "path", "Path") || item.path;
-                const cleared = boolOf(raw, "cleared", "Cleared");
-                if (cleared && path) {
-                    savePdfMarks(path, []);
-                    savePdfTranslations(path, []);
-                    onProjectDeleted?.(path);
+                if (item.source === "cloud" && item.mine && item.token && !item.expired) {
+                    // The owner's 移除 is the share control: revoke the link on
+                    // the Hub. Participants' next refresh treats the missing
+                    // token as deleted and withdraws the copy and open tab.
+                    await DeleteFileCompanionShare(item.token);
+                    if (libraryDeleteGen) libraryDeleteGen.current += 1;
+                    showToast("已取消分享，参与者会移除并关闭该文档", "success", 6000);
+                } else {
+                    const raw = await DeleteFileCompanionProject(item.id) as Record<string, unknown>;
+                    // Any list that started before this delete finished still has
+                    // the project. Drop it. The reload below starts after the bump.
+                    if (libraryDeleteGen) libraryDeleteGen.current += 1;
+                    const path = textOf(raw, "path", "Path") || item.path;
+                    const cleared = boolOf(raw, "cleared", "Cleared");
+                    if (cleared && path) {
+                        savePdfMarks(path, []);
+                        savePdfTranslations(path, []);
+                        savePdfDrawings(path, []);
+                        saveChatMarks(path, []);
+                        onProjectDeleted?.(path);
+                    }
+                    showToast(cleared ? "已删除伴读数据，源文件仍在" : "已从文档管理移除，源文件仍在", "success", 6000);
                 }
-                showToast(cleared ? "已删除伴读数据，源文件仍在" : "已从文档管理移除，源文件仍在", "success", 6000);
             } catch (err) {
                 showToast(libraryError(err), "error", 6000);
             }
@@ -913,6 +1075,9 @@ export function CompanionLibraryView({
                     <p className="file-companion-project-meta">
                         <span className="file-companion-badge" data-tone="source">{item.source === "cloud" ? "云端" : "本机"}</span>
                         {item.source === "cloud" ? <span className="file-companion-badge">{audienceLabel(item.visibility)}</span> : null}
+                        {item.source === "cloud" && item.host ? (
+                            <span className="file-companion-badge" data-tone="active">主持人</span>
+                        ) : null}
                         <span className="file-companion-badge">{whenLabel(item)}</span>
                         {marks > 0 ? <span className="file-companion-badge" data-tone="mark">标注 {marks}</span> : null}
                         {notes > 0 ? <span className="file-companion-badge" data-tone="note">讨论 {notes}</span> : null}
@@ -962,6 +1127,12 @@ export function CompanionLibraryView({
                                 path: shareRow.path,
                                 token: shareRow.token,
                                 mine: true,
+                                admin: true,
+                                host: shareRow.host !== false,
+                                hostLabel: shareRow.hostLabel || "",
+                                pendingHost: Boolean(shareRow.pendingHost),
+                                pendingHostLabel: shareRow.pendingHostLabel || "",
+                                owner: shareRow.owner || "",
                                 name: shareRow.name,
                                 visibility: shareRow.visibility,
                                 expiresAt: shareRow.expiresAt,
@@ -973,7 +1144,7 @@ export function CompanionLibraryView({
                             修改
                         </button>
                     ) : null}
-                    {item.path && item.source === "cloud" && shareRow ? (
+                    {item.path && item.source === "cloud" && item.host ? (
                         <button
                             type="button"
                             className="file-companion-project-action"
@@ -1002,10 +1173,16 @@ export function CompanionLibraryView({
                         className="file-companion-project-action"
                         data-testid={`file-companion-library-delete-${item.id}`}
                         disabled={Boolean(busy)}
-                        title={item.source === "cloud" ? "从文档管理移除；云端分享链接不会失效" : "删除伴读数据，不删除源文件"}
+                        title={item.source === "cloud"
+                            ? (item.mine && !item.expired
+                                ? "取消分享 — 参与者会移除并关闭该文档"
+                                : item.expired ? "移除已过期的分享" : "从文档管理移除；云端分享仍属于分享者")
+                            : "删除伴读数据，不删除源文件"}
                         onClick={() => { void deleteRow(item); }}
                     >
-                        {busy === "delete" ? "删除中…" : item.source === "cloud" ? "移除" : "删除"}
+                        {busy === "delete"
+                            ? (item.source === "cloud" && item.mine ? "取消中…" : "删除中…")
+                            : item.source === "cloud" && item.mine && !item.expired ? "取消分享" : item.source === "cloud" ? "移除" : "删除"}
                     </button>
                 </div>
             </div>
@@ -1601,6 +1778,14 @@ export function CompanionShareDialog({
     // opened with is a snapshot, so it still shows the old audience and
     // expiry after a save.
     const [savedEcho, setSavedEcho] = useState<{ visibility: string; expiresAt: string } | null>(null);
+    const [hostContact, setHostContact] = useState("");
+    const [hostLabel, setHostLabel] = useState(share?.hostLabel || share?.owner || "");
+    const [pendingHost, setPendingHost] = useState(share?.pendingHostLabel || "");
+    // hostIsMe follows the seat, not the label. A missing host label falls back
+    // to the owner, which used to hide 收回 even after the seat had moved.
+    const [hostIsMe, setHostIsMe] = useState(share?.host !== false);
+    const [hostBusy, setHostBusy] = useState(false);
+    const [hostError, setHostError] = useState("");
     const echoVisibility = savedEcho?.visibility ?? share?.visibility ?? "public";
     const echoExpiresAt = savedEcho ? savedEcho.expiresAt : (share?.expiresAt ?? "");
     const listedRef = useRef(onListed);
@@ -1616,6 +1801,13 @@ export function CompanionShareDialog({
     }, []);
 
     useEffect(() => {
+        setHostLabel(share?.hostLabel || share?.owner || "");
+        setPendingHost(share?.pendingHostLabel || "");
+        setHostIsMe(share?.host !== false);
+        setHostError("");
+    }, [share?.token, share?.host, share?.hostLabel, share?.owner, share?.pendingHostLabel]);
+
+    useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
             if (event.key !== "Escape") return;
             event.preventDefault();
@@ -1627,19 +1819,30 @@ export function CompanionShareDialog({
 
     const reload = useCallback(async () => {
         const started = libraryDeleteGen?.current ?? 0;
+        const token = share?.token ?? "";
         try {
             const listed = await ListFileCompanionLibrary();
             if (libraryDeleteGen && libraryDeleteGen.current !== started) return;
             listedRef.current?.(listed);
+            if (!token) return;
+            const row = companionMineShares(listed).find((item) => item.token === token);
+            if (!row) return;
+            // The dialog's share prop is the row it opened with. A range edit
+            // can cancel a nomination or return the seat, and this is the copy
+            // the host section is showing.
+            setHostLabel(row.hostLabel || row.owner || "");
+            setPendingHost(row.pendingHostLabel || "");
+            setHostIsMe(row.host);
         } catch {
             // The toast already carried the failure; the next refresh lands the row.
         }
-    }, [libraryDeleteGen]);
+    }, [libraryDeleteGen, share?.token]);
 
     // loadPdfMarks reads and parses local storage, so the dialog parses once
-    // per render and both actions send the same string.
+    // per render and both actions send the same string. Answer highlights
+    // travel with the paper highlights so one revision carries both.
     const marks = loadPdfMarks(path);
-    const marksJSON = marks.length > 0 ? JSON.stringify(marks) : "[]";
+    const marksJSON = JSON.stringify({ highlights: marks, chatMarks: loadChatMarks(path), annotations: loadPdfAnnotations(path), drawings: loadPdfDrawings(path) });
     const highlightsCount = marks.length;
 
     const shareCurrent = async () => {
@@ -1747,6 +1950,63 @@ export function CompanionShareDialog({
         showToast("已删除分享", "success", 6000);
         onClose();
         await reload();
+    };
+
+    // transferHost nominates a participant. The seat only moves after that
+    // person accepts in their own notification; the admin keeps management.
+    const transferHost = async () => {
+        const token = share?.token ?? "";
+        const contact = hostContact.trim();
+        if (!token || hostBusy) return;
+        if (!contact) {
+            setHostError("请填写参与者邮箱或手机号");
+            return;
+        }
+        setHostBusy(true);
+        setHostError("");
+        try {
+            await TransferFileCompanionShareHost(token, contact);
+            setPendingHost(contact);
+            setHostContact("");
+            showToast("已发送主持人转移邀请，等待对方接受", "success", 6000);
+            await reload();
+        } catch (err) {
+            setHostError(libraryError(err));
+        } finally {
+            setHostBusy(false);
+        }
+    };
+
+    // revokeHost cancels a pending nomination, or takes the seat back from the
+    // current host. The admin never loses management rights.
+    const revokeHost = async () => {
+        const token = share?.token ?? "";
+        if (!token || hostBusy) return;
+        const ok = await showConfirm(
+            pendingHost
+                ? `确认取消提名 ${pendingHost} 接任主持人？`
+                : "确认收回主持权，由你重新担任主持人？",
+            pendingHost ? "取消转移" : "收回主持权",
+            { confirmText: "确认", cancelText: "取消", confirmVariant: "danger" },
+        );
+        if (!ok) return;
+        const cancelling = Boolean(pendingHost);
+        setHostBusy(true);
+        setHostError("");
+        try {
+            await RevokeFileCompanionShareHost(token, cancelling ? "cancel" : "revoke");
+            if (!cancelling) setHostIsMe(true);
+            setPendingHost("");
+            showToast(cancelling ? "已取消主持人转移" : "已收回主持权", "success", 6000);
+            await reload();
+        } catch (err) {
+            setHostError(libraryError(err));
+            // The seat may already have moved (the nominee accepted). Show that
+            // instead of leaving the cancel button on a finished nomination.
+            await reload();
+        } finally {
+            setHostBusy(false);
+        }
     };
 
     const cardRef = useDialogFocus<HTMLDivElement>(".file-companion-audience-option");
@@ -1863,6 +2123,48 @@ export function CompanionShareDialog({
                         </div>
                     </section>
 
+                    {editing && share?.admin ? (
+                        <section className="file-companion-dialog-section" data-testid="file-companion-share-host">
+                            <h3 className="file-companion-dialog-label">主持人</h3>
+                            <p className="file-companion-dialog-hint" data-testid="file-companion-share-host-current">
+                                {hostLabel ? `当前主持人：${hostLabel}` : "当前主持人：你"}
+                            </p>
+                            {pendingHost ? (
+                                <div className="file-companion-dialog-row">
+                                    <p className="file-companion-dialog-hint" data-testid="file-companion-share-host-pending">
+                                        已提名 {pendingHost}，等待对方在通知里接受。
+                                    </p>
+                                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-host-cancel" disabled={hostBusy} onClick={() => { void revokeHost(); }}>
+                                        取消转移
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="file-companion-dialog-row">
+                                    <input
+                                        className="file-companion-dialog-input"
+                                        data-testid="file-companion-share-host-target"
+                                        aria-label="新主持人的邮箱或手机号"
+                                        placeholder="参与者的邮箱或手机号"
+                                        value={hostContact}
+                                        onChange={(event) => setHostContact(event.target.value)}
+                                    />
+                                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-host-transfer" disabled={hostBusy} onClick={() => { void transferHost(); }}>
+                                        转移主持权
+                                    </button>
+                                    {!hostIsMe ? (
+                                        <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-host-revoke" disabled={hostBusy} onClick={() => { void revokeHost(); }}>
+                                            收回主持权
+                                        </button>
+                                    ) : null}
+                                </div>
+                            )}
+                            <p className="file-companion-dialog-hint">对方接受后才转移；你保留管理权，可随时收回或另行指定。</p>
+                            {hostError ? (
+                                <p className="file-companion-dialog-error" data-testid="file-companion-share-host-error" role="alert">{hostError}</p>
+                            ) : null}
+                        </section>
+                    ) : null}
+
                     {shareURL ? (
                         <section className="file-companion-dialog-section file-companion-dialog-result" data-testid="file-companion-share-result">
                             <h3 className="file-companion-dialog-label">{editing ? "分享链接" : "链接已生成"}</h3>
@@ -1948,7 +2250,19 @@ export function CompanionImportDialog({
         try {
             const imported = readItem(await ImportFileCompanionShare(trimmed, secret.trim()));
             if (imported?.path && imported.highlights) {
-                updatedRef.current?.({ path: imported.path, highlights: imported.highlights, messages: [], project: true, replaceMessages: false });
+                updatedRef.current?.({
+                    path: imported.path,
+                    highlights: imported.highlights,
+                    chatMarks: imported.chatMarks ?? "",
+                    chatMarksKnown: Boolean(imported.chatMarks),
+                    annotations: imported.annotations ?? "",
+                    annotationsKnown: Boolean(imported.annotations),
+                    drawings: imported.drawings ?? "",
+                    drawingsKnown: Boolean(imported.drawings),
+                    messages: [],
+                    project: true,
+                    replaceMessages: false,
+                });
             }
             showToast("已导入文档库", "success", 6000);
             try {

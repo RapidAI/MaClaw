@@ -551,7 +551,7 @@ func CompanionDocumentGroupMembersHandler(identity *auth.IdentityService) http.H
 		case http.MethodPost:
 			addCompanionGroupMember(r.Context(), identity, w, groupID, ownerID, contact)
 		case http.MethodDelete:
-			removeCompanionGroupMember(r.Context(), w, groupID, ownerID, contact)
+			removeCompanionGroupMember(r.Context(), identity, w, groupID, ownerID, contact)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST or DELETE")
 		}
@@ -669,7 +669,7 @@ func storeCompanionGroupMemberNotification(groupID, contact, noticeID string) *c
 	return nil
 }
 
-func removeCompanionGroupMember(ctx context.Context, w http.ResponseWriter, groupID, ownerID, contact string) {
+func removeCompanionGroupMember(ctx context.Context, identity *auth.IdentityService, w http.ResponseWriter, groupID, ownerID, contact string) {
 	loadCompanionDocGroups()
 	companionDocGroups.Lock()
 	group, ok := companionDocGroups.items[groupID]
@@ -715,6 +715,9 @@ func removeCompanionGroupMember(ctx context.Context, w http.ResponseWriter, grou
 	// A withdrawn invitation must leave the bell, not stay as a notice whose
 	// buttons the hub would reject.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	// If this person was the host (or was nominated), that seat must not stay
+	// with someone who can no longer open the document.
+	reconcileGroupHostSeats(ctx, identity, groupID)
 	writeJSON(w, http.StatusOK, companionGroupView(group, ownerID))
 }
 
@@ -739,7 +742,7 @@ func CompanionDocumentGroupHandler(identity *auth.IdentityService) http.HandlerF
 		case http.MethodPatch:
 			updateCompanionGroup(w, r, groupID, ownerID)
 		case http.MethodDelete:
-			deleteCompanionGroup(r.Context(), w, groupID, ownerID)
+			deleteCompanionGroup(r.Context(), identity, w, groupID, ownerID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH or DELETE")
 		}
@@ -792,7 +795,7 @@ func updateCompanionGroup(w http.ResponseWriter, r *http.Request, groupID, owner
 	writeJSON(w, http.StatusOK, companionGroupView(group, ownerID))
 }
 
-func deleteCompanionGroup(ctx context.Context, w http.ResponseWriter, groupID, ownerID string) {
+func deleteCompanionGroup(ctx context.Context, identity *auth.IdentityService, w http.ResponseWriter, groupID, ownerID string) {
 	loadCompanionDocGroups()
 	companionDocGroups.Lock()
 	group, found := companionDocGroups.items[groupID]
@@ -818,6 +821,8 @@ func deleteCompanionGroup(ctx context.Context, w http.ResponseWriter, groupID, o
 	companionDocGroups.Unlock()
 	// Every pending invitation in a dissolved group is dead; its notice must go.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	// Every member lost access; a host seat held by a member must revert.
+	reconcileGroupHostSeats(ctx, identity, groupID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -881,6 +886,9 @@ func CompanionDocumentGroupLeaveHandler(identity *auth.IdentityService) http.Han
 			return
 		}
 		companionDocGroups.Unlock()
+		// The leaver may have been the host on a group share; that seat must
+		// not stay with someone who can no longer open the document.
+		reconcileGroupHostSeats(r.Context(), identity, groupID)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -1054,5 +1062,7 @@ func decideCompanionGroupInvite(ctx context.Context, w http.ResponseWriter, r *h
 	companionDocGroups.Unlock()
 	// A decided invitation is answered. Its notice must leave every device.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	// Every member lost access; a host seat held by a member must revert.
+	reconcileGroupHostSeats(ctx, identity, groupID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

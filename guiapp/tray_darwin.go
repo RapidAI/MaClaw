@@ -58,7 +58,7 @@ func setupTrayNative(app *App, appOptions *options.App) {
 			},
 			func() {
 				// Quit
-				runtime.Quit(app.ctx)
+				requestAppQuit(app.ctx)
 			},
 		)
 

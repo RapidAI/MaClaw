@@ -261,6 +261,7 @@ describe("codingTaskMode", () => {
             workingDir: "C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a",
         })).toBe(true);
         expect(isCloudWorkspaceTask({ project_path: "D:/tasks/local", working_dir: "D:/work/app" })).toBe(false);
+        expect(isCloudWorkspaceTask({ project_path: "D:/tasks/cloud-copy", working_dir: "C:/Users/me/.maclaw/data/cloud-workspaces-readonly/tenant/cws_a/cwi_1" })).toBe(true);
         expect(isCloudWorkspaceTask({ project_path: "C:/Users/me/.maclaw/data/cloud-workspaces/" })).toBe(true);
         expect(isCloudWorkspaceTask(null)).toBe(false);
     });
@@ -418,6 +419,27 @@ describe("codingTaskMode", () => {
         expect(cloudWorkspaceIdFromPath("C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\docs\\a.md")).toBe("cws_abc");
         expect(cloudWorkspaceIdFromPath("/home/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc")).toBe("cws_abc");
         expect(cloudWorkspaceIdFromPath("D:/work/app")).toBe("");
+    });
+
+    it("recognizes the read-share cache as a cloud workspace mount", () => {
+        const root = "C:\\Users\\me\\.maclaw\\data\\cloud-workspaces-readonly\\tenant_default\\cws_shared\\cwi_1";
+        expect(isCloudWorkspacePath(root)).toBe(true);
+        expect(isCloudWorkspacePath(`${root}\\docs\\报告.md`)).toBe(true);
+        expect(isCloudWorkspacePath("D:/work/app")).toBe(false);
+        expect(cloudWorkspaceIdFromPath(root)).toBe("cws_shared");
+        expect(cloudWorkspaceRootFromPath(`${root}\\docs\\报告.md`)).toBe(root.replace(/\\/g, "/"));
+        expect(cloudWorkspaceRootFromPath(root)).toBe(root.replace(/\\/g, "/"));
+        expect(cloudWorkspaceRelativePath(`${root}\\docs\\报告.md`)).toBe("docs/报告.md");
+        expect(cloudWorkspaceRelativePath(root)).toBe("");
+        expect(cloudSafePathLabel(`${root}\\docs\\报告.md`)).toBe("docs/报告.md");
+        expect(isCloudWorkspaceFilePath(`${root}\\docs\\报告.md`)).toBe(true);
+        expect(isActiveCloudWorkspacePreview({
+            isProjectTab: true,
+            projectPath: "D:/tasks/cloud-copy",
+            workingDir: root,
+        })).toBe(true);
+        const readOnlyWorkingDir = nextTabWorkingDir(null, "proj-2", root);
+        expect(nextTabWorkingDir(readOnlyWorkingDir, "proj-2", "D:/Users/me/Desktop")).toBe(readOnlyWorkingDir);
     });
 
     it("resolves the Hub workspace name from entitlement rows", () => {

@@ -4063,10 +4063,16 @@ func buildRemoteHighRiskApprovalCallbackOwned(handler *IMMessageHandler, loopCtx
 				return decision
 			case <-loopCtx.CancelC:
 				pendingScopeApprovals.Delete(approvalID)
+				if handler != nil {
+					emitScopeApprovalResolvedEvent(handler.app, approvalID)
+				}
 				recordScopeApprovalAudit(handler, approvalID, req, ScopeApprovalDeny, "cancelled")
 				return ScopeApprovalDeny
 			case <-timeout.C:
 				pendingScopeApprovals.Delete(approvalID)
+				if handler != nil {
+					emitScopeApprovalResolvedEvent(handler.app, approvalID)
+				}
 				decision := remoteScopeApprovalTimeoutDecision(req)
 				if onProgress != nil {
 					onProgress(remoteScopeApprovalTimeoutProgress(req, decision))
@@ -4085,6 +4091,9 @@ func buildRemoteHighRiskApprovalCallbackOwned(handler *IMMessageHandler, loopCtx
 			return decision
 		case <-timeout.C:
 			pendingScopeApprovals.Delete(approvalID)
+			if handler != nil {
+				emitScopeApprovalResolvedEvent(handler.app, approvalID)
+			}
 			decision := remoteScopeApprovalTimeoutDecision(req)
 			recordScopeApprovalAudit(handler, approvalID, req, decision, "timeout")
 			return decision

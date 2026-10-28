@@ -7,6 +7,7 @@
 #include "nvs_flash.h"
 
 #include "buddy_display.h"
+#include "buddy_pet.h"
 #include "buddy_protocol.h"
 #include "buddy_sound.h"
 #include "buddy_state.h"
@@ -56,6 +57,7 @@ void app_main(void) {
     // the host is still starting.
     buddy_state_weather_load();
 
+    const bool pet_buffer = buddy_pet_init();
     ESP_ERROR_CHECK(buddy_display_init());
     buddy_ui_init();
 
@@ -69,6 +71,9 @@ void app_main(void) {
     }
     if (sound_err != ESP_OK) {
         buddy_protocol_send_log("warn", "sound codec unavailable");
+    }
+    if (!pet_buffer) {
+        buddy_protocol_send_log("warn", "pet asset buffer unavailable");
     }
     buddy_protocol_send_log("info", "buddy firmware started");
 

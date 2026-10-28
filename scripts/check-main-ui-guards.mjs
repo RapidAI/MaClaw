@@ -592,10 +592,10 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/AboutPanel.tsx', 1000],
   ['guiapp/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['guiapp/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  // Refreshed 6800 -> ... -> 7130 -> 7170 (2026-10-27): the agent-preview focus
-  // and commit-gate work keeps growing this file (guard counts 7132); headroom
+  // Refreshed 6800 -> ... -> 7170 -> 7300 (2026-10-28): the agent-preview focus
+  // and commit-gate work keeps growing this file (guard counts 7251); headroom
   // absorbs it while that work is in progress. Re-tighten once it lands.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7170],
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7300],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],

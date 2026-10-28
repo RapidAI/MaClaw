@@ -184,10 +184,18 @@ func CloudWorkspaceRemoveShareRecipientHandler(svc *cloudworkspace.Service, iden
 // CloudWorkspaceAcceptShareHandler POST /api/v1/cloud-workspace-shares/{token}/accept
 func writeCloudWorkspaceShareAccepted(w http.ResponseWriter, svc *cloudworkspace.Service, r *http.Request, ws *cloudworkspace.Workspace, permission, accessToken string) {
 	ownerEmail := ""
-	if svc != nil && svc.Users != nil && ws != nil {
-		if user, userErr := svc.Users.GetByID(r.Context(), ws.UserID); userErr == nil && user != nil {
-			ownerEmail = strings.TrimSpace(user.Email)
+	taskName := ""
+	if svc != nil && ws != nil {
+		if svc.Users != nil {
+			if user, userErr := svc.Users.GetByID(r.Context(), ws.UserID); userErr == nil && user != nil {
+				ownerEmail = strings.TrimSpace(user.Email)
+			}
 		}
+		// The workspace name is not the owner's task title. Recipients restore
+		// the task list from this response, so carry the durable task identity
+		// (task.json sidecar / binding) whenever the owner has one.
+		task := svc.WorkspaceTaskIdentity(r.Context(), ws.TenantID, ws.UserID, ws.ID)
+		taskName = strings.TrimSpace(task.Name)
 	}
 	payload := map[string]any{
 		"workspace_id":     ws.ID,
@@ -195,6 +203,9 @@ func writeCloudWorkspaceShareAccepted(w http.ResponseWriter, svc *cloudworkspace
 		"share_permission": permission,
 		"owner_user_id":    ws.UserID,
 		"owner_email":      ownerEmail,
+	}
+	if taskName != "" {
+		payload["task_name"] = taskName
 	}
 	if strings.TrimSpace(accessToken) != "" {
 		payload["access_token"] = accessToken

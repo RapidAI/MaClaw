@@ -51,7 +51,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionHostShares, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, sameCompanionMineShare, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -75,9 +75,10 @@ import { NoteResultCard } from "./NoteResultCard";
 import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps } from "../../utils/windowDrag";
 import type { CodePreviewTheme } from "../ai/FileTabBar";
-import { loadPdfMarks, normalizePdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks, type PdfMark } from "./pdfMarks";
-import { savePdfTranslations } from "./pdfTranslations";
-import { CHAT_MARK_TEXT_MAX, loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
+import { loadPdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks } from "./pdfMarks";
+import { loadPdfAnnotations, loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, savePdfTranslations } from "./pdfTranslations";
+import { loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT, savePdfDrawings } from "./pdfDrawings";
+import { CHAT_MARKS_CHANGED_EVENT, CHAT_MARK_TEXT_MAX, loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
 import { applyChatHighlights, chatHighlightsSupported, chatMarkAtOffset, chatMessageIndexAt, chatMessageRoot, chatOffsetForPoint, chatSelectionSlices, chatTextSpans, clearChatHighlights, type ChatSelectionSlice } from "./chatMarkAnchors";
 import { CompanionChatMarkMenu } from "./CompanionChatMarkMenu";
 import { subscribeCompanionReaderState } from "./companionReaderState";
@@ -278,6 +279,14 @@ type CompanionDoc = {
     Messages?: CompanionMessageDoc[];
     highlights?: unknown;
     Highlights?: unknown;
+    // A project zip also carries the host's answer marks, placed notes, and
+    // freehand drawings. Older projects omit the latter fields.
+    chatMarks?: unknown;
+    ChatMarks?: unknown;
+    annotations?: unknown;
+    Annotations?: unknown;
+    drawings?: unknown;
+    Drawings?: unknown;
     imported?: boolean;
     Imported?: boolean;
 };
@@ -558,10 +567,11 @@ function knowledgeResultText(result: { imported_files?: number; failed_files?: n
     return { ok: true, text: "已进入桌面知识库" };
 }
 
-function highlightsFromDoc(doc: CompanionDoc): PdfMark[] | null {
-    const has = Object.prototype.hasOwnProperty.call(doc, "highlights") || Object.prototype.hasOwnProperty.call(doc, "Highlights");
-    if (!has) return null;
-    return normalizePdfMarks(doc.highlights ?? doc.Highlights);
+function docFieldJSON(doc: CompanionDoc, lower: string, upper: string): string {
+    const has = Object.prototype.hasOwnProperty.call(doc, lower) || Object.prototype.hasOwnProperty.call(doc, upper);
+    if (!has) return "[]";
+    const value = (doc as Record<string, unknown>)[lower] ?? (doc as Record<string, unknown>)[upper];
+    return JSON.stringify(value ?? []);
 }
 
 function messagesFromDoc(doc: CompanionDoc): ChatMessage[] {
@@ -1938,6 +1948,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const [mineSharesByPath, setMineSharesByPath] = useState<Map<string, CompanionShareRow>>(() => new Map());
     const mineSharesByPathRef = useRef(mineSharesByPath);
     mineSharesByPathRef.current = mineSharesByPath;
+    // The auto-push seat is the current host, not whoever created the share.
+    const [hostSharesByPath, setHostSharesByPath] = useState<Map<string, CompanionShareRow>>(() => new Map());
+    const hostSharesByPathRef = useRef(hostSharesByPath);
+    hostSharesByPathRef.current = hostSharesByPath;
     // Who hosts each shared file: the share's creator. A host badge marks the
     // document here and on every participant's screen at the same place.
     const [shareHosts, setShareHosts] = useState<Map<string, CompanionShareHost>>(() => new Map());
@@ -2001,8 +2015,18 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         }
         setMineSharesByPath((current) => {
             const same = nextMine.size === current.size
-                && [...nextMine].every(([key, row]) => current.get(key)?.token === row.token);
+                && [...nextMine].every(([key, row]) => sameCompanionMineShare(current.get(key), row));
             return same ? current : nextMine;
+        });
+        const nextHostSeats = new Map<string, CompanionShareRow>();
+        for (const row of companionHostShares(listed)) {
+            const key = companionSharePathKey(row.path);
+            if (key && !nextHostSeats.has(key)) nextHostSeats.set(key, row);
+        }
+        setHostSharesByPath((current) => {
+            const same = nextHostSeats.size === current.size
+                && [...nextHostSeats].every(([key, row]) => current.get(key)?.token === row.token);
+            return same ? current : nextHostSeats;
         });
         const nextHosts = companionShareHosts(listed);
         setShareHosts((current) => {
@@ -2077,6 +2101,56 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         } catch {
             savePdfMarks(update.path, []);
         }
+        // A legacy project has no answer highlights; leave this reader's own
+        // marks alone in that case. An empty array is a real "host cleared
+        // them" and must clear the page.
+        if (update.chatMarksKnown) {
+            let saved: ChatMark[] = [];
+            try {
+                saved = saveChatMarks(update.path, update.chatMarks ? JSON.parse(update.chatMarks) : []);
+            } catch {
+                saved = saveChatMarks(update.path, []);
+            }
+            if (companionSharePathKey(activeRef.current) === companionSharePathKey(update.path)) {
+                setChatMarksState({ path: update.path, marks: saved });
+            }
+        }
+        // The host's placed notes travel with the project. Local translations
+        // stay; a legacy project without the field leaves local notes alone.
+        if (update.annotationsKnown) {
+            let incoming: Record<string, unknown>[] = [];
+            try {
+                const raw = update.annotations ? JSON.parse(update.annotations) : [];
+                incoming = Array.isArray(raw)
+                    ? raw
+                        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && (item as { kind?: unknown }).kind === "annotation")
+                        .map((item) => ({ ...item, shared: true }))
+                    : [];
+            } catch {
+                incoming = [];
+            }
+            // Replace the host's notes only. A note this reader wrote stays
+            // local, and the host's next project does not wipe it.
+            const kept = loadPdfTranslations(update.path).filter((item) => item.kind !== "annotation" || item.shared !== true);
+            savePdfTranslations(update.path, [...kept, ...incoming]);
+        }
+        // The host's freehand strokes travel too. As with notes, only the
+        // host's previous drawings are replaced; this reader's own stay.
+        if (update.drawingsKnown) {
+            let incoming: Record<string, unknown>[] = [];
+            try {
+                const raw = update.drawings ? JSON.parse(update.drawings) : [];
+                incoming = Array.isArray(raw)
+                    ? raw
+                        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+                        .map((item) => ({ ...item, shared: true }))
+                    : [];
+            } catch {
+                incoming = [];
+            }
+            const kept = loadPdfDrawings(update.path).filter((item) => item.shared !== true);
+            savePdfDrawings(update.path, [...kept, ...incoming]);
+        }
         if (!update.replaceMessages) return;
         const updateKey = companionSharePathKey(update.path);
         const sessionId = tabsRef.current.find((tab) => companionSharePathKey(tab.path) === updateKey)?.sessionId ?? "";
@@ -2111,6 +2185,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             if (!path) continue;
             savePdfMarks(path, []);
             savePdfTranslations(path, []);
+            savePdfDrawings(path, []);
             saveChatMarks(path, []);
             const held = sharePushTimerRef.current.get(path);
             if (held !== undefined) {
@@ -2140,7 +2215,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             return;
         }
         sharePushInFlightRef.current.add(path);
-        void SyncFileCompanionShare(path, JSON.stringify(loadPdfMarks(path)))
+        void SyncFileCompanionShare(path, JSON.stringify({
+            highlights: loadPdfMarks(path),
+            chatMarks: loadChatMarks(path),
+            annotations: loadPdfAnnotations(path),
+            drawings: loadPdfDrawings(path),
+        }))
             .then(() => {
                 sharePushWarnedRef.current.delete(path);
             })
@@ -2157,7 +2237,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             });
     };
     const pushShareTranscript = (path: string) => {
-        if (!path || !mineSharesByPathRef.current.has(companionSharePathKey(path))) return;
+        if (!path || !hostSharesByPathRef.current.has(companionSharePathKey(path))) return;
         const timers = sharePushTimerRef.current;
         const held = timers.get(path);
         if (held !== undefined) window.clearTimeout(held);
@@ -2179,7 +2259,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             const detail = (event as CustomEvent<{ path?: string }>).detail;
             const path = String(detail?.path || "").trim();
             if (!path) return;
-            if (mineSharesByPathRef.current.has(companionSharePathKey(path))) {
+            if (hostSharesByPathRef.current.has(companionSharePathKey(path))) {
                 pushShareTranscriptRef.current(path);
                 return;
             }
@@ -2188,16 +2268,24 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             pendingShareMarksRef.current.add(path);
         };
         window.addEventListener(PDF_MARKS_CHANGED_EVENT, onMarksChanged);
-        return () => window.removeEventListener(PDF_MARKS_CHANGED_EVENT, onMarksChanged);
+        window.addEventListener(CHAT_MARKS_CHANGED_EVENT, onMarksChanged);
+        window.addEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, onMarksChanged);
+        window.addEventListener(PDF_DRAWINGS_CHANGED_EVENT, onMarksChanged);
+        return () => {
+            window.removeEventListener(PDF_MARKS_CHANGED_EVENT, onMarksChanged);
+            window.removeEventListener(CHAT_MARKS_CHANGED_EVENT, onMarksChanged);
+            window.removeEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, onMarksChanged);
+            window.removeEventListener(PDF_DRAWINGS_CHANGED_EVENT, onMarksChanged);
+        };
     }, []);
     useEffect(() => {
         if (pendingShareMarksRef.current.size === 0) return;
         for (const path of [...pendingShareMarksRef.current]) {
-            if (!mineSharesByPathRef.current.has(companionSharePathKey(path))) continue;
+            if (!hostSharesByPathRef.current.has(companionSharePathKey(path))) continue;
             pendingShareMarksRef.current.delete(path);
             pushShareTranscriptRef.current(path);
         }
-    }, [mineSharesByPath]);
+    }, [hostSharesByPath]);
     // The library panel is not the only reader. A removed member, or a newer
     // revision, has to land while the document is already open. A received
     // share polls on a short timer so the host's next line appears while the
@@ -2399,8 +2487,31 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             }
             const next = tabFromDoc(doc, trimmed);
             const imported = doc.imported === true || doc.Imported === true;
-            const importedMarks = highlightsFromDoc(doc);
-            if (importedMarks && next.path && !next.error) savePdfMarks(next.path, importedMarks);
+            if (imported && next.path && !next.error) {
+                const hasField = (lower: string, upper: string) =>
+                    Object.prototype.hasOwnProperty.call(doc, lower) || Object.prototype.hasOwnProperty.call(doc, upper);
+                const hasChatMarks = hasField("chatMarks", "ChatMarks");
+                const hasAnnotations = hasField("annotations", "Annotations");
+                const hasDrawings = hasField("drawings", "Drawings");
+                const hasHighlights = hasField("highlights", "Highlights");
+                if (hasHighlights || hasChatMarks || hasAnnotations || hasDrawings) {
+                    applyShareUpdateRef.current({
+                        path: next.path,
+                        // A project without the highlights field must not erase
+                        // marks the reader already had for the same document.
+                        highlights: hasHighlights ? docFieldJSON(doc, "highlights", "Highlights") : JSON.stringify(loadPdfMarks(next.path)),
+                        chatMarks: docFieldJSON(doc, "chatMarks", "ChatMarks"),
+                        chatMarksKnown: hasChatMarks,
+                        annotations: docFieldJSON(doc, "annotations", "Annotations"),
+                        annotationsKnown: hasAnnotations,
+                        drawings: docFieldJSON(doc, "drawings", "Drawings"),
+                        drawingsKnown: hasDrawings,
+                        messages: [],
+                        project: true,
+                        replaceMessages: false,
+                    });
+                }
+            }
             const resolved = next.path || trimmed;
             if (refresh < 1 && (saveEpoch.current.get(resolved) ?? 0) !== (epochsAtStart.get(resolved) ?? 0)) {
                 void openPath(resolved, fromDrop, keepDirty, 1, focus);
@@ -3038,6 +3149,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const activeTab = tabs.find((tab) => tab.path === active) ?? null;
     // The share this document already has, if this person created it.
     const sharedRow = active ? mineSharesByPath.get(companionSharePathKey(active)) ?? null : null;
+    const hostSeat = active ? hostSharesByPath.get(companionSharePathKey(active)) ?? null : null;
     const readHost = active ? shareHosts.get(companionSharePathKey(active)) ?? null : null;
     // A received share is a discussion. The host agent's answers arrive as
     // notes; show the ones that answer a reader note in the chat itself, where
@@ -3109,7 +3221,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
 
     const commitChatMarks = (next: ChatMark[]) => {
         if (!active) return;
-        setChatMarksState({ path: active, marks: saveChatMarks(active, next) });
+        // A reader's own answer highlight is part of the shared project when
+        // this document is hosted; the window uploads it after a debounce.
+        setChatMarksState({ path: active, marks: saveChatMarks(active, next, true) });
         setChatMenu(null);
     };
 
@@ -3685,7 +3799,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         exportFlight.current.add(flight);
         setProjectExportBusyPath(path);
         try {
-            const dest = await FileCompanionExportProject(path, JSON.stringify(loadPdfMarks(path)));
+            const dest = await FileCompanionExportProject(path, JSON.stringify({
+                highlights: loadPdfMarks(path),
+                chatMarks: loadChatMarks(path),
+                annotations: loadPdfAnnotations(path),
+                drawings: loadPdfDrawings(path),
+            }));
             if (dest) {
                 showToast("已导出项目", "success", 6000);
                 void ShowItemInFolder(dest).catch(() => undefined);
@@ -4312,14 +4431,30 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             const raw = await ImportFileCompanionShare(link, password) as Record<string, unknown>;
             const path = String(raw?.path || raw?.Path || "").trim();
             const highlights = String(raw?.highlights || raw?.Highlights || "");
+            const chatMarks = String(raw?.chatMarks || raw?.ChatMarks || "");
+            const annotations = String(raw?.annotations || raw?.Annotations || "");
+            const drawings = String(raw?.drawings || raw?.Drawings || "");
+            const has = (name: string) => Object.prototype.hasOwnProperty.call(raw, name) || Object.prototype.hasOwnProperty.call(raw, name[0].toUpperCase() + name.slice(1));
             if (!path) {
                 const failure = "导入失败：没有拿到文件";
                 if (sharePasswordRef.current) setSharePasswordError(failure);
                 else setArxivMessage(failure);
                 return;
             }
-            if (highlights) {
-                applyShareUpdateRef.current({ path, highlights, messages: [], project: true, replaceMessages: false });
+            if (highlights || has("chatMarks") || has("annotations") || has("drawings")) {
+                applyShareUpdateRef.current({
+                    path,
+                    highlights,
+                    chatMarks,
+                    chatMarksKnown: has("chatMarks"),
+                    annotations,
+                    annotationsKnown: has("annotations"),
+                    drawings,
+                    drawingsKnown: has("drawings"),
+                    messages: [],
+                    project: true,
+                    replaceMessages: false,
+                });
             }
             try {
                 await openPath(path, false, false, 0, true);
@@ -4747,13 +4882,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         onClick={() => setActive(tab.path)}
                     >
                         <span className="file-companion-tab-name">{tab.name}{tab.dirty ? "*" : ""}</span>
-                        {host ? (
+                        {host?.mine ? (
                             <span
                                 className="file-companion-tab-host"
                                 data-testid={`file-companion-tab-host-${tab.name}`}
-                                data-state={host.mine ? "mine" : "guest"}
-                                title={host.mine ? "你是主持人" : `主持人：${host.owner || "其他人"}`}
-                                aria-label={host.mine ? "你是主持人" : `主持人：${host.owner || "其他人"}`}
+                                data-state="mine"
+                                title="你是主持人"
+                                aria-label="你是主持人"
                             >
                                 主持
                             </span>
@@ -4762,9 +4897,17 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             <span
                                 className="file-companion-tab-share"
                                 data-testid={`file-companion-tab-share-${tab.name}`}
-                                data-state={tab.shareMine ? "mine" : "received"}
-                                title={tab.shareMine ? "已分享 — 链接可以修改分享范围和有效期" : "收到的分享"}
-                                aria-label={tab.shareMine ? "已分享" : "收到的分享"}
+                                data-state={mineSharesByPathRef.current.has(companionSharePathKey(tab.path))
+                                    ? "mine"
+                                    : hostSharesByPathRef.current.has(companionSharePathKey(tab.path)) ? "host" : "received"}
+                                title={mineSharesByPathRef.current.has(companionSharePathKey(tab.path))
+                                    ? "已分享 — 链接可以修改分享范围、有效期、主持人"
+                                    : hostSharesByPathRef.current.has(companionSharePathKey(tab.path))
+                                        ? "你是这份文档的主持人"
+                                        : "收到的分享"}
+                                aria-label={mineSharesByPathRef.current.has(companionSharePathKey(tab.path))
+                                    ? "已分享"
+                                    : hostSharesByPathRef.current.has(companionSharePathKey(tab.path)) ? "主持人" : "收到的分享"}
                             >
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
                                     <path d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
@@ -4979,6 +5122,20 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 {readHost.mine ? "你是主持人" : `主持人：${readHost.owner || "其他人"}`}
                             </span>
                         ) : null}
+                        {hostSeat && !sharedRow ? (
+                            <button
+                                type="button"
+                                className="file-companion-tool file-companion-tool--icon"
+                                data-testid="file-companion-host-sync"
+                                disabled={Boolean(activeTab.error) || isWebTab || !activeTab.path}
+                                aria-label="同步"
+                                title="同步 — 把最新标注和聊天推到这份分享"
+                                onClick={() => { runSharePush(activeTab.path); }}
+                            >
+                                <CompanionActionIcon name="cloud" />
+                                <span className="file-companion-sr">同步</span>
+                            </button>
+                        ) : (
                         <button
                             type="button"
                             className="file-companion-tool file-companion-tool--icon"
@@ -4995,6 +5152,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             <CompanionActionIcon name="share" />
                             <span className="file-companion-sr">{sharedRow ? "修改分享" : "分享"}</span>
                         </button>
+                        )}
                         {showConvert ? (
                         <button
                             type="button"
@@ -5514,7 +5672,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 <CompanionShareDialog
                     path={shareDialogPath}
                     name={shareDialogName}
-                    share={shareDialogRow}
+                    share={shareDialogRow
+                        ? mineSharesByPath.get(companionSharePathKey(shareDialogPath)) ?? shareDialogRow
+                        : null}
                     showToast={showToast}
                     onListed={(listed) => { applyLibraryListRef.current(listed); }}
                     libraryDeleteGen={libraryDeleteGen}

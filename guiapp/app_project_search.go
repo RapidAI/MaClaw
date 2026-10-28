@@ -5281,15 +5281,24 @@ func projectWorkflowStateFromV2(state *v2.WorkflowState) *ProjectWorkflowState {
 		// nil. Preserve that last phase as useful context in the recent task list.
 		phaseID = state.Phases[len(state.Phases)-1].ID
 	}
+	status := string(state.Status)
+	// A workflow that was active when the app closed is suspended on the next
+	// startup: nothing is executing until the user resumes it, so the task list
+	// must not count it as in progress.
+	if state.Status == v2.StatusActive && state.Suspended {
+		status = string(codingruntime.TaskInterrupted)
+	}
 	return &ProjectWorkflowState{
 		ID:          state.ID,
 		Type:        state.Type,
 		ProjectPath: state.ProjectPath,
 		Phase:       phaseID,
-		Status:      string(state.Status),
+		Status:      status,
 		// A cancelled workflow can retain its phase's waiting-confirm status in
 		// storage. Terminal status takes precedence over a stale review marker.
-		PendingReview: state.Status == v2.StatusActive && state.IsWaitingConfirm(),
+		// A suspended workflow cannot present its confirm until the user resumes
+		// it, so a phase frozen at waiting-confirm must not invite a review.
+		PendingReview: state.Status == v2.StatusActive && !state.Suspended && state.IsWaitingConfirm(),
 	}
 }
 
@@ -6103,6 +6112,17 @@ func (a *App) emitProjectTaskDeleted(projectPath string) {
 	a.emitEvent(EventProjectTaskDeleted, projectPath)
 }
 
+// emitProjectTaskHistoryUpdated tells the UI that projectPath's durable
+// transcript was replaced from outside its tab. A blank tab adopts the new
+// history; a tab that already shows turns keeps them.
+func (a *App) emitProjectTaskHistoryUpdated(projectPath string) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a.ctx == nil || projectPath == "" {
+		return
+	}
+	a.emitEvent(EventProjectTaskHistoryUpdated, projectPath)
+}
+
 func (a *App) emitExpertTaskDeleted(expertID string) {
 	expertID = strings.TrimSpace(expertID)
 	if a.ctx == nil || expertID == "" {
@@ -6455,7 +6475,7 @@ func (a *App) RenameTask(projectPath, newName string) string {
 			result.Name = displayName
 			rememberCloudWorkspaceTask(workspaceID, result)
 		}
-		if !a.projectHasTaskCopyTag(projectPath) && lookupHeldCloudWorkspace(workspaceID) != nil {
+		if _, writable := heldWritableCloudWorkspacePath(workspaceID); writable && !a.projectHasTaskCopyTag(projectPath) {
 			a.flushCloudWorkspaceTaskSidecarBestEffort(workspaceID)
 		}
 	}

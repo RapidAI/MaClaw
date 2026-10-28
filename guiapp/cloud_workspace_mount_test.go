@@ -46,6 +46,7 @@ type fakeCloudWorkspaceHub struct {
 	sidecars             map[string][]byte
 	sidecarGets          int
 	sidecarGetsByName    map[string]int
+	manifestGets         int
 	events               []cloudWorkspaceEvent
 	failEvents           bool
 	entitlement          *CloudWorkspaceEntitlement
@@ -527,6 +528,7 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		h.deleted = true
 		_ = json.NewEncoder(w).Encode(map[string]any{"released": true})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/manifest"):
+		h.manifestGets++
 		entries := h.entries
 		if entries == nil {
 			entries = []cloudWorkspaceManifestEntry{}

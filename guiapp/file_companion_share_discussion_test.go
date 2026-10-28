@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -757,5 +758,156 @@ func TestShareDiscussionClampsAHostClockWatermark(t *testing.T) {
 	}
 	if questions != 1 {
 		t.Fatalf("a watermark ahead of the Hub clock skipped a live note: questions=%d", questions)
+	}
+}
+
+// After a host transfer the old admin is a participant: the new host uploads
+// the project and the admin's machine must download it. Only the host seat
+// syncs, so the two machines cannot overwrite each other.
+func TestFileCompanionHostTransferMovesSyncAndDiscussion(t *testing.T) {
+	const token = "cd_10101010101010101010101010101010"
+	var app *App
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			_, _ = io.WriteString(w, `{"notes_reply":true,"server_time":"`+time.Now().UTC().Format(time.RFC3339)+`","mine":[{"token":"`+token+`","name":"a.pdf","owner":"old@example.com","host_label":"new@example.com","host":false,"admin":true,"visibility":"group","permanent":true,"revision":4}],"received":[]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			w.Header().Set("X-Companion-Document-Name", "a.pdf")
+			w.Header().Set("X-Companion-Document-Visibility", "group")
+			w.Header().Set("X-Companion-Document-Revision", "4")
+			_, _ = w.Write([]byte("%PDF-from-new-host"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app = &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	source := filepath.Join(t.TempDir(), "a.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-old-admin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.FileCompanionOpen(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The admin's own row: created it, but the seat moved away.
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: opened.Path,
+		Source: "cloud", Mine: true, Admin: true, Host: false, HostKnown: true,
+		Visibility: "group", Revision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SyncFileCompanionShare(opened.Path, "[]"); err == nil {
+		t.Fatal("the former admin uploaded a project the new host owns")
+	}
+	// It is a participant now, so a newer host revision is downloaded.
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Updates) != 1 || listed.Updates[0].Token != token {
+		t.Fatalf("updates = %+v", listed.Updates)
+	}
+	if listed.Updates[0].Revision != 4 {
+		t.Fatalf("pulled revision = %d", listed.Updates[0].Revision)
+	}
+}
+
+// A machine that accepts the host seat was a participant a moment ago, so its
+// copy can be one revision behind the host who handed it over. It downloads
+// the live project once before it starts uploading, or its first sync would
+// publish the older revision and drop what the previous host already shared.
+func TestFileCompanionHostSeatGainPullsTheLiveRevision(t *testing.T) {
+	const token = "cd_20202020202020202020202020202020"
+	var app *App
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			_, _ = io.WriteString(w, `{"notes_reply":false,"server_time":"`+time.Now().UTC().Format(time.RFC3339)+`","mine":[{"token":"`+token+`","name":"a.pdf","owner":"old@example.com","host_label":"me@example.com","host":true,"admin":false,"visibility":"group","permanent":true,"revision":4}],"received":[]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			w.Header().Set("X-Companion-Document-Name", "a.pdf")
+			w.Header().Set("X-Companion-Document-Visibility", "group")
+			w.Header().Set("X-Companion-Document-Revision", "4")
+			_, _ = w.Write([]byte("%PDF-latest"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app = &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	source := filepath.Join(t.TempDir(), "a.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-participant"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.FileCompanionOpen(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The row this machine had while it was only a participant: same share, one
+	// revision behind, and the seat was somebody else's.
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: opened.Path,
+		Source: "cloud", Mine: false, Admin: false, Host: false, HostKnown: true,
+		Visibility: "group", Revision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Updates) != 1 || listed.Updates[0].Token != token {
+		t.Fatalf("the new host did not pull the live revision: updates=%+v", listed.Updates)
+	}
+	if listed.Updates[0].Revision != 4 {
+		t.Fatalf("pulled revision = %d", listed.Updates[0].Revision)
+	}
+	var stored FileCompanionLibraryItem
+	var found bool
+	for _, item := range listed.Items {
+		if item.Token == token {
+			stored, found = item, true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("the share row disappeared from the library: %+v", listed.Items)
+	}
+	if !fileCompanionItemIsHost(stored) {
+		t.Fatalf("the row did not keep the host seat: %+v", stored)
+	}
+	if stored.Revision != 4 {
+		t.Fatalf("stored revision = %d, the next sync would publish the older project", stored.Revision)
+	}
+	// The seat answer has to survive a restart: a row re-read from disk is what
+	// decides who may upload, and a dropped answer hands the seat back to the
+	// share's creator.
+	fileCompanionLibraryMu.Lock()
+	reread, ok := app.readFileCompanionLibraryLocked()
+	fileCompanionLibraryMu.Unlock()
+	if !ok {
+		t.Fatal("the library cannot be read back")
+	}
+	for _, item := range reread {
+		if item.Token != token {
+			continue
+		}
+		if !item.HostKnown {
+			t.Fatalf("the stored row forgot the host answer: %+v", item)
+		}
+		if !fileCompanionItemIsHost(item) {
+			t.Fatalf("a restarted row handed the host seat back: %+v", item)
+		}
 	}
 }

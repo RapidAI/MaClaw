@@ -116,12 +116,17 @@ func TestCompanionDocumentGroupShareSyncAndRemoval(t *testing.T) {
 	if synced["revision"] != float64(2) {
 		t.Fatalf("revision: %s", syncRec.Body.String())
 	}
+	// A sync rewrites the desktop's cloud row; the edit dialog still needs the
+	// audience it must prefill.
+	if synced["visibility"] != "group" || synced["group_id"] != groupID || synced["target"] != groupID {
+		t.Fatalf("synced audience: %s", syncRec.Body.String())
+	}
 	again := importCompanionShare(t, identity, readerToken, token, "")
 	if again.Code != http.StatusOK || string(again.Body.Bytes()) != "%PDF-group-v2" {
 		t.Fatalf("synced import: %d %s", again.Code, again.Body.String())
 	}
 	strangerSync := syncCompanionShare(t, identity, readerToken, token, []byte("nope"))
-	if strangerSync.Code != http.StatusForbidden || !strings.Contains(strangerSync.Body.String(), "只有分享者可以同步更新") {
+	if strangerSync.Code != http.StatusForbidden || !strings.Contains(strangerSync.Body.String(), "只有主持人可以同步更新") {
 		t.Fatalf("reader sync: %d %s", strangerSync.Code, strangerSync.Body.String())
 	}
 
@@ -355,11 +360,20 @@ func TestCompanionDocumentShareHostReplyAnswersOneReaderNote(t *testing.T) {
 func TestCompanionShareNoteIsHostReadsLegacyAuthorID(t *testing.T) {
 	share := companionDocShare{OwnerID: "owner-1"}
 	legacy := companionShareNote{ID: "cn_1", AuthorID: "owner-1"}
-	if !companionShareNoteIsHost(legacy, share.OwnerID) {
+	if !companionShareNoteIsHost(legacy, share) {
 		t.Fatal("an owner note without the host flag was treated as a reader note")
 	}
-	if companionShareNoteIsHost(companionShareNote{ID: "cn_2", AuthorID: "reader-1"}, share.OwnerID) {
+	if companionShareNoteIsHost(companionShareNote{ID: "cn_2", AuthorID: "reader-1"}, share) {
 		t.Fatal("a reader note was treated as the host's")
+	}
+	// Once the seat has moved, the admin's new lines are a reader's. A line they
+	// wrote while they held the seat keeps its own flag and stays the host's.
+	transferred := companionDocShare{OwnerID: "owner-1", HostID: "host-2"}
+	if companionShareNoteIsHost(legacy, transferred) {
+		t.Fatal("the admin's note was treated as a host line after the transfer")
+	}
+	if !companionShareNoteIsHost(companionShareNote{ID: "cn_3", AuthorID: "owner-1", Host: true}, transferred) {
+		t.Fatal("a line the admin wrote as host stopped being one")
 	}
 }
 

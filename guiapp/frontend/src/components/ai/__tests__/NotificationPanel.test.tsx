@@ -50,6 +50,119 @@ describe("NotificationPanel", () => {
         expect(screen.queryByTestId("notification-detail")).toBeNull();
     });
 
+    it("offers 接受/拒绝 for a pending host transfer notice", () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const transferNotice: AdminNotification = {
+            id: "host-transfer-1",
+            title: "主持人转移",
+            content: "admin@example.com 希望你接任文档《论文.pdf》的主持人。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "companion_host_transfer",
+            source_id: token,
+        };
+        const onTransfer = vi.fn();
+        renderPanel({
+            notifications: [transferNotice],
+            selectedNotification: transferNotice,
+            onHostTransfer: onTransfer,
+        });
+        fireEvent.click(screen.getByTestId("notification-host-transfer-accept"));
+        fireEvent.click(screen.getByTestId("notification-host-transfer-decline"));
+        expect(onTransfer).toHaveBeenNthCalledWith(1, token, "accept");
+        expect(onTransfer).toHaveBeenNthCalledWith(2, token, "decline");
+        expect(screen.queryByTestId("notification-share-open")).toBeNull();
+    });
+
+    it("asks the nominee to open a host transfer, and leaves a status notice without actions", () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const transferNotice: AdminNotification = {
+            id: "host-transfer-list",
+            title: "主持人转移",
+            content: "admin@example.com 希望你接任文档《论文.pdf》的主持人。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "companion_host_transfer",
+            source_id: token,
+        };
+        const statusNotice: AdminNotification = {
+            id: "host-status-1",
+            title: "主持人变更",
+            content: "admin@example.com 已收回《论文.pdf》的主持权，管理员重新担任主持人。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "companion_host_transfer_notice",
+            source_id: token,
+        };
+        const { rerender } = renderPanel({ notifications: [transferNotice, statusNotice] });
+        expect(screen.getByTestId("notification-item-host-transfer-list").textContent).toContain("打开处理");
+        expect(screen.getByTestId("notification-item-host-status-1").textContent).toContain("查看全文");
+        expect(screen.getByTestId("notification-item-host-status-1").textContent).not.toContain("打开处理");
+
+        rerender(
+            <NotificationPanel
+                notifications={[statusNotice]}
+                categoryFilter={null}
+                onCategoryChange={vi.fn()}
+                onMarkAllRead={vi.fn()}
+                onSelectNotification={vi.fn()}
+                onClose={vi.fn()}
+                selectedNotification={statusNotice}
+                onHostTransfer={vi.fn()}
+                lang="zh"
+            />,
+        );
+        expect(screen.getByTestId("notification-detail-content").textContent).toContain("已收回");
+        expect(screen.queryByTestId("notification-host-transfer-accept")).toBeNull();
+    });
+
+    it("offers 打开 for a shared document notice", () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const shareNotice: AdminNotification = {
+            id: "share-1",
+            title: "分享文档",
+            content: "owner@example.com 向你分享了文档《论文.pdf》。在伴读通知里点「打开」即可查看。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "companion_share",
+            source_id: token,
+        };
+        const onShareOpen = vi.fn();
+        const { rerender } = renderPanel({
+            notifications: [shareNotice],
+            selectedNotification: shareNotice,
+            onShareOpen,
+        });
+        expect(screen.getByTestId("notification-share-open").textContent).toBe("打开");
+        fireEvent.click(screen.getByTestId("notification-share-open"));
+        expect(onShareOpen).toHaveBeenCalledWith(token);
+        expect(screen.queryByTestId("notification-share-error")).toBeNull();
+
+        rerender(
+            <NotificationPanel
+                notifications={[shareNotice]}
+                categoryFilter={null}
+                onCategoryChange={vi.fn()}
+                onMarkAllRead={vi.fn()}
+                onSelectNotification={vi.fn()}
+                onClose={vi.fn()}
+                selectedNotification={shareNotice}
+                onShareOpen={onShareOpen}
+                shareOpenError="打不开这份分享，请稍后重试。"
+                lang="zh"
+            />,
+        );
+        expect(screen.getByTestId("notification-share-error").textContent).toContain("打不开这份分享");
+    });
+
     it("opens the full markdown detail when a notification is selected", () => {
         const onBack = vi.fn();
         renderPanel({

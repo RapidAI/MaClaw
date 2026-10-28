@@ -600,6 +600,18 @@ type MachineMetadata struct {
 	HeartbeatIntervalSec int
 }
 
+// MachineLoginClient is the lightweight projection used by admin user cards
+// to show the last client platform/version. It deliberately excludes
+// credentials and machine identity so listing a tenant stays cheap.
+type MachineLoginClient struct {
+	UserID     string
+	Platform   string
+	AppVersion string
+	LastSeenAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type ViewerToken struct {
 	ID        string
 	TenantID  string
@@ -855,6 +867,10 @@ type MachineRepository interface {
 	ListByUserID(ctx context.Context, userID string) ([]*Machine, error)
 	ListByTenant(ctx context.Context, tenantID string) ([]*Machine, error)
 	ListAll(ctx context.Context) ([]*Machine, error)
+	// ListLoginClientsByTenant returns only the client metadata needed by
+	// admin user cards. Callers that need full machine records should use
+	// ListByTenant instead.
+	ListLoginClientsByTenant(ctx context.Context, tenantID string) ([]*MachineLoginClient, error)
 	Delete(ctx context.Context, machineID string) error
 	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 	DeleteByTenantUserID(ctx context.Context, tenantID, userID string) (int64, error)

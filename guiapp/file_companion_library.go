@@ -56,10 +56,28 @@ type FileCompanionLibraryItem struct {
 	Size       int64  `json:"size,omitempty"`
 	Permanent  bool   `json:"permanent,omitempty"`
 	Mine       bool   `json:"mine,omitempty"`
-	Token      string `json:"token,omitempty"`
-	Revision   int    `json:"revision,omitempty"`
-	Target     string `json:"target,omitempty"`
-	GroupID    string `json:"groupId,omitempty"`
+	// Admin is the share creator. Admin keeps edit/delete/transfer rights even
+	// after handing the host seat to someone else.
+	Admin bool `json:"admin,omitempty"`
+	// Host marks the current host seat for this viewer. The desktop only
+	// auto-syncs and answers notes from the host seat.
+	Host      bool   `json:"host,omitempty"`
+	HostLabel string `json:"hostLabel,omitempty"`
+	// HostKnown separates "the Hub said this seat is not mine" from a row
+	// written before the host seat existed. An unknown seat follows Mine. It is
+	// stored: the library is read back from disk on the next start, and a row
+	// whose seat answer was dropped would fall back to Mine and hand a
+	// transferred host's rights back to the admin. Only true is written, so a
+	// legacy row keeps the unknown seat.
+	HostKnown bool `json:"hostKnown,omitempty"`
+	// PendingHost is the nomination waiting for acceptance; only the admin row
+	// carries it.
+	PendingHost      bool   `json:"pendingHost,omitempty"`
+	PendingHostLabel string `json:"pendingHostLabel,omitempty"`
+	Token            string `json:"token,omitempty"`
+	Revision         int    `json:"revision,omitempty"`
+	Target           string `json:"target,omitempty"`
+	GroupID          string `json:"groupId,omitempty"`
 	// Expired is derived on every list: the hub no longer lists a link whose
 	// time is up, but the project stays here so the reader keeps the paper.
 	// An expired share does not block sharing the same paper again.
@@ -73,6 +91,13 @@ type FileCompanionLibraryItem struct {
 	// Highlights is set on an import that unpacked a companion project.
 	// It is not stored in the library file.
 	Highlights string `json:"highlights,omitempty"`
+	// ChatMarks is the same import-only value for answer highlights. It is
+	// absent from a legacy project, which leaves a reader's own marks alone.
+	ChatMarks string `json:"chatMarks,omitempty"`
+	// Annotations is the same import-only value for the host's placed notes.
+	Annotations string `json:"annotations,omitempty"`
+	// Drawings is the same import-only value for the host's freehand marks.
+	Drawings string `json:"drawings,omitempty"`
 }
 
 // FileCompanionShareNote is one reader's discussion on a shared paper.
@@ -110,33 +135,45 @@ type FileCompanionShareResult struct {
 }
 
 // FileCompanionShareUpdate is a newer project the reader should show.
-// Highlights and messages replace what that path had on screen.
+// Highlights and messages replace what that path had on screen. ChatMarks,
+// Annotations, and Drawings are present only when the project carries them; a
+// legacy project omits them and the reader's own marks and notes stay.
 type FileCompanionShareUpdate struct {
-	Path       string                 `json:"path"`
-	Token      string                 `json:"token"`
-	Name       string                 `json:"name"`
-	Revision   int                    `json:"revision"`
-	Highlights string                 `json:"highlights,omitempty"`
-	Messages   []FileCompanionMessage `json:"messages"`
-	Project    bool                   `json:"project"`
+	Path        string                 `json:"path"`
+	Token       string                 `json:"token"`
+	Name        string                 `json:"name"`
+	Revision    int                    `json:"revision"`
+	Highlights  string                 `json:"highlights,omitempty"`
+	ChatMarks   *string                `json:"chatMarks,omitempty"`
+	Annotations *string                `json:"annotations,omitempty"`
+	Drawings    *string                `json:"drawings,omitempty"`
+	Messages    []FileCompanionMessage `json:"messages"`
+	Project     bool                   `json:"project"`
 }
 
 type fileCompanionShareView struct {
-	Token         string                   `json:"token"`
-	Name          string                   `json:"name"`
-	Size          int64                    `json:"size"`
-	Owner         string                   `json:"owner"`
-	Visibility    string                   `json:"visibility"`
-	Permanent     bool                     `json:"permanent"`
-	Expired       bool                     `json:"expired"`
-	URL           string                   `json:"url"`
-	CreatedAt     string                   `json:"created_at"`
-	ExpiresAt     string                   `json:"expires_at"`
-	Revision      int                      `json:"revision"`
-	Target        string                   `json:"target"`
-	GroupID       string                   `json:"group_id"`
-	Notes         *[]fileCompanionNoteWire `json:"notes"`
-	NotesRevision *int                     `json:"notes_revision"`
+	Token string `json:"token"`
+	Name  string `json:"name"`
+	// Host/Admin are per-viewer flags on list rows. Host is a pointer so an
+	// older Hub (field absent) can default to the owner.
+	Host             *bool                    `json:"host,omitempty"`
+	Admin            bool                     `json:"admin,omitempty"`
+	HostLabel        string                   `json:"host_label,omitempty"`
+	PendingHost      bool                     `json:"pending_host,omitempty"`
+	PendingHostLabel string                   `json:"pending_host_label,omitempty"`
+	Size             int64                    `json:"size"`
+	Owner            string                   `json:"owner"`
+	Visibility       string                   `json:"visibility"`
+	Permanent        bool                     `json:"permanent"`
+	Expired          bool                     `json:"expired"`
+	URL              string                   `json:"url"`
+	CreatedAt        string                   `json:"created_at"`
+	ExpiresAt        string                   `json:"expires_at"`
+	Revision         int                      `json:"revision"`
+	Target           string                   `json:"target"`
+	GroupID          string                   `json:"group_id"`
+	Notes            *[]fileCompanionNoteWire `json:"notes"`
+	NotesRevision    *int                     `json:"notes_revision"`
 }
 
 type fileCompanionNoteWire struct {
@@ -152,6 +189,9 @@ type fileCompanionNoteWire struct {
 type fileCompanionShareStatus struct {
 	status  int
 	message string
+	// A create that collides with a live share also names that share. The
+	// desktop adopts it instead of leaving a duplicate dead end.
+	token string
 }
 
 func (e *fileCompanionShareStatus) Error() string {
@@ -687,24 +727,38 @@ func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub strin
 		if !fileCompanionShareTokenMatch.MatchString(token) || view.Expired {
 			continue
 		}
+		host := mine
+		if view.Host != nil {
+			host = *view.Host
+		}
+		hostLabel := strings.TrimSpace(view.HostLabel)
+		if hostLabel == "" {
+			hostLabel = strings.TrimSpace(view.Owner)
+		}
 		item := FileCompanionLibraryItem{
-			ID:         token,
-			Token:      token,
-			Name:       strings.TrimSpace(view.Name),
-			Source:     "cloud",
-			OpenedAt:   strings.TrimSpace(view.CreatedAt),
-			Owner:      strings.TrimSpace(view.Owner),
-			ShareURL:   strings.TrimSpace(view.URL),
-			ExpiresAt:  strings.TrimSpace(view.ExpiresAt),
-			Visibility: strings.TrimSpace(view.Visibility),
-			Size:       view.Size,
-			Permanent:  view.Permanent || strings.TrimSpace(view.ExpiresAt) == "",
-			Mine:       mine,
-			Revision:   view.Revision,
-			Target:     strings.TrimSpace(view.Target),
-			GroupID:    strings.TrimSpace(view.GroupID),
-			Notes:      notesFromCompanionShareView(view),
-			NotesKnown: view.Notes != nil,
+			ID:               token,
+			Token:            token,
+			Name:             strings.TrimSpace(view.Name),
+			Source:           "cloud",
+			OpenedAt:         strings.TrimSpace(view.CreatedAt),
+			Owner:            strings.TrimSpace(view.Owner),
+			ShareURL:         strings.TrimSpace(view.URL),
+			ExpiresAt:        strings.TrimSpace(view.ExpiresAt),
+			Visibility:       strings.TrimSpace(view.Visibility),
+			Size:             view.Size,
+			Permanent:        view.Permanent || strings.TrimSpace(view.ExpiresAt) == "",
+			Mine:             mine,
+			Admin:            view.Admin || mine,
+			Host:             host,
+			HostLabel:        hostLabel,
+			HostKnown:        true,
+			PendingHost:      view.PendingHost,
+			PendingHostLabel: strings.TrimSpace(view.PendingHostLabel),
+			Revision:         view.Revision,
+			Target:           strings.TrimSpace(view.Target),
+			GroupID:          strings.TrimSpace(view.GroupID),
+			Notes:            notesFromCompanionShareView(view),
+			NotesKnown:       view.Notes != nil,
 		}
 		if view.NotesRevision != nil {
 			item.NotesRevision = *view.NotesRevision
@@ -851,6 +905,9 @@ func (a *App) ShareFileCompanionDocument(path, visibility, password, target, hig
 	name := filepath.Base(canonical)
 	view, err := postFileCompanionShare(hub, viewer, name, visibility, password, target, days, contentHash, file)
 	if err != nil {
+		if adopted, handled, adoptErr := a.adoptDuplicateFileCompanionShare(canonical, err, visibility, password, target, days, zipPath, hub, viewer); handled {
+			return adopted, adoptErr
+		}
 		return FileCompanionShareResult{}, err
 	}
 	item := libraryItemsFromShares([]fileCompanionShareView{view}, true, hub)
@@ -871,6 +928,59 @@ func (a *App) ShareFileCompanionDocument(path, visibility, password, target, hig
 		Token:      item[0].Token,
 		Revision:   item[0].Revision,
 	}, nil
+}
+
+// adoptDuplicateFileCompanionShare recovers the case where the Hub already
+// holds a live link for this paper, scope, and owner. It applies the settings
+// the person just chose, pushes the current project onto that link, and puts
+// the cloud row back for this local file. handled is false for any error that
+// is not a duplicate-with-token, so the caller keeps the original message.
+func (a *App) adoptDuplicateFileCompanionShare(canonical string, shareErr error, visibility, password, target string, days int, zipPath, hub, viewer string) (FileCompanionShareResult, bool, error) {
+	var status *fileCompanionShareStatus
+	if !errors.As(shareErr, &status) || status == nil || status.status != http.StatusConflict {
+		return FileCompanionShareResult{}, false, nil
+	}
+	token := strings.TrimSpace(status.token)
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return FileCompanionShareResult{}, false, nil
+	}
+	// The link exists with this paper and scope; apply the password/expiry the
+	// person just selected before pushing the newer project.
+	if _, err := a.UpdateFileCompanionShare(token, visibility, password, target, days); err != nil {
+		return FileCompanionShareResult{}, true, err
+	}
+	file, err := os.Open(zipPath)
+	if err != nil {
+		return FileCompanionShareResult{}, true, errors.New("无法保存分享")
+	}
+	view, syncErr := postFileCompanionShareSync(hub, viewer, token, filepath.Base(canonical), file)
+	_ = file.Close()
+	if syncErr != nil {
+		return FileCompanionShareResult{}, true, syncErr
+	}
+	if view.Token != token {
+		return FileCompanionShareResult{}, true, errors.New("云端没有返回分享链接")
+	}
+	item := libraryItemsFromShares([]fileCompanionShareView{view}, true, hub)
+	if len(item) == 0 {
+		return FileCompanionShareResult{}, true, errors.New("云端没有返回分享链接")
+	}
+	item[0].Path = canonical
+	item[0].OpenedAt = time.Now().UTC().Format(time.RFC3339)
+	// Upsert also clears a dismissal left by the old local-remove behavior; a
+	// live share must not stay hidden from its owner.
+	if err := a.upsertFileCompanionCloud(item[0]); err != nil {
+		return FileCompanionShareResult{}, true, errors.New("文档列表无法保存")
+	}
+	return FileCompanionShareResult{
+		URL:        item[0].ShareURL,
+		Name:       item[0].Name,
+		ExpiresAt:  item[0].ExpiresAt,
+		Visibility: item[0].Visibility,
+		Permanent:  item[0].Permanent,
+		Token:      item[0].Token,
+		Revision:   item[0].Revision,
+	}, true, nil
 }
 
 // UpdateFileCompanionShare changes who can see one of this person's shares and
@@ -1104,13 +1214,144 @@ func postFileCompanionShare(hub, viewer, name, visibility, password, target stri
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fileCompanionShareView{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+		failure := &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+		var payload struct {
+			Token string `json:"token"`
+		}
+		if json.Unmarshal(body, &payload) == nil {
+			failure.token = strings.TrimSpace(payload.Token)
+		}
+		return fileCompanionShareView{}, failure
 	}
 	var view fileCompanionShareView
 	if json.Unmarshal(body, &view) != nil || !fileCompanionShareTokenMatch.MatchString(view.Token) {
 		return fileCompanionShareView{}, errors.New("云端没有返回分享链接")
 	}
 	return view, nil
+}
+
+// fileCompanionNotificationLaunch is replaced in tests so opening a share does
+// not start a real companion process.
+var fileCompanionNotificationLaunch = func(a *App, paths []string) error {
+	return a.LaunchFileCompanion(paths)
+}
+
+// TransferFileCompanionShareHost nominates a participant as the next host.
+// Only the share admin may call it; the nominee must accept before the seat
+// moves.
+func (a *App) TransferFileCompanionShareHost(token, contact string) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	token = strings.TrimSpace(token)
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return errors.New("分享链接不存在")
+	}
+	contact = strings.TrimSpace(contact)
+	if contact == "" {
+		return errors.New("请填写参与者邮箱或手机号")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]string{"contact": contact})
+	_, err = a.fileCompanionHubJSON(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/host", viewer, payload)
+	return err
+}
+
+// RevokeFileCompanionShareHost cancels a pending nomination (action "cancel")
+// or takes the host seat back to the admin (action "revoke"). The two are not
+// interchangeable: a cancel that arrives after the nominee accepted must not
+// unseat them.
+func (a *App) RevokeFileCompanionShareHost(token, action string) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	token = strings.TrimSpace(token)
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return errors.New("分享链接不存在")
+	}
+	switch strings.TrimSpace(action) {
+	case "cancel", "revoke":
+	default:
+		return errors.New("无法管理主持人")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return err
+	}
+	_, err = a.fileCompanionHubJSON(http.MethodDelete, hub+"/api/mobile/documents/shares/"+token+"/host?action="+action, viewer, nil)
+	return err
+}
+
+// AcceptFileCompanionShareHost accepts a pending host transfer.
+func (a *App) AcceptFileCompanionShareHost(token string) error {
+	return a.decideFileCompanionShareHost(token, "accept")
+}
+
+// DeclineFileCompanionShareHost declines a pending host transfer.
+func (a *App) DeclineFileCompanionShareHost(token string) error {
+	return a.decideFileCompanionShareHost(token, "decline")
+}
+
+func (a *App) decideFileCompanionShareHost(token, decision string) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	token = strings.TrimSpace(token)
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return errors.New("分享链接不存在")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return err
+	}
+	_, err = a.fileCompanionHubJSON(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/host/"+decision, viewer, nil)
+	return err
+}
+
+// OpenFileCompanionShareFromNotification opens one shared document from a Hub
+// notification. An already imported copy is opened as-is; otherwise the share
+// is downloaded first (person and group notices need no password). The caller
+// is the main window, so LaunchFileCompanion starts or reveals the companion.
+func (a *App) OpenFileCompanionShareFromNotification(token string) (string, error) {
+	if a == nil {
+		return "", errors.New("app unavailable")
+	}
+	token = strings.TrimSpace(token)
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return "", errors.New("分享链接不存在")
+	}
+	fileCompanionLibraryMu.Lock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	fileCompanionLibraryMu.Unlock()
+	if !ok {
+		return "", errors.New("文档列表无法读取")
+	}
+	for _, item := range items {
+		if item.Source != "cloud" || item.Token != token {
+			continue
+		}
+		if path := strings.TrimSpace(item.Path); path != "" && fileCompanionLibraryFileExists(path) {
+			if err := fileCompanionNotificationLaunch(a, []string{path}); err != nil {
+				return "", err
+			}
+			return path, nil
+		}
+	}
+	imported, err := a.ImportFileCompanionShare(token, "")
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(imported.Path)
+	if path == "" {
+		return "", errors.New("文件未导入")
+	}
+	if err := fileCompanionNotificationLaunch(a, []string{path}); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // ImportFileCompanionShare copies a share into this library. The link may be

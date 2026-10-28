@@ -94,6 +94,10 @@ button, .btn, .tab, .cap-tab, .auth-tab, .filter, .user-link, .nav-link, .nav-bt
   border-radius: 9px !important;
   font-weight: 650 !important;
 }
+/* Button labels never wrap mid-word (search chips were breaking vertically). */
+button, .btn, [role="button"] { white-space: nowrap !important; }
+/* Nav buttons carry label + description; let their copy wrap. */
+.app .nav button, .app .nav button span:not(.nav-icon), .app .nav small { white-space: normal !important; }
 [role="button"] { cursor: pointer; }
 .btn-primary, .toolbar button, .lang-switch button.active, .tab.active, .cap-tab.active,
 .auth-tab.active, .rating-row button.selected, .rating-row button:hover {
@@ -241,3 +245,96 @@ input[type="checkbox"], input[type="radio"] { min-height: 0 !important; min-widt
 .toolbar button.filter.active, .toolbar button.filter[aria-pressed="true"] { background: var(--primary) !important; border-color: var(--primary) !important; color: #fff !important; }
 /* These surfaces render opaque now; the legacy backdrop blur costs GPU and shows nothing. */
 .card, .panel, .item, .metric, .side { backdrop-filter: none !important; }
+
+/* ==========================================================================
+   Modern surface polish (2026-10). Presentation only: calmer scrollbars,
+   tabular figures, unified motion and states. Kept here (not admin-shell.css)
+   so both the admin console and the consumer pages share one pass.
+   ========================================================================== */
+
+/* Rendering: antialiased text everywhere, tabular numerals for data. */
+body { -webkit-font-smoothing: antialiased !important; -moz-osx-font-smoothing: grayscale !important; text-rendering: optimizeLegibility !important; }
+.metric strong, .stat b, .summary-card strong, .ha-overview-card strong, .hub-runtime-summary strong,
+.user-mgmt-stat-grid strong, .hub-route-stat strong, .user-mgmt-report-row strong { font-variant-numeric: tabular-nums !important; }
+.mono, .console, .code-textarea, .hub-config-box, .cm-data-table td.num, .cm-stats-period-cell { font-variant-numeric: tabular-nums !important; }
+input::placeholder, textarea::placeholder { color: #9aa4b2 !important; opacity: 1 !important; }
+
+/* Scrollbars: thin, quiet, rounded - replaces the chunky OS defaults. */
+* { scrollbar-width: thin !important; scrollbar-color: #c9d3e0 transparent !important; }
+*::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+*::-webkit-scrollbar-thumb { background: #c9d3e0 !important; border-radius: 999px !important; border: 3px solid transparent !important; background-clip: content-box !important; }
+*::-webkit-scrollbar-thumb:hover { background-color: #aebac9 !important; }
+*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent !important; }
+.nav, .side, .panel, .console, .im-content, .sm-section, .table-wrap { scrollbar-width: thin !important; }
+
+/* Leftover decorative gradient strips from the legacy theme: off. */
+.hub-route-preview::before, .sm-section::before, .sm-config-card::before,
+.metric::before, .metric::after, .item::after, .hero::after { content: none !important; }
+
+/* Interactive surfaces: quiet border shift on hover, no layout movement. */
+.card, .panel, .item, .metric, .summary-card, .stat { transition: border-color .18s ease, box-shadow .18s ease !important; }
+.app .card:hover, .app .item:hover, .app .metric:hover { border-color: #d5dde8 !important; box-shadow: var(--shadow-soft) !important; }
+.nav button { transition: background-color .16s ease, border-color .16s ease, color .16s ease !important; }
+.badge { transition: background-color .16s ease !important; }
+
+/* Primary action: steadier shadow, no decorative motion. */
+.btn-primary, .toolbar button { box-shadow: 0 2px 8px rgba(37, 99, 235, .2) !important; }
+.btn-primary:hover, .toolbar button:hover { box-shadow: 0 4px 14px rgba(37, 99, 235, .26) !important; }
+
+/* Panels enter with a short fade; motion-sensitive users opt out below. */
+@media (prefers-reduced-motion: no-preference) {
+  .panel.active { animation: panel-in .22s cubic-bezier(.2, .7, .3, 1); }
+  @keyframes panel-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+}
+
+/* Modals: slightly deeper scrim and one elevation level for focus. */
+.session-modal-overlay { background: rgba(15, 23, 42, .32) !important; }
+.session-modal { border-radius: 14px !important; box-shadow: 0 24px 64px rgba(15, 23, 42, .18) !important; }
+.ve-auth-dialog, .guest-domain-dialog { border-radius: 14px !important; }
+
+/* Empty hints read as quiet neutral callouts, not alerts. */
+.hint, .route-query-empty, .muted-result { border-style: solid !important; border-color: #e3e8f0 !important; background: #f8fafc !important; }
+/* A lone hint inside a list is an empty state: center it and give it presence. */
+.list > .hint:only-child { text-align: center !important; padding: 30px 18px !important; font-size: 13px !important; }
+/* Data rows echo Hub's quiet hover shift. */
+.row:not(.header) { transition: border-color .16s ease, background-color .16s ease !important; }
+.row:not(.header):hover { border-color: #dbe3ee !important; }
+
+/* Toast: frosted white so it reads above any panel. */
+.toast { background: rgba(255, 255, 255, .96) !important; backdrop-filter: saturate(160%) blur(10px) !important; }
+
+/* Setup gate card: same elevation language as panels. */
+.setup-gate .card { border-radius: 14px !important; box-shadow: 0 24px 64px rgba(15, 23, 42, .16) !important; }
+
+/* Topbar controls stay on one row; the page title absorbs narrow widths instead. */
+.app .topbar { flex-wrap: nowrap !important; flex: 0 0 auto !important; max-width: 100% !important; }
+.app .topbar .lang-switch { flex-wrap: nowrap !important; }
+@media (max-width: 1200px) { .app .topbar { flex-wrap: wrap !important; flex: 0 1 auto !important; } }
+
+/* Layout pass (2026-10 v2): sticky page header, wider canvas, denser nav.
+   Presentation only; scoped to the admin console.
+   When the header runs out of room the controls drop below the title instead of squeezing it. */
+.app .main > .top {
+  position: sticky; top: 0; z-index: 40;
+  background: rgba(246, 247, 249, .92);
+  backdrop-filter: saturate(150%) blur(10px);
+  border-bottom: 1px solid rgba(28, 39, 55, .06);
+  padding: 12px 0 14px;
+  margin: -12px auto 4px;
+  max-width: 1320px;
+  flex-wrap: wrap;
+}
+.app .main > .top .page-copy { flex: 1 1 340px; min-width: 260px; }
+.app .metrics, .app .panel { max-width: 1320px; }
+/* The console always renders exactly three hero metrics; a 4-track grid left a dead column. */
+.app .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+@media (max-width: 1180px) { .app .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; } }
+@media (max-width: 760px) { .app .metrics { grid-template-columns: 1fr !important; } }
+.app .nav button { min-height: 48px; padding: 8px 10px 8px 12px; column-gap: 10px; border-radius: 10px; grid-template-columns: 36px minmax(0, 1fr); }
+.app .nav .nav-icon { width: 36px; height: 36px; border-radius: 10px; }
+.app .nav .nav-icon svg { width: 18px; height: 18px; }
+.app .nav button > span:not(.nav-icon) { font-size: 14.5px; }
+.app .nav small { font-size: 11px; }
+@media (max-width: 1180px) {
+  .app .main > .top { position: static; background: transparent; border-bottom: 0; backdrop-filter: none; margin: 0 auto 22px; padding: 0; }
+}

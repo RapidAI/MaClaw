@@ -43,9 +43,12 @@ type FileCompanionDocument struct {
 	Error          string                 `json:"error,omitempty"`
 	ReadOnlyReason string                 `json:"readOnlyReason,omitempty"`
 	Messages       []FileCompanionMessage `json:"messages,omitempty"`
-	// Highlights is set when this open unpacked a companion project. A normal
-	// open leaves it empty so the reader keeps the marks it already stored.
-	Highlights json.RawMessage `json:"highlights,omitempty"`
+	// The mark fields are set when this open unpacked a companion project. A
+	// normal open leaves them empty so the reader keeps what it already stored.
+	Highlights  json.RawMessage `json:"highlights,omitempty"`
+	ChatMarks   json.RawMessage `json:"chatMarks,omitempty"`
+	Annotations json.RawMessage `json:"annotations,omitempty"`
+	Drawings    json.RawMessage `json:"drawings,omitempty"`
 	// Imported is set when Path is the document taken out of a project zip.
 	Imported bool `json:"imported,omitempty"`
 }

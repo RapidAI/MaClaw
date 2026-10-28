@@ -1,17 +1,19 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
 )
 
 func TestCloudWorkspaceShareHTTPAcceptAndRevoke(t *testing.T) {
-	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	svc, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
 	created := doCloudWorkspaceRequest(t, h, http.MethodPost, "/api/v1/cloud-workspaces", "m1", "secret", map[string]any{"name": "分享课题"})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create=%d %s", created.Code, created.Body.String())
@@ -21,6 +23,11 @@ func TestCloudWorkspaceShareHTTPAcceptAndRevoke(t *testing.T) {
 	}
 	if err := json.Unmarshal(created.Body.Bytes(), &ws); err != nil || ws.ID == "" {
 		t.Fatalf("create body=%s err=%v", created.Body.String(), err)
+	}
+	// The workspace name is not the owner's task title; owners publish the
+	// durable title through the task binding / task.json sidecar.
+	if _, err := svc.Workspaces.UpsertTaskBinding(context.Background(), "t1", "u1", ws.ID, "", "", "所有者的任务名", "", "", 0, time.Now().UTC()); err != nil {
+		t.Fatalf("seed task binding: %v", err)
 	}
 
 	shareRec := doCloudWorkspaceRequest(t, h, http.MethodPost, "/api/v1/cloud-workspaces/"+ws.ID+"/share", "m1", "secret", map[string]any{"permission": "read"})
@@ -45,12 +52,16 @@ func TestCloudWorkspaceShareHTTPAcceptAndRevoke(t *testing.T) {
 	}
 	var accepted struct {
 		OwnerEmail string `json:"owner_email"`
+		TaskName   string `json:"task_name"`
 	}
 	if err := json.Unmarshal(accept.Body.Bytes(), &accepted); err != nil {
 		t.Fatal(err)
 	}
 	if accepted.OwnerEmail != "u1@x.com" {
 		t.Fatalf("owner_email=%q body=%s", accepted.OwnerEmail, accept.Body.String())
+	}
+	if accepted.TaskName != "所有者的任务名" {
+		t.Fatalf("task_name=%q body=%s", accepted.TaskName, accept.Body.String())
 	}
 
 	ent := doCloudWorkspaceRequest(t, h, http.MethodGet, "/api/v1/cloud-workspaces/entitlement", "m2", "secret", nil)
@@ -60,6 +71,7 @@ func TestCloudWorkspaceShareHTTPAcceptAndRevoke(t *testing.T) {
 	var payload struct {
 		Shared []struct {
 			ID              string `json:"id"`
+			TaskName        string `json:"task_name"`
 			SharePermission string `json:"share_permission"`
 		} `json:"shared"`
 	}
@@ -68,6 +80,9 @@ func TestCloudWorkspaceShareHTTPAcceptAndRevoke(t *testing.T) {
 	}
 	if len(payload.Shared) != 1 || payload.Shared[0].ID != ws.ID || payload.Shared[0].SharePermission != "read" {
 		t.Fatalf("shared=%+v", payload.Shared)
+	}
+	if payload.Shared[0].TaskName != "所有者的任务名" {
+		t.Fatalf("shared task_name=%q", payload.Shared[0].TaskName)
 	}
 
 	manifest := doCloudWorkspaceRequest(t, h, http.MethodGet, "/api/v1/cloud-workspaces/"+ws.ID+"/manifest", "m2", "secret", nil)

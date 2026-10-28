@@ -313,6 +313,8 @@ func (a *App) replaceUnreadNotifications(items []ClientNotification) {
 	// Unread notifications pulled after connecting are how an invitation
 	// reaches a machine that was offline when it was sent.
 	a.announceCompanionGroupInviteNotices(items)
+	a.announceCompanionShareNotices(items)
+	a.announceCompanionHostTransferNotices(items)
 	emitNotificationFrontendEvent(a, "notification:sync", items)
 }
 

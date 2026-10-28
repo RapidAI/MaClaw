@@ -43,6 +43,13 @@ func newCompanionGroupNotificationServiceWithBroadcaster(t *testing.T, broadcast
 		t.Fatalf("open notification db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	// Delivery is asynchronous while tests poll the same database. SQLite
+	// needs a busy wait here, as the Hub database has.
+	for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000"} {
+		if _, err := db.Exec(pragma); err != nil {
+			t.Fatalf("configure notification db: %v", err)
+		}
+	}
 	// Publishing resolves the audience's machines, and the unread pull joins
 	// machines to users. The Hub database has both; the isolated test database
 	// needs the same shape.

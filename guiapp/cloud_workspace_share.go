@@ -720,6 +720,7 @@ func (a *App) AcceptCloudWorkspaceShare(tokenOrURL, password string) (ProjectSea
 	var accepted struct {
 		WorkspaceID     string `json:"workspace_id"`
 		Name            string `json:"name"`
+		TaskName        string `json:"task_name"`
 		SharePermission string `json:"share_permission"`
 		OwnerUserID     string `json:"owner_user_id"`
 		OwnerEmail      string `json:"owner_email"`
@@ -755,10 +756,29 @@ func (a *App) AcceptCloudWorkspaceShare(tokenOrURL, password string) (ProjectSea
 			Name:        strings.TrimSpace(accepted.Name),
 		})
 	}
-	if existing := a.findCanonicalCloudWorkspaceTask(workspaceID, false); strings.TrimSpace(existing.ProjectPath) != "" {
-		return a.tagSharedCloudWorkspaceTask(existing, workspaceID, permission, ownerLabel), nil
+	// The Hub returns the workspace name in name. The task title the owner sees
+	// lives in the task.json sidecar (or the task binding). Prefer it so the
+	// recipient's task list is not titled with the workspace name.
+	ownerTaskName := taskNameForCreate(accepted.TaskName, true)
+	if ownerTaskName == "" {
+		if sidecar, sidecarErr := a.getCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarTask); sidecarErr == nil && len(sidecar) > 0 {
+			var task cloudWorkspaceTaskSidecar
+			if json.Unmarshal(sidecar, &task) == nil {
+				ownerTaskName = taskNameForCreate(task.Name, true)
+			}
+		}
 	}
-	name := strings.TrimSpace(accepted.Name)
+	if existing := a.findCanonicalCloudWorkspaceTask(workspaceID, false); strings.TrimSpace(existing.ProjectPath) != "" {
+		bound := a.tagSharedCloudWorkspaceTask(existing, workspaceID, permission, ownerLabel)
+		if a.adoptSharedCloudWorkspaceTaskName(workspaceID, accepted.Name, ownerTaskName) {
+			bound.Name = ownerTaskName
+		}
+		return bound, nil
+	}
+	name := ownerTaskName
+	if name == "" {
+		name = strings.TrimSpace(accepted.Name)
+	}
 	if name == "" {
 		name = "云端工作区"
 	}
@@ -807,6 +827,63 @@ func (a *App) tagSharedCloudWorkspaceTask(result ProjectSearchResult, workspaceI
 		workingDir = next
 	}
 	return a.bindPreparedCloudWorkspaceTask(workspaceID, result, workingDir)
+}
+
+func cloudWorkspaceTaskIsShared(result ProjectSearchResult) bool {
+	for _, tag := range result.Tags {
+		if strings.HasPrefix(strings.TrimSpace(tag), "cloud_workspace_share:") {
+			return true
+		}
+	}
+	return false
+}
+
+// adoptSharedCloudWorkspaceTaskName titles a recipient's row with the sharer's
+// task name instead of the workspace name. Only an auto-created row (its name
+// still equals the workspace name) is retitled; a recipient rename always wins.
+func (a *App) adoptSharedCloudWorkspaceTaskName(workspaceID, workspaceName, taskName string) bool {
+	workspaceID = strings.TrimSpace(workspaceID)
+	workspaceName = strings.TrimSpace(workspaceName)
+	taskName = taskNameForCreate(taskName, true)
+	if a == nil || workspaceID == "" || taskName == "" {
+		return false
+	}
+	result := a.findCanonicalCloudWorkspaceTask(workspaceID, true)
+	projectPath := normalizeProjectSessionPath(result.ProjectPath)
+	if projectPath == "" || !cloudWorkspaceTaskIsShared(result) {
+		return false
+	}
+	current := strings.TrimSpace(result.Name)
+	if current == taskName {
+		return false
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	if strings.TrimSpace(pi.CustomName(projectPath)) != "" {
+		return false
+	}
+	if current != "" && workspaceName != "" && !strings.EqualFold(current, workspaceName) {
+		return false
+	}
+	// Local-only rename: a read-only recipient must never push this title back
+	// over the owner's task sidecar.
+	pi.SetCustomName(projectPath, taskName)
+	result.Name = taskName
+	rememberCloudWorkspaceTask(workspaceID, result)
+	// The task list refresh is owned by the caller (accept emits it after the
+	// join, restore emits once for the whole batch). Only the open tab title
+	// needs an immediate event here.
+	a.emitEvent(EventProjectTaskRenamed, map[string]string{
+		"project_path": projectPath,
+		"name":         taskName,
+	})
+	return true
 }
 
 func (a *App) setPendingCloudWorkspaceShare(launch CloudWorkspaceShareLaunch) {

@@ -4134,6 +4134,134 @@ input.cwshare-url {
   min-height: 0;
   --wails-draggable: no-drag;
 }
+/* 手绘: a yellow pen button floats in the page gutter. Its panel carries the
+   same four swatches as the highlight menu and a 线/框 choice. */
+.companion-pdf-draw {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 8;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: calc(100% - 20px);
+  --wails-draggable: no-drag;
+}
+.companion-pdf-draw-toggle {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #e3b23c;
+  border-radius: 50%;
+  background: #ffe08a;
+  color: #7a5200;
+  cursor: pointer;
+  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.16);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+.companion-pdf-draw-toggle:hover {
+  background: #ffd766;
+}
+.companion-pdf-draw-toggle[aria-pressed="true"] {
+  border-color: #c9931a;
+  background: #f5c542;
+  box-shadow: 0 0 0 3px rgba(245, 197, 66, 0.28), 0 1px 6px rgba(15, 23, 42, 0.16);
+}
+.companion-pdf-draw-toggle svg {
+  width: 19px;
+  height: 19px;
+}
+.companion-pdf-draw-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--theme-border, #c9ddf6);
+  border-radius: var(--radius-lg);
+  background: var(--theme-surface, #fff);
+  box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18));
+}
+.companion-pdf-draw-colors {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.companion-pdf-draw-colors .companion-pdf-menu-color {
+  width: 28px;
+  height: 24px;
+}
+.companion-pdf-draw-colors .companion-pdf-menu-color[aria-pressed="true"] {
+  border-color: var(--theme-primary, #2e75cb);
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+}
+.companion-pdf-draw-colors .companion-pdf-menu-color:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.companion-pdf-draw-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--theme-border-subtle, #dde9fa);
+}
+.companion-pdf-draw-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.companion-pdf-draw-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--theme-border, #c9ddf6);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #546479);
+  cursor: pointer;
+}
+.companion-pdf-draw-tools button svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.companion-pdf-draw-tools button:hover,
+.companion-pdf-draw-tools button:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-draw-tools button[aria-pressed="true"] {
+  border-color: var(--theme-primary, #2e75cb);
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.12));
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-draw-tools button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.companion-pdf-drawings {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.companion-pdf-drawings--active {
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+.companion-pdf-drawings--eraser {
+  cursor: cell;
+}
 .companion-pdf-scroll {
   flex: 1;
   min-height: 0;
@@ -6526,8 +6654,8 @@ body.companion-pdf-translation-dragging * {
   width: 13px;
   height: 13px;
 }
-/* The host seat travels with the document: the same tab says 你是主持人 here
-   and names the host on a participant's screen. */
+/* Only the host's own tab carries the seat. A participant's tab stays clean:
+   the title-bar host badge already names the host for the open document. */
 .file-companion-tab-host {
   flex: 0 0 auto;
   padding: 0 4px;
@@ -6537,10 +6665,6 @@ body.companion-pdf-translation-dragging * {
   font: 600 10px/15px "Segoe UI", "Microsoft YaHei", sans-serif;
   letter-spacing: 0.02em;
   white-space: nowrap;
-}
-.file-companion-tab-host[data-state="guest"] {
-  background: #eef2f7;
-  color: var(--theme-text-secondary, #546479);
 }
 .file-companion-host-badge {
   box-sizing: border-box;

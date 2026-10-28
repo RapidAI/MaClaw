@@ -4,7 +4,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/guiapp/petpack"
@@ -546,16 +545,13 @@ func (m *FloatingAssistantManager) QuitApp() {
 	// Quit on a separate goroutine - runtime.Quit triggers the Wails
 	// shutdown sequence which must not run on the WebView's JS callback
 	// goroutine (same pattern as the system tray quit handler).
-	// After runtime.Quit, also call quitSystray() to terminate the
-	// systray event loop - otherwise the process stays alive in the
-	// background even though the Wails window is gone.
-	go func() {
-		if m.app != nil && m.app.ctx != nil {
-			runtime.Quit(m.app.ctx)
-		}
-		time.Sleep(500 * time.Millisecond)
-		quitSystray()
-	}()
+	// requestAppQuit also arms the hard-exit watchdog, so a wedged shutdown
+	// cannot leave the process alive in the background.
+	if m.app != nil {
+		requestAppQuit(m.app.ctx)
+		return
+	}
+	hardExitProcess(0)
 }
 
 // Screen dimension helpers
@@ -565,11 +561,6 @@ func (m *FloatingAssistantManager) QuitApp() {
 
 var platformGetScreenWidth func() int
 var platformGetScreenHeight func() int
-
-// quitSystray terminates the system tray event loop. Set by platform-specific
-// tray setup code (e.g. tray_windows.go). Without this, the process stays
-// alive in the background after runtime.Quit because the systray loop blocks.
-var quitSystray func() = func() {}
 
 func getScreenWidth() int {
 	if platformGetScreenWidth != nil {

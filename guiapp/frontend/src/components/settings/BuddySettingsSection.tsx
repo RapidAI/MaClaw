@@ -3,6 +3,7 @@ import {
     BuddyGetSoundConfig,
     BuddyGetStatus,
     BuddyListPorts,
+    BuddyRefreshPet,
     BuddyRefreshWeather,
     BuddySetSoundConfig,
     BuddyStart,
@@ -71,6 +72,7 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const [weatherNote, setWeatherNote] = useState('');
+    const [petNote, setPetNote] = useState('');
     const [sound, setSound] = useState<SoundConfig | null>(null);
     const statusRequest = useRef<Promise<void> | null>(null);
     const portsRequest = useRef<Promise<void> | null>(null);
@@ -193,6 +195,20 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
         }
     };
 
+    const refreshPet = async () => {
+        setBusy(true);
+        setError('');
+        setPetNote('');
+        try {
+            await BuddyRefreshPet();
+            setPetNote(localizeText(lang, 'Pet sent', '宠物已发送', '寵物已傳送'));
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const effectName = (index: number): string =>
         [
             localizeText(lang, 'Light chime', '轻快双音', '輕快雙音'),
@@ -283,6 +299,13 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
                         {localizeText(lang, 'Send weather now', '立即推送天气', '立即推送天氣')}
                     </button>
                     {weatherNote && <span className="buddy-settings__note">{weatherNote}</span>}
+                </div>
+
+                <div className="buddy-settings__row">
+                    <button type="button" disabled={busy || !status?.enabled} onClick={() => void refreshPet()}>
+                        {localizeText(lang, 'Send pet now', '立即发送宠物', '立即傳送寵物')}
+                    </button>
+                    {petNote && <span className="buddy-settings__note">{petNote}</span>}
                 </div>
 
                 <div className="buddy-settings__group">

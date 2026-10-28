@@ -22,3 +22,16 @@ int buddy_font_width(const char *text, int scale, int max_px);
 void buddy_utf8_truncate(char *dst, size_t dst_size, const char *src, size_t max_bytes);
 
 int buddy_font_missing_total(bool reset);
+
+/** Decodes one UTF-8 codepoint; returns bytes consumed (>=1). */
+int buddy_font_utf8_next(const char *text, uint32_t *codepoint);
+
+/** Curved-text advance: ASCII 18 (space 12), CJK 24. */
+int buddy_font_arc_advance(uint32_t codepoint);
+
+/** Total curved-text width of a UTF-8 string. */
+int buddy_font_arc_width(const char *text);
+
+/** Rasterizes one codepoint into a 24x24 1-bit cell for rotated drawing.
+ * Returns false when the glyph is unsupported. */
+bool buddy_font_cell(uint32_t codepoint, uint8_t cell[24 * 24]);

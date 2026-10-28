@@ -94,9 +94,54 @@ export function collapseCloudWorkspaceTasks<T extends {
     return out;
 }
 
+const cloudWorkspaceWriteMarker = "/cloud-workspaces/";
+const cloudWorkspaceReadOnlyMarker = "/cloud-workspaces-readonly/";
+
+type CloudWorkspaceCachePath = {
+    /** The task's cache mount root, including the reader instance directory. */
+    root: string;
+    /** Path below the mount root, or "" for the root itself. */
+    relative: string;
+    workspaceId: string;
+};
+
+/**
+ * Parse both cache layouts: writers use …/cloud-workspaces/{tenant}/{id},
+ * readers of a share use …/cloud-workspaces-readonly/{tenant}/{id}/{instance}.
+ * They are separate marker strings; matching only the writer marker leaves a
+ * shared (read) task without cloud preview.
+ */
+function parseCloudWorkspaceCachePath(path?: string | null): CloudWorkspaceCachePath | null {
+    const normalized = String(path || "").replace(/\\/g, "/");
+    if (!normalized) return null;
+    const lower = normalized.toLowerCase();
+    const readOnlyIdx = lower.indexOf(cloudWorkspaceReadOnlyMarker);
+    if (readOnlyIdx >= 0) {
+        const parts = normalized.slice(readOnlyIdx + cloudWorkspaceReadOnlyMarker.length).split("/").filter(Boolean);
+        if (parts.length < 2 || !parts[1]) return null;
+        // The reader instance directory is part of the mount root (the task's
+        // working directory), never part of the relative file path.
+        const rootParts = parts.slice(0, Math.min(parts.length, 3));
+        return {
+            root: `${normalized.slice(0, readOnlyIdx + cloudWorkspaceReadOnlyMarker.length)}${rootParts.join("/")}`,
+            relative: parts.slice(rootParts.length).join("/"),
+            workspaceId: parts[1],
+        };
+    }
+    const writeIdx = lower.indexOf(cloudWorkspaceWriteMarker);
+    if (writeIdx < 0) return null;
+    const parts = normalized.slice(writeIdx + cloudWorkspaceWriteMarker.length).split("/").filter(Boolean);
+    if (parts.length < 2 || !parts[1]) return null;
+    return {
+        root: `${normalized.slice(0, writeIdx + cloudWorkspaceWriteMarker.length)}${parts[0]}/${parts[1]}`,
+        relative: parts.slice(2).join("/"),
+        workspaceId: parts[1],
+    };
+}
+
 export function isCloudWorkspacePath(path?: string | null): boolean {
     const normalized = String(path || "").replace(/\\/g, "/").toLowerCase();
-    return normalized.includes("/cloud-workspaces/");
+    return normalized.includes(cloudWorkspaceWriteMarker) || normalized.includes(cloudWorkspaceReadOnlyMarker);
 }
 
 /** Task list / resume: tagged or mounted on a cloud-workspace cache. */
@@ -387,11 +432,7 @@ export function isActiveCloudWorkspacePreview(input: {
 
 /** Relative path inside a cloud workspace cache, or "" for the workspace root. */
 export function cloudWorkspaceRelativePath(path?: string | null): string {
-    const normalized = String(path || "").replace(/\\/g, "/");
-    const idx = normalized.toLowerCase().indexOf("/cloud-workspaces/");
-    if (idx < 0) return "";
-    const parts = normalized.slice(idx + "/cloud-workspaces/".length).split("/").filter(Boolean);
-    return parts.length > 2 ? parts.slice(2).join("/") : "";
+    return parseCloudWorkspaceCachePath(path)?.relative || "";
 }
 
 /** A file inside the cache (relative path with an extension), not a workspace/dir. */
@@ -406,12 +447,9 @@ export function isCloudWorkspaceFilePath(path?: string | null): boolean {
     return dot > 0 && dot < base.length - 1;
 }
 
-/** Hub workspace id from a cache mount path (…/cloud-workspaces/{tenant}/{id}). */
+/** Hub workspace id from a writer or read-share cache mount path. */
 export function cloudWorkspaceIdFromPath(path?: string | null): string {
-    const root = cloudWorkspaceRootFromPath(path);
-    if (!root) return "";
-    const parts = root.split("/").filter(Boolean);
-    return parts[parts.length - 1] || "";
+    return parseCloudWorkspaceCachePath(path)?.workspaceId || "";
 }
 
 export function cloudWorkspaceNameFromEntitlement(ent: unknown, workspaceId: string): string {
@@ -498,15 +536,9 @@ export function __resetCloudWorkspaceDisplayNamesForTests(): void {
     emitCloudWorkspaceDisplayNames();
 }
 
-/** Cache-root path (…/cloud-workspaces/{tenant}/{id}) for reveal/resume. */
+/** Cache-root path for reveal/resume: the writer workspace or reader instance dir. */
 export function cloudWorkspaceRootFromPath(path?: string | null): string {
-    const normalized = String(path || "").replace(/\\/g, "/");
-    const marker = "/cloud-workspaces/";
-    const idx = normalized.toLowerCase().indexOf(marker);
-    if (idx < 0) return "";
-    const parts = normalized.slice(idx + marker.length).split("/").filter(Boolean);
-    if (parts.length < 2) return "";
-    return `${normalized.slice(0, idx + marker.length)}${parts[0]}/${parts[1]}`;
+    return parseCloudWorkspaceCachePath(path)?.root || "";
 }
 
 /** User-visible path that never includes the local cloud cache directory. */

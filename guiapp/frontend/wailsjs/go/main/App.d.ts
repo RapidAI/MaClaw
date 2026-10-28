@@ -721,6 +721,14 @@ export function ShareFileCompanionDocument(arg1:string,arg2:string,arg3:string,a
 
 export function UpdateFileCompanionShare(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<Record<string, any>>;
 
+export function AcceptFileCompanionShareHost(arg1:string):Promise<void>;
+
+export function DeclineFileCompanionShareHost(arg1:string):Promise<void>;
+
+export function TransferFileCompanionShareHost(arg1:string,arg2:string):Promise<void>;
+
+export function RevokeFileCompanionShareHost(arg1:string,arg2:string):Promise<void>;
+
 export function ImportFileCompanionShare(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function SyncFileCompanionShare(arg1:string,arg2:string):Promise<Record<string, any>>;
@@ -756,6 +764,8 @@ export function IgnoreFileCompanionGroupInvite(arg1:string):Promise<void>;
 export function LoadCompanionReaderState(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function SaveCompanionPdfMarks(arg1:string,arg2:string):Promise<void>;
+
+export function SaveCompanionPdfDrawings(arg1:string,arg2:string):Promise<void>;
 
 export function SaveCompanionPdfTranslations(arg1:string,arg2:string):Promise<void>;
 
@@ -1919,6 +1929,8 @@ export function ListSwarmRuns():Promise<Array<swarm.SwarmRunSummary>>;
 export function ListTasks(arg1:number):Promise<Array<main.ProjectSearchResult>>;
 
 // MANUAL SYNC (wails generate module unavailable on this machine): mirrors guiapp/app_task_create.go.
+export function ListPendingScopeApprovals():Promise<Array<Record<string, any>>>;
+
 export function ListWorkflowTemplateSummaries():Promise<Array<main.WorkflowTemplateSummary>>;
 
 export function ListTemplates():Promise<Array<remote.SessionTemplate>>;
@@ -1969,6 +1981,8 @@ export function MigrateDataDir():Promise<void>;
 
 export function MigrateVirtualRepositoryRoot(arg1:string):Promise<string>;
 
+export function MoveTaskConversation(arg1:string,arg2:string):Promise<boolean>;
+
 export function NormalizeVoiceCommand(arg1:string):Promise<main.VoiceCommandNormalizationResult>;
 
 export function OpenAdaptivePromptExportsDir():Promise<Record<string, any>>;
@@ -2002,6 +2016,8 @@ export function OpenMaclawAppWorkspaceFromInstall(arg1:main.MaclawAppOpenWorkspa
 export function OpenMobileDocumentInFileCompanion(arg1:string):Promise<string>;
 
 export function OpenMobileDocumentOriginal(arg1:string):Promise<string>;
+
+export function OpenFileCompanionShareFromNotification(arg1:string):Promise<string>;
 
 export function OpenMobileMeetingRecordingAudio(arg1:string):Promise<string>;
 
@@ -3111,3 +3127,5 @@ export function PostBotRoomMessage(arg1:string,arg2:string):Promise<{message:{id
 export function BuddyGetSoundConfig():Promise<{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number}}>;
 
 export function BuddySetSoundConfig(arg1:{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number}}):Promise<void>;
+
+export function BuddyRefreshPet():Promise<void>;

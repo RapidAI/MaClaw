@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { IconBell } from "./WorkbenchIcons";
+import { companionHostTransferToken } from "./AssistantTitleBarNotifications.companionShare";
 import { NotificationDetail } from "./NotificationDetail";
 import type { AdminNotification as SharedNotification } from "./useNotifications";
 
@@ -29,6 +30,12 @@ export interface NotificationPanelProps {
     groupInviteActionError?: string;
     groupInviteListError?: string;
     groupInviteError?: string;
+    onShareOpen?: (token: string) => void;
+    shareOpenBusy?: boolean;
+    shareOpenError?: string;
+    onHostTransfer?: (token: string, decision: "accept" | "decline") => void;
+    hostTransferBusy?: boolean;
+    hostTransferError?: string;
     /** Marks the transient panel inaccessible while its host page is hidden. */
     ariaHidden?: boolean;
     lang?: string;
@@ -163,6 +170,7 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
         : stripMarkdownPreview(notification.content || "");
     const hasDistinctPreview = Boolean(contentPreview) && contentPreview !== titleText;
     const hasMoreToRead = titleText.length > 28 || hasDistinctPreview;
+    const needsDecision = Boolean(notification.groupInviteId) || Boolean(companionHostTransferToken(notification));
 
     return (
         <div
@@ -209,9 +217,9 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
                 </span>
             )}
 
-            {(notification.groupInviteId || hasMoreToRead) && (
+            {(needsDecision || hasMoreToRead) && (
                 <span className="notification-item-more">
-                    {notification.groupInviteId
+                    {needsDecision
                         ? localizeText(lang, "Open to respond", "打开处理", "打開處理")
                         : localizeText(lang, "View full notice", "查看全文", "查看全文")}
                 </span>
@@ -236,6 +244,12 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     groupInviteActionError = "",
     groupInviteListError = "",
     groupInviteError = "",
+    onShareOpen,
+    shareOpenBusy = false,
+    shareOpenError = "",
+    onHostTransfer,
+    hostTransferBusy = false,
+    hostTransferError = "",
     ariaHidden = false,
     lang,
 }) => {
@@ -390,6 +404,12 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     groupInviteHold={selectedNotification.groupInviteId ? groupInviteHold : ""}
                     groupInviteActionError={selectedNotification.groupInviteId ? groupInviteActionError : ""}
                     groupInviteError={selectedNotification.groupInviteId ? groupInviteError : ""}
+                    onShareOpen={onShareOpen}
+                    shareOpenBusy={shareOpenBusy}
+                    shareOpenError={shareOpenError}
+                    onHostTransfer={onHostTransfer}
+                    hostTransferBusy={hostTransferBusy}
+                    hostTransferError={hostTransferError}
                 />
             ) : (
             <>

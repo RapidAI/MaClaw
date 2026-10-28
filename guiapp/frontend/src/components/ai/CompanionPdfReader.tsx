@@ -10,6 +10,17 @@ import {
     type TaskResultPreviewPayload,
 } from "./taskResultPreview";
 import {
+    loadPdfDrawings,
+    newPdfDrawingId,
+    PDF_DRAWING_MAX_POINTS,
+    pdfDrawingHitsRect,
+    savePdfDrawings,
+    subscribePdfDrawings,
+    type PdfDrawing,
+    type PdfDrawingPoint,
+    type PdfDrawingTool,
+} from "../filecompanion/pdfDrawings";
+import {
     PDF_MARK_COLORS,
     loadPdfMarks,
     newPdfMarkId,
@@ -28,6 +39,7 @@ import {
     loadPdfTranslationDrafts,
     loadPdfTranslations,
     newPdfTranslationId,
+    notifyPdfAnnotationsChanged,
     pdfTranslationError,
     pdfTranslationPlace,
     rememberPdfTranslationPlace,
@@ -36,6 +48,7 @@ import {
     type PdfTranslation,
     type PdfTranslationDraft,
     type PdfTranslationPlace,
+    type PdfTranslationSize,
 } from "../filecompanion/pdfTranslations";
 import { subscribeCompanionReaderState } from "../filecompanion/companionReaderState";
 
@@ -72,6 +85,8 @@ type MenuState = {
     y: number;
     hitId: string;
     hitNoteId: string;
+    hitNoteKind: "" | "annotation" | "translation";
+    hitMark: PdfMark | null;
     parts: SelectionPart[];
 };
 
@@ -396,7 +411,7 @@ function markAt(marks: PdfMark[], page: number, x: number, y: number): PdfMark |
     return null;
 }
 
-type PdfMenuGlyphKind = "highlight" | "translate" | "copy" | "check" | "close" | "erase";
+type PdfMenuGlyphKind = "highlight" | "translate" | "copy" | "check" | "close" | "erase" | "note";
 
 function PdfMenuGlyph({ kind }: { kind: PdfMenuGlyphKind }) {
     if (kind === "highlight") {
@@ -475,6 +490,7 @@ type PdfSelectionMenuProps = {
     onTranslate: () => void;
     onCopy: () => void;
     onPaint: (color: PdfMarkColor) => void;
+    onAnnotate: (text: string) => void;
     onClearNote: () => void;
     onClearMark: () => void;
     onClose: () => void;
@@ -492,12 +508,15 @@ function PdfSelectionMenu({
     onTranslate,
     onCopy,
     onPaint,
+    onAnnotate,
     onClearNote,
     onClearMark,
     onClose,
 }: PdfSelectionMenuProps) {
     const rootRef = useRef<HTMLDivElement>(null);
     const [place, setPlace] = useState({ left: state.x, top: state.y });
+    const [annotationOpen, setAnnotationOpen] = useState(false);
+    const [annotationText, setAnnotationText] = useState("");
 
     useLayoutEffect(() => {
         const root = rootRef.current;
@@ -515,7 +534,7 @@ function PdfSelectionMenu({
         measure();
         window.addEventListener("resize", measure);
         return () => window.removeEventListener("resize", measure);
-    }, [state.x, state.y, selectionText, state.hitId, state.hitNoteId]);
+    }, [state.x, state.y, selectionText, state.hitId, state.hitNoteId, annotationOpen]);
 
     useEffect(() => {
         rootRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true });
@@ -587,11 +606,20 @@ function PdfSelectionMenu({
         items[next]?.focus();
     };
 
-    const quote = selectionText ? menuQuote(selectionText) : "";
     const hasSelection = selectionText.trim().length > 0;
+    const quoteText = hasSelection ? selectionText : (state.hitMark?.text ?? "");
+    const quote = quoteText ? menuQuote(quoteText) : "";
+    const canAnnotate = quoteText.trim().length > 0;
+    const submitAnnotation = () => {
+        const text = annotationText.trim();
+        if (!text) return;
+        onAnnotate(text);
+        setAnnotationOpen(false);
+        setAnnotationText("");
+    };
     // The visible quote is trimmed to one line; the tooltip carries the whole
     // selection so a truncated head can still be read in full.
-    const quoteTitle = selectionText.replace(/\s+/g, " ").trim();
+    const quoteTitle = quoteText.replace(/\s+/g, " ").trim();
 
     return (
         <div
@@ -636,6 +664,64 @@ function PdfSelectionMenu({
                     </button>
                 </div>
             ) : null}
+            {canAnnotate ? (
+                <div className="companion-pdf-menu-group">
+                    {annotationOpen ? (
+                        <div data-testid="pdf-annotation-editor" style={{ display: "grid", gap: 6, padding: "8px", minWidth: 220 }}>
+                            <textarea
+                                data-testid="pdf-annotation-input"
+                                value={annotationText}
+                                autoFocus
+                                rows={3}
+                                placeholder="写批注…"
+                                style={{ resize: "vertical", minHeight: 64, font: "inherit", padding: "6px 8px" }}
+                                onChange={(event) => setAnnotationText(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === "Escape") {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        setAnnotationOpen(false);
+                                        setAnnotationText("");
+                                        return;
+                                    }
+                                    if (event.key === "Enter" && !event.shiftKey) {
+                                        event.preventDefault();
+                                        submitAnnotation();
+                                    }
+                                }}
+                            />
+                            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                                <button
+                                    type="button"
+                                    data-testid="pdf-annotation-cancel"
+                                    onClick={() => { setAnnotationOpen(false); setAnnotationText(""); }}
+                                    onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                                    style={{ padding: "4px 8px" }}
+                                >取消</button>
+                                <button
+                                    type="button"
+                                    data-testid="pdf-annotation-save"
+                                    disabled={!annotationText.trim()}
+                                    onClick={submitAnnotation}
+                                    onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                                    style={{ padding: "4px 8px" }}
+                                >保存批注</button>
+                            </div>
+                        </div>
+                    ) : (
+                        <button
+                            type="button"
+                            role="menuitem"
+                            data-testid="pdf-annotate"
+                            className="companion-pdf-menu-item"
+                            {...activate(() => setAnnotationOpen(true))}
+                        >
+                            <PdfMenuGlyph kind="note" />
+                            <span className="companion-pdf-menu-item-label">批注</span>
+                        </button>
+                    )}
+                </div>
+            ) : null}
             {state.parts.length > 0 ? (
                 <div className="companion-pdf-menu-group">
                     <p className="companion-pdf-menu-title"><PdfMenuGlyph kind="highlight" />高亮</p>
@@ -668,7 +754,7 @@ function PdfSelectionMenu({
                             {...activate(onClearNote)}
                         >
                             <PdfMenuGlyph kind="erase" />
-                            <span className="companion-pdf-menu-item-label">取消翻译</span>
+                            <span className="companion-pdf-menu-item-label">{state.hitNoteKind === "annotation" ? "删除批注" : "取消翻译"}</span>
                         </button>
                     ) : null}
                     {state.hitId ? (
@@ -689,25 +775,359 @@ function PdfSelectionMenu({
     );
 }
 
+// A stronger ink than the highlighter fill so a thin stroke stays readable on
+// white paper while the palette still matches the highlight colours.
+const PDF_DRAWING_INK: Record<PdfMarkColor, string> = {
+    yellow: "#c9930a",
+    green: "#2f8f5b",
+    blue: "#2f6bbd",
+    pink: "#c74884",
+};
+
+// Eraser is a reader mode, not a stored drawing tool.
+type PdfDrawTool = PdfDrawingTool | "eraser";
+
+// PdfDrawingLayer is the transparent page overlay used while 手绘 is on. The
+// same SVG also paints stored strokes and boxes; with the pen off it has no
+// pointer events, so text selection and the highlight menu keep working.
+function PdfDrawingLayer({
+    pageNumber,
+    drawings,
+    active,
+    color,
+    tool,
+    onAdd,
+    onErase,
+}: {
+    pageNumber: number;
+    drawings: PdfDrawing[];
+    active: boolean;
+    color: PdfMarkColor;
+    tool: PdfDrawTool;
+    onAdd: (drawing: PdfDrawing) => void;
+    onErase: (ids: string[]) => void;
+}) {
+    const surfaceRef = useRef<SVGSVGElement>(null);
+    const [draft, setDraft] = useState<PdfDrawing | null>(null);
+    const draftRef = useRef<PdfDrawing | null>(null);
+    const [eraseRect, setEraseRect] = useState<PdfMarkRect | null>(null);
+    const eraseStartRef = useRef<PdfDrawingPoint | null>(null);
+    const eraseRectRef = useRef<PdfMarkRect | null>(null);
+    const drawingsRef = useRef(drawings);
+    drawingsRef.current = drawings;
+    const stopRef = useRef<(() => void) | null>(null);
+    const cleanupRef = useRef<(() => void) | null>(null);
+
+    // The pointer handlers live on window for the duration of one stroke. A
+    // tab switch unmounts this layer; leaving them behind would keep acting on
+    // a canvas that is gone.
+    useEffect(() => () => cleanupRef.current?.(), []);
+    useEffect(() => {
+        if (active) return;
+        // The pen can be switched off after a mouseup that landed outside the
+        // window. Throw that unfinished stroke away instead of painting it on
+        // the next click.
+        cleanupRef.current?.();
+        cleanupRef.current = null;
+        stopRef.current = null;
+        draftRef.current = null;
+        eraseStartRef.current = null;
+        eraseRectRef.current = null;
+        setDraft(null);
+        setEraseRect(null);
+    }, [active]);
+
+    // Switching tools abandons a gesture whose mouseup was lost outside the
+    // window; otherwise the next click would commit that stale selection.
+    useEffect(() => {
+        cleanupRef.current?.();
+        cleanupRef.current = null;
+        stopRef.current = null;
+        draftRef.current = null;
+        eraseStartRef.current = null;
+        eraseRectRef.current = null;
+        setDraft(null);
+        setEraseRect(null);
+    }, [tool]);
+
+    const pointAt = (clientX: number, clientY: number): PdfDrawingPoint | null => {
+        const box = surfaceRef.current?.getBoundingClientRect();
+        if (!box || box.width < 1 || box.height < 1) return null;
+        return {
+            x: Math.min(1, Math.max(0, (clientX - box.left) / box.width)),
+            y: Math.min(1, Math.max(0, (clientY - box.top) / box.height)),
+        };
+    };
+
+    // The eraser is a marquee: drag a box and every local stroke or frame it
+    // touches goes away. Host drawings received from a share carry `shared`
+    // and stay, matching the 撤销 guard.
+    const beginErase = (start: PdfDrawingPoint) => {
+        eraseStartRef.current = start;
+        const initial = { x: start.x, y: start.y, w: 0, h: 0 };
+        eraseRectRef.current = initial;
+        setEraseRect(initial);
+        let frame = 0;
+        let finish: () => void = () => undefined;
+        const paintRect = () => {
+            frame = 0;
+            setEraseRect(eraseRectRef.current);
+        };
+        const schedulePaint = () => {
+            if (frame) return;
+            if (typeof window.requestAnimationFrame !== "function") {
+                paintRect();
+                return;
+            }
+            frame = window.requestAnimationFrame(paintRect);
+        };
+        const cancelPaint = () => {
+            if (!frame) return;
+            if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(frame);
+            frame = 0;
+        };
+        const move = (moveEvent: MouseEvent) => {
+            const from = eraseStartRef.current;
+            if (!from) return;
+            const next = pointAt(moveEvent.clientX, moveEvent.clientY);
+            if (!next) return;
+            eraseRectRef.current = {
+                x: Math.min(from.x, next.x),
+                y: Math.min(from.y, next.y),
+                w: Math.abs(next.x - from.x),
+                h: Math.abs(next.y - from.y),
+            };
+            schedulePaint();
+        };
+        const removeListeners = () => {
+            cancelPaint();
+            window.removeEventListener("mousemove", move, true);
+            window.removeEventListener("mouseup", finish, true);
+            window.removeEventListener("blur", finish);
+            if (cleanupRef.current === removeListeners) cleanupRef.current = null;
+        };
+        finish = () => {
+            removeListeners();
+            stopRef.current = null;
+            const rect = eraseRectRef.current;
+            eraseStartRef.current = null;
+            eraseRectRef.current = null;
+            setEraseRect(null);
+            // A click without a drag must not erase a whole stroke.
+            if (!rect || Math.max(rect.w, rect.h) < 0.002) return;
+            const ids = drawingsRef.current
+                .filter((drawing) => !drawing.shared && pdfDrawingHitsRect(drawing, rect))
+                .map((drawing) => drawing.id);
+            if (ids.length > 0) onErase(ids);
+        };
+        cleanupRef.current = removeListeners;
+        stopRef.current = finish;
+        window.addEventListener("mousemove", move, true);
+        window.addEventListener("mouseup", finish, true);
+        window.addEventListener("blur", finish);
+    };
+
+    const startDrawing = (event: React.MouseEvent) => {
+        if (!active || event.button !== 0) return;
+        event.preventDefault();
+        const point = pointAt(event.clientX, event.clientY);
+        if (!point) return;
+        stopRef.current?.();
+        if (tool === "eraser") {
+            beginErase(point);
+            return;
+        }
+        const shapeTool: PdfDrawingTool = tool === "box" ? "box" : "line";
+        const drawing: PdfDrawing = {
+            id: newPdfDrawingId(),
+            page: pageNumber,
+            color,
+            tool: shapeTool,
+            points: [point, point],
+        };
+        draftRef.current = drawing;
+        setDraft(drawing);
+        let frame = 0;
+        let finish: () => void = () => undefined;
+        const paintDraft = () => {
+            frame = 0;
+            setDraft(draftRef.current);
+        };
+        // Mouse move can fire faster than the display refresh. Repaint once per
+        // frame instead of re-rendering the whole stroke on every event.
+        const schedulePaint = () => {
+            if (frame) return;
+            if (typeof window.requestAnimationFrame !== "function") {
+                paintDraft();
+                return;
+            }
+            frame = window.requestAnimationFrame(paintDraft);
+        };
+        const cancelPaint = () => {
+            if (!frame) return;
+            if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(frame);
+            frame = 0;
+        };
+        const move = (moveEvent: MouseEvent) => {
+            const current = draftRef.current;
+            const box = surfaceRef.current?.getBoundingClientRect();
+            if (!current || !box || box.width < 1 || box.height < 1) return;
+            const next = pointAt(moveEvent.clientX, moveEvent.clientY);
+            if (!next) return;
+            if (current.tool === "line") {
+                const last = current.points[current.points.length - 1];
+                if (current.points.length >= PDF_DRAWING_MAX_POINTS) return;
+                if (Math.abs(next.x - last.x) * box.width + Math.abs(next.y - last.y) * box.height < 1.5) return;
+                draftRef.current = { ...current, points: [...current.points, next] };
+                schedulePaint();
+                return;
+            }
+            draftRef.current = { ...current, points: [current.points[0], next] };
+            schedulePaint();
+        };
+        const removeListeners = () => {
+            cancelPaint();
+            window.removeEventListener("mousemove", move, true);
+            window.removeEventListener("mouseup", finish, true);
+            window.removeEventListener("blur", finish);
+            if (cleanupRef.current === removeListeners) cleanupRef.current = null;
+        };
+        finish = () => {
+            removeListeners();
+            stopRef.current = null;
+            const finished = draftRef.current;
+            draftRef.current = null;
+            setDraft(null);
+            if (!finished) return;
+            if (finished.tool === "line") {
+                if (finished.points.length < 2) return;
+            } else {
+                const a = finished.points[0];
+                const b = finished.points[finished.points.length - 1];
+                if (Math.abs(b.x - a.x) < 0.002 && Math.abs(b.y - a.y) < 0.002) return;
+            }
+            onAdd(finished);
+        };
+        cleanupRef.current = removeListeners;
+        stopRef.current = finish;
+        window.addEventListener("mousemove", move, true);
+        window.addEventListener("mouseup", finish, true);
+        window.addEventListener("blur", finish);
+    };
+
+    const shapes = draft ? [...drawings, draft] : drawings;
+    const erasing = active && tool === "eraser";
+    const doomed = tool === "eraser" && eraseRect
+        ? new Set(
+            drawings
+                .filter((drawing) => !drawing.shared && pdfDrawingHitsRect(drawing, eraseRect))
+                .map((drawing) => drawing.id),
+        )
+        : null;
+    return (
+        <svg
+            ref={surfaceRef}
+            className={active
+                ? `companion-pdf-drawings companion-pdf-drawings--active${erasing ? " companion-pdf-drawings--eraser" : ""}`
+                : "companion-pdf-drawings"}
+            data-testid={`pdf-drawing-layer-${pageNumber}`}
+            viewBox="0 0 1 1"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+            onMouseDown={startDrawing}
+        >
+            {shapes.map((drawing) => {
+                const marked = doomed?.has(drawing.id) === true;
+                const stroke = marked ? "#dc1f25" : PDF_DRAWING_INK[drawing.color];
+                const opacity = marked ? 0.35 : undefined;
+                if (drawing.tool === "box") {
+                    const a = drawing.points[0];
+                    const b = drawing.points[drawing.points.length - 1];
+                    return (
+                        <rect
+                            key={drawing.id}
+                            data-drawing-id={drawing.id}
+                            x={Math.min(a.x, b.x)}
+                            y={Math.min(a.y, b.y)}
+                            width={Math.abs(b.x - a.x)}
+                            height={Math.abs(b.y - a.y)}
+                            fill={pdfMarkFill(drawing.color)}
+                            fillOpacity={0.16}
+                            stroke={stroke}
+                            strokeWidth={2}
+                            opacity={opacity}
+                            vectorEffect="non-scaling-stroke"
+                        />
+                    );
+                }
+                return (
+                    <polyline
+                        key={drawing.id}
+                        data-drawing-id={drawing.id}
+                        points={drawing.points.map((point) => `${point.x},${point.y}`).join(" ")}
+                        fill="none"
+                        stroke={stroke}
+                        strokeWidth={2.4}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        opacity={opacity}
+                        vectorEffect="non-scaling-stroke"
+                    />
+                );
+            })}
+            {tool === "eraser" && eraseRect ? (
+                <rect
+                    data-testid={`pdf-erase-preview-${pageNumber}`}
+                    x={eraseRect.x}
+                    y={eraseRect.y}
+                    width={eraseRect.w}
+                    height={eraseRect.h}
+                    fill="#dc1f25"
+                    fillOpacity={0.08}
+                    stroke="#dc1f25"
+                    strokeWidth={1.5}
+                    strokeDasharray="6 4"
+                    pointerEvents="none"
+                    vectorEffect="non-scaling-stroke"
+                />
+            ) : null}
+        </svg>
+    );
+}
+
 function PdfPageView({
     pdf,
     pageNumber,
     width,
     marks,
+    drawings,
+    drawActive,
+    drawColor,
+    drawTool,
+    onAddDrawing,
+    onEraseDrawing,
     notes,
     openNoteId,
     onToggleNote,
     onPlaceNote,
+    onResizeNote,
     active,
 }: {
     pdf: PdfDocument;
     pageNumber: number;
     width: number;
     marks: PdfMark[];
+    drawings: PdfDrawing[];
+    drawActive: boolean;
+    drawColor: PdfMarkColor;
+    drawTool: PdfDrawTool;
+    onAddDrawing: (drawing: PdfDrawing) => void;
+    onEraseDrawing: (ids: string[]) => void;
     notes: ShownTranslation[];
     openNoteId: string;
     onToggleNote: (id: string) => void;
     onPlaceNote: (id: string, place: PdfTranslationPlace | null) => void;
+    onResizeNote: (id: string, size: PdfTranslationSize | null) => void;
     active: boolean;
 }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -916,6 +1336,64 @@ function PdfPageView({
         dragStopRef.current = stop;
     };
 
+    // Resize the card from its bottom-right corner. Both translations and
+    // annotations use it; the size is stored relative to the rendered page so
+    // it survives a zoom change.
+    const startPopResize = (event: React.MouseEvent, note: ShownTranslation) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const pop = (event.currentTarget as HTMLElement).closest("[data-pdf-translation-pop]") as HTMLElement | null;
+        const span = pop?.closest(".companion-pdf-translation") as HTMLElement | null;
+        const pageEl = span?.closest(".companion-pdf-page") as HTMLElement | null;
+        if (!pop || !span || !pageEl) return;
+        const pageBox = pageEl.getBoundingClientRect();
+        if (pageBox.width < 1 || pageBox.height < 1) return;
+        dragStopRef.current?.();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const startW = pop.offsetWidth;
+        const startH = pop.offsetHeight;
+        const minW = Math.min(200, pageBox.width);
+        const minH = Math.min(100, pageBox.height);
+        let lastW = startW;
+        let lastH = startH;
+        let stopped = false;
+        const previousCursor = document.body.style.cursor;
+        const apply = (width: number, height: number) => {
+            pop.style.width = `${width}px`;
+            pop.style.height = `${height}px`;
+            pop.style.maxWidth = "none";
+            pop.style.maxHeight = "none";
+        };
+        const move = (ev: MouseEvent) => {
+            ev.preventDefault();
+            const pageNow = pageEl.getBoundingClientRect();
+            if (pageNow.width < 1 || pageNow.height < 1) return;
+            lastW = Math.min(pageNow.width, Math.max(minW, startW + (ev.clientX - startX)));
+            lastH = Math.min(pageNow.height, Math.max(minH, startH + (ev.clientY - startY)));
+            apply(lastW, lastH);
+        };
+        const stop = () => {
+            if (stopped) return;
+            stopped = true;
+            window.removeEventListener("mousemove", move, true);
+            window.removeEventListener("mouseup", stop, true);
+            window.removeEventListener("blur", stop);
+            document.body.style.cursor = previousCursor;
+            if (dragStopRef.current === stop) dragStopRef.current = null;
+            if (lastW === startW && lastH === startH) return;
+            const pageNow = pageEl.getBoundingClientRect();
+            if (pageNow.width < 1 || pageNow.height < 1) return;
+            onResizeNote(note.id, { w: lastW / pageNow.width, h: lastH / pageNow.height });
+        };
+        document.body.style.cursor = "nwse-resize";
+        window.addEventListener("mousemove", move, true);
+        window.addEventListener("mouseup", stop, true);
+        window.addEventListener("blur", stop);
+        dragStopRef.current = stop;
+    };
+
     return (
         <div
             ref={pageRef}
@@ -951,10 +1429,34 @@ function PdfPageView({
                     })}
                 </div>
             ) : null}
+            {active ? (
+                <PdfDrawingLayer
+                    pageNumber={pageNumber}
+                    drawings={drawings.filter((drawing) => drawing.page === pageNumber)}
+                    active={drawActive}
+                    color={drawColor}
+                    tool={drawTool}
+                    onAdd={onAddDrawing}
+                    onErase={onEraseDrawing}
+                />
+            ) : null}
             {active ? notes.map((note) => {
                 const part = note.parts.find((item) => item.page === pageNumber);
                 if (!part) return null;
                 const iconHere = note.parts[0]?.page === pageNumber;
+                const annotation = note.kind === "annotation";
+                // A resized card keeps its own width/height; an untouched one
+                // stays sized to its content by the stylesheet.
+                const sized = Boolean(note.size) && viewport.width > 0 && viewport.height > 0;
+                const popStyle: React.CSSProperties | undefined = sized && note.size ? {
+                    width: `${Math.max(Math.min(200, viewport.width), Math.min(viewport.width, note.size.w * viewport.width))}px`,
+                    height: `${Math.max(Math.min(100, viewport.height), Math.min(viewport.height, note.size.h * viewport.height))}px`,
+                    maxWidth: "none",
+                    maxHeight: "none",
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden",
+                } : undefined;
                 return part.rects.map((rect, index) => (
                     <span
                         key={`${note.id}-${index}`}
@@ -977,7 +1479,7 @@ function PdfPageView({
                                 data-testid={`pdf-translate-icon-${note.id}`}
                                 data-pdf-translation-icon=""
                                 {...(note.pending ? {} : { "data-pdf-translation-id": note.id })}
-                                aria-label={note.pending ? "正在翻译" : "译文"}
+                                aria-label={annotation ? "批注" : note.pending ? "正在翻译" : "译文"}
                                 aria-busy={note.pending ? true : undefined}
                                 onMouseDown={(event) => {
                                     if (event.button !== 0) return;
@@ -986,24 +1488,33 @@ function PdfPageView({
                                     onToggleNote(note.id);
                                 }}
                             >
-                                <svg className="companion-pdf-translation-icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <path d="M3 5h9" />
-                                    <path d="M7.5 3v2" />
-                                    <path d="m5.5 8 5 5" />
-                                    <path d="m4.5 13 5-5 1.5-2" />
-                                    <path d="m20 20-3.6-7.4L12.8 20" />
-                                    <path d="M14.4 17.2h4.4" />
-                                </svg>
-                                译文
+                                {annotation ? (
+                                    <svg className="companion-pdf-translation-icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
+                                        <path d="m8.5 10.5 5 5" />
+                                        <path d="M5 20h14" />
+                                    </svg>
+                                ) : (
+                                    <svg className="companion-pdf-translation-icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="M3 5h9" />
+                                        <path d="M7.5 3v2" />
+                                        <path d="m5.5 8 5 5" />
+                                        <path d="m4.5 13 5-5 1.5-2" />
+                                        <path d="m20 20-3.6-7.4L12.8 20" />
+                                        <path d="M14.4 17.2h4.4" />
+                                    </svg>
+                                )}
+                                {annotation ? "批注" : "译文"}
                             </button>
                         ) : null}
                         {iconHere && index === 0 && openNoteId === note.id ? (
                             <span
                                 className={(note.place ? note.place.above === true : popAbove) ? "companion-pdf-translation-pop companion-pdf-translation-pop--above" : "companion-pdf-translation-pop"}
                                 role="dialog"
-                                aria-label="译文"
+                                aria-label={annotation ? "批注" : "译文"}
                                 data-testid={`pdf-translate-pop-${note.id}`}
                                 data-pdf-translation-pop=""
+                                style={popStyle}
                                 onMouseDown={(event) => event.stopPropagation()}
                             >
                                 <span
@@ -1018,7 +1529,7 @@ function PdfPageView({
                                 />
                                 <span className="companion-pdf-translation-head">
                                     <span className="companion-pdf-translation-kicker">
-                                        {note.pending ? "正在翻译" : "中文译文"}
+                                        {annotation ? "批注" : note.pending ? "正在翻译" : "中文译文"}
                                     </span>
                                     <span className="companion-pdf-translation-actions">
                                         <button
@@ -1026,8 +1537,8 @@ function PdfPageView({
                                             className="companion-pdf-translation-action"
                                             data-testid={`pdf-translate-copy-${note.id}`}
                                             data-copy-state={copyFailedId === note.id ? "failed" : copiedId === note.id ? "copied" : undefined}
-                                            title={copyFailedId === note.id ? "复制失败" : copiedId === note.id ? "已复制" : "复制译文"}
-                                            aria-label={copyFailedId === note.id ? "复制失败" : copiedId === note.id ? "已复制" : "复制译文"}
+                                            title={copyFailedId === note.id ? "复制失败" : copiedId === note.id ? "已复制" : (annotation ? "复制批注" : "复制译文")}
+                                            aria-label={copyFailedId === note.id ? "复制失败" : copiedId === note.id ? "已复制" : (annotation ? "复制批注" : "复制译文")}
                                             disabled={note.pending || !note.translation}
                                             onMouseDown={(event) => {
                                                 event.preventDefault();
@@ -1055,7 +1566,7 @@ function PdfPageView({
                                             className="companion-pdf-translation-action"
                                             data-testid={`pdf-translate-close-${note.id}`}
                                             title="关闭"
-                                            aria-label="关闭译文"
+                                            aria-label={annotation ? "关闭批注" : "关闭译文"}
                                             onMouseDown={(event) => {
                                                 event.preventDefault();
                                                 event.stopPropagation();
@@ -1067,7 +1578,7 @@ function PdfPageView({
                                     </span>
                                 </span>
                                 </span>
-                                <span className="companion-pdf-translation-body">
+                                <span className="companion-pdf-translation-body" style={sized ? { flex: "1 1 auto", minHeight: 0, overflow: "auto" } : undefined}>
                                     {!note.pending && note.clipped ? <span className="companion-pdf-translation-clip">仅翻译了前 4000 字</span> : null}
                                     {note.pending ? (
                                         <span className="companion-pdf-translation-skeleton" aria-hidden="true">
@@ -1078,11 +1589,30 @@ function PdfPageView({
                                     ) : note.translation}
                                 </span>
                                 {!note.pending && note.text ? (
-                                    <span className="companion-pdf-translation-source" title={note.text}>
+                                    <span className="companion-pdf-translation-source" style={sized ? { flex: "0 0 auto" } : undefined} title={note.text}>
                                         <span className="companion-pdf-translation-source-label">原文</span>
                                         {note.text}
                                     </span>
                                 ) : null}
+                                <span
+                                    data-pdf-translation-resize=""
+                                    title="调整大小"
+                                    aria-hidden="true"
+                                    onMouseDown={(event) => startPopResize(event, note)}
+                                    style={{
+                                        position: "absolute",
+                                        right: 2,
+                                        bottom: 2,
+                                        width: 14,
+                                        height: 14,
+                                        cursor: "nwse-resize",
+                                        zIndex: 4,
+                                        borderRight: "2px solid currentColor",
+                                        borderBottom: "2px solid currentColor",
+                                        opacity: 0.45,
+                                        pointerEvents: "auto",
+                                    }}
+                                />
                             </span>
                         ) : null}
                     </span>
@@ -1107,6 +1637,11 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     const [seen, setSeen] = useState<Record<number, boolean>>({ 1: true });
     const [marks, setMarks] = useState<PdfMark[]>(() => loadPdfMarks(absPath));
     const [translations, setTranslations] = useState<PdfTranslation[]>(() => loadPdfTranslations(absPath));
+    const [drawings, setDrawings] = useState<PdfDrawing[]>(() => loadPdfDrawings(absPath));
+    const [drawMode, setDrawMode] = useState(false);
+    const [drawColor, setDrawColor] = useState<PdfMarkColor>("yellow");
+    const [drawTool, setDrawTool] = useState<PdfDrawTool>("line");
+    const lastShapeToolRef = useRef<PdfDrawingTool>("line");
     const [pendingNote, setPendingNote] = useState<ShownTranslation | null>(() => {
         const drafts = loadPdfTranslationDrafts(absPath);
         return pendingTranslation(drafts[drafts.length - 1]);
@@ -1135,6 +1670,8 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     useEffect(() => {
         applyStoredTranslations(absPath);
         setMarks(loadPdfMarks(absPath));
+        setDrawings(loadPdfDrawings(absPath));
+        setDrawMode(false);
         setOpenNoteId("");
         setMenu(null);
         setSeen({ 1: true });
@@ -1145,10 +1682,16 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         applyStoredTranslations(pathRef.current);
     }), [applyStoredTranslations]);
 
+    useEffect(() => subscribePdfDrawings((key) => {
+        if (key !== pdfMarkPathKey(pathRef.current)) return;
+        setDrawings(loadPdfDrawings(pathRef.current));
+    }), []);
+
     // A host read slower than the startup wait can land after this reader is
-    // already mounted. Re-read both mirrors instead of painting stale state.
+    // already mounted. Re-read the mirrors instead of painting stale state.
     useEffect(() => subscribeCompanionReaderState(() => {
         setMarks(loadPdfMarks(pathRef.current));
+        setDrawings(loadPdfDrawings(pathRef.current));
         applyStoredTranslations(pathRef.current);
     }), [applyStoredTranslations]);
 
@@ -1291,6 +1834,10 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         if (!menu) return undefined;
         const onKey = (event: KeyboardEvent) => {
             if (event.key !== "Escape") return;
+            // Escape inside the annotation editor closes only the editor; the
+            // menu stays open so the note can be written or the action chosen.
+            const target = event.target as HTMLElement | null;
+            if (target?.closest?.("[data-testid='pdf-annotation-input']")) return;
             event.preventDefault();
             event.stopPropagation();
             setMenu(null);
@@ -1328,6 +1875,15 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             window.removeEventListener("mousedown", onPointer);
         };
     }, [openNoteId]);
+
+    useEffect(() => {
+        if (!drawMode) return undefined;
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") setDrawMode(false);
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [drawMode]);
 
     const commit = (next: PdfMark[]) => {
         // A reader's own paint or clear is part of the shared project when this
@@ -1372,10 +1928,100 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         const id = menu?.hitNoteId ?? "";
         if (!id) return;
         if (loadPdfTranslationDrafts(absPath).some((item) => item.id === id)) return;
+        const stored = loadPdfTranslations(absPath);
+        const removed = stored.find((item) => item.id === id);
         rememberPdfTranslationPlace(id, null);
-        savePdfTranslations(absPath, loadPdfTranslations(absPath).filter((item) => item.id !== id));
+        savePdfTranslations(absPath, stored.filter((item) => item.id !== id));
+        if (removed?.kind === "annotation") notifyPdfAnnotationsChanged(absPath);
         setOpenNoteId((current) => (current === id ? "" : current));
         setMenu(null);
+    };
+
+    // A reader's own note on a selected passage (or an existing highlight).
+    // It is displayed by the same card as a translation and shares with the
+    // project, unlike the local LLM translations.
+    const createAnnotation = (noteText: string) => {
+        if (!menu) return;
+        const body = noteText.trim();
+        const parts = menu.parts.length > 0
+            ? menu.parts.map((part) => ({ page: part.page, rects: part.rects }))
+            : menu.hitMark ? [{ page: menu.hitMark.page, rects: menu.hitMark.rects }] : [];
+        const source = (menu.parts[0]?.text || menu.hitMark?.text || "").trim();
+        if (!body || parts.length === 0 || !source) return;
+        const id = newPdfTranslationId();
+        const notes: PdfTranslation = { id, kind: "annotation", text: source, translation: body, parts };
+        const stored = loadPdfTranslations(absPath).filter((item) => item.id !== id);
+        savePdfTranslations(absPath, [...stored, notes]);
+        setOpenNoteId(id);
+        setMenu(null);
+        window.getSelection()?.removeAllRanges();
+        notifyPdfAnnotationsChanged(absPath);
+    };
+
+    const resizeNote = (id: string, size: PdfTranslationSize | null) => {
+        const stored = loadPdfTranslations(pathRef.current);
+        const target = stored.find((item) => item.id === id);
+        if (!target) return;
+        const next = stored.map((item) => {
+            if (item.id !== id) return item;
+            if (!size) {
+                const { size: _dropped, ...rest } = item;
+                return rest;
+            }
+            return { ...item, size };
+        });
+        savePdfTranslations(pathRef.current, next);
+        if (target.kind === "annotation") notifyPdfAnnotationsChanged(pathRef.current);
+    };
+
+    // A finished stroke or box is local to this reader until the companion
+    // window hosts this document; that window uploads the project.
+    const addDrawing = useCallback((drawing: PdfDrawing) => {
+        const saved = savePdfDrawings(pathRef.current, [...loadPdfDrawings(pathRef.current), drawing], true);
+        setDrawings(saved);
+    }, []);
+
+    const undoDrawing = useCallback(() => {
+        const stored = loadPdfDrawings(pathRef.current);
+        // A participant must not erase the host's stroke with 撤销; only the
+        // newest drawing made on this machine is removable.
+        let index = -1;
+        for (let i = stored.length - 1; i >= 0; i -= 1) {
+            if (!stored[i].shared) {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0) return;
+        const saved = savePdfDrawings(pathRef.current, stored.filter((_, i) => i !== index), true);
+        setDrawings(saved);
+    }, []);
+
+    const eraseDrawings = useCallback((ids: string[]) => {
+        if (ids.length === 0) return;
+        const doomed = new Set(ids);
+        const stored = loadPdfDrawings(pathRef.current);
+        // The layer already filters 主持人's drawings; keep the guard here so
+        // a future caller cannot remove a received stroke by accident.
+        const next = stored.filter((item) => item.shared || !doomed.has(item.id));
+        if (next.length === stored.length) return;
+        const saved = savePdfDrawings(pathRef.current, next, true);
+        setDrawings(saved);
+    }, []);
+
+    const selectDrawTool = (next: PdfDrawTool) => {
+        if (next !== "eraser") lastShapeToolRef.current = next;
+        setDrawTool(next);
+    };
+
+    const toggleDrawMode = () => {
+        if (!drawMode) {
+            // Drawing and text selection compete for the same drag.
+            setMenu(null);
+            setOpenNoteId("");
+            window.getSelection()?.removeAllRanges();
+        }
+        setDrawMode(!drawMode);
     };
 
     const translateSelection = () => {
@@ -1425,7 +2071,8 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             return;
         }
         const stored = loadPdfTranslations(pathRef.current);
-        if (!stored.some((item) => item.id === id)) {
+        const target = stored.find((item) => item.id === id);
+        if (!target) {
             rememberPdfTranslationPlace(id, null);
             return;
         }
@@ -1439,6 +2086,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             return { ...item, place };
         });
         savePdfTranslations(pathRef.current, next);
+        if (target.kind === "annotation") notifyPdfAnnotationsChanged(pathRef.current);
     };
 
     const onContextMenu = (event: React.MouseEvent) => {
@@ -1451,7 +2099,15 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         if (!root) return;
         const pageEl = target?.closest?.("[data-pdf-page]") as HTMLElement | null;
         let hitId = "";
+        let hitMark: PdfMark | null = null;
         let hitNoteId = target?.closest?.("[data-pdf-translation-id]")?.getAttribute("data-pdf-translation-id")?.trim() ?? "";
+        let hitNoteKind: "" | "annotation" | "translation" = "";
+        if (hitNoteId) {
+            // A click on the card's icon carries the id, not the kind; read the
+            // kind back so the menu offers 删除批注 and not 取消翻译.
+            const direct = translationsRef.current.find((item) => item.id === hitNoteId);
+            hitNoteKind = direct?.kind === "annotation" ? "annotation" : "translation";
+        }
         if (pageEl) {
             const box = pageEl.getBoundingClientRect();
             const page = Number(pageEl.dataset.pdfPage);
@@ -1459,10 +2115,16 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                 const x = (event.clientX - box.left) / box.width;
                 const y = (event.clientY - box.top) / box.height;
                 const hit = markAt(marksRef.current, page, x, y);
-                if (hit) hitId = hit.id;
+                if (hit) {
+                    hitId = hit.id;
+                    hitMark = hit;
+                }
                 if (!hitNoteId) {
                     const note = noteAt(translationsRef.current, page, x, y);
-                    if (note) hitNoteId = note.id;
+                    if (note) {
+                        hitNoteId = note.id;
+                        hitNoteKind = note.kind === "annotation" ? "annotation" : "translation";
+                    }
                 }
             }
         }
@@ -1471,7 +2133,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             setMenu(null);
             return;
         }
-        setMenu({ x: event.clientX, y: event.clientY, hitId, hitNoteId, parts });
+        setMenu({ x: event.clientX, y: event.clientY, hitId, hitMark, hitNoteId, hitNoteKind, parts });
     };
 
     const fill: React.CSSProperties = { background: theme.bg, color: theme.text };
@@ -1493,6 +2155,109 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             {translateError ? (
                 <p className="companion-pdf-translate-error" role="status" data-testid="pdf-translate-error">{translateError}</p>
             ) : null}
+            <div
+                className="companion-pdf-draw"
+                data-testid="pdf-draw"
+                onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }}
+            >
+                <button
+                    type="button"
+                    className="companion-pdf-draw-toggle"
+                    data-testid="pdf-draw-toggle"
+                    aria-label={isZh ? "手绘" : "Draw"}
+                    aria-pressed={drawMode}
+                    title={isZh ? (drawMode ? "退出手绘" : "手绘 — 在 PDF 上画线或框") : (drawMode ? "Exit drawing" : "Draw on the PDF")}
+                    onClick={toggleDrawMode}
+                >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M4 20h4L18.5 9.5a2.5 2.5 0 0 0-3.5-3.5L4 16.5V20Z" />
+                        <path d="m13.5 7.5 3 3" />
+                    </svg>
+                </button>
+                {drawMode ? (
+                    <div className="companion-pdf-draw-panel" data-testid="pdf-draw-panel">
+                        <div className="companion-pdf-draw-colors" role="group" aria-label={isZh ? "手绘颜色" : "Drawing colour"}>
+                            {PDF_MARK_COLORS.map((option) => (
+                                <button
+                                    key={option.id}
+                                    type="button"
+                                    className="companion-pdf-menu-color"
+                                    data-testid={`pdf-draw-color-${option.id}`}
+                                    aria-label={isZh ? `${option.label}笔` : `${option.label} pen`}
+                                    aria-pressed={drawColor === option.id}
+                                    disabled={drawTool === "eraser"}
+                                    title={isZh ? `${option.label}笔` : `${option.label} pen`}
+                                    onClick={() => setDrawColor(option.id)}
+                                >
+                                    <span style={{ background: PDF_DRAWING_INK[option.id] }} />
+                                </button>
+                            ))}
+                        </div>
+                        <span className="companion-pdf-draw-sep" aria-hidden="true" />
+                        <div className="companion-pdf-draw-tools" role="group" aria-label={isZh ? "手绘工具" : "Drawing tools"}>
+                            <button
+                                type="button"
+                                data-testid="pdf-draw-line"
+                                aria-label={isZh ? "画线" : "Draw a line"}
+                                aria-pressed={drawTool === "line"}
+                                title={isZh ? "画线" : "Draw a line"}
+                                onClick={() => selectDrawTool("line")}
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="M5 19 19 5" />
+                                    <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                                    <circle cx="19" cy="5" r="1.5" fill="currentColor" stroke="none" />
+                                </svg>
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="pdf-draw-box"
+                                aria-label={isZh ? "画框" : "Draw a box"}
+                                aria-pressed={drawTool === "box"}
+                                title={isZh ? "画框" : "Draw a box"}
+                                onClick={() => selectDrawTool("box")}
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <rect x="4" y="6" width="16" height="12" rx="1.5" />
+                                </svg>
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="pdf-draw-eraser"
+                                aria-label={isZh ? "擦除" : "Erase"}
+                                aria-pressed={drawTool === "eraser"}
+                                title={isZh ? "擦除 — 圈选要清除的线或框" : "Erase — drag a box over strokes or frames"}
+                                onClick={() => selectDrawTool(drawTool === "eraser" ? lastShapeToolRef.current : "eraser")}
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="m7 21-4.3-4.3a2.4 2.4 0 0 1 0-3.4l9.6-9.6a2.4 2.4 0 0 1 3.4 0l5.6 5.6a2.4 2.4 0 0 1 0 3.4L13 21" />
+                                    <path d="M22 21H7" />
+                                    <path d="m5 11 9 9" />
+                                </svg>
+                            </button>
+                        </div>
+                        <span className="companion-pdf-draw-sep" aria-hidden="true" />
+                        <div className="companion-pdf-draw-tools">
+                            <button
+                                type="button"
+                                data-testid="pdf-draw-undo"
+                                aria-label={isZh ? "撤销上一笔" : "Undo the last stroke"}
+                                disabled={!drawings.some((item) => !item.shared)}
+                                title={isZh ? "撤销上一笔" : "Undo the last stroke"}
+                                onClick={undoDrawing}
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="M9 7 4 12l5 5" />
+                                    <path d="M4 12h9a5 5 0 0 1 5 5v1" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
+            </div>
             <div className="companion-pdf-scroll" ref={scrollerRef} data-testid="companion-pdf-scroll">
                 {pages.map((page) => (
                     <PdfPageView
@@ -1501,10 +2266,17 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                         pageNumber={page}
                         width={width}
                         marks={marks}
+                        drawings={drawings}
+                        drawActive={drawMode}
+                        drawColor={drawColor}
+                        drawTool={drawTool}
+                        onAddDrawing={addDrawing}
+                        onEraseDrawing={eraseDrawings}
                         notes={shownNotes}
                         openNoteId={openNoteId}
                         onToggleNote={toggleNote}
                         onPlaceNote={placeNote}
+                        onResizeNote={resizeNote}
                         active={page === 1 || seen[page] === true}
                     />
                 ))}
@@ -1516,6 +2288,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                     onTranslate={translateSelection}
                     onCopy={copySelection}
                     onPaint={paint}
+                    onAnnotate={createAnnotation}
                     onClearNote={clearNote}
                     onClearMark={clearHit}
                     onClose={closeMenu}

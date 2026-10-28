@@ -26,7 +26,9 @@ func main() {
 	idle := flag.Bool("idle", false, "push zero tasks (standby pet page)")
 	titlesFile := flag.String("titles", "", "JSON array of titles to push one at a time (font coverage check)")
 	celebrateDemo := flag.Bool("celebrate-demo", false, "push a fake task completion and watch the celebration page")
+	petDemo := flag.Bool("pet-demo", false, "send a synthetic 128x128 pet asset and weather, then exit")
 	verbose := flag.Bool("v", true, "log link events")
+	duration := flag.Duration("duration", 0, "exit after this long (e.g. 8s); 0 = run until ctrl-c")
 	flag.Parse()
 
 	if *list {
@@ -64,6 +66,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *duration)
+		defer cancel()
+	}
 	go runner.Run(ctx)
 
 	if *titlesFile != "" {
@@ -72,6 +79,10 @@ func main() {
 	}
 	if *celebrateDemo {
 		runCelebrateDemo(ctx, runner)
+		return
+	}
+	if *petDemo {
+		runPetDemo(ctx, runner)
 		return
 	}
 
@@ -98,8 +109,8 @@ func main() {
 			runner.SetWeather(mock.weather())
 		case <-statusTicker.C:
 			s := runner.Status()
-			fmt.Printf("status: connected=%v port=%s fw=%s board=%s touch=%v page=%s ack=%s err=%s\n",
-				s.Connected, s.Port, s.DeviceFW, s.DeviceBoard, s.DeviceTouch, s.Page,
+			fmt.Printf("status: connected=%v port=%s fw=%s board=%s touch=%v sound=%v page=%s ack=%s err=%s\n",
+				s.Connected, s.Port, s.DeviceFW, s.DeviceBoard, s.DeviceTouch, s.DeviceSound, s.Page,
 				s.LastAckAt.Format("15:04:05.000"), s.LastError)
 		}
 	}
@@ -216,6 +227,66 @@ func runCelebrateDemo(ctx context.Context, runner *service.Runner) {
 		fmt.Printf("celebrate-demo page=%s\n", s.Page)
 	}
 	fmt.Printf("CELEBRATE_DEMO seen=%v connected=%v\n", seen, runner.Status().Connected)
+}
+
+// runPetDemo pushes a synthetic animated pet asset so the asset transfer and
+// the ring standby layout can be checked without the GUI.
+func runPetDemo(ctx context.Context, runner *service.Runner) {
+	waitUntil := time.Now().Add(10 * time.Second)
+	for !runner.Status().Connected && time.Now().Before(waitUntil) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	runner.SetWeather(protocol.Weather{Summary: "晴", TemperatureC: 23, Location: "北京"})
+	frames := make([][]byte, 0, protocol.AssetMaxFrames)
+	for i := 0; i < protocol.AssetMaxFrames; i++ {
+		frames = append(frames, demoPetFrame(i))
+	}
+	runner.SetPetAsset(frames, 450)
+	for i := 0; i < 16; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		s := runner.Status()
+		fmt.Printf("pet-demo page=%s fw=%s pet_ready=%v\n", s.Page, s.DeviceFW, s.PetReady)
+	}
+	fmt.Printf("PET_DEMO sent=%d frames ready=%v connected=%v\n",
+		protocol.AssetMaxFrames, runner.Status().PetReady, runner.Status().Connected)
+}
+
+// demoPetFrame draws a bobbing synthetic mascot; the frame index drives the
+// vertical offset so an 8-frame transfer is visibly animated.
+func demoPetFrame(index int) []byte {
+	const size = protocol.AssetWidth
+	bob := [...]int{0, -3, -4, -3, 0, 3, 4, 3}[index%8]
+	frame := make([]byte, size*size*3)
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			yy := y - bob
+			dx, dy := float64(x-64), float64(yy-64)
+			inside := dx*dx+dy*dy <= 42*42
+			earL := (x-38)*(x-38)+(yy-26)*(yy-26) <= 14*14
+			earR := (x-90)*(x-90)+(yy-26)*(yy-26) <= 14*14
+			eyeL := (x-52)*(x-52)+(yy-58)*(yy-58) <= 6*6
+			eyeR := (x-76)*(x-76)+(yy-58)*(yy-58) <= 6*6
+			if !inside && !earL && !earR {
+				continue
+			}
+			r, g, b := byte(0x60), byte(0xA5), byte(0xFA)
+			if eyeL || eyeR {
+				r, g, b = 0x0E, 0x11, 0x16
+			}
+			value := uint16((uint16(r)&0xF8)<<8 | (uint16(g)&0xFC)<<3 | uint16(b)>>3)
+			i := (y*size + x) * 3
+			frame[i], frame[i+1], frame[i+2] = byte(value), byte(value>>8), 255
+		}
+	}
+	return frame
 }
 
 func portLabel(name string) string {

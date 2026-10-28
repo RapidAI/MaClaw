@@ -362,6 +362,12 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
     expandedRef.current = expanded;
     const [focusedPath, setFocusedPath] = useState("");
     const [treeMetrics, setTreeMetrics] = useState({ scrollTop: 0, viewportHeight: 480, treeTop: 0 });
+    // Last metrics handed to setTreeMetrics. A layout effect below runs after
+    // every render and re-measures the tree; comparing here means an unchanged
+    // measurement schedules no update at all. Returning the previous state from
+    // a functional update is not enough during the commit phase: React still
+    // renders again, and that render re-runs the effect into an endless loop.
+    const treeMetricsSnapshotRef = useRef(treeMetrics);
     const entriesRef = useRef<HTMLDivElement | null>(null);
     const treeRef = useRef<HTMLDivElement | null>(null);
     const pendingFocusRef = useRef("");
@@ -831,7 +837,10 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
         const scroller = entriesRef.current;
         if (!scroller) return;
         const next = { scrollTop: scroller.scrollTop, viewportHeight: scroller.clientHeight || 480, treeTop: treeRef.current?.offsetTop || 0 };
-        setTreeMetrics(current => current.scrollTop === next.scrollTop && current.viewportHeight === next.viewportHeight && current.treeTop === next.treeTop ? current : next);
+        const current = treeMetricsSnapshotRef.current;
+        if (current.scrollTop === next.scrollTop && current.viewportHeight === next.viewportHeight && current.treeTop === next.treeTop) return;
+        treeMetricsSnapshotRef.current = next;
+        setTreeMetrics(next);
     }, []);
     useLayoutEffect(() => {
         updateTreeMetrics();

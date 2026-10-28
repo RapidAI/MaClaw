@@ -79,6 +79,51 @@ func TestRestoreCloudWorkspaceTasksCreatesLocalTaskWithoutLease(t *testing.T) {
 	}
 }
 
+func TestRestoreCloudWorkspaceTasksAdoptsSharedTaskName(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	workspaceID := "cws_shared_name"
+	taskRaw, _ := json.Marshal(cloudWorkspaceTaskSidecar{
+		Name: "所有者的任务名",
+		Tag:  cloudWorkspaceTag(workspaceID),
+	})
+	hub := &fakeCloudWorkspaceHub{
+		acquired: cloudWorkspaceAcquiredGranted,
+		sidecars: map[string][]byte{cloudWorkspaceSidecarTask: taskRaw},
+		entitlement: &CloudWorkspaceEntitlement{
+			Enabled:    true,
+			Quota:      5,
+			Used:       1,
+			Workspaces: []CloudWorkspaceEntitlementWorkspace{},
+			Deleted:    []CloudWorkspaceDeletedWorkspace{},
+			Shared: []CloudWorkspaceSharedWorkspace{{
+				CloudWorkspaceEntitlementWorkspace: CloudWorkspaceEntitlementWorkspace{ID: workspaceID, Name: "工作区名"},
+				OwnerEmail:                         "owner@example.com",
+				SharePermission:                    "read",
+			}},
+		},
+	}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := app.createTaskRecordWithWorkingDir("工作区名", "", []string{
+		taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID),
+		cloudWorkspaceShareTag("read"), cloudWorkspaceSharedFromPrefix + "owner@example.com",
+	}, app.cloudWorkspaceReadOnlyCachePath(app.cloudWorkspaceTenantID(), workspaceID), false)
+	if strings.TrimSpace(created.ProjectPath) == "" {
+		t.Fatal("create shared task")
+	}
+	app.RestoreCloudWorkspaceTasks()
+	got := app.findCanonicalCloudWorkspaceTask(workspaceID, false)
+	if got.Name != "所有者的任务名" {
+		t.Fatalf("restored shared task name=%q", got.Name)
+	}
+	hub.mu.Lock()
+	taskSidecarGets := hub.sidecarGetsByName[cloudWorkspaceSidecarTask]
+	hub.mu.Unlock()
+	if taskSidecarGets == 0 {
+		t.Fatal("shared task adoption must read the owner task sidecar")
+	}
+}
+
 func TestRestoreCloudWorkspaceTasksRemapsRemoteCodingMode(t *testing.T) {
 	resetCloudWorkspaceEntitlementCache()
 	t.Cleanup(resetCloudWorkspaceEntitlementCache)

@@ -13,6 +13,7 @@ Usage:
 Commands and flags:
   --help, -h       Show this help and exit
   --version        Print the build version and exit
+  --quit           Ask the running instance to exit
   remote-smoke     Remote-session smoke tool (see remote-smoke -h)
   tui | ui         Start the terminal UI
   init             First-run / init mode

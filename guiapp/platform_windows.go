@@ -20,7 +20,6 @@ import (
 	"unsafe"
 
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -1726,7 +1725,7 @@ func (a *App) restartApp() {
 	if err := cmd.Start(); err != nil {
 		a.log("Failed to restart: " + err.Error())
 	} else {
-		runtime.Quit(a.ctx)
+		requestAppQuit(a.ctx)
 	}
 }
 
@@ -2421,7 +2420,7 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		runtime.Quit(a.ctx)
+		requestAppQuit(a.ctx)
 	}()
 
 	return nil

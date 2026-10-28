@@ -46,6 +46,32 @@ type CloudWorkspaceSharedWorkspace struct {
 	SharePermission string `json:"share_permission,omitempty"`
 }
 
+// UnmarshalJSON decodes the embedded workspace and the share-only fields
+// together. Without this method the embedded type's custom UnmarshalJSON is
+// promoted to this struct and silently drops owner_user_id / owner_email /
+// share_permission, so every restored share looked like an ownerless read.
+func (ws *CloudWorkspaceSharedWorkspace) UnmarshalJSON(data []byte) error {
+	var workspace CloudWorkspaceEntitlementWorkspace
+	if err := json.Unmarshal(data, &workspace); err != nil {
+		return err
+	}
+	var share struct {
+		OwnerUserID     string `json:"owner_user_id,omitempty"`
+		OwnerEmail      string `json:"owner_email,omitempty"`
+		SharePermission string `json:"share_permission,omitempty"`
+	}
+	if err := json.Unmarshal(data, &share); err != nil {
+		return err
+	}
+	*ws = CloudWorkspaceSharedWorkspace{
+		CloudWorkspaceEntitlementWorkspace: workspace,
+		OwnerUserID:                        share.OwnerUserID,
+		OwnerEmail:                         share.OwnerEmail,
+		SharePermission:                    share.SharePermission,
+	}
+	return nil
+}
+
 type cloudWorkspaceHubLease struct {
 	Held               bool   `json:"held"`
 	MachineID          string `json:"machine_id"`

@@ -37,6 +37,8 @@ const hubNotice = {
 const list = vi.fn();
 const accept = vi.fn();
 const decline = vi.fn();
+const openShare = vi.fn();
+const acceptHost = vi.fn();
 const markRead = vi.fn();
 const markAll = vi.fn();
 
@@ -45,11 +47,15 @@ beforeEach(() => {
     list.mockReset();
     accept.mockReset();
     decline.mockReset();
+    openShare.mockReset();
+    acceptHost.mockReset();
     markRead.mockReset();
     markAll.mockReset();
     list.mockResolvedValue([invite]);
     accept.mockResolvedValue(undefined);
     decline.mockResolvedValue(undefined);
+    openShare.mockResolvedValue("C:/library/shared.pdf");
+    acceptHost.mockResolvedValue(undefined);
     markRead.mockResolvedValue(undefined);
     markAll.mockResolvedValue(undefined);
     (window as unknown as { go: unknown }).go = {
@@ -61,6 +67,8 @@ beforeEach(() => {
                 ListFileCompanionGroupInvites: () => list(),
                 AcceptFileCompanionGroupInvite: (id: string) => accept(id),
                 DeclineFileCompanionGroupInvite: (id: string) => decline(id),
+                OpenFileCompanionShareFromNotification: (token: string) => openShare(token),
+                AcceptFileCompanionShareHost: (token: string) => acceptHost(token),
             },
         },
     };
@@ -83,6 +91,73 @@ function renderBell() {
 }
 
 describe("AssistantTitleBarNotifications group invites", () => {
+    it("accepts a host transfer from its notice", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        list.mockResolvedValue([]);
+        const transferNotice = {
+            id: "host-notice-1",
+            title: "主持人转移",
+            content: "admin@example.com 希望你接任文档《论文.pdf》的主持人。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "companion_host_transfer",
+            source_id: token,
+        };
+        (window as unknown as { go: unknown }).go = {
+            main: {
+                App: {
+                    GetUnreadNotifications: async () => [transferNotice],
+                    MarkNotificationRead: (id: string) => markRead(id),
+                    MarkAllNotificationsRead: () => markAll(),
+                    ListFileCompanionGroupInvites: () => list(),
+                    AcceptFileCompanionShareHost: (shareToken: string) => acceptHost(shareToken),
+                },
+            },
+        };
+        renderBell();
+        fireEvent.click(await screen.findByRole("button", { name: "1 条未读通知" }));
+        fireEvent.click(await screen.findByTestId("notification-item-host-notice-1"));
+        fireEvent.click(await screen.findByTestId("notification-host-transfer-accept"));
+        await waitFor(() => expect(acceptHost).toHaveBeenCalledWith(token));
+        await waitFor(() => expect(screen.queryByTestId("notification-panel")).toBeNull());
+    });
+
+    it("opens a shared document from its delivery notice", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        list.mockResolvedValue([]);
+        const shareNotice = {
+            id: "share-notice-1",
+            title: "分享文档",
+            content: "owner@example.com 向你分享了文档《论文.pdf》。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "companion_share",
+            source_id: token,
+        };
+        (window as unknown as { go: unknown }).go = {
+            main: {
+                App: {
+                    GetUnreadNotifications: async () => [shareNotice],
+                    MarkNotificationRead: (id: string) => markRead(id),
+                    MarkAllNotificationsRead: () => markAll(),
+                    ListFileCompanionGroupInvites: () => list(),
+                    OpenFileCompanionShareFromNotification: (shareToken: string) => openShare(shareToken),
+                },
+            },
+        };
+        renderBell();
+        fireEvent.click(await screen.findByRole("button", { name: "1 条未读通知" }));
+        fireEvent.click(await screen.findByTestId("notification-item-share-notice-1"));
+        fireEvent.click(await screen.findByTestId("notification-share-open"));
+        await waitFor(() => expect(openShare).toHaveBeenCalledWith(token));
+        expect(markRead).toHaveBeenCalledWith("share-notice-1");
+        await waitFor(() => expect(screen.queryByTestId("notification-panel")).toBeNull());
+    });
+
     it("lists a pending invite in the bell and joins without marking it read", async () => {
         renderBell();
         const bell = await screen.findByRole("button", { name: "2 条未读通知" });

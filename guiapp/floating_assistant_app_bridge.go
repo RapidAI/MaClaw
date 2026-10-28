@@ -104,7 +104,6 @@ func (a *App) QuitApp() {
 		fa.QuitApp()
 		return
 	}
-	if a != nil && a.ctx != nil {
-		runtime.Quit(a.ctx)
-	}
+	// requestAppQuit handles a nil ctx (startup not reached) by forcing exit.
+	requestAppQuit(a.ctx)
 }

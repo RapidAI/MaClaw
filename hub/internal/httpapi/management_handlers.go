@@ -139,6 +139,13 @@ type BoundUserView struct {
 	HasServiceAccess  bool                      `json:"has_service_access,omitempty"`
 	ServiceStatus     *llmservice.ServiceStatus `json:"service_status,omitempty"`
 	Referral          *BoundUserReferralView    `json:"referral,omitempty"`
+	// LastLogin* describe the most recently active client for this user. A
+	// desktop connect publishes machine.hello with platform/app_version, and
+	// re-enrollment refreshes the machine timestamp, so the newest machine
+	// record is the best available login attribution without a login table.
+	LastLoginPlatform   string `json:"last_login_platform,omitempty"`
+	LastLoginAppVersion string `json:"last_login_app_version,omitempty"`
+	LastLoginAt         string `json:"last_login_at,omitempty"`
 }
 
 // BoundUserReferralView is a permission-safe attribution indicator for the
@@ -165,6 +172,79 @@ type boundUserIdentityBatchLister interface {
 
 func boundUserIdentityKey(tenantID, userID string) string {
 	return store.NormalizeTenantID(tenantID) + "\x00" + strings.TrimSpace(userID)
+}
+
+// preloadBoundUserLastLogins returns the most recently active client
+// projection per user. The projection carries the platform and app version
+// reported by machine.hello/heartbeat, which is what the admin user card
+// surfaces as the last login client.
+func preloadBoundUserLastLogins(ctx context.Context, repo store.MachineRepository, users []*store.User) map[string]*store.MachineLoginClient {
+	out := map[string]*store.MachineLoginClient{}
+	if repo == nil {
+		return out
+	}
+	wanted := make(map[string]struct{}, len(users))
+	tenants := map[string]struct{}{}
+	for _, user := range users {
+		if user == nil || strings.TrimSpace(user.ID) == "" {
+			continue
+		}
+		tenantID := store.NormalizeTenantID(user.TenantID)
+		tenants[tenantID] = struct{}{}
+		wanted[boundUserIdentityKey(tenantID, user.ID)] = struct{}{}
+	}
+	activity := make(map[string]time.Time, len(wanted))
+	for tenantID := range tenants {
+		clients, err := repo.ListLoginClientsByTenant(ctx, tenantID)
+		if err != nil {
+			log.Printf("[admin/users] ListLoginClientsByTenant failed for tenant=%s: %v", tenantID, err)
+			continue
+		}
+		for _, client := range clients {
+			if client == nil || strings.TrimSpace(client.UserID) == "" {
+				continue
+			}
+			key := boundUserIdentityKey(tenantID, client.UserID)
+			if _, ok := wanted[key]; !ok {
+				continue
+			}
+			seenAt := machineLoginActivity(client)
+			if _, ok := out[key]; !ok || seenAt.After(activity[key]) {
+				out[key] = client
+				activity[key] = seenAt
+			}
+		}
+	}
+	return out
+}
+
+// machineLoginActivity picks the timestamp that best represents the client's
+// last login/connect. LastSeenAt is only written by hello/heartbeat, so it
+// outranks UpdatedAt (which alias renames also touch) but never outranks a
+// newer enrollment on a different machine.
+func machineLoginActivity(client *store.MachineLoginClient) time.Time {
+	if client == nil {
+		return time.Time{}
+	}
+	if client.LastSeenAt != nil && !client.LastSeenAt.IsZero() {
+		return client.LastSeenAt.UTC()
+	}
+	if !client.UpdatedAt.IsZero() {
+		return client.UpdatedAt.UTC()
+	}
+	return client.CreatedAt.UTC()
+}
+
+func boundUserLastLoginFields(client *store.MachineLoginClient) (platform, appVersion, loginAt string) {
+	if client == nil {
+		return "", "", ""
+	}
+	platform = strings.TrimSpace(client.Platform)
+	appVersion = strings.TrimSpace(client.AppVersion)
+	if at := machineLoginActivity(client); !at.IsZero() {
+		loginAt = at.Format(time.RFC3339)
+	}
+	return platform, appVersion, loginAt
 }
 
 func preloadBoundUserIdentities(ctx context.Context, repo store.UserRepository, users []*store.User) map[string][]*store.UserIdentity {
@@ -777,6 +857,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 		}
 		items = visible
 		identityRows := preloadBoundUserIdentities(r.Context(), identity.UsersRepo(), items)
+		lastLoginClients := preloadBoundUserLastLogins(r.Context(), identity.MachinesRepo(), items)
 		usersByTenantID := make(map[string]*store.User, len(items))
 		for _, user := range items {
 			if user != nil && strings.TrimSpace(user.ID) != "" {
@@ -861,24 +942,28 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				}
 				referral = &BoundUserReferralView{ReferralID: item.ID, InviterUserID: item.InviterUserID, InviterDisplayName: inviterDisplayName, Status: item.Status, RegisteredAt: item.RegisteredAt.UTC().Format(time.RFC3339)}
 			}
+			lastLoginPlatform, lastLoginAppVersion, lastLoginAt := boundUserLastLoginFields(lastLoginClients[boundUserIdentityKey(tenantID, user.ID)])
 			out = append(out, BoundUserView{
-				ID:                user.ID,
-				TenantID:          tenantID,
-				Email:             user.Email,
-				Emails:            emails,
-				Phone:             primaryPhone,
-				Phones:            phones,
-				Identities:        identities,
-				SN:                user.SN,
-				Status:            user.Status,
-				EnrollmentStatus:  user.EnrollmentStatus,
-				AccountType:       accountType,
-				IsVirtualEmployee: isVirtualEmployee,
-				SmartRoute:        user.SmartRoute,
-				EmailVerified:     boundUserEmailVerified(user, identities),
-				HasServiceAccess:  serviceStatus != nil && serviceStatus.Active,
-				ServiceStatus:     serviceStatus,
-				Referral:          referral,
+				ID:                  user.ID,
+				TenantID:            tenantID,
+				Email:               user.Email,
+				Emails:              emails,
+				Phone:               primaryPhone,
+				Phones:              phones,
+				Identities:          identities,
+				SN:                  user.SN,
+				Status:              user.Status,
+				EnrollmentStatus:    user.EnrollmentStatus,
+				AccountType:         accountType,
+				IsVirtualEmployee:   isVirtualEmployee,
+				SmartRoute:          user.SmartRoute,
+				EmailVerified:       boundUserEmailVerified(user, identities),
+				HasServiceAccess:    serviceStatus != nil && serviceStatus.Active,
+				ServiceStatus:       serviceStatus,
+				Referral:            referral,
+				LastLoginPlatform:   lastLoginPlatform,
+				LastLoginAppVersion: lastLoginAppVersion,
+				LastLoginAt:         lastLoginAt,
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": out})

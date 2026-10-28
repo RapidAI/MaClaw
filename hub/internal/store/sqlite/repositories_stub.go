@@ -2555,6 +2555,42 @@ func (r *machineRepo) listMachines(ctx context.Context, tenantID string) ([]*sto
 	return items, rows.Err()
 }
 
+func (r *machineRepo) ListLoginClientsByTenant(ctx context.Context, tenantID string) ([]*store.MachineLoginClient, error) {
+	rows, err := r.readDB.QueryContext(
+		ctx,
+		`SELECT user_id, platform, app_version, last_seen_at, created_at, updated_at
+		 FROM machines WHERE tenant_id = ?`,
+		normalizeTenantID(tenantID),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*store.MachineLoginClient
+	for rows.Next() {
+		var (
+			item                           store.MachineLoginClient
+			lastSeen, createdAt, updatedAt sql.NullString
+		)
+		if err := rows.Scan(&item.UserID, &item.Platform, &item.AppVersion, &lastSeen, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		if lastSeen.Valid {
+			t := mustParseTime(lastSeen.String)
+			item.LastSeenAt = &t
+		}
+		if createdAt.Valid {
+			item.CreatedAt = mustParseTime(createdAt.String)
+		}
+		if updatedAt.Valid {
+			item.UpdatedAt = mustParseTime(updatedAt.String)
+		}
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
 func (r *machineRepo) Delete(ctx context.Context, machineID string) error {
 	return execWrite(ctx, r.batch, r.db, `DELETE FROM machines WHERE id = ?`, machineID)
 }

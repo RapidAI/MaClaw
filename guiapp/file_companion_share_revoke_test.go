@@ -110,6 +110,50 @@ func TestListFileCompanionLibraryDropsADeletedReceivedShare(t *testing.T) {
 	}
 }
 
+func TestListFileCompanionLibraryDropsAGroupShareTheHubNoLongerLists(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/mobile/documents/shares" {
+			_, _ = w.Write([]byte(`{"notes_reply":true,"mine":[],"received":[],"server_time":"` + time.Now().UTC().Format(time.RFC3339) + `"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	downloaded, sessionFile := seedReceivedShareCopy(t, app, token)
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "shared.pdf", Path: downloaded,
+		Source: "cloud", Mine: false, Visibility: "group", Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed.Items {
+		if item.Token == token {
+			t.Fatalf("the deleted group share is still listed: %+v", item)
+		}
+	}
+	if len(listed.Removed) != 1 || !strings.EqualFold(listed.Removed[0], downloaded) {
+		t.Fatalf("removed = %v", listed.Removed)
+	}
+	if _, err := os.Stat(filepath.Dir(downloaded)); !os.IsNotExist(err) {
+		t.Fatalf("the downloaded group copy is still present: %v", err)
+	}
+	if _, err := os.Stat(sessionFile); !os.IsNotExist(err) {
+		t.Fatalf("the revoked group transcript is still present: %v", err)
+	}
+	fileCompanionLibraryMu.Lock()
+	dismissed := app.readDismissedShareTokensLocked()[token]
+	fileCompanionLibraryMu.Unlock()
+	if dismissed {
+		t.Fatal("a group token must stay available for a future re-invite")
+	}
+}
+
 func TestListFileCompanionLibraryKeepsAPathStillUsedByALocalRow(t *testing.T) {
 	resetFileCompanionShareProbeCache()
 	const token = "cd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

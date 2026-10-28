@@ -51,7 +51,17 @@ const (
 	TypeSound      MessageType = "sound"
 	TypeStateAck   MessageType = "state_ack"
 	TypeLog        MessageType = "log"
+	TypeAssetAck   MessageType = "asset_ack"
 )
+
+// AssetAck reports how many bytes of one pet-asset frame the device has
+// committed. USB CDC offers no application backpressure, so the host sends
+// the next chunk only after this ack arrives.
+type AssetAck struct {
+	Frame int  `json:"frame"`
+	Bytes int  `json:"bytes"`
+	Ready bool `json:"ready,omitempty"`
+}
 
 // SoundEffectCount is the number of clips embedded in the firmware.
 const SoundEffectCount = 5
@@ -123,6 +133,29 @@ type Display struct {
 	Round  bool `json:"round,omitempty"`
 }
 
+// Pet asset transfer limits. The host sends 128x128 RGB565+A8 frames as
+// base64 chunks; the device reassembles them in PSRAM.
+const (
+	AssetMaxFrames  = 8
+	AssetWidth      = 128
+	AssetHeight     = 128
+	AssetFrameBytes = AssetWidth * AssetHeight * 3
+)
+
+// AssetChunk is one slice of one pet frame. CRC32 (IEEE) covers the whole
+// frame and is repeated on every chunk so the device can verify on completion.
+type AssetChunk struct {
+	Frame   int    `json:"frame"`
+	Frames  int    `json:"frames"`
+	Width   int    `json:"w"`
+	Height  int    `json:"h"`
+	Offset  int    `json:"offset"`
+	Total   int    `json:"total"`
+	CRC32   uint32 `json:"crc32"`
+	FrameMS int    `json:"frame_ms,omitempty"`
+	Data    string `json:"data"`
+}
+
 // Pet carries an optional emotion hint.
 type Pet struct {
 	State string `json:"state"`
@@ -143,6 +176,8 @@ type Message struct {
 	Clock     *Clock       `json:"clock,omitempty"`
 	Celebrate *Celebrate   `json:"celebrate,omitempty"`
 	Sound     *SoundConfig `json:"sound,omitempty"`
+	Asset     *AssetChunk  `json:"asset,omitempty"`
+	AssetAck  *AssetAck    `json:"asset_ack,omitempty"`
 
 	// hello
 	FullResend bool     `json:"full_resend,omitempty"`
@@ -472,11 +507,45 @@ func (m *Message) Validate() error {
 		if err := m.Sound.Validate(); err != nil {
 			return err
 		}
+	case TypeAssetChunk:
+		if m.Asset == nil {
+			return errors.New("buddy: asset_chunk requires asset")
+		}
+		a := m.Asset
+		if a.Frames < 1 || a.Frames > AssetMaxFrames {
+			return fmt.Errorf("buddy: asset frames %d outside 1..%d", a.Frames, AssetMaxFrames)
+		}
+		if a.Frame < 0 || a.Frame >= a.Frames {
+			return fmt.Errorf("buddy: asset frame %d outside 0..%d", a.Frame, a.Frames-1)
+		}
+		if a.Width != AssetWidth || a.Height != AssetHeight {
+			return fmt.Errorf("buddy: asset size %dx%d, want %dx%d", a.Width, a.Height, AssetWidth, AssetHeight)
+		}
+		if a.Total != AssetFrameBytes {
+			return fmt.Errorf("buddy: asset frame bytes %d, want %d", a.Total, AssetFrameBytes)
+		}
+		if a.Offset < 0 || a.Offset >= a.Total {
+			return fmt.Errorf("buddy: asset offset %d outside 0..%d", a.Offset, a.Total-1)
+		}
+		if a.Data == "" {
+			return errors.New("buddy: asset chunk has no data")
+		}
+	case TypeAssetAck:
+		if m.AssetAck == nil {
+			return errors.New("buddy: asset_ack requires asset_ack")
+		}
+		a := m.AssetAck
+		if a.Frame < 0 || a.Frame >= AssetMaxFrames {
+			return fmt.Errorf("buddy: asset_ack frame %d outside 0..%d", a.Frame, AssetMaxFrames-1)
+		}
+		if a.Bytes < 0 || a.Bytes > AssetFrameBytes {
+			return fmt.Errorf("buddy: asset_ack bytes %d outside 0..%d", a.Bytes, AssetFrameBytes)
+		}
 	case TypeHello:
 		if m.Proto == 0 {
 			return errors.New("buddy: hello requires proto")
 		}
-	case TypeHeartbeat, TypePet, TypeAssetChunk, TypeStateAck, TypeLog:
+	case TypeHeartbeat, TypePet, TypeStateAck, TypeLog:
 		// No mandatory payload fields.
 	default:
 		return fmt.Errorf("buddy: unknown message type %q", m.Type)

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hydrateCompanionReaderState, subscribeCompanionReaderState } from "./companionReaderState";
 import { chatMarksSaveRevision, hydrateChatMarks, loadChatMarks, saveChatMarks } from "./chatMarks";
 import { fileCompanionInputHistory, FILE_COMPANION_INPUT_HISTORY_KEY, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
+import { hydratePdfDrawings, loadPdfDrawings } from "./pdfDrawings";
 import { hydratePdfMarks, loadPdfMarks, PDF_MARK_STORAGE_KEY, pdfMarksSaveRevision, savePdfMarks } from "./pdfMarks";
 import { hydratePdfTranslations, loadPdfTranslations, PDF_TRANSLATION_STORAGE_KEY } from "./pdfTranslations";
 
@@ -23,6 +24,7 @@ beforeEach(() => {
     loadState.mockReset();
     hydratePdfMarks({});
     hydratePdfTranslations({});
+    hydratePdfDrawings({});
     hydrateChatMarks({});
     hydrateFileCompanionInputHistory([]);
     installHostBindings();
@@ -66,6 +68,15 @@ describe("companion reader state migration", () => {
                     parts: [{ page: 1, rects: [{ x: 0.1, y: 0.1, w: 0.2, h: 0.03 }] }],
                 }],
             },
+            pdf_drawings: {
+                "c:/docs/paper.pdf": [{
+                    id: "d1",
+                    page: 1,
+                    color: "blue",
+                    tool: "box",
+                    points: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.4 }],
+                }],
+            },
             input_history: ["总结这一页"],
         }));
 
@@ -93,6 +104,7 @@ describe("companion reader state migration", () => {
         );
         expect(loadPdfMarks("C:/docs/Paper.PDF").some((mark) => mark.id === "m1")).toBe(true);
         expect(loadPdfTranslations("C:/docs/Paper.PDF").some((item) => item.translation === "你好")).toBe(true);
+        expect(loadPdfDrawings("C:/docs/Paper.PDF").some((item) => item.id === "d1" && item.tool === "box")).toBe(true);
         expect(fileCompanionInputHistory()).toEqual(["总结这一页"]);
         // The host owns the data now, so the browser keys are gone.
         expect(localStorage.getItem(PDF_MARK_STORAGE_KEY)).toBeNull();

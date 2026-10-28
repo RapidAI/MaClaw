@@ -273,6 +273,10 @@ function assistantSubstantiveBody(message: ChatMessage): boolean {
     if ((message.content || "").trim()) return true;
     if ((message.fields?.length ?? 0) > 0) return true;
     if ((message.codingTimeline?.length ?? 0) > 0) return true;
+    // A question/approval card can be the round's only body. Treating it as
+    // empty kept the pre-card row in tab history and dropped its buttons.
+    if ((message.actions?.length ?? 0) > 0) return true;
+    if (message.confirmation || message.unfinishedSlot) return true;
     return (message.pendingCodingThoughts?.length ?? 0) > 0;
 }
 
@@ -302,7 +306,8 @@ function codingProgressRowsChanged(
 /**
  * True when tab history should commit during a stream.
  * Token appends keep the previous prefix and stay on the stream ref.
- * A stage report, a field chip, a new or updated tool row, or the first thought commits.
+ * A stage report, a field chip, a new or updated tool row, the first thought,
+ * or an action/approval card commits.
  * A thought revision stays on the stream ref.
  */
 export function projectHistorySubstantiveDelta(previous: ChatMessage[] | undefined, next: ChatMessage[]): boolean {
@@ -327,6 +332,9 @@ export function projectHistorySubstantiveDelta(previous: ChatMessage[] | undefin
         if ((message.fields?.length ?? 0) > (before.fields?.length ?? 0)) return true;
         if ((message.codingTimeline?.length ?? 0) > (before.codingTimeline?.length ?? 0)) return true;
         if (codingProgressRowsChanged(before.codingTimeline, message.codingTimeline)) return true;
+        if ((message.actions?.length ?? 0) > (before.actions?.length ?? 0)) return true;
+        if (!before.confirmation && message.confirmation) return true;
+        if (!before.unfinishedSlot && message.unfinishedSlot) return true;
         if ((before.pendingCodingThoughts?.length ?? 0) === 0 && (message.pendingCodingThoughts?.length ?? 0) > 0) return true;
     }
     return false;

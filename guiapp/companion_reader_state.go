@@ -24,6 +24,7 @@ import (
 const (
 	companionReaderPDFMarksKind        = "pdf_marks"
 	companionReaderPDFTranslationsKind = "pdf_translations"
+	companionReaderPDFDrawingsKind     = "pdf_drawings"
 	companionReaderChatMarksKind       = "chat_marks"
 	companionReaderInputHistoryKind    = "input_history"
 	// One document can hold many long translations (200 × 12k characters), so
@@ -102,7 +103,8 @@ func companionReaderNormalizeHistory(entries []string) []string {
 }
 
 // LoadCompanionReaderState returns every stored value for the companion reader
-// as JSON: {"pdf_marks": {path: [...mark...]}, "chat_marks": {path: [...mark...]},
+// as JSON: {"pdf_marks": {path: [...mark...]}, "pdf_translations": {path: [...]},
+// "pdf_drawings": {path: [...]}, "chat_marks": {path: [...mark...]},
 // "input_history": ["..."]}.
 // legacyPDFMarksJSON and legacyInputHistoryJSON are the old WebView documents
 // (maclaw.fileCompanionPdfMarks.v1 and maclaw.fileCompanionInputHistory.v1).
@@ -134,6 +136,7 @@ func (a *App) LoadCompanionReaderState(legacyPDFMarksJSON, legacyPDFTranslations
 type companionReaderStatePayload struct {
 	PDFMarks        map[string]json.RawMessage `json:"pdf_marks"`
 	PDFTranslations map[string]json.RawMessage `json:"pdf_translations"`
+	PDFDrawings     map[string]json.RawMessage `json:"pdf_drawings"`
 	ChatMarks       map[string]json.RawMessage `json:"chat_marks"`
 	InputHistory    []string                   `json:"input_history"`
 }
@@ -142,6 +145,7 @@ func readCompanionReaderState(db *sql.DB) (companionReaderStatePayload, error) {
 	payload := companionReaderStatePayload{
 		PDFMarks:        map[string]json.RawMessage{},
 		PDFTranslations: map[string]json.RawMessage{},
+		PDFDrawings:     map[string]json.RawMessage{},
 		ChatMarks:       map[string]json.RawMessage{},
 		InputHistory:    []string{},
 	}
@@ -163,6 +167,10 @@ func readCompanionReaderState(db *sql.DB) (companionReaderStatePayload, error) {
 		case companionReaderPDFTranslationsKind:
 			if json.Valid([]byte(value)) {
 				payload.PDFTranslations[key] = json.RawMessage(value)
+			}
+		case companionReaderPDFDrawingsKind:
+			if json.Valid([]byte(value)) {
+				payload.PDFDrawings[key] = json.RawMessage(value)
 			}
 		case companionReaderChatMarksKind:
 			if json.Valid([]byte(value)) {
@@ -303,6 +311,27 @@ func (a *App) SaveCompanionPdfMarks(path, marksJSON string) error {
 		return a.deleteCompanionReaderState(companionReaderPDFMarksKind, key)
 	}
 	return a.writeCompanionReaderState(companionReaderPDFMarksKind, key, marksJSON)
+}
+
+// SaveCompanionPdfDrawings stores one document's freehand strokes and boxes.
+// An empty list removes the row, which is what clearing every drawing means.
+func (a *App) SaveCompanionPdfDrawings(path, drawingsJSON string) error {
+	key := companionReaderPathKey(path)
+	if key == "" || len(key) > companionReaderKeyMaxBytes {
+		return fmt.Errorf("invalid companion document path")
+	}
+	drawingsJSON = strings.TrimSpace(drawingsJSON)
+	if len(drawingsJSON) > companionReaderValueMaxBytes {
+		return fmt.Errorf("companion pdf drawings exceed %d bytes", companionReaderValueMaxBytes)
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal([]byte(drawingsJSON), &list); err != nil {
+		return fmt.Errorf("companion pdf drawings must be a JSON array")
+	}
+	if len(list) == 0 {
+		return a.deleteCompanionReaderState(companionReaderPDFDrawingsKind, key)
+	}
+	return a.writeCompanionReaderState(companionReaderPDFDrawingsKind, key, drawingsJSON)
 }
 
 // SaveCompanionPdfTranslations stores one document's translations. An empty

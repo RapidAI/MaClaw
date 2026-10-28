@@ -18,7 +18,7 @@
 [CmdletBinding()]
 param(
     [string] $Port = "COM3",
-    [string] $Gui = (Join-Path $PSScriptRoot "..\..\build\bin\MaClaw-sound.exe")
+    [string] $Gui = (Join-Path $PSScriptRoot "..\..\build\bin\MaClaw-pet.exe")
 )
 
 $ErrorActionPreference = "Continue"

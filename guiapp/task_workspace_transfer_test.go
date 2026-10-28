@@ -1,10 +1,13 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func writeTransferTestFile(t *testing.T, path, content string) {
@@ -339,5 +342,298 @@ func TestCopyCloudWorkspaceTaskFilesToLocalValidatesArguments(t *testing.T) {
 	}
 	if _, err := app.CopyCloudWorkspaceTaskFilesToLocal("   ", "  "); err == nil {
 		t.Fatal("blank paths must be rejected")
+	}
+}
+
+// wireTransferConversationMemory points the app at an in-memory conversation
+// store so the transcript carry can be seeded and read back, mirroring the
+// task-copy test setup.
+func wireTransferConversationMemory(t *testing.T, app *App, projectPath string, entries ...agent.ConversationEntry) *agent.ConversationMemory {
+	t.Helper()
+	mgr := NewRemoteSessionManager(app)
+	hubClient := NewRemoteHubClient(app, mgr)
+	handler := &IMMessageHandler{memory: app.ensureConversationMemory()}
+	hubClient.imHandler = handler
+	mgr.SetHubClient(hubClient)
+	app.remoteSessions = mgr
+	if projectPath != "" {
+		handler.memory.Save(projectSessionOwnerID(projectPath), entries)
+	}
+	return handler.memory
+}
+
+func requireTransferHistory(t *testing.T, app *App, projectPath, wantUser, wantAssistant string) {
+	t.Helper()
+	history := app.LoadProjectConversationHistory(projectPath)
+	if len(history) < 2 {
+		t.Fatalf("history for %q = %+v, want the transferred transcript", projectPath, history)
+	}
+	if history[0].Role != "user" || history[0].Content != wantUser {
+		t.Fatalf("history[0] = %+v, want user %q", history[0], wantUser)
+	}
+	if history[1].Role != "assistant" || history[1].Content != wantAssistant {
+		t.Fatalf("history[1] = %+v, want assistant %q", history[1], wantAssistant)
+	}
+}
+
+// requireTransferMemory asserts the carry reached the owner memory the agent
+// loop reads for the next turn, not just the display fallback.
+func requireTransferMemory(t *testing.T, app *App, projectPath, wantUser, wantAssistant string) {
+	t.Helper()
+	mem := app.ensureTaskConversationMemory()
+	if mem == nil {
+		t.Fatal("conversation memory unavailable")
+	}
+	entries := mem.Load(projectSessionOwnerID(projectPath))
+	if len(entries) < 2 || entries[0].Role != "user" || entries[0].Content != wantUser || entries[1].Content != wantAssistant {
+		t.Fatalf("owner memory for %q = %+v, want the transferred transcript", projectPath, entries)
+	}
+}
+
+// A task move created and opened the cloud task before the file copy. The
+// transcript must be carried onto that task, and it must survive the source
+// task's deletion — DeleteTask wipes the source conversation and tab sessions.
+func TestCopyTaskFilesToCloudWorkspaceCarriesChatHistory(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	source := app.CreateTask("本地任务", "")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+	wireTransferConversationMemory(t, app, source.ProjectPath,
+		agent.ConversationEntry{Role: "user", Content: "本地问题"},
+		agent.ConversationEntry{Role: "assistant", Content: "本地回答"},
+	)
+	target := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "", "cws_move")
+
+	// A chat task has no workspace files: files == 0 must still carry the chat.
+	if _, err := app.CopyTaskFilesToCloudWorkspace(source.ProjectPath, "cws_move"); err != nil {
+		t.Fatalf("CopyTaskFilesToCloudWorkspace: %v", err)
+	}
+	requireTransferHistory(t, app, target.ProjectPath, "本地问题", "本地回答")
+	// The next turn in the cloud task must continue from the moved chat, not
+	// just display it.
+	requireTransferMemory(t, app, target.ProjectPath, "本地问题", "本地回答")
+
+	// The user confirms deletion of the source task after the move.
+	if err := app.DeleteTask(source.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	requireTransferHistory(t, app, target.ProjectPath, "本地问题", "本地回答")
+	requireTransferMemory(t, app, target.ProjectPath, "本地问题", "本地回答")
+}
+
+// A chat task reopened after a restart can have an empty owner memory while
+// its tab snapshot still holds the conversation. The carry must fall back to
+// that snapshot, exactly like the task fork path does.
+func TestCopyTaskFilesToCloudWorkspaceCarriesPersistedTranscriptOnly(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	source := app.CreateTask("本地任务", "")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+	// No owner memory is seeded: only the saved tab transcript exists.
+	persist := app.ensureProjectTabSessionPersist()
+	if persist == nil {
+		t.Fatal("session persist unavailable")
+	}
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       "src-transcript-tab",
+		ProjectPath: source.ProjectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"role": "user", "content": "快照问题"},
+			map[string]interface{}{"role": "assistant", "content": "快照回答"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	target := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "", "cws_snapshot_only")
+
+	if _, err := app.CopyTaskFilesToCloudWorkspace(source.ProjectPath, "cws_snapshot_only"); err != nil {
+		t.Fatalf("CopyTaskFilesToCloudWorkspace: %v", err)
+	}
+	requireTransferHistory(t, app, target.ProjectPath, "快照问题", "快照回答")
+}
+
+// The cloud task's tab is opened by task creation, before the copy runs. The
+// carry must merge the transcript into that live tab session so a reopen on
+// this machine shows the history from the tab snapshot store as well, and the
+// flush must publish it as the workspace session sidecar for other machines.
+func TestCopyTaskFilesToCloudWorkspaceMergesIntoOpenTargetTab(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	source := app.CreateTask("本地任务", "")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+	// Only owner memory exists here: the tab snapshot has to be synthesized
+	// from it, exactly like a task that was never reopened since app start.
+	wireTransferConversationMemory(t, app, source.ProjectPath,
+		agent.ConversationEntry{Role: "user", Content: "开标签页提问"},
+		agent.ConversationEntry{Role: "assistant", Content: "开标签页回答"},
+	)
+	target := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "", "cws_open_tab")
+	if got := app.CreateProjectTabSession("tab_target_open", target.ProjectPath); got == "" {
+		t.Fatal("CreateProjectTabSession returned empty result")
+	}
+
+	if _, err := app.CopyTaskFilesToCloudWorkspace(source.ProjectPath, "cws_open_tab"); err != nil {
+		t.Fatalf("CopyTaskFilesToCloudWorkspace: %v", err)
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession("tab_target_open")
+	if err != nil || session == nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if !sessionSnapshotHasUserTurn(session.Conversation) {
+		t.Fatalf("open target tab session = %+v, want the moved transcript", session.Conversation)
+	}
+
+	hub.mu.Lock()
+	published := append([]byte(nil), hub.sidecars[cloudWorkspaceSidecarSession]...)
+	hub.mu.Unlock()
+	if len(published) == 0 {
+		t.Fatal("the moved transcript was not published as the workspace session sidecar")
+	}
+	var sidecar cloudWorkspaceSessionSidecar
+	if err := json.Unmarshal(published, &sidecar); err != nil {
+		t.Fatalf("session sidecar json: %v", err)
+	}
+	if !sessionSnapshotHasUserTurn(sidecar.Conversation) {
+		t.Fatalf("published session sidecar = %+v, want the moved transcript", sidecar.Conversation)
+	}
+}
+
+// Files and the transcript are carried by the same call: a successful push
+// must not skip the chat, and the carry must not break the file result.
+func TestCopyTaskFilesToCloudWorkspaceCarriesHistoryAfterPushingFiles(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	workDir := t.TempDir()
+	writeTransferTestFile(t, filepath.Join(workDir, "notes.md"), "moved notes")
+	source := app.CreateTaskWithMode("本地任务", workDir, "")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty path")
+	}
+	wireTransferConversationMemory(t, app, source.ProjectPath,
+		agent.ConversationEntry{Role: "user", Content: "带文件的提问"},
+		agent.ConversationEntry{Role: "assistant", Content: "带文件的回答"},
+	)
+	target := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "", "cws_move_files")
+
+	moved, err := app.CopyTaskFilesToCloudWorkspace(source.ProjectPath, "cws_move_files")
+	if err != nil {
+		t.Fatalf("CopyTaskFilesToCloudWorkspace: %v", err)
+	}
+	if moved.Files != 1 {
+		t.Fatalf("files=%d, want 1", moved.Files)
+	}
+	cachePath := app.cloudWorkspaceCachePath(app.cloudWorkspaceTenantID(), "cws_move_files")
+	if data, readErr := os.ReadFile(filepath.Join(cachePath, "notes.md")); readErr != nil || string(data) != "moved notes" {
+		t.Fatalf("workspace cache file = %q err=%v", data, readErr)
+	}
+	hub.mu.Lock()
+	pushed := len(hub.entries)
+	hub.mu.Unlock()
+	if pushed == 0 {
+		t.Fatal("the copied file was never pushed to the Hub")
+	}
+	requireTransferHistory(t, app, target.ProjectPath, "带文件的提问", "带文件的回答")
+}
+
+// A cloud task restored from another machine may hold its transcript only in
+// the Hub session sidecar. Moving it to local must pull that transcript first,
+// otherwise the move carries an empty chat and deleting the source loses the
+// history for good.
+func TestMoveTaskConversationPullsRemoteTranscriptBeforeMoving(t *testing.T) {
+	sessionRaw, err := json.Marshal(cloudWorkspaceSessionSidecar{Conversation: []interface{}{
+		map[string]interface{}{"role": "user", "content": "远程问题"},
+		map[string]interface{}{"role": "assistant", "content": "远程回答"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	source := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "", "cws_remote_chat")
+	target := app.CreateTask("本地目标", "")
+	if target.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+	// Read the persist store directly: LoadProjectConversationHistory would
+	// lazily pull the sidecar and hide whether the move did the pull itself.
+	if persist := app.ensureProjectTabSessionPersist(); persist != nil {
+		if session, loadErr := persist.LoadLatestSessionForProject(source.ProjectPath); loadErr == nil && session != nil && sessionSnapshotHasUserTurn(session.Conversation) {
+			t.Fatalf("source must start without a local transcript, got %+v", session.Conversation)
+		}
+	}
+
+	// Another machine publishes the transcript after this machine last synced.
+	hub.mu.Lock()
+	if hub.sidecars == nil {
+		hub.sidecars = map[string][]byte{}
+	}
+	hub.sidecars[cloudWorkspaceSidecarSession] = sessionRaw
+	hub.mu.Unlock()
+
+	carried, err := app.MoveTaskConversation(source.ProjectPath, target.ProjectPath)
+	if err != nil {
+		t.Fatalf("MoveTaskConversation: %v", err)
+	}
+	if !carried {
+		t.Fatal("expected the remote transcript to be carried")
+	}
+	requireTransferHistory(t, app, target.ProjectPath, "远程问题", "远程回答")
+}
+
+// Transferring files into a workspace whose task already owns a transcript
+// must not overwrite that chat.
+func TestCopyTaskFilesToCloudWorkspaceKeepsExistingTargetTranscript(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	target := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "", "cws_busy_chat")
+	wireTransferConversationMemory(t, app, target.ProjectPath,
+		agent.ConversationEntry{Role: "user", Content: "云端自己的问题"},
+		agent.ConversationEntry{Role: "assistant", Content: "云端自己的回答"},
+	)
+	source := app.CreateTask("本地任务", "")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+
+	if _, err := app.CopyTaskFilesToCloudWorkspace(source.ProjectPath, "cws_busy_chat"); err != nil {
+		t.Fatalf("CopyTaskFilesToCloudWorkspace: %v", err)
+	}
+	requireTransferHistory(t, app, target.ProjectPath, "云端自己的问题", "云端自己的回答")
+}
+
+// "转移到本地" creates the destination task first, then carries the cloud
+// transcript onto it; the cloud source is deleted afterwards.
+func TestMoveTaskConversationCarriesCloudTranscriptToLocalTask(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	source := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "", "cws_to_local")
+	wireTransferConversationMemory(t, app, source.ProjectPath,
+		agent.ConversationEntry{Role: "user", Content: "云端问题"},
+		agent.ConversationEntry{Role: "assistant", Content: "云端回答"},
+	)
+	target := app.CreateTask("本地目标", "")
+	if target.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+
+	carried, err := app.MoveTaskConversation(source.ProjectPath, target.ProjectPath)
+	if err != nil {
+		t.Fatalf("MoveTaskConversation: %v", err)
+	}
+	if !carried {
+		t.Fatal("expected the cloud transcript to be carried")
+	}
+	requireTransferHistory(t, app, target.ProjectPath, "云端问题", "云端回答")
+
+	// A task that already shows turns is never overwritten by a second move.
+	carried, err = app.MoveTaskConversation(source.ProjectPath, target.ProjectPath)
+	if err != nil {
+		t.Fatalf("second MoveTaskConversation: %v", err)
+	}
+	if carried {
+		t.Fatal("a target with an existing transcript must be left alone")
 	}
 }

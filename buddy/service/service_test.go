@@ -21,6 +21,7 @@ func testOptions() Options {
 	opts.AmbientRefresh = time.Hour
 	opts.StaleAfter = 5 * time.Second
 	opts.WeatherStaleAfter = time.Hour
+	opts.ReadyTimeout = 50 * time.Millisecond
 	opts.Logf = func(string, ...any) {}
 	return opts
 }

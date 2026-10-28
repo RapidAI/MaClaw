@@ -197,6 +197,15 @@ func Main(v string) {
 					return
 				}
 
+				// `MaClaw.exe --quit` (or `quit`) is a tray-independent way to
+				// end the app: the launch is handed to this instance and we
+				// quit instead of activating the window.
+				if secondInstanceRequestsQuit(secondInstanceData.Args) {
+					log.Printf("[exit-lifecycle] quit requested by command line")
+					requestAppQuit(app.ctx)
+					return
+				}
+
 				shouldShowWindow := true
 
 				// Check if init argument was passed to the second instance
@@ -287,6 +296,25 @@ func Main(v string) {
 	if err != nil {
 		println("Error:", err.Error())
 	}
+	// Do not simply return: the Go runtime's ExitProcess can hang in DLL
+	// detach (injected graphics/audio hooks), leaving a window-less process
+	// behind after a tray quit. finishDesktopExit removes the tray icon and
+	// terminates the process deterministically.
+	finishDesktopExit()
+}
+
+// secondInstanceRequestsQuit reports whether a handoff launch asked the
+// running instance to exit (`MaClaw.exe --quit`). This is the tray-independent
+// quit path: the launch is delivered to the primary instance and it quits
+// instead of activating its window.
+func secondInstanceRequestsQuit(args []string) bool {
+	for _, arg := range args {
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "quit", "--quit", "-quit":
+			return true
+		}
+	}
+	return false
 }
 
 func referralHandoffFromArgs(args []string) ReferralHandoffLaunch {

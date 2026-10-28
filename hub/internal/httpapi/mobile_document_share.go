@@ -40,19 +40,28 @@ const companionShareDuplicateUpdateMessage = "这份文档已经以相同的范�
 var companionShareTokenPattern = regexp.MustCompile(`^cd_[0-9a-f]{32}$`)
 
 type companionDocShare struct {
-	Token        string            `json:"token"`
-	TenantID     string            `json:"tenant_id"`
-	OwnerID      string            `json:"owner_id"`
-	OwnerLabel   string            `json:"owner_label"`
-	Name         string            `json:"name"`
-	Size         int64             `json:"size"`
-	BlobPath     string            `json:"blob_path"`
-	Visibility   string            `json:"visibility"`
-	PasswordSalt string            `json:"password_salt,omitempty"`
-	PasswordHash string            `json:"password_hash,omitempty"`
-	ExpiresAt    time.Time         `json:"expires_at,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	Importers    map[string]string `json:"importers,omitempty"`
+	Token      string `json:"token"`
+	TenantID   string `json:"tenant_id"`
+	OwnerID    string `json:"owner_id"`
+	OwnerLabel string `json:"owner_label"`
+	// HostID is the current host when the admin transferred the seat. Empty
+	// means the owner is the host. The owner keeps admin rights for the life of
+	// the share, even after becoming a participant.
+	HostID    string `json:"host_id,omitempty"`
+	HostLabel string `json:"host_label,omitempty"`
+	// A pending nomination waits for the named participant to accept.
+	PendingHostID    string            `json:"pending_host_id,omitempty"`
+	PendingHostLabel string            `json:"pending_host_label,omitempty"`
+	PendingHostSince time.Time         `json:"pending_host_since,omitempty"`
+	Name             string            `json:"name"`
+	Size             int64             `json:"size"`
+	BlobPath         string            `json:"blob_path"`
+	Visibility       string            `json:"visibility"`
+	PasswordSalt     string            `json:"password_salt,omitempty"`
+	PasswordHash     string            `json:"password_hash,omitempty"`
+	ExpiresAt        time.Time         `json:"expires_at,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	Importers        map[string]string `json:"importers,omitempty"`
 	// Revision starts at 1. The owner bumps it when highlights or chat change.
 	// The bytes are a companion project: the paper, the highlights, and the chat.
 	Revision int `json:"revision,omitempty"`
@@ -257,6 +266,35 @@ func companionShareOwnerLabel(principal *auth.ViewerPrincipal) string {
 	return "云端用户"
 }
 
+// companionShareHostID is the seat that answers notes and syncs the project.
+// Before any transfer, or after an admin revokes the seat, the owner holds it.
+func companionShareHostID(share companionDocShare) string {
+	if id := strings.TrimSpace(share.HostID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(share.OwnerID)
+}
+
+func companionShareHostLabel(share companionDocShare) string {
+	if label := strings.TrimSpace(share.HostLabel); label != "" {
+		return label
+	}
+	if label := strings.TrimSpace(share.OwnerLabel); label != "" {
+		return label
+	}
+	return "云端用户"
+}
+
+func companionShareIsAdmin(share companionDocShare, userID string) bool {
+	userID = strings.TrimSpace(userID)
+	return userID != "" && strings.TrimSpace(share.OwnerID) == userID
+}
+
+func companionShareIsHost(share companionDocShare, userID string) bool {
+	userID = strings.TrimSpace(userID)
+	return userID != "" && companionShareHostID(share) == userID
+}
+
 func companionShareFileName(name string) string {
 	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
 	name = strings.TrimSpace(name)
@@ -300,6 +338,7 @@ func companionShareView(share companionDocShare, r *http.Request) map[string]any
 		"name":           share.Name,
 		"size":           share.Size,
 		"owner":          share.OwnerLabel,
+		"host_label":     companionShareHostLabel(share),
 		"visibility":     share.Visibility,
 		"needs_password": share.Visibility == "private",
 		"permanent":      share.ExpiresAt.IsZero(),
@@ -362,6 +401,14 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 			continue
 		}
 		view := companionShareView(share, r)
+		view["host"] = companionShareIsHost(share, ownerID)
+		if companionShareIsAdmin(share, ownerID) {
+			view["admin"] = true
+			if strings.TrimSpace(share.PendingHostID) != "" {
+				view["pending_host"] = true
+				view["pending_host_label"] = strings.TrimSpace(share.PendingHostLabel)
+			}
+		}
 		if share.OwnerID == ownerID {
 			if share.Target != "" {
 				view["target"] = share.Target
@@ -393,6 +440,19 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 		"received":    received,
 		"notes_reply": true,
 		"server_time": now.UTC().Format(time.RFC3339),
+	})
+}
+
+// writeCompanionShareDuplicate tells the desktop which live link already
+// covers this paper and scope. The desktop can then adopt that link (and sync
+// the current project onto it) instead of leaving an invisible share behind
+// when a local row was removed in an older build.
+func writeCompanionShareDuplicate(w http.ResponseWriter, r *http.Request, share companionDocShare) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"code":    "SHARE_DUPLICATE",
+		"message": companionShareDuplicateMessage,
+		"token":   share.Token,
+		"share":   companionShareView(share, r),
 	})
 }
 
@@ -468,10 +528,11 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 	now := time.Now().UTC()
 	loadCompanionDocShares()
 	companionDocShares.Lock()
-	_, duplicate := companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, "", now)
+	duplicateShare, duplicate := companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, "", now)
 	companionDocShares.Unlock()
 	if duplicate {
-		writeError(w, http.StatusConflict, "SHARE_DUPLICATE", companionShareDuplicateMessage)
+		go ensureCompanionShareNotification(duplicateShare)
+		writeCompanionShareDuplicate(w, r, duplicateShare)
 		return
 	}
 	token, err := newCompanionShareToken()
@@ -516,10 +577,11 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 	companionDocShares.Lock()
 	// The pre-check happened before the blob was written. Check once more with
 	// the lock held so two requests that raced through it cannot both publish.
-	if _, duplicate = companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, "", now); duplicate {
+	if duplicateShare, duplicate = companionShareDuplicateLocked(ownerID, contentHash, visibility, target, groupID, "", now); duplicate {
 		companionDocShares.Unlock()
 		mobileDeleteDocumentBlob(blobPath)
-		writeError(w, http.StatusConflict, "SHARE_DUPLICATE", companionShareDuplicateMessage)
+		go ensureCompanionShareNotification(duplicateShare)
+		writeCompanionShareDuplicate(w, r, duplicateShare)
 		return
 	}
 	companionDocShares.items[token] = share
@@ -532,6 +594,7 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 		return
 	}
 	companionDocShares.Unlock()
+	go refreshCompanionShareNotification(share)
 	writeJSON(w, http.StatusOK, companionShareView(share, r))
 }
 
@@ -617,6 +680,8 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 			return
 		}
 		companionDocShares.Unlock()
+		go revokeCompanionShareNotification(share.Token)
+		go revokeCompanionHostTransferNotifications(share.Token)
 		mobileDeleteDocumentBlob(share.BlobPath)
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": token})
 	}
@@ -743,6 +808,17 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 		share.Visibility = visibility
 		share.Target = target
 		share.GroupID = groupID
+		audienceChanged := companionShareAudienceChanged(previous, share)
+		// Any audience edit withdraws a nomination, even when the nominee can
+		// still open the new audience. The host seat is settled after the lock
+		// is released, because that check takes the group lock.
+		clearedPending := ""
+		if audienceChanged && strings.TrimSpace(share.PendingHostID) != "" {
+			clearedPending = strings.TrimSpace(share.PendingHostID)
+			share.PendingHostID = ""
+			share.PendingHostLabel = ""
+			share.PendingHostSince = time.Time{}
+		}
 		if visibility == "private" {
 			if password != "" {
 				salt := make([]byte, 16)
@@ -766,7 +842,31 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 			return
 		}
 		companionDocShares.Unlock()
+		if audienceChanged {
+			go refreshCompanionShareNotification(share)
+			droppedPending, droppedHost, latest, _ := dropUnreachableCompanionHostSeats(r.Context(), identity, token, nil)
+			if latest.Token != "" {
+				share = latest
+			}
+			// A nomination that landed after this edit owns the status notice.
+			// Publishing "已取消" on top of it would revoke that request.
+			// A nomination that landed and cannot open is cleared by the drop
+			// above; that person still needs the outcome.
+			pendingCleared := clearedPending != "" || droppedPending != ""
+			if strings.TrimSpace(share.PendingHostID) == "" && (pendingCleared || droppedHost != "") {
+				go notifyCompanionHostTransferResult(share, companionShareAudienceHostNotice(share, pendingCleared, droppedHost != ""), companionHostSeatStampOf(share), clearedPending, droppedPending, droppedHost)
+			}
+		}
 		view := companionShareView(share, r)
+		// The editor is the admin. Echo the seat so the desktop row does not
+		// treat a transferred host as this machine again: an absent host field
+		// is read as "the owner still holds the seat".
+		view["admin"] = true
+		view["host"] = companionShareIsHost(share, ownerID)
+		if strings.TrimSpace(share.PendingHostID) != "" {
+			view["pending_host"] = true
+			view["pending_host_label"] = strings.TrimSpace(share.PendingHostLabel)
+		}
 		// The owner is looking at their own link, so the target and the group
 		// are part of what the edit dialog echoes back.
 		if share.Target != "" {
@@ -869,8 +969,24 @@ func CompanionDocumentShareImportHandler(identity *auth.IdentityService) http.Ha
 	}
 }
 
+// companionShareSyncRejection is why this caller cannot write the project.
+// A share that still exists after the host seat moved must stay a forbidden
+// update. Calling it missing makes the desktop retire the row.
+func companionShareSyncRejection(share companionDocShare, found bool, userID string, now time.Time) (status int, code, message string) {
+	if !found {
+		return http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在"
+	}
+	if share.expired(now) {
+		return http.StatusGone, "SHARE_EXPIRED", "分享链接已过期"
+	}
+	if !companionShareIsHost(share, userID) {
+		return http.StatusForbidden, "SHARE_FORBIDDEN", "只有主持人可以同步更新"
+	}
+	return 0, "", ""
+}
+
 // CompanionDocumentShareSyncHandler replaces the project and bumps the revision.
-// Only the owner can push new highlights or chat.
+// Only the current host can push new highlights or chat.
 //
 //	POST /api/mobile/documents/shares/{token}/sync
 func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.HandlerFunc {
@@ -918,14 +1034,9 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
 			return
 		}
-		if share.expired(time.Now().UTC()) {
+		if status, code, message := companionShareSyncRejection(share, true, ownerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
-			writeError(w, http.StatusGone, "SHARE_EXPIRED", "分享链接已过期")
-			return
-		}
-		if share.OwnerID != ownerID {
-			companionDocShares.Unlock()
-			writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有分享者可以同步更新")
+			writeError(w, status, code, message)
 			return
 		}
 		companionDocShares.Unlock()
@@ -936,12 +1047,13 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 		}
 		companionDocShares.Lock()
 		share, ok = companionDocShares.items[token]
-		if !ok || share.OwnerID != ownerID {
+		if status, code, message := companionShareSyncRejection(share, ok, ownerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
 			// A delete that landed while this sync was writing must not leave
-			// the bytes it just wrote behind as an orphan.
+			// the bytes it just wrote behind as an orphan. Losing the host
+			// seat is not a delete: the desktop retires a row only on 404.
 			mobileDeleteDocumentBlob(blobPath)
-			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			writeError(w, status, code, message)
 			return
 		}
 		previous := share
@@ -957,23 +1069,41 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 			return
 		}
 		companionDocShares.Unlock()
-		writeJSON(w, http.StatusOK, companionShareView(share, r))
+		view := companionShareView(share, r)
+		// The owner is syncing their own link; keep the audience fields the
+		// desktop row needs to prefill 修改 after the row is rewritten.
+		if share.Target != "" {
+			view["target"] = share.Target
+		}
+		if share.GroupID != "" {
+			view["group_id"] = share.GroupID
+		}
+		writeJSON(w, http.StatusOK, view)
 	}
 }
 
 func companionShareAttachNotes(view map[string]any, share companionDocShare) {
-	view["notes"] = companionShareNotesJSON(share.Notes, share.OwnerID)
+	view["notes"] = companionShareNotesJSON(share.Notes, share)
 	view["notes_revision"] = share.NotesRevision
 }
 
-// companionShareNoteIsHost reads the owner out of the persisted note. Notes
-// written before Host existed still carry AuthorID, so an owner line is never
-// mistaken for a reader's note and answered again.
-func companionShareNoteIsHost(note companionShareNote, ownerID string) bool {
+// companionShareNoteIsHost reports whether a note came from the host seat. The
+// note carries the seat it was written from, so a line the admin wrote before
+// handing the seat over stays a host line and is not answered again. Notes
+// written before Host existed only carry AuthorID; the owner was the host then,
+// and an owner line counts as the host's only while the owner still holds the
+// seat — after a transfer the admin's new lines are a reader's.
+func companionShareNoteIsHost(note companionShareNote, share companionDocShare) bool {
 	if note.Host {
 		return true
 	}
-	return note.AuthorID != "" && note.AuthorID == ownerID
+	if strings.TrimSpace(note.AuthorID) == "" {
+		return false
+	}
+	if strings.TrimSpace(share.HostID) != "" {
+		return false
+	}
+	return note.AuthorID == strings.TrimSpace(share.OwnerID)
 }
 
 func companionShareNoteByID(notes []companionShareNote, noteID string) (companionShareNote, bool) {
@@ -985,7 +1115,7 @@ func companionShareNoteByID(notes []companionShareNote, noteID string) (companio
 	return companionShareNote{}, false
 }
 
-func companionShareNotesJSON(notes []companionShareNote, ownerID string) []map[string]any {
+func companionShareNotesJSON(notes []companionShareNote, share companionDocShare) []map[string]any {
 	out := make([]map[string]any, 0, len(notes))
 	for _, note := range notes {
 		if strings.TrimSpace(note.ID) == "" || strings.TrimSpace(note.Text) == "" {
@@ -996,7 +1126,7 @@ func companionShareNotesJSON(notes []companionShareNote, ownerID string) []map[s
 			"author":     note.Author,
 			"text":       note.Text,
 			"created_at": note.CreatedAt.UTC().Format(time.RFC3339),
-			"host":       companionShareNoteIsHost(note, ownerID),
+			"host":       companionShareNoteIsHost(note, share),
 		}
 		if note.ReplyTo != "" {
 			row["reply_to"] = note.ReplyTo
@@ -1108,7 +1238,8 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		}
 		previous := share
 		previous.Notes = cloneCompanionShareNotes(share.Notes)
-		isHost := share.OwnerID == ownerID
+		hostID := companionShareHostID(share)
+		isHost := hostID == ownerID
 		if replyTo != "" {
 			// Only the host answers a reader note. A reader's own line is a new
 			// discussion entry, not an answer, and every answer names the note
@@ -1119,14 +1250,14 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 				return
 			}
 			for _, existing := range share.Notes {
-				if existing.ReplyTo != replyTo || !companionShareNoteIsHost(existing, share.OwnerID) {
+				if existing.ReplyTo != replyTo || !companionShareNoteIsHost(existing, share) {
 					continue
 				}
 				// A second host machine, or a retry after a dropped response,
 				// must not add a second answer to the same reader note. This
 				// check runs before the target lookup: the question may already
 				// have left the capped list while the answer is still there.
-				notes := companionShareNotesJSON(share.Notes, share.OwnerID)
+				notes := companionShareNotesJSON(share.Notes, share)
 				revision := share.NotesRevision
 				companionDocShares.Unlock()
 				writeJSON(w, http.StatusOK, map[string]any{
@@ -1141,7 +1272,7 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "被回复的批注不存在")
 				return
 			}
-			if companionShareNoteIsHost(target, share.OwnerID) {
+			if companionShareNoteIsHost(target, share) {
 				companionDocShares.Unlock()
 				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "只能回复读者的批注")
 				return
@@ -1170,7 +1301,7 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		}
 		companionDocShares.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"notes":          companionShareNotesJSON(share.Notes, share.OwnerID),
+			"notes":          companionShareNotesJSON(share.Notes, share),
 			"notes_revision": share.NotesRevision,
 		})
 	}

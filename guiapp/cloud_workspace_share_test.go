@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestCloudWorkspaceShareJoinErrorsLocalized(t *testing.T) {
@@ -147,6 +149,105 @@ func TestCloudWorkspaceShareWorkingDir(t *testing.T) {
 	}
 	if !strings.Contains(readPath, "cloud-workspaces-readonly") {
 		t.Fatalf("read path=%q", readPath)
+	}
+}
+
+func TestAcceptCloudWorkspaceShareUsesOwnerTaskName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/cloud-workspace-shares/tok_name/accept" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"workspace_id":"cws_name","name":"工作区名","task_name":"所有者的任务名","share_permission":"read","owner_email":"owner@example.com"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	app := newProjectSearchTestApp(t)
+	t.Cleanup(resetCloudWorkspaceDialogMocks)
+	t.Cleanup(resetCloudWorkspaceShareAccessCache)
+	t.Cleanup(resetCloudWorkspaceMounts)
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineToken: "machine-token",
+		RemoteMachineID:    "machine-test",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	result, err := app.AcceptCloudWorkspaceShare("tok_name", "")
+	if err != nil {
+		t.Fatalf("AcceptCloudWorkspaceShare: %v", err)
+	}
+	if result.Name != "所有者的任务名" {
+		t.Fatalf("task name=%q, want owner task name", result.Name)
+	}
+	if !cloudWorkspaceTaskIsReadShare(result) {
+		t.Fatalf("tags=%v, want read share", result.Tags)
+	}
+	if got := app.findCanonicalCloudWorkspaceTask("cws_name", false); got.Name != "所有者的任务名" {
+		t.Fatalf("canonical task name=%q", got.Name)
+	}
+}
+
+func TestRenameReadOnlySharedTaskDoesNotPushSidecar(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	t.Cleanup(resetCloudWorkspaceMounts)
+	const workspaceID = "cws_ro_rename"
+	workingDir := app.cloudWorkspaceReadOnlyCachePath(app.cloudWorkspaceTenantID(), workspaceID)
+	task := app.createTaskRecordWithWorkingDir("工作区名", "", []string{
+		taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID), cloudWorkspaceShareTag("read"),
+	}, workingDir, false)
+	if strings.TrimSpace(task.ProjectPath) == "" {
+		t.Fatal("create shared task")
+	}
+	storeCloudWorkspaceMount(&cloudWorkspaceHeldMount{
+		WorkspaceID: workspaceID,
+		LocalPath:   workingDir,
+		ReadOnly:    true,
+	})
+	if got := app.RenameTask(task.ProjectPath, "接收者改名"); got != "接收者改名" {
+		t.Fatalf("display name=%q", got)
+	}
+	hub.mu.Lock()
+	_, pushed := hub.sidecars[cloudWorkspaceSidecarTask]
+	hub.mu.Unlock()
+	if pushed {
+		t.Fatal("read-only recipient rename must not push the owner task sidecar")
+	}
+}
+
+func TestAdoptSharedCloudWorkspaceTaskName(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workspaceID := "cws_name"
+	shared := app.createTaskRecordWithWorkingDir("工作区名", "", []string{
+		taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID),
+		cloudWorkspaceShareTag("read"), cloudWorkspaceSharedFromPrefix + "u1",
+	}, "C:/data/cloud-workspaces-readonly/t/"+workspaceID+"/cwi_1", false)
+	if strings.TrimSpace(shared.ProjectPath) == "" {
+		t.Fatal("create shared task")
+	}
+	if !app.adoptSharedCloudWorkspaceTaskName(workspaceID, "工作区名", "所有者的任务名") {
+		t.Fatal("workspace-named shared row should adopt the owner task name")
+	}
+	got := app.findCanonicalCloudWorkspaceTask(workspaceID, false)
+	if got.Name != "所有者的任务名" {
+		t.Fatalf("name=%q", got.Name)
+	}
+	// Once retitled, the row is a user-visible choice and later restores must
+	// not overwrite it with another hub value.
+	if app.adoptSharedCloudWorkspaceTaskName(workspaceID, "工作区名", "另一个名字") {
+		t.Fatal("already retitled shared row must not be overwritten")
+	}
+	if got := app.findCanonicalCloudWorkspaceTask(workspaceID, false); got.Name != "所有者的任务名" {
+		t.Fatalf("name after second adopt=%q", got.Name)
+	}
+
+	ownedID := "cws_owned"
+	app.createTaskRecordWithWorkingDir("我的任务", "", []string{
+		taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(ownedID),
+	}, "C:/data/cloud-workspaces/t/"+ownedID, false)
+	if app.adoptSharedCloudWorkspaceTaskName(ownedID, "我的任务", "别人的任务名") {
+		t.Fatal("owned rows must not adopt a share title")
 	}
 }
 

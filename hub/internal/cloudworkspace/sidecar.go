@@ -102,18 +102,55 @@ func ParseTaskSidecar(data []byte) TaskSidecar {
 }
 
 func (s *Service) taskSidecarFor(ctx context.Context, tenantID, userID, workspaceID string) TaskSidecar {
-	blobs, err := s.blobs()
-	if err != nil {
+	if s == nil {
 		return TaskSidecar{}
 	}
-	data, err := blobs.GetSidecar(ctx, tenantID, userID, workspaceID, SidecarTask)
-	if err == nil && len(data) > 0 {
-		return ParseTaskSidecar(data)
+	var task TaskSidecar
+	blobs, err := s.blobs()
+	if err == nil {
+		if data, readErr := blobs.GetSidecar(ctx, tenantID, userID, workspaceID, SidecarTask); readErr == nil && len(data) > 0 {
+			task = ParseTaskSidecar(data)
+		}
 	}
-	if binding, bindErr := s.Workspaces.GetTaskBinding(ctx, tenantID, userID, workspaceID); bindErr == nil && binding != nil {
-		return TaskSidecar{WorkspaceID: workspaceID, CloudTaskID: binding.CloudTaskID, BindingVersion: binding.Version, Name: binding.Name, Mode: binding.Mode, Tag: binding.Tag}
+	if task.WorkspaceID == "" {
+		task.WorkspaceID = workspaceID
 	}
-	return TaskSidecar{}
+	if task.Name != "" {
+		return task
+	}
+	// A name-less sidecar (for example mode-only, or a legacy/corrupt write)
+	// must not hide the title that provisioning stored on the binding. Merge
+	// only the empty fields so sidecar values always win.
+	if s.Workspaces != nil {
+		if binding, bindErr := s.Workspaces.GetTaskBinding(ctx, tenantID, userID, workspaceID); bindErr == nil && binding != nil {
+			if task.CloudTaskID == "" {
+				task.CloudTaskID = binding.CloudTaskID
+			}
+			if task.BindingVersion == 0 {
+				task.BindingVersion = binding.Version
+			}
+			if task.Name == "" {
+				task.Name = binding.Name
+			}
+			if task.Mode == "" {
+				task.Mode = binding.Mode
+			}
+			if task.Tag == "" {
+				task.Tag = binding.Tag
+			}
+		}
+	}
+	return task
+}
+
+// WorkspaceTaskIdentity exposes the owner's durable task identity for share
+// acceptance. The sidecar and binding are keyed by the owner, so callers pass
+// ws.UserID even when the current principal is only a recipient.
+func (s *Service) WorkspaceTaskIdentity(ctx context.Context, tenantID, userID, workspaceID string) TaskSidecar {
+	if s == nil {
+		return TaskSidecar{}
+	}
+	return s.taskSidecarFor(ctx, tenantID, userID, workspaceID)
 }
 
 func sidecarAAD(tenantID, userID, workspaceID, name string) []byte {

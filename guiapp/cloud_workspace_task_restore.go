@@ -607,9 +607,38 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 		}
 		a.refreshCloudWorkspaceSessionSidecar(fetch.workspaceID, fetch.projectPath)
 	}
+	// Already-joined recipients were created with the workspace name before the
+	// Hub learned to send the owner's task title. Adopt that title once, while
+	// the row still carries the workspace name; a recipient rename is kept.
+	sharedNamed := 0
+	for _, shared := range ent.Shared {
+		if cloudWorkspaceRestoreGen.Load() != gen {
+			break
+		}
+		workspaceID := strings.TrimSpace(shared.ID)
+		if workspaceID == "" {
+			continue
+		}
+		if _, skip := dismissed[workspaceID]; skip {
+			continue
+		}
+		existing := a.findCanonicalCloudWorkspaceTask(workspaceID, true)
+		if strings.TrimSpace(existing.ProjectPath) == "" {
+			continue
+		}
+		workspaceName := strings.TrimSpace(shared.Name)
+		current := strings.TrimSpace(existing.Name)
+		if current != "" && (workspaceName == "" || !strings.EqualFold(current, workspaceName)) {
+			continue
+		}
+		name, _ := a.cloudWorkspaceRestoreIdentity(shared.CloudWorkspaceEntitlementWorkspace)
+		if a.adoptSharedCloudWorkspaceTaskName(workspaceID, workspaceName, name) {
+			sharedNamed++
+		}
+	}
 	extras := a.hideOtherLocalCloudWorkspaceTasksForKeep(keep)
-	log.Printf("[cloud_workspace] restore tasks entitlement=%d pending=%d existing=%d restored=%d dismissed=%d invalid=%d hidden_unbound=%d extras=%d", len(ent.Workspaces), len(pending), existingCount, len(restored), skippedDismissed, skippedInvalid, unhid, extras)
-	if unhid > 0 || extras > 0 {
+	log.Printf("[cloud_workspace] restore tasks entitlement=%d pending=%d existing=%d restored=%d dismissed=%d invalid=%d hidden_unbound=%d shared_named=%d extras=%d", len(ent.Workspaces), len(pending), existingCount, len(restored), skippedDismissed, skippedInvalid, unhid, sharedNamed, extras)
+	if unhid > 0 || extras > 0 || sharedNamed > 0 {
 		a.emitProjectIndexChanged("")
 	}
 	return restored

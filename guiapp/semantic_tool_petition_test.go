@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -271,6 +272,10 @@ func TestSemanticPetitionLabelResolutionIsDeterministic(t *testing.T) {
 		{tool.CapabilityScheduleAdministerLocal, intent.LabelScheduleManage},   // dispatch rule is multi-need
 		{tool.CapabilityConfigManageSelf, intent.LabelConfigManage},            //
 		{tool.CapabilityBusinessDataMIS, intent.LabelBusinessData},             // read leg stays optional
+		{tool.CapabilityMessageReadMailbox, intent.LabelMailboxRead},           // sole required template
+		{tool.CapabilityMessageDeleteMailbox, intent.LabelMailboxDelete},       // effect gated by a receipt
+		{tool.CapabilityMessageSendMailbox, intent.LabelMailboxSend},           // effect gated by a receipt
+		{tool.CapabilityMessageConfigureMailbox, intent.LabelMailboxConfigure}, //
 	}
 	for _, tc := range cases {
 		label, ok := semanticPetitionLabelForCapability(tc.capability)
@@ -432,6 +437,12 @@ func TestSemanticPetitionableNamesMatchToolsSearchInventory(t *testing.T) {
 		inventory[entry.name] = true
 	}
 	for name := range semanticPetitionableCapabilities {
+		// Desktop-driving names are deliberately absent from the main-agent
+		// directory (semanticToolsSearchCatalog drops them); the pin covers
+		// names this surface can actually advertise.
+		if desktopbot.MainDropsTool(name) {
+			continue
+		}
 		if !inventory[name] {
 			t.Errorf("petitionable name %q has no tools_search inventory entry", name)
 		}

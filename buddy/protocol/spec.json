@@ -11,6 +11,6 @@
   "display": { "width": 360, "height": 360, "round": true },
   "types": {
     "host_to_device": ["hello", "state", "ambient", "pet", "heartbeat", "asset_chunk", "clock", "celebrate", "sound"],
-    "device_to_host": ["hello", "state_ack", "heartbeat", "log"]
+    "device_to_host": ["hello", "state_ack", "heartbeat", "log", "asset_ack"]
   }
 }

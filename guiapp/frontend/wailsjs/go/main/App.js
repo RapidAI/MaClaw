@@ -1441,6 +1441,22 @@ export function UpdateFileCompanionShare(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['UpdateFileCompanionShare'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function AcceptFileCompanionShareHost(arg1) {
+  return window['go']['main']['App']['AcceptFileCompanionShareHost'](arg1);
+}
+
+export function DeclineFileCompanionShareHost(arg1) {
+  return window['go']['main']['App']['DeclineFileCompanionShareHost'](arg1);
+}
+
+export function TransferFileCompanionShareHost(arg1, arg2) {
+  return window['go']['main']['App']['TransferFileCompanionShareHost'](arg1, arg2);
+}
+
+export function RevokeFileCompanionShareHost(arg1, arg2) {
+  return window['go']['main']['App']['RevokeFileCompanionShareHost'](arg1, arg2);
+}
+
 export function ImportFileCompanionShare(arg1, arg2) {
   return window['go']['main']['App']['ImportFileCompanionShare'](arg1, arg2);
 }
@@ -1507,6 +1523,10 @@ export function LoadCompanionReaderState(arg1, arg2, arg3) {
 
 export function SaveCompanionPdfMarks(arg1, arg2) {
   return window['go']['main']['App']['SaveCompanionPdfMarks'](arg1, arg2);
+}
+
+export function SaveCompanionPdfDrawings(arg1, arg2) {
+  return window['go']['main']['App']['SaveCompanionPdfDrawings'](arg1, arg2);
 }
 
 export function SaveCompanionPdfTranslations(arg1, arg2) {
@@ -3842,6 +3862,10 @@ export function ListTasks(arg1) {
 }
 
 // MANUAL SYNC (wails generate module unavailable on this machine): mirrors guiapp/app_task_create.go.
+export function ListPendingScopeApprovals() {
+  return window['go']['main']['App']['ListPendingScopeApprovals']();
+}
+
 export function ListWorkflowTemplateSummaries() {
   return window['go']['main']['App']['ListWorkflowTemplateSummaries']();
 }
@@ -3942,6 +3966,10 @@ export function MigrateVirtualRepositoryRoot(arg1) {
   return window['go']['main']['App']['MigrateVirtualRepositoryRoot'](arg1);
 }
 
+export function MoveTaskConversation(arg1, arg2) {
+  return window['go']['main']['App']['MoveTaskConversation'](arg1, arg2);
+}
+
 export function NormalizeVoiceCommand(arg1) {
   return window['go']['main']['App']['NormalizeVoiceCommand'](arg1);
 }
@@ -4008,6 +4036,10 @@ export function OpenMobileDocumentInFileCompanion(arg1) {
 
 export function OpenMobileDocumentOriginal(arg1) {
   return window['go']['main']['App']['OpenMobileDocumentOriginal'](arg1);
+}
+
+export function OpenFileCompanionShareFromNotification(arg1) {
+  return window['go']['main']['App']['OpenFileCompanionShareFromNotification'](arg1);
 }
 
 export function OpenMobileMeetingRecordingAudio(arg1) {
@@ -6274,4 +6306,8 @@ export function BuddyGetSoundConfig() {
 
 export function BuddySetSoundConfig(arg1) {
   return window['go']['main']['App']['BuddySetSoundConfig'](arg1);
+}
+
+export function BuddyRefreshPet() {
+  return window['go']['main']['App']['BuddyRefreshPet']();
 }

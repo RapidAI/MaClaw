@@ -105,6 +105,34 @@ func codingWorkbenchBrowserLocalRoot(a *App, projectPath string) (string, error)
 		} else {
 			root = strings.TrimSpace(a.recentTaskExecutionProjectPath(projectPath))
 		}
+		// A restored read-share tab can still carry the previous process's
+		// readonly instance path after cleanup removed that directory.
+		if root == "" {
+			if id := cloudWorkspaceIDFromReadOnlyCachePath(projectPath); id != "" {
+				root = normalizeProjectSessionPath(projectPath)
+			}
+		}
+		if root != "" {
+			if id := cloudWorkspaceIDFromReadOnlyCachePath(root); id != "" && !cloudWorkspaceDirExists(root) {
+				if held, ok := heldCloudWorkspacePath(id); ok && cloudWorkspaceDirExists(held) {
+					// A previous page load already hydrated this workspace; use
+					// the live mount instead of fetching the manifest again.
+					root = held
+				} else {
+					// Rebuild only the browse index and download files on demand.
+					// PrepareCloudWorkspaceReadOnly would pull the whole tree just
+					// to show a directory listing.
+					prepared, hydrateErr := a.SyncCloudWorkspaceFiles(id)
+					if hydrateErr != nil {
+						log.Printf("[cloud_workspace] lazy browse hydrate failed workspace=%s path=%q err=%v", id, root, hydrateErr)
+						return "", hydrateErr
+					}
+					if next := strings.TrimSpace(prepared.LocalPath); next != "" {
+						root = next
+					}
+				}
+			}
+		}
 	}
 	if root == "" {
 		return "", fmt.Errorf("working directory is unavailable")

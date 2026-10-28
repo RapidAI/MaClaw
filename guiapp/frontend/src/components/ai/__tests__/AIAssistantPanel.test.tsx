@@ -11,8 +11,9 @@ import { DialogProvider } from '../../CustomDialog';
 import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_TASK_ACTIVATE } from '../../../constants/events';
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
 import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
+import { projectSessionKey } from '../aiAssistantPanelSessionUtils';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, loadProjectTabConversationMock, loadProjectTabIndexMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, resumeCloudWorkspaceTaskMock, createTaskUnifiedMock, listManagedIndustryExpertsMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, loadProjectTabConversationMock, loadProjectTabIndexMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, resumeCloudWorkspaceTaskMock, createTaskUnifiedMock, listManagedIndustryExpertsMock, listPendingScopeApprovalsMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     openProjectDirectoryMock: vi.fn().mockResolvedValue(undefined),
@@ -46,6 +47,7 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMo
     resumeCloudWorkspaceTaskMock: vi.fn().mockResolvedValue({ project_path: 'D:/tasks/cloud-math' }),
     createTaskUnifiedMock: vi.fn().mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' }),
     listManagedIndustryExpertsMock: vi.fn().mockResolvedValue('[]'),
+    listPendingScopeApprovalsMock: vi.fn().mockResolvedValue([]),
     runtimeEventsOnMock: vi.fn(),
     runtimeEventsOffMock: vi.fn(),
 }));
@@ -231,6 +233,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     LocalSearch: vi.fn().mockResolvedValue({ hits: [] }),
     ListExperts: vi.fn().mockResolvedValue('[]'),
     ListManagedIndustryExperts: listManagedIndustryExpertsMock,
+    ListPendingScopeApprovals: listPendingScopeApprovalsMock,
     ResumeTask: vi.fn(),
     SaveCurrentChatAsTask: saveCurrentChatAsTaskMock,
     SuggestCurrentTaskName: suggestCurrentTaskNameMock,
@@ -440,6 +443,8 @@ describe('AIAssistantPanel property tests', () => {
         createTaskUnifiedMock.mockReset();
         createTaskUnifiedMock.mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' });
         listManagedIndustryExpertsMock.mockReset();
+        listPendingScopeApprovalsMock.mockReset();
+        listPendingScopeApprovalsMock.mockResolvedValue([]);
         listManagedIndustryExpertsMock.mockResolvedValue('[]');
         __resetCloudWorkspaceLeaseEnsureForTests();
         saveCurrentChatAsTaskMock.mockReset();
@@ -1829,6 +1834,103 @@ describe('AIAssistantPanel property tests', () => {
         expect(queryByRole('alertdialog')).toBeTruthy();
     });
 
+    it('drops a pending approval dialog the backend withdrew', () => {
+        const { queryByRole } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: true, streaming: false, ready: true, active: true },
+        });
+        const approvalHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval')
+            .at(-1)?.[1];
+        const resolvedHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval-resolved')
+            .at(-1)?.[1];
+        expect(approvalHandler).toBeTypeOf('function');
+        expect(resolvedHandler).toBeTypeOf('function');
+
+        act(() => approvalHandler({
+            id: 'approval-withdrawn',
+            tool: 'mailbox_send',
+            path: 'a@b.c',
+            project_path: 'D:/task',
+            kind: 'commit_shape',
+            message: '执行 mailbox_send 需要你的确认，这一步还没有执行。',
+            timeout_seconds: 0,
+            auto_allow: false,
+        }));
+        expect(queryByRole('alertdialog')).toBeTruthy();
+
+        act(() => resolvedHandler({ id: 'another-approval' }));
+        expect(queryByRole('alertdialog')).toBeTruthy();
+
+        act(() => resolvedHandler({ id: 'approval-withdrawn' }));
+        expect(queryByRole('alertdialog')).toBeNull();
+    });
+
+    it('queues a second approval instead of dropping the first', async () => {
+        const { getByRole, queryByRole } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: true, streaming: false, ready: true, active: true },
+        });
+        const approvalHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval')
+            .at(-1)?.[1];
+
+        act(() => approvalHandler({
+            id: 'approval-a',
+            tool: 'mailbox_send',
+            path: 'a@b.c',
+            project_path: 'D:/task-a',
+            kind: 'commit_shape',
+            message: 'First approval',
+            timeout_seconds: 0,
+            auto_allow: false,
+        }));
+        act(() => approvalHandler({
+            id: 'approval-b',
+            tool: 'im_message',
+            path: 'group',
+            project_path: 'D:/task-b',
+            kind: 'commit_shape',
+            message: 'Second approval',
+            timeout_seconds: 0,
+            auto_allow: false,
+        }));
+        expect(getByRole('alertdialog').textContent).toContain('First approval');
+
+        await act(async () => {
+            fireEvent.click(screen.getByText('Deny'));
+        });
+        expect(getByRole('alertdialog').textContent).toContain('Second approval');
+
+        // The promoted dialog must answer too: its latch belongs to the request.
+        await act(async () => {
+            fireEvent.click(screen.getByText('Deny'));
+        });
+        expect(queryByRole('alertdialog')).toBeNull();
+    });
+
+    it('adopts an approval that was still pending when the panel mounted', async () => {
+        listPendingScopeApprovalsMock.mockResolvedValue([{
+            id: 'restored-approval',
+            tool: 'mailbox_send',
+            path: 'a@b.c',
+            project_path: 'D:/task',
+            directory: '',
+            kind: 'commit_shape',
+            message: 'Restored approval',
+            timeout_seconds: 0,
+            remaining_seconds: 0,
+            auto_allow: false,
+            maintenance: false,
+        }]);
+        const { getByRole } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: true, streaming: false, ready: true, active: true },
+        });
+        await waitFor(() => expect(getByRole('alertdialog').textContent).toContain('Restored approval'));
+    });
+
     it('uses the maintenance intent in remote high-risk approval prompts', async () => {
         const { getByRole } = renderPanel({
             window: { inline: true },
@@ -1979,6 +2081,76 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => {
             expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
         });
+    });
+
+    it('scrolls to the newest tail when a task-list activation returns to an open task', async () => {
+        const projectA = 'D:/tasks/switch-scroll-a';
+        const projectB = 'D:/tasks/switch-scroll-b';
+        // A stripped history (no user row) renders a real transcript whose tail
+        // is only reachable through the switch itself — no "new user message"
+        // re-pin can mask whether the switch anchors the view.
+        loadProjectConversationHistoryMock.mockImplementation(async (path: string) => (
+            String(path) === projectA
+                ? [
+                    { id: 'task-a-assistant', role: 'assistant', content: 'task A answer', timestamp: 2 },
+                ]
+                : []
+        ));
+        const base = defaultPanelProps();
+        // A busy tab is not auto-closed when the user opens another task, so
+        // both tabs stay open and switching back takes the tab-state restore.
+        const busyState = { ...base.state, busySessionKeys: [projectSessionKey(projectA)] };
+        const { getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{ projectPath: projectA, taskTitle: 'Task A', autoSend: false, prepareMode: 'restore-context' }}
+                onPendingProjectTabOpenHandled={vi.fn()}
+                state={{ ...busyState, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        await waitFor(() => expect(document.body.textContent || '').toContain('task A answer'));
+
+        // Read the middle of task A, which latches the transcript out of
+        // follow mode. That offset is what the tab state records on leave.
+        const readingView = getByTestId('ai-output-container');
+        Object.defineProperties(readingView, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 120, writable: true },
+        });
+        fireEvent.wheel(readingView, { deltaY: -40 });
+        fireEvent.scroll(readingView);
+
+        const onOpenedB = vi.fn();
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{ projectPath: projectB, taskTitle: 'Task B', autoSend: false, prepareMode: 'restore-context' }}
+                onPendingProjectTabOpenHandled={onOpenedB}
+                state={{ ...busyState, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+        );
+        await waitFor(() => expect(onOpenedB).toHaveBeenCalled());
+
+        // The sidebar's task-row click emits this event to focus an open task.
+        const activateTask = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === EVENT_PROJECT_TASK_ACTIVATE)
+            .at(-1)?.[1] as ((payload: { projectPath: string }) => void) | undefined;
+        expect(activateTask, 'project-task:activate handler should be registered').toBeTruthy();
+        act(() => { activateTask?.({ projectPath: projectA }); });
+
+        const switchedView = getByTestId('ai-output-container');
+        Object.defineProperties(switchedView, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+
+        // Neither the saved mid-transcript offset nor the follow latch left
+        // over from reading A may survive the switch: the transcript always
+        // lands on its newest tail.
+        await waitFor(() => expect(switchedView.scrollTop).toBe(400));
     });
 
     it('immediately scrolls to a newly rendered system progress message before reasoning starts', () => {
@@ -3209,6 +3381,42 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(document.body.textContent || '').toContain('summarize the beijing weather report'));
         expect(document.body.textContent || '').toContain('sunny, 26 degrees');
         expect(queryByTestId('ai-welcome-container')).toBeNull();
+    });
+
+    it('re-hydrates a blank open tab when a task transfer replaces its transcript', async () => {
+        const projectPath = 'D:/tasks/transferred-to-cloud';
+        loadProjectContextMock.mockResolvedValue({
+            project_name: 'Transferred task',
+            recent_progress: '',
+            key_artifacts: [],
+            recent_artifacts: [],
+            active_workflow: '',
+        });
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Transferred task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+
+        // The backend carried the source chat onto this task after its tab had
+        // already opened blank, and announced the replaced transcript.
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'moved question' },
+            { role: 'assistant', content: 'moved answer' },
+        ]);
+        const handler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'project-task:history-updated')
+            .at(-1)?.[1] as ((payload: string) => void) | undefined;
+        expect(handler).toBeTypeOf('function');
+        await act(async () => { handler?.(projectPath); });
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('moved question'));
+        expect(document.body.textContent || '').toContain('moved answer');
     });
 
     it('prefers full tab-session conversation over stripped project history', async () => {

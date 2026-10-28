@@ -11,9 +11,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "mbedtls/base64.h"
 
 #include "buddy_display.h"
 #include "buddy_font.h"
+#include "buddy_pet.h"
 #include "buddy_sound.h"
 #include "buddy_state.h"
 #include "buddy_touch.h"
@@ -93,6 +95,17 @@ void buddy_protocol_send_log(const char *level, const char *msg) {
     cJSON_AddStringToObject(root, "type", BUDDY_MSG_LOG);
     cJSON_AddStringToObject(root, "level", level ? level : "info");
     cJSON_AddStringToObject(root, "msg", msg ? msg : "");
+    send_json(root);
+}
+
+void buddy_protocol_send_asset_ack(int frame, int bytes, bool ready) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", BUDDY_MSG_ASSET_ACK);
+    cJSON_AddNumberToObject(root, "proto", BUDDY_PROTO_VERSION);
+    cJSON *ack = cJSON_AddObjectToObject(root, "asset_ack");
+    cJSON_AddNumberToObject(ack, "frame", frame);
+    cJSON_AddNumberToObject(ack, "bytes", bytes);
+    cJSON_AddBoolToObject(ack, "ready", ready);
     send_json(root);
 }
 
@@ -272,6 +285,39 @@ static void handle_sound(cJSON *root) {
     buddy_sound_set_config(&cfg);
 }
 
+static void handle_asset_chunk(cJSON *root) {
+    cJSON *asset = obj(root, "asset");
+    if (!cJSON_IsObject(asset)) return;
+    cJSON *data = obj(asset, "data");
+    if (!cJSON_IsString(data) || !data->valuestring) return;
+    cJSON *crc_item = obj(asset, "crc32");
+    const uint32_t crc = cJSON_IsNumber(crc_item) ? (uint32_t)crc_item->valuedouble : 0;
+    static uint8_t decoded[800];
+    size_t decoded_len = 0;
+    if (mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_len,
+                              (const unsigned char *)data->valuestring,
+                              strlen(data->valuestring)) != 0) {
+        buddy_protocol_send_log("warn", "asset base64 invalid");
+        return;
+    }
+    const int frame = get_int(asset, "frame", -1);
+    const int offset = get_int(asset, "offset", -1);
+    const buddy_pet_chunk_result_t result =
+        buddy_pet_chunk(frame, get_int(asset, "frames", 0), get_int(asset, "w", 0),
+                        get_int(asset, "h", 0), offset, get_int(asset, "total", 0), crc,
+                        get_int(asset, "frame_ms", 450), decoded, decoded_len);
+    if (result == BUDDY_PET_CHUNK_REJECTED) {
+        // No ack: the host aborts the transfer and retries on the next push.
+        buddy_protocol_send_log("warn", "asset chunk rejected");
+        return;
+    }
+    buddy_protocol_send_asset_ack(frame, offset + (int)decoded_len,
+                                  result == BUDDY_PET_CHUNK_READY);
+    if (result == BUDDY_PET_CHUNK_READY) {
+        buddy_protocol_send_log("info", "pet asset ready");
+    }
+}
+
 static void handle_hello(cJSON *root) {
     const int proto = get_int(root, "proto", 0);
     if (proto != BUDDY_PROTO_VERSION) {
@@ -286,16 +332,27 @@ static void handle_hello(cJSON *root) {
     buddy_protocol_send_state_ack(true, buddy_protocol_current_page(), 0);
 }
 
+static int s_parse_warnings;
+
+/** USB-Serial-JTAG can hand us ROM console bytes right after a reset, and one
+ * dropped byte can turn a line into a burst of parse errors. Logging every one
+ * over the same link makes the backlog worse, so sample them. */
+static void log_parse_warning(const char *msg) {
+    if ((s_parse_warnings++ % 32) == 0) {
+        buddy_protocol_send_log("warn", msg);
+    }
+}
+
 static void handle_line(const char *line) {
     cJSON *root = cJSON_Parse(line);
     if (!root) {
-        buddy_protocol_send_log("warn", "bad json");
+        log_parse_warning("bad json");
         return;
     }
     char type[24] = {0};
     if (!get_string(root, "type", type, sizeof(type))) {
         cJSON_Delete(root);
-        buddy_protocol_send_log("warn", "frame without type");
+        log_parse_warning("frame without type");
         return;
     }
 
@@ -316,6 +373,8 @@ static void handle_line(const char *line) {
         handle_celebrate(root);
     } else if (strcmp(type, BUDDY_MSG_SOUND) == 0) {
         handle_sound(root);
+    } else if (strcmp(type, BUDDY_MSG_ASSET_CHUNK) == 0) {
+        handle_asset_chunk(root);
     } else if (strcmp(type, BUDDY_MSG_HELLO) == 0) {
         handle_hello(root);
     } else if (strcmp(type, BUDDY_MSG_HEARTBEAT) == 0) {
@@ -325,7 +384,7 @@ static void handle_line(const char *line) {
     } else if (strcmp(type, BUDDY_MSG_STATE_ACK) == 0 || strcmp(type, BUDDY_MSG_LOG) == 0) {
         // Host never sends these; tolerate a misconfigured peer.
     } else {
-        buddy_protocol_send_log("warn", "unknown type");
+        log_parse_warning("unknown type");
     }
     cJSON_Delete(root);
 }
@@ -345,7 +404,7 @@ static void rx_task(void *arg) {
                 if (overflow) {
                     overflow = false;
                     len = 0;
-                    buddy_protocol_send_log("warn", "line too long");
+                    log_parse_warning("line too long");
                     continue;
                 }
                 if (len > 0) {
@@ -381,7 +440,7 @@ esp_err_t buddy_protocol_start(void) {
     if (!s_tx_lock || !s_seq_lock) return ESP_ERR_NO_MEM;
 
     usb_serial_jtag_driver_config_t cfg = {
-        .rx_buffer_size = 4096,
+        .rx_buffer_size = 16384,
         .tx_buffer_size = 4096,
     };
     esp_err_t err = usb_serial_jtag_driver_install(&cfg);

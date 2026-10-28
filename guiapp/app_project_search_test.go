@@ -3495,6 +3495,95 @@ func TestCancelledWorkflowSnapshotDoesNotRequestReview(t *testing.T) {
 	}
 }
 
+// A workflow that was active when the app was killed is suspended on the next
+// startup. Its task row must not keep counting as in progress (sidebar filter,
+// tray badge); it shows as interrupted until the user resumes it.
+func TestSuspendedWorkflowSnapshotIsInterrupted(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		phaseStatus workflow.PhaseStatus
+	}{
+		{name: "mid-execute", phaseStatus: workflow.PhaseRunning},
+		{name: "waiting-confirm", phaseStatus: workflow.PhaseWaitingConfirm},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &workflow.WorkflowState{
+				ID:          "wf2-suspended",
+				Type:        string(workflow.WorkflowCoding),
+				ProjectPath: "D:/work/suspended",
+				Phases: []workflow.Phase{{
+					ID:     workflow.PhaseCodingImplementation,
+					Name:   "Implementation",
+					Status: tc.phaseStatus,
+				}},
+				Status:    workflow.StatusActive,
+				Suspended: true,
+			}
+
+			got := projectWorkflowStateFromV2(state)
+			if got == nil || got.Status != string(codingruntime.TaskInterrupted) {
+				t.Fatalf("projectWorkflowStateFromV2() = %#v, want interrupted snapshot", got)
+			}
+			if projectWorkflowSnapshotActive(got) {
+				t.Fatalf("suspended snapshot still counts as active: %#v", got)
+			}
+			// A suspended workflow cannot present its confirm until resumed, so
+			// even a phase frozen at waiting-confirm must not invite a review.
+			if got.PendingReview {
+				t.Fatalf("suspended snapshot requests review: %#v", got)
+			}
+		})
+	}
+}
+
+func TestStartupSuspensionDropsStaleRunningTaskRow(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	workingDir := filepath.Join(t.TempDir(), "killed-workflow-workdir")
+	task := app.CreateRecentTaskWithWorkingDir("Killed mid-run", workingDir)
+	ownerID := projectSessionOwnerID(filepath.Clean(workingDir))
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(ownerID),
+		UserID:      ownerID,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: filepath.Clean(workingDir),
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingImplementation,
+			Name:   "Implementation",
+			Status: workflow.PhaseRunning,
+		}},
+		CurrentPhase: 0,
+		Status:       workflow.StatusActive,
+	}); err != nil {
+		t.Fatalf("workflowV2 Save failed: %v", err)
+	}
+
+	// Startup recovery: the app was killed while this workflow ran.
+	if !app.cancelStaleWorkflowsOnStartup(app.workflowV2.machine, nil) {
+		t.Fatal("cancelStaleWorkflowsOnStartup suspended nothing")
+	}
+
+	tasks := app.ListTasks(10)
+	var row *ProjectSearchResult
+	for i := range tasks {
+		if tasks[i].ProjectPath == task.ProjectPath {
+			row = &tasks[i]
+			break
+		}
+	}
+	if row == nil || row.ActiveWorkflow == nil {
+		t.Fatalf("ListTasks = %+v, want workflow snapshot for %q", tasks, task.ProjectPath)
+	}
+	if row.ActiveWorkflow.Status != string(codingruntime.TaskInterrupted) {
+		t.Fatalf("ActiveWorkflow.Status = %q, want interrupted so the row no longer counts as in progress", row.ActiveWorkflow.Status)
+	}
+	if projectWorkflowSnapshotActive(row.ActiveWorkflow) {
+		t.Fatalf("suspended snapshot still counts as active: %#v", row.ActiveWorkflow)
+	}
+}
+
 func TestRecentTaskPrefersActiveLegacyWorkflowOverTerminalV2Snapshot(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())

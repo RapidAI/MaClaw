@@ -62,7 +62,7 @@ func TestSpecMatchesConstants(t *testing.T) {
 	known := map[MessageType]bool{
 		TypeHello: true, TypeState: true, TypeAmbient: true, TypePet: true,
 		TypeHeartbeat: true, TypeAssetChunk: true, TypeClock: true, TypeCelebrate: true, TypeSound: true,
-		TypeStateAck: true, TypeLog: true,
+		TypeStateAck: true, TypeLog: true, TypeAssetAck: true,
 	}
 	listed := map[MessageType]bool{}
 	for _, name := range append(append([]string{}, spec.Types.HostToDevice...), spec.Types.DeviceToHost...) {

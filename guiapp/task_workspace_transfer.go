@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // Task file transfer backs the task-list "转移到云端 / 转移到本地" actions.
@@ -62,11 +64,12 @@ type TaskFileTransferResult struct {
 }
 
 // CopyTaskFilesToCloudWorkspace copies the source task's execution directory
-// into the cloud workspace cache and pushes it to the Hub.
+// into the cloud workspace cache, pushes it to the Hub, and moves the source
+// task's chat transcript onto the cloud task bound to the workspace.
 //
 // The caller is expected to have created (or resumed) the cloud workspace task
-// for workspaceID first — that call is what mounts the cache and takes the
-// writer lease. This method therefore only needs the mount, not task identity.
+// for workspaceID first — that call is what mounts the cache, takes the writer
+// lease, and creates the transcript owner the carry targets.
 func (a *App) CopyTaskFilesToCloudWorkspace(sourceProjectPath, workspaceID string) (TaskFileTransferResult, error) {
 	result := TaskFileTransferResult{}
 	sourceProjectPath = normalizeProjectSessionPath(sourceProjectPath)
@@ -100,23 +103,198 @@ func (a *App) CopyTaskFilesToCloudWorkspace(sourceProjectPath, workspaceID strin
 	}
 	result.TargetDir = root
 
-	if sourceDir == "" {
-		// Nothing to move: the workspace already holds whatever the task had.
-		return result, nil
+	if sourceDir != "" {
+		files, bytes, err := copyTaskTransferTree(sourceDir, root)
+		result.Files = files
+		result.Bytes = bytes
+		if err != nil {
+			return result, err
+		}
+		if files > 0 {
+			if err := a.pushTaskTransferToCloudWorkspace(workspaceID, root); err != nil {
+				return result, err
+			}
+		}
 	}
-	files, bytes, err := copyTaskTransferTree(sourceDir, root)
-	result.Files = files
-	result.Bytes = bytes
-	if err != nil {
-		return result, err
-	}
-	if files == 0 {
-		return result, nil
-	}
-	if err := a.pushTaskTransferToCloudWorkspace(workspaceID, root); err != nil {
-		return result, err
-	}
+	// Files alone are not the task. A chat-only task has no files at all, so
+	// the transcript is all that carries its history; the source task is
+	// deleted right after the move, which wipes its conversation memory and
+	// tab sessions. The carry therefore runs even when nothing was copied.
+	a.carryTaskTransferConversation(sourceProjectPath, workspaceID)
 	return result, nil
+}
+
+// carryTaskTransferConversation resolves the cloud task bound to workspaceID
+// and moves the source task's chat transcript onto it.
+func (a *App) carryTaskTransferConversation(sourceProjectPath, workspaceID string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if a == nil || workspaceID == "" {
+		return
+	}
+	target := a.findCanonicalCloudWorkspaceTask(workspaceID, false)
+	targetPath := normalizeProjectSessionPath(target.ProjectPath)
+	if targetPath == "" {
+		return
+	}
+	workingDir := normalizeProjectSessionPath(target.WorkingDir)
+	if workingDir == "" {
+		workingDir = a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), workspaceID)
+	}
+	if !a.carryTaskConversation(sourceProjectPath, targetPath, workingDir) {
+		return
+	}
+	// Publish the transcript with the workspace so the chat follows the cloud
+	// task to other machines as well.
+	a.flushCloudWorkspaceSessionBestEffort(targetPath)
+	log.Printf("[task_transfer] conversation carried source=%q target=%q workspace=%s", sourceProjectPath, targetPath, workspaceID)
+}
+
+// MoveTaskConversation moves a task's transcript onto another task. The task
+// transfer UI calls this for "转移到本地": the destination task is created
+// before the move, and the source cloud task is deleted afterwards — without
+// the carry, deleting the source would wipe the only copy of the history.
+func (a *App) MoveTaskConversation(sourceProjectPath, targetProjectPath string) (bool, error) {
+	if a == nil {
+		return false, fmt.Errorf("app unavailable")
+	}
+	targetPath := normalizeProjectSessionPath(targetProjectPath)
+	if targetPath == "" {
+		return false, fmt.Errorf("target task is required")
+	}
+	sourceProjectPath = normalizeProjectSessionPath(sourceProjectPath)
+	if sourceProjectPath == "" {
+		return false, fmt.Errorf("source task is required")
+	}
+	// A cloud source may hold its transcript only on the Hub until the task is
+	// opened on this machine. Pull it first so the move carries the real chat
+	// instead of a locally empty session.
+	if workspaceID := a.lookupCloudWorkspaceIDForProject(sourceProjectPath); workspaceID != "" {
+		a.refreshCloudWorkspaceSessionSidecar(workspaceID, sourceProjectPath)
+	}
+	workingDir := normalizeProjectSessionPath(a.recentTaskWorkingDir(targetPath))
+	if workingDir == "" {
+		workingDir = a.managedTaskExecutionDirForDisplay(targetPath)
+	}
+	return a.carryTaskConversation(sourceProjectPath, targetPath, workingDir), nil
+}
+
+// carryTaskConversation copies the transcript, the staged scroll-back archive,
+// and the workbench state that continuing the task depends on. A target that
+// already shows turns keeps them: the move must not overwrite an existing
+// conversation (for example when files are moved into a cloud workspace that
+// already has its own task).
+func (a *App) carryTaskConversation(sourceProjectPath, targetProjectPath, workingDir string) bool {
+	sourceProjectPath = normalizeProjectSessionPath(sourceProjectPath)
+	targetProjectPath = normalizeProjectSessionPath(targetProjectPath)
+	if a == nil || sourceProjectPath == "" || targetProjectPath == "" || sourceProjectPath == targetProjectPath {
+		return false
+	}
+	if a.projectConversationHasTurns(targetProjectPath) {
+		log.Printf("[task_transfer] conversation carry skipped source=%q target=%q reason=target_has_transcript", sourceProjectPath, targetProjectPath)
+		return false
+	}
+	// Same primitives as the fork path (DuplicateTask): live owner memory, the
+	// persisted snapshot LoadProjectConversationHistory falls back to, and the
+	// scroll-back archive.
+	if !a.copyProjectConversation(sourceProjectPath, targetProjectPath) {
+		return false
+	}
+	// The workbench state (plan, permission mode, route) is part of continuing
+	// the task; the source task directory is deleted by the move.
+	if err := copyTaskCodingConfig(sourceProjectPath, targetProjectPath, workingDir); err != nil {
+		log.Printf("[task_transfer] coding config copy failed source=%q target=%q err=%v", sourceProjectPath, targetProjectPath, err)
+	}
+	// The destination tab may already be open: the cloud task is created before
+	// the file copy, and the local task is created before this call. Merge the
+	// transcript into that live tab session, or stage it for the tab that is
+	// about to open, so reopening the task shows the moved history instead of
+	// the pre-carry empty chat. Without a saved source snapshot the owner
+	// memory is rendered instead, so the Hub session sidecar published from
+	// the tab still carries the moved chat to other machines.
+	if conversation, inputText := a.sourceTaskTabConversation(sourceProjectPath); len(conversation) > 0 {
+		a.restoreCloudWorkspaceTabSession(targetProjectPath, &TabSessionData{
+			Conversation: conversation,
+			InputText:    inputText,
+		})
+	}
+	a.emitProjectTaskHistoryUpdated(targetProjectPath)
+	return true
+}
+
+// sourceTaskTabConversation returns the transcript that seeds the destination
+// tab: the source's newest saved tab snapshot when one exists, otherwise the
+// owner memory. A task that has not been reopened since the app started can
+// have turns in memory without a saved tab file.
+func (a *App) sourceTaskTabConversation(projectPath string) ([]interface{}, string) {
+	if persist := a.ensureProjectTabSessionPersist(); persist != nil {
+		if session, err := persist.LoadLatestSessionForProject(projectPath); err == nil && session != nil && len(session.Conversation) > 0 {
+			return append([]interface{}(nil), session.Conversation...), session.InputText
+		}
+	}
+	mem := a.ensureTaskConversationMemory()
+	if mem == nil {
+		return nil, ""
+	}
+	entries, _ := a.taskCopyConversationEntries(projectPath, mem)
+	if len(entries) == 0 {
+		return nil, ""
+	}
+	return conversationEntriesToTabMessages(entries), ""
+}
+
+// conversationEntriesToTabMessages renders stored entries in the tab-session
+// message shape the history panel restores from.
+func conversationEntriesToTabMessages(entries []agent.ConversationEntry) []interface{} {
+	out := make([]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		role := strings.ToLower(strings.TrimSpace(entry.Role))
+		switch role {
+		case "user", "assistant", "system", "error":
+		default:
+			continue
+		}
+		message := map[string]interface{}{"role": role}
+		if content := stringifyProjectConversationContent(entry.Content); content != "" {
+			message["content"] = content
+		} else if strings.TrimSpace(entry.ReasoningContent) == "" {
+			continue
+		}
+		if reasoning := strings.TrimSpace(entry.ReasoningContent); reasoning != "" {
+			message["reasoning_content"] = reasoning
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+// projectConversationHasTurns reports whether a task already owns a transcript
+// that a transfer must not overwrite. The live owner memory and the newest
+// persisted tab session both count: an open tab saves its turns even when the
+// owner memory is empty after a restart.
+func (a *App) projectConversationHasTurns(projectPath string) bool {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return false
+	}
+	if mem := a.ensureTaskConversationMemory(); mem != nil {
+		for _, entry := range mem.Load(projectSessionOwnerID(projectPath)) {
+			switch strings.ToLower(strings.TrimSpace(entry.Role)) {
+			case "user", "assistant":
+				return true
+			}
+		}
+	}
+	persist := a.ensureProjectTabSessionPersist()
+	if persist == nil {
+		return false
+	}
+	session, err := persist.LoadLatestSessionForProject(projectPath)
+	if err != nil || session == nil {
+		return false
+	}
+	// Any visible user/assistant turn counts, matching what the history panel
+	// would show for this task.
+	return projectConversationHistoryHasTurns(projectConversationHistoryFromTabSession(session.Conversation))
 }
 
 // CopyCloudWorkspaceTaskFilesToLocal copies a cloud workspace's files into a

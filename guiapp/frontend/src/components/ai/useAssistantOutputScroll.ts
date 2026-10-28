@@ -126,11 +126,17 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
     }, [containerMetrics, suspendedRef]);
 
     const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto", force = false, settleFrames = 0) => {
-        if (suspendedRef?.current || outputHostHidden(outputContainerRef.current)) return;
+        // A forced pin owns the follow latch even while the transcript is
+        // covered or hidden: the uncover transition must resume following
+        // instead of inheriting the scrolled-up state of the surface left.
+        const wasLatched = userScrolledUpRef.current;
         if (force) {
-            if (userScrolledUpRef.current) logAIScrollEvent("force-repin", { ...containerMetrics() });
             userScrolledUpRef.current = false;
             userIntentRef.current = false;
+        }
+        if (suspendedRef?.current || outputHostHidden(outputContainerRef.current)) return;
+        if (force) {
+            if (wasLatched) logAIScrollEvent("force-repin", { ...containerMetrics() });
         } else if (userScrolledUpRef.current) {
             // The pin request will be dropped by runPinnedScroll; this is the
             // stuck state the diagnostics are hunting for.

@@ -24,6 +24,30 @@ func TestParseTaskSidecar(t *testing.T) {
 	}
 }
 
+func TestTaskSidecarForMergesPartialSidecarWithBinding(t *testing.T) {
+	st, _ := newTestWorkspaceStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ws, err := st.Create(ctx, CreateParams{TenantID: "t1", UserID: "u1", Name: "工作区", Quota: 5, TenantMaxTotalBytes: 1 << 30}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertTaskBinding(ctx, "t1", "u1", ws.ID, "", "", "绑定的任务名", "coding_dev", "", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	t.Setenv(masterKeyEnv, "")
+	bs := &BlobStore{Root: root, KeyDir: filepath.Join(root, "keys"), DB: st.db}
+	// A mode-only sidecar must not hide the name provisioning stored on the
+	// binding for the same workspace.
+	writeTestSidecar(t, bs, "t1", "u1", ws.ID, SidecarTask, []byte(`{"mode":"coding_dev"}`))
+	svc := &Service{Workspaces: st, Blobs: bs}
+	task := svc.taskSidecarFor(ctx, "t1", "u1", ws.ID)
+	if task.Name != "绑定的任务名" || task.Mode != "coding_dev" || task.CloudTaskID == "" {
+		t.Fatalf("merged task identity=%+v", task)
+	}
+}
+
 func TestValidateSidecarName(t *testing.T) {
 	for _, name := range []string{SidecarSession, SidecarTask, SidecarWorkbench, SidecarCheckpoint} {
 		got, err := ValidateSidecarName(name)

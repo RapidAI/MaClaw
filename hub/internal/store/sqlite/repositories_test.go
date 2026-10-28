@@ -792,6 +792,7 @@ func TestUserMachineAndSessionRepositoriesRoundTrip(t *testing.T) {
 		UserID:           user.ID,
 		Name:             "office-pc",
 		Platform:         "windows",
+		AppVersion:       "8.1.0.12464",
 		MachineTokenHash: "machine-hash",
 		Status:           "offline",
 		CreatedAt:        now,
@@ -799,6 +800,16 @@ func TestUserMachineAndSessionRepositoriesRoundTrip(t *testing.T) {
 	}
 	if err := st.Machines.Create(ctx, machine); err != nil {
 		t.Fatalf("create machine: %v", err)
+	}
+	loginClients, err := st.Machines.ListLoginClientsByTenant(ctx, user.TenantID)
+	if err != nil {
+		t.Fatalf("list login clients: %v", err)
+	}
+	if len(loginClients) != 1 {
+		t.Fatalf("login client list len = %d, want 1", len(loginClients))
+	}
+	if got := loginClients[0]; got.UserID != user.ID || got.Platform != "windows" || got.AppVersion != "8.1.0.12464" {
+		t.Fatalf("unexpected login client projection: %#v", got)
 	}
 	if err := st.Machines.UpdateStatus(ctx, machine.ID, "online"); err != nil {
 		t.Fatalf("update machine status: %v", err)

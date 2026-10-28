@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -695,10 +696,16 @@ func buildSubAgentScopeApprovalCallbackOwned(handler *IMMessageHandler, loopCtx 
 				return decision
 			case <-loopCtx.CancelC:
 				pendingScopeApprovals.Delete(approvalID)
+				if handler != nil {
+					emitScopeApprovalResolvedEvent(handler.app, approvalID)
+				}
 				recordScopeApprovalAudit(handler, approvalID, req, ScopeApprovalDeny, "cancelled")
 				return ScopeApprovalDeny
 			case <-timeout.C:
 				pendingScopeApprovals.Delete(approvalID)
+				if handler != nil {
+					emitScopeApprovalResolvedEvent(handler.app, approvalID)
+				}
 				decision := remoteScopeApprovalTimeoutDecision(req)
 				if onProgress != nil {
 					onProgress(remoteScopeApprovalTimeoutProgress(req, decision))
@@ -718,6 +725,9 @@ func buildSubAgentScopeApprovalCallbackOwned(handler *IMMessageHandler, loopCtx 
 			return decision
 		case <-timeout.C:
 			pendingScopeApprovals.Delete(approvalID)
+			if handler != nil {
+				emitScopeApprovalResolvedEvent(handler.app, approvalID)
+			}
 			decision := remoteScopeApprovalTimeoutDecision(req)
 			recordScopeApprovalAudit(handler, approvalID, req, decision, "timeout")
 			return decision
@@ -794,6 +804,7 @@ type pendingScopeApproval struct {
 	ID         string
 	Request    ScopeApprovalRequest
 	ResponseCh chan ScopeApprovalDecision
+	CreatedAt  time.Time
 }
 
 var (
@@ -807,8 +818,75 @@ func storePendingScopeApproval(handler *IMMessageHandler, req ScopeApprovalReque
 		ID:         id,
 		Request:    req,
 		ResponseCh: ch,
+		CreatedAt:  time.Now(),
 	})
 	return id
+}
+
+// ScopeApprovalView is the frontend-safe shape of an approval the process is
+// still waiting on. The panel asks for these when it mounts: a webview reload
+// or crash recovery drops its in-memory prompt, and the blocked turn would
+// otherwise have nothing on screen to answer.
+type ScopeApprovalView struct {
+	ID               string `json:"id"`
+	Tool             string `json:"tool"`
+	Path             string `json:"path"`
+	ProjectPath      string `json:"project_path"`
+	Directory        string `json:"directory"`
+	Kind             string `json:"kind"`
+	Message          string `json:"message"`
+	AutoAllow        bool   `json:"auto_allow"`
+	Maintenance      bool   `json:"maintenance"`
+	TimeoutSeconds   int    `json:"timeout_seconds"`
+	RemainingSeconds int    `json:"remaining_seconds"`
+}
+
+// ListPendingScopeApprovals returns the approvals this process is still
+// waiting on, oldest first. The caller replays them through the same event
+// path as a live request, deduped by id.
+func (a *App) ListPendingScopeApprovals() []ScopeApprovalView {
+	var pending []*pendingScopeApproval
+	pendingScopeApprovals.Range(func(_, value any) bool {
+		if item, ok := value.(*pendingScopeApproval); ok && item != nil {
+			pending = append(pending, item)
+		}
+		return true
+	})
+	sort.Slice(pending, func(i, j int) bool {
+		if !pending[i].CreatedAt.Equal(pending[j].CreatedAt) {
+			return pending[i].CreatedAt.Before(pending[j].CreatedAt)
+		}
+		return pending[i].ID < pending[j].ID
+	})
+	views := make([]ScopeApprovalView, 0, len(pending))
+	for _, item := range pending {
+		req := item.Request
+		timeoutSeconds := int(scopeApprovalTimeout / time.Second)
+		remainingSeconds := timeoutSeconds
+		if req.Kind == commitShapeApprovalKind {
+			// A human-call card waits until it is answered or the task ends.
+			timeoutSeconds, remainingSeconds = 0, 0
+		} else if !item.CreatedAt.IsZero() {
+			remainingSeconds = timeoutSeconds - int(time.Since(item.CreatedAt)/time.Second)
+			if remainingSeconds < 0 {
+				remainingSeconds = 0
+			}
+		}
+		views = append(views, ScopeApprovalView{
+			ID:               item.ID,
+			Tool:             req.ToolName,
+			Path:             req.Path,
+			ProjectPath:      req.ProjectPath,
+			Directory:        req.Directory,
+			Kind:             req.Kind,
+			Message:          req.Message,
+			AutoAllow:        req.AutoAllow,
+			Maintenance:      req.Maintenance,
+			TimeoutSeconds:   timeoutSeconds,
+			RemainingSeconds: remainingSeconds,
+		})
+	}
+	return views
 }
 
 // ResolveScopeApproval is called by the frontend when the user responds to
@@ -860,6 +938,18 @@ func emitScopeApprovalEvent(app *App, approvalID string, req ScopeApprovalReques
 		"auto_allow":      req.AutoAllow,
 		"maintenance":     req.Maintenance,
 		"timeout_seconds": timeoutSeconds,
+	})
+}
+
+// emitScopeApprovalResolvedEvent tells the panel to drop a dialog the backend
+// withdrew. Cancelling a task removes the pending channel, so a modal left on
+// screen would only offer buttons that no longer resolve anything.
+func emitScopeApprovalResolvedEvent(app *App, approvalID string) {
+	if app == nil || strings.TrimSpace(approvalID) == "" {
+		return
+	}
+	app.emitEvent("subagent-scope-approval-resolved", map[string]interface{}{
+		"id": approvalID,
 	})
 }
 

@@ -3,11 +3,12 @@ import { EventsOn } from "../../../wailsjs/runtime";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { NotificationBell } from "./NotificationBell";
-import { asNotificationCategory, NotificationPanel, stripMarkdownPreview } from "./NotificationPanel";
+import { asNotificationCategory, NotificationPanel } from "./NotificationPanel";
 import { refreshCompanionGroupInvites, useCompanionGroupInvites } from "./CompanionGroupInvites";
 import { useNotifications, type AdminNotification } from "./useNotifications";
-import { IconRecord } from "./WorkbenchIcons";
+import { NotificationUrgentToast } from "./NotificationUrgentToast";
 import { COMPANION_GROUP_INVITE_SOURCE, groupInviteElsewhereText, groupInviteGroupID } from "./AssistantTitleBarNotifications.groupInvite";
+import { useShareActions } from "./AssistantTitleBarNotifications.shareActions";
 
 export function AssistantTitleBarNotifications({
     active = true,
@@ -94,28 +95,45 @@ export function AssistantTitleBarNotifications({
         [hubNotifications],
     );
     const [selectedNotification, setSelectedNotification] = useState<AdminNotification | null>(null);
-    const handleSelectNotification = useCallback((notification: AdminNotification) => {
-        if (!notification.groupInviteId && !notification.is_read) markRead(notification.id);
-        setSelectedNotification(notification);
-    }, [markRead]);
-    const handleClosePanel = useCallback(() => {
+    // Clear the selection and close the panel: a successful share action puts
+    // the companion in front, so the main window must not sit over it.
+    const dismissSelectedNotification = useCallback(() => {
         setSelectedNotification(null);
         if (panelOpen) togglePanel();
     }, [panelOpen, togglePanel]);
+    const share = useShareActions(lang, dismissSelectedNotification);
+    // Destructured so the handlers below depend on the stable callbacks
+    // rather than a fresh object identity on every render.
+    const { resetShareErrors } = share;
+    const handleSelectNotification = useCallback((notification: AdminNotification) => {
+        if (!notification.groupInviteId && !notification.is_read) markRead(notification.id);
+        resetShareErrors();
+        setSelectedNotification(notification);
+    }, [markRead, resetShareErrors]);
+    const handleClosePanel = useCallback(() => {
+        dismissSelectedNotification();
+        resetShareErrors();
+    }, [dismissSelectedNotification, resetShareErrors]);
     const handleBackFromDetail = useCallback(() => {
         setSelectedNotification(null);
     }, []);
     const handleOpenFromToast = useCallback(() => {
         if (!urgentToast) return;
         if (!urgentToast.is_read) markRead(urgentToast.id);
+        // The toast opens a different notice, so an error from the previous
+        // one must not surface on its detail.
+        resetShareErrors();
         setSelectedNotification(urgentToast);
         if (!panelOpen) togglePanel();
         dismissUrgentToast();
-    }, [dismissUrgentToast, markRead, panelOpen, togglePanel, urgentToast]);
+    }, [dismissUrgentToast, markRead, panelOpen, resetShareErrors, togglePanel, urgentToast]);
     const handleTogglePanel = useCallback(() => {
-        if (panelOpen) setSelectedNotification(null);
+        if (panelOpen) {
+            setSelectedNotification(null);
+            resetShareErrors();
+        }
         togglePanel();
-    }, [panelOpen, togglePanel]);
+    }, [panelOpen, resetShareErrors, togglePanel]);
     useEffect(() => {
         if (!active) return;
         const openSystemNotifications = (event: Event) => {
@@ -182,45 +200,23 @@ export function AssistantTitleBarNotifications({
                     groupInviteActionError={groupInviteElsewhere}
                     groupInviteListError={groupInviteListError}
                     groupInviteError={resolvedSelected?.groupInviteId && groupInviteError?.id === resolvedSelected.groupInviteId ? groupInviteError.message : ""}
+                    onShareOpen={share.openSharedDocument}
+                    shareOpenBusy={share.shareOpenBusy}
+                    shareOpenError={share.shareOpenError}
+                    onHostTransfer={share.handleHostTransfer}
+                    hostTransferBusy={share.hostTransferBusy}
+                    hostTransferError={share.hostTransferError}
                     ariaHidden={!active}
                     lang={lang}
                 />
             )}
             {urgentToast && active && !panelOpen && (
-                <div
-                    data-testid="notification-urgent-toast"
-                    data-notification-toast="true"
-                    role="status"
-                    aria-live="assertive"
-                    className="notification-toast"
-                >
-                    <div className="notification-toast__head">
-                        <span className="notification-toast__label">
-                            <IconRecord size={12} className="notification-toast__glyph" />
-                            {localizeText(lang, "Urgent Notification", "\u7d27\u6025\u901a\u77e5", "\u7dca\u6025\u901a\u77e5")}
-                        </span>
-                        <button
-                            onClick={dismissUrgentToast}
-                            className="notification-toast__close"
-                            aria-label={localizeText(lang, "Dismiss", "\u5173\u95ed", "\u95dc\u9589")}
-                        >
-                            ×
-                        </button>
-                    </div>
-                    <button
-                        data-testid="notification-urgent-toast-open"
-                        onClick={handleOpenFromToast}
-                        className="notification-toast__open"
-                    >
-                        <span className="notification-toast__title">{urgentToast.title}</span>
-                        <span className="notification-toast__preview">
-                            {stripMarkdownPreview(urgentToast.content)}
-                        </span>
-                        <span className="notification-toast__cta">
-                            {localizeText(lang, "View full notice", "\u67e5\u770b\u5168\u6587", "\u67e5\u770b\u5168\u6587")}
-                        </span>
-                    </button>
-                </div>
+                <NotificationUrgentToast
+                    notification={urgentToast}
+                    lang={lang}
+                    onDismiss={dismissUrgentToast}
+                    onOpen={handleOpenFromToast}
+                />
             )}
         </>
     );

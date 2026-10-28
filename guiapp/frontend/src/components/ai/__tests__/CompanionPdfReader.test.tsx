@@ -5,7 +5,8 @@ import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanionPdfReader } from "../CompanionPdfReader";
 import { hydratePdfMarks, loadPdfMarks, savePdfMarks } from "../../filecompanion/pdfMarks";
-import { hydratePdfTranslations, loadPdfTranslations, resetPdfTranslationFlight, savePdfTranslations } from "../../filecompanion/pdfTranslations";
+import { hydratePdfDrawings, loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT } from "../../filecompanion/pdfDrawings";
+import { hydratePdfTranslations, loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, resetPdfTranslationFlight, savePdfTranslations } from "../../filecompanion/pdfTranslations";
 import { hydrateCompanionReaderState } from "../../filecompanion/companionReaderState";
 import type { CodePreviewTheme } from "../FileTabBar";
 
@@ -26,13 +27,13 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
 const theme = { bg: "#fff", text: "#111" } as CodePreviewTheme;
 const previewURL = "/maclaw-preview/v1/file?t=0123456789abcdef0123456789abcdef";
 
-function pdfWithPages(count: number, text = "Hello world") {
+function pdfWithPages(count: number, text = "Hello world", size = { width: 200, height: 400 }) {
     const getPage = vi.fn(async (page: number) => ({
         getViewport: ({ scale }: { scale: number }) => ({
-            width: 200 * scale,
-            height: 400 * scale,
+            width: size.width * scale,
+            height: size.height * scale,
             scale,
-            transform: [scale, 0, 0, -scale, 0, 400 * scale],
+            transform: [scale, 0, 0, -scale, 0, size.height * scale],
         }),
         getTextContent: async () => ({
             items: page === 1 ? [{ str: text, transform: [12, 0, 0, 12, 40, 300], width: 80, height: 12 }] : [],
@@ -47,7 +48,7 @@ function pdfWithPages(count: number, text = "Hello world") {
     return getPage;
 }
 
-function box(node: HTMLElement, width: number, height: number) {
+function box(node: Element, width: number, height: number) {
     node.getBoundingClientRect = () => ({
         x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON() { return {}; },
     });
@@ -79,6 +80,7 @@ beforeEach(() => {
     resetPdfTranslationFlight();
     hydratePdfMarks({});
     hydratePdfTranslations({});
+    hydratePdfDrawings({});
     delete (window as unknown as { go?: unknown }).go;
     getDocument.mockReset();
     preview.mockReset();
@@ -436,6 +438,332 @@ describe("companion pdf reader", () => {
         const row = loadPdfTranslations("C:/docs/Paper.PDF")[0];
         expect(row?.place?.x).toBeCloseTo(0.25, 4);
         expect(row?.place?.y).toBeCloseTo(0.25, 4);
+    });
+
+    it("writes a selection annotation as a shareable note card", async () => {
+        pdfWithPages(1);
+        const changed = vi.fn();
+        window.addEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        try {
+            render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            const page = await screen.findByTestId("companion-pdf-page-1");
+            selectHello(page);
+            fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+            expect(screen.queryByTestId("pdf-annotation-input")).toBeNull();
+            fireEvent.mouseDown(screen.getByTestId("pdf-annotate"));
+            const editor = screen.getByTestId("pdf-annotation-input") as HTMLTextAreaElement;
+            fireEvent.keyDown(editor, { key: "Escape" });
+            expect(screen.queryByTestId("pdf-annotation-input")).toBeNull();
+
+            fireEvent.mouseDown(screen.getByTestId("pdf-annotate"));
+            fireEvent.change(screen.getByTestId("pdf-annotation-input"), { target: { value: "这里的假设需要检验" } });
+            fireEvent.click(screen.getByTestId("pdf-annotation-save"));
+            // An annotation is written locally; it is not a model request.
+            expect(translate).not.toHaveBeenCalled();
+            expect(changed).toHaveBeenCalledTimes(1);
+            const icon = screen.getByRole("button", { name: "批注" });
+            expect(icon.textContent).toBe("批注");
+            const pop = screen.getByRole("dialog");
+            expect(pop.getAttribute("aria-label")).toBe("批注");
+            expect(pop.querySelector(".companion-pdf-translation-kicker")?.textContent).toBe("批注");
+            expect(pop.textContent).toContain("这里的假设需要检验");
+            expect(pop.textContent).toContain("Hello");
+            const saved = loadPdfTranslations("C:/docs/Paper.PDF");
+            expect(saved).toHaveLength(1);
+            expect(saved[0]).toMatchObject({ kind: "annotation", text: "Hello", translation: "这里的假设需要检验" });
+
+            // Right-clicking the card names it an annotation, not a translation.
+            fireEvent.contextMenu(icon, { clientX: 20, clientY: 30 });
+            expect(screen.getByTestId("pdf-translate-clear").textContent).toContain("删除批注");
+            fireEvent.mouseDown(screen.getByTestId("pdf-translate-clear"));
+            expect(screen.queryByRole("dialog")).toBeNull();
+            expect(loadPdfTranslations("C:/docs/Paper.PDF")).toEqual([]);
+            expect(changed).toHaveBeenCalledTimes(2);
+        } finally {
+            window.removeEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        }
+    });
+
+    it("resizes a translation card and restores its saved size on remount", async () => {
+        pdfWithPages(1, "Hello world", { width: 800, height: 1000 });
+        const changed = vi.fn();
+        window.addEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        try {
+            const view = render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            const page = await screen.findByTestId("companion-pdf-page-1");
+            selectHello(page);
+            fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+            fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
+            const icon = await screen.findByRole("button", { name: "译文" });
+            fireEvent.mouseDown(icon);
+            const pop = screen.getByRole("dialog");
+            box(page, 800, 1000);
+            // The card can grow but never shrink below the 200x100 minimum.
+            Object.defineProperty(pop, "offsetWidth", { configurable: true, value: 240 });
+            Object.defineProperty(pop, "offsetHeight", { configurable: true, value: 90 });
+            const handle = pop.querySelector("[data-pdf-translation-resize]") as HTMLElement;
+            expect(handle.getAttribute("title")).toBe("调整大小");
+            fireEvent.mouseDown(handle, { button: 0, clientX: 0, clientY: 0 });
+            fireEvent.mouseMove(window, { clientX: 40, clientY: 30 });
+            fireEvent.mouseUp(window);
+            expect(pop.style.width).toBe("280px");
+            expect(pop.style.height).toBe("120px");
+            const row = loadPdfTranslations("C:/docs/Paper.PDF")[0];
+            expect(row?.kind).toBeUndefined();
+            expect(row?.size?.w).toBeCloseTo(0.35, 4);
+            expect(row?.size?.h).toBeCloseTo(0.12, 4);
+            // Translations stay local; only annotations travel with the share.
+            expect(changed).not.toHaveBeenCalled();
+
+            view.unmount();
+            render(<CompanionPdfReader absPath="c:/docs/paper.pdf" theme={theme} lang="zh-Hans" />);
+            await screen.findByTestId("companion-pdf-page-1");
+            fireEvent.mouseDown(screen.getByRole("button", { name: "译文" }));
+            const restored = screen.getByRole("dialog");
+            expect(restored.style.width).toBe("280px");
+            expect(restored.style.height).toBe("120px");
+        } finally {
+            window.removeEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        }
+    });
+
+    it("resizes an annotation card and announces the change for the share", async () => {
+        pdfWithPages(1, "Hello world", { width: 800, height: 1000 });
+        const changed = vi.fn();
+        window.addEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        try {
+            render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            const page = await screen.findByTestId("companion-pdf-page-1");
+            selectHello(page);
+            fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+            fireEvent.mouseDown(screen.getByTestId("pdf-annotate"));
+            fireEvent.change(screen.getByTestId("pdf-annotation-input"), { target: { value: "复核这段推导" } });
+            fireEvent.click(screen.getByTestId("pdf-annotation-save"));
+            expect(changed).toHaveBeenCalledTimes(1);
+            const pop = screen.getByRole("dialog");
+            box(page, 800, 1000);
+            Object.defineProperty(pop, "offsetWidth", { configurable: true, value: 240 });
+            Object.defineProperty(pop, "offsetHeight", { configurable: true, value: 90 });
+            const handle = pop.querySelector("[data-pdf-translation-resize]") as HTMLElement;
+            fireEvent.mouseDown(handle, { button: 0, clientX: 0, clientY: 0 });
+            fireEvent.mouseMove(window, { clientX: 40, clientY: 30 });
+            fireEvent.mouseUp(window);
+            expect(pop.style.width).toBe("280px");
+            expect(pop.style.height).toBe("120px");
+            const saved = loadPdfTranslations("C:/docs/Paper.PDF")[0];
+            expect(saved).toMatchObject({ kind: "annotation", translation: "复核这段推导" });
+            expect(saved?.size?.w).toBeCloseTo(0.35, 4);
+            expect(saved?.size?.h).toBeCloseTo(0.12, 4);
+            expect(changed).toHaveBeenCalledTimes(2);
+        } finally {
+            window.removeEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        }
+    });
+
+    it("draws a freehand line only while 手绘 is pressed", async () => {
+        pdfWithPages(1);
+        const changed = vi.fn();
+        window.addEventListener(PDF_DRAWINGS_CHANGED_EVENT, changed);
+        try {
+            const view = render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            const page = await screen.findByTestId("companion-pdf-page-1");
+            box(page, 200, 400);
+            const toggle = screen.getByTestId("pdf-draw-toggle");
+            expect(toggle.getAttribute("aria-pressed")).toBe("false");
+            expect(screen.queryByTestId("pdf-draw-panel")).toBeNull();
+            fireEvent.click(toggle);
+            expect(toggle.getAttribute("aria-pressed")).toBe("true");
+            expect(screen.getByTestId("pdf-draw-panel")).toBeTruthy();
+            expect(screen.getByTestId("pdf-draw-line").getAttribute("aria-pressed")).toBe("true");
+            expect(screen.getByTestId("pdf-draw-color-yellow").getAttribute("aria-pressed")).toBe("true");
+            expect((screen.getByTestId("pdf-draw-undo") as HTMLButtonElement).disabled).toBe(true);
+
+            const layer = screen.getByTestId("pdf-drawing-layer-1");
+            expect(layer.getAttribute("class")).toContain("--active");
+            box(layer, 200, 400);
+            fireEvent.mouseDown(layer, { button: 0, clientX: 10, clientY: 20 });
+            fireEvent.mouseMove(window, { clientX: 60, clientY: 80 });
+            fireEvent.mouseMove(window, { clientX: 110, clientY: 160 });
+            fireEvent.mouseUp(window);
+            const saved = loadPdfDrawings("C:/docs/Paper.PDF");
+            expect(saved).toHaveLength(1);
+            expect(saved[0]).toMatchObject({ page: 1, tool: "line", color: "yellow" });
+            expect(saved[0].points[0]).toEqual({ x: 0.05, y: 0.05 });
+            expect(saved[0].points[saved[0].points.length - 1]).toEqual({ x: 0.55, y: 0.4 });
+            expect(saved[0].points.length).toBeGreaterThanOrEqual(3);
+            expect(changed).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("pdf-drawing-layer-1").querySelector("polyline[data-drawing-id]")).toBeTruthy();
+
+            // The same button leaves drawing mode; a press no longer paints.
+            fireEvent.click(toggle);
+            expect(toggle.getAttribute("aria-pressed")).toBe("false");
+            expect(screen.queryByTestId("pdf-draw-panel")).toBeNull();
+            fireEvent.mouseDown(layer, { button: 0, clientX: 20, clientY: 30 });
+            fireEvent.mouseMove(window, { clientX: 90, clientY: 100 });
+            fireEvent.mouseUp(window);
+            expect(loadPdfDrawings("C:/docs/Paper.PDF")).toHaveLength(1);
+
+            view.unmount();
+            render(<CompanionPdfReader absPath="c:/docs/paper.pdf" theme={theme} lang="zh-Hans" />);
+            await screen.findByTestId("companion-pdf-page-1");
+            expect(screen.getByTestId("pdf-drawing-layer-1").querySelector("polyline[data-drawing-id]")).toBeTruthy();
+            // 撤销 removes the newest stroke and is itself shareable state.
+            fireEvent.click(screen.getByTestId("pdf-draw-toggle"));
+            fireEvent.click(screen.getByTestId("pdf-draw-undo"));
+            expect(loadPdfDrawings("C:/docs/Paper.PDF")).toEqual([]);
+            expect(screen.getByTestId("pdf-drawing-layer-1").querySelector("polyline[data-drawing-id]")).toBeNull();
+        } finally {
+            window.removeEventListener(PDF_DRAWINGS_CHANGED_EVENT, changed);
+        }
+    });
+
+    it("draws a box in the selected colour and tool", async () => {
+        pdfWithPages(1);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        box(page, 200, 400);
+        fireEvent.click(screen.getByTestId("pdf-draw-toggle"));
+        fireEvent.click(screen.getByTestId("pdf-draw-box"));
+        fireEvent.click(screen.getByTestId("pdf-draw-color-blue"));
+        expect(screen.getByTestId("pdf-draw-box").getAttribute("aria-pressed")).toBe("true");
+        expect(screen.getByTestId("pdf-draw-color-blue").getAttribute("aria-pressed")).toBe("true");
+        const layer = screen.getByTestId("pdf-drawing-layer-1");
+        box(layer, 200, 400);
+        fireEvent.mouseDown(layer, { button: 0, clientX: 20, clientY: 40 });
+        fireEvent.mouseMove(window, { clientX: 80, clientY: 100 });
+        fireEvent.mouseMove(window, { clientX: 120, clientY: 140 });
+        fireEvent.mouseUp(window);
+        const saved = loadPdfDrawings("C:/docs/Paper.PDF");
+        expect(saved).toHaveLength(1);
+        expect(saved[0]).toMatchObject({ tool: "box", color: "blue", page: 1 });
+        expect(saved[0].points).toEqual([{ x: 0.1, y: 0.1 }, { x: 0.6, y: 0.35 }]);
+        const rect = layer.querySelector("rect[data-drawing-id]");
+        expect(rect).toBeTruthy();
+        expect(Number(rect?.getAttribute("x"))).toBeCloseTo(0.1, 4);
+        expect(Number(rect?.getAttribute("y"))).toBeCloseTo(0.1, 4);
+        expect(Number(rect?.getAttribute("width"))).toBeCloseTo(0.5, 4);
+        expect(Number(rect?.getAttribute("height"))).toBeCloseTo(0.25, 4);
+        expect(rect?.getAttribute("fill")).toBe("#b9d4f5");
+        expect(rect?.getAttribute("stroke")).toBe("#2f6bbd");
+        // Escape also leaves drawing mode.
+        fireEvent.keyDown(window, { key: "Escape" });
+        expect(screen.getByTestId("pdf-draw-toggle").getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("cancels an unfinished stroke when drawing is switched off", async () => {
+        pdfWithPages(1);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        box(page, 200, 400);
+        const toggle = screen.getByTestId("pdf-draw-toggle");
+        fireEvent.click(toggle);
+        const layer = screen.getByTestId("pdf-drawing-layer-1");
+        box(layer, 200, 400);
+        fireEvent.mouseDown(layer, { button: 0, clientX: 10, clientY: 20 });
+        fireEvent.mouseMove(window, { clientX: 80, clientY: 90 });
+        // The stroke has not been released yet; leaving the pen must not save it.
+        fireEvent.click(toggle);
+        expect(loadPdfDrawings("C:/docs/Paper.PDF")).toEqual([]);
+        fireEvent.mouseUp(window);
+        expect(loadPdfDrawings("C:/docs/Paper.PDF")).toEqual([]);
+        expect(layer.querySelector("polyline[data-drawing-id]")).toBeNull();
+    });
+
+    it("drops an unfinished stroke when the tool changes", async () => {
+        pdfWithPages(1);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        box(page, 200, 400);
+        fireEvent.click(screen.getByTestId("pdf-draw-toggle"));
+        const layer = screen.getByTestId("pdf-drawing-layer-1");
+        box(layer, 200, 400);
+        fireEvent.mouseDown(layer, { button: 0, clientX: 10, clientY: 20 });
+        fireEvent.mouseMove(window, { clientX: 80, clientY: 100 });
+        // The mouseup never arrived, but picking another tool abandons it.
+        fireEvent.click(screen.getByTestId("pdf-draw-box"));
+        fireEvent.mouseUp(window);
+        expect(loadPdfDrawings("C:/docs/Paper.PDF")).toEqual([]);
+        expect(layer.querySelector("polyline[data-drawing-id]")).toBeNull();
+    });
+
+    it("does not let a participant undo the host's drawing", async () => {
+        pdfWithPages(1);
+        hydratePdfDrawings({
+            "c:/docs/paper.pdf": [{
+                id: "d_host",
+                page: 1,
+                color: "blue",
+                tool: "line",
+                points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }],
+                shared: true,
+            }],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByTestId("companion-pdf-page-1");
+        expect(screen.getByTestId("pdf-drawing-layer-1").querySelector("polyline[data-drawing-id]")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("pdf-draw-toggle"));
+        expect((screen.getByTestId("pdf-draw-undo") as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("erases local drawings inside a marquee and leaves host drawings", async () => {
+        pdfWithPages(1);
+        const lineMark = { id: "d_line", page: 1, color: "yellow" as const, tool: "line" as const, points: [{ x: 0.05, y: 0.05 }, { x: 0.25, y: 0.2 }] };
+        const localBox = { id: "d_box", page: 1, color: "blue" as const, tool: "box" as const, points: [{ x: 0.6, y: 0.6 }, { x: 0.8, y: 0.8 }] };
+        const hostBox = { id: "d_host", page: 1, color: "green" as const, tool: "box" as const, shared: true, points: [{ x: 0.1, y: 0.1 }, { x: 0.3, y: 0.3 }] };
+        hydratePdfDrawings({ "c:/docs/paper.pdf": [lineMark, localBox, hostBox] });
+        const changed = vi.fn();
+        window.addEventListener(PDF_DRAWINGS_CHANGED_EVENT, changed);
+        try {
+            render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            const page = await screen.findByTestId("companion-pdf-page-1");
+            box(page, 200, 400);
+            fireEvent.click(screen.getByTestId("pdf-draw-toggle"));
+            fireEvent.click(screen.getByTestId("pdf-draw-eraser"));
+            expect(screen.getByTestId("pdf-draw-eraser").getAttribute("aria-pressed")).toBe("true");
+            expect(screen.getByTestId("pdf-draw-eraser").getAttribute("title")).toContain("擦除");
+            expect(screen.getByTestId("pdf-draw-line").getAttribute("title")).toBe("画线");
+            expect(screen.getByTestId("pdf-draw-undo").getAttribute("title")).toBe("撤销上一笔");
+            expect((screen.getByTestId("pdf-draw-color-yellow") as HTMLButtonElement).disabled).toBe(true);
+            const layer = screen.getByTestId("pdf-drawing-layer-1");
+            expect(layer.getAttribute("class")).toContain("companion-pdf-drawings--eraser");
+            box(layer, 200, 400);
+
+            // The marquee covers the local line and the host box, but not the
+            // local box on the lower right.
+            fireEvent.mouseDown(layer, { button: 0, clientX: 0, clientY: 0 });
+            fireEvent.mouseMove(window, { clientX: 70, clientY: 130 });
+            await waitFor(() => expect(screen.getByTestId("pdf-erase-preview-1")).toBeTruthy());
+            await waitFor(() => expect(layer.querySelector("[data-drawing-id='d_line']")?.getAttribute("opacity")).toBe("0.35"));
+            expect(layer.querySelector("[data-drawing-id='d_host']")?.getAttribute("opacity")).toBeNull();
+            fireEvent.mouseUp(window);
+            const saved = loadPdfDrawings("C:/docs/Paper.PDF").map((item) => item.id).sort();
+            // The host's drawing is not ours to erase; the untouched box stays.
+            expect(saved).toEqual(["d_box", "d_host"]);
+            expect(changed).toHaveBeenCalledTimes(1);
+            expect(screen.queryByTestId("pdf-erase-preview-1")).toBeNull();
+            expect(layer.querySelector("[data-drawing-id='d_line']")).toBeNull();
+            expect(layer.querySelector("[data-drawing-id='d_box']")).toBeTruthy();
+            expect(layer.querySelector("[data-drawing-id='d_host']")).toBeTruthy();
+
+            // An empty marquee, or a click without a drag, erases nothing.
+            fireEvent.mouseDown(layer, { button: 0, clientX: 170, clientY: 20 });
+            fireEvent.mouseMove(window, { clientX: 190, clientY: 60 });
+            fireEvent.mouseUp(window);
+            expect(loadPdfDrawings("C:/docs/Paper.PDF").map((item) => item.id).sort()).toEqual(["d_box", "d_host"]);
+            expect(changed).toHaveBeenCalledTimes(1);
+            fireEvent.mouseDown(layer, { button: 0, clientX: 130, clientY: 250 });
+            fireEvent.mouseUp(window);
+            expect(loadPdfDrawings("C:/docs/Paper.PDF").map((item) => item.id).sort()).toEqual(["d_box", "d_host"]);
+            expect(changed).toHaveBeenCalledTimes(1);
+
+            // The same button leaves the eraser and returns to the pen.
+            fireEvent.click(screen.getByTestId("pdf-draw-eraser"));
+            expect(screen.getByTestId("pdf-draw-eraser").getAttribute("aria-pressed")).toBe("false");
+            expect(screen.getByTestId("pdf-draw-line").getAttribute("aria-pressed")).toBe("true");
+            expect((screen.getByTestId("pdf-draw-color-yellow") as HTMLButtonElement).disabled).toBe(false);
+        } finally {
+            window.removeEventListener(PDF_DRAWINGS_CHANGED_EVENT, changed);
+        }
     });
 
     it("keeps a dragged translation in place when the card re-renders", async () => {

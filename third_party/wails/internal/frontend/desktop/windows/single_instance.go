@@ -22,6 +22,7 @@ type COPYDATASTRUCT struct {
 // WMCOPYDATA_SINGLE_INSTANCE_DATA we define our own type for WM_COPYDATA message
 const WMCOPYDATA_SINGLE_INSTANCE_DATA = 1542
 
+// SendMessage hands the launch arguments to the primary instance.
 func SendMessage(hwnd w32.HWND, data string) {
 	arrUtf16, _ := syscall.UTF16FromString(data)
 
@@ -31,6 +32,17 @@ func SendMessage(hwnd w32.HWND, data string) {
 	pCopyData.lpData = uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(data)))
 
 	w32.SendMessage(hwnd, w32.WM_COPYDATA, 0, uintptr(unsafe.Pointer(pCopyData)))
+}
+
+// exitProcessNoDetach ends a rejected second instance without running
+// DLL_PROCESS_DETACH handlers. An injected graphics hook (e.g. OBS
+// graphics-hook) can block the loader's detach path, which would leave this
+// process alive with no window and no tray icon.
+func exitProcessNoDetach(code int) {
+	if h, err := syscall.GetCurrentProcess(); err == nil {
+		_ = syscall.TerminateProcess(h, uint32(code))
+	}
+	os.Exit(code)
 }
 
 // SetupSingleInstance single instance Windows app
@@ -65,7 +77,7 @@ func SetupSingleInstance(uniqueId string) {
 
 				SendMessage(hwnd, string(serialized))
 				// exit second instance of app after sending message
-				os.Exit(0)
+				exitProcessNoDetach(0)
 			}
 			// if we got any other unknown error we will just start new application instance
 		}

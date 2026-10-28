@@ -70,6 +70,9 @@
     contentAuditConfigSaved: { zh: '\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5df2\u4fdd\u5b58', en: 'Content audit config saved' },
     saveContentAuditConfigFailed: { zh: '\u4fdd\u5b58\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Save content audit config failed: ' },
     smartRouteAllEnabled: { zh: '\u5df2\u5f00\u542f\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route enabled for all users' },
+    lastLoginLabel: { zh: '\u6700\u540e\u767b\u5f55', en: 'Last login' },
+    noLoginRecord: { zh: '\u6682\u65e0\u767b\u5f55\u8bb0\u5f55', en: 'No login record' },
+    unknownPlatform: { zh: '\u672a\u77e5\u5e73\u53f0', en: 'Unknown platform' },
     unbindUser: { zh: '\u5220\u9664\u7ed1\u5b9a', en: 'Remove Binding' },
     unbindConfirm: { zh: '\u786e\u8ba4\u5220\u9664 {email} \u7684 Hub \u7ed1\u5b9a\u5417\uff1f\u8fd9\u4f1a\u540c\u65f6\u6e05\u7406\u8be5\u7528\u6237\u7684\u673a\u5668\u548c IM \u7ed1\u5b9a\u3002', en: 'Remove Hub binding for {email}? This also clears the user machines and IM bindings.' },
     unbindSuccess: { zh: '\u5df2\u5220\u9664 {email} \u7684 Hub \u7ed1\u5b9a', en: 'Removed Hub binding for {email}' },
@@ -232,6 +235,39 @@
     return lines.join('&#10;');
   }
 
+  function formatClientPlatform(platform) {
+    var raw = String(platform || '').trim();
+    if (!raw) return '';
+    var p = raw.toLowerCase();
+    if (p === 'windows' || p === 'win32' || p === 'win') return 'Windows';
+    if (p === 'darwin' || p === 'mac' || p === 'macos') return 'macOS';
+    if (p === 'linux') return 'Linux';
+    if (p === 'android') return 'Android';
+    if (p === 'ios') return 'iOS';
+    if (p === 'mobile') return 'Mobile';
+    if (p === 'unknown') return gt('unknownPlatform');
+    return raw;
+  }
+
+  function formatLastLoginTime(value) {
+    var date = new Date(value || '');
+    return isNaN(date.getTime()) ? '' : date.toLocaleString();
+  }
+
+  function renderBoundUserLastLogin(item) {
+    var platform = formatClientPlatform(item && item.last_login_platform);
+    var version = String(item && item.last_login_app_version || '').trim();
+    var client = [platform, version].filter(Boolean).join(' \u00b7 ');
+    var hasRecord = !!(item && (item.last_login_platform || item.last_login_app_version || item.last_login_at));
+    var label = gt('lastLoginLabel');
+    var value = client || gt(hasRecord ? 'unknownPlatform' : 'noLoginRecord');
+    var parts = [label + ': ' + value];
+    var when = formatLastLoginTime(item && item.last_login_at);
+    if (when) parts.push(when);
+    var title = parts.join(' | ');
+    return '<div class="item-meta" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)" title="' + escapeHtml(title) + '">' + escapeHtml(label) + ': ' + escapeHtml(value) + '</div>';
+  }
+
   function formatCreditsValue(value) {
     var n = Number(value || 0);
     if (!Number.isFinite(n)) n = 0;
@@ -318,6 +354,22 @@
       + '</div>';
   }
 
+  // Go store structs marshal PascalCase (no json tags); the templates read camelCase.
+  function normalizeListItems(items) {
+    return (items || []).map(function(item) {
+      if (!item || typeof item !== 'object') return item;
+      const out = {};
+      for (const key in item) {
+        if (Object.prototype.hasOwnProperty.call(item, key)) {
+          out[key] = item[key];
+          const lower = key.charAt(0).toLowerCase() + key.slice(1);
+          if (!Object.prototype.hasOwnProperty.call(out, lower)) out[lower] = item[key];
+        }
+      }
+      return out;
+    });
+  }
+
   global.renderBlockedEmails = function renderBlockedEmails(items) {
     document.getElementById('blockedCountHero').textContent = String(items.length);
     const root = document.getElementById('blockedEmails');
@@ -330,7 +382,7 @@
         + '<div style="display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(0,2fr) auto;gap:10px;align-items:center">'
         + '<div style="min-width:0"><div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.email) + '</div></div>'
         + '<div class="item-meta" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.reason || tr('noReason')) + '</div>'
-        + '<span class="badge danger" style="padding:4px 8px;font-size:10px">' + escapeHtml(tr('addBlock')) + '</span>'
+        + '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 9px" data-email="' + escapeHtml(String(item.email || '')) + '" onclick="removeBlockedEmail(this.dataset.email)">' + escapeHtml(tr('deleteBlockedLabel')) + '</button>'
         + '</div></div>';
     }).join('') + '</div>';
   };
@@ -408,6 +460,7 @@
           + '</div>'
           + renderCreditsSummary(item)
           + '<div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(item.sn || tr('na')) + '</div>'
+          + renderBoundUserLastLogin(item)
           + '</div></div>';
       }).join('');
       return '<div style="grid-column:1 / -1;margin-top:4px"><div class="item-title" style="font-size:12px;margin-bottom:8px">' + escapeHtml(governanceUserTypeLabel(type)) + ' (' + list.length + ')</div><div class="user-grid-wrap" style="' + gridStyle + '">' + cards + '</div></div>';
@@ -570,10 +623,27 @@
     }
   };
 
+  global.removeBlockedEmail = async function removeBlockedEmail(email) {
+    email = String(email || '').trim();
+    if (!email) return;
+    if (!confirm(tr('deleteBlockedLabel') + ': ' + email)) return;
+    try {
+      await api('/api/admin/blocklist/' + encodeURIComponent(email), { method: 'DELETE' });
+      const msg = tr('blockedRemoved');
+      setOutput(msg);
+      showToast(msg, 'success');
+      await global.loadBlockedEmails();
+    } catch (err) {
+      const msg = tr('blockedRemoveFailed', { error: err.message });
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
+
   global.loadBlockedEmails = async function loadBlockedEmails() {
     try {
       const data = await api('/api/admin/blocklist');
-      global.renderBlockedEmails(data.blocked_emails || []);
+      global.renderBlockedEmails(normalizeListItems(data.blocked_emails || []));
     } catch (err) {
       setOutput(tr('blockedLoadFailed', { error: err.message }));
     }
@@ -617,7 +687,7 @@
   global.loadInvites = async function loadInvites() {
     try {
       const data = await api('/api/admin/invites');
-      global.renderInvites(data.invites || []);
+      global.renderInvites(normalizeListItems(data.invites || []));
     } catch (err) {
       setOutput(tr('inviteLoadFailed', { error: err.message }));
     }

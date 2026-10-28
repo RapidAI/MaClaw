@@ -36,6 +36,10 @@ func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T)
 		{"role": "assistant", "content": "这是摘要。", "reasoning_content": "先看标题"},
 	})
 	highlights := `[{"id":"m1","page":1,"color":"pink","rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}],"text":"方法"}]`
+	chatMarks := `[{"message":1,"color":"green","start":0,"end":2,"text":"摘要"}]`
+	annotations := `[{"id":"a1","kind":"annotation","text":"方法","translation":"这里要复核","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]}]`
+	drawings := `[{"id":"d1","page":1,"color":"blue","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`
+	exportPayload := `{"highlights":` + highlights + `,"chatMarks":` + chatMarks + `,"annotations":` + annotations + `,"drawings":` + drawings + `}`
 
 	previous := fileCompanionSaveProjectDialog
 	defer func() { fileCompanionSaveProjectDialog = previous }()
@@ -46,7 +50,7 @@ func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T)
 		}
 		return dest, nil
 	}
-	written, err := app.FileCompanionExportProject(source, highlights)
+	written, err := app.FileCompanionExportProject(source, exportPayload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +97,13 @@ func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T)
 	var marks []fileCompanionProjectMark
 	if err := json.Unmarshal(imported.Highlights, &marks); err != nil || len(marks) != 1 || marks[0].Color != "pink" {
 		t.Fatalf("restored highlights: %s %v", imported.Highlights, err)
+	}
+	if len(imported.ChatMarks) == 0 || len(imported.Annotations) == 0 || len(imported.Drawings) == 0 {
+		t.Fatalf("restored marks: chat=%s annotations=%s drawings=%s", imported.ChatMarks, imported.Annotations, imported.Drawings)
+	}
+	var restoredDrawings []fileCompanionDrawing
+	if err := json.Unmarshal(imported.Drawings, &restoredDrawings); err != nil || len(restoredDrawings) != 1 || restoredDrawings[0].Tool != "line" {
+		t.Fatalf("restored drawings: %s %v", imported.Drawings, err)
 	}
 }
 

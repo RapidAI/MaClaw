@@ -149,10 +149,14 @@ func (h *NotificationHandler) HandleListNotifications(w http.ResponseWriter, r *
 		Category: category,
 		Offset:   offset,
 		Limit:    limit,
-		// The admin console manages admin-created notices. Reading-group
-		// invitations are per-reader delivery rows and would leak group
-		// membership into that list.
-		ExcludeSources: []string{notification.SourceCompanionGroupInvite},
+		// The admin console manages admin-created notices. Share delivery rows
+		// are raised by the companion module and must stay out of that list.
+		ExcludeSources: []string{
+			notification.SourceCompanionGroupInvite,
+			notification.SourceCompanionShare,
+			notification.SourceCompanionHostTransfer,
+			notification.SourceCompanionHostTransferNotice,
+		},
 	}
 
 	notifications, err := h.svc.ListNotifications(r.Context(), filter)

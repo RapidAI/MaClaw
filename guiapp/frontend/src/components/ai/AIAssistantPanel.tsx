@@ -27,7 +27,7 @@ import { CodingConflictLogStrip, CodingExecutionPlanCard } from "./aiCodingWorkb
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
 import { useAIAssistantVoiceControls } from "./useAIAssistantVoiceControls";
-import { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX, useAssistantOutputScroll } from "./useAssistantOutputScroll";
+import { useAssistantOutputScroll } from "./useAssistantOutputScroll";
 import { useConversationViewArchive } from "./useConversationViewArchive";
 import { useNewTaskGuideDraft } from "./useNewTaskGuideDraft";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
@@ -105,7 +105,7 @@ import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
-import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
+import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, codingChecklistAllDone, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
@@ -115,7 +115,7 @@ import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
 import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTab, cloudWorkspaceRevealMatchesTab, ensureCloudWorkspaceLeaseBeforeSend, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, resolveRemoteWorkspaceDisplay, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
-import { EVENT_EXPERT_TASK_DELETED, EVENT_EXPERT_TASK_RETIRED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED } from "../../constants/events";
+import { EVENT_EXPERT_TASK_DELETED, EVENT_EXPERT_TASK_RETIRED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED, EVENT_PROJECT_TASK_HISTORY_UPDATED } from "../../constants/events";
 import { useProjectTaskActivateEvent } from "./useProjectTaskActivateEvent";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
@@ -152,12 +152,44 @@ import { SaveTaskDialog } from "./SaveTaskDialog";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 const EMPTY_PROGRESS_MESSAGES: ChatMessage[] = [];
 
+/** One interactive approval the panel still owes an answer to. */
+type PendingScopeApproval = {
+    id: string;
+    tool: string;
+    path: string;
+    projectPath: string;
+    tabProject: string;
+    directory: string;
+    timeoutSeconds: number;
+    /** Timeout left when the panel adopted an already-pending request. */
+    remainingSeconds?: number;
+    kind: string;
+    message: string;
+    autoAllow: boolean;
+    maintenance: boolean;
+};
+
 // Length + a short tail sample of a streaming text field: O(1) to build and
 // changes on every append (the length grows). Used for the live streaming
 // tail's render-cache key, where copying the whole text every 33ms flush
 // dominated the frame budget on long replies.
 function liveTextFingerprint(text: string | undefined): string {
     return text ? `${text.length}:${text.slice(-48)}` : '';
+}
+
+// The interactive cards are drawn from the message, so their content belongs
+// in every render-cache key that decides whether to rebuild the bubble. A
+// final round can keep the streamed text and only add an approval/question
+// card; a key without the card reuses the pre-card node and the buttons never
+// appear. Commands are included because a re-issued card can keep the same
+// option count with different choices.
+function replyCardFingerprint(msg: ChatMessage): string {
+    // Most messages carry no card; keep the common render path allocation-free.
+    if (!msg.actions?.length && !msg.confirmation && !msg.unfinishedSlot) return '';
+    const actions = msg.actions?.map(action => `${action.label}>${action.command}>${action.style ?? ''}`).join(',') ?? '';
+    const confirmation = msg.confirmation ? `${msg.confirmation.id || ''}:${msg.confirmation.status || ''}` : '';
+    const slot = msg.unfinishedSlot ? `${msg.unfinishedSlot.slotID || ''}:${msg.unfinishedSlot.status || ''}:${msg.unfinishedSlot.actions?.length ?? 0}` : '';
+    return `${actions}|${confirmation}|${slot}`;
 }
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
@@ -394,16 +426,49 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }).catch(() => { /* ignore */ });
         return () => { if (typeof off === "function") off(); };
     }, []);
-    // SubAgent scope approval: interactive confirmation when accessing paths outside project
-    const [scopeApprovalPending, setScopeApprovalPending] = useState<{ id: string; tool: string; path: string; projectPath: string; tabProject: string; directory: string; timeoutSeconds: number; kind: string; message: string; autoAllow: boolean; maintenance: boolean } | null>(null);
+    // SubAgent scope / commit approval: interactive confirmation when a call
+    // exceeds its scope. Two task tabs can each be blocked on an approval at
+    // the same time, so requests queue: overwriting the visible one left the
+    // first turn blocked forever with no prompt on screen.
+    const [scopeApprovalPending, setScopeApprovalPending] = useState<PendingScopeApproval | null>(null);
+    const scopeApprovalPendingRef = useRef<PendingScopeApproval | null>(null);
+    scopeApprovalPendingRef.current = scopeApprovalPending;
+    const scopeApprovalQueuedRef = useRef<PendingScopeApproval[]>([]);
     const [scopeApprovalCountdown, setScopeApprovalCountdown] = useState(0);
+    // Drop one request. Dropping the head promotes the next one together with
+    // its own countdown, in the same update, so a queued prompt never inherits
+    // the previous window (or auto-dismisses on arrival).
+    const dropScopeApproval = useCallback((approvalID: string) => {
+        if (!approvalID) return;
+        const head = scopeApprovalPendingRef.current;
+        if (head && head.id !== approvalID) {
+            scopeApprovalQueuedRef.current = scopeApprovalQueuedRef.current.filter(item => item.id !== approvalID);
+            return;
+        }
+        const [next, ...rest] = scopeApprovalQueuedRef.current;
+        scopeApprovalQueuedRef.current = rest;
+        scopeApprovalPendingRef.current = next || null;
+        setScopeApprovalPending(next || null);
+        setScopeApprovalCountdown(next ? next.remainingSeconds ?? next.timeoutSeconds : 0);
+    }, []);
+    const enqueueScopeApproval = useCallback((request: PendingScopeApproval) => {
+        if (scopeApprovalPendingRef.current) {
+            if (!scopeApprovalQueuedRef.current.some(item => item.id === request.id)) {
+                scopeApprovalQueuedRef.current = [...scopeApprovalQueuedRef.current, request];
+            }
+            return;
+        }
+        scopeApprovalPendingRef.current = request;
+        setScopeApprovalPending(request);
+        setScopeApprovalCountdown(request.remainingSeconds ?? request.timeoutSeconds);
+    }, []);
     useEffect(() => {
         const off = EventsOn("subagent-scope-approval", (payload: unknown) => {
             if (!payload || typeof payload !== "object") return;
             const data = payload as Record<string, unknown>;
             if (!data.id) return;
             const timeoutSec = typeof data.timeout_seconds === "number" ? data.timeout_seconds : 10;
-            setScopeApprovalPending({
+            enqueueScopeApproval({
                 id: data.id as string,
                 tool: (data.tool as string) || "",
                 path: (data.path as string) || "",
@@ -416,10 +481,44 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 autoAllow: typeof data.auto_allow === "boolean" ? data.auto_allow : true,
                 maintenance: data.maintenance === true,
             });
-            setScopeApprovalCountdown(timeoutSec);
         });
         return () => { if (typeof off === "function") off(); };
-    }, []);
+    }, [enqueueScopeApproval]);
+    // A webview reload or crash recovery drops this panel's live prompt while
+    // the backend keeps waiting on the answer. Adopt whatever is still pending;
+    // ids already shown are deduped by the queue.
+    useEffect(() => {
+        let cancelled = false;
+        void (async () => {
+            try {
+                const rows = await ListPendingScopeApprovals();
+                if (cancelled || !Array.isArray(rows)) return;
+                for (const row of rows) {
+                    if (!row || typeof row !== "object" || !row.id) continue;
+                    const timeoutSec = Number(row.timeout_seconds) || 0;
+                    const remaining = Number(row.remaining_seconds);
+                    enqueueScopeApproval({
+                        id: String(row.id),
+                        tool: String(row.tool || ""),
+                        path: String(row.path || ""),
+                        projectPath: String(row.project_path || ""),
+                        tabProject: visibleCodingProjectRef.current,
+                        directory: String(row.directory || ""),
+                        timeoutSeconds: timeoutSec,
+                        // A restored request keeps the window it has left. Zero
+                        // means its backend timer is already due, so the head
+                        // must not restart a full countdown for it.
+                        remainingSeconds: Number.isFinite(remaining) ? Math.max(0, Math.floor(remaining)) : undefined,
+                        kind: String(row.kind || ""),
+                        message: String(row.message || ""),
+                        autoAllow: row.auto_allow === true,
+                        maintenance: row.maintenance === true,
+                    });
+                }
+            } catch { /* host without the binding */ }
+        })();
+        return () => { cancelled = true; };
+    }, [enqueueScopeApproval]);
     // Countdown timer for scope approval auto-allow.
     useEffect(() => {
         if (!scopeApprovalPending || scopeApprovalCountdown <= 0) return;
@@ -431,13 +530,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Auto-dismiss 1 second before backend timeout to avoid a race where the user clicks "deny" after auto-allow.
     useEffect(() => {
         if (scopeApprovalShouldAutoDismiss(scopeApprovalPending, scopeApprovalCountdown)) {
-            setScopeApprovalPending(null);
+            dropScopeApproval(scopeApprovalPending?.id || "");
         }
-    }, [scopeApprovalPending, scopeApprovalCountdown]);
+    }, [dropScopeApproval, scopeApprovalPending, scopeApprovalCountdown]);
+    // The backend withdraws a pending approval when its task is cancelled or the
+    // loop exits. Drop the modal with it: its buttons would resolve nothing.
+    useEffect(() => {
+        const off = EventsOn("subagent-scope-approval-resolved", (payload: unknown) => {
+            const id = payload && typeof payload === "object"
+                ? String((payload as Record<string, unknown>).id || "").trim()
+                : "";
+            if (!id) return;
+            dropScopeApproval(id);
+        });
+        return () => { if (typeof off === "function") off(); };
+    }, [dropScopeApproval]);
     const handleScopeApprovalResolve = useCallback(async (decision: ScopeApprovalDecision) => {
-        const pending = scopeApprovalPending;
-        setScopeApprovalPending(null);
+        const pending = scopeApprovalPendingRef.current;
         if (!pending) return;
+        dropScopeApproval(pending.id);
         try {
             const { ResolveScopeApproval } = await import("../../../wailsjs/go/main/App");
             await ResolveScopeApproval(pending.id, decision);
@@ -457,7 +568,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
             }
         } catch { /* expired or already resolved */ }
-    }, [scopeApprovalPending]);
+    }, [dropScopeApproval]);
     const finishSkillRecordingRequest = useCallback(() => {
         skillRecBusyRef.current = false;
         setSkillRecordingBusy(false);
@@ -2775,13 +2886,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (projectStreamHistoryRef.current?.tabId !== currentTabId) projectStreamHistoryRef.current = null;
                 setProjectTabMessages((restored.history || []) as ChatMessage[]);
                 setLocalDraftInputValue(restored.inputText || "");
-                requestAnimationFrame(() => {
-                    const el = outputContainerRef.current;
-                    if (!el || !restored.scrollTop) return;
-                    el.scrollTop = restored.scrollTop;
-                    userScrolledUpRef.current =
-                        el.scrollHeight - el.scrollTop - el.clientHeight > ASSISTANT_OUTPUT_NEAR_BOTTOM_PX;
-                });
             } else {
                 projectStreamHistoryRef.current = null; setProjectTabMessages([]);
                 setLocalDraftInputValue("");
@@ -2789,6 +2893,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } else if (activeTab.id === "local") {
             setLocalDraftInputValue(draftInputValue);
         }
+        // Switching tabs always re-anchors the transcript on the newest tail.
+        // A saved scrollTop clamps against re-laid-out content and can strand
+        // the view mid-conversation with the follow latch set, so the restore
+        // is never applied. The rAF waits for the restored history to commit;
+        // the settle frames cover late growth, and force clears the
+        // scrolled-up latch carried over from the tab we left.
+        requestAnimationFrame(() => scrollToBottom("auto", true, 2));
         // Compose mode is session-UI state, not per-tab draft — clear on switch.
         setComposeAction(null);
         alignPreviewBodyFocusRef.current(codePreviewStateRef.current);
@@ -3798,6 +3909,46 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             else EventsOff(EVENT_EXPERT_TASK_RETIRED);
         };
     }, [discardDeletedExpertTabs, discardDeletedProjectTabs, getTabs, hydrateClosedExpertTabHistory]);
+    // A task transfer replaces the destination task's durable transcript from
+    // outside its tab: the cloud task is created (and its tab opened) before
+    // the backend copies the source chat over. Re-hydrate only a tab that is
+    // still blank so an active conversation is never overwritten by the
+    // backend snapshot.
+    useEffect(() => {
+        const off = EventsOn(EVENT_PROJECT_TASK_HISTORY_UPDATED, (projectPath: string) => {
+            const target = normalizeProjectSessionPath(typeof projectPath === "string" ? projectPath : "");
+            if (!target) return;
+            const targetTabs = getTabs().filter(candidate => candidate.type === "project" && normalizeProjectSessionPath(candidate.projectPath) === target);
+            for (const tab of targetTabs) {
+                if (!tab.id || clearedProjectTabIdsRef.current.has(tab.id)) continue;
+                const state = getTabState(tab.id);
+                if (hasRestorableProjectConversation(withoutProjectContextMessages(state?.history))) continue;
+                projectConversationHydrationGenerationByTabIdRef.current.set(
+                    tab.id,
+                    (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) + 1,
+                );
+                projectConversationHydrationByTabIdRef.current.delete(tab.id);
+                void (async () => {
+                    try {
+                        const restored = await loadRestoredProjectConversationHistory(target);
+                        if (restored.length === 0) return;
+                        if (!getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && normalizeProjectSessionPath(openTab.projectPath) === target)) return;
+                        const existing = getTabState(tab.id);
+                        if (hasRestorableProjectConversation(withoutProjectContextMessages(existing?.history))) return;
+                        const nextHistory = mergeChatMessages(withoutProjectContextMessages(existing?.history), restored);
+                        saveTabState(tab.id, { ...existing, history: nextHistory });
+                        if (activeTabIdRef.current === tab.id) setProjectTabMessages(nextHistory);
+                    } catch (error) {
+                        console.warn("[AIAssistantPanel] failed to restore transferred task history", { projectPath: target, error });
+                    }
+                })();
+            }
+        });
+        return () => {
+            if (typeof off === "function") off();
+            else EventsOff(EVENT_PROJECT_TASK_HISTORY_UPDATED);
+        };
+    }, [getTabState, getTabs, saveTabState]);
     // Keep the AI panel task switcher consistent with the sidebar task list:
     // any open project tab that NO task-list row claims (e.g. its delete/hide
     // event fired while the GUI was not listening) is reaped by the tab
@@ -6079,7 +6230,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     : -1;
                 const replyCacheId = `${msg.id}\0reply`;
                 // The live tail key fingerprints the content instead of copying it.
-                const replyKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? "")}|${fieldKey}|${shownLiveLabel ?? ""}|${messageOwnsLive ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}`;
+                // Cards are part of the bubble: a final round can keep the
+                // streamed text and only add actions or a question card, and a
+                // key without them reuses the pre-card node.
+                const replyKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? "")}|${fieldKey}|${shownLiveLabel ?? ""}|${messageOwnsLive ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${replyCardFingerprint(msg)}`;
                 const replyCached = cache.get(replyCacheId);
                 const reply = replyCached?.contentKey === replyKey ? replyCached.node : renderMessage(
                     suppressWorkflowReviewActions(msg),
@@ -6136,7 +6290,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const reasoningFingerprint = msg.reasoning
                 ? `${msg.reasoning.length}:${msg.reasoning.slice(-48)}`
                 : '';
-            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
+            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${replyCardFingerprint(msg)}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -6327,6 +6481,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             <KnowledgeDialog open={panelActive && knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
             {panelActive && scopeApprovalPending && (
                 <ScopeApprovalDialog
+                    // One instance per request: the dialog latches its own
+                    // "already answered" guard, so reusing it for the next
+                    // queued approval would leave its buttons inert.
+                    key={scopeApprovalPending.id}
                     lang={lang}
                     approval={scopeApprovalPending}
                     isHighRisk={scopeApprovalIsHighRisk}

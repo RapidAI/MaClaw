@@ -47,6 +47,31 @@ func seedCloudWorkspaceInstanceSession(hubURL, machineToken, machineID string) {
 	cloudWorkspaceSessions.Unlock()
 }
 
+func TestCloudWorkspaceSharedWorkspaceUnmarshalKeepsOuterFields(t *testing.T) {
+	const raw = `{"enabled":true,"shared":[{
+		"id":"cws_shared","name":"工作区名","task_name":"所有者的任务名",
+		"owner_user_id":"u1","owner_email":"owner@example.com","share_permission":"write",
+		"lease":{"held":true,"machine_id":"m1","machine_name":"pc","is_self":false,"expires_at":"2099-01-01T00:00:00Z"}
+	}]}`
+	var ent CloudWorkspaceEntitlement
+	if err := json.Unmarshal([]byte(raw), &ent); err != nil {
+		t.Fatalf("unmarshal entitlement: %v", err)
+	}
+	if len(ent.Shared) != 1 {
+		t.Fatalf("shared rows=%d", len(ent.Shared))
+	}
+	got := ent.Shared[0]
+	if got.ID != "cws_shared" || got.Name != "工作区名" || got.TaskName != "所有者的任务名" {
+		t.Fatalf("embedded fields=%+v", got.CloudWorkspaceEntitlementWorkspace)
+	}
+	if got.OwnerUserID != "u1" || got.OwnerEmail != "owner@example.com" || got.SharePermission != "write" {
+		t.Fatalf("outer fields lost: owner=%q/%q permission=%q", got.OwnerUserID, got.OwnerEmail, got.SharePermission)
+	}
+	if !got.LeaseInUse || got.LeaseHolder != "pc" {
+		t.Fatalf("lease projection lost: in_use=%v holder=%q", got.LeaseInUse, got.LeaseHolder)
+	}
+}
+
 func TestCloudWorkspaceEntitlementDisabledDoesNotMarkHubUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != cloudWorkspaceEntitlementPath {

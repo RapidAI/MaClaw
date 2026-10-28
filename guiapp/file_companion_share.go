@@ -63,7 +63,7 @@ func normalizeFileCompanionContact(value string) string {
 }
 
 func (a *App) writeFileCompanionShareZip(source, highlightsJSON string) (string, error) {
-	highlights, err := fileCompanionCleanHighlights(highlightsJSON)
+	highlights, chatMarks, annotations, drawings, err := fileCompanionSplitSharePayload(highlightsJSON)
 	if err != nil {
 		return "", err
 	}
@@ -78,7 +78,7 @@ func (a *App) writeFileCompanionShareZip(source, highlightsJSON string) (string,
 		_ = os.Remove(name)
 		return "", errors.New("无法保存分享")
 	}
-	if err := writeFileCompanionProject(name, source, highlights, messages, paperPath, paperTurn); err != nil {
+	if err := writeFileCompanionProject(name, source, highlights, chatMarks, annotations, drawings, messages, paperPath, paperTurn); err != nil {
 		_ = os.Remove(name)
 		return "", err
 	}
@@ -100,22 +100,28 @@ func fileCompanionShareDocumentName(fallback string, manifest fileCompanionProje
 // until commit. If the transcript cannot be installed, the previous document
 // is put back.
 type fileCompanionShareStage struct {
-	dir        string
-	token      string
-	name       string
-	document   string
-	highlights json.RawMessage
-	messages   []FileCompanionMessage
-	paper      []byte
-	paperTurn  int
-	project    bool
+	dir         string
+	token       string
+	name        string
+	document    string
+	highlights  json.RawMessage
+	chatMarks   json.RawMessage
+	annotations json.RawMessage
+	drawings    json.RawMessage
+	messages    []FileCompanionMessage
+	paper       []byte
+	paperTurn   int
+	project     bool
 }
 
 type fileCompanionShareInstall struct {
-	path       string
-	highlights json.RawMessage
-	messages   []FileCompanionMessage
-	project    bool
+	path        string
+	highlights  json.RawMessage
+	chatMarks   json.RawMessage
+	annotations json.RawMessage
+	drawings    json.RawMessage
+	messages    []FileCompanionMessage
+	project     bool
 }
 
 func (a *App) fileCompanionPullStageRoot() string {
@@ -179,6 +185,9 @@ func (a *App) stageFileCompanionShare(token, fallbackName string, raw []byte) (*
 	}
 	if project {
 		stage.highlights = manifest.Highlights
+		stage.chatMarks = manifest.ChatMarks
+		stage.annotations = manifest.Annotations
+		stage.drawings = manifest.Drawings
 		stage.messages = manifest.Messages
 		stage.paper = paper
 		stage.paperTurn = manifest.PaperTurn
@@ -275,10 +284,13 @@ func (a *App) publishStagedFileCompanionShareLocked(stage *fileCompanionShareSta
 		highlights = json.RawMessage("[]")
 	}
 	return fileCompanionShareInstall{
-		path:       identity,
-		highlights: highlights,
-		messages:   stage.messages,
-		project:    stage.project,
+		path:        identity,
+		highlights:  highlights,
+		chatMarks:   stage.chatMarks,
+		annotations: stage.annotations,
+		drawings:    stage.drawings,
+		messages:    stage.messages,
+		project:     stage.project,
 	}, nil
 }
 
@@ -331,9 +343,27 @@ func (a *App) commitLockedFileCompanionShare(stage *fileCompanionShareStage, epo
 	store.Path = installed.path
 	if installed.project {
 		store.Highlights = string(installed.highlights)
+		if installed.chatMarks != nil {
+			store.ChatMarks = string(installed.chatMarks)
+		} else {
+			store.ChatMarks = ""
+		}
+		if installed.annotations != nil {
+			store.Annotations = string(installed.annotations)
+		} else {
+			store.Annotations = ""
+		}
+		if installed.drawings != nil {
+			store.Drawings = string(installed.drawings)
+		} else {
+			store.Drawings = ""
+		}
 	}
 	saved := *store
 	saved.Highlights = ""
+	saved.ChatMarks = ""
+	saved.Annotations = ""
+	saved.Drawings = ""
 	if err := a.upsertFileCompanionCloudLocked(saved); err != nil {
 		return installed, err
 	}
@@ -538,7 +568,17 @@ func (a *App) pullNewerFileCompanionShares(hub, viewer string, items []FileCompa
 	updates := make([]FileCompanionShareUpdate, 0)
 	for i := range items {
 		item := &items[i]
-		if item.Source != "cloud" || item.Mine || item.Token == "" {
+		if item.Source != "cloud" || item.Token == "" {
+			continue
+		}
+		prev, had := previous[item.Token]
+		// A row that just gained the host seat was a participant a moment ago,
+		// so its copy can still be one revision behind the host who handed the
+		// seat over. Download the live project once before this machine starts
+		// uploading it, or the first sync would publish the older revision and
+		// drop what the previous host had already shared.
+		seatGained := item.HostKnown && item.Host && had && !fileCompanionItemIsHost(prev)
+		if fileCompanionItemIsHost(*item) && !seatGained {
 			continue
 		}
 		if len(updates) >= 8 {
@@ -546,15 +586,14 @@ func (a *App) pullNewerFileCompanionShares(hub, viewer string, items []FileCompa
 		}
 		// Capture the generation before the download. Delete and import advance
 		// it under the same lock as their live write, and the commit below
-		// refuses to publish when it moved. A hidden share, or one this
-		// machine already stored at this revision, is not downloaded.
+		// refuses to publish when it moved. A hidden share, or one this machine
+		// already stored at this revision, is not downloaded.
 		epoch, skip := a.fileCompanionSharePullPermit(*item)
 		if skip {
 			continue
 		}
-		prev := previous[item.Token]
 		needs := item.Revision > prev.Revision
-		if item.Path == "" && item.Visibility != "private" {
+		if seatGained || (item.Path == "" && item.Visibility != "private") {
 			needs = true
 		}
 		if !needs {
@@ -631,6 +670,18 @@ func (a *App) pullFileCompanionShare(hub, viewer string, item FileCompanionLibra
 	}
 	if installed.project {
 		update.Highlights = string(installed.highlights)
+		if installed.chatMarks != nil {
+			marks := string(installed.chatMarks)
+			update.ChatMarks = &marks
+		}
+		if installed.annotations != nil {
+			notes := string(installed.annotations)
+			update.Annotations = &notes
+		}
+		if installed.drawings != nil {
+			strokes := string(installed.drawings)
+			update.Drawings = &strokes
+		}
 		messages := installed.messages
 		if messages == nil {
 			messages = []FileCompanionMessage{}
@@ -658,7 +709,7 @@ func (a *App) SyncFileCompanionShare(path, highlights string) (FileCompanionShar
 	if err != nil || info.IsDir() || info.Size() == 0 {
 		return FileCompanionShareResult{}, errors.New("文件无法读取")
 	}
-	shares := a.fileCompanionMineShares(canonical)
+	shares := a.fileCompanionSyncShares(canonical)
 	if len(shares) == 0 {
 		return FileCompanionShareResult{}, errors.New("还没有分享这份文档，无法同步更新")
 	}
@@ -893,11 +944,22 @@ func (a *App) fileCompanionShareByPath(canonical string) (FileCompanionLibraryIt
 	return FileCompanionLibraryItem{}, false
 }
 
-// fileCompanionMineShares returns every cloud share this machine owns for the
-// open file, newest first. A received copy of the same path is not owned.
-// The caller uploads outside the library lock, so the returned rows are the
-// snapshots from this read.
-func (a *App) fileCompanionMineShares(canonical string) []FileCompanionLibraryItem {
+// fileCompanionItemIsHost reports whether this row holds the host seat. A row
+// stored before host transfer existed has no answer from the Hub, and the owner
+// was the host then, so it follows Mine.
+func fileCompanionItemIsHost(item FileCompanionLibraryItem) bool {
+	if item.HostKnown {
+		return item.Host
+	}
+	return item.Mine
+}
+
+// fileCompanionSyncShares returns every cloud share this machine hosts for the
+// open file. Only the host seat uploads the project: after a transfer the
+// admin is a participant and must not overwrite the new host. A plain received
+// copy is not included. The caller uploads outside the library lock, so the
+// returned rows are the snapshots from this read.
+func (a *App) fileCompanionSyncShares(canonical string) []FileCompanionLibraryItem {
 	fileCompanionLibraryMu.Lock()
 	defer fileCompanionLibraryMu.Unlock()
 	items, ok := a.readFileCompanionLibraryLocked()
@@ -908,7 +970,7 @@ func (a *App) fileCompanionMineShares(canonical string) []FileCompanionLibraryIt
 	out := make([]FileCompanionLibraryItem, 0, 1)
 	seen := map[string]bool{}
 	for _, item := range items {
-		if item.Source != "cloud" || !item.Mine || item.Token == "" || seen[item.Token] {
+		if item.Source != "cloud" || !fileCompanionItemIsHost(item) || item.Token == "" || seen[item.Token] {
 			continue
 		}
 		if item.Path != canonical {

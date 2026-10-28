@@ -386,6 +386,143 @@ func TestListUsersHandlerReturnsBoundUsers(t *testing.T) {
 	}
 }
 
+func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	user := &store.User{
+		ID:               "user-last-login-client",
+		TenantID:         store.DefaultTenantID,
+		Email:            "last-login@example.com",
+		SN:               "SN-last-login",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	noClientUser := &store.User{
+		ID:               "user-without-client",
+		TenantID:         store.DefaultTenantID,
+		Email:            "no-client@example.com",
+		SN:               "SN-no-client",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := services.store.Users.Create(ctx, noClientUser); err != nil {
+		t.Fatalf("create user without client: %v", err)
+	}
+	older := now.Add(-2 * time.Hour)
+	newer := now.Add(-2 * time.Minute)
+	// The old machine was renamed recently (fresh UpdatedAt) but its last real
+	// client connect is older; LastSeenAt must win over the rename timestamp.
+	oldUpdatedAt := now.Add(-time.Minute)
+	for _, machine := range []*store.Machine{
+		{
+			ID:               "machine-old-login-client",
+			TenantID:         store.DefaultTenantID,
+			UserID:           user.ID,
+			Platform:         "linux",
+			AppVersion:       "8.0.0.100",
+			MachineTokenHash: "hash-old",
+			Status:           "offline",
+			LastSeenAt:       &older,
+			CreatedAt:        older,
+			UpdatedAt:        oldUpdatedAt,
+		},
+		{
+			ID:               "machine-new-login-client",
+			TenantID:         store.DefaultTenantID,
+			UserID:           user.ID,
+			Platform:         "windows",
+			AppVersion:       "8.1.0.12464",
+			MachineTokenHash: "hash-new",
+			Status:           "online",
+			LastSeenAt:       &newer,
+			CreatedAt:        newer,
+			UpdatedAt:        newer,
+		},
+	} {
+		if err := services.store.Machines.Create(ctx, machine); err != nil {
+			t.Fatalf("create machine %s: %v", machine.ID, err)
+		}
+	}
+
+	listResp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/users", nil, token)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", listResp.Code, listResp.Body.String())
+	}
+	var payload struct {
+		Users []struct {
+			Email               string `json:"email"`
+			LastLoginPlatform   string `json:"last_login_platform"`
+			LastLoginAppVersion string `json:"last_login_app_version"`
+			LastLoginAt         string `json:"last_login_at"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var found bool
+	var noClientFound bool
+	for _, item := range payload.Users {
+		if item.Email == "no-client@example.com" {
+			noClientFound = true
+			if item.LastLoginPlatform != "" || item.LastLoginAppVersion != "" || item.LastLoginAt != "" {
+				t.Fatalf("user without a machine must not report a last login client: %#v", item)
+			}
+			continue
+		}
+		if item.Email != "last-login@example.com" {
+			continue
+		}
+		found = true
+		if item.LastLoginPlatform != "windows" || item.LastLoginAppVersion != "8.1.0.12464" {
+			t.Fatalf("unexpected last login client: %#v body=%s", item, listResp.Body.String())
+		}
+		parsed, err := time.Parse(time.RFC3339, item.LastLoginAt)
+		if err != nil {
+			t.Fatalf("parse last_login_at %q: %v", item.LastLoginAt, err)
+		}
+		if !parsed.Equal(newer.Truncate(time.Second)) {
+			t.Fatalf("last_login_at = %s, want %s", parsed, newer.Truncate(time.Second))
+		}
+	}
+	if !noClientFound {
+		t.Fatalf("user without a machine missing from response: %s", listResp.Body.String())
+	}
+	if !found {
+		t.Fatalf("user missing from response: %s", listResp.Body.String())
+	}
+}
+
+func TestMachineLoginActivityPrefersLastSeenAndFallsBack(t *testing.T) {
+	lastSeen := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	updatedAt := lastSeen.Add(24 * time.Hour)
+	createdAt := lastSeen.Add(-24 * time.Hour)
+
+	withLastSeen := machineLoginActivity(&store.MachineLoginClient{LastSeenAt: &lastSeen, UpdatedAt: updatedAt, CreatedAt: createdAt})
+	if !withLastSeen.Equal(lastSeen) {
+		t.Fatalf("LastSeenAt should win: got %s want %s", withLastSeen, lastSeen)
+	}
+
+	neverConnected := machineLoginActivity(&store.MachineLoginClient{UpdatedAt: updatedAt, CreatedAt: createdAt})
+	if !neverConnected.Equal(updatedAt) {
+		t.Fatalf("UpdatedAt should be the fallback: got %s want %s", neverConnected, updatedAt)
+	}
+
+	empty := machineLoginActivity(&store.MachineLoginClient{CreatedAt: createdAt})
+	if !empty.Equal(createdAt) {
+		t.Fatalf("CreatedAt should be the final fallback: got %s want %s", empty, createdAt)
+	}
+}
+
 func TestListUsersHandlerExcludesSystemLLMUser(t *testing.T) {
 	services := newAdminRouterTestContext(t)
 	token := issueHubAdminToken(t, services.handler)

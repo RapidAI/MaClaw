@@ -38,12 +38,12 @@ const (
 )
 
 var (
-	ErrShareReadOnly           = errors.New("cloud workspace share is read-only")
-	ErrShareSelf               = errors.New("cannot accept your own cloud workspace share")
-	ErrShareRevoked            = errors.New("cloud workspace share is revoked")
-	ErrShareExpired            = errors.New("cloud workspace share has expired")
-	ErrSharePasswordRequired   = errors.New("cloud workspace share password required")
-	ErrSharePasswordInvalid    = errors.New("cloud workspace share password is incorrect")
+	ErrShareReadOnly         = errors.New("cloud workspace share is read-only")
+	ErrShareSelf             = errors.New("cannot accept your own cloud workspace share")
+	ErrShareRevoked          = errors.New("cloud workspace share is revoked")
+	ErrShareExpired          = errors.New("cloud workspace share has expired")
+	ErrSharePasswordRequired = errors.New("cloud workspace share password required")
+	ErrSharePasswordInvalid  = errors.New("cloud workspace share password is incorrect")
 )
 
 // WorkspaceShare is one cloud_workspace_shares row.
@@ -108,6 +108,10 @@ type EntitlementSharedWorkspace struct {
 	OwnerUserID     string `json:"owner_user_id"`
 	OwnerEmail      string `json:"owner_email,omitempty"`
 	SharePermission string `json:"share_permission"`
+	// ownerTenantID is the workspace owner's tenant, which differs from the
+	// recipient's tenant for a cross-tenant share. It selects the sidecar /
+	// binding row that holds the owner's task title.
+	ownerTenantID string
 }
 
 func hashSharePassword(password string) (string, error) {
@@ -541,7 +545,7 @@ func (s *Store) AcceptWorkspaceShare(ctx context.Context, tenantID, userID, toke
 	var permission string
 	err := s.withImmediate(ctx, func(q queryer) error {
 		share, err := scanShare(q.QueryRowContext(ctx, `
-			SELECT ` + shareCols + `
+			SELECT `+shareCols+`
 			FROM cloud_workspace_shares WHERE token = ?`, token))
 		if err != nil {
 			return err
@@ -706,6 +710,7 @@ func (s *Store) ListSharedWithUser(ctx context.Context, tenantID, userID string)
 			},
 			OwnerUserID:     ws.UserID,
 			SharePermission: perm,
+			ownerTenantID:   ws.TenantID,
 		})
 	}
 	return out, rows.Err()
@@ -1003,7 +1008,7 @@ func (s *Store) ClaimWorkspaceShare(ctx context.Context, token string, claim Sha
 	var permission string
 	err = s.withImmediate(ctx, func(q queryer) error {
 		share, err := scanShare(q.QueryRowContext(ctx, `
-			SELECT ` + shareCols + `
+			SELECT `+shareCols+`
 			FROM cloud_workspace_shares WHERE token = ?`, token))
 		if err != nil {
 			return err

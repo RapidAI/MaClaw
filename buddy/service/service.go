@@ -6,9 +6,11 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"strings"
 	"sync"
@@ -29,9 +31,13 @@ type Options struct {
 	ClockRefresh      time.Duration
 	StaleAfter        time.Duration
 	WeatherStaleAfter time.Duration
-	HostName          string
-	HostVersion       string
-	Logf              func(format string, args ...any)
+	// ReadyTimeout bounds the wait for the device hello and for each pet
+	// asset ack. USB CDC buffers a whole burst, so the host paces the asset
+	// transfer on these acks instead of on wall-clock delays.
+	ReadyTimeout time.Duration
+	HostName     string
+	HostVersion  string
+	Logf         func(format string, args ...any)
 }
 
 // DefaultOptions mirrors protocol/spec.json.
@@ -43,6 +49,7 @@ func DefaultOptions() Options {
 		ClockRefresh:      time.Minute,
 		StaleAfter:        60 * time.Second,
 		WeatherStaleAfter: 2 * time.Hour,
+		ReadyTimeout:      2 * time.Second,
 		HostName:          "MaClaw",
 		Logf:              func(string, ...any) {},
 	}
@@ -68,6 +75,9 @@ func (o Options) normalize() Options {
 	if o.WeatherStaleAfter <= 0 {
 		o.WeatherStaleAfter = def.WeatherStaleAfter
 	}
+	if o.ReadyTimeout <= 0 {
+		o.ReadyTimeout = def.ReadyTimeout
+	}
 	if o.HostName == "" {
 		o.HostName = def.HostName
 	}
@@ -92,6 +102,8 @@ type Status struct {
 	MissingGlyphs int       `json:"missing_glyphs,omitempty"`
 	LastError     string    `json:"last_error,omitempty"`
 	DeviceTouch   bool      `json:"device_touch"`
+	// PetReady is true once the device has committed every pet frame.
+	PetReady bool `json:"pet_ready"`
 
 	// Diagnostic fields used by the end-to-end verification: what was sent,
 	// when it was sent, and when the device acknowledged it.
@@ -116,11 +128,18 @@ type Runner struct {
 	weatherAt  time.Time
 	sound      protocol.SoundConfig
 	hasSound   bool
+	petFrames  [][]byte
+	petFrameMS int
+	hasPet     bool
+	petGen     uint64
 	status     Status
 	seq        uint64
 
 	dirty     chan struct{}
 	soundWake chan struct{}
+	petWake   chan struct{}
+	ready     chan struct{}
+	assetAcks chan protocol.AssetAck
 }
 
 // NewRunner builds a runner; call Run to start it.
@@ -130,6 +149,9 @@ func NewRunner(dial Dialer, opts Options) *Runner {
 		opts:      opts.normalize(),
 		dirty:     make(chan struct{}, 1),
 		soundWake: make(chan struct{}, 1),
+		petWake:   make(chan struct{}, 1),
+		ready:     make(chan struct{}, 1),
+		assetAcks: make(chan protocol.AssetAck, 8),
 	}
 }
 
@@ -142,6 +164,34 @@ func (r *Runner) SetSnapshot(s protocol.Snapshot) {
 	r.snapAt = time.Now()
 	r.mu.Unlock()
 	r.wake()
+}
+
+// SetPetAsset stores the animated pet frames (128x128 RGB565+A8) and sends
+// them to the device on every connect and after a change.
+func (r *Runner) SetPetAsset(frames [][]byte, frameMS int) {
+	if len(frames) == 0 || len(frames) > protocol.AssetMaxFrames {
+		return
+	}
+	copied := make([][]byte, 0, len(frames))
+	for _, frame := range frames {
+		if len(frame) != protocol.AssetFrameBytes {
+			return
+		}
+		copied = append(copied, append([]byte(nil), frame...))
+	}
+	if frameMS <= 0 {
+		frameMS = 450
+	}
+	r.mu.Lock()
+	r.petFrames = copied
+	r.petFrameMS = frameMS
+	r.hasPet = true
+	r.petGen++
+	r.mu.Unlock()
+	select {
+	case r.petWake <- struct{}{}:
+	default:
+	}
 }
 
 // SetWeather stores the newest weather snapshot.
@@ -260,6 +310,8 @@ func (r *Runner) session(ctx context.Context, conn io.ReadWriteCloser) error {
 		}
 	}()
 
+	r.drainReady()
+	r.drainAssetAcks()
 	if err := r.write(conn, &protocol.Message{
 		Type:       protocol.TypeHello,
 		Proto:      protocol.Version,
@@ -269,12 +321,48 @@ func (r *Runner) session(ctx context.Context, conn io.ReadWriteCloser) error {
 	}); err != nil {
 		return err
 	}
-	// Full resend after every (re)connect.
+	// A device that just rebooted still has the ROM USB console attached for
+	// a moment; its hello proves the firmware parser is draining lines before
+	// we push sound and asset frames at it.
+	if err := r.waitReady(ctx); err != nil {
+		return err
+	}
+	// Full resend after every (re)connect. A SetPetAsset/SetSoundConfig that
+	// raced with the connect queued a wake; that data is included below, so
+	// drop the redundant wake instead of sending it twice.
 	r.wake()
+	r.drainSoundWake()
 	if r.hasSoundConfig() {
 		if err := r.sendSound(conn); err != nil {
 			return err
 		}
+	}
+
+	// Put the task screen on the device first: the pet transfer is paced on
+	// per-chunk acks and can take a couple of seconds.
+	statePending := true
+	ambientPending := true
+	if err := r.sendState(conn); err != nil {
+		return err
+	}
+	if err := r.sendAmbient(conn); err != nil {
+		return err
+	}
+	if err := r.sendClock(conn); err != nil {
+		return err
+	}
+	statePending = false
+	ambientPending = false
+
+	// The generation guard keeps a SetPetAsset that raced with this connect
+	// from sending the same frames twice.
+	sentPetGen := uint64(0)
+	if r.hasPetAsset() {
+		gen, err := r.sendPetAsset(ctx, conn)
+		if err != nil {
+			return err
+		}
+		sentPetGen = gen
 	}
 
 	heartbeat := time.NewTicker(r.opts.Heartbeat)
@@ -286,9 +374,7 @@ func (r *Runner) session(ctx context.Context, conn io.ReadWriteCloser) error {
 	clock := time.NewTicker(r.opts.ClockRefresh)
 	defer clock.Stop()
 
-	clockPending := true
-	ambientPending := true
-	statePending := true
+	clockPending := false
 
 	for {
 		select {
@@ -306,6 +392,15 @@ func (r *Runner) session(ctx context.Context, conn io.ReadWriteCloser) error {
 			if err := r.sendSound(conn); err != nil {
 				return err
 			}
+		case <-r.petWake:
+			if r.currentPetGen() == sentPetGen {
+				continue
+			}
+			gen, err := r.sendPetAsset(ctx, conn)
+			if err != nil {
+				return err
+			}
+			sentPetGen = gen
 		case <-flush.C:
 			if !r.anyData() {
 				continue
@@ -463,6 +558,167 @@ func (r *Runner) hasSoundConfig() bool {
 	return r.hasSound
 }
 
+func (r *Runner) hasPetAsset() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.hasPet
+}
+
+// sendPetAsset streams every frame in 512-byte base64 chunks. Each chunk is
+// acknowledged by the device before the next one is written: USB CDC happily
+// buffers a whole burst, so wall-clock pacing either overflows the device's RX
+// buffer or crawls at the OS timer granularity.
+func (r *Runner) sendPetAsset(ctx context.Context, conn io.ReadWriteCloser) (uint64, error) {
+	r.mu.Lock()
+	if !r.hasPet {
+		r.mu.Unlock()
+		return 0, nil
+	}
+	frames := r.petFrames
+	frameMS := r.petFrameMS
+	gen := r.petGen
+	r.status.PetReady = false
+	r.mu.Unlock()
+
+	r.drainAssetAcks()
+
+	const chunkBytes = 512
+	sent := 0
+	finalReady := false
+	for fi, frame := range frames {
+		crc := crc32.ChecksumIEEE(frame)
+		total := len(frame)
+		for off := 0; off < total; off += chunkBytes {
+			end := off + chunkBytes
+			if end > total {
+				end = total
+			}
+			msg := &protocol.Message{
+				Type:  protocol.TypeAssetChunk,
+				Proto: protocol.Version,
+				Asset: &protocol.AssetChunk{
+					Frame:   fi,
+					Frames:  len(frames),
+					Width:   protocol.AssetWidth,
+					Height:  protocol.AssetHeight,
+					Offset:  off,
+					Total:   total,
+					CRC32:   crc,
+					FrameMS: frameMS,
+					Data:    base64.StdEncoding.EncodeToString(frame[off:end]),
+				},
+			}
+			if err := msg.Validate(); err != nil {
+				r.opts.Logf("[buddy] pet chunk rejected: %v", err)
+				continue
+			}
+			if err := r.write(conn, msg); err != nil {
+				return gen, err
+			}
+			sent++
+			ready, ok := r.waitAssetAck(ctx, fi, end)
+			if !ok {
+				r.opts.Logf("[buddy] pet asset stalled at frame %d/%d offset %d; device did not ack",
+					fi+1, len(frames), end)
+				return gen, nil
+			}
+			if fi == len(frames)-1 && end == total {
+				finalReady = ready
+			}
+		}
+	}
+	r.mu.Lock()
+	r.status.PetReady = finalReady
+	r.mu.Unlock()
+	if finalReady {
+		r.opts.Logf("[buddy] pet asset confirmed: %d frames, %d chunks", len(frames), sent)
+	} else {
+		r.opts.Logf("[buddy] pet asset incomplete: %d frames, %d chunks without ready", len(frames), sent)
+	}
+	return gen, nil
+}
+
+// currentPetGen lets the session drop a wake that belongs to frames it has
+// already sent (SetPetAsset racing with the connect-time transfer).
+func (r *Runner) currentPetGen() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.petGen
+}
+
+// waitAssetAck waits for the device's commit ack for one chunk. Acks from
+// earlier chunks (the device is strictly sequential) are skipped.
+func (r *Runner) waitAssetAck(ctx context.Context, frame, bytes int) (ready, ok bool) {
+	timer := time.NewTimer(r.opts.ReadyTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, false
+		case <-timer.C:
+			return false, false
+		case ack := <-r.assetAcks:
+			// Exact match: a stale ack from an aborted transfer with a later
+			// offset must not satisfy this chunk.
+			if ack.Frame == frame && ack.Bytes == bytes {
+				return ack.Ready, true
+			}
+		}
+	}
+}
+
+func (r *Runner) waitReady(ctx context.Context) error {
+	timer := time.NewTimer(r.opts.ReadyTimeout)
+	defer timer.Stop()
+	select {
+	case <-r.ready:
+		return nil
+	case <-timer.C:
+		r.opts.Logf("[buddy] device hello not seen within %s; continuing", r.opts.ReadyTimeout)
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Runner) drainReady() {
+	for {
+		select {
+		case <-r.ready:
+		default:
+			return
+		}
+	}
+}
+
+func (r *Runner) drainAssetAcks() {
+	for {
+		select {
+		case <-r.assetAcks:
+		default:
+			return
+		}
+	}
+}
+
+func (r *Runner) drainSoundWake() {
+	for {
+		select {
+		case <-r.soundWake:
+		default:
+			return
+		}
+	}
+}
+
+// signalReady is safe to call while holding r.mu: the channel never blocks.
+func (r *Runner) signalReady() {
+	select {
+	case r.ready <- struct{}{}:
+	default:
+	}
+}
+
 func (r *Runner) sendSound(conn io.ReadWriteCloser) error {
 	r.mu.Lock()
 	if !r.hasSound {
@@ -558,11 +814,20 @@ func (r *Runner) handleDeviceMessage(msg *protocol.Message) {
 		r.status.DeviceProto = msg.Proto
 		r.status.DeviceTouch = msg.Touch
 		r.status.DeviceSound = msg.SoundAvailable
+		r.signalReady()
 	case protocol.TypeStateAck:
 		r.status.LastAckAt = time.Now()
 		r.status.Page = msg.Page
 		if msg.MissingGlyphs > 0 {
 			r.status.MissingGlyphs = msg.MissingGlyphs
+		}
+		r.signalReady()
+	case protocol.TypeAssetAck:
+		if msg.AssetAck != nil {
+			select {
+			case r.assetAcks <- *msg.AssetAck:
+			default:
+			}
 		}
 	case protocol.TypeHeartbeat:
 		r.status.UptimeS = msg.UptimeS

@@ -182,10 +182,23 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	if err != nil {
 		return "[system rejected] tools_search_arguments_invalid"
 	}
-	identityProvided := scopeID != "" || catalogDigest != ""
 	explicitIdentity := scopeID != "" && catalogDigest != ""
-	if (scopeID == "") != (catalogDigest == "") {
-		return "[system rejected] tools_search_scope_identity_required"
+	// A caller that copied only one field of the previous result header is
+	// still bound to this surface: the live governed surface supplies the
+	// missing half and every supplied value is verified below. Rejecting the
+	// partial pair stranded a production model after a petition (2026-10-27:
+	// scope_id alone and catalog_digest alone both returned
+	// tools_search_scope_identity_required, and the turn retried the lookup
+	// past its budget trying to re-read the surface it had just been given).
+	hostBoundPartial := false
+	if (scopeID == "") != (catalogDigest == "") && cb != nil && cb.semanticSurface != nil {
+		if scopeID == "" {
+			scopeID = semanticSurfaceScopeID(cb.semanticSurface)
+		}
+		if catalogDigest == "" {
+			catalogDigest = strings.TrimSpace(cb.semanticSurface.plan.CatalogDigest)
+		}
+		hostBoundPartial = true
 	}
 	// A governed execution entry supplies the identity automatically for
 	// legacy clients that still send only query. This keeps compatibility with
@@ -195,11 +208,11 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		scopeID = semanticSurfaceScopeID(cb.semanticSurface)
 		catalogDigest = strings.TrimSpace(cb.semanticSurface.plan.CatalogDigest)
 	}
-	// Recompute this after host-side binding.  The previous value described the
-	// untrusted request before the surface supplied its identity, so a valid
-	// empty-query directory page was rejected as if it were an unbound legacy
-	// lookup.
-	identityProvided = scopeID != "" && catalogDigest != ""
+	// Derived, not trusted: an unbound legacy call receives the live identity
+	// here, and every supplied value is compared with that identity below.
+	// Computing this after binding is what lets an empty-query directory read
+	// be accepted on a fully bound surface.
+	identityProvided := scopeID != "" && catalogDigest != ""
 	// A caller may never use an arbitrary scope/catalog pair to enumerate the
 	// process-wide inventory.  There is no external catalog provider on this
 	// execution path; identity is meaningful only when it is verified against
@@ -212,14 +225,15 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	// this check after deriving the governed identity so an empty-query page
 	// continuation is accepted only on a bound surface.
 	// Query-only compatibility calls still need a non-empty explanation on the
-	// first page. An explicitly bound directory request (or a continuation
-	// carrying a page token) may omit it because the immutable scope already
-	// determines the result set.
+	// first page. An explicitly bound directory request (both fields supplied,
+	// one field plus the host-bound half, or a continuation carrying a page
+	// token) may omit it because the immutable scope already determines the
+	// result set.
 	pageToken, pageTokenPresent, err := semanticToolsSearchStringArg(args, "page_token")
 	if err != nil {
 		return "[system rejected] tools_search_arguments_invalid"
 	}
-	if query == "" && !explicitIdentity && strings.TrimSpace(pageToken) == "" {
+	if query == "" && !explicitIdentity && !hostBoundPartial && strings.TrimSpace(pageToken) == "" {
 		return "[system rejected] tools_search_query_required"
 	}
 	if cb != nil && cb.semanticSurface != nil && scopeID != "" {

@@ -365,8 +365,30 @@ func TestSemanticToolsSearchRejectsScopeAndCatalogMismatch(t *testing.T) {
 	if got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-other","query":"list"}`); !strings.Contains(got, "tools_search_scope_mismatch") {
 		t.Fatalf("foreign catalog accepted: %s", got)
 	}
-	if got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","query":"list"}`); !strings.Contains(got, "tools_search_scope_identity_required") {
-		t.Fatalf("partial scope identity accepted: %s", got)
+	// A copied header field is enough; the live surface supplies the other
+	// half, and the supplied half is still verified. The production failure
+	// this pins: a model that copied only scope_id or only catalog_digest was
+	// told the identity was missing and could not re-read the surface.
+	got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","query":"list"}`)
+	if strings.Contains(got, "tools_search_scope_") || !strings.Contains(got, "dynamic_000") {
+		t.Fatalf("partial scope identity was not host-bound: %s", got)
+	}
+	got = semanticToolsSearchRun(cb, `{"catalog_digest":"catalog-search","query":"list"}`)
+	if strings.Contains(got, "tools_search_scope_") || !strings.Contains(got, "dynamic_000") {
+		t.Fatalf("partial catalog identity was not host-bound: %s", got)
+	}
+	if got := semanticToolsSearchRun(cb, `{"scope_id":"scope-other","query":"list"}`); !strings.Contains(got, "tools_search_scope_mismatch") {
+		t.Fatalf("foreign half accepted: %s", got)
+	}
+	if got := semanticToolsSearchRun(cb, `{"catalog_digest":"catalog-other","query":"list"}`); !strings.Contains(got, "tools_search_scope_mismatch") {
+		t.Fatalf("foreign catalog half accepted: %s", got)
+	}
+	// The host-bound half also satisfies the empty-query directory read: the
+	// caller proved it belongs to this surface, so a missing explanation is not
+	// a reason to reject the page.
+	got = semanticToolsSearchRun(cb, `{"scope_id":"scope-search"}`)
+	if strings.Contains(got, "tools_search_query_required") || !strings.Contains(got, "dynamic_000") {
+		t.Fatalf("partial identity did not bind an empty-query page: %s", got)
 	}
 }
 
@@ -395,6 +417,13 @@ func TestSemanticToolsSearchNeedsNameDoesNotBlankTheDirectory(t *testing.T) {
 	got := semanticToolsSearchRun(cb, `{"query":"崇州天气","needs":["information.search.web"]}`)
 	if !strings.Contains(got, "web_search") || strings.Contains(got, "office — ") {
 		t.Fatalf("a real capability filter must stay narrow: %s", got)
+	}
+	// The delete discovery call from production 2026-10-27 must resolve by
+	// name and report that the call is reachable by petition, not that it
+	// matched nothing or is permanently unavailable.
+	got = semanticToolsSearchRun(cb, `{"query":"删除邮件 mailbox delete","needs":["mailbox_delete"]}`)
+	if !strings.Contains(got, "- mailbox_delete — ") || !strings.Contains(got, "[可请愿：直接调用一次]") {
+		t.Fatalf("mailbox_delete needs lookup did not resolve: %s", got)
 	}
 }
 

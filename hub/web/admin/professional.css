@@ -621,3 +621,90 @@ button:active{transform:scale(.985)}
 #tab-linkhealth .lh-off{color:#c44e4e;font-weight:600}
 #tab-linkhealth .lh-hint{margin-top:2px}
 #tenantCloudWorkspaceSettingsCard{border-color:#cfe0ff}
+
+/* ==========================================================================
+   Modern surface polish (2026-10). Presentation only: renders the existing
+   markup with calmer scrollbars, tabular figures, unified motion and states.
+   No selectors are removed and no behavior changes.
+   ========================================================================== */
+
+/* Rendering: antialiased text everywhere, tabular numerals for data. */
+body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility}
+.metric strong,.usage-rank-value,#tab-linkhealth .lh-value,#tab-usagestats .metric strong,.llh-metric strong{font-variant-numeric:tabular-nums}
+.mono,.console,.llh-version-table td{font-variant-numeric:tabular-nums}
+input::placeholder,textarea::placeholder{color:#9aa4b2;opacity:1}
+
+/* Scrollbars: thin, quiet, rounded - replaces the chunky OS defaults. */
+*{scrollbar-width:thin;scrollbar-color:#c9d3e0 transparent}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-thumb{background:#c9d3e0;border-radius:999px;border:3px solid transparent;background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background-color:#aebac9}
+*::-webkit-scrollbar-track,*::-webkit-scrollbar-corner{background:transparent}
+.nav,.side,.panel,.console,.overview-assistant-chat,#secGroupTree,#digitalAssetsList{scrollbar-width:thin}
+
+/* Interactive surfaces: quiet border shift on hover, no layout movement. */
+.metric,.item,.panel{transition:border-color .18s ease,box-shadow .18s ease}
+.metric:hover,.item:hover{border-color:#d5dde8}
+.panel:hover{border-color:#e2e8f1}
+.row:not(.header){transition:border-color .16s ease,background-color .16s ease}
+.row:not(.header):hover{border-color:#dbe3ee}
+.nav button{transition:background-color .16s ease,border-color .16s ease,color .16s ease,box-shadow .16s ease}
+.subtab{transition:color .16s ease,border-color .16s ease}
+.badge{transition:background-color .16s ease}
+
+/* Primary action: steadier shadow, no decorative motion. */
+button{white-space:nowrap}
+/* Nav buttons carry two-line label + description; let their copy wrap. */
+.nav button,.nav button .nav-copy span,.nav button .nav-copy small{white-space:normal}
+.btn-primary{box-shadow:0 2px 8px rgba(37,99,235,.22)}
+.btn-primary:hover{box-shadow:0 4px 14px rgba(37,99,235,.28)}
+.btn-primary:active{box-shadow:0 1px 4px rgba(37,99,235,.24)}
+
+/* Panels enter with a short fade; motion-sensitive users opt out below. */
+@media (prefers-reduced-motion:no-preference){
+  .panel.active{animation:panel-in .22s cubic-bezier(.2,.7,.3,1)}
+  @keyframes panel-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+}
+
+/* Modals: slightly deeper scrim and one elevation level for focus. */
+.session-modal-overlay{background:rgba(15,23,42,.32)}
+.session-modal{border-radius:14px;box-shadow:0 24px 64px rgba(15,23,42,.18)}
+
+/* Headings keep one optical scale across panels. */
+.head h3{font-size:18px}
+.top h2{font-size:24px}
+
+/* Topbar controls stay on one row; the page title absorbs narrow widths instead. */
+.topbar{flex-wrap:nowrap;flex:0 0 auto;max-width:100%}
+.topbar .lang-switch{flex-wrap:nowrap}
+@media (max-width:1200px){.topbar{flex-wrap:wrap;flex:0 1 auto}}
+
+/* LLM provider surfaces: retire the last legacy pink accent; the unified steel blue owns every state. */
+#tab-llmproviders,#tab-modelservices,#tab-servicecards{--llm-accent:#2563eb;--llm-accent-soft:#f7faff;--llm-focus:rgba(37,99,235,.13)}
+#tab-modelservices #llmProviderConfigSection{border-left-color:#2563eb;background:linear-gradient(90deg,#f7faff 0%,#fff 34%,#fff 100%)}
+#tab-llmproviders input:focus,#tab-llmproviders select:focus,#tab-llmproviders textarea:focus,#tab-modelservices input:focus,#tab-modelservices select:focus,#tab-modelservices textarea:focus,#tab-servicecards input:focus,#tab-servicecards select:focus,#tab-servicecards textarea:focus{border-color:#9db9e8}
+
+/* Layout pass (2026-10 v2): sticky page header, wider canvas, denser nav.
+   Presentation only; spacing rhythm is preserved via margin compensation. */
+.main>.top{position:sticky;top:0;z-index:40;background:rgba(246,247,249,.92);backdrop-filter:saturate(150%) blur(10px);border-bottom:1px solid rgba(28,39,55,.06);padding:12px 0 14px;margin:-12px auto 4px;max-width:1320px;flex-wrap:wrap}
+.main>.top .page-copy{flex:1 1 340px;min-width:260px}
+/* Tenant-scope pages add compute/tenant chips; when the header runs out of room the controls drop below the title instead of squeezing it. */
+.top .page-kicker{margin-top:0}
+.metrics,.panel{max-width:1320px}
+.nav button{min-height:46px}
+.nav button .nav-row{padding:8px 10px 8px 12px;column-gap:9px}
+.nav button .nav-icon{width:30px;height:30px}
+.nav button .nav-copy span{font-size:14px}
+.nav button .nav-copy small{font-size:10.5px;line-height:1.3}
+@media (max-width:1180px){.main>.top{position:static;background:transparent;border-bottom:0;backdrop-filter:none;margin:0 auto 16px;padding:0}}
+
+/* Empty hints read as quiet neutral callouts, not alerts. */
+.hint{border-style:solid;border-color:#e3e8f0;background:#f8fafc}
+#tab-overview .hint,#tab-system .hint{background:#f8fafc}
+/* A lone hint inside a list is an empty state: center it and give it presence. */
+.list>.hint:only-child,.catalog-search-results .hint:only-child{text-align:center;padding:30px 18px;font-size:13px}
+/* .empty is the generic disabled/empty surface used across admin modules; it had no styling at all. */
+.empty{padding:30px 18px;border:1px solid #e3e8f0;border-radius:10px;background:#f8fafc;color:#64748b;font-size:13px;line-height:1.6;text-align:center}
+
+/* Toast: frosted white so it reads above any panel. */
+.toast{background:rgba(255,255,255,.96);backdrop-filter:saturate(160%) blur(10px)}

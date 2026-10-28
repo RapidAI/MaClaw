@@ -1614,7 +1614,7 @@ function assertFeatureIcons() {
     'item-title" data-icon="cloud" id="tenantCloudWorkspaceSettingsTitle"',
     'item-title" data-icon="library" id="tenantDigitalAssetsSettingsTitle"',
     'item-title" data-icon="mail" data-i18n="mailConfigTitle"',
-    'professional.css?v=feature-icons-20260828-6',
+    'professional.css?v=modern-polish-20261028-5',
     'id="subtab-market" data-icon="store"',
     'id="cardStoreManageSubtab" data-icon="store"'
   ].forEach(function(marker) {

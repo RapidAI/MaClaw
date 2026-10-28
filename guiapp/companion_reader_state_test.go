@@ -49,6 +49,28 @@ func TestCompanionReaderStatePersistsPdfMarks(t *testing.T) {
 	}
 }
 
+func TestCompanionReaderStatePersistsPdfDrawings(t *testing.T) {
+	app := newCompanionReaderTestApp(t)
+	drawings := `[{"id":"d1","page":1,"color":"yellow","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`
+	if err := app.SaveCompanionPdfDrawings(`C:\Docs\Paper.PDF`, drawings); err != nil {
+		t.Fatalf("SaveCompanionPdfDrawings: %v", err)
+	}
+	payload := loadCompanionReaderTestState(t, app, "", "")
+	got, ok := payload.PDFDrawings["c:/docs/paper.pdf"]
+	if !ok || !strings.Contains(string(got), `"tool":"line"`) {
+		t.Fatalf("drawings = %v", payload.PDFDrawings)
+	}
+
+	// An empty list is "clear my drawings for this document".
+	if err := app.SaveCompanionPdfDrawings(`C:\Docs\Paper.PDF`, "[]"); err != nil {
+		t.Fatalf("SaveCompanionPdfDrawings empty: %v", err)
+	}
+	payload = loadCompanionReaderTestState(t, app, "", "")
+	if _, ok := payload.PDFDrawings["c:/docs/paper.pdf"]; ok {
+		t.Fatalf("cleared drawings remained: %v", payload.PDFDrawings)
+	}
+}
+
 func TestCompanionReaderStatePersistsChatMarks(t *testing.T) {
 	app := newCompanionReaderTestApp(t)
 	marks := `[{"message":1,"color":"green","start":3,"end":8,"text":"lo wo"}]`
