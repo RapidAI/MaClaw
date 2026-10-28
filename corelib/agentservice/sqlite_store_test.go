@@ -304,14 +304,11 @@ func TestSQLiteStoreImportsLegacyJSONStateWithoutSecrets(t *testing.T) {
 		t.Fatalf("legacy credential normalization failed: %#v err=%v", cred, err)
 	}
 	var payload []byte
-	if err := store.db.QueryRow(`SELECT state_json FROM agentservice_state WHERE id=1`).Scan(&payload); err != nil {
+	if err := store.db.QueryRow(`SELECT v FROM as_credentials`).Scan(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if string(payload) == "" || string(payload) == legacy || string(payload) == "legacy-secret" {
-		t.Fatalf("sqlite database did not persist normalized imported state: %s", payload)
-	}
-	if string(payload) == "" || strings.Contains(string(payload), "legacy-secret") {
-		t.Fatalf("sqlite state leaked plaintext credential: %s", payload)
+	if len(payload) == 0 || strings.Contains(string(payload), "legacy-secret") {
+		t.Fatalf("sqlite rows leaked plaintext credential: %s", payload)
 	}
 }
 

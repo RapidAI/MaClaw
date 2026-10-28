@@ -83,8 +83,8 @@ func TestDesktopBotDurableCases(t *testing.T) {
 				t.Fatalf("stored a step that is not done: %+v", step)
 			}
 		}
-		if version := durableSchemaVersion(t, path); version != 1 || sqliteStoreStateVersion != 1 {
-			t.Fatalf("schema = %d constant = %d", version, sqliteStoreStateVersion)
+		if version := durableSchemaVersion(t, path); version != 2 || sqliteRowsFormatVersion != 2 {
+			t.Fatalf("schema = %d constant = %d", version, sqliteRowsFormatVersion)
 		}
 		durableColumns(t, path)
 	})
@@ -145,7 +145,7 @@ func TestDesktopBotDurableCases(t *testing.T) {
 		if got.Result != "已安装" || got.Outcome != agent.ToolExecutionOutcomeOK {
 			t.Fatalf("replay = %+v", got)
 		}
-		if version := durableSchemaVersion(t, path); version != 1 {
+		if version := durableSchemaVersion(t, path); version != sqliteRowsFormatVersion {
 			t.Fatalf("schema = %d", version)
 		}
 	})
@@ -168,7 +168,7 @@ func TestDesktopBotDurableCases(t *testing.T) {
 		if _, err := db.SaveDesktopStep(desktopbot.Step{RunID: "run", Tool: "email", Key: "mail-1", Result: "邮件已发送", Done: true}); !errors.Is(err, desktopbot.ErrJournalOnVM) {
 			t.Fatal(err)
 		}
-		if version := durableSchemaVersion(t, path); version != 1 {
+		if version := durableSchemaVersion(t, path); version != sqliteRowsFormatVersion {
 			t.Fatalf("schema = %d", version)
 		}
 		raw, err := sql.Open("sqlite", path)
@@ -225,7 +225,7 @@ func durableSchemaVersion(t *testing.T, path string) int {
 	}
 	defer raw.Close()
 	var version int
-	if err := raw.QueryRow(`SELECT schema_version FROM agentservice_state WHERE id=1`).Scan(&version); err != nil {
+	if err := raw.QueryRow(`SELECT format_version FROM as_meta WHERE id=1`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 	return version

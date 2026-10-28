@@ -59,6 +59,9 @@ type MemoryStore struct {
 	runs        map[string]Run
 	runEvents   map[string][]RunEvent
 	auditEvents []AuditEvent
+	// dirty, when set by a row-backed owner (SQLiteStore rows mode), records
+	// which entities a write touched so only those rows are persisted.
+	dirty *storeDirty
 }
 
 type storeState struct {
@@ -194,6 +197,7 @@ func (s *MemoryStore) restoreLocked(state storeState) {
 		return
 	}
 	restored := newMemoryStoreFromState(state)
+	s.touchAll()
 	s.tenants = restored.tenants
 	s.users = restored.users
 	s.credentials = restored.credentials
@@ -226,6 +230,7 @@ func (s *MemoryStore) SaveTenant(v Tenant) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tenants[v.ID] = v
+	s.touch(collTenants, v.ID)
 	return nil
 }
 
@@ -257,36 +262,45 @@ func (s *MemoryStore) DeleteTenant(tenantID string) error {
 		return ErrTenantNotFound
 	}
 	delete(s.tenants, tenantID)
+	s.touch(collTenants, tenantID)
 	for key, user := range s.users {
 		if user.TenantID == tenantID {
 			delete(s.users, key)
+			s.touch(collUsers, key)
 		}
 	}
 	for key, cred := range s.credentials {
 		if cred.TenantID == tenantID {
 			delete(s.credentials, key)
+			s.touch(collCredentials, key)
 		}
 	}
 	for key, cfg := range s.userConfigs {
 		if cfg.TenantID == tenantID {
 			delete(s.userConfigs, key)
+			s.touch(collUserConfigs, key)
 		}
 	}
 	for instanceID, inst := range s.instances {
 		if inst.TenantID == tenantID {
 			delete(s.instances, instanceID)
+			s.touch(collInstances, instanceID)
 		}
 	}
 	for sessionID, sess := range s.sessions {
 		if sess.TenantID == tenantID {
 			delete(s.sessions, sessionID)
+			s.touch(collSessions, sessionID)
 			delete(s.messages, sessionID)
+			s.touchMessagesRewrite(sessionID)
 		}
 	}
 	for runID, run := range s.runs {
 		if run.TenantID == tenantID {
 			delete(s.runs, runID)
+			s.touch(collRuns, runID)
 			delete(s.runEvents, runEventScope(run.TenantID, run.UserID, run.ID))
+			s.touchRunEventsRewrite(runEventScope(run.TenantID, run.UserID, run.ID))
 		}
 	}
 	return nil
@@ -296,6 +310,7 @@ func (s *MemoryStore) SaveUser(v User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.users[composite(v.TenantID, v.ID)] = v
+	s.touch(collUsers, composite(v.TenantID, v.ID))
 	return nil
 }
 
@@ -330,27 +345,35 @@ func (s *MemoryStore) DeleteUser(tenantID, userID string) error {
 		return ErrUserNotFound
 	}
 	delete(s.users, key)
+	s.touch(collUsers, key)
 	delete(s.userConfigs, key)
+	s.touch(collUserConfigs, key)
 	for lookupKey, cred := range s.credentials {
 		if cred.TenantID == tenantID && cred.UserID == userID {
 			delete(s.credentials, lookupKey)
+			s.touch(collCredentials, lookupKey)
 		}
 	}
 	for instanceID, inst := range s.instances {
 		if inst.TenantID == tenantID && inst.UserID == userID {
 			delete(s.instances, instanceID)
+			s.touch(collInstances, instanceID)
 		}
 	}
 	for sessionID, sess := range s.sessions {
 		if sess.TenantID == tenantID && sess.UserID == userID {
 			delete(s.sessions, sessionID)
+			s.touch(collSessions, sessionID)
 			delete(s.messages, sessionID)
+			s.touchMessagesRewrite(sessionID)
 		}
 	}
 	for runID, run := range s.runs {
 		if run.TenantID == tenantID && run.UserID == userID {
 			delete(s.runs, runID)
+			s.touch(collRuns, runID)
 			delete(s.runEvents, runEventScope(run.TenantID, run.UserID, run.ID))
+			s.touchRunEventsRewrite(runEventScope(run.TenantID, run.UserID, run.ID))
 		}
 	}
 	return nil
@@ -367,9 +390,11 @@ func (s *MemoryStore) SaveCredential(v Credential) error {
 	for key, existing := range s.credentials {
 		if existing.ID == stored.ID {
 			delete(s.credentials, key)
+			s.touch(collCredentials, key)
 		}
 	}
 	s.credentials[lookupKey] = stored
+	s.touch(collCredentials, lookupKey)
 	return nil
 }
 
@@ -414,6 +439,7 @@ func (s *MemoryStore) SaveUserConfig(v UserConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.userConfigs[composite(v.TenantID, v.UserID)] = v
+	s.touch(collUserConfigs, composite(v.TenantID, v.UserID))
 	return nil
 }
 
@@ -431,6 +457,7 @@ func (s *MemoryStore) SaveInstance(v Instance) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.instances[v.ID] = v
+	s.touch(collInstances, v.ID)
 	return nil
 }
 
@@ -465,16 +492,21 @@ func (s *MemoryStore) DeleteInstance(tenantID, userID, instanceID string) error 
 		return ErrInstanceNotFound
 	}
 	delete(s.instances, instanceID)
+	s.touch(collInstances, instanceID)
 	for sessionID, sess := range s.sessions {
 		if sess.TenantID == tenantID && sess.UserID == userID && sess.InstanceID == instanceID {
 			delete(s.sessions, sessionID)
+			s.touch(collSessions, sessionID)
 			delete(s.messages, sessionID)
+			s.touchMessagesRewrite(sessionID)
 		}
 	}
 	for runID, run := range s.runs {
 		if run.TenantID == tenantID && run.UserID == userID && run.InstanceID == instanceID {
 			delete(s.runs, runID)
+			s.touch(collRuns, runID)
 			delete(s.runEvents, runEventScope(run.TenantID, run.UserID, run.ID))
+			s.touchRunEventsRewrite(runEventScope(run.TenantID, run.UserID, run.ID))
 		}
 	}
 	return nil
@@ -494,6 +526,7 @@ func (s *MemoryStore) SaveSession(v Session) error {
 		}
 	}
 	s.sessions[v.ID] = v
+	s.touch(collSessions, v.ID)
 	return nil
 }
 
@@ -528,11 +561,15 @@ func (s *MemoryStore) DeleteSession(tenantID, userID, instanceID, sessionID stri
 		return ErrSessionNotFound
 	}
 	delete(s.sessions, sessionID)
+	s.touch(collSessions, sessionID)
 	delete(s.messages, sessionID)
+	s.touchMessagesRewrite(sessionID)
 	for runID, run := range s.runs {
 		if run.TenantID == tenantID && run.UserID == userID && run.InstanceID == instanceID && run.SessionID == sessionID {
 			delete(s.runs, runID)
+			s.touch(collRuns, runID)
 			delete(s.runEvents, runEventScope(run.TenantID, run.UserID, run.ID))
+			s.touchRunEventsRewrite(runEventScope(run.TenantID, run.UserID, run.ID))
 		}
 	}
 	return nil
@@ -545,6 +582,7 @@ func (s *MemoryStore) SaveMessage(v Message) error {
 		return err
 	}
 	s.messages[v.SessionID] = append(s.messages[v.SessionID], v)
+	s.touchMessagesAppend(v.SessionID)
 	return nil
 }
 
@@ -604,6 +642,7 @@ func (s *MemoryStore) DeleteMessages(sessionID string, ids []string) (int, error
 		return 0, nil
 	}
 	s.messages[sessionID] = append([]Message(nil), kept...)
+	s.touchMessagesRewrite(sessionID)
 	return deleted, nil
 }
 
@@ -611,6 +650,7 @@ func (s *MemoryStore) SaveRun(v Run) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runs[v.ID] = v
+	s.touch(collRuns, v.ID)
 	return nil
 }
 
@@ -649,6 +689,7 @@ func (s *MemoryStore) appendRunEventLocked(event RunEvent) (RunEvent, error) {
 	items = append(items, event)
 	sort.Slice(items, func(i, j int) bool { return items[i].Sequence < items[j].Sequence })
 	s.runEvents[key] = items
+	s.touchRunEventInsert(key, event.Sequence)
 	return event, nil
 }
 
@@ -746,6 +787,7 @@ func (s *MemoryStore) SaveAuditEvent(v AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.auditEvents = append(s.auditEvents, v)
+	s.touchAuditAppend()
 	return nil
 }
 
@@ -783,6 +825,7 @@ func (s *MemoryStore) DeleteAuditEvents(tenantID, userID string) (int, error) {
 		kept = append(kept, event)
 	}
 	s.auditEvents = kept
+	s.touchAuditRewrite()
 	return deleted, nil
 }
 
