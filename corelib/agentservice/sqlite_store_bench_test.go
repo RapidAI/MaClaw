@@ -11,6 +11,9 @@ import (
 // (MACLAW_BENCH_DB=/path/copy.db). Only the public Store API is used so the
 // same file runs against the previous blob implementation.
 func openBenchStore(b *testing.B) (*SQLiteStore, []Run) {
+	// Benchmarks measure production behaviour: the test-only full
+	// cache/rows verification after every write is switched off.
+	sqliteVerifyWrites = false
 	src := os.Getenv("MACLAW_BENCH_DB")
 	if src == "" {
 		b.Skip("set MACLAW_BENCH_DB")
