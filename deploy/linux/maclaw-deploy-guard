@@ -35,7 +35,7 @@ _SRVDB=${MACLAW_SRV_DB:-/data/soft/maclaw_srv/data/state/service.db}
 _LIVE_RUNS=0
 if [ -f "$_SRVDB" ] && command -v python3 >/dev/null; then
   _LIVE_RUNS=$(python3 - "$_SRVDB" "${MACLAW_DEPLOY_STALE_H:-6}" <<'PY' || echo 0
-import sqlite3, json, sys, datetime
+import sqlite3, json, sys, datetime, re
 db, stale_h = sys.argv[1], float(sys.argv[2])
 c = sqlite3.connect('file:' + db + '?mode=ro', uri=True)
 now = datetime.datetime.now(datetime.timezone.utc)
@@ -52,9 +52,10 @@ for (v,) in rows:
     if j.get('status') not in ('queued', 'running'):
         continue
     try:
-        age = (now - datetime.datetime.fromisoformat(j.get('started_at', '')[:26] + j.get('started_at', '')[-6:])).total_seconds() / 3600
+        t = re.sub(r'(\.\d{6})\d+', r'\1', j.get('started_at', '').replace('Z', '+00:00'))
+        age = (now - datetime.datetime.fromisoformat(t)).total_seconds() / 3600
     except Exception:
-        age = 0
+        age = 0  # unparseable: treat as live
     tag = 'stale' if age > stale_h else 'live'
     sys.stderr.write('deploy-guard: srv run %s %s %s %.1fh\n' % (j.get('id', '?'), j.get('status'), tag, age))
     if tag == 'live':
