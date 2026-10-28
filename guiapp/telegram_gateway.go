@@ -28,6 +28,7 @@ import (
 type telegramGatewayManager struct {
 	app       *App
 	mu        sync.Mutex
+	syncMu    sync.Mutex // SyncFromConfig/Stop; never take while holding mu
 	gateway   *telegram.Gateway
 	status    gatewayConnectionStatus
 	lastToken string
@@ -59,69 +60,85 @@ func (m *telegramGatewayManager) currentLocalHandler() *IMMessageHandler {
 
 // SyncFromConfig reads the current AppConfig and starts or stops the gateway.
 func (m *telegramGatewayManager) SyncFromConfig() {
-	cfg, err := m.app.LoadConfig()
-	if err != nil {
-		return
-	}
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
 
-	m.mu.Lock()
-	if !cfg.TelegramBotEnabled || cfg.TelegramBotToken == "" {
-		gw := m.gateway
-		if gw != nil {
-			m.gateway = nil
-			m.status = gatewayConnectionStatusDisconnected
-			m.mu.Unlock()
-			_ = gw.Stop()
-		} else {
-			m.mu.Unlock()
+	for {
+		cfg, err := m.app.LoadConfig()
+		if err != nil {
+			return
 		}
-		// Always notify Hub to release gateway claim, even if local gateway
-		// was already nil — Hub may still hold a stale claim from a previous run.
-		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformTelegram)
-			log.Printf("[telegram-mgr] sent gateway unclaim to hub")
-		}
-		if gw != nil {
-			m.emitStatusEvent()
-		}
-		return
-	}
 
-	if m.gateway != nil && m.lastToken == cfg.TelegramBotToken {
-		m.mu.Unlock()
-		return
-	}
-
-	oldGw := m.gateway
-	m.gateway = nil
-	m.mu.Unlock()
-
-	if oldGw != nil {
-		_ = oldGw.Stop()
-	}
-
-	gw := telegram.NewGateway(telegram.Config{BotToken: cfg.TelegramBotToken}, m.onIncomingMessage)
-	gw.SetStatusCallback(m.onStatusChange)
-
-	m.mu.Lock()
-	m.gateway = gw
-	m.lastToken = cfg.TelegramBotToken
-	m.mu.Unlock()
-
-	if err := gw.Start(context.Background()); err != nil {
-		log.Printf("[telegram-mgr] start failed: %v", err)
 		m.mu.Lock()
+		if !cfg.TelegramBotEnabled || cfg.TelegramBotToken == "" {
+			gw := m.gateway
+			if gw != nil {
+				m.gateway = nil
+				m.status = gatewayConnectionStatusDisconnected
+				m.mu.Unlock()
+				releaseIMSyncLock(&m.syncMu, func() { _ = gw.Stop() })
+				m.mu.Lock()
+				replaced := m.gateway != nil
+				m.mu.Unlock()
+				if replaced {
+					return
+				}
+			} else {
+				m.mu.Unlock()
+			}
+			// Always notify Hub to release gateway claim, even if local gateway
+			// was already nil — Hub may still hold a stale claim from a previous run.
+			if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+				_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformTelegram)
+				log.Printf("[telegram-mgr] sent gateway unclaim to hub")
+			}
+			if gw != nil {
+				m.emitStatusEvent()
+			}
+			return
+		}
+
+		if m.gateway != nil && m.lastToken == cfg.TelegramBotToken {
+			m.mu.Unlock()
+			return
+		}
+
+		oldGw := m.gateway
 		m.gateway = nil
-		m.lastToken = ""
-		m.status = gatewayConnectionStatusError
 		m.mu.Unlock()
-		m.emitStatusEvent()
+
+		if oldGw != nil {
+			releaseIMSyncLock(&m.syncMu, func() { _ = oldGw.Stop() })
+			continue
+		}
+
+		gw := telegram.NewGateway(telegram.Config{BotToken: cfg.TelegramBotToken}, m.onIncomingMessage)
+		gw.SetStatusCallback(m.onStatusChange)
+
+		m.mu.Lock()
+		m.gateway = gw
+		m.lastToken = cfg.TelegramBotToken
+		m.mu.Unlock()
+
+		if err := gw.Start(context.Background()); err != nil {
+			log.Printf("[telegram-mgr] start failed: %v", err)
+			m.mu.Lock()
+			m.gateway = nil
+			m.lastToken = ""
+			m.status = gatewayConnectionStatusError
+			m.mu.Unlock()
+			m.emitStatusEvent()
+			return
+		}
 		return
 	}
 }
 
 // Stop shuts down the gateway.
 func (m *telegramGatewayManager) Stop() {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
@@ -132,9 +149,14 @@ func (m *telegramGatewayManager) Stop() {
 	m.mu.Unlock()
 	_ = lh // shared App conversation memory remains alive
 	if gw != nil {
-		_ = gw.Stop()
+		releaseIMSyncLock(&m.syncMu, func() { _ = gw.Stop() })
 	}
-	m.emitStatusEvent()
+	m.mu.Lock()
+	replaced := m.gateway != nil
+	m.mu.Unlock()
+	if !replaced {
+		m.emitStatusEvent()
+	}
 }
 
 // Status returns the current connection status.
@@ -697,15 +719,21 @@ func (a *App) ensureTelegramGateway() {
 		return
 	}
 	if !cfg.TelegramBotEnabled || cfg.TelegramBotToken == "" {
-		if a.telegramGateway != nil {
-			a.telegramGateway.SyncFromConfig()
+		a.imGatewaySyncMu.Lock()
+		m := a.telegramGateway
+		a.imGatewaySyncMu.Unlock()
+		if m != nil {
+			m.SyncFromConfig()
 		}
 		return
 	}
+	a.imGatewaySyncMu.Lock()
 	if a.telegramGateway == nil {
 		a.telegramGateway = newTelegramGatewayManager(a)
 	}
-	a.telegramGateway.SyncFromConfig()
+	m := a.telegramGateway
+	a.imGatewaySyncMu.Unlock()
+	m.SyncFromConfig()
 }
 
 func (a *App) GetTelegramStatus() string {

@@ -37,6 +37,7 @@ import (
 type weixinGatewayManager struct {
 	app       *App
 	mu        sync.Mutex
+	syncMu    sync.Mutex // SyncFromConfig/Stop; never take while holding mu
 	gateway   *weixin.Gateway
 	status    gatewayConnectionStatus
 	lastToken string
@@ -64,93 +65,112 @@ func (m *weixinGatewayManager) currentLocalHandler() *IMMessageHandler {
 
 // SyncFromConfig reads the current AppConfig and starts or stops the gateway.
 func (m *weixinGatewayManager) SyncFromConfig() {
-	wl := weixin.GetWxLog()
-	m.app.logMemorySnapshot("weixinGateway:sync-start")
-	cfg, err := m.app.LoadConfig()
-	if err != nil {
-		wl.Log("mgr.sync", "---", "-", "ERR LoadConfig: %v", err)
-		return
-	}
-	wl.Log("mgr.sync", "---", "-", "config enabled=%v token_len=%d local=%v base_url=%s cdn_url_set=%v", cfg.WeixinEnabled, len(cfg.WeixinToken), cfg.IsWeixinLocalMode(), cfg.WeixinBaseURL, cfg.WeixinCDNURL != "")
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
 
-	m.mu.Lock()
-	if !cfg.WeixinEnabled || cfg.WeixinToken == "" {
-		gw := m.gateway
-		if gw != nil {
-			wl.Log("mgr.sync", "---", "-", "stopping gateway because enabled=%v token_len=%d", cfg.WeixinEnabled, len(cfg.WeixinToken))
-			m.gateway = nil
-			m.status = gatewayConnectionStatusDisconnected
-			m.mu.Unlock()
-			_ = gw.Stop()
-		} else {
-			m.mu.Unlock()
+	for {
+		wl := weixin.GetWxLog()
+		m.app.logMemorySnapshot("weixinGateway:sync-start")
+		cfg, err := m.app.LoadConfig()
+		if err != nil {
+			wl.Log("mgr.sync", "---", "-", "ERR LoadConfig: %v", err)
+			return
 		}
-		// Always notify Hub to release gateway claim, even if local gateway
-		// was already nil — Hub may still hold a stale claim from a previous run.
-		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformWeixin)
-			log.Printf("[weixin-mgr] sent gateway unclaim to hub")
-		}
-		if gw != nil {
-			m.emitStatusEvent()
-		}
-		return
-	}
+		wl.Log("mgr.sync", "---", "-", "config enabled=%v token_len=%d local=%v base_url=%s cdn_url_set=%v", cfg.WeixinEnabled, len(cfg.WeixinToken), cfg.IsWeixinLocalMode(), cfg.WeixinBaseURL, cfg.WeixinCDNURL != "")
 
-	if m.gateway != nil && m.lastToken == cfg.WeixinToken {
-		wl.Log("mgr.sync", "---", "-", "gateway already running token_len=%d", len(cfg.WeixinToken))
-		m.mu.Unlock()
-		return
-	}
-
-	oldGw := m.gateway
-	tokenChanged := m.lastToken != "" && m.lastToken != cfg.WeixinToken
-	// Keep old gateway in place until new one is ready ->avoids a nil window
-	// where HandleGatewayReply would silently drop messages.
-	m.mu.Unlock()
-
-	if oldGw != nil {
-		wl.Log("mgr.sync", "---", "-", "stopping old gateway before restart token_changed=%v", tokenChanged)
-		_ = oldGw.Stop()
-	}
-
-	baseURL := cfg.WeixinBaseURL
-	if baseURL == "" {
-		baseURL = weixin.DefaultBaseURL
-	}
-	cdnURL := cfg.WeixinCDNURL
-	if cdnURL == "" {
-		cdnURL = weixin.DefaultCDNBaseURL
-	}
-
-	gw := weixin.NewGateway(weixin.Config{
-		Token:              cfg.WeixinToken,
-		BaseURL:            baseURL,
-		CDNURL:             cdnURL,
-		AccountID:          cfg.WeixinAccountID,
-		SessionPersistPath: weixin.DefaultSessionPersistPath(),
-	}, m.onIncomingMessage)
-	gw.SetStatusCallback(m.onStatusChange)
-
-	m.mu.Lock()
-	m.gateway = gw
-	m.lastToken = cfg.WeixinToken
-	m.mu.Unlock()
-
-	if err := gw.Start(context.Background()); err != nil {
-		wl.Log("mgr.sync", "---", "-", "ERR start failed: %v", err)
-		log.Printf("[weixin-mgr] start failed: %v", err)
 		m.mu.Lock()
-		m.status = gatewayConnectionStatusError
+		if !cfg.WeixinEnabled || cfg.WeixinToken == "" {
+			gw := m.gateway
+			if gw != nil {
+				wl.Log("mgr.sync", "---", "-", "stopping gateway because enabled=%v token_len=%d", cfg.WeixinEnabled, len(cfg.WeixinToken))
+				m.gateway = nil
+				m.status = gatewayConnectionStatusDisconnected
+				m.mu.Unlock()
+				releaseIMSyncLock(&m.syncMu, func() { _ = gw.Stop() })
+				m.mu.Lock()
+				replaced := m.gateway != nil
+				m.mu.Unlock()
+				if replaced {
+					return
+				}
+			} else {
+				m.mu.Unlock()
+			}
+			// Always notify Hub to release gateway claim, even if local gateway
+			// was already nil — Hub may still hold a stale claim from a previous run.
+			if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+				_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformWeixin)
+				log.Printf("[weixin-mgr] sent gateway unclaim to hub")
+			}
+			if gw != nil {
+				m.emitStatusEvent()
+			}
+			return
+		}
+
+		if m.gateway != nil && m.lastToken == cfg.WeixinToken {
+			wl.Log("mgr.sync", "---", "-", "gateway already running token_len=%d", len(cfg.WeixinToken))
+			m.mu.Unlock()
+			return
+		}
+
+		oldGw := m.gateway
+		tokenChanged := m.lastToken != "" && m.lastToken != cfg.WeixinToken
+		// Drop the pointer before Stop. Stop waits for in-flight handlers, and a
+		// handler can re-enter SyncFromConfig; that retry publishes the replacement.
+		if oldGw != nil {
+			m.gateway = nil
+		}
 		m.mu.Unlock()
-		m.emitStatusEvent()
+
+		if oldGw != nil {
+			wl.Log("mgr.sync", "---", "-", "stopping old gateway before restart token_changed=%v", tokenChanged)
+			releaseIMSyncLock(&m.syncMu, func() { _ = oldGw.Stop() })
+			continue
+		}
+
+		baseURL := cfg.WeixinBaseURL
+		if baseURL == "" {
+			baseURL = weixin.DefaultBaseURL
+		}
+		cdnURL := cfg.WeixinCDNURL
+		if cdnURL == "" {
+			cdnURL = weixin.DefaultCDNBaseURL
+		}
+
+		gw := weixin.NewGateway(weixin.Config{
+			Token:              cfg.WeixinToken,
+			BaseURL:            baseURL,
+			CDNURL:             cdnURL,
+			AccountID:          cfg.WeixinAccountID,
+			SessionPersistPath: weixin.DefaultSessionPersistPath(),
+		}, m.onIncomingMessage)
+		gw.SetStatusCallback(m.onStatusChange)
+
+		m.mu.Lock()
+		m.gateway = gw
+		m.lastToken = cfg.WeixinToken
+		m.mu.Unlock()
+
+		if err := gw.Start(context.Background()); err != nil {
+			wl.Log("mgr.sync", "---", "-", "ERR start failed: %v", err)
+			log.Printf("[weixin-mgr] start failed: %v", err)
+			m.mu.Lock()
+			m.status = gatewayConnectionStatusError
+			m.mu.Unlock()
+			m.emitStatusEvent()
+			return
+		}
+		wl.Log("mgr.sync", "---", "-", "gateway start requested token_len=%d base_url=%s cdn_url=%s", len(cfg.WeixinToken), baseURL, cdnURL)
 		return
 	}
-	wl.Log("mgr.sync", "---", "-", "gateway start requested token_len=%d base_url=%s cdn_url=%s", len(cfg.WeixinToken), baseURL, cdnURL)
 }
 
 // Stop shuts down the gateway.
 func (m *weixinGatewayManager) Stop() {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	wl := weixin.GetWxLog()
 	wl.Log("mgr.stop", "---", "-", "begin")
 	m.mu.Lock()
@@ -165,7 +185,7 @@ func (m *weixinGatewayManager) Stop() {
 	// not stop the shared store used by desktop, Hub, or other gateways.
 	_ = lh
 	if gw != nil {
-		_ = gw.Stop()
+		releaseIMSyncLock(&m.syncMu, func() { _ = gw.Stop() })
 	}
 	wl.Log("mgr.stop", "---", "-", "done had_gateway=%v had_local_handler=%v", gw != nil, lh != nil)
 }
@@ -1715,15 +1735,21 @@ func (a *App) ensureWeixinGateway() {
 		return
 	}
 	if !cfg.WeixinEnabled || cfg.WeixinToken == "" {
-		if a.weixinGateway != nil {
-			a.weixinGateway.SyncFromConfig()
+		a.imGatewaySyncMu.Lock()
+		m := a.weixinGateway
+		a.imGatewaySyncMu.Unlock()
+		if m != nil {
+			m.SyncFromConfig()
 		}
 		return
 	}
+	a.imGatewaySyncMu.Lock()
 	if a.weixinGateway == nil {
 		a.weixinGateway = newWeixinGatewayManager(a)
 	}
-	a.weixinGateway.SyncFromConfig()
+	m := a.weixinGateway
+	a.imGatewaySyncMu.Unlock()
+	m.SyncFromConfig()
 	a.logMemorySnapshot("ensureWeixinGateway:done")
 }
 

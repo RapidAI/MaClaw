@@ -321,8 +321,14 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 	m.mu.Lock()
 	m.gateway = gw
 	m.lastToken = cacheKey
+	// Mark connecting before Start returns. Start only proves the app token;
+	// the socket reports later. Until then status is still the initial
+	// "disconnected", and a second sync (GUI startup plus Hub auth) would
+	// treat the live gateway as down and tear it down.
+	m.status = gatewayConnectionStatusConnecting
+	m.statusSince = time.Now()
 	m.mu.Unlock()
-	m.ensureHealthMonitor()
+	m.emitStatusEvent()
 
 	if err := gw.Start(context.Background()); err != nil {
 		log.Printf("[lansenger-mgr] start failed: %v", err)
@@ -333,8 +339,14 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 		m.statusSince = time.Now()
 		m.mu.Unlock()
 		m.emitStatusEvent()
-		return
 	}
+	// Arm the watchdog only after Start returns. The gateway pointer is
+	// published first, and Start marks itself running a moment later; a tick
+	// in that gap treats the new gateway as dead, blocks on syncMu, and then
+	// tears down the socket that just came up. A failed token fetch still
+	// needs the watchdog, or the channel stays on error when nothing else
+	// syncs again.
+	m.ensureHealthMonitor()
 }
 
 // Stop shuts down the gateway.
@@ -2156,29 +2168,46 @@ func (a *App) ensureLansengerGateway() {
 	}
 	// The registry runs every enabled profile. Keep the historical singleton
 	// pointer as a compatibility facade for delivery and settings code that has
-	// not yet gained an explicit profile selector.
+	// not yet gained an explicit profile selector. The pointer publish is the
+	// only part that takes imGatewaySyncMu; the dial itself uses the manager
+	// lock so a slow token fetch does not stall hardware controls.
 	if len(cfg.LansengerBots) > 0 {
+		a.imGatewaySyncMu.Lock()
 		if a.lansengerGateways == nil {
 			a.lansengerGateways = newLansengerGatewayRegistry(a)
 		}
-		a.lansengerGateways.syncFromConfig(cfg, false)
-		a.lansengerGateway = a.lansengerGateways.defaultManager()
+		reg := a.lansengerGateways
+		a.imGatewaySyncMu.Unlock()
+		reg.syncFromConfig(cfg, false)
+		a.imGatewaySyncMu.Lock()
+		a.lansengerGateway = reg.defaultManager()
+		a.imGatewaySyncMu.Unlock()
 		return
 	}
-	if a.lansengerGateways != nil && !a.lansengerGateways.isEmpty() {
-		a.lansengerGateways.stopAll()
+	a.imGatewaySyncMu.Lock()
+	reg := a.lansengerGateways
+	legacy := a.lansengerGateway
+	a.imGatewaySyncMu.Unlock()
+	if reg != nil && !reg.isEmpty() {
+		reg.stopAll()
+		a.imGatewaySyncMu.Lock()
 		a.lansengerGateway = nil
+		a.imGatewaySyncMu.Unlock()
+		legacy = nil
 	}
 	if !cfg.LansengerEnabled || strings.TrimSpace(cfg.LansengerAppID) == "" || strings.TrimSpace(cfg.LansengerAppSecret) == "" {
-		if a.lansengerGateway != nil {
-			a.lansengerGateway.SyncFromConfig()
+		if legacy != nil {
+			legacy.SyncFromConfig()
 		}
 		return
 	}
+	a.imGatewaySyncMu.Lock()
 	if a.lansengerGateway == nil {
 		a.lansengerGateway = newLansengerGatewayManager(a)
 	}
-	a.lansengerGateway.SyncFromConfig()
+	m := a.lansengerGateway
+	a.imGatewaySyncMu.Unlock()
+	m.SyncFromConfig()
 }
 
 func (a *App) GetLansengerStatus() string {

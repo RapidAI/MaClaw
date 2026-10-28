@@ -26,7 +26,8 @@ func hubReconnectJitter(d time.Duration) time.Duration {
 }
 
 // onHubReconnected finishes what asyncHubConnect would have done when the
-// first connect failed: the app leaves degraded mode and IM gateways start.
+// first connect failed: the app leaves degraded mode, and one IM sync retries
+// any gateway whose startup attempt failed and refreshes Hub claims.
 func (c *RemoteHubClient) onHubReconnected() {
 	c.retryAttempts.Store(0)
 	c.nextRetryAt.Store(0)

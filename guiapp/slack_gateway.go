@@ -29,6 +29,7 @@ var slackLoginMu sync.Mutex
 type slackGatewayManager struct {
 	app          *App
 	mu           sync.Mutex
+	syncMu       sync.Mutex // SyncFromConfig/Stop; never take while holding mu
 	gateway      *slack.Gateway
 	status       gatewayConnectionStatus
 	lastToken    string
@@ -54,57 +55,73 @@ func (m *slackGatewayManager) currentLocalHandler() *IMMessageHandler {
 }
 
 func (m *slackGatewayManager) SyncFromConfig() {
-	cfg, err := m.app.LoadConfig()
-	if err != nil {
-		return
-	}
-	m.mu.Lock()
-	if !cfg.SlackEnabled || strings.TrimSpace(cfg.SlackBotToken) == "" {
-		gw := m.gateway
-		m.gateway = nil
-		m.lastToken = ""
-		m.status = gatewayConnectionStatusDisconnected
-		m.mu.Unlock()
-		if gw != nil {
-			_ = gw.Stop()
-			m.emitStatusEvent()
-		}
-		return
-	}
-	if m.gateway != nil && m.lastToken == cfg.SlackBotToken {
-		m.mu.Unlock()
-		return
-	}
-	old := m.gateway
-	m.gateway = nil
-	m.mu.Unlock()
-	if old != nil {
-		_ = old.Stop()
-	}
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
 
-	gw := slack.NewGateway(cfg.SlackBotToken, cfg.SlackBotUserID, m.onIncomingMessage)
-	gw.SetStatusCallback(m.onStatusChange)
-	if err := gw.Start(context.Background()); err != nil {
-		log.Printf("[slack-mgr] start failed: %v", err)
+	for {
+		cfg, err := m.app.LoadConfig()
+		if err != nil {
+			return
+		}
 		m.mu.Lock()
-		m.status = gatewayConnectionStatusError
-		m.lastToken = ""
-		m.lastErr = explainSlackStartError(err)
+		if !cfg.SlackEnabled || strings.TrimSpace(cfg.SlackBotToken) == "" {
+			gw := m.gateway
+			m.gateway = nil
+			m.lastToken = ""
+			m.status = gatewayConnectionStatusDisconnected
+			m.mu.Unlock()
+			if gw != nil {
+				releaseIMSyncLock(&m.syncMu, func() { _ = gw.Stop() })
+				m.mu.Lock()
+				replaced := m.gateway != nil
+				m.mu.Unlock()
+				if replaced {
+					return
+				}
+				m.emitStatusEvent()
+			}
+			return
+		}
+		if m.gateway != nil && m.lastToken == cfg.SlackBotToken {
+			m.mu.Unlock()
+			return
+		}
+		old := m.gateway
+		m.gateway = nil
 		m.mu.Unlock()
-		m.emitStatusEvent()
+		if old != nil {
+			releaseIMSyncLock(&m.syncMu, func() { _ = old.Stop() })
+			continue
+		}
+
+		gw := slack.NewGateway(cfg.SlackBotToken, cfg.SlackBotUserID, m.onIncomingMessage)
+		gw.SetStatusCallback(m.onStatusChange)
+		if err := gw.Start(context.Background()); err != nil {
+			log.Printf("[slack-mgr] start failed: %v", err)
+			m.mu.Lock()
+			m.status = gatewayConnectionStatusError
+			m.lastToken = ""
+			m.lastErr = explainSlackStartError(err)
+			m.mu.Unlock()
+			m.emitStatusEvent()
+			return
+		}
+		m.mu.Lock()
+		m.gateway = gw
+		m.lastToken = cfg.SlackBotToken
+		m.lastErr = ""
+		m.mu.Unlock()
 		return
 	}
-	m.mu.Lock()
-	m.gateway = gw
-	m.lastToken = cfg.SlackBotToken
-	m.lastErr = ""
-	m.mu.Unlock()
 }
 
 func (m *slackGatewayManager) Stop() {
 	if m == nil {
 		return
 	}
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
@@ -113,9 +130,14 @@ func (m *slackGatewayManager) Stop() {
 	m.localHandler = nil
 	m.mu.Unlock()
 	if gw != nil {
-		_ = gw.Stop()
+		releaseIMSyncLock(&m.syncMu, func() { _ = gw.Stop() })
 	}
-	m.emitStatusEvent()
+	m.mu.Lock()
+	replaced := m.gateway != nil
+	m.mu.Unlock()
+	if !replaced {
+		m.emitStatusEvent()
+	}
 }
 
 func (m *slackGatewayManager) connectionError() string {
@@ -373,15 +395,21 @@ func (a *App) ensureSlackGateway() {
 		return
 	}
 	if !cfg.SlackEnabled || strings.TrimSpace(cfg.SlackBotToken) == "" {
-		if a.slackGateway != nil {
-			a.slackGateway.SyncFromConfig()
+		a.imGatewaySyncMu.Lock()
+		m := a.slackGateway
+		a.imGatewaySyncMu.Unlock()
+		if m != nil {
+			m.SyncFromConfig()
 		}
 		return
 	}
+	a.imGatewaySyncMu.Lock()
 	if a.slackGateway == nil {
 		a.slackGateway = newSlackGatewayManager(a)
 	}
-	a.slackGateway.SyncFromConfig()
+	m := a.slackGateway
+	a.imGatewaySyncMu.Unlock()
+	m.SyncFromConfig()
 }
 
 // GetSlackStatus reports the desktop Slack connection.

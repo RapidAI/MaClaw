@@ -29,6 +29,7 @@ import (
 type qqBotGatewayManager struct {
 	app        *App
 	mu         sync.Mutex
+	syncMu     sync.Mutex // SyncFromConfig/Stop; never take while holding mu
 	gateway    *qqbot.Gateway
 	status     gatewayConnectionStatus
 	lastAppID  string
@@ -80,87 +81,103 @@ func (m *qqBotGatewayManager) currentLocalHandler() *IMMessageHandler {
 
 // SyncFromConfig reads the current AppConfig and starts or stops the gateway.
 func (m *qqBotGatewayManager) SyncFromConfig() {
-	cfg, err := m.app.LoadConfig()
-	if err != nil {
-		return
-	}
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
 
-	m.mu.Lock()
+	for {
+		cfg, err := m.app.LoadConfig()
+		if err != nil {
+			return
+		}
 
-	if !cfg.QQBotEnabled || cfg.QQBotAppID == "" || cfg.QQBotAppSecret == "" {
-		// Should be stopped. Publish "disconnected" before Stop returns:
-		// Stop waits for the socket read and any in-flight message handler,
-		// which is what left the workbench chip on "QQ: 已连接".
-		gw := m.gateway
-		if gw != nil {
+		m.mu.Lock()
+
+		if !cfg.QQBotEnabled || cfg.QQBotAppID == "" || cfg.QQBotAppSecret == "" {
+			// Should be stopped. Publish "disconnected" before Stop returns:
+			// Stop waits for the socket read and any in-flight message handler,
+			// which is what left the workbench chip on "QQ: 已连接".
+			gw := m.gateway
+			if gw != nil {
+				m.gateway = nil
+				m.status = gatewayConnectionStatusDisconnected
+				m.mu.Unlock()
+				m.emitStatusEvent()
+				releaseIMSyncLock(&m.syncMu, func() { _ = m.stopGateway(gw) }) // outside m.mu; onGatewayStatus takes it
+				m.mu.Lock()
+				replaced := m.gateway != nil
+				m.mu.Unlock()
+				if replaced {
+					return
+				}
+			} else {
+				m.mu.Unlock()
+			}
+			// Always notify Hub to release gateway claim, even if local gateway
+			// was already nil — Hub may still hold a stale claim from a previous run.
+			if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+				_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformQQBotRemote)
+				log.Printf("[qqbot-mgr] sent gateway unclaim to hub")
+			}
+			return
+		}
+
+		// Should be running — check if credentials actually changed.
+		// Owner openid can change without restarting the WS gateway (resolved via LoadConfig).
+		if m.gateway != nil && m.lastAppID == cfg.QQBotAppID && m.lastSecret == cfg.QQBotAppSecret {
+			m.mu.Unlock()
+			return
+		}
+
+		// Restart with new config. Drop "已连接" before the old socket closes,
+		// otherwise a slow handler keeps the chip online for the whole turn.
+		oldGw := m.gateway
+		m.gateway = nil
+		if oldGw != nil {
+			m.status = gatewayConnectionStatusConnecting
+		}
+		m.mu.Unlock()
+
+		if oldGw != nil {
+			m.emitStatusEvent()
+			releaseIMSyncLock(&m.syncMu, func() { _ = m.stopGateway(oldGw) })
+			continue
+		}
+
+		newCfg := qqbot.Config{
+			AppID:     cfg.QQBotAppID,
+			AppSecret: cfg.QQBotAppSecret,
+		}
+		gw := qqbot.NewGateway(newCfg, m.onIncomingMessage)
+		gw.SetStatusCallback(func(status string) {
+			m.onGatewayStatus(gw, status)
+		})
+
+		m.mu.Lock()
+		m.gateway = gw
+		m.lastAppID = cfg.QQBotAppID
+		m.lastSecret = cfg.QQBotAppSecret
+		m.mu.Unlock()
+
+		if err := gw.Start(context.Background()); err != nil {
+			log.Printf("[qqbot-mgr] start failed: %v", err)
+			m.mu.Lock()
 			m.gateway = nil
-			m.status = gatewayConnectionStatusDisconnected
+			m.lastAppID = ""
+			m.lastSecret = ""
+			m.status = gatewayConnectionStatusError
 			m.mu.Unlock()
 			m.emitStatusEvent()
-			_ = m.stopGateway(gw) // outside the lock; onGatewayStatus takes it
-		} else {
-			m.mu.Unlock()
+			return
 		}
-		// Always notify Hub to release gateway claim, even if local gateway
-		// was already nil — Hub may still hold a stale claim from a previous run.
-		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformQQBotRemote)
-			log.Printf("[qqbot-mgr] sent gateway unclaim to hub")
-		}
-		return
-	}
-
-	// Should be running — check if credentials actually changed.
-	// Owner openid can change without restarting the WS gateway (resolved via LoadConfig).
-	if m.gateway != nil && m.lastAppID == cfg.QQBotAppID && m.lastSecret == cfg.QQBotAppSecret {
-		m.mu.Unlock()
-		return
-	}
-
-	// Restart with new config. Drop "已连接" before the old socket closes,
-	// otherwise a slow handler keeps the chip online for the whole turn.
-	oldGw := m.gateway
-	m.gateway = nil
-	if oldGw != nil {
-		m.status = gatewayConnectionStatusConnecting
-	}
-	m.mu.Unlock()
-
-	if oldGw != nil {
-		m.emitStatusEvent()
-		_ = m.stopGateway(oldGw)
-	}
-
-	newCfg := qqbot.Config{
-		AppID:     cfg.QQBotAppID,
-		AppSecret: cfg.QQBotAppSecret,
-	}
-	gw := qqbot.NewGateway(newCfg, m.onIncomingMessage)
-	gw.SetStatusCallback(func(status string) {
-		m.onGatewayStatus(gw, status)
-	})
-
-	m.mu.Lock()
-	m.gateway = gw
-	m.lastAppID = cfg.QQBotAppID
-	m.lastSecret = cfg.QQBotAppSecret
-	m.mu.Unlock()
-
-	if err := gw.Start(context.Background()); err != nil {
-		log.Printf("[qqbot-mgr] start failed: %v", err)
-		m.mu.Lock()
-		m.gateway = nil
-		m.lastAppID = ""
-		m.lastSecret = ""
-		m.status = gatewayConnectionStatusError
-		m.mu.Unlock()
-		m.emitStatusEvent()
 		return
 	}
 }
 
 // Stop shuts down the gateway.
 func (m *qqBotGatewayManager) Stop() {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
@@ -173,7 +190,7 @@ func (m *qqBotGatewayManager) Stop() {
 	_ = lh // shared App conversation memory remains alive
 	m.emitStatusEvent()
 	if gw != nil {
-		_ = m.stopGateway(gw)
+		releaseIMSyncLock(&m.syncMu, func() { _ = m.stopGateway(gw) })
 	}
 }
 
@@ -722,15 +739,21 @@ func (a *App) ensureQQBotGateway() {
 	if !cfg.QQBotEnabled || cfg.QQBotAppID == "" || cfg.QQBotAppSecret == "" {
 		// Not configured — skip creating the manager entirely.
 		// If there's an existing manager (user just disabled), let it sync to stop.
-		if a.qqBotGateway != nil {
-			a.qqBotGateway.SyncFromConfig()
+		a.imGatewaySyncMu.Lock()
+		m := a.qqBotGateway
+		a.imGatewaySyncMu.Unlock()
+		if m != nil {
+			m.SyncFromConfig()
 		}
 		return
 	}
+	a.imGatewaySyncMu.Lock()
 	if a.qqBotGateway == nil {
 		a.qqBotGateway = newQQBotGatewayManager(a)
 	}
-	a.qqBotGateway.SyncFromConfig()
+	m := a.qqBotGateway
+	a.imGatewaySyncMu.Unlock()
+	m.SyncFromConfig()
 }
 
 // GetQQBotStatus returns the current QQ Bot gateway status (Wails binding).

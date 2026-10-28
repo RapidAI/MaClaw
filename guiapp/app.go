@@ -2486,10 +2486,10 @@ func (a *App) prepareHubClientSync() {
 
 // asyncHubConnect performs Hub WebSocket connection, authentication, and post-connect
 // setup in a background goroutine. This is the network I/O portion that was previously
-// blocking startup(). After successful auth, it emits the "ready" event and starts
-// IM gateways. sendMachineHelloLocked() runs in a separate goroutine so it doesn't
-// delay the "ready" signal. On failure, the system operates in degraded mode (local
-// features work).
+// blocking startup(). After successful auth, it emits the "ready" event and refreshes
+// IM gateway claims. Startup already opened the sockets. sendMachineHelloLocked()
+// runs in a separate goroutine so it doesn't delay the "ready" signal. On failure,
+// the system operates in degraded mode (local features, including those sockets, work).
 func (a *App) asyncHubConnect() {
 	connectStart := time.Now()
 	log.Printf("[asyncHubConnect] starting Hub connection in background")
@@ -2507,9 +2507,8 @@ func (a *App) asyncHubConnect() {
 	err := hubClient.ConnectAuthOnly()
 	if err != nil {
 		log.Printf("[asyncHubConnect] Hub auth failed in %v: %v -operating in degraded mode", time.Since(connectStart), err)
-		// Degraded mode: local LLM, local tools still work. Only Hub-dependent
-		// features (IM relay, remote session sync, scheduled task push to IM
-		// channels) are unavailable until reconnection succeeds.
+		// Degraded mode: local LLM, local tools, and the IM sockets started
+		// during GUI startup still work. Hub relay waits for reconnect.
 		a.emitEvent("ai-assistant-init-progress", "degraded")
 		return
 	}
@@ -2544,7 +2543,8 @@ func (a *App) asyncHubConnect() {
 		log.Printf("[asyncHubConnect] sendMachineHelloLocked done in %v", time.Since(helloStart))
 	}()
 
-	// Start IM gateways after successful Hub connection.
+	// Refresh IM gateways now that Hub can accept claims. Startup already opened
+	// the sockets; this is idempotent when nothing in config changed.
 	a.syncIMGatewaysFromConfig()
 }
 
@@ -2723,15 +2723,37 @@ func (a *App) IsToolBeingInstalled(toolName string) bool {
 }
 
 func (a *App) syncIMGatewaysFromConfig() {
-	a.imGatewaySyncMu.Lock()
-	defer a.imGatewaySyncMu.Unlock()
+	// Each channel serializes itself. imGatewaySyncMu stays with the
+	// third-party listener and the hardware controls that share it: holding
+	// that lock across a Lansenger token fetch or Slack auth check also
+	// stalled Hub's post-connect hardware sync and status reads.
+	var wg sync.WaitGroup
+	start := func(fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn()
+		}()
+	}
+	start(a.ensureQQBotGateway)
+	start(a.ensureTelegramGateway)
+	start(a.ensureSlackGateway)
+	start(a.ensureWeixinGateway)
+	start(a.ensureLansengerGateway)
+	start(a.ensureThirdPartyGateway)
+	wg.Wait()
+}
 
-	a.ensureQQBotGateway()
-	a.ensureTelegramGateway()
-	a.ensureSlackGateway()
-	a.ensureWeixinGateway()
-	a.ensureLansengerGateway()
-	a.ensureThirdPartyGatewayLocked()
+// releaseIMSyncLock runs stop without holding mu. The caller must hold mu.
+// Gateway Stop waits for in-flight message handlers, and a handler can call
+// SyncFromConfig to send a reply. Keeping mu across that wait deadlocks the handler.
+func releaseIMSyncLock(mu *sync.Mutex, stop func()) {
+	if stop == nil {
+		return
+	}
+	mu.Unlock()
+	defer mu.Lock()
+	stop()
 }
 
 // startup is called when the app starts. The context is saved
@@ -2842,6 +2864,11 @@ func (a *App) startup(ctx context.Context) {
 		waitForFirstPaintOrTimeout(1500 * time.Millisecond)
 		logStartupPhase("first-paint yield", paintWaitStart, startupBegin)
 
+		// Open saved IM channels after the first frame, in parallel with the
+		// embedding load below. Hub registration does not gate this; auth only
+		// refreshes claims once the sockets are up.
+		go a.syncIMGatewaysFromConfig()
+
 		// Synchronous embedding engine initialization: ensure the intent classifier
 		// has Layer 2 (embedding) ready BEFORE the UI becomes interactive.
 		// This prevents the cold-start window where BM25 noise can trigger wrong
@@ -2914,14 +2941,6 @@ func (a *App) startup(ctx context.Context) {
 		// Keep the AI assistant in a lightweight "connecting" state until the
 		// user actually opens or uses it; avoid pre-warming the full interaction
 		// stack during startup because it eagerly loads memory-heavy services.
-		// Auto-start IM gateways that were previously enabled.
-		// If Hub is connected, createAndWireHubClient already started them;
-		// only start here when Hub credentials are absent (pure local mode).
-		if config.RemoteMachineID == "" || config.RemoteMachineToken == "" || config.RemoteHubURL == "" {
-			go func() {
-				a.syncIMGatewaysFromConfig()
-			}()
-		}
 		// Mode B: loopback ACP host so VS Code can use GUI AI assistant as programming agent.
 		go func() {
 			// Defer slightly so hub/IM handler warmup can begin first.

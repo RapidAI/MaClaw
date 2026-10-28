@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,6 +44,83 @@ func TestLansengerStatusNeedsWatchdogRestart(t *testing.T) {
 		if lansengerStatusNeedsWatchdogRestart(status) {
 			t.Fatalf("status %q should not trigger stale-status watchdog restart", status)
 		}
+	}
+}
+
+func TestLansengerSyncKeepsGatewayWhileSocketIsStillConnecting(t *testing.T) {
+	var tokenHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/apptoken/create" {
+			tokenHits.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errCode": 0,
+				"data":    map[string]any{"appToken": "tok", "expiresIn": 3600},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := corelib.LansengerBotProfile{
+		ID: "desk", Enabled: true, AppID: "app", AppSecret: "sec", GatewayURL: srv.URL,
+	}
+	manager := newLansengerGatewayManagerForProfile(app, profile)
+	t.Cleanup(func() { manager.Stop() })
+
+	manager.syncFromConfig(false)
+	manager.syncFromConfig(false)
+	if got := tokenHits.Load(); got != 1 {
+		t.Fatalf("app-token fetches = %d, want 1 (second sync restarted a live gateway)", got)
+	}
+	if manager.Status() == gatewayConnectionStatusError.String() || manager.Status() == gatewayConnectionStatusDisconnected.String() {
+		t.Fatalf("status = %s, want the in-flight connection kept", manager.Status())
+	}
+}
+
+func TestLansengerFailedStartArmsWatchdogAndRetries(t *testing.T) {
+	var tokenHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/apptoken/create" {
+			tokenHits.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 1, "errMsg": "nope"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := corelib.LansengerBotProfile{
+		ID: "desk", Enabled: true, AppID: "app", AppSecret: "sec", GatewayURL: srv.URL,
+	}
+	manager := newLansengerGatewayManagerForProfile(app, profile)
+	t.Cleanup(func() { manager.Stop() })
+
+	manager.syncFromConfig(false)
+	if manager.Status() != gatewayConnectionStatusError.String() {
+		t.Fatalf("status = %s, want error", manager.Status())
+	}
+	manager.mu.Lock()
+	armed := manager.healthCancel != nil
+	manager.mu.Unlock()
+	if !armed {
+		t.Fatal("health monitor not armed after start failure")
+	}
+	if got := tokenHits.Load(); got != 1 {
+		t.Fatalf("app-token fetches = %d, want 1", got)
+	}
+
+	manager.syncFromConfig(false)
+	if got := tokenHits.Load(); got != 2 {
+		t.Fatalf("app-token fetches = %d, want 2 (failed start was treated as already running)", got)
 	}
 }
 
