@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -31,7 +32,19 @@ type SQLiteStore struct {
 	path   string
 	inner  *MemoryStore
 	closed bool
+	// loaded names the committed row inner was built from. A read whose row
+	// still has the same updated_at and length reuses inner instead of
+	// parsing the whole state document again (papers: 18.9 MB per read kept
+	// MaClawSrv above 100% CPU with no traffic to speak of).
+	loaded sqliteStateStamp
 }
+
+type sqliteStateStamp struct {
+	updatedAt string
+	size      int64
+}
+
+func (a sqliteStateStamp) valid() bool { return a.updatedAt != "" }
 
 const sqliteStoreStateVersion = 1
 
@@ -126,16 +139,36 @@ func (s *SQLiteStore) refreshLocked() error {
 	if err := s.ensureOpenLocked(); err != nil {
 		return err
 	}
-	var payload []byte
 	var version int
-	if err := s.db.QueryRow(`SELECT schema_version, state_json FROM agentservice_state WHERE id=1`).Scan(&version, &payload); err != nil {
+	var stamp sqliteStateStamp
+	if err := s.db.QueryRow(`SELECT schema_version, updated_at, length(state_json) FROM agentservice_state WHERE id=1`).Scan(&version, &stamp.updatedAt, &stamp.size); err != nil {
 		return err
 	}
 	if version != sqliteStoreStateVersion {
 		return fmt.Errorf("unsupported agentservice SQLite state schema version %d", version)
 	}
-	return s.applyState(payload)
+	if stamp.valid() && stamp == s.loaded && s.inner != nil {
+		return nil
+	}
+	var payload []byte
+	// Same length() expression as the probe, so a TEXT row compares too.
+	if err := s.db.QueryRow(`SELECT schema_version, updated_at, length(state_json), state_json FROM agentservice_state WHERE id=1`).Scan(&version, &stamp.updatedAt, &stamp.size, &payload); err != nil {
+		return err
+	}
+	if version != sqliteStoreStateVersion {
+		return fmt.Errorf("unsupported agentservice SQLite state schema version %d", version)
+	}
+	if err := s.applyState(payload); err != nil {
+		s.loaded = sqliteStateStamp{}
+		return err
+	}
+	s.loaded = stamp
+	sqliteStateParses.Add(1)
+	return nil
 }
+
+// sqliteStateParses counts full state parses on the read path (tests).
+var sqliteStateParses atomic.Int64
 
 func (s *SQLiteStore) read(fn func(*MemoryStore) error) error {
 	if s == nil {
@@ -199,13 +232,15 @@ func (s *SQLiteStore) writeOnceLocked(fn func(*MemoryStore) error) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE agentservice_state SET schema_version=?, state_json=?, updated_at=? WHERE id=1`, sqliteStoreStateVersion, next, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	stamp := sqliteStateStamp{updatedAt: time.Now().UTC().Format(time.RFC3339Nano), size: int64(len(next))}
+	if _, err := tx.Exec(`UPDATE agentservice_state SET schema_version=?, state_json=?, updated_at=? WHERE id=1`, sqliteStoreStateVersion, next, stamp.updatedAt); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	s.inner = working
+	s.loaded = stamp
 	return nil
 }
 
