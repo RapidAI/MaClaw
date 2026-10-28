@@ -35,6 +35,8 @@ func TestFileCompanionPendingShareNotesKeepsOnlyUnansweredReaderNotes(t *testing
 	notes := []FileCompanionShareNote{
 		{ID: "cn_old", Author: "reader", Text: "旧批注", CreatedAt: "2026-10-27T09:00:00Z"},
 		{ID: "cn_new", Author: "reader", Text: "新批注", CreatedAt: "2026-10-27T10:01:00Z"},
+		{ID: "cn_held", Author: "reader", Text: "待审核", CreatedAt: "2026-10-27T10:01:30Z", Decision: "pending"},
+		{ID: "cn_skip", Author: "reader", Text: "已忽略", CreatedAt: "2026-10-27T10:01:40Z", Decision: "ignored"},
 		{ID: "cn_host", Author: "host", Text: "主持人的话", CreatedAt: "2026-10-27T10:02:00Z", Host: true},
 		{ID: "cn_answered", Author: "reader", Text: "已经被回答", CreatedAt: "2026-10-27T10:03:00Z"},
 		{ID: "cn_reply", Author: "host", Text: "回答", CreatedAt: "2026-10-27T10:04:00Z", Host: true, ReplyTo: "cn_answered"},
@@ -226,6 +228,138 @@ func TestPollFileCompanionShareDiscussionsSkipsANoteIgnoredBeforeTheTurn(t *test
 	}
 	if questions != 0 {
 		t.Fatalf("ignored note reached the agent: questions=%d", questions)
+	}
+}
+
+func TestPollFileCompanionShareDiscussionsSkipsAnIgnoreWhenTheReviewFlagIsMissing(t *testing.T) {
+	const token = "cd_dddddddddddddddddddddddddddddddd"
+	resetFileCompanionShareDiscussionLimits(token)
+	t.Cleanup(func() { resetFileCompanionShareDiscussionLimits(token) })
+	now := time.Now().UTC()
+	var mu sync.Mutex
+	gets := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/mobile/documents/shares" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		gets++
+		decision := "approved"
+		if gets > 1 {
+			decision = "ignored"
+		}
+		payload := map[string]any{
+			"notes_reply": true,
+			"mine": []map[string]any{{
+				"token": token, "name": "a.pdf", "owner": "o", "visibility": "group",
+				"permanent": true, "revision": 1, "notes_revision": gets,
+				"notes": []map[string]any{{
+					"id": "cn_late", "author": "reader@example.com", "text": "不该进入模型",
+					"created_at": now.Add(-time.Minute).Format(time.RFC3339), "decision": decision,
+				}},
+			}},
+			"received": []any{},
+		}
+		body, _ := json.Marshal(payload)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	source := filepath.Join(t.TempDir(), "a.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: source, Source: "cloud", Mine: true, Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := fileCompanionShareDiscussionModelHook
+	t.Cleanup(func() { fileCompanionShareDiscussionModelHook = oldHook })
+	questions := 0
+	fileCompanionShareDiscussionModelHook = func(msg IMUserMessage) (*IMAgentResponse, error) {
+		questions++
+		return &IMAgentResponse{Text: "不该出现的回答"}, nil
+	}
+	if _, err := app.pollFileCompanionShareDiscussions(); err != nil {
+		t.Fatal(err)
+	}
+	if questions != 0 {
+		t.Fatalf("ignored note reached the agent without notes_review: questions=%d", questions)
+	}
+}
+
+func TestPollFileCompanionShareDiscussionsHoldsPendingNotesWhenTheReviewFlagIsMissing(t *testing.T) {
+	const token = "cd_abababababababababababababababab"
+	resetFileCompanionShareDiscussionLimits(token)
+	t.Cleanup(func() { resetFileCompanionShareDiscussionLimits(token) })
+	now := time.Now().UTC()
+	var posts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			body, _ := json.Marshal(map[string]any{
+				"notes_reply": true,
+				"mine": []map[string]any{{
+					"token": token, "name": "a.pdf", "owner": "o", "visibility": "group",
+					"permanent": true, "revision": 1, "notes_revision": 1,
+					"notes": []map[string]any{
+						{"id": "cn_wait", "author": "phone:17090134628", "text": "作者是谁？", "created_at": now.Add(-2 * time.Minute).Format(time.RFC3339), "decision": "pending"},
+						{"id": "cn_ok", "author": "phone:17090134628", "text": "已通过的问题", "created_at": now.Add(-time.Minute).Format(time.RFC3339), "decision": "approved"},
+					},
+				}},
+				"received": []any{},
+			})
+			_, _ = w.Write(body)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/mobile/documents/shares/"+token+"/notes":
+			var post struct {
+				ReplyTo string `json:"reply_to"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&post)
+			posts = append(posts, post.ReplyTo)
+			_, _ = w.Write([]byte(`{"notes":[],"notes_revision":2}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	source := filepath.Join(t.TempDir(), "a.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: source, Source: "cloud", Mine: true, Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := fileCompanionShareDiscussionModelHook
+	t.Cleanup(func() { fileCompanionShareDiscussionModelHook = oldHook })
+	questions := 0
+	fileCompanionShareDiscussionModelHook = func(msg IMUserMessage) (*IMAgentResponse, error) {
+		questions++
+		if strings.Contains(msg.Text, "作者是谁") {
+			t.Fatalf("pending note reached the agent without approval: %q", msg.Text)
+		}
+		return &IMAgentResponse{Text: "回答已通过的问题"}, nil
+	}
+	if _, err := app.pollFileCompanionShareDiscussions(); err != nil {
+		t.Fatal(err)
+	}
+	if questions != 1 || len(posts) != 1 || posts[0] != "cn_ok" {
+		t.Fatalf("questions=%d posts=%v", questions, posts)
 	}
 }
 

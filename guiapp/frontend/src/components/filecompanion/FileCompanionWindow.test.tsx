@@ -8,6 +8,7 @@ import FileCompanionWindow, {
     clampCompanionChatWidth,
     clampCompanionTabScroll,
     companionLibraryPollFast,
+    companionAnnotationMarkdown,
     companionMessageReview,
     companionOpenSetPaths,
     companionTabEndsFromBoxes,
@@ -15,6 +16,7 @@ import FileCompanionWindow, {
     companionTabScrollEnds,
     revealCompanionTab,
 } from "./FileCompanionWindow";
+import { normalizeInlineListMarkers } from "../ai/aiAssistantMarkdownNormalize";
 import { finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
 import { ToastProvider } from "../Toast";
 import { DialogProvider } from "../CustomDialog";
@@ -4020,6 +4022,59 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(reviewShareNote).toHaveBeenCalledWith("cd_0123456789abcdef0123456789abcdef", "cn_pending", "approve"));
         expect((await screen.findByTestId("file-companion-annotation-approved-cn_pending")).textContent).toContain("已通过");
         expect(screen.queryByTestId("file-companion-annotation-approve-cn_pending")).toBeNull();
+    });
+
+    it("the host sees pass and ignore when the review flag is missing but the note is pending", async () => {
+        const note = { id: "cn_phone", author: "phone:17090134628", text: "作者是谁？", createdAt: "2026-10-25T00:00:00Z", decision: "pending" };
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: true,
+                host: true,
+                notesRevision: 1,
+                notes: [note],
+            }],
+            notice: "",
+            notesReply: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("作者是谁？");
+        expect(screen.getByTestId("file-companion-host-badge").textContent).toBe("你是主持人");
+        expect(screen.getByTestId("file-companion-annotation-approve-cn_phone")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-annotation-ignore-cn_phone")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-annotations").textContent).toContain("待审核 1");
+    });
+
+    it("renders markdown in the annotation panel", async () => {
+        const note = { id: "cn_md", author: "364479@qq.com", text: "这篇综述是**单作者**完成的。\n**Daniel Garcia\nPeña**", createdAt: "2026-10-25T00:00:00Z", host: true };
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notesRevision: 1,
+                notes: [note],
+            }],
+            notice: "",
+            notesReply: true,
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        const body = await screen.findByTestId("file-companion-annotation-body-cn_md");
+        const strong = [...body.querySelectorAll("strong")].map((node) => node.textContent);
+        expect(strong).toContain("单作者");
+        expect(strong).toContain("Daniel Garcia Peña");
+        expect(body.textContent).not.toContain("**");
+        expect(screen.getByTestId("file-companion-annotation-cn_md").textContent).toContain("主持人");
     });
 
     it("the host can ignore a reader note and the participant sees the marker", async () => {
@@ -8443,5 +8498,25 @@ describe("companion titlebar keeps its controls out of the window drag region", 
         const source = css();
         expect(source).toMatch(/\.file-companion-library-anchor\s*\{[^}]*gap:\s*8px/);
         expect(declaresNoDrag(source, ".file-companion-library-anchor")).toBe(true);
+    });
+});
+
+describe("companionAnnotationMarkdown", () => {
+    it("joins a name broken across a line and keeps CJK bold together", () => {
+        expect(companionAnnotationMarkdown("**Daniel Garcia\nPeña**")).toBe("**Daniel Garcia Peña**");
+        expect(companionAnnotationMarkdown("**单一作\n者**")).toBe("**单一作者**");
+    });
+
+    it("does not glue a following list or a fenced block into the bold", () => {
+        expect(companionAnnotationMarkdown("**未闭合\n- 列表项")).toBe("**未闭合\n- 列表项");
+        expect(companionAnnotationMarkdown("**未闭合\n\n下一段")).toBe("**未闭合\n\n下一段");
+        expect(companionAnnotationMarkdown("```\n**keep\nme**\n```")).toBe("```\n**keep\nme**\n```");
+    });
+
+    it("keeps a wrapped name bold after the chat list normalizer", () => {
+        const raw = "这篇综述是**单一作者**完成的： **Daniel Garcia\nPeña** - 联系邮箱： info@iamdgarcia.com - ORCID：\n0000-0002-1456-4785 - 封面日期： June 16, 2026 -";
+        const prepared = normalizeInlineListMarkers(companionAnnotationMarkdown(raw));
+        expect(prepared).toContain("**Daniel Garcia Peña**");
+        expect(prepared).toContain("**单一作者**");
     });
 });

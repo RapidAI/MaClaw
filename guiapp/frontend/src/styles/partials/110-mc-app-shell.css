@@ -6862,7 +6862,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-annotations {
   flex: 0 0 auto;
-  max-height: 140px;
+  max-height: 260px;
   overflow: auto;
   margin: 0 12px 8px;
   padding: 8px 10px;
@@ -6878,8 +6878,12 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-annotations-author {
   display: block;
+  margin: 0 0 2px;
   color: var(--theme-text-muted);
   font-size: 11px;
+}
+.file-companion-annotation-row .file-companion-annotations-author {
+  margin: 0 0 2px;
 }
 .file-companion-annotations p {
   margin: 0 0 6px;
@@ -6897,6 +6901,26 @@ body.companion-pdf-translation-dragging * {
   margin: 0 0 7px;
 }
 .file-companion-annotation-row p {
+  margin: 0;
+}
+.file-companion-annotation-body {
+  color: var(--theme-text);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.file-companion-annotation-body p {
+  margin: 0 0 4px;
+}
+.file-companion-annotation-body p:last-child {
+  margin-bottom: 0;
+}
+.file-companion-annotation-body ul,
+.file-companion-annotation-body ol {
+  margin: 0 0 4px;
+  padding-left: 1.2em;
+}
+.file-companion-annotation-body li {
   margin: 0;
 }
 .file-companion-annotation-status {

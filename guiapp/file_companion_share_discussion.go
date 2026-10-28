@@ -187,8 +187,12 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 		if answered >= fileCompanionShareDiscussionPerPoll {
 			break
 		}
+		// A note that already carries a decision is in review, even when the
+		// list omitted notes_review. Pending and ignored lines must not be
+		// answered just because the capability flag was missing.
+		itemReview := reviewSupported || fileCompanionNotesCarryDecision(item.Notes)
 		pending := fileCompanionPendingShareNotes(item.Notes, since[item.Token])
-		if reviewSupported {
+		if itemReview {
 			// With host review the watermark does not apply to an approved
 			// note: the host looked at it and chose to answer it, even if it
 			// was written before this machine installed the feature.
@@ -248,7 +252,7 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 			continue
 		}
 		context := item.Notes
-		if reviewSupported {
+		if itemReview {
 			// The list above can be minutes old: an earlier note in this poll
 			// may still be in the model. Ask again before spending a turn, so
 			// an ignore that landed in that window never reaches the agent.
@@ -314,10 +318,28 @@ func fileCompanionPendingShareNotes(notes []FileCompanionShareNote, since time.T
 		if err != nil || !created.After(since) {
 			continue
 		}
+		// An explicit hold is not an old note. The watermark path is only for
+		// hubs that do not send a decision at all.
+		switch strings.TrimSpace(strings.ToLower(note.Decision)) {
+		case "pending", "ignored":
+			continue
+		}
 		out = append(out, note)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out
+}
+
+// fileCompanionNotesCarryDecision reports that this share's notes already use
+// host review. The list flag can be missing from a response; the decision on
+// the note is enough to keep a pending line away from the agent.
+func fileCompanionNotesCarryDecision(notes []FileCompanionShareNote) bool {
+	for _, note := range notes {
+		if strings.TrimSpace(note.Decision) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // fileCompanionApprovedShareNotes returns the notes the host passed and that
@@ -404,7 +426,7 @@ func forgetFileCompanionShareDiscussionUnlessApproved(token string, notes []File
 // note was ignored while the turn ran.
 func (a *App) refreshFileCompanionApprovedNote(hub, viewer, token, noteID string, fallback FileCompanionShareNote, fallbackNotes []FileCompanionShareNote) (FileCompanionShareNote, []FileCompanionShareNote, bool) {
 	items, _, reviewOn, _, err := a.fetchFileCompanionShareList(hub, viewer)
-	if err != nil || !reviewOn {
+	if err != nil {
 		return fallback, fallbackNotes, true
 	}
 	token = strings.TrimSpace(token)
@@ -412,6 +434,12 @@ func (a *App) refreshFileCompanionApprovedNote(hub, viewer, token, noteID string
 	for _, item := range items {
 		if strings.TrimSpace(item.Token) != token {
 			continue
+		}
+		// A list that neither flags review nor stores a decision is the old
+		// watermark path. Keep the note already chosen. A decision on the
+		// fresh notes is enough even when the flag itself was left off.
+		if !reviewOn && !fileCompanionNotesCarryDecision(item.Notes) {
+			return fallback, fallbackNotes, true
 		}
 		for _, note := range fileCompanionApprovedShareNotes(item.Notes) {
 			if strings.TrimSpace(note.ID) == noteID {

@@ -1605,6 +1605,92 @@ function companionPendingReviewCount(notes: CompanionShareNote[] | undefined): n
     return list.filter((note) => !note.host && ((note.decision ?? "") === "pending" || (note.decision ?? "") === "") && !list.some((other) => other.host && other.replyTo === note.id)).length;
 }
 
+function companionBoldMarkCount(line: string): number {
+    let count = 0;
+    for (let i = 0; i < line.length - 1; i++) {
+        if (line[i] === "*" && line[i + 1] === "*") {
+            count++;
+            i++;
+        }
+    }
+    return count;
+}
+
+function companionBoldContinues(line: string): boolean {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    if (/^(?:[-*+]|\u2022|\u00b7)\s/.test(trimmed)) return false;
+    if (/^\d+[.)]\s/.test(trimmed)) return false;
+    if (/^#{1,6}\s/.test(trimmed)) return false;
+    if (trimmed.startsWith(">") || trimmed.startsWith("|")) return false;
+    return true;
+}
+
+function companionJoinBoldLine(prev: string, next: string): string {
+    if (prev.endsWith(" ") || prev.endsWith("\u3000")) return prev + next;
+    const prevLast = prev.match(/.$/u)?.[0] ?? "";
+    const nextFirst = next.match(/^./u)?.[0] ?? "";
+    if (/[\p{Script=Han}]/u.test(prevLast) && /[\p{Script=Han}]/u.test(nextFirst)) return prev + next;
+    return `${prev} ${next}`;
+}
+
+// The chat painter only recognizes **bold** on a single line. A host reply
+// often breaks a name across the wrap, which would otherwise leave the
+// asterisks on screen. Join a short prose continuation only: a blank line,
+// a list, or a heading ends the bold instead of being glued into it.
+export function companionAnnotationMarkdown(text: string): string {
+    if (!text.includes("**")) return text;
+    const lines = text.split("\n");
+    const out: string[] = [];
+    let open = false;
+    let joined = 0;
+    let fence = false;
+    for (const line of lines) {
+        const trimmed = line.trimStart();
+        if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+            fence = !fence;
+            open = false;
+            joined = 0;
+            out.push(line);
+            continue;
+        }
+        if (fence) {
+            out.push(line);
+            continue;
+        }
+        const marks = companionBoldMarkCount(line);
+        if (open) {
+            if (joined < 3 && companionBoldContinues(line)) {
+                out[out.length - 1] = companionJoinBoldLine(out[out.length - 1], line.trimStart());
+                joined++;
+                if (marks % 2 === 1) {
+                    open = false;
+                    joined = 0;
+                }
+                continue;
+            }
+            open = false;
+            joined = 0;
+        }
+        out.push(line);
+        open = marks % 2 === 1;
+        joined = 0;
+    }
+    return out.join("\n");
+}
+
+// A stored note does not stream. Memoize the parse so typing in the composer
+// does not re-render every annotation, and drop the blank-line spacers the
+// chat uses: this strip is only a few lines tall.
+const CompanionAnnotationBody = memo(function CompanionAnnotationBody({ noteId, text, theme }: { noteId: string; text: string; theme: Parameters<typeof renderContentWithCodeBlocks>[1] }) {
+    const body = useMemo(() => renderContentWithCodeBlocks(companionAnnotationMarkdown(text), theme, { omitBlankSpacers: true }), [text, theme]);
+    return (
+        <div className="file-companion-annotation-body" data-testid={`file-companion-annotation-body-${noteId}`}>
+            {body}
+        </div>
+    );
+});
+
 function sameShareNotes(left: CompanionShareNote[], right: CompanionShareNote[]): boolean {
     if (left.length !== right.length) return false;
     for (let i = 0; i < left.length; i++) {
@@ -2250,7 +2336,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const notesReply = listedRecord ? (listedRecord.notesReply ?? listedRecord.NotesReply) : undefined;
         if (typeof notesReply === "boolean") notesReplyRef.current = notesReply;
         const notesReviewFlag = listedRecord ? (listedRecord.notesReview ?? listedRecord.NotesReview) : undefined;
-        if (typeof notesReviewFlag === "boolean") setNotesReview((current) => current === notesReviewFlag ? current : notesReviewFlag);
+        // A note that already says pending/approved/ignored is in review, even
+        // when this list left the capability flag off. The host still has to
+        // pass it before the agent sees it.
+        const notesImplyReview = companionShareNotes(listed).some((row) => row.notes.some((note) => (note.decision ?? "") !== ""));
+        if (notesReviewFlag === true || notesImplyReview) setNotesReview(true);
+        else if (notesReviewFlag === false) setNotesReview(false);
         // 文档管理 paints this same snapshot. The window poll lands here too,
         // so an expiry or a share made elsewhere reaches an open library list.
         // A closed library does not need it, and skipping it keeps a poll from
@@ -3268,7 +3359,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 return {
                     id: `share-note-${note.id}`,
                     role: "assistant" as const,
-                    text: note.text,
+                    text: companionAnnotationMarkdown(note.text),
                     discussion: {
                         askedBy: (target?.author || "读者").trim(),
                         question: question.length > 120 ? `${question.slice(0, 120)}…` : question,
@@ -3278,7 +3369,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     }, [activeTab?.shareToken, activeTab?.shareMine, activeTab?.notes]);
     // One note labels one chat line. The set lives for this render only.
     const messageReviewUsed = new Set<string>();
-    const pendingReviewCount = activeTab?.shareMine && notesReview ? companionPendingReviewCount(activeTab.notes) : 0;
+    const hostReviewer = Boolean(activeTab?.shareMine) || Boolean(readHost?.mine);
+    // The list flag can be missing. A decision already stored on the note is
+    // the same fact: this share waits for the host before the agent runs.
+    const reviewOn = notesReview || (activeTab?.notes ?? []).some((note) => (note.decision ?? "") !== "");
+    const pendingReviewCount = hostReviewer && reviewOn ? companionPendingReviewCount(activeTab?.notes) : 0;
     // Marks only apply to the document they were painted on.
     const chatMarks = chatMarksState.path === active ? chatMarksState.marks : NO_CHAT_MARKS;
     const chatMarksRef = useRef(chatMarks);
@@ -4082,7 +4177,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     if (!notePhrase) {
                         void publishShareNoteRef.current(tabPath, shareNoteText).then((posted) => {
                             if (!posted || !hostThread) return;
-                            showToast(notesReview ? "已发给主持人审核，通过后由主持人 Agent 回复" : "已发给主持人 Agent，回复会作为批注同步给参与者", "success", 6000);
+                            // The list flag can still be missing. The note just
+                            // saved already says pending when the host has to
+                            // pass it, which is the fact the toast should use.
+                            const saved = shareByPathRef.current.get(key)?.notes ?? [];
+                            const waitsForReview = saved.some((note) => !note.host && (note.decision ?? "") !== "");
+                            showToast(waitsForReview || notesReview ? "已发给主持人审核，通过后由主持人 Agent 回复" : "已发给主持人 Agent，回复会作为批注同步给参与者", "success", 6000);
                         });
                     }
                 }
@@ -5615,7 +5715,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                 // Both controls work on finished Markdown. Mid-stream text would copy a
                                                 // half answer, and the paper reply exports through its own result card.
                                                 const shareable = !mine && !streaming && !message.resultPath && !paperPending && answerText.trim().length > 0;
-                                                const messageReview = mine && !activeTab.shareMine && notesReview
+                                                const messageReview = mine && !activeTab.shareMine && reviewOn
                                                     ? companionMessageReview(message.text, activeTab.notes, messageReviewUsed)
                                                     : null;
                                                 return (
@@ -5748,28 +5848,29 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     const answered = activeTab.notes?.some((other) => other.host && other.replyTo === note.id) ?? false;
                                     const decision = note.host ? "" : (note.decision ?? "");
                                     const waitingForReview = !note.host && !answered && (decision === "pending" || decision === "");
-                                    const canReview = Boolean(activeTab.shareMine) && notesReview && waitingForReview;
+                                    // The title-bar badge and this list can disagree when one file
+                                    // belongs to more than one share. Either one means this
+                                    // person holds the host seat for the open document.
+                                    const canReview = hostReviewer && reviewOn && waitingForReview;
                                     // A mistaken ignore can be taken back while no answer exists;
                                     // the Hub refuses once a reply was posted.
-                                    const canReopen = Boolean(activeTab.shareMine) && notesReview && !note.host && decision === "ignored" && !answered;
+                                    const canReopen = hostReviewer && reviewOn && !note.host && decision === "ignored" && !answered;
                                     // An accidental pass can be taken back until the agent has
                                     // posted. After that the Hub rejects another review.
-                                    const canWithdraw = Boolean(activeTab.shareMine) && notesReview && !note.host && decision === "approved" && !answered;
+                                    const canWithdraw = hostReviewer && reviewOn && !note.host && decision === "approved" && !answered;
                                     return (
                                         <div key={note.id} className="file-companion-annotation-row" data-testid={`file-companion-annotation-${note.id}`}>
-                                            <p>
-                                                <span className="file-companion-annotations-author">
-                                                    {note.host ? `主持人${note.author ? ` · ${note.author}` : ""}` : note.author || "读者"}
-                                                </span>
-                                                {note.text}
+                                            <p className="file-companion-annotations-author">
+                                                {note.host ? `主持人${note.author ? ` · ${note.author}` : ""}` : note.author || "读者"}
                                             </p>
+                                            <CompanionAnnotationBody noteId={note.id} text={note.text} theme={appearance.assistantTheme} />
                                             {!note.host && decision === "ignored" ? (
                                                 <span className="file-companion-annotation-status" data-tone="ignored" data-testid={`file-companion-annotation-ignored-${note.id}`}>主持人已忽略这条批注</span>
                                             ) : null}
                                             {!note.host && decision === "approved" && !answered ? (
                                                 <span className="file-companion-annotation-status" data-tone="approved" data-testid={`file-companion-annotation-approved-${note.id}`}>已通过，等待主持人 Agent 回复</span>
                                             ) : null}
-                                            {!note.host && waitingForReview && !activeTab.shareMine && notesReview ? (
+                                            {!note.host && waitingForReview && !hostReviewer && reviewOn ? (
                                                 <span className="file-companion-annotation-status" data-tone="pending" data-testid={`file-companion-annotation-pending-${note.id}`}>等待主持人审核</span>
                                             ) : null}
                                             {canReview ? (
