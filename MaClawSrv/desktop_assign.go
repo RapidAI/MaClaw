@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -115,7 +116,7 @@ func desktopSayHint() string {
 	if !desktopSayOn() {
 		return ""
 	}
-	return " action=say with message (and room for a group room) speaks to the person directly; say only what is new to them (Hub refuses a repeat of what another bot already said)."
+	return " action=say with message (and room for a group room) speaks to the person directly; say only what is new to them (Hub refuses a repeat of what another bot already said). One say per run: put the result in that one message. A later say in the same run is refused unless it carries update=true for information the person has not had yet."
 }
 
 func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[string]any) (string, error) {
@@ -136,6 +137,13 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 	}
 	runKey := inst.ID + "|" + firstNonEmptyString(strings.TrimSpace(request.Scope.RunID), strings.TrimSpace(request.Scope.SessionID))
 	room := strings.TrimSpace(desktopArg(args, "room"))
+	// Hub only refuses near-identical text, so a reworded repeat of the same
+	// result got through (seen live: one assignment, three says). The run is
+	// the assignment's unit of work: it gets one say, plus one marked update.
+	update := strings.EqualFold(strings.TrimSpace(desktopArg(args, "update")), "true")
+	if !desktopSayRuns.allow(runKey+"|"+room, update, time.Now()) {
+		return "SKIPPED already_said_this_run: you already told the person in this run. Do not say it again; only call say with update=true if there is information they have not had yet.", nil
+	}
 	body := map[string]any{
 		"tenant_id":   strings.TrimSpace(inst.Metadata["hub_tenant_id"]),
 		"user_id":     user,
@@ -157,6 +165,10 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 		err = fmt.Errorf("Hub is not configured on this server")
 	}
 	if err != nil {
+		if !strings.Contains(err.Error(), "ALREADY_SAID") && !strings.Contains(err.Error(), "409") {
+			// Nothing reached the person; the run may try again.
+			desktopSayRuns.undo(runKey+"|"+room, time.Now())
+		}
 		if strings.Contains(err.Error(), "ALREADY_SAID") || strings.Contains(err.Error(), "409") {
 			return "SKIPPED already_said: another bot already told the person this. Stay silent on it.", nil
 		}
@@ -173,4 +185,46 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 		return "SAID already_answered_by=" + strings.Join(names, ",") + ": others had already replied in this room; do not add more unless it is new.", nil
 	}
 	return "SAID", nil
+}
+
+// desktopSayRunGate counts says per run and room.
+type desktopSayRunGate struct {
+	mu   sync.Mutex
+	runs map[string]desktopSayRunCount
+}
+
+type desktopSayRunCount struct {
+	n    int
+	seen time.Time
+}
+
+const (
+	desktopSayRunMax = 2 // first say, plus one update=true
+	desktopSayRunTTL = 6 * time.Hour
+)
+
+var desktopSayRuns = &desktopSayRunGate{runs: map[string]desktopSayRunCount{}}
+
+func (g *desktopSayRunGate) allow(key string, update bool, now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for k, v := range g.runs {
+		if now.Sub(v.seen) > desktopSayRunTTL {
+			delete(g.runs, k)
+		}
+	}
+	c := g.runs[key]
+	if c.n >= 1 && (!update || c.n >= desktopSayRunMax) {
+		return false
+	}
+	g.runs[key] = desktopSayRunCount{n: c.n + 1, seen: now}
+	return true
+}
+
+func (g *desktopSayRunGate) undo(key string, now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if c, ok := g.runs[key]; ok && c.n > 0 {
+		g.runs[key] = desktopSayRunCount{n: c.n - 1, seen: now}
+	}
 }
