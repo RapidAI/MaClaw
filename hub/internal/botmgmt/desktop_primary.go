@@ -814,6 +814,12 @@ func (s *Service) reportDelegateRunEnd(tenantID, userID, botID, runID, status st
 	if delegate == "" {
 		return
 	}
+	if runErr == nil && status != "failed" && status != "error" && runFiledOpenState(rec.CrossNotes, userID, botID, delegate, runID) {
+		// The bot already reported waiting_human or needs_login for this run.
+		// A generic "done" after it would flip the assignment to completed and
+		// drop the open question, so the person is never asked.
+		return
+	}
 	topic, text := "done", strings.TrimSpace(reply.Text)
 	switch {
 	case runErr != nil || status == "failed" || status == "error":
@@ -848,4 +854,21 @@ func firstNonEmptyString(v ...string) string {
 		}
 	}
 	return ""
+}
+
+// runFiledOpenState reports whether this run already filed a report that
+// leaves its assignment open (a question for the person or a login wall).
+func runFiledOpenState(notes []BotCrossNote, userID, botID, delegateID, runID string) bool {
+	for _, n := range notes {
+		if n.Owner != userID || n.From != botID || n.Kind != "report" || n.RunID != runID {
+			continue
+		}
+		if n.ReplyTo != delegateID && n.ParentID != delegateID {
+			continue
+		}
+		if n.State == "waiting_human" || n.State == "needs_login" || n.Topic == "question" {
+			return true
+		}
+	}
+	return false
 }
