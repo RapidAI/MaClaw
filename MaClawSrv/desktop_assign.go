@@ -184,7 +184,18 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 		}
 		return "SAID already_answered_by=" + strings.Join(names, ",") + ": others had already replied in this room; do not add more unless it is new.", nil
 	}
-	return "SAID", nil
+	return desktopSaidResult(text), nil
+}
+
+// desktopSaidResult echoes what reached the person. A bare "SAID" left the
+// run's outcome check without evidence of the sentence (seen live: "the tool
+// only shows SAID", so a finished say task kept running for many minutes).
+func desktopSaidResult(text string) string {
+	r := []rune(strings.TrimSpace(text))
+	if len(r) > 600 {
+		r = append(r[:600], '…')
+	}
+	return "SAID to the person: \u201c" + string(r) + "\u201d"
 }
 
 // desktopSayRunGate counts says per run and room.

@@ -79,7 +79,7 @@ func TestDesktopSayPostsAndSkipsRepeat(t *testing.T) {
 		return map[string]any{"id": "s1"}, nil
 	}
 	defer func() { desktopRemoteAssign = nil }()
-	if out, err := desktopSay(context.Background(), assignReq("r"), map[string]any{"message": "好了"}); err != nil || out != "SAID" {
+	if out, err := desktopSay(context.Background(), assignReq("r"), map[string]any{"message": "好了"}); err != nil || !strings.HasPrefix(out, "SAID to the person: ") {
 		t.Fatalf("%q %v", out, err)
 	}
 	if out, err := desktopSay(context.Background(), assignReq("r"), map[string]any{"message": "好了!"}); err != nil || !strings.Contains(out, "already_said") {
@@ -109,21 +109,27 @@ func TestDesktopSayOncePerRunUnlessUpdate(t *testing.T) {
 	}
 	defer func() { desktopRemoteAssign = nil }()
 	req := assignReq("run-once")
-	if out, _ := desktopSay(context.Background(), req, map[string]any{"message": "报告已经写好，放在桌面上了"}); out != "SAID" {
+	if out, _ := desktopSay(context.Background(), req, map[string]any{"message": "报告已经写好，放在桌面上了"}); !strings.HasPrefix(out, "SAID to the person: ") {
 		t.Fatalf("first = %q", out)
 	}
 	// A reworded repeat of the same result: Hub would not catch it.
 	if out, _ := desktopSay(context.Background(), req, map[string]any{"message": "我已完成报告，文件在桌面"}); !strings.Contains(out, "already_said_this_run") || calls != 1 {
 		t.Fatalf("reworded repeat = %q calls=%d", out, calls)
 	}
-	if out, _ := desktopSay(context.Background(), req, map[string]any{"message": "补充：另附了一份 PDF", "update": "true"}); out != "SAID" || calls != 2 {
+	if out, _ := desktopSay(context.Background(), req, map[string]any{"message": "补充：另附了一份 PDF", "update": "true"}); !strings.HasPrefix(out, "SAID to the person: ") || calls != 2 {
 		t.Fatalf("update = %q calls=%d", out, calls)
 	}
 	if out, _ := desktopSay(context.Background(), req, map[string]any{"message": "再补充一点", "update": "true"}); !strings.Contains(out, "already_said_this_run") || calls != 2 {
 		t.Fatalf("third = %q calls=%d", out, calls)
 	}
 	// Another run starts fresh.
-	if out, _ := desktopSay(context.Background(), assignReq("run-other"), map[string]any{"message": "另一个任务完成"}); out != "SAID" {
+	if out, _ := desktopSay(context.Background(), assignReq("run-other"), map[string]any{"message": "另一个任务完成"}); !strings.HasPrefix(out, "SAID to the person: ") {
 		t.Fatalf("other run = %q", out)
+	}
+}
+
+func TestDesktopSaidResultCarriesSentence(t *testing.T) {
+	if got := desktopSaidResult(" 好的，已经完成 "); got != "SAID to the person: \u201c好的，已经完成\u201d" {
+		t.Fatalf("got %q", got)
 	}
 }
