@@ -121,17 +121,19 @@ func TestLegacyStoreIsSanitizedAndRewritten(t *testing.T) {
 	if entries := loaded.Load("desktop-user"); len(entries) != 2 {
 		t.Fatalf("entries = %d, want 2", len(entries))
 	}
-	if !loaded.dirty {
-		t.Fatal("legacy store must be marked dirty so the sanitized form is persisted with a version")
+	if loaded.sqlite == nil {
+		t.Fatal("legacy store must be imported into SQLite during startup")
+	}
+	if _, err := os.Stat(path + ".migrated.bak"); err != nil {
+		t.Fatalf("legacy migration backup: %v", err)
 	}
 
-	// Flushing must stamp the version, turning the next load into the fast path.
 	if err := loaded.FlushNow(); err != nil {
 		t.Fatalf("FlushNow: %v", err)
 	}
 	loaded.Stop()
 
-	rewritten, err := os.ReadFile(path)
+	rewritten, err := readConversationStoreForTest(t, path)
 	if err != nil {
 		t.Fatal(err)
 	}

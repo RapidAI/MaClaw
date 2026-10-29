@@ -383,14 +383,14 @@ func openCodingAgentChecklistNudge(state *codingAgentTodoState) string {
 }
 
 func (c *codingSubAgentCallbacks) OpenChecklistNudge() string {
-	if c == nil {
+	if c == nil || taskCarriesGoalContinuation(c.task, c.reqCtx) {
 		return ""
 	}
 	return openCodingAgentChecklistNudge(&c.todos)
 }
 
 func (c *remoteCodingCallbacks) OpenChecklistNudge() string {
-	if c == nil {
+	if c == nil || goalContinuationPhase(c.task) != "" || goalContinuationPhase(c.taskContext) != "" {
 		return ""
 	}
 	return openCodingAgentChecklistNudge(&c.todos)

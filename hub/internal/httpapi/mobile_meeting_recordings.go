@@ -293,7 +293,7 @@ func mobileMeetingRecordingCreateWithHardware(w http.ResponseWriter, r *http.Req
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
 	mobileKnowledgePurgeState.RUnlock()
-	mobilePersistState()
+	mobilePersistMeeting(rec)
 	writeJSON(w, http.StatusCreated, mobileMeetingRecordingPayload(rec))
 }
 
@@ -347,7 +347,6 @@ func mobileMeetingRecordingPutChunk(w http.ResponseWriter, r *http.Request, owne
 		}
 		return
 	}
-	mobilePersistState()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -440,7 +439,7 @@ func mobileMeetingRecordingComplete(w http.ResponseWriter, r *http.Request, owne
 		writeJSON(w, http.StatusOK, mobileMeetingRecordingPayload(rec))
 		return
 	}
-	mobilePersistState()
+	mobilePersistMeeting(rec)
 	finalized := false
 	defer func() {
 		if !finalized {
@@ -507,7 +506,7 @@ func mobileMeetingRecordingComplete(w http.ResponseWriter, r *http.Request, owne
 	})
 	finalized = true
 	rec, _ = mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
-	mobilePersistState()
+	mobilePersistMeeting(rec)
 	writeJSON(w, http.StatusOK, mobileMeetingRecordingPayload(rec))
 }
 
@@ -677,7 +676,7 @@ func mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode string, docu
 	rec.UpdatedAt = time.Now().UTC()
 	mobileMeetingRecordings.items[id] = rec
 	mobileMeetingRecordings.Unlock()
-	mobilePersistState()
+	mobilePersistMeeting(rec)
 	mobileRealtimeBroadcast(rec.TenantID, rec.OwnerID, map[string]any{
 		"type":         "meeting_recording",
 		"recording":    mobileMeetingRecordingPayload(rec),
@@ -820,6 +819,7 @@ func mobileRunMeetingRecording(id string) {
 func mobileResumeMeetingRecordingWorkers() {
 	resume := make([]string, 0)
 	terminal := make([]mobileMeetingRecording, 0)
+	changed := make([]mobileMeetingRecording, 0)
 	mobileMeetingRecordings.Lock()
 	for id, rec := range mobileMeetingRecordings.items {
 		// A terminal state may have been persisted before its queue notification
@@ -841,22 +841,23 @@ func mobileResumeMeetingRecordingWorkers() {
 			rec.Progress = 1
 			rec.UpdatedAt = time.Now().UTC()
 			mobileMeetingRecordings.items[id] = rec
+			changed = append(changed, rec)
 			continue
 		}
 		rec.Message = "resuming interrupted processing"
 		rec.Progress = .25
 		rec.UpdatedAt = time.Now().UTC()
 		mobileMeetingRecordings.items[id] = rec
+		changed = append(changed, rec)
 		resume = append(resume, id)
 	}
 	mobileMeetingRecordings.Unlock()
 	for _, rec := range terminal {
 		mobileNotifyHardwareMeetingResult(rec.ID, rec)
 	}
-	if len(resume) == 0 {
-		return
+	if len(changed) > 0 {
+		mobilePersistMeetings(changed)
 	}
-	mobilePersistState()
 	for _, id := range resume {
 		go mobileRunMeetingRecording(id)
 	}
@@ -966,8 +967,8 @@ func mobileMeetingRecordingDelete(w http.ResponseWriter, ownerID, tenantID, id s
 	}
 	delete(mobileMeetingRecordings.items, id)
 	mobileMeetingRecordings.Unlock()
-	mobileDeleteMeetingResultDocuments(ownerID, tenantID, rec.TranscriptDraftID, rec.MinutesDraftID)
-	mobilePersistState()
+	changes := mobileDeleteMeetingResultDocuments(ownerID, tenantID, rec.TranscriptDraftID, rec.MinutesDraftID)
+	mobileDeleteMeetingWithDocuments(id, changes)
 	_ = os.RemoveAll(rec.Dir)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -975,15 +976,16 @@ func mobileMeetingRecordingDelete(w http.ResponseWriter, ownerID, tenantID, id s
 // mobileDeleteMeetingResultDocuments removes the derived library documents
 // together with their parent recording. Result documents cannot be deleted
 // individually because their IDs are part of the recording's durable state.
-func mobileDeleteMeetingResultDocuments(ownerID, tenantID string, draftIDs ...string) {
+func mobileDeleteMeetingResultDocuments(ownerID, tenantID string, draftIDs ...string) mobileDocumentChanges {
 	ids := make(map[string]struct{}, len(draftIDs))
 	for _, draftID := range draftIDs {
 		if draftID = strings.TrimSpace(draftID); draftID != "" {
 			ids[draftID] = struct{}{}
 		}
 	}
+	changes := mobileDocumentChanges{}
 	if len(ids) == 0 {
-		return
+		return changes
 	}
 
 	var blobPaths []string
@@ -997,10 +999,12 @@ func mobileDeleteMeetingResultDocuments(ownerID, tenantID string, draftIDs ...st
 		blobPaths = append(blobPaths, draft.SourcePath)
 		images = append(images, draft.Images...)
 		delete(mobileDocuments.drafts, draftID)
+		changes.deletedDrafts = append(changes.deletedDrafts, draftID)
 		for taskID, upload := range mobileDocuments.uploads {
 			if upload.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, upload.TenantID) && upload.DraftID == draftID {
 				blobPaths = append(blobPaths, upload.SourcePath)
 				delete(mobileDocuments.uploads, taskID)
+				changes.deletedUploads = append(changes.deletedUploads, taskID)
 			}
 		}
 	}
@@ -1009,6 +1013,7 @@ func mobileDeleteMeetingResultDocuments(ownerID, tenantID string, draftIDs ...st
 		mobileDeleteDocumentBlob(blobPath)
 	}
 	mobileDraftDeleteImages(images)
+	return changes
 }
 
 // mobileMeetingRecordingDeleteAudio deletes only the raw audio. Transcript,
@@ -1049,7 +1054,7 @@ func mobileCleanupExpiredMeetingRecordings(now time.Time) int {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	cleaned := 0
+	cleaned := make([]mobileMeetingRecording, 0)
 	mobileMeetingRecordings.Lock()
 	for id, rec := range mobileMeetingRecordings.items {
 		if rec.RetentionUntil.IsZero() || rec.RetentionUntil.After(now) || strings.TrimSpace(rec.Dir) == "" {
@@ -1064,13 +1069,13 @@ func mobileCleanupExpiredMeetingRecordings(now time.Time) int {
 		}
 		rec.UpdatedAt = now
 		mobileMeetingRecordings.items[id] = rec
-		cleaned++
+		cleaned = append(cleaned, rec)
 	}
 	mobileMeetingRecordings.Unlock()
-	if cleaned > 0 {
-		mobilePersistState()
+	if len(cleaned) > 0 {
+		mobilePersistMeetings(cleaned)
 	}
-	return cleaned
+	return len(cleaned)
 }
 
 func mobileMeetingRecordingOwned(ownerID, id string) (mobileMeetingRecording, bool) {
@@ -1091,6 +1096,10 @@ func mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id string) (mobileM
 	return rec, ok && rec.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID)
 }
 func mobileMeetingRecordingUpdate(id string, mutate func(*mobileMeetingRecording)) {
+	mobileMeetingRecordingUpdateWithDocuments(id, mobileDocumentChanges{}, mutate)
+}
+
+func mobileMeetingRecordingUpdateWithDocuments(id string, changes mobileDocumentChanges, mutate func(*mobileMeetingRecording)) {
 	// Keep the lifecycle read lock through the map mutation. An in-flight
 	// meeting worker may otherwise update a record just after its owner is
 	// unbound and recreate it after the purger removed it.
@@ -1106,8 +1115,8 @@ func mobileMeetingRecordingUpdate(id string, mutate func(*mobileMeetingRecording
 	}
 	mobileMeetingRecordings.Unlock()
 	mobileKnowledgePurgeState.RUnlock()
-	mobilePersistState()
 	if ok {
+		mobilePersistMeetingWithDocuments(rec, changes)
 		mobileRealtimeBroadcast(rec.TenantID, rec.OwnerID, map[string]any{
 			"type":         "meeting_recording",
 			"recording":    mobileMeetingRecordingPayload(rec),
@@ -1163,7 +1172,7 @@ func mobileNotifyHardwareMeetingResult(id string, rec mobileMeetingRecording) {
 	}
 	mobileMeetingRecordings.Unlock()
 	if exists {
-		mobilePersistState()
+		mobilePersistMeeting(current)
 	}
 }
 func mobileMeetingRecordingPayload(rec mobileMeetingRecording) map[string]any {
@@ -1305,7 +1314,14 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 		mobileDocuments.Unlock()
 		mobileKnowledgePurgeState.RUnlock()
 	}
-	mobileMeetingRecordingUpdate(rec.ID, func(current *mobileMeetingRecording) {
+	changes := mobileDocumentChanges{}
+	if transcriptDraft != nil {
+		changes.drafts = append(changes.drafts, *transcriptDraft)
+	}
+	if minutesDraft != nil {
+		changes.drafts = append(changes.drafts, *minutesDraft)
+	}
+	mobileMeetingRecordingUpdateWithDocuments(rec.ID, changes, func(current *mobileMeetingRecording) {
 		if transcriptDraftID != "" && current.TranscriptDraftID == "" {
 			current.TranscriptDraftID = transcriptDraftID
 		}

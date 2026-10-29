@@ -979,12 +979,12 @@ func (a *App) writeFileCompanionProjectSession(sessionID string, messages []File
 		return errors.New("无法打开项目")
 	}
 	userID := "file-companion:" + sessionID
-	// History reads the in-memory copy first. Clear would also delete the side
-	// file and unbind it. The replacement bumps the save generation and writes
+	// History reads the in-memory copy first. Clear also removes the detached
+	// record and unbinds it. The replacement bumps the save generation and writes
 	// the sharer's transcript before it releases the lock, so a turn that
-	// already loaded the old chat cannot write that chat back. The side file
-	// is written by that save. Cancel comes after the bump: a save from the
-	// turn being stopped then sees the new generation and is dropped.
+	// already loaded the old chat cannot write that chat back. Cancel comes after
+	// the bump: a save from the turn being stopped then sees the new generation
+	// and is dropped.
 	if err := a.ensureFileCompanionHandler(userID, sessionID); err != nil {
 		return errors.New("无法打开项目")
 	}

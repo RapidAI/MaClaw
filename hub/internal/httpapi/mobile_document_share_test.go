@@ -23,7 +23,7 @@ func resetCompanionDocShares(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(companionDocSharePathEnv, filepath.Join(root, "shares.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(root, "blobs"))
-	t.Setenv(mobileStatePathEnv, filepath.Join(root, "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(root, "state.json"))
 	companionDocShares.Lock()
 	companionDocShares.loaded = false
 	companionDocShares.items = map[string]companionDocShare{}

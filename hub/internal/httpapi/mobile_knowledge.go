@@ -80,6 +80,7 @@ func mobileResetKnowledgePurgeStateForTest() {
 	mobileKnowledgePurgeState.Lock()
 	mobileKnowledgePurgeState.purged = make(map[string]struct{})
 	mobileKnowledgePurgeState.Unlock()
+	mobilePurgeTombstonesLoaded.Store(false)
 }
 
 // mobileInitKnowledgeStore opens a process-level knowledge DB under the mobile

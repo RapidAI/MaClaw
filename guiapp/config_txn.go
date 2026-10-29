@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -33,14 +34,78 @@ import (
 //     4. publishConfigLocked(cfg)  // immutable snap + data-dir pointer
 //     5. Unlock
 //     6. runConfigPostUnlock(cfg)
-//     7. persistConfig(path, cfg)  // configDiskMu + AtomicWrite
+//     7. persistConfig(path, cfg)  // configDiskMu + storage transaction
 //
 // Rules:
-//   - Never hold configMu across AtomicWrite.
+//   - Never hold configMu across storage writes.
 //   - Never mutate a configSnap-pointed value after Store (always publish a new copy).
 //   - Never run resetPathBoundStateForDataDirChange under configMu.
 //   - Never invent a new unlock path that skips runConfigPostUnlock.
 // ---------------------------------------------------------------------------
+
+type configFileFingerprint struct {
+	path         string
+	size         int64
+	modTimeNanos int64
+	valid        bool
+}
+
+func newConfigFileFingerprint(path string, info os.FileInfo) *configFileFingerprint {
+	fingerprint := &configFileFingerprint{path: path}
+	if info != nil {
+		fingerprint.size = info.Size()
+		fingerprint.modTimeNanos = info.ModTime().UnixNano()
+		fingerprint.valid = true
+	}
+	return fingerprint
+}
+
+func (f *configFileFingerprint) matches(path string, info os.FileInfo) bool {
+	return f != nil && f.valid && info != nil && f.path == path &&
+		f.size == info.Size() && f.modTimeNanos == info.ModTime().UnixNano()
+}
+
+// configCacheMatchesDisk validates disk-backed snapshots without taking
+// configMu. Nil metadata belongs to an in-memory bootstrap or a legacy seed.
+// During our own transaction, the published snapshot remains authoritative.
+func (a *App) configCacheMatchesDisk() bool {
+	if a.configWritesInFlight.Load() > 0 {
+		return true
+	}
+	fingerprint := a.configFileState.Load()
+	if fingerprint == nil {
+		return true
+	}
+	jsonPath, err := a.getConfigPath()
+	if err != nil {
+		return false
+	}
+	path := a.configStoreForPath(jsonPath).StoragePath()
+	if path != fingerprint.path {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && fingerprint.matches(path, info)
+}
+
+func (a *App) recordConfigFileStateAfterRead(path string, before os.FileInfo) {
+	after, err := os.Stat(path)
+	beforeFingerprint := newConfigFileFingerprint(path, before)
+	if err != nil || !beforeFingerprint.matches(path, after) {
+		a.configFileState.Store(&configFileFingerprint{path: path})
+		return
+	}
+	a.configFileState.Store(newConfigFileFingerprint(path, after))
+}
+
+func (a *App) recordConfigFileStateAfterWrite(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		a.configFileState.Store(&configFileFingerprint{path: path})
+		return
+	}
+	a.configFileState.Store(newConfigFileFingerprint(path, info))
+}
 
 // publishedConfig returns a full config including NLSkills (reattached from
 // nlSkillsSnap) without taking configMu. ok=false means cold/invalid.
@@ -229,15 +294,15 @@ func (a *App) mutateConfigMaybe(patchFn func(cfg *corelib.AppConfig) bool, opts 
 }
 
 // loadConfigSnapshot is the unified read API used by LoadConfig.
-// Hot path is lock-free (atomic snap). Always runs post-unlock drains so
-// deferred writer work is never stranded.
+// Hot path is lock-free (atomic snap plus one mtime/size stat). Always runs
+// post-unlock drains so deferred writer work is never stranded.
 //
 // configSnap intentionally omits NLSkills so single-field readers stay cheap.
 // LoadConfig is the full-config API, however, and must return the same shape
 // on both hot and cold paths. Reattach the separately published skill table
 // before returning so a read-modify-save caller cannot silently discard it.
 func (a *App) loadConfigSnapshot() (corelib.AppConfig, error) {
-	if p := a.PeekConfig(); p != nil {
+	if p := a.PeekConfig(); p != nil && a.configCacheMatchesDisk() {
 		// Apply log gates from the snap without copying the whole AppConfig first.
 		corelib.SetLogDetailEnabled(p.LogDetailEnabled)
 		memory.SetMemoryRecallLogEnabled(p.MemoryRecallLogEnabled)
@@ -246,17 +311,16 @@ func (a *App) loadConfigSnapshot() (corelib.AppConfig, error) {
 		return cfg, nil
 	}
 
-	// Cold path: exclusive load from disk.
+	// Cold or externally changed path: exclusive load from disk.
 	lockStart := time.Now()
 	a.configMu.Lock()
 	lockWait := time.Since(lockStart)
 	if lockWait > 50*time.Millisecond {
 		log.Printf("[config] LoadConfig:lock_wait=%s", lockWait)
 	}
-	// Another writer may have published while we waited. Do not call
-	// publishedConfig/PeekConfig here: configMu is already held and PeekConfig
-	// takes the same mutex only for an unseeded legacy cache promotion.
-	if p := a.configSnap.Load(); p != nil {
+	// Another writer may have published while we waited. Revalidate the file
+	// before accepting that snapshot; an external edit may have raced the wait.
+	if p := a.configSnap.Load(); p != nil && a.configCacheMatchesDisk() {
 		cfg := a.attachPublishedSkills(*p)
 		a.configMu.Unlock()
 		corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)

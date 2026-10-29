@@ -473,12 +473,27 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "goal",
 		Description: "Manage a persistent long-running goal (action: create/plan/step/complete/fail/get). Create a goal only when explicitly requested by the user; do not infer goals from ordinary tasks. The first continuation must plan; later turns execute one step at a time until complete or failed.",
 		Properties: map[string]interface{}{
-			"action":              map[string]string{"type": "string", "description": "Action: create, plan, step, complete, fail, get"},
-			"objective":           map[string]string{"type": "string", "description": "Goal description (required for create)"},
-			"understanding":       map[string]string{"type": "string", "description": "Restatement of the task (required for plan)"},
-			"steps":               map[string]interface{}{"type": "array", "description": "Ordered steps for plan. Each item is a string or {title, detail}", "items": map[string]string{"type": "object"}},
-			"index":               map[string]string{"type": "integer", "description": "1-based step index (required for step)"},
-			"status":              map[string]string{"type": "string", "description": "Step outcome for action=step: progress (same step continues next turn), done, or failed"},
+			"action": map[string]interface{}{
+				"type":        "string",
+				"enum":        []string{"create", "plan", "step", "complete", "fail", "get"},
+				"description": "Required discriminator: create, plan, step, complete, fail, or get",
+			},
+			"objective":     map[string]string{"type": "string", "description": "Goal description (required for create)"},
+			"understanding": map[string]string{"type": "string", "description": "Restatement of the task (required for plan)"},
+			"steps": map[string]interface{}{
+				"type":        "array",
+				"description": "Ordered steps for plan. Each item needs title.",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"title":  map[string]string{"type": "string", "description": "Short step name"},
+						"detail": map[string]string{"type": "string", "description": "What this step delivers"},
+					},
+					"required": []string{"title"},
+				},
+			},
+			"index":               map[string]interface{}{"type": "integer", "description": "Host goal step number for this turn. Not a todo item number. Omit it to use the current step."},
+			"status":              map[string]interface{}{"type": "string", "enum": []string{"progress", "done", "failed"}, "description": "progress keeps this step current; done closes it; failed ends the goal. Omit it and the report stays progress."},
 			"result":              map[string]string{"type": "string", "description": "Step result (required for step)"},
 			"token_budget":        map[string]string{"type": "integer", "description": "Token budget limit (optional, 0=unlimited)"},
 			"max_turns":           map[string]string{"type": "integer", "description": "Max continuation turns (optional). Omit it and the goal runs until it finishes, fails, or the user stops it."},

@@ -1,5 +1,6 @@
 import React from "react";
 import { fluentLightScheme } from "./assistantLightSchemes";
+import { onyxDarkScheme } from "./assistantDarkSchemes";
 
 /* Theme definitions */
 
@@ -55,50 +56,12 @@ export const lightTheme: Theme = fluentLightScheme.assistantTheme;
 export const overlayTheme: Theme = fluentLightScheme.assistantTheme;
 
 
-export const darkTheme: Theme = {
-    ...lightTheme,
-    bg: "#050505",
-    titleBarBg: "#0d0d0d",
-    titleBarBorder: "#2e2e2e",
-    titleText: "#c9c9c9",
-    text: "#c9c9c9",
-    textMuted: "#7d7d7d",
-    inputBarBg: "#111111",
-    inputBarBorder: "#2e2e2e",
-    inputText: "#c9c9c9",
-    codeBg: "#161616",
-    codeText: "#a8a8a8",
-    codeBlockBg: "#0a0a0a",
-    codeBlockBorder: "#2a2a2a",
-    codeBlockLang: "#8a8a8a",
-    borderLeft: "#2e2e2e",
-    responseBorderLeft: "#6e6e6e",
-    headingColor: "#d4d4d4",
-    linkColor: "#b3b3b3",
-    pathColor: "#b3b3b3",
-    promptColor: "#a8a8a8",
-    userColor: "#bdbdbd",
-    divider: "#1f1f1f",
-    fieldBg: "#141414",
-    fieldBorder: "#3a3a3a",
-    fieldLabel: "#b8b8b8",
-    errorText: "#e07a72",
-    errorBg: "rgba(224, 122, 114, 0.10)",
-    errorBorder: "#b85c56",
-    emptyHint: "#6a6a6a",
-    boldColor: "#e6e6e6",
-    italicColor: "#c2c2c2",
-    bulletColor: "#7d7d7d",
-    quoteBorder: "#4a4a4a",
-    quoteText: "#a3a3a3",
-    actionBtnColor: "#9a9a9a",
-    closeBtnColor: "#9a9a9a",
-    btnColor: "#b3b3b3",
-    btnBorder: "#4a4a4a",
-    sendBtnColor: "#0a0a0a",
-    sendBtnBorder: "#b3b3b3",
-    sendBtnBg: "#b3b3b3",
-};
+/**
+ * Dark runtime fallback. Derived from the Onyx scheme (single source of
+ * truth) instead of a hand-written duplicate — the alignment test in
+ * assistantDarkSchemes.test.ts fails if these ever drift apart again.
+ */
+export const darkTheme: Theme = onyxDarkScheme.assistantTheme;
 
 export const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
 export const AI_THEME_MODE_LEGACY_STORAGE_KEY = "maclaw.ai.themeMode";

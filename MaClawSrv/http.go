@@ -161,8 +161,21 @@ func NewHTTPServerWithError(svc *agentservice.Service, adminSecret string, knowl
 	if err != nil {
 		return nil, fmt.Errorf("create dynamic capability publisher: %w", err)
 	}
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), databaseAdminLimiter: newAuthLimiter(30, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), qqbotQRTokens: newWeixinQRTokenStore(), qqbotQR: qqbot.NewQRClient(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), hardwareBindings: newSrvDeviceAgentBindingStore(svc.DataRoot()), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot()), dynamicCapabilityPublisher: publisher}
-	s.initCodingRuntimeStore()
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), databaseAdminLimiter: newAuthLimiter(30, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), qqbotQRTokens: newWeixinQRTokenStore(), qqbotQR: qqbot.NewQRClient(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), hardwareBindings: newSrvDeviceAgentBindingStore(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot()), dynamicCapabilityPublisher: publisher}
+	var codingStore *codingruntime.SQLiteStore
+	var storageWait sync.WaitGroup
+	storageWait.Add(2)
+	go func() {
+		defer storageWait.Done()
+		s.jobs = newAsyncJobManagerStores(svc.DataRoot())
+	}()
+	go func() {
+		defer storageWait.Done()
+		codingStore = s.openCodingRuntimeStore()
+	}()
+	storageWait.Wait()
+	s.jobs.recoverStores()
+	s.installCodingRuntimeStore(codingStore)
 	if releaseCatalog, err := newSrvGitHubReleaseCatalogFromEnv(s.deviceUpdateCatalog); err != nil {
 		// An invalid trust anchor must disable this optional provider rather than
 		// silently accepting an unsigned/local substitute. Existing local
@@ -230,12 +243,23 @@ func (s *HTTPServer) Close() {
 // use. Recovery must be initiated by an authenticated host adapter using the
 // read-only recovery protocol.
 func (s *HTTPServer) initCodingRuntimeStore() {
+	s.installCodingRuntimeStore(s.openCodingRuntimeStore())
+}
+
+func (s *HTTPServer) openCodingRuntimeStore() *codingruntime.SQLiteStore {
 	if s == nil || s.svc == nil || s.codingRuntimeStore != nil || !s.svc.CodingRuntimeStoreSupported() {
-		return
+		return nil
 	}
 	store, err := codingruntime.NewSQLiteStore(filepath.Join(s.svc.DataRoot(), "coding_runtime.db"))
 	if err != nil {
 		srvLog().Warn("coding runtime disabled", slog.String("error", err.Error()))
+		return nil
+	}
+	return store
+}
+
+func (s *HTTPServer) installCodingRuntimeStore(store *codingruntime.SQLiteStore) {
+	if store == nil {
 		return
 	}
 	if expired, err := store.ExpireLeases(time.Now().UTC()); err != nil {

@@ -1,7 +1,6 @@
 package acpagent
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
 )
 
 const (
@@ -38,18 +38,15 @@ func DiscoverGateway(configPath string) GatewayEndpoint {
 	}
 	out := GatewayEndpoint{ConfigPath: configPath, BaseURL: DefaultGatewayBaseURL}
 
-	if data, err := os.ReadFile(configPath); err == nil && len(data) > 0 {
-		var cfg corelib.AppConfig
-		if json.Unmarshal(data, &cfg) == nil {
-			host := gatewayClientHost(cfg.ThirdPartyGatewayHost)
-			port := cfg.ThirdPartyGatewayPort
-			if port <= 0 {
-				port = DefaultGatewayPort
-			}
-			out.BaseURL = fmt.Sprintf("http://%s/api/im-gateway/v1", netJoinHostPort(host, port))
-			out.Token = strings.TrimSpace(cfg.ThirdPartyGatewayToken)
-			out.OK = cfg.ThirdPartyGatewayEnabled && out.Token != ""
+	if cfg, err := coreconfig.NewSQLiteStoreForJSONPath(configPath).LoadConfig(); err == nil {
+		host := gatewayClientHost(cfg.ThirdPartyGatewayHost)
+		port := cfg.ThirdPartyGatewayPort
+		if port <= 0 {
+			port = DefaultGatewayPort
 		}
+		out.BaseURL = fmt.Sprintf("http://%s/api/im-gateway/v1", netJoinHostPort(host, port))
+		out.Token = strings.TrimSpace(cfg.ThirdPartyGatewayToken)
+		out.OK = cfg.ThirdPartyGatewayEnabled && out.Token != ""
 	}
 
 	if u := strings.TrimSpace(os.Getenv("MACLAW_GATEWAY_URL")); u != "" {

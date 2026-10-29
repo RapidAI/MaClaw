@@ -21,16 +21,15 @@ func isIsolatedAssistantSessionUserID(userID string) bool {
 		expertIDFromUserID(userID) != ""
 }
 
-// projectTabTranscriptPath is a per-owner side file. Tool checkpoints flush
-// this file instead of rewriting the shared conversation store.
+// projectTabTranscriptPath is the stable per-owner detached key. SQLite stores
+// this key as isolation metadata; legacy JSON mode uses it as a side-file path.
 func projectTabTranscriptPath(storePath, userID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(userID)))
 	return filepath.Join(filepath.Dir(storePath), "session-transcripts", hex.EncodeToString(sum[:])+".json")
 }
 
-// detachProjectTabTranscript moves a project-tab owner onto its own transcript
-// file. Later calls with the same path are a no-op and do not reload disk
-// over the live session.
+// detachProjectTabTranscript marks a project-tab owner as detached. Later calls
+// with the same key are a no-op and do not reload over the live session.
 func (h *IMMessageHandler) detachProjectTabTranscript(userID string) {
 	if h == nil || h.memory == nil || !isProjectTabUserID(userID) {
 		return

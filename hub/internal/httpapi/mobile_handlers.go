@@ -101,16 +101,9 @@ var mobileStatePersistence = struct {
 	loaded bool
 }{}
 
-// mobileStateWriteMu serializes complete state.json snapshots. A purge must
-// commit its post-deletion snapshot after any already-running writer, otherwise
-// an older snapshot could win the final rename and restore deleted records on
-// the next Hub restart.
+// mobileStateWriteMu serializes incremental transactions with account purges so
+// an already-running writer cannot commit after the purge's durable deletion.
 var mobileStateWriteMu sync.Mutex
-
-// mobilePersistStateBeforeRenameForTest lets the package tests hold a stale
-// snapshot after it has been assembled but before it becomes durable. It is
-// nil in production.
-var mobilePersistStateBeforeRenameForTest func()
 
 var mobileOfficialHubCenterCandidates = []string{
 	"https://hubs.mypapers.top",
@@ -212,7 +205,7 @@ type mobileDocumentDraftRecord struct {
 	SourceFilename    string
 	SourceContentType string
 	// SourcePath is relative to mobile blob dir (durable). SourceBytes is a
-	// process-local cache and is stripped when writing state.json.
+	// process-local cache and is stripped from the persistent payload.
 	SourcePath  string
 	SourceSize  int
 	SourceBytes []byte
@@ -411,70 +404,20 @@ func mobileEnsureStateLoaded() {
 		return
 	}
 	mobileStatePersistence.loaded = true
-	path := mobileStatePath()
 	mobileStatePersistence.Unlock()
-	if path == "" {
-		return
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil || len(raw) == 0 {
-		return
-	}
-	var state mobilePersistentState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return
-	}
+	state := mobileLoadPersistentState()
 	mobileDocuments.Lock()
-	stateChanged := false
 	if state.Drafts != nil {
-		// Do not eagerly load multi-MB originals into RAM. Bytes are filled on
-		// demand via mobileDraftLoadSourceBytes; only normalize SourceSize here.
-		// Legacy state.json may still embed SourceBytes — keep them until next persist strips to disk.
-		for id, rec := range state.Drafts {
-			if mobileNormalizePersistedTenantID(&rec.TenantID) {
-				stateChanged = true
-			}
-			mobileNormalizeDraftSourceMeta(&rec)
-			state.Drafts[id] = rec
-		}
 		mobileDocuments.drafts = state.Drafts
 	}
 	if state.Exports != nil {
-		for id, rec := range state.Exports {
-			if mobileNormalizePersistedTenantID(&rec.TenantID) {
-				stateChanged = true
-			}
-			state.Exports[id] = rec
-		}
 		mobileDocuments.exports = state.Exports
 	}
 	if state.Uploads != nil {
-		for id, rec := range state.Uploads {
-			if mobileNormalizePersistedTenantID(&rec.TenantID) {
-				stateChanged = true
-			}
-			mobileNormalizeUploadSourceMeta(&rec)
-			state.Uploads[id] = rec
-		}
 		mobileDocuments.uploads = state.Uploads
 	}
 	mobileDocuments.Unlock()
 	if state.MeetingRecordings != nil {
-		// Finalization is an in-process critical section, not a durable worker.
-		// After a Hub restart no goroutine can still be assembling the file, so
-		// reopen the resumable chunk stream rather than leaving it stuck forever.
-		for id, rec := range state.MeetingRecordings {
-			if mobileNormalizePersistedTenantID(&rec.TenantID) {
-				stateChanged = true
-			}
-			if rec.Status == "finalizing" {
-				rec.Status = "uploading"
-				rec.Message = "upload finalization interrupted; retry complete"
-				rec.Progress = 0
-				rec.UpdatedAt = time.Now().UTC()
-			}
-			state.MeetingRecordings[id] = rec
-		}
 		mobileMeetingRecordings.Lock()
 		mobileMeetingRecordings.items = state.MeetingRecordings
 		mobileMeetingRecordings.Unlock()
@@ -483,40 +426,19 @@ func mobileEnsureStateLoaded() {
 	}
 	mobileDigitalEmployeeTasks.Lock()
 	if state.DigitalEmployeeTasks != nil {
-		for id, rec := range state.DigitalEmployeeTasks {
-			if mobileNormalizePersistedTenantID(&rec.TenantID) {
-				stateChanged = true
-			}
-			state.DigitalEmployeeTasks[id] = rec
-		}
 		mobileDigitalEmployeeTasks.tasks = state.DigitalEmployeeTasks
 	}
 	mobileDigitalEmployeeTasks.Unlock()
 	mobilePushLoadFromState(state.PushDevices, state.PushPending)
 	if state.ServerProfiles != nil {
-		for id, rec := range state.ServerProfiles {
-			if mobileNormalizePersistedTenantID(&rec.TenantID) {
-				stateChanged = true
-			}
-			state.ServerProfiles[id] = rec
-		}
 		mobileServerProfiles.Lock()
 		mobileServerProfiles.profiles = state.ServerProfiles
 		mobileServerProfiles.Unlock()
 	}
 	if state.SSHVaultSecrets != nil {
-		for id, rec := range state.SSHVaultSecrets {
-			if mobileNormalizePersistedTenantID(&rec.TenantID) {
-				stateChanged = true
-			}
-			state.SSHVaultSecrets[id] = rec
-		}
 		mobileSSHVault.Lock()
 		mobileSSHVault.secrets = state.SSHVaultSecrets
 		mobileSSHVault.Unlock()
-	}
-	if stateChanged {
-		mobilePersistState()
 	}
 }
 
@@ -535,15 +457,9 @@ func mobileNormalizePersistedTenantID(tenantID *string) bool {
 	return true
 }
 
-func mobilePersistState() {
-	mobileStateWriteMu.Lock()
-	defer mobileStateWriteMu.Unlock()
-	mobilePersistStateLocked()
-}
-
-// mobilePersistStateLocked writes a complete Mobile state snapshot. The caller
-// must hold mobileStateWriteMu.
-func mobilePersistStateLocked() {
+// mobilePersistLegacyStateLocked is used only when SQLite initialization or
+// migration failed and the original JSON file remains the active store.
+func mobilePersistLegacyStateLocked() {
 	path := mobileStatePath()
 	if path == "" {
 		return
@@ -629,9 +545,6 @@ func mobilePersistStateLocked() {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return
 	}
-	if hook := mobilePersistStateBeforeRenameForTest; hook != nil {
-		hook()
-	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 	}
@@ -639,6 +552,7 @@ func mobilePersistStateLocked() {
 
 func mobileResetStatePersistenceForTest() {
 	mobileStopMeetingRecordingRetentionCleanupForTest()
+	mobileCloseStateDBForTest()
 	mobileStatePersistence.Lock()
 	mobileStatePersistence.loaded = false
 	mobileStatePathOverride = ""
@@ -4393,7 +4307,7 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 		mobileDocuments.Unlock()
 		mobileKnowledgePurgeState.RUnlock()
 		mobileDocumentQuotaAdmissionMu.Unlock()
-		mobilePersistState()
+		mobilePersistDraft(record)
 		go mobileIngestDocumentDraft(principal, record)
 
 		writeJSON(w, http.StatusCreated, map[string]any{
@@ -4489,7 +4403,7 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
-		mobilePersistState()
+		mobilePersistDraft(record)
 		go mobileIngestDocumentDraft(principal, record)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"draft":  mobileDocumentDraftPayload(record),
@@ -4534,17 +4448,19 @@ func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity 
 	blobPath := record.SourcePath
 	images := append([]mobileDocumentDraftImage(nil), record.Images...)
 	delete(mobileDocuments.drafts, draftID)
+	changes := mobileDocumentChanges{deletedDrafts: []string{draftID}}
 	// Drop related upload tasks that pointed at this draft (free quota/source).
 	for taskID, upload := range mobileDocuments.uploads {
 		if upload.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, upload.TenantID) && upload.DraftID == draftID {
 			mobileDeleteDocumentBlob(upload.SourcePath)
 			delete(mobileDocuments.uploads, taskID)
+			changes.deletedUploads = append(changes.deletedUploads, taskID)
 		}
 	}
 	mobileDocuments.Unlock()
 	mobileDeleteDocumentBlob(blobPath)
 	mobileDraftDeleteImages(images)
-	mobilePersistState()
+	mobilePersistDocumentChanges(changes)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "draft_deleted",
 		"draft_id": draftID,
@@ -4667,7 +4583,7 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 			writeError(w, http.StatusConflict, "DRAFT_STATE_CHANGED", "draft changed while processing; retry")
 			return
 		}
-		mobilePersistState()
+		mobilePersistDraft(record)
 		go mobileIngestDocumentDraft(principal, record)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"draft":  mobileDocumentDraftPayload(record),
@@ -4911,7 +4827,7 @@ func MobileDocumentExportHandler(identity *auth.IdentityService) http.HandlerFun
 		mobileDocuments.exports[job.JobID] = job
 		mobileDocuments.Unlock()
 		mobileKnowledgePurgeState.RUnlock()
-		mobilePersistState()
+		mobilePersistExport(job)
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", mobileDocumentExportPayload(job)))
 		writeJSON(w, http.StatusAccepted, mobileDocumentExportPayload(job))
 	}
@@ -5238,14 +5154,18 @@ func mobileReclaimStaleDocumentUploadIfNeeded(record mobileDocumentUploadRecord,
 // mobileReclaimStaleDocumentUploadClaims resets timed-out in_progress tasks so
 // another (or the same) worker can claim them. Caller must hold mobileDocuments.Lock.
 func mobileReclaimStaleDocumentUploadClaims(now time.Time) int {
-	reclaimed := 0
+	return len(mobileReclaimStaleDocumentUploadClaimRecords(now))
+}
+
+func mobileReclaimStaleDocumentUploadClaimRecords(now time.Time) []mobileDocumentUploadRecord {
+	var reclaimed []mobileDocumentUploadRecord
 	for taskID, record := range mobileDocuments.uploads {
 		next, ok := mobileReclaimStaleDocumentUploadIfNeeded(record, now)
 		if !ok {
 			continue
 		}
 		mobileDocuments.uploads[taskID] = next
-		reclaimed++
+		reclaimed = append(reclaimed, next)
 	}
 	return reclaimed
 }
@@ -6367,7 +6287,9 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				}
 				return
 			}
-			mobilePersistState()
+			mobilePersistDocumentChanges(mobileDocumentChanges{
+				drafts: []mobileDocumentDraftRecord{draft}, uploads: []mobileDocumentUploadRecord{record},
+			})
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 			writeJSON(w, http.StatusAccepted, payload)
 		}
@@ -6545,7 +6467,7 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 			return
 		}
 		if stateChanged || repaired {
-			mobilePersistState()
+			mobilePersistUpload(record)
 		}
 		if stateChanged {
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
@@ -6572,8 +6494,10 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 		mobileDocuments.Lock()
 		record, exists := mobileDocuments.uploads[taskID]
 		repaired := false
+		changes := mobileDocumentChanges{}
 		if exists && mobileUploadRepairSourceMeta(&record) {
 			mobileDocuments.uploads[taskID] = record
+			changes.uploads = append(changes.uploads, record)
 			repaired = true
 		}
 		path := record.SourcePath
@@ -6607,15 +6531,17 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 				originalSize = mobileDraftOriginalSize(*draft)
 				hasSrc = true
 				if draftRepaired {
+					changes.drafts = append(changes.drafts, *draft)
 					repaired = true
 				}
 			} else if draftRepaired {
+				changes.drafts = append(changes.drafts, mobileDocuments.drafts[record.DraftID])
 				repaired = true
 			}
 		}
 		mobileDocuments.Unlock()
 		if repaired {
-			mobilePersistState()
+			mobilePersistDocumentChanges(changes)
 		}
 		if !exists || owner != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) || !hasSrc {
 			writeError(w, http.StatusNotFound, "UPLOAD_SOURCE_NOT_FOUND", "upload source not found")
@@ -6629,7 +6555,7 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 			// Stream failed. Clear meta only when the attempted path is confirmed
 			// missing under an online store — never during store outages.
 			failedPath := strings.TrimSpace(path)
-			dirty := false
+			failedChanges := mobileDocumentChanges{}
 			if mobileShouldClearSourceMetaAfterStreamFail(failedPath) {
 				mobileDocuments.Lock()
 				if rec, ok := mobileDocuments.uploads[taskID]; ok && rec.OwnerID == owner {
@@ -6638,11 +6564,11 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 						if upPath != "" && (failedPath == "" || upPath == failedPath) {
 							mobileClearUploadSourceMeta(&rec)
 							mobileDocuments.uploads[taskID] = rec
-							dirty = true
+							failedChanges.uploads = append(failedChanges.uploads, rec)
 						} else if upPath == "" && rec.SourceSize != 0 {
 							mobileClearUploadSourceMeta(&rec)
 							mobileDocuments.uploads[taskID] = rec
-							dirty = true
+							failedChanges.uploads = append(failedChanges.uploads, rec)
 						}
 					}
 					if draftID := strings.TrimSpace(rec.DraftID); draftID != "" && failedPath != "" {
@@ -6650,15 +6576,15 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 							if strings.TrimSpace(draft.SourcePath) == failedPath {
 								mobileClearDraftSourceMeta(&draft)
 								mobileDocuments.drafts[draftID] = draft
-								dirty = true
+								failedChanges.drafts = append(failedChanges.drafts, draft)
 							}
 						}
 					}
 				}
 				mobileDocuments.Unlock()
 			}
-			if dirty {
-				mobilePersistState()
+			if len(failedChanges.drafts)+len(failedChanges.uploads) > 0 {
+				mobilePersistDocumentChanges(failedChanges)
 			}
 			writeError(w, http.StatusNotFound, "UPLOAD_SOURCE_NOT_FOUND", "upload source not found")
 		}
@@ -6688,17 +6614,13 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 		}
 		now := time.Now().UTC()
 		var claimed mobileDocumentUploadRecord
-		reclaimed := 0
-		stateDirty := false
+		changes := mobileDocumentChanges{}
 		// Cache once per claim pass — avoid N directory stats while scanning uploads.
 		storeReady := mobileDocumentBlobStoreReady()
 		// Terminal failures (ghost originals) to push over realtime after unlock.
 		var terminalEvents []map[string]any
 		mobileDocuments.Lock()
-		reclaimed = mobileReclaimStaleDocumentUploadClaims(now)
-		if reclaimed > 0 {
-			stateDirty = true
-		}
+		changes.uploads = append(changes.uploads, mobileReclaimStaleDocumentUploadClaimRecords(now)...)
 		// Opportunistic: free upload-side originals for terminal tasks (migration
 		// for records created before release-on-ready).
 		for taskID, record := range mobileDocuments.uploads {
@@ -6710,7 +6632,7 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 			}
 			if mobileReleaseUploadOriginalWhenDraftOwns(&record) {
 				mobileDocuments.uploads[taskID] = record
-				stateDirty = true
+				changes.uploads = append(changes.uploads, record)
 			}
 		}
 		for taskID, record := range mobileDocuments.uploads {
@@ -6732,11 +6654,11 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 			// Worker needs a downloadable original (upload blob or draft fallback).
 			avail, repaired := mobileUploadSourceAvailable(record)
 			if repaired {
-				stateDirty = true
 				// Re-read after repair so we do not re-persist ghost SourcePath.
 				if refreshed, ok := mobileDocuments.uploads[taskID]; ok {
 					record = refreshed
 				}
+				changes.uploads = append(changes.uploads, record)
 			}
 			if !avail {
 				// Store online + no source: OCR/parse can never complete. Terminal-fail
@@ -6749,7 +6671,7 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 					record.ClaimedBy = ""
 					record.UpdatedAt = now
 					mobileDocuments.uploads[taskID] = record
-					stateDirty = true
+					changes.uploads = append(changes.uploads, record)
 					terminalEvents = append(terminalEvents, mobileDocumentUploadPayload(record))
 				}
 				continue
@@ -6759,6 +6681,7 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 			record.Message = "远程解析 worker 正在处理移动端文档。"
 			record.UpdatedAt = now
 			mobileDocuments.uploads[taskID] = record
+			changes.uploads = append(changes.uploads, record)
 			claimed = record
 			break
 		}
@@ -6766,8 +6689,8 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 		mobileDocuments.Unlock()
 		// Persist before realtime so a crash cannot drop terminal-fail / claim state
 		// after the client already observed the event.
-		if stateDirty || claimed.TaskID != "" {
-			mobilePersistState()
+		if len(changes.uploads) > 0 {
+			mobilePersistDocumentChanges(changes)
 		}
 		// Notify Mobile when ghost tasks were terminal-failed during this claim pass.
 		for _, ev := range terminalEvents {
@@ -6921,6 +6844,7 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 		record.OCRMarkdown = markdown
 		record.OCRMessage = message
 		record.OCRError = errText
+		changes := mobileDocumentChanges{}
 		// Intermediate status so mobileApplyUploadPipelineResult can promote to ready/failed.
 		if record.Status == "" || record.Status == "queued" || record.Status == "in_progress" {
 			record.Status = "needs_ocr"
@@ -6953,15 +6877,17 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 				}
 				mobileDocuments.drafts[draft.ID] = draft
 			}
+			changes.drafts = append(changes.drafts, draft)
 		}
 		record.UpdatedAt = now
 		record, _ = mobileApplyUploadPipelineResult(record, now)
 		mobileDocuments.uploads[taskID] = record
+		changes.uploads = append(changes.uploads, record)
 		payload := mobileDocumentUploadPayload(record)
 		mobileDocuments.Unlock()
 		mobileKnowledgePurgeState.RUnlock()
 		mobileDocumentQuotaAdmissionMu.Unlock()
-		mobilePersistState()
+		mobilePersistDocumentChanges(changes)
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		writeJSON(w, http.StatusOK, payload)
 	}
@@ -7157,7 +7083,11 @@ func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFun
 			}
 			mobileServerProfiles.Unlock()
 			mobileKnowledgePurgeState.RUnlock()
-			go mobilePersistState()
+			records := make([]mobileServerProfileRecord, 0, len(next))
+			for _, record := range next {
+				records = append(records, record)
+			}
+			go mobilePersistServerProfiles(tenantID, ownerID, sourceMachineID, !viewerUpsert, records)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status": "ok",
 				"count":  len(next),
@@ -8506,7 +8436,7 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 		mobileDigitalEmployeeTasks.tasks[record.TaskID] = record
 		mobileDigitalEmployeeTasks.Unlock()
 		mobileKnowledgePurgeState.RUnlock()
-		mobilePersistState()
+		mobilePersistDigitalTask(record)
 		payload := mobileDigitalEmployeeTaskPayload(record)
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
 		// Wake desktop GUI workers immediately (sub-second claim vs multi-second poll).
@@ -8608,7 +8538,7 @@ func mobileDigitalEmployeeTaskClaim(identity *auth.IdentityService, requirePathE
 			})
 			return
 		}
-		mobilePersistState()
+		mobilePersistDigitalTask(claimed)
 		payload := mobileDigitalEmployeeTaskPayload(claimed)
 		// Notify the mobile task owner (may differ from machine owner for hosted VEs).
 		mobileRealtimeBroadcast(principal.TenantID, claimed.OwnerID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
@@ -8856,7 +8786,7 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 		// realtime only. Persist durable snapshots on terminal status (claim already
 		// persisted the in_progress ownership handoff).
 		if status == "done" || status == "failed" {
-			mobilePersistState()
+			mobilePersistDigitalTask(record)
 		}
 		payload := mobileDigitalEmployeeTaskPayload(record)
 		// Phone owner always gets the live event (progress + completion).

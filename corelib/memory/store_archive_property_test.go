@@ -623,6 +623,41 @@ func TestArchiveStoreAddIsIDIdempotentAndRemoveIDsIsOrdered(t *testing.T) {
 	}
 }
 
+func TestArchiveStoreDoesNotResurrectClearedJSON(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "archive.json")
+	raw := []byte(`[{"id":"cold-1","content":"kept on disk","category":"project_knowledge","updated_at":"2026-08-10T12:00:00Z"}]`)
+	if err := os.WriteFile(archivePath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := NewArchiveStore(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archive.Count() != 1 {
+		archive.Stop()
+		t.Fatalf("imported archive count = %d, want 1", archive.Count())
+	}
+	if _, err := archive.RemoveIDsDurable([]string{"cold-1"}); err != nil {
+		archive.Stop()
+		t.Fatal(err)
+	}
+	archive.Stop()
+
+	reloaded, err := NewArchiveStore(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Stop()
+	if reloaded.Count() != 0 {
+		t.Fatalf("deleted archive entry came back from archive.json, count = %d", reloaded.Count())
+	}
+	kept, err := os.ReadFile(archivePath)
+	if err != nil || string(kept) != string(raw) {
+		t.Fatal("archive.json was rewritten or removed")
+	}
+}
+
 func TestNewStoreReconcilesActiveArchiveDuplicateIDs(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "memories.json")

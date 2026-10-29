@@ -367,11 +367,14 @@ func guiRemoteWorkspaceProbeFromOutput(task codingruntime.Task, identity, workDi
 	if len(strings.Fields(head)) != 1 {
 		return nil, fmt.Errorf("remote read-only git probe returned no unambiguous HEAD")
 	}
-	status := strings.Trim(output[begin+len(markerStart):end], "\r\n")
+	statusHash, err := codingruntime.RemoteWorkspaceStatusDigest(output[begin+len(markerStart) : end])
+	if err != nil {
+		return nil, err
+	}
 	return &codingruntime.WorkspaceProbe{
 		ProjectRef: firstNonEmptyTraceText(task.ProjectRef, workDir),
 		Head:       head,
-		StatusHash: codingRuntimeDigest(status),
+		StatusHash: statusHash,
 		HostKey:    identity,
 		WorkDir:    workDir,
 		ObservedAt: observedAt.UTC(),

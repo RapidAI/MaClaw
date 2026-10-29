@@ -2022,11 +2022,11 @@
 /* Quiet deny action: neutral until hovered, no danger tint by design. */
 .ve-auth-action--ghost {
     background: transparent;
-    color: var(--theme-text-secondary, #546479);
+    color: var(--theme-text-secondary, #46586f);
 }
 
 .ve-auth-action--ghost:hover:not(:disabled) {
-    color: var(--theme-text-primary, #526277);
+    color: var(--theme-text-primary, #24364e);
     background: rgba(148, 163, 184, 0.1);
 }
 

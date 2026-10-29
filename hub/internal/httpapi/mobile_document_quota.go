@@ -41,10 +41,9 @@ func ConfigureMobileDocumentQuota(system store.SystemSettingsRepository, securit
 // draft markdown bytes + upload source bytes (raw files still on Hub).
 // Dead blob paths are repaired so missing originals do not inflate used quota.
 func mobileDocumentQuotaUsedBytes(ownerID, tenantID string) int64 {
-	used, repaired := mobileDocumentQuotaScan(ownerID, tenantID, true)
-	if repaired {
-		// Persist outside the scan lock (scan already unlocked).
-		mobilePersistState()
+	used, changes := mobileDocumentQuotaScanChanges(ownerID, tenantID, true)
+	if len(changes.drafts)+len(changes.uploads) > 0 {
+		mobilePersistDocumentChanges(changes)
 	}
 	return used
 }
@@ -53,9 +52,14 @@ func mobileDocumentQuotaUsedBytes(ownerID, tenantID string) int64 {
 // When repair is false, metadata is trusted (fast path for write checks that are under limit).
 // Caller must not hold mobileDocuments.Lock.
 func mobileDocumentQuotaScan(ownerID, tenantID string, repair bool) (used int64, repaired bool) {
+	used, changes := mobileDocumentQuotaScanChanges(ownerID, tenantID, repair)
+	return used, len(changes.drafts)+len(changes.uploads) > 0
+}
+
+func mobileDocumentQuotaScanChanges(ownerID, tenantID string, repair bool) (used int64, changes mobileDocumentChanges) {
 	ownerID = strings.TrimSpace(ownerID)
 	if ownerID == "" {
-		return 0, false
+		return 0, changes
 	}
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
@@ -66,7 +70,7 @@ func mobileDocumentQuotaScan(ownerID, tenantID string, repair bool) (used int64,
 		}
 		if repair && mobileDraftRepairSourceMeta(&draft) {
 			mobileDocuments.drafts[id] = draft
-			repaired = true
+			changes.drafts = append(changes.drafts, draft)
 		}
 		used += int64(len(draft.Markdown))
 		for _, image := range draft.Images {
@@ -87,7 +91,7 @@ func mobileDocumentQuotaScan(ownerID, tenantID string, repair bool) (used int64,
 		}
 		if repair && mobileUploadRepairSourceMeta(&upload) {
 			mobileDocuments.uploads[id] = upload
-			repaired = true
+			changes.uploads = append(changes.uploads, upload)
 		}
 		// Avoid double-counting only when draft/upload reference the same durable
 		// immutable blob. DraftID alone is insufficient: legacy records may have a
@@ -99,7 +103,7 @@ func mobileDocumentQuotaScan(ownerID, tenantID string, repair bool) (used int64,
 		}
 		used += int64(mobileUploadSourceSize(upload))
 	}
-	return used, repaired
+	return used, changes
 }
 
 // mobileDocumentQuotaLimitForPrincipal returns the effective quota bytes for bootstrap parity.
@@ -139,9 +143,9 @@ func mobileCheckDocumentQuota(ownerID, tenantID string, additionalBytes int64, l
 		return nil
 	}
 	// Over limit: re-scan with repair so ghost blobs cannot block uploads.
-	used, repaired := mobileDocumentQuotaScan(ownerID, tenantID, true)
-	if repaired {
-		mobilePersistState()
+	used, changes := mobileDocumentQuotaScanChanges(ownerID, tenantID, true)
+	if len(changes.drafts)+len(changes.uploads) > 0 {
+		mobilePersistDocumentChanges(changes)
 	}
 	if used+additionalBytes > limit {
 		return errString("document storage quota exceeded")

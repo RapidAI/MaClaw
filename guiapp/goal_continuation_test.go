@@ -547,6 +547,58 @@ func TestGoalStepProgressKeepsTheFollowingTurnOnTheSameStep(t *testing.T) {
 	if strings.Contains(prompt, "骨架已写，还没编译") || strings.Contains(prompt, "窗口能打开") {
 		t.Fatalf("closed step result was copied into the next step: %s", prompt)
 	}
+	if !strings.Contains(prompt, "本轮只能提交步骤 2") || strings.Contains(prompt, "理解：") {
+		t.Fatalf("execute prompt still includes the plan essay: %s", prompt)
+	}
+	noted := h.toolGoalForUser(userID, map[string]interface{}{
+		"action": "step", "index": "1", "status": "done", "result": "补记选型证据",
+	})
+	if strings.HasPrefix(noted, "错误") || !strings.Contains(noted, "补充说明已记下") || !strings.Contains(noted, "index=2") {
+		t.Fatalf("done-step follow-up = %q", noted)
+	}
+	stored = h.getGoalStore().Get(userID)
+	if stored.Steps[0].Status != goal.StepDone || !strings.Contains(stored.Steps[0].Result, "补记选型证据") || stored.Steps[1].Status != goal.StepPending {
+		t.Fatalf("follow-up moved the current step: %+v", stored.Steps)
+	}
+	omitted := h.toolGoalForUser(userID, map[string]interface{}{
+		"action": "step", "status": "progress", "result": "骨架目录已建",
+	})
+	if !strings.Contains(omitted, "步骤 2 仍在进行") {
+		t.Fatalf("omitted index = %q", omitted)
+	}
+	noStatus := h.toolGoalForUser(userID, map[string]interface{}{
+		"action": "step", "index": 2, "result": "还在搭骨架",
+	})
+	if !strings.Contains(noStatus, "步骤 2 仍在进行") {
+		t.Fatalf("omitted status = %q", noStatus)
+	}
+}
+
+func TestGoalExecutePromptKeepsCurrentStepAheadOfUnderstanding(t *testing.T) {
+	store := goal.NewStore("")
+	g, err := store.Set("user", "图形版游戏")
+	if err != nil {
+		t.Fatal(err)
+	}
+	understanding := strings.Repeat("这是步骤1的长篇选型，不要在本轮重做。", 80)
+	detail := strings.Repeat("写目录和主循环。", 50) + "验收：窗口能开"
+	if err := store.SavePlan("user", g.GoalID, understanding, []goal.Step{
+		{Title: "锁定工具链", Detail: "只写文档"},
+		{Title: "搭工程骨架", Detail: detail},
+	}, []string{strings.Repeat("验收标准很长。", 40)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateStep("user", g.GoalID, 1, goal.StepDone, "文档已写"); err != nil {
+		t.Fatal(err)
+	}
+	prompt := buildGoalExecutePrompt(store.Get("user"))
+	if strings.Contains(prompt, "这是步骤1的长篇选型") || !strings.Contains(prompt, "验收：窗口能开") {
+		t.Fatalf("step detail was cut or the plan essay was copied in: %s", prompt)
+	}
+	msg := goalContinuationTaskUserMessage(&TaskItem{Description: prompt}, "")
+	if !strings.Contains(msg, "index=2") || !strings.Contains(msg, "搭工程骨架") || !strings.Contains(msg, "验收：窗口能开") {
+		t.Fatalf("user message lost the current step: %s", msg)
+	}
 }
 
 func TestGoalContinuationCodingTaskIsThePhaseContract(t *testing.T) {
@@ -612,8 +664,12 @@ func TestGoalContinuationCodingTaskIsThePhaseContract(t *testing.T) {
 	for _, def := range exec.BuildTools("") {
 		execNames[extractToolName(def)] = true
 	}
-	if !execNames["write_file"] || !execNames["goal"] {
+	if !execNames["write_file"] || !execNames["goal"] || execNames[codingAgentTodoToolName] {
 		t.Fatalf("execute surface = %v", execNames)
+	}
+	execPrompt := buildCodingSubAgentSystemPrompt(exec.task, `C:\game`, "", "", nil)
+	if strings.Contains(execPrompt, "必须先用 todo_write") {
+		t.Fatalf("goal execute prompt required the local checklist: %s", execPrompt)
 	}
 }
 

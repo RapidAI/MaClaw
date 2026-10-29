@@ -42,6 +42,7 @@ const walkFiles = (dir, out = []) => {
 };
 const saveConfigAllowedSnippets = [
   ['guiapp/app.go', 'func (a *App) SaveConfig(config corelib.AppConfig) error', 'SaveConfig implementation'],
+  ['guiapp/app.go', 'err := store.SaveConfig(config)', 'saveToPath persists a complete config snapshot to an explicit path'],
   ['guiapp/config_manager.go', 'm.app.SaveConfig(mergedCfg)', 'config import owns a full merged config snapshot'],
   ['guiapp/app_user_data_migration.go', 'return a.SaveConfig(cfg)', 'user data migration restores a validated full configuration snapshot'],
   ['guiapp/frontend/src/App.tsx', 'PatchConfigFields(patch)', 'model settings save uses atomic patch to avoid TOCTOU race'],

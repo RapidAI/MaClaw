@@ -164,7 +164,7 @@ func mobileRunDocumentProcessJob(jobID string, principal *auth.ViewerPrincipal) 
 		})
 		return
 	}
-	mobilePersistState()
+	mobilePersistDraft(record)
 	if principal != nil {
 		go mobileIngestDocumentDraft(principal, record)
 	}

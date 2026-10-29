@@ -24,8 +24,7 @@ func ToolGoal(store *goal.Store, args map[string]interface{}) string {
 		return "目标管理器未初始化"
 	}
 
-	action, _ := args["action"].(string)
-	action = strings.TrimSpace(strings.ToLower(action))
+	action := goal.ApplyMissingAction(args)
 
 	switch action {
 	case "create":
@@ -130,17 +129,30 @@ func toolGoalStep(store *goal.Store, args map[string]interface{}) string {
 	if g.IsTerminal() {
 		return fmt.Sprintf("错误: 目标已处于终态（%s）", g.Status)
 	}
-	index, ok := intFromArg(args, "index")
-	if !ok || index <= 0 {
-		return "错误: 缺少 index 参数"
-	}
+	index, indexOK := goal.IndexArg(args, "index")
 	statusRaw, _ := args["status"].(string)
 	result, _ := args["result"].(string)
 	if strings.TrimSpace(result) == "" {
 		result, _ = args["reason"].(string)
 	}
-	if refusal := g.StepReportRefusal(index); refusal != "" {
-		return "错误: " + refusal
+	resolved := g.ResolveReportedStep(index, indexOK && index > 0)
+	if resolved.Refusal != "" {
+		return "错误: " + resolved.Refusal
+	}
+	if resolved.FollowUp.Index > 0 {
+		saved := false
+		if strings.TrimSpace(result) != "" {
+			var err error
+			saved, err = store.AppendStepNote("default", g.GoalID, resolved.FollowUp.Index, result)
+			if err != nil {
+				return "错误: " + err.Error()
+			}
+		}
+		return goal.FormatDoneStepNote(resolved.FollowUp, resolved.Current, saved)
+	}
+	index = resolved.Index
+	if strings.TrimSpace(statusRaw) == "" {
+		statusRaw = string(goal.StepProgress)
 	}
 	if err := store.UpdateStep("default", g.GoalID, index, goal.StepStatus(statusRaw), result); err != nil {
 		return "错误: " + err.Error()

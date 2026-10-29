@@ -3,6 +3,7 @@ package codingruntime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -189,7 +190,7 @@ func TestRunnerBlocksGatedWriterBeforeExecutorWhenBaselineProbeFails(t *testing.
 	if calls != 0 {
 		t.Fatalf("executor calls=%d; gated writer must not execute without baseline", calls)
 	}
-	if task == nil || task.Status != TaskBlocked || attempt == nil || attempt.Status != TaskBlocked || attempt.ErrorCode != "workspace_before_probe_failed" {
+	if task == nil || task.Status != TaskBlocked || attempt == nil || attempt.Status != TaskBlocked || attempt.ErrorCode != "workspace_before_probe_failed" || !strings.Contains(attempt.ErrorSummary, "git is unavailable") {
 		t.Fatalf("task=%+v attempt=%+v", task, attempt)
 	}
 	events, err := store.ListEvents(attempt.AttemptID)

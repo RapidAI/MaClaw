@@ -1,6 +1,6 @@
 /* WCAG AA: the status pairings keep ≥4.5:1 on their tinted backgrounds
-   (success 4.62, warning 4.54, danger 4.55, muted-on-white 5.79, on-primary
-   4.64 as of the 2026-10-25 Fluent fallback alignment). */
+   (success 4.62, warning 4.54, danger 4.55, muted-on-white 5.44, on-primary
+   4.64 as of the 2026-10-29 modern-ink pass). */
 :root {
     color-scheme: light;
     /* Legacy pre-theme variables were removed (2026-08): every consumer now
@@ -10,11 +10,12 @@
        The fallback palette mirrors the default light scheme (Fluent Azure,
        assistantLightSchemes.ts) so the pre-paint frame matches the mounted
        app exactly. */
-    --shadow-sm: 0 1px 2px rgba(30, 58, 95, 0.06);
-    --shadow-md: 0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10);
-    --shadow-lg: 0 8px 28px -6px rgba(30, 58, 95, 0.18);
+    --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, -apple-system, sans-serif;
+    --shadow-sm: 0 1px 2px rgba(16, 34, 61, 0.05), 0 1px 3px rgba(16, 34, 61, 0.04);
+    --shadow-md: 0 1px 2px rgba(16, 34, 61, 0.04), 0 4px 14px -2px rgba(16, 34, 61, 0.09);
+    --shadow-lg: 0 10px 32px -8px rgba(16, 34, 61, 0.16), 0 2px 8px -2px rgba(16, 34, 61, 0.06);
     /* Overlay/modal elevation (expert-market & share shells). */
-    --shadow-xl: 0 12px 40px -8px rgba(30, 58, 95, 0.22);
+    --shadow-xl: 0 16px 48px -12px rgba(16, 34, 61, 0.22), 0 4px 16px -6px rgba(16, 34, 61, 0.10);
     --radius-xs: 4px;
     --radius-sm: 6px;
     --radius-md: 8px;
@@ -38,16 +39,17 @@
     --theme-primary-soft: rgba(47, 120, 208, 0.10);
     --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
-    --theme-surface-muted: #eef5ff;
-    /* Light shell retints these again on [data-ai-light-scheme] to the
-       assistant-title gray. This fallback matches that Fluent ink. */
-    --theme-text-primary: #526277;
-    --theme-text-secondary: #546479;
-    --theme-text-muted: #56677c;
+    --theme-surface-muted: #f1f6fc;
+    /* Deep slate-blue ink (2026-10-29 modern-ink pass): titles and body copy
+       read confidently on the white canvas; the rail may retint text again on
+       [data-ai-light-scheme] / [data-ai-theme] roots. */
+    --theme-text-primary: #24364e;
+    --theme-text-secondary: #46586f;
+    --theme-text-muted: #5b6b80;
     /* Derived on theme roots via :is(...) block below (must rebind per cascade). */
     --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));
-    --theme-border: #c9ddf6;
-    --theme-border-subtle: #dde9fa;
+    --theme-border: #d5e0ef;
+    --theme-border-subtle: #e2e9f3;
     --theme-success: #11813a;
     --theme-success-bg: rgba(22, 163, 74, 0.07);
     --theme-warning: #aa5d05;

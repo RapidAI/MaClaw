@@ -82,8 +82,8 @@ type TaskStore interface {
 }
 
 // Manager manages scheduled tasks and a background ticker that fires due tasks.
-// A store keeps the rows in the service database. Without one, path is the
-// JSON file used by hosts that have not moved.
+// store is the SQLite database. path is the pre-migration JSON file, kept so a
+// later import can still find it. NewManager always sets store.
 type Manager struct {
 	mu              sync.RWMutex
 	tasks           []ScheduledTask
@@ -100,22 +100,35 @@ type Manager struct {
 	runningTasks map[string]context.CancelFunc
 }
 
-// NewManager creates a manager persisting to the given path.
+// NewManager creates a manager that stores tasks in SQLite next to path.
+// path is the pre-migration JSON file. That file is copied in once and left
+// in place. A later empty task list is not filled from the JSON again.
 func NewManager(path string) (*Manager, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("scheduler: resolve path: %w", err)
 	}
-	m := &Manager{
-		tasks:        make([]ScheduledTask, 0),
-		path:         absPath,
-		stopCh:       make(chan struct{}),
-		runningTasks: make(map[string]context.CancelFunc),
-	}
-	if err := m.load(); err != nil {
+	store, err := OpenSQLiteTaskStore(scheduleDBPath(absPath))
+	if err != nil {
 		return nil, err
 	}
-	m.finishNew()
+	done, err := store.legacyImportDone()
+	if err != nil {
+		return nil, err
+	}
+	if !done {
+		if _, err := ImportLegacyTasks(absPath, store); err != nil {
+			return nil, err
+		}
+		if err := store.markLegacyImportDone(); err != nil {
+			return nil, err
+		}
+	}
+	m, err := NewManagerFromStore(store)
+	if err != nil {
+		return nil, err
+	}
+	m.path = absPath
 	return m, nil
 }
 

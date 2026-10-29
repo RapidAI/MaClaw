@@ -52,7 +52,10 @@ if (!existsSync(snapshotPath)) {
     process.exit(1)
 }
 
-const baseline = readFileSync(snapshotPath, 'utf8')
+// The snapshot has no .gitattributes eol anchor, so a core.autocrlf checkout
+// may hand it back CRLF while the assembled text is always LF. Compare
+// content, not line endings.
+const baseline = readFileSync(snapshotPath, 'utf8').replace(/\r\n/g, '\n')
 if (baseline === assembled) {
     console.log(`App.css matches baseline (${baseline.length} bytes)`)
     process.exit(0)

@@ -93,6 +93,7 @@ func goalContinuationPhaseSection(text string) string {
 	case "execute":
 		return `## 宿主目标阶段
 本轮只执行用户消息里的当前步骤。不要把下一步的工作写进本轮回复。
+todo_write 只是清单，不能代替本轮记录。index 用用户消息里的步骤号，不要用清单编号。
 这一步还没做完时调用 goal(action="step", index, status="progress", result)，下一轮仍是这一步。
 交付物完成时调用 status="done"，然后停止。不要把未完成的步骤标成 done。
 步骤都完成时调用 goal(action="complete", summary)；无法收尾时调用 goal(action="fail", reason)。
@@ -1436,11 +1437,46 @@ func buildGoalPlanPrompt(g *goal.Goal) string {
 	return b.String()
 }
 
+// capGoalPromptRunes shortens prompt background. The current step stays
+// outside this cap so a long understanding cannot push it out of the window.
+func capGoalPromptRunes(s string, max int) string {
+	s = strings.TrimSpace(s)
+	runes := []rune(s)
+	if max <= 0 || len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
+}
+
+// capGoalPromptTail keeps the latest part of a progress note. The conclusion
+// is at the end, and the opening is already known.
+func capGoalPromptTail(s string, max int) string {
+	s = strings.TrimSpace(s)
+	runes := []rune(s)
+	if max <= 0 || len(runes) <= max {
+		return s
+	}
+	return "…" + string(runes[len(runes)-max:])
+}
+
 func buildGoalExecutePrompt(g *goal.Goal) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("[系统续接][execute] 按步骤执行目标：%s\n\n", g.Objective))
-	if strings.TrimSpace(g.Understanding) != "" {
-		b.WriteString("理解：" + g.Understanding + "\n")
+	step, hasStep := g.CurrentStep()
+	if hasStep {
+		b.WriteString(fmt.Sprintf("本轮只能提交步骤 %d：%s。已完成的步骤不要再调用 goal。\n调用 goal(action=\"step\", index=%d, status=\"progress\" 或 \"done\", result=\"...\")。\n\n", step.Index, step.Title, step.Index))
+		b.WriteString(fmt.Sprintf("当前步骤（本轮只做这一步，不要开始后续步骤）：\n  %d. %s\n", step.Index, step.Title))
+		if detail := capGoalPromptRunes(step.Detail, 480); detail != "" {
+			b.WriteString("  " + detail + "\n")
+		}
+		if step.Status == goal.StepProgress {
+			if progress := capGoalPromptTail(step.Result, 240); progress != "" {
+				b.WriteString("  已记录的进度：" + progress + "\n")
+			}
+		}
+		b.WriteString(fmt.Sprintf("\n这一步的交付物还没完成时，调用 goal(action=\"step\", index=%d, status=\"progress\", result=\"这一步已经做成什么样，还剩什么\"）。下一轮仍是这一步。", step.Index))
+		b.WriteString(fmt.Sprintf("\n交付物完成后再调用 goal(action=\"step\", index=%d, status=\"done\", result=\"...\")，然后停止。不要把未完成的步骤标成 done，也不要在本轮里做步骤 %d 之后的工作。", step.Index, step.Index))
+		b.WriteString("\n如果这一步无法完成，status 用 failed，并把原因写进 result。\n")
 	}
 	if g.MaxTurns > 0 {
 		b.WriteString(fmt.Sprintf("进度：第 %d/%d 轮", g.TurnsUsed, g.MaxTurns))
@@ -1454,34 +1490,44 @@ func buildGoalExecutePrompt(g *goal.Goal) string {
 	b.WriteString(fmt.Sprintf(" | 耗时: %ds\n", g.TimeUsedSeconds))
 
 	var done []goal.Step
-	for _, step := range g.Steps {
-		if step.Status == goal.StepDone {
-			done = append(done, step)
+	for _, item := range g.Steps {
+		if item.Status == goal.StepDone {
+			done = append(done, item)
 		}
 	}
 	if len(done) > 0 {
 		b.WriteString("\n已完成（这些步骤已结束，本轮不要重做，也不要把它们没写完的内容并进当前步骤）:\n")
-		for _, step := range done {
-			b.WriteString(fmt.Sprintf("  %d. %s\n", step.Index, step.Title))
+		for _, item := range done {
+			b.WriteString(fmt.Sprintf("  %d. %s\n", item.Index, item.Title))
+		}
+	}
+	// The plan essay describes the whole goal, and its opening is usually the
+	// step that is already done. While a step is current, that essay pulls
+	// the model back onto the closed step. The complete turn still needs it.
+	if !hasStep {
+		if understanding := strings.TrimSpace(g.Understanding); understanding != "" {
+			b.WriteString("\n理解：" + understanding + "\n")
 		}
 	}
 	if len(g.AcceptanceCriteria) > 0 {
 		b.WriteString("\n验收标准:\n")
-		for _, criterion := range g.AcceptanceCriteria {
-			b.WriteString(fmt.Sprintf("  • %s\n", criterion))
+		limit := len(g.AcceptanceCriteria)
+		if hasStep && limit > 6 {
+			limit = 6
+		}
+		for _, criterion := range g.AcceptanceCriteria[:limit] {
+			shown := criterion
+			if hasStep {
+				shown = capGoalPromptRunes(criterion, 80)
+			}
+			b.WriteString(fmt.Sprintf("  • %s\n", shown))
+		}
+		if hasStep && len(g.AcceptanceCriteria) > limit {
+			b.WriteString(fmt.Sprintf("  • …其余 %d 条留到完成时再逐条引用\n", len(g.AcceptanceCriteria)-limit))
 		}
 	}
-	if step, ok := g.CurrentStep(); ok {
-		b.WriteString(fmt.Sprintf("\n当前步骤（本轮只做这一步，不要开始后续步骤）：\n  %d. %s\n", step.Index, step.Title))
-		if strings.TrimSpace(step.Detail) != "" {
-			b.WriteString("  " + step.Detail + "\n")
-		}
-		if step.Status == goal.StepProgress && strings.TrimSpace(step.Result) != "" {
-			b.WriteString("  已记录的进度：" + strings.TrimSpace(step.Result) + "\n")
-		}
-		b.WriteString(fmt.Sprintf("\n这一步的交付物还没完成时，调用 goal(action=\"step\", index=%d, status=\"progress\", result=\"这一步已经做成什么样，还剩什么\"）。下一轮仍是这一步。", step.Index))
-		b.WriteString(fmt.Sprintf("\n交付物完成后再调用 goal(action=\"step\", index=%d, status=\"done\", result=\"...\")，然后停止。不要把未完成的步骤标成 done，也不要在本轮里做步骤 %d 之后的工作。", step.Index, step.Index))
-		b.WriteString("\n如果这一步无法完成，status 用 failed，并把原因写进 result。")
+	if hasStep {
+		b.WriteString(fmt.Sprintf("\n再次确认：本轮只调用 goal(action=\"step\", index=%d, status=\"progress\" 或 \"done\", result=\"...\")。\n", step.Index))
 		return b.String()
 	}
 	b.WriteString("\n所有步骤已完成。请核对验收标准后调用 goal(action=\"complete\", summary=\"...\")。")

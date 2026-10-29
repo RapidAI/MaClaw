@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
+	"github.com/RapidAI/CodeClaw/corelib/configdb"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -26,7 +27,7 @@ func IsLogDetailEnabled() bool {
 	return logDetailEnabled.Load()
 }
 
-// SyncLogDetailEnabledFromDefaultConfig refreshes the gate from ~/.maclaw/config.json.
+// SyncLogDetailEnabledFromDefaultConfig refreshes the gate from ~/.maclaw/config.db.
 // Missing or unreadable config keeps the default disabled state.
 func SyncLogDetailEnabledFromDefaultConfig() {
 	home, err := os.UserHomeDir()
@@ -39,15 +40,16 @@ func SyncLogDetailEnabledFromDefaultConfig() {
 
 // SyncLogDetailEnabledFromConfigPath refreshes the gate from a specific config path.
 func SyncLogDetailEnabledFromConfigPath(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		SetLogDetailEnabled(false)
-		return
-	}
 	var cfg struct {
 		LogDetailEnabled bool `json:"log_detail_enabled"`
 	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if filepath.Base(path) == configdb.JSONFileName {
+		configdb.ReadValue(filepath.Dir(path), "log_detail_enabled", &cfg.LogDetailEnabled)
+		SetLogDetailEnabled(cfg.LogDetailEnabled)
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(data, &cfg) != nil {
 		SetLogDetailEnabled(false)
 		return
 	}

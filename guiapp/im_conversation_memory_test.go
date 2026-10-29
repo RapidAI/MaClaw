@@ -5,7 +5,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -225,14 +224,13 @@ func TestPersistentConversationMemoryReloadDropsLegacySessionFields(t *testing.T
 	}
 	cm.Stop()
 
-	reloadedBytes, err := os.ReadFile(storePath)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+	reloaded := agent.NewPersistentConversationMemory(storePath)
+	defer reloaded.Stop()
+	slot = reloaded.GetUnfinishedSlot("desktop-user")
+	if slot == nil || slot.Tool != "claude" {
+		t.Fatalf("persisted slot lost canonical tool field: %#v", slot)
 	}
-	if strings.Contains(string(reloadedBytes), "session_id") {
-		t.Fatalf("persisted payload still contains legacy session_id: %s", string(reloadedBytes))
-	}
-	if !strings.Contains(string(reloadedBytes), "\"tool\":\"claude\"") {
-		t.Fatalf("persisted payload should preserve canonical tool field: %s", string(reloadedBytes))
+	if len(slot.LegacySessionID) != 0 {
+		t.Fatalf("persisted payload still contains legacy session_id: %s", slot.LegacySessionID)
 	}
 }

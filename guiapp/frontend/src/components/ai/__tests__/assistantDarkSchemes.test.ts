@@ -58,7 +58,7 @@ describe("assistant dark schemes", () => {
     it("exposes the Onyx palette tokens", () => {
         const scheme = getAssistantDarkScheme("onyx");
         expect(scheme.cssVars.pageBg).toBe("#050505");
-        expect(scheme.cssVars.textPrimary).toBe("#c9c9c9");
+        expect(scheme.cssVars.textPrimary).toBe("#d8dade");
         expect(scheme.assistantTheme.sendBtnBg).toBe("#b3b3b3");
     });
 

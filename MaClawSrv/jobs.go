@@ -119,6 +119,12 @@ func (r asyncJobEffectRecorder) SettleJobEffect(ctx context.Context, settlement 
 }
 
 func newAsyncJobManager(dataRoot string) *asyncJobManager {
+	m := newAsyncJobManagerStores(dataRoot)
+	m.recoverStores()
+	return m
+}
+
+func newAsyncJobManagerStores(dataRoot string) *asyncJobManager {
 	m := &asyncJobManager{
 		jobs:                 map[string]*asyncJobRecord{},
 		effectCleanupPending: map[string]struct{}{},
@@ -142,21 +148,39 @@ func newAsyncJobManager(dataRoot string) *asyncJobManager {
 		m.lastPersistErr = err
 		return m
 	}
-	repository, err := newSQLiteAsyncJobRepository(m.repositoryPath, m.filePath)
-	if err != nil {
-		m.lastPersistErr = err
-		return m
+	var repository agentruntime.JobRepository
+	var effectRepository agentruntime.JobEffectRepository
+	var repositoryErr, effectErr error
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		repository, repositoryErr = newSQLiteAsyncJobRepository(m.repositoryPath, m.filePath)
+	}()
+	go func() {
+		defer wait.Done()
+		effectRepository, effectErr = agentservice.NewSQLiteJobEffectRepository(m.effectRepositoryPath)
+	}()
+	wait.Wait()
+	if repositoryErr != nil {
+		m.lastPersistErr = repositoryErr
+	} else {
+		m.repository = repository
 	}
-	m.repository = repository
-	effectRepository, effectErr := agentservice.NewSQLiteJobEffectRepository(m.effectRepositoryPath)
 	if effectErr != nil {
 		m.lastEffectPersistErr = effectErr
 	} else {
 		m.effectRepository = effectRepository
 	}
+	return m
+}
+
+func (m *asyncJobManager) recoverStores() {
+	if m == nil || m.repository == nil && m.effectRepository == nil {
+		return
+	}
 	m.loadPendingEffectCleanup()
 	m.loadFromRepository()
-	return m
 }
 
 func (m *asyncJobManager) createUserJob(kind string, p agentservice.Principal, run func(context.Context) (any, error)) *asyncJobRecord {

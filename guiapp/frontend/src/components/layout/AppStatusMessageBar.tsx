@@ -65,8 +65,8 @@ export const AppStatusMessageBar = ({
     const statusTone = (statusText.includes("Error") || statusText.includes("!"))
         ? 'var(--theme-danger, #dc1f25)'
         : 'var(--theme-success, #11813a)';
-    const noticeTone = 'var(--theme-text-muted, #56677c)';
-    const progressTone = successMarker ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #56677c)';
+    const noticeTone = 'var(--theme-text-muted, #5b6b80)';
+    const progressTone = successMarker ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #5b6b80)';
     const inline = variant === 'inline';
 
     // Inline sits after chips: take only natural width (can shrink), do not compete

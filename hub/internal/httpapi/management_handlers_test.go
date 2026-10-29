@@ -29,6 +29,7 @@ type fakeBoundUserRouteDeleter struct {
 }
 
 func TestUserDataPurgerRemovesAllUserOwnedSQLAndFiles(t *testing.T) {
+	defer mobileCloseStateDBForTest()
 	services := newAdminRouterTestContext(t)
 	ctx := context.Background()
 	now := time.Now().UTC()

@@ -158,8 +158,7 @@ func mobileSSHQuickConnectStore(
 		return mobileSSHQuickConnectResult{}, fmt.Errorf("failed to store password")
 	}
 	vaultKey := mobileSSHVaultMapKey(tenantID, ownerID, profileID)
-	mobileSSHVault.Lock()
-	mobileSSHVault.secrets[vaultKey] = mobileSSHVaultRecord{
+	secret := mobileSSHVaultRecord{
 		TenantID:        tenantID,
 		OwnerID:         ownerID,
 		ProfileID:       profileID,
@@ -167,8 +166,10 @@ func mobileSSHQuickConnectStore(
 		EncryptedSecret: enc,
 		UpdatedAt:       now,
 	}
+	mobileSSHVault.Lock()
+	mobileSSHVault.secrets[vaultKey] = secret
 	mobileSSHVault.Unlock()
-	go mobilePersistState()
+	go mobilePersistSSHQuick(rec, secret)
 
 	return mobileSSHQuickConnectResult{
 		ProfileID:     profileID,

@@ -390,3 +390,84 @@ func TestSQLiteStoreCrossHandleDuplicateClientMessageIsRejectedAtomically(t *tes
 		t.Fatalf("successes=%d duplicates=%d; want one of each", successes, duplicates)
 	}
 }
+
+func TestSQLiteStoreIndexedIdentityLookups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lookup.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	cred := Credential{ID: "cred-rotate", TenantID: "tenant", UserID: "user", Name: "key", APIKeyHash: hashAPIKey("old-key"), Status: CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveCredential(cred); err != nil {
+		t.Fatal(err)
+	}
+	cred.APIKeyHash = hashAPIKey("new-key")
+	if err := store.SaveCredential(cred); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := store.db.QueryRow(`SELECT count(*) FROM as_credentials WHERE credential_id=?`, cred.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("credential rows=%d err=%v", n, err)
+	}
+	got, err := store.GetCredential("tenant", "user", cred.ID)
+	if err != nil || got.APIKeyHash != cred.APIKeyHash {
+		t.Fatalf("credential=%#v err=%v", got, err)
+	}
+	if _, err := store.GetCredentialByAPIKey("old-key"); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("old key err=%v", err)
+	}
+	session := Session{ID: "sess-1", TenantID: "tenant", UserID: "user", InstanceID: "instance", Metadata: map[string]string{"client_session_key": "stable"}, CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	other := session
+	other.ID = "sess-2"
+	if err := store.SaveSession(other); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("session duplicate err=%v", err)
+	}
+	for i := 0; i < 30; i++ {
+		message := Message{ID: "assistant-" + strings.Repeat("n", i+1), SessionID: session.ID, TenantID: session.TenantID, UserID: session.UserID, InstanceID: session.InstanceID, Role: MessageRoleAssistant, Content: strings.Repeat("payload", 40), CreatedAt: now}
+		if err := store.SaveMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	userMessage := Message{ID: "user-1", SessionID: session.ID, TenantID: session.TenantID, UserID: session.UserID, InstanceID: session.InstanceID, Role: MessageRoleUser, Content: "hello", Metadata: map[string]string{"client_message_id": "same"}, CreatedAt: now}
+	if err := store.SaveMessage(userMessage); err != nil {
+		t.Fatal(err)
+	}
+	userMessage.ID = "user-2"
+	if err := store.SaveMessage(userMessage); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("message duplicate err=%v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE as_credentials SET credential_id=''`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE as_sessions SET client_session_key=''`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE as_messages SET client_message_id=''`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE as_meta SET hotpath_backfill=0`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, err = reopened.GetCredential("tenant", "user", cred.ID)
+	if err != nil || got.APIKeyHash != cred.APIKeyHash {
+		t.Fatalf("backfilled credential=%#v err=%v", got, err)
+	}
+	if err := reopened.SaveSession(other); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("backfilled session duplicate err=%v", err)
+	}
+	if err := reopened.SaveMessage(userMessage); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("backfilled message duplicate err=%v", err)
+	}
+}

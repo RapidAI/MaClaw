@@ -5729,7 +5729,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                 minWidth: 0,
                                                 padding: "8px 12px",
                                                 borderRadius: mine ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-                                                background: mine ? "var(--theme-primary, #2f6fbc)" : "var(--theme-surface, #ffffff)",
+                                                background: mine ? "var(--theme-primary, #2e75cb)" : "var(--theme-surface, #ffffff)",
                                                 color: mine ? "var(--theme-on-primary, #ffffff)" : "var(--theme-text-primary, #1e293b)",
                                                 border: mine ? "none" : "1px solid var(--theme-border, #e2e8f0)",
                                                 fontSize: 14,
@@ -5808,11 +5808,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                         }}
                                     >
                                         <CompanionMessageActions path={activeTab.path} markdown={message.text} messageId={message.id} />
-                                        <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "var(--theme-text-muted, #64748b)" }}>
+                                        <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)" }}>
                                             主持人回复
                                         </p>
                                         {message.discussion?.question ? (
-                                            <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "var(--theme-text-muted, #64748b)", borderLeft: "2px solid var(--theme-border, #cbd5e1)", paddingLeft: 8 }}>
+                                            <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)", borderLeft: "2px solid var(--theme-border, #cbd5e1)", paddingLeft: 8 }}>
                                                 回复 {message.discussion.askedBy || "读者"}：{message.discussion.question}
                                             </p>
                                         ) : null}

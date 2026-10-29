@@ -1,8 +1,7 @@
 package guiapp
 
 import (
-	"encoding/json"
-	"errors"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -17,15 +16,9 @@ import (
 // ---------------------------------------------------------------------------
 // Project Tab Session Persistence
 //
-// Manages disk read/write for project tab sessions. Each tab's conversation
-// state is stored as an individual JSON file (tab_{id}.json) alongside a
-// shared index file (_index.json) that tracks all known tabs.
-//
-// Session directory: ~/.maclaw/data/sessions/
-//
-// File layout:
-//   ~/.maclaw/data/sessions/_index.json       — Tab list index
-//   ~/.maclaw/data/sessions/tab_{id}.json     — Individual session files
+// Manages project tab sessions in SQLite (~/.maclaw/data/sessions/sessions.db).
+// _index.json, tab_{id}.json and *.view-archive.json are the pre-migration
+// files. The first open copies them in once and leaves them in place.
 // ---------------------------------------------------------------------------
 
 const (
@@ -80,8 +73,14 @@ type TabSessionData struct {
 // ProjectTabSessionPersist handles reading and writing project tab sessions
 // to disk. It is safe for concurrent use.
 type ProjectTabSessionPersist struct {
-	mu      sync.RWMutex
-	baseDir string
+	mu             sync.RWMutex
+	importMu       sync.Mutex
+	legacyImported bool
+	baseDir        string
+	dbMu           sync.Mutex
+	db             *sql.DB
+	dbDir          string
+	dbClosed       bool
 }
 
 // NewProjectTabSessionPersist creates a new persistence handler.
@@ -107,16 +106,7 @@ func (p *ProjectTabSessionPersist) sessionsDir() (string, error) {
 	return dir, nil
 }
 
-// indexPath returns the absolute path to _index.json.
-func (p *ProjectTabSessionPersist) indexPath() (string, error) {
-	dir, err := p.sessionsDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, sessionIndexFileName), nil
-}
-
-// sessionFilePath returns the absolute path to a tab's session file.
+// sessionFilePath returns the absolute path to a tab's legacy session file.
 func (p *ProjectTabSessionPersist) sessionFilePath(tabID string) (string, error) {
 	dir, err := p.sessionsDir()
 	if err != nil {
@@ -129,82 +119,31 @@ func (p *ProjectTabSessionPersist) sessionFilePath(tabID string) (string, error)
 // Index operations
 // ---------------------------------------------------------------------------
 
-// LoadIndex reads the tab list index from disk. Returns an empty TabIndex
-// (not an error) if the file does not exist.
+// LoadIndex reads the tab list. Returns an empty TabIndex (not an error) when
+// no tabs have been stored.
 func (p *ProjectTabSessionPersist) LoadIndex() (*TabIndex, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-
-	path, err := p.indexPath()
-	if err != nil {
-		return nil, err
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &TabIndex{Tabs: []TabIndexEntry{}}, nil
-		}
-		return nil, fmt.Errorf("read index: %w", err)
-	}
-
-	var index TabIndex
-	if err := json.Unmarshal(data, &index); err != nil {
-		log.Printf("[session-persist] corrupted index file, resetting: %v", err)
-		return &TabIndex{Tabs: []TabIndexEntry{}}, nil
-	}
-
-	return &index, nil
+	return p.loadIndexDB()
 }
 
-// SaveIndex writes the tab list index to disk atomically (write to temp then rename).
+// SaveIndex replaces the tab list.
 func (p *ProjectTabSessionPersist) SaveIndex(index *TabIndex) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	path, err := p.indexPath()
-	if err != nil {
-		return err
-	}
-
-	data, err := json.MarshalIndent(index, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal index: %w", err)
-	}
-
-	return atomicWriteFile(path, data)
+	return p.saveIndexDB(index)
 }
 
 // ---------------------------------------------------------------------------
 // Session operations
 // ---------------------------------------------------------------------------
 
-// LoadSession reads a single tab's session data from disk. Returns nil (not
-// an error) if the session file does not exist.
+// LoadSession reads a single tab's session. Returns nil (not an error) if the
+// session does not exist.
 func (p *ProjectTabSessionPersist) LoadSession(tabID string) (*TabSessionData, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-
-	path, err := p.sessionFilePath(tabID)
-	if err != nil {
-		return nil, err
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read session %s: %w", tabID, err)
-	}
-
-	var session TabSessionData
-	if err := json.Unmarshal(data, &session); err != nil {
-		log.Printf("[session-persist] corrupted session file %s, ignoring: %v", tabID, err)
-		return nil, nil
-	}
-
-	return &session, nil
+	return p.loadSessionDB(tabID)
 }
 
 func parseSessionLastActiveAt(value string) (time.Time, bool) {
@@ -225,7 +164,7 @@ func parseSessionLastActiveAt(value string) (time.Time, bool) {
 // A later activity time wins. When two files share a second-precision stamp,
 // an explicit clear wins over leftover text, and otherwise the fuller copy wins
 // so an unflushed tail is not hidden by the shorter snapshot.
-func sessionOutranksLatest(session, latest *TabSessionData, activeAt, latestAt time.Time, hasTimestamp, latestHasTimestamp bool) bool {
+func sessionOutranksLatest(session, latest *TabSessionData, sessionLen, latestLen int, activeAt, latestAt time.Time, hasTimestamp, latestHasTimestamp bool) bool {
 	if latest == nil {
 		return true
 	}
@@ -238,12 +177,12 @@ func sessionOutranksLatest(session, latest *TabSessionData, activeAt, latestAt t
 	if !hasTimestamp || !activeAt.Equal(latestAt) {
 		return false
 	}
-	sessionCleared := session.ConversationClearedAt > 0 && len(session.Conversation) == 0
-	latestCleared := latest.ConversationClearedAt > 0 && len(latest.Conversation) == 0
+	sessionCleared := session.ConversationClearedAt > 0 && sessionLen == 0
+	latestCleared := latest.ConversationClearedAt > 0 && latestLen == 0
 	if sessionCleared != latestCleared {
 		return sessionCleared
 	}
-	return len(session.Conversation) > len(latest.Conversation)
+	return sessionLen > latestLen
 }
 
 // LoadLatestSessionForProject returns the most recently active persisted tab
@@ -251,9 +190,10 @@ func sessionOutranksLatest(session, latest *TabSessionData, activeAt, latestAt t
 // tab was closed, so archived index entries remain eligible: closing a tab is
 // not the same as deleting its task or its conversation.
 //
-// This deliberately scans the session files instead of trusting only
-// _index.json. A session write can outlive an interrupted index update, and
-// that durable conversation is still the best recovery source for the task.
+// This deliberately reads every stored session header instead of trusting
+// only the tab index, then loads the winning conversation. A session write
+// can outlive an interrupted index update, and that durable conversation is
+// still the best recovery source for the task.
 func (p *ProjectTabSessionPersist) LoadLatestSessionForProject(projectPath string) (*TabSessionData, error) {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if p == nil || projectPath == "" {
@@ -263,50 +203,42 @@ func (p *ProjectTabSessionPersist) LoadLatestSessionForProject(projectPath strin
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	dir, err := p.sessionsDir()
+	heads, err := p.listSessionHeadsDB()
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("read sessions dir: %w", err)
-	}
 
-	var latest *TabSessionData
+	var latest *sessionHead
 	var latestAt time.Time
 	var latestHasTimestamp bool
-	for _, entry := range entries {
-		if entry.IsDir() || skipSessionDirEntry(entry.Name()) {
+	for i := range heads {
+		head := &heads[i]
+		if normalizeProjectSessionPath(head.data.ProjectPath) != projectPath {
 			continue
 		}
-		data, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if readErr != nil {
-			return nil, fmt.Errorf("read session %s: %w", entry.Name(), readErr)
-		}
-		var session TabSessionData
-		if json.Unmarshal(data, &session) != nil || normalizeProjectSessionPath(session.ProjectPath) != projectPath {
-			continue
-		}
-		if session.TabID == "" {
-			session.TabID = strings.TrimSuffix(entry.Name(), ".json")
-		}
-		activeAt, hasTimestamp := parseSessionLastActiveAt(session.LastActiveAt)
+		activeAt, hasTimestamp := parseSessionLastActiveAt(head.data.LastActiveAt)
 		if !hasTimestamp {
-			if info, infoErr := entry.Info(); infoErr == nil {
-				activeAt = info.ModTime()
-			}
+			activeAt = head.updated
 		}
-		// A real saved LastActiveAt is stronger than filesystem metadata. The
+		// A real saved LastActiveAt is stronger than the row's write time. The
 		// latter is only a legacy fallback and can be newer after a copied or
-		// repaired session file, despite containing older conversation content.
-		if sessionOutranksLatest(&session, latest, activeAt, latestAt, hasTimestamp, latestHasTimestamp) {
-			copy := session
-			latest = &copy
+		// repaired session, despite containing older conversation content.
+		var latestSession *TabSessionData
+		latestLen := 0
+		if latest != nil {
+			latestSession = &latest.data
+			latestLen = latest.convLen
+		}
+		if sessionOutranksLatest(&head.data, latestSession, head.convLen, latestLen, activeAt, latestAt, hasTimestamp, latestHasTimestamp) {
+			latest = head
 			latestAt = activeAt
 			latestHasTimestamp = hasTimestamp
 		}
 	}
-	return latest, nil
+	if latest == nil {
+		return nil, nil
+	}
+	return p.loadSessionDB(latest.data.TabID)
 }
 
 // ClearProjectSessionConversations removes transcript snapshots from every
@@ -323,54 +255,12 @@ func (p *ProjectTabSessionPersist) ClearProjectSessionConversations(projectPath 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	dir, err := p.sessionsDir()
-	if err != nil {
-		return 0, err
+	now := time.Now()
+	cleared, err := p.clearProjectSessionsDB(projectPath, now.UnixMilli(), now.UTC().Format(time.RFC3339Nano))
+	if dir, dirErr := p.sessionsDir(); dirErr == nil {
+		removeConversationViewArchive(dir, taskCopyArchiveTabID(projectPath))
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0, fmt.Errorf("read sessions dir: %w", err)
-	}
-
-	cleared := 0
-	var errs []error
-	for _, entry := range entries {
-		if entry.IsDir() || skipSessionDirEntry(entry.Name()) {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			errs = append(errs, fmt.Errorf("read session %s: %w", entry.Name(), readErr))
-			continue
-		}
-		var session TabSessionData
-		if json.Unmarshal(data, &session) != nil || normalizeProjectSessionPath(session.ProjectPath) != projectPath {
-			continue
-		}
-		session.Conversation = []interface{}{}
-		session.ConversationClearedAt = time.Now().UnixMilli()
-		session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
-		encoded, marshalErr := json.MarshalIndent(&session, "", "  ")
-		if marshalErr != nil {
-			errs = append(errs, fmt.Errorf("marshal session %s: %w", entry.Name(), marshalErr))
-			continue
-		}
-		if writeErr := atomicWriteFile(path, encoded); writeErr != nil {
-			errs = append(errs, fmt.Errorf("clear session %s: %w", entry.Name(), writeErr))
-			continue
-		}
-		archiveTabID := strings.TrimSpace(session.TabID)
-		if archiveTabID == "" {
-			archiveTabID = strings.TrimSuffix(entry.Name(), ".json")
-		}
-		removeConversationViewArchive(dir, archiveTabID)
-		cleared++
-	}
-	// A staged fork can have a scroll-back archive without a session file (the
-	// memory-backed copy path), so the scan above never sees it.
-	removeConversationViewArchive(dir, taskCopyArchiveTabID(projectPath))
-	return cleared, errors.Join(errs...)
+	return cleared, err
 }
 
 // ClearSessionConversation clears exactly one tab's durable transcript. It is
@@ -385,32 +275,13 @@ func (p *ProjectTabSessionPersist) ClearSessionConversation(tabID string) error 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	path, err := p.sessionFilePath(tabID)
-	if err != nil {
+	now := time.Now()
+	if err := p.clearSessionDB(tabID, now.UnixMilli(), now.UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read session %s: %w", tabID, err)
+	if dir, dirErr := p.sessionsDir(); dirErr == nil {
+		removeConversationViewArchive(dir, tabID)
 	}
-	var session TabSessionData
-	if err := json.Unmarshal(data, &session); err != nil {
-		return fmt.Errorf("decode session %s: %w", tabID, err)
-	}
-	session.Conversation = []interface{}{}
-	session.ConversationClearedAt = time.Now().UnixMilli()
-	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
-	encoded, err := json.MarshalIndent(&session, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal session %s: %w", tabID, err)
-	}
-	if err := atomicWriteFile(path, encoded); err != nil {
-		return fmt.Errorf("clear session %s: %w", tabID, err)
-	}
-	removeConversationViewArchive(filepath.Dir(path), tabID)
 	return nil
 }
 
@@ -423,20 +294,20 @@ func (p *ProjectTabSessionPersist) SaveSession(session *TabSessionData) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	path, err := p.sessionFilePath(session.TabID)
-	if err != nil {
-		return err
-	}
-
 	// Nanoseconds so two writes in the same wall-clock second stay ordered.
 	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return p.upsertSessionDB(session)
+}
 
-	data, err := json.MarshalIndent(session, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal session %s: %w", session.TabID, err)
+// putSessionSnapshot stores a session exactly as given, including LastActiveAt.
+// SaveSession is the normal writer and always refreshes that timestamp.
+func (p *ProjectTabSessionPersist) putSessionSnapshot(session *TabSessionData) error {
+	if session == nil || session.TabID == "" {
+		return fmt.Errorf("save session: tab_id is required")
 	}
-
-	return atomicWriteFile(path, data)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.upsertSessionDB(session)
 }
 
 // DeleteSession removes a tab's session file from disk.
@@ -444,15 +315,13 @@ func (p *ProjectTabSessionPersist) DeleteSession(tabID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	path, err := p.sessionFilePath(tabID)
-	if err != nil {
+	if err := p.deleteSessionDB(tabID); err != nil {
 		return err
 	}
-
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("delete session %s: %w", tabID, err)
+	if dir, dirErr := p.sessionsDir(); dirErr == nil {
+		_ = os.Remove(filepath.Join(dir, tabID+".json"))
+		removeConversationViewArchive(dir, tabID)
 	}
-	removeConversationViewArchive(filepath.Dir(path), tabID)
 	return nil
 }
 
@@ -466,94 +335,7 @@ func (p *ProjectTabSessionPersist) DeleteProjectSessions(projectPath string) (in
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	dir, err := p.sessionsDir()
-	if err != nil {
-		return 0, err
-	}
-	indexPath := filepath.Join(dir, sessionIndexFileName)
-	index := &TabIndex{Tabs: []TabIndexEntry{}}
-	if data, readErr := os.ReadFile(indexPath); readErr == nil {
-		if err := json.Unmarshal(data, index); err != nil {
-			log.Printf("[session-persist] corrupted index while deleting project sessions, rebuilding from files: %v", err)
-			index = &TabIndex{Tabs: []TabIndexEntry{}}
-		}
-	} else if !os.IsNotExist(readErr) {
-		return 0, fmt.Errorf("read session index: %w", readErr)
-	}
-
-	removedIDs := make(map[string]struct{})
-	kept := make([]TabIndexEntry, 0, len(index.Tabs))
-	for _, entry := range index.Tabs {
-		if normalizeProjectSessionPath(entry.ProjectPath) == projectPath {
-			removedIDs[entry.ID] = struct{}{}
-			continue
-		}
-		kept = append(kept, entry)
-	}
-	indexChanged := len(kept) != len(index.Tabs)
-	index.Tabs = kept
-
-	var errs []error
-	removedFiles := make(map[string]struct{})
-	removeFile := func(tabID string) {
-		if strings.TrimSpace(tabID) == "" {
-			return
-		}
-		filePath := filepath.Join(dir, tabID+".json")
-		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-			errs = append(errs, fmt.Errorf("delete session %s: %w", tabID, err))
-			return
-		}
-		removeConversationViewArchive(dir, tabID)
-		removedFiles[tabID] = struct{}{}
-	}
-	for tabID := range removedIDs {
-		removeFile(tabID)
-	}
-	// A staged fork transcript is written without an index entry, and its
-	// memory-backed copy path can leave an archive without a session file.
-	if stagedID := taskCopyArchiveTabID(projectPath); stagedID != "" {
-		if _, statErr := os.Stat(filepath.Join(dir, stagedID+".json")); statErr == nil {
-			removeFile(stagedID)
-		} else {
-			removeConversationViewArchive(dir, stagedID)
-		}
-	}
-
-	// Session files can outlive the index after an interrupted write. Inspect
-	// them so that deleting a task clears those orphaned conversations too.
-	files, readErr := os.ReadDir(dir)
-	if readErr != nil {
-		errs = append(errs, fmt.Errorf("read sessions dir: %w", readErr))
-	} else {
-		for _, file := range files {
-			if file.IsDir() || skipSessionDirEntry(file.Name()) {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(dir, file.Name()))
-			if err != nil {
-				errs = append(errs, fmt.Errorf("read session %s: %w", file.Name(), err))
-				continue
-			}
-			var session TabSessionData
-			if json.Unmarshal(data, &session) != nil || normalizeProjectSessionPath(session.ProjectPath) != projectPath {
-				continue
-			}
-			if _, alreadyRemoved := removedIDs[session.TabID]; !alreadyRemoved {
-				removeFile(strings.TrimSuffix(file.Name(), ".json"))
-			}
-		}
-	}
-	if indexChanged {
-		data, err := json.MarshalIndent(index, "", "  ")
-		if err != nil {
-			errs = append(errs, fmt.Errorf("marshal session index: %w", err))
-		} else if err := atomicWriteFile(indexPath, data); err != nil {
-			errs = append(errs, fmt.Errorf("save session index: %w", err))
-		}
-	}
-	return len(removedFiles), errors.Join(errs...)
+	return p.deleteProjectSessionsDB(projectPath)
 }
 
 // ---------------------------------------------------------------------------
@@ -640,6 +422,7 @@ func (p *ProjectTabSessionPersist) cleanupOrphanedFiles(index *TabIndex) {
 	}
 
 	cutoff := time.Now().Add(-defaultStaleThreshold)
+	p.cleanupOrphanSessionsDB(index, cutoff)
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -693,55 +476,33 @@ func (p *ProjectTabSessionPersist) conversationViewArchivePath(tabID string) (st
 	return filepath.Join(dir, conversationViewArchiveFileName(tabID)), nil
 }
 
-// LoadConversationViewArchive reads the earlier turns for a tab. Missing files
-// are an empty transcript, not an error.
+// LoadConversationViewArchive reads the earlier turns for a tab. A missing
+// archive is an empty transcript, not an error.
 func (p *ProjectTabSessionPersist) LoadConversationViewArchive(tabID string) ([]interface{}, error) {
 	if p == nil {
 		return []interface{}{}, nil
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	path, err := p.conversationViewArchivePath(tabID)
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []interface{}{}, nil
-		}
-		return nil, fmt.Errorf("read conversation archive %s: %w", tabID, err)
-	}
-	var document conversationViewArchiveDocument
-	if json.Unmarshal(data, &document) != nil || len(document.Messages) == 0 {
-		return []interface{}{}, nil
-	}
-	return document.Messages, nil
+	return p.loadConversationArchiveDB(tabID)
 }
 
-// SaveConversationViewArchive writes earlier turns. An empty slice removes the file.
+// SaveConversationViewArchive writes earlier turns. An empty slice removes them.
 func (p *ProjectTabSessionPersist) SaveConversationViewArchive(tabID string, messages []interface{}) error {
 	if p == nil {
 		return nil
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	path, err := p.conversationViewArchivePath(tabID)
-	if err != nil {
+	if err := p.saveConversationArchiveDB(tabID, messages); err != nil {
 		return err
 	}
 	if len(messages) == 0 {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove conversation archive %s: %w", tabID, err)
+		if dir, dirErr := p.sessionsDir(); dirErr == nil {
+			removeConversationViewArchive(dir, tabID)
 		}
-		return nil
 	}
-	count := len(messages)
-	payload, err := json.MarshalIndent(conversationViewArchiveDocument{Messages: messages, Count: &count}, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal conversation archive %s: %w", tabID, err)
-	}
-	return atomicWriteFile(path, payload)
+	return nil
 }
 
 // ConversationViewArchiveCount reports how many messages a tab archive
@@ -755,32 +516,7 @@ func (p *ProjectTabSessionPersist) ConversationViewArchiveCount(tabID string) (i
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	path, err := p.conversationViewArchivePath(tabID)
-	if err != nil {
-		return 0, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("read conversation archive %s: %w", tabID, err)
-	}
-	var header struct {
-		Count    *int            `json:"count"`
-		Messages json.RawMessage `json:"messages"`
-	}
-	if json.Unmarshal(data, &header) != nil || len(header.Messages) == 0 {
-		return 0, nil
-	}
-	if header.Count != nil {
-		return *header.Count, nil
-	}
-	var document conversationViewArchiveDocument
-	if json.Unmarshal(data, &document) != nil {
-		return 0, nil
-	}
-	return len(document.Messages), nil
+	return p.conversationArchiveCountDB(tabID)
 }
 
 // atomicWriteFile writes data to a temporary file then renames it to the

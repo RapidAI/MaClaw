@@ -186,7 +186,7 @@ func TestMobileCoreAgentSemanticRoutingBootstrap(t *testing.T) {
 
 func TestMobileCoreAgentManagedRequestUsesGrantBoundSemanticSurface(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	_, svc, err := mobileEnsureCoreAgent()
 	if err != nil {
@@ -211,7 +211,7 @@ func TestMobileCoreAgentManagedRequestUsesGrantBoundSemanticSurface(t *testing.T
 
 func TestMobileCoreAgentLookupContinuationStaysUnmanaged(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -242,7 +242,7 @@ func TestMobileCoreAgentLookupContinuationStaysUnmanaged(t *testing.T) {
 
 func TestMobileCoreAgentCurrentTimeUsesHostClockAndStaysUnmanagedOnContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -277,7 +277,7 @@ func TestMobileCoreAgentCurrentTimeUsesHostClockAndStaysUnmanagedOnContinue(t *t
 
 func TestMobileCoreAgentKnowledgeReadUsesHostStoreAndStaysUnmanagedOnContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -312,7 +312,7 @@ func TestMobileCoreAgentKnowledgeReadUsesHostStoreAndStaysUnmanagedOnContinue(t 
 
 func TestMobileCoreAgentAuditReadUsesHostReaderAndStaysUnmanagedOnContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -353,7 +353,7 @@ func TestMobileCoreAgentAuditReadUsesHostReaderAndStaysUnmanagedOnContinue(t *te
 
 func TestMobileCoreAgentWebFetchUsesHostFetcherAndStaysUnmanagedOnContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -388,7 +388,7 @@ func TestMobileCoreAgentWebFetchUsesHostFetcherAndStaysUnmanagedOnContinue(t *te
 
 func TestMobileCoreAgentFileReadUsesHostReaderAndStaysUnmanagedOnContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -423,7 +423,7 @@ func TestMobileCoreAgentFileReadUsesHostReaderAndStaysUnmanagedOnContinue(t *tes
 
 func TestMobileCoreAgentFileWriteUsesHostWriterAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -474,7 +474,7 @@ func TestMobileCoreAgentFileWriteUsesHostWriterAndStaysUnmanagedOnUnverifiedCont
 
 func TestMobileCoreAgentKnowledgeWriteUsesHostIngesterAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -526,7 +526,7 @@ func TestMobileCoreAgentKnowledgeWriteUsesHostIngesterAndStaysUnmanagedOnUnverif
 
 func TestMobileCoreAgentMemoryManageUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -578,7 +578,7 @@ func TestMobileCoreAgentMemoryManageUsesHostStoreAndStaysUnmanagedOnUnverifiedCo
 
 func TestMobileCoreAgentTaskTrackUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -630,7 +630,7 @@ func TestMobileCoreAgentTaskTrackUsesHostStoreAndStaysUnmanagedOnUnverifiedConti
 
 func TestMobileCoreAgentGoalManageUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -682,7 +682,7 @@ func TestMobileCoreAgentGoalManageUsesHostStoreAndStaysUnmanagedOnUnverifiedCont
 
 func TestMobileCoreAgentTemplateManageUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -734,7 +734,7 @@ func TestMobileCoreAgentTemplateManageUsesHostStoreAndStaysUnmanagedOnUnverified
 
 func TestMobileCoreAgentScheduleAdministerUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -786,7 +786,7 @@ func TestMobileCoreAgentScheduleAdministerUsesHostStoreAndStaysUnmanagedOnUnveri
 
 func TestMobileCoreAgentKnowledgeAdminUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -838,7 +838,7 @@ func TestMobileCoreAgentKnowledgeAdminUsesHostStoreAndStaysUnmanagedOnUnverified
 
 func TestMobileCoreAgentConfigManageUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -890,7 +890,7 @@ func TestMobileCoreAgentConfigManageUsesHostStoreAndStaysUnmanagedOnUnverifiedCo
 
 func TestMobileCoreAgentSessionManageInspectsWithoutDriveAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -942,7 +942,7 @@ func TestMobileCoreAgentSessionManageInspectsWithoutDriveAndStaysUnmanagedOnUnve
 
 func TestMobileCoreAgentGitInspectUsesHostInspectorAndStaysUnmanagedOnContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -977,7 +977,7 @@ func TestMobileCoreAgentGitInspectUsesHostInspectorAndStaysUnmanagedOnContinue(t
 
 func TestMobileCoreAgentDocumentReadFailsClosedWithoutAttachment(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -1003,7 +1003,7 @@ func TestMobileCoreAgentDocumentReadFailsClosedWithoutAttachment(t *testing.T) {
 
 func TestMobileCoreAgentAudioTranscribeFailsClosedWithoutAttachment(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -1035,7 +1035,7 @@ func (fakeMobileSpeechTranscriber) TranscribeSpeech(context.Context, string, []b
 
 func TestMobileCoreAgentAudioTranscribeUsesHostEngineAndAttachment(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	exec, svc, err := mobileEnsureCoreAgent()
@@ -1084,7 +1084,7 @@ func TestMobileCoreAgentAudioTranscribeUsesHostEngineAndAttachment(t *testing.T)
 
 func TestMobileCoreAgentAudioTranscribeUsesOwnedRecordingAttachment(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	exec, svc, err := mobileEnsureCoreAgent()
@@ -1154,7 +1154,7 @@ func TestMobileReviewedHostSpeechTranscriberUsesMeetingWorker(t *testing.T) {
 
 func TestMobileCoreAgentDocumentReadUsesOwnedDraftAttachment(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	t.Setenv("MACLAW_PROMPT_PROFILE", "full")
 	_, svc, err := mobileEnsureCoreAgent()
@@ -1214,7 +1214,7 @@ func TestMobileCoreAgentDocumentReadUsesOwnedDraftAttachment(t *testing.T) {
 
 func TestMobileCoreAgentUnmanagedRequestKeepsLegacyBridgeSurface(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	// Keep the full prompt profile so the pre-existing light-profile tool
 	// allowlist does not hide the legacy bridge surface from this assertion.
@@ -1238,7 +1238,7 @@ func TestMobileCoreAgentUnmanagedRequestKeepsLegacyBridgeSurface(t *testing.T) {
 
 func TestMobileCoreAgentSemanticRoutingCrossPrincipalIsolation(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
-	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
+	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
 	_, svc, err := mobileEnsureCoreAgent()
 	if err != nil {

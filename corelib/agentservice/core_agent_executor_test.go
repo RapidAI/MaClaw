@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1079,8 +1078,9 @@ func TestServiceRemoteWorkspaceProbeParserIgnoresPTYCommandEcho(t *testing.T) {
 	// A terminal echoes the submitted command first. The old fixed-marker
 	// parser could accept that echo as a marker and hash an arbitrary tail.
 	// The nonce-framed parser must instead use the final generated frame.
-	output := "deploy@build:/srv/app$ git -C '/srv/app' rev-parse HEAD; printf '\\n" + begin + "\\n'; git -C '/srv/app' status --porcelain=v1 --untracked-files=all; printf '\\n" + end + "\\n'\n" +
-		"deadbeef\n" + begin + "\n M main.go\n" + end + "\n"
+	const real = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	output := "deploy@build:/srv/app$ git -C '/srv/app' rev-parse HEAD; printf '\\n" + begin + "\\n'; git hash-object; printf '\\n" + end + "\\n'\n" +
+		"deadbeef\n" + begin + "\n" + real + "\n" + end + "\n"
 	probe, err := serviceRemoteWorkspaceProbeFromOutput(codingruntime.Task{ProjectRef: target.WorkDir}, binding, output, begin, end, time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
@@ -1088,9 +1088,11 @@ func TestServiceRemoteWorkspaceProbeParserIgnoresPTYCommandEcho(t *testing.T) {
 	if probe.Head != "deadbeef" || probe.WorkDir != target.WorkDir || probe.HostKey != identity {
 		t.Fatalf("probe = %#v", probe)
 	}
-	want := sha256.Sum256([]byte(" M main.go"))
-	if probe.StatusHash != "sha256:"+fmt.Sprintf("%x", want[:]) {
+	if probe.StatusHash != "gitblob:"+real {
 		t.Fatalf("status hash = %q", probe.StatusHash)
+	}
+	if _, err := serviceRemoteWorkspaceProbeFromOutput(codingruntime.Task{ProjectRef: target.WorkDir}, binding, "deadbeef\n"+begin+"\n M main.go\n"+end+"\n", begin, end, time.Now()); err == nil {
+		t.Fatal("porcelain listing was accepted as a baseline")
 	}
 }
 

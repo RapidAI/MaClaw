@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/configdb"
 )
 
 // Effect is the outcome a rule assigns to a matching tool call.
@@ -548,9 +550,25 @@ func readSource(path string) ([]byte, error) {
 }
 
 func loadUserConfigRules(path string) ([]Rule, error) {
-	data, err := readSource(path)
-	if err != nil || data == nil {
-		return nil, err
+	var data []byte
+	var err error
+	if filepath.Base(path) == configdb.JSONFileName {
+		raw, ok, err := configdb.ReadRaw(filepath.Dir(path), "permission")
+		if err != nil || !ok {
+			return nil, err
+		}
+		var permission struct {
+			Rules []Rule `json:"rules"`
+		}
+		if err := json.Unmarshal(raw, &permission); err != nil {
+			return nil, err
+		}
+		return permission.Rules, nil
+	} else {
+		data, err = readSource(path)
+		if err != nil || data == nil {
+			return nil, err
+		}
 	}
 	var doc struct {
 		Permission struct {

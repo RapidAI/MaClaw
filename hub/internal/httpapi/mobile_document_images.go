@@ -26,7 +26,7 @@ const (
 )
 
 // mobileDocumentDraftImage is a durable reference to an extracted illustration
-// (e.g. from word/media). Bytes live on disk under SourcePath; never in state.json.
+// (e.g. from word/media). Bytes live on disk under SourcePath, never in the state payload.
 type mobileDocumentDraftImage struct {
 	ID          string `json:"id"`
 	Filename    string `json:"filename,omitempty"`

@@ -2734,7 +2734,7 @@ func mobileTestTenantID(t *testing.T, identity *auth.IdentityService, viewerToke
 func TestMobilePersistentStateRoundTrip(t *testing.T) {
 	clearMobileStateForTest(t)
 	path := filepath.Join(t.TempDir(), "mobile-state.json")
-	t.Setenv(mobileStatePathEnv, path)
+	setMobileStatePathForTest(t, path)
 	mobileResetStatePersistenceForTest()
 	now := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
 
@@ -2783,7 +2783,12 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 	}
 	mobileDigitalEmployeeTasks.Unlock()
 
-	mobilePersistState()
+	mobilePersistDocumentChanges(mobileDocumentChanges{
+		drafts:  []mobileDocumentDraftRecord{mobileDocuments.drafts["draft-1"]},
+		exports: []mobileDocumentExportRecord{mobileDocuments.exports["export-1"]},
+		uploads: []mobileDocumentUploadRecord{mobileDocuments.uploads["upload-1"]},
+	})
+	mobilePersistDigitalTask(mobileDigitalEmployeeTasks.tasks["task-1"])
 	mobileDocuments.Lock()
 	mobileDocuments.drafts = make(map[string]mobileDocumentDraftRecord)
 	mobileDocuments.exports = make(map[string]mobileDocumentExportRecord)
@@ -2821,7 +2826,7 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 func TestMobilePersistentStateNormalizesLegacyTenantIDs(t *testing.T) {
 	clearMobileStateForTest(t)
 	path := filepath.Join(t.TempDir(), "mobile-state.json")
-	t.Setenv(mobileStatePathEnv, path)
+	setMobileStatePathForTest(t, path)
 	legacy := mobilePersistentState{
 		Drafts:  map[string]mobileDocumentDraftRecord{"draft": {ID: "draft", OwnerID: "owner"}},
 		Exports: map[string]mobileDocumentExportRecord{"export": {JobID: "export", OwnerID: "owner"}},
@@ -3858,7 +3863,7 @@ func TestMobileDOCXExtractsEmbeddedPNG(t *testing.T) {
 	// Durable blob store required so illustrations get SourcePath + markdown links.
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
-	t.Setenv(mobileStatePathEnv, statePath)
+	setMobileStatePathForTest(t, statePath)
 	mobileStatePathOverride = statePath
 	t.Cleanup(func() { mobileStatePathOverride = "" })
 	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {

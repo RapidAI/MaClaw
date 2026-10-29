@@ -1244,6 +1244,9 @@ func segmentPushesGitAt(segment string, depth int) bool {
 	if commandSubstitutionPushesGit(segment, depth) {
 		return true
 	}
+	if scriptblockCreatePushesGit(segment, depth) {
+		return true
+	}
 	return argvPushesGit(shellTokens(segment), depth)
 }
 
@@ -1266,9 +1269,18 @@ func argvPushesGitOnce(tokens []string, depth int) bool {
 	if depth > maxGitPushParseDepth {
 		return true
 	}
-	tokens = foldPowerShellArgs(stripCallOperators(flattenPowerShellArrays(stripEnvAssignments(tokens))))
+	prepared := flattenPowerShellArrays(stripEnvAssignments(tokens))
+	invoked := len(prepared) > 0 && (prepared[0] == "&" || prepared[0] == ".")
+	tokens = foldPowerShellArgs(stripCallOperators(prepared))
 	if len(tokens) == 0 || strings.HasPrefix(tokens[0], "#") {
 		return false
+	}
+	// $x -replace rhs is an expression, not a program. & $x -replace stays a
+	// call. Words after the rhs are a separate statement ("git push").
+	if !invoked {
+		if tail, ok := skipPowerShellValue(tokens); ok {
+			return expressionTailPushes(tail, depth+1)
+		}
 	}
 	if gitPushArgv(tokens) {
 		return true
@@ -1334,7 +1346,8 @@ func argvPushesGitOnce(tokens []string, depth int) bool {
 		return shellDashCPushesGit(tokens, depth)
 	default:
 		// $git, $env:ComSpec, and %COMSPEC% expand on the Windows host.
-		if indirectCommandWord(tokens[0]) {
+		// $x.ForEach{ $_.Line ... } is a method block, not a program. ${git} still is.
+		if indirectCommandWord(tokens[0]) && !gluedScriptblock(tokens[0]) {
 			return indirectCommandPushesGit(tokens, depth)
 		}
 		return false
@@ -1365,6 +1378,130 @@ func indirectCommandWord(token string) bool {
 		return true
 	}
 	return len(token) >= 3 && token[0] == '%' && strings.Contains(token[1:], "%")
+}
+
+// gluedScriptblock reports a scriptblock written against a value, as in
+// $x.ForEach{ $_.Line }. ${name} is a variable, not a block.
+func gluedScriptblock(token string) bool {
+	var b strings.Builder
+	for i := 0; i < len(token); i++ {
+		if token[i] == '$' && i+1 < len(token) && token[i+1] == '{' {
+			end := strings.IndexByte(token[i+2:], '}')
+			if end < 0 {
+				b.WriteString(token[i:])
+				break
+			}
+			i += 2 + end
+			continue
+		}
+		b.WriteByte(token[i])
+	}
+	return strings.Contains(b.String(), "{")
+}
+
+// skipPowerShellValue drops a leading value statement.
+// $_.Line git push keeps "git push". $x -replace rhs git push keeps the
+// command after the operand. The call operator is handled by the caller.
+func skipPowerShellValue(tokens []string) ([]string, bool) {
+	if len(tokens) == 0 {
+		return nil, false
+	}
+	if pipelineValue(tokens[0]) {
+		if len(tokens) >= 2 && powershellValueOperator(tokens[1]) {
+			return operatorRHSTail(tokens[2:]), true
+		}
+		return tokens[1:], true
+	}
+	if len(tokens) >= 2 && powershellValueWord(tokens[0]) && powershellValueOperator(tokens[1]) {
+		return operatorRHSTail(tokens[2:]), true
+	}
+	return nil, false
+}
+
+// operatorRHSTail drops the right-hand side. A comma, glued or alone, keeps
+// the next word in that operand, so both `$x -replace 'a', 'b' git push` and
+// `$x -replace 'a' , 'b' git push` still see git push.
+func operatorRHSTail(tokens []string) []string {
+	i := 0
+	for i < len(tokens) {
+		tok := tokens[i]
+		i++
+		if strings.HasSuffix(tok, ",") {
+			continue
+		}
+		if i < len(tokens) && tokens[i] == "," {
+			continue
+		}
+		break
+	}
+	if i >= len(tokens) {
+		return nil
+	}
+	return tokens[i:]
+}
+
+func expressionTailPushes(tokens []string, depth int) bool {
+	for len(tokens) > 0 {
+		if depth > maxGitPushParseDepth {
+			return true
+		}
+		if argvPushesGit(tokens, depth) {
+			return true
+		}
+		// $b git push: the value is its own statement, then a command.
+		// $git push is only two words and stays on the indirect-command path.
+		if len(tokens) > 2 && powershellValueWord(tokens[0]) && !powershellValueOperator(tokens[1]) {
+			tokens = tokens[1:]
+			depth++
+			continue
+		}
+		return false
+	}
+	return false
+}
+
+func powershellValueWord(token string) bool {
+	return pipelineValue(token) || indirectCommandWord(token)
+}
+
+// pipelineValue reports $_ / $PSItem and their member or index forms.
+// $_git is a different variable and can expand to a program name.
+func pipelineValue(token string) bool {
+	token = strings.TrimSpace(token)
+	if len(token) < 2 || token[0] != '$' {
+		return false
+	}
+	name, rest := pipelineVariableName(token[1:])
+	if !strings.EqualFold(name, "_") && !strings.EqualFold(name, "psitem") {
+		return false
+	}
+	return rest == "" || rest[0] == '.' || rest[0] == '['
+}
+
+func pipelineVariableName(rest string) (string, string) {
+	if rest == "" {
+		return "", ""
+	}
+	if rest[0] == '{' {
+		end := strings.IndexByte(rest, '}')
+		if end <= 1 {
+			return "", rest
+		}
+		return rest[1:end], rest[end+1:]
+	}
+	i := 0
+	for i < len(rest) {
+		ch := rest[i]
+		if i == 0 {
+			if !psIdentStart(ch) {
+				break
+			}
+		} else if !psIdentByte(ch) {
+			break
+		}
+		i++
+	}
+	return rest[:i], rest[i:]
 }
 
 func indirectCommandPushesGit(tokens []string, depth int) bool {
@@ -2824,6 +2961,9 @@ func shellSyntaxPushesGit(command string, depth int, compound bool) bool {
 				}
 				continue
 			}
+			if methodParenPushesGit(command, i, depth) {
+				return true
+			}
 			if script, end, ok := parenthesizedCommand(command, i); ok && commandPushesGitAt(script, depth+1) {
 				return true
 			} else if ok {
@@ -2933,7 +3073,7 @@ func braceOpens(command string, i int) bool {
 	if i == 0 || isShellBoundary(command[i-1]) || command[i-1] == ')' {
 		return true
 	}
-	return powershellInvokesBlock(command, i)
+	return powershellInvokesBlock(command, i) || scriptblockRuns(command, i)
 }
 
 func isBraceGroupClose(command string, i int) bool {
@@ -3036,7 +3176,7 @@ func braceBodyRuns(command string, open int) bool {
 		// switch (1) { 1 {git push} } runs the matching clause, even with no space after {.
 		return true
 	}
-	if powershellInvokesBlock(command, open) {
+	if powershellInvokesBlock(command, open) || scriptblockRuns(command, open) {
 		return true
 	}
 	// Bash runs { cmd; } when the braces are separate words.
@@ -3046,6 +3186,362 @@ func braceBodyRuns(command string, open int) bool {
 		}
 	}
 	return false
+}
+
+// scriptblockRuns reports a block PowerShell invokes. -split runs its
+// delimiter block in an expression. .ForEach and .Where run on a value.
+// A bare word such as hi.ForEach is a command name and does not.
+func scriptblockRuns(command string, open int) bool {
+	return splitScriptblockRuns(command, open) || methodScriptblockRuns(command, open) || scriptblockInvokeAfter(command, open)
+}
+
+// scriptblockInvokeAfter reports {git push}.Invoke(). The block runs.
+// {git push} by itself does not.
+func scriptblockInvokeAfter(command string, open int) bool {
+	end, ok := matchingBrace(command, open)
+	if !ok {
+		return false
+	}
+	j := end + 1
+	for j < len(command) && (command[j] == ' ' || command[j] == '\t' || command[j] == '\r') {
+		j++
+	}
+	if j >= len(command) || command[j] != '.' {
+		return false
+	}
+	j++
+	start := j
+	for j < len(command) && psIdentByte(command[j]) {
+		j++
+	}
+	switch strings.ToLower(command[start:j]) {
+	case "invoke", "invokereturnasis", "invokewithcontext":
+		return true
+	default:
+		return false
+	}
+}
+
+// scriptblockCreatePushesGit runs [scriptblock]::Create('git push').Invoke()
+// and & ([scriptblock]::Create('git push')). The script text is quoted, so the
+// argv scan never sees it. Create without Invoke only builds a value.
+func scriptblockCreatePushesGit(command string, depth int) bool {
+	if depth > maxGitPushParseDepth {
+		return true
+	}
+	const key = "[scriptblock]::create("
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if quote != 0 {
+			if quote == '\'' && ch == '\'' && i+1 < len(command) && command[i+1] == '\'' {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch != '[' || i+len(key) > len(command) || !strings.EqualFold(command[i:i+len(key)], key) {
+			continue
+		}
+		open := i + len(key) - 1
+		script, literal, end, ok := createScript(command, open)
+		if !ok {
+			continue
+		}
+		if !createResultRuns(command, i, end) {
+			i = end
+			continue
+		}
+		if !literal || commandPushesGitAt(script, depth+1) {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+func createScript(command string, open int) (script string, literal bool, end int, ok bool) {
+	end, ok = matchingParen(command, open)
+	if !ok {
+		return "", false, open, false
+	}
+	arg := strings.TrimSpace(command[open+1 : end])
+	if len(arg) >= 2 {
+		q := arg[0]
+		if (q == '\'' || q == '"') && arg[len(arg)-1] == q {
+			body := arg[1 : len(arg)-1]
+			if q == '\'' {
+				body = strings.ReplaceAll(body, "''", "'")
+			}
+			return body, true, end, true
+		}
+	}
+	return "", false, end, true
+}
+
+func createResultRuns(command string, createStart, closeParen int) bool {
+	j := closeParen
+	for {
+		j++
+		for j < len(command) && isShellSpace(command[j]) {
+			j++
+		}
+		if j >= len(command) || command[j] != ')' {
+			break
+		}
+		wrap, ok := parenOpen(command, j)
+		if !ok || wrap >= createStart {
+			break
+		}
+	}
+	if j < len(command) && command[j] == '.' {
+		j++
+		start := j
+		for j < len(command) && psIdentByte(command[j]) {
+			j++
+		}
+		switch strings.ToLower(command[start:j]) {
+		case "invoke", "invokereturnasis", "invokewithcontext":
+			return true
+		}
+	}
+	return callWraps(command, createStart)
+}
+
+func callWraps(command string, createStart int) bool {
+	j := createStart - 1
+	for {
+		for j >= 0 && isShellSpace(command[j]) {
+			j--
+		}
+		if j < 0 || command[j] != '(' {
+			return false
+		}
+		j--
+		for j >= 0 && isShellSpace(command[j]) {
+			j--
+		}
+		if j < 0 {
+			return false
+		}
+		if command[j] == '&' || command[j] == '.' {
+			return j == 0 || isShellBoundary(command[j-1]) || command[j-1] == '('
+		}
+		if command[j] != '(' {
+			return false
+		}
+	}
+}
+
+func splitScriptblockRuns(command string, open int) bool {
+	opStart, ok := splitOperatorStart(command, open)
+	if !ok {
+		return false
+	}
+	return expressionBefore(command, opStart)
+}
+
+func splitOperatorStart(command string, open int) (int, bool) {
+	j := open - 1
+	for j >= 0 && (command[j] == ' ' || command[j] == '\t' || command[j] == '\r') {
+		j--
+	}
+	if j < 0 {
+		return 0, false
+	}
+	end := j + 1
+	for j >= 0 && !isShellSpace(command[j]) && !isShellBoundary(command[j]) && command[j] != '(' && command[j] != ')' {
+		j--
+	}
+	name := strings.ToLower(command[j+1 : end])
+	switch name {
+	case "-split", "-isplit", "-csplit":
+		return j + 1, true
+	default:
+		return 0, false
+	}
+}
+
+// expressionBefore reports that the statement or group containing opStart is
+// an expression, so a following -split block runs. -split {block} at the
+// start of a statement is unary and only stringifies the block. echo hi
+// -split {block} is command mode and does not run it either.
+func expressionBefore(command string, opStart int) bool {
+	i := opStart - 1
+	for i >= 0 {
+		ch := command[i]
+		if ch == ' ' || ch == '\t' || ch == '\r' {
+			i--
+			continue
+		}
+		switch ch {
+		case ';', '\n', '|', '{', '}':
+			return expressionLead(command, i+1, opStart)
+		case '(':
+			return expressionLead(command, i+1, opStart)
+		case ')':
+			next, ok := skipGroupBackward(command, i)
+			if !ok {
+				return true
+			}
+			i = next
+		case '\'', '"':
+			next, ok := skipQuotedBackward(command, i)
+			if !ok {
+				return true
+			}
+			i = next
+		default:
+			i--
+		}
+	}
+	return expressionLead(command, 0, opStart)
+}
+
+func expressionLead(command string, i, opStart int) bool {
+	for i < opStart && isShellSpace(command[i]) {
+		i++
+	}
+	if i >= opStart || i >= len(command) {
+		return false
+	}
+	ch := command[i]
+	switch ch {
+	case '$', '\'', '"', '(', '@':
+		return true
+	}
+	if ch >= '0' && ch <= '9' {
+		return true
+	}
+	return (ch == '+' || ch == '-') && i+1 < opStart && command[i+1] >= '0' && command[i+1] <= '9'
+}
+
+func skipQuotedBackward(command string, i int) (int, bool) {
+	if i < 0 || i >= len(command) {
+		return -1, false
+	}
+	quote := command[i]
+	if quote != '\'' && quote != '"' {
+		return i, false
+	}
+	for j := i - 1; j >= 0; j-- {
+		if command[j] != quote {
+			continue
+		}
+		if quote == '\'' && j > 0 && command[j-1] == '\'' {
+			j--
+			continue
+		}
+		return j - 1, true
+	}
+	return -1, false
+}
+
+func skipGroupBackward(command string, close int) (int, bool) {
+	depth := 1
+	i := close - 1
+	for i >= 0 {
+		switch command[i] {
+		case '\'', '"':
+			next, ok := skipQuotedBackward(command, i)
+			if !ok {
+				return -1, false
+			}
+			i = next
+		case ')':
+			depth++
+			i--
+		case '(':
+			depth--
+			if depth == 0 {
+				return i - 1, true
+			}
+			i--
+		default:
+			i--
+		}
+	}
+	return -1, false
+}
+
+func methodParenPushesGit(command string, paren, depth int) bool {
+	j := paren + 1
+	for j < len(command) && isShellSpace(command[j]) {
+		j++
+	}
+	if j >= len(command) || command[j] != '{' || !methodScriptblockRuns(command, j) {
+		return false
+	}
+	script, _, ok := braceGroup(command, j)
+	return ok && commandPushesGitAt(script, depth+1)
+}
+
+func methodScriptblockRuns(command string, open int) bool {
+	j := open - 1
+	for j >= 0 && (command[j] == ' ' || command[j] == '\t' || command[j] == '\r') {
+		j--
+	}
+	if j >= 0 && command[j] == '(' {
+		j--
+		for j >= 0 && (command[j] == ' ' || command[j] == '\t' || command[j] == '\r') {
+			j--
+		}
+	}
+	dot, ok := methodDotBefore(command, j)
+	if !ok {
+		return false
+	}
+	return methodReceiverRuns(command, dot)
+}
+
+func methodDotBefore(command string, j int) (int, bool) {
+	if j < 0 || j >= len(command) {
+		return 0, false
+	}
+	end := j + 1
+	for j >= 0 && psIdentByte(command[j]) {
+		j--
+	}
+	if j < 0 || command[j] != '.' || end-(j+1) == 0 {
+		return 0, false
+	}
+	switch strings.ToLower(command[j+1 : end]) {
+	case "foreach", "where":
+		return j, true
+	default:
+		return 0, false
+	}
+}
+
+func methodReceiverRuns(command string, dot int) bool {
+	if dot <= 0 {
+		return false
+	}
+	switch command[dot-1] {
+	case ')', ']', '}', '\'', '"':
+		return true
+	}
+	k := dot - 1
+	for k >= 0 && methodReceiverByte(command[k]) {
+		k--
+	}
+	if k+1 >= dot {
+		return false
+	}
+	ch := command[k+1]
+	return ch == '$' || ch == '@' || (ch >= '0' && ch <= '9')
+}
+
+func methodReceiverByte(ch byte) bool {
+	return ch == '$' || ch == '_' || ch == ':' || ch == '.' || ch == '?' ||
+		(ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }
 
 func powershellInvokesBlock(command string, open int) bool {
@@ -3058,13 +3554,17 @@ func powershellInvokesBlock(command string, open int) bool {
 	}
 	if command[j] == ')' {
 		switch statementKeyword(command, open) {
+		case "if", "elseif", "while", "for", "foreach", "switch":
+			return true
 		case "function", "filter", "workflow":
 			return false
 		default:
-			return true
+			return callOperatorParen(command, j)
 		}
 	}
-	if command[j] == '&' || command[j] == '.' || command[j] == '%' || command[j] == '?' {
+	// & {block} and . {block} run. % and ? are ForEach/Where aliases only when
+	// they are the command, so echo %{block} stays a value.
+	if command[j] == '&' || command[j] == '.' {
 		return j == 0 || isShellBoundary(command[j-1]) || command[j-1] == ')'
 	}
 	end := j + 1
@@ -3073,9 +3573,10 @@ func powershellInvokesBlock(command string, open int) bool {
 	}
 	token := command[j+1 : end]
 	switch strings.ToLower(token) {
-	case "&", ".", "%", "?", "foreach", "foreach-object", "where", "where-object",
-		"try", "catch", "finally", "else", "elseif", "do", "trap",
-		"invoke-command", "icm":
+	case "&", ".":
+		return true
+	}
+	if statementBlock(command, open, token) {
 		return true
 	}
 	if strings.HasPrefix(token, "-") || strings.HasPrefix(token, "/") {
@@ -3088,19 +3589,419 @@ func powershellInvokesBlock(command string, open int) bool {
 			return true
 		}
 	}
+	return commandScriptblock(command, open, token)
+}
+
+// commandScriptblock reports a block the pipeline command invokes.
+// The word has to be that command. echo group {git push} only prints the block.
+// Module\Command and a leading & or . still name that command.
+func commandScriptblock(command string, open int, token string) bool {
+	head := commandLeaf(leadingCommand(command, open))
+	if head == "" {
+		return false
+	}
+	tokenLeaf := commandLeaf(token)
+	if tokenLeaf == head && positionalScriptblock(head) {
+		return true
+	}
+	name := strings.TrimLeft(tokenLeaf, "-/")
+	switch head {
+	case "sort", "sort-object", "group", "group-object":
+		return name == "property" || expressionKey(token)
+	case "select", "select-object":
+		return name == "property" || expressionKey(token)
+	case "measure-command":
+		return name == "expression"
+	case "trace-command", "trcm":
+		return traceScriptblock(command, open, token, head, name)
+	default:
+		return false
+	}
+}
+
+func positionalScriptblock(head string) bool {
+	switch head {
+	case "sort", "sort-object", "group", "group-object", "select", "select-object",
+		"measure-command", "start-job", "sajb",
+		"foreach", "foreach-object", "where", "where-object", "%", "?",
+		"invoke-command", "icm":
+		return true
+	default:
+		return false
+	}
+}
+
+// traceScriptblock runs for -Expression once -Name is bound, including -Name
+// after the block. A value word before the block is the positional -Expression.
+// Trace-Command {block} binds the block to -Name and does not run it.
+func traceScriptblock(command string, open int, token, head, name string) bool {
+	if name == "expression" {
+		return traceNameBound(command, open)
+	}
+	if strings.HasPrefix(token, "-") || strings.HasPrefix(token, "/") {
+		return false
+	}
+	return commandLeaf(token) != head
+}
+
+func traceNameBound(command string, open int) bool {
+	end, ok := matchingBrace(command, open)
+	if !ok {
+		return true
+	}
+	start := statementStart(command, open)
+	stop := statementEnd(command, end)
+	return hasNameParam(command[start:open]) || hasNameParam(command[end+1:stop])
+}
+
+func statementStart(command string, open int) int {
+	if open > len(command) {
+		open = len(command)
+	}
+	start := 0
+	var quote byte
+	for i := 0; i < open; i++ {
+		ch := command[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case ';', '|', '\n':
+			start = i + 1
+		}
+	}
+	return start
+}
+
+func statementEnd(command string, braceEnd int) int {
+	var quote byte
+	for i := braceEnd + 1; i < len(command); i++ {
+		ch := command[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case ';', '|', '\n':
+			return i
+		}
+	}
+	return len(command)
+}
+
+func hasNameParam(segment string) bool {
+	var quote byte
+	for i := 0; i < len(segment); i++ {
+		ch := segment[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+			continue
+		}
+		if ch != '-' && ch != '/' {
+			continue
+		}
+		j := i + 1
+		for j < len(segment) {
+			next := segment[j]
+			if next == ' ' || next == '\t' || next == ':' || next == ';' || next == '|' || next == '{' || next == '\n' {
+				break
+			}
+			j++
+		}
+		name := strings.ToLower(segment[i+1 : j])
+		if name != "" && strings.HasPrefix("name", name) {
+			return true
+		}
+		i = j
+	}
 	return false
 }
 
-func statementKeyword(command string, open int) string {
-	j := open - 1
-	for j >= 0 && command[j] != ';' && command[j] != '\n' && command[j] != '|' && command[j] != '&' {
+func commandLeaf(name string) string {
+	name = strings.TrimSpace(name)
+	if len(name) >= 2 {
+		q := name[0]
+		if (q == '\'' || q == '"') && name[len(name)-1] == q {
+			name = name[1 : len(name)-1]
+			if q == '\'' {
+				name = strings.ReplaceAll(name, "''", "'")
+			}
+		}
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if i := strings.LastIndex(name, `\`); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
+}
+
+// statementBlock runs try, catch, else, do, and trap only as that statement.
+// echo try {git push} prints the word. catch [type] and trap [type] keep the
+// type token between the keyword and the block.
+func statementBlock(command string, open int, token string) bool {
+	head := commandLeaf(leadingCommand(command, open))
+	word := strings.ToLower(token)
+	switch word {
+	case "try", "do", "trap":
+		return word == head
+	case "catch", "finally":
+		return head == "try" || word == head
+	case "else", "elseif":
+		return head == "if" || word == head
+	}
+	return typeFilterBlock(command, open, token)
+}
+
+func typeFilterBlock(command string, open int, token string) bool {
+	if len(token) < 2 || token[0] != '[' || token[len(token)-1] != ']' {
+		return false
+	}
+	end := open
+	for end > 0 && isShellSpace(command[end-1]) {
+		end--
+	}
+	start := end - len(token)
+	if start < 0 || command[start:end] != token {
+		return false
+	}
+	if !precededByKeyword(command, start, "catch", "trap") {
+		return false
+	}
+	switch statementKeyword(command, open) {
+	case "try", "catch", "trap":
+		return true
+	default:
+		return false
+	}
+}
+
+func precededByKeyword(command string, index int, words ...string) bool {
+	j := index - 1
+	for j >= 0 && isShellSpace(command[j]) {
 		j--
 	}
-	j++
-	for j < open && isShellSpace(command[j]) {
-		j++
+	if j < 0 {
+		return false
 	}
-	end := j
+	end := j + 1
+	for j >= 0 && !isShellSpace(command[j]) && !isShellBoundary(command[j]) && command[j] != ')' && command[j] != '(' {
+		j--
+	}
+	word := strings.ToLower(command[j+1 : end])
+	for _, want := range words {
+		if word == want {
+			return true
+		}
+	}
+	return false
+}
+
+func callOperatorParen(command string, close int) bool {
+	open, ok := parenOpen(command, close)
+	if !ok || open == 0 {
+		return false
+	}
+	j := open - 1
+	for j >= 0 && isShellSpace(command[j]) {
+		j--
+	}
+	if j < 0 || (command[j] != '&' && command[j] != '.') {
+		return false
+	}
+	return j == 0 || isShellBoundary(command[j-1]) || command[j-1] == ')'
+}
+
+func parenOpen(command string, close int) (int, bool) {
+	if close < 0 || close >= len(command) || command[close] != ')' {
+		return 0, false
+	}
+	depth := 0
+	var quote byte
+	open := -1
+	for i := 0; i < close; i++ {
+		ch := command[i]
+		if quote != 0 {
+			if quote == '\'' && ch == '\'' && i+1 < len(command) && command[i+1] == '\'' {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case '(':
+			if depth == 0 {
+				open = i
+			}
+			depth++
+		case ')':
+			if depth == 0 {
+				return 0, false
+			}
+			depth--
+			if depth == 0 {
+				open = -1
+			}
+		}
+	}
+	if depth != 1 || open < 0 {
+		return 0, false
+	}
+	return open, true
+}
+
+func matchingParen(command string, open int) (int, bool) {
+	if open < 0 || open >= len(command) || command[open] != '(' {
+		return 0, false
+	}
+	depth := 1
+	var quote byte
+	for i := open + 1; i < len(command); i++ {
+		ch := command[i]
+		if quote != 0 {
+			if quote == '\'' && ch == '\'' && i+1 < len(command) && command[i+1] == '\'' {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func leadingCommand(command string, open int) string {
+	if open > len(command) {
+		open = len(command)
+	}
+	head := command[:open]
+	cut := 0
+	var quote byte
+	for i := 0; i < len(head); i++ {
+		ch := head[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case '|', '\n':
+			cut = i + 1
+		}
+	}
+	head = skipCallOperator(strings.TrimSpace(head[cut:]))
+	if head == "" {
+		return ""
+	}
+	end := 0
+	for end < len(head) && head[end] != ' ' && head[end] != '\t' && head[end] != '(' && head[end] != '{' {
+		end++
+	}
+	return strings.ToLower(head[:end])
+}
+
+// skipCallOperator drops one leading & or . so the next word is the command.
+// .\ and .. stay paths.
+func skipCallOperator(head string) string {
+	if len(head) < 2 {
+		return head
+	}
+	op := head[0]
+	if op != '&' && op != '.' {
+		return head
+	}
+	next := head[1]
+	if next == op || next == '\\' || next == '/' {
+		return head
+	}
+	rest := strings.TrimSpace(head[1:])
+	if rest == "" {
+		return head
+	}
+	return rest
+}
+
+func expressionKey(token string) bool {
+	name := strings.TrimRight(strings.ToLower(strings.TrimSpace(token)), "=")
+	return name != "" && strings.HasPrefix("expression", name)
+}
+
+func statementKeyword(command string, open int) string {
+	if open > len(command) {
+		open = len(command)
+	}
+	start := 0
+	var quote byte
+	paren := 0
+	for i := 0; i < open; i++ {
+		ch := command[i]
+		if quote != 0 {
+			if quote == '\'' && ch == '\'' && i+1 < len(command) && command[i+1] == '\'' {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case '(':
+			paren++
+		case ')':
+			if paren > 0 {
+				paren--
+			}
+		case ';', '\n', '|', '&':
+			// for ($i=0; $i -lt 1; $i++) keeps the keyword. A semicolon in
+			// the condition is not a new statement.
+			if paren == 0 {
+				start = i + 1
+			}
+		}
+	}
+	for start < open && isShellSpace(command[start]) {
+		start++
+	}
+	end := start
 	for end < open {
 		ch := command[end]
 		if ch == ' ' || ch == '\t' || ch == '(' || ch == ';' {
@@ -3108,10 +4009,10 @@ func statementKeyword(command string, open int) string {
 		}
 		end++
 	}
-	if end <= j {
+	if end <= start {
 		return ""
 	}
-	return strings.ToLower(command[j:end])
+	return strings.ToLower(command[start:end])
 }
 
 func gitPushArgv(args []string) bool {
@@ -3140,6 +4041,11 @@ func gitPushArgvHops(args []string, hops int) bool {
 		}
 		if arg == "push" {
 			return true
+		}
+		if powershellOperator(arg) {
+			// Git rejects these. Skipping -replace made the next word, such as
+			// the regex '[:.].*$', look like the subcommand.
+			return false
 		}
 		if strings.HasPrefix(arg, "-") {
 			if arg == "-c" || strings.HasPrefix(arg, "-c=") {
@@ -3193,6 +4099,58 @@ func resolveGitAlias(word string, rest []string, aliases map[string]string, hops
 	}
 	followed := append(append([]string{}, fields[1:]...), rest...)
 	return resolveGitAlias(fields[0], followed, aliases, hops+1)
+}
+
+// powershellValueOperator is an infix operator. -f is the format operator
+// ($fmt -f 'push' prints text). It is not a gitPushArgv stop: git push -f
+// is a force push, and a call such as & $git -f push still has to see push.
+func powershellValueOperator(arg string) bool {
+	return powershellOperator(arg) || formatOperator(arg)
+}
+
+func formatOperator(arg string) bool {
+	if len(arg) < 2 || arg[0] != '-' || arg[1] == '-' {
+		return false
+	}
+	name := strings.ToLower(arg[1:])
+	if colon := strings.IndexByte(name, ':'); colon >= 0 {
+		name = name[:colon]
+	}
+	return name == "f"
+}
+
+// powershellOperator reports a PowerShell operator token. Git never accepts
+// these as options, and the operand after one is not a subcommand.
+func powershellOperator(arg string) bool {
+	if len(arg) < 3 || arg[0] != '-' || arg[1] == '-' {
+		return false
+	}
+	name := strings.ToLower(arg[1:])
+	if colon := strings.IndexByte(name, ':'); colon >= 0 {
+		name = name[:colon]
+	}
+	if name == "" {
+		return false
+	}
+	// -ireplace / -creplace are the same operator with a case prefix.
+	// -c and -C stay git's config and directory options.
+	if (name[0] == 'c' || name[0] == 'i') && powershellOperatorBase(name[1:]) {
+		return true
+	}
+	return powershellOperatorBase(name)
+}
+
+func powershellOperatorBase(name string) bool {
+	switch name {
+	case "replace", "split", "join", "match", "notmatch", "like", "notlike",
+		"eq", "ne", "gt", "ge", "lt", "le",
+		"contains", "notcontains", "in", "notin",
+		"and", "or", "xor", "band", "bor", "bxor", "shl", "shr",
+		"is", "isnot", "as":
+		return true
+	default:
+		return false
+	}
 }
 
 func gitConfigAlias(val string) (string, string, bool) {
@@ -3291,7 +4249,8 @@ func splitShellSegments(command string) []shellPiece {
 			}
 			b.WriteByte(ch)
 		case '{':
-			if isBraceGroupOpen(command, i) {
+			// @{ ... } is a hashtable. A semicolon inside it is not a new statement.
+			if isBraceGroupOpen(command, i) || (i > 0 && command[i-1] == '@') {
 				brace++
 			} else if i > 0 && command[i-1] == '$' {
 				vars++

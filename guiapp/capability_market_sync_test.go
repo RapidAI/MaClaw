@@ -90,7 +90,7 @@ func TestCommitMarketplaceMCPConfigCancelledBeforeWriteLeavesNoMutation(t *testi
 	if got.Language != original.Language {
 		t.Fatalf("cancelled MCP transaction mutated config: language=%q", got.Language)
 	}
-	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.db")
 	if _, err := os.Stat(configPath); err != nil {
 		t.Fatalf("config disappeared after cancellation: %v", err)
 	}
@@ -154,6 +154,7 @@ func TestCommitMarketplaceMCPConfigRecoveryAcrossRestartRestoresPreImage(t *test
 	if err != nil {
 		t.Fatalf("getConfigPath: %v", err)
 	}
+	configPath = app.configStoreForPath(configPath).StoragePath()
 	preImage, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read pre-image: %v", err)

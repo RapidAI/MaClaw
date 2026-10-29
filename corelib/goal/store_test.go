@@ -580,6 +580,33 @@ func TestSavePlanAndUpdateStep(t *testing.T) {
 	if refusal := got.StepReportRefusal(1); !strings.Contains(refusal, "步骤 2") {
 		t.Fatalf("refusal = %q", refusal)
 	}
+	resolved := got.ResolveReportedStep(1, true)
+	if resolved.Refusal != "" || resolved.FollowUp.Index != 1 || resolved.Current.Index != 2 {
+		t.Fatalf("done-step report = %+v", resolved)
+	}
+	if saved, err := s.AppendStepNote("user1", g.GoalID, 1, "补了一处证据"); err != nil || !saved {
+		t.Fatal(err)
+	}
+	got = s.Get("user1")
+	if !strings.Contains(got.Steps[0].Result, "补了一处证据") || got.Steps[0].Status != StepDone || got.Steps[1].Status != StepProgress {
+		t.Fatalf("note reopened the step: %+v", got.Steps)
+	}
+	missing := got.ResolveReportedStep(0, false)
+	if missing.Index != 2 || missing.Refusal != "" {
+		t.Fatalf("missing index = %+v", missing)
+	}
+	longNote := strings.Repeat("新证据", 1500)
+	joined := joinStepNote(strings.Repeat("旧结论", 5000), longNote)
+	if !strings.Contains(joined, "新证据") || len([]rune(joined)) > 12000 {
+		t.Fatalf("note was dropped len=%d", len([]rune(joined)))
+	}
+	if again := joinStepNote(joined, longNote); again != joined {
+		t.Fatal("identical note should not grow the result")
+	}
+	quoted := joinStepNote(joined, "旧结论")
+	if !strings.Contains(quoted, "\n补充: 旧结论") {
+		t.Fatal("a phrase already inside the old result was dropped")
+	}
 	if missing := MissingCriteria("还没测", got.AcceptanceCriteria); len(missing) != 1 || missing[0] != "go test 通过" {
 		t.Fatalf("missing = %#v", missing)
 	}

@@ -1813,14 +1813,14 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
       minHeight: 0,
       // Use real theme tokens (not --theme-bg* which do not exist on #App).
       background: 'var(--theme-surface, #ffffff)',
-      color: 'var(--theme-text-primary, #526277)',
+      color: 'var(--theme-text-primary, #24364e)',
       // Follow the shared surface scale so the panel keeps the same radius
       // as the workbench in both light and dark themes.
       // Keep the documents dialog on the shared workbench radius scale.  The
       // token set intentionally stops at --radius-lg; --radius-xl would
       // silently fall back to an oversized 24px shell.
       borderRadius: 'var(--radius-lg, 12px)',
-      border: '1px solid var(--theme-border, #c9ddf6)',
+      border: '1px solid var(--theme-border, #d5e0ef)',
       boxShadow: 'var(--shadow-lg, 0 24px 70px rgba(19,43,77,0.18), 0 4px 14px rgba(19,43,77,0.08))',
       display: 'flex',
       flexDirection: 'column' as const,

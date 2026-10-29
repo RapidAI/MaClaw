@@ -332,7 +332,7 @@ function ConfirmStatusBadge({ status }: { status: string }) {
     const colors: Record<string, CSSProperties> = {
         pending: { background: "var(--theme-info-bg, #f3f7fb)", color: "var(--theme-primary, #2f5f98)" },
         confirmed: { background: "var(--theme-success-bg, #f3f7f5)", color: "var(--theme-success, #11813a)" },
-        auto_closed: { background: "var(--theme-surface-muted, #f7f8fa)", color: "var(--theme-text-muted, #56677c)" },
+        auto_closed: { background: "var(--theme-surface-muted, #f7f8fa)", color: "var(--theme-text-muted, #5b6b80)" },
     };
     const labels: Record<string, string> = {
         pending: "待确认",
@@ -381,7 +381,7 @@ const headingStyle: CSSProperties = {
     margin: 0,
     fontSize: "1.1rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const badgeBaseStyle: CSSProperties = {
@@ -409,7 +409,7 @@ const sectionHeadingStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.88rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const formDataContainerStyle: CSSProperties = {
@@ -428,12 +428,12 @@ const formDataRowStyle: CSSProperties = {
 
 const formDataKeyStyle: CSSProperties = {
     fontWeight: 500,
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
     fontSize: "0.8rem",
 };
 
 const formDataValueStyle: CSSProperties = {
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     fontSize: "0.8rem",
 };
 
@@ -462,20 +462,20 @@ const decisionHeaderStyle: CSSProperties = {
 
 const decisionApproverStyle: CSSProperties = {
     fontWeight: 600,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     fontSize: "0.82rem",
 };
 
 const decisionDateStyle: CSSProperties = {
     fontSize: "0.72rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
     marginLeft: "auto",
 };
 
 const decisionRationaleStyle: CSSProperties = {
     margin: "4px 0 0",
     fontSize: "0.78rem",
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
     fontStyle: "italic",
 };
 
@@ -497,7 +497,7 @@ const notesContainerStyle: CSSProperties = {
 
 const notesLabelStyle: CSSProperties = {
     fontSize: "0.75rem",
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
     fontWeight: 500,
 };
 
@@ -506,7 +506,7 @@ const notesTextareaStyle: CSSProperties = {
     minHeight: "80px",
     padding: "8px 12px",
     fontSize: "0.82rem",
-    border: "1px solid var(--theme-border, #c9ddf6)",
+    border: "1px solid var(--theme-border, #d5e0ef)",
     borderRadius: "6px",
     outline: "none",
     resize: "vertical",
@@ -516,7 +516,7 @@ const notesTextareaStyle: CSSProperties = {
 
 const notesCounterStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
     textAlign: "right",
 };
 
@@ -567,13 +567,13 @@ const summaryRowStyle: CSSProperties = {
 
 const summaryLabelStyle: CSSProperties = {
     fontSize: "0.78rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
     minWidth: "60px",
 };
 
 const summaryValueStyle: CSSProperties = {
     fontSize: "0.82rem",
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     fontWeight: 500,
 };
 
@@ -602,13 +602,13 @@ const statusItemHeaderStyle: CSSProperties = {
 
 const statusItemNameStyle: CSSProperties = {
     fontWeight: 500,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     fontSize: "0.8rem",
 };
 
 const statusItemTypeStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
     background: "var(--theme-surface, #ffffff)",
     padding: "1px 6px",
     borderRadius: "8px",
@@ -616,12 +616,12 @@ const statusItemTypeStyle: CSSProperties = {
 
 const statusItemDetailsStyle: CSSProperties = {
     fontSize: "0.72rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
 };
 
 const statusItemNotesStyle: CSSProperties = {
     margin: "4px 0 0",
     fontSize: "0.75rem",
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
     fontStyle: "italic",
 };

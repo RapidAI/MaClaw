@@ -20,7 +20,7 @@ import (
 // counters are exposed separately via GetSharedAgentLoopStatus.
 func (a *App) RunDoctor() doctor.Report {
 	cfg := corelib.AppConfig{}
-	cfgPath := filepath.Join(maclawpath.DefaultBaseDir(), "config.json")
+	cfgPath := filepath.Join(maclawpath.DefaultBaseDir(), "config.db")
 	if a != nil {
 		if loaded, err := a.LoadConfig(); err == nil {
 			cfg = loaded

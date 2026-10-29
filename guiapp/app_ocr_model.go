@@ -2,7 +2,6 @@ package guiapp
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/configdb"
 	"github.com/RapidAI/CodeClaw/corelib/ocr"
 )
 
@@ -100,17 +100,9 @@ func ocrConfiguredModelTier() string {
 	if err != nil {
 		return corelib.DefaultOCRModelTier
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".maclaw", "config.json"))
-	if err != nil {
-		return corelib.DefaultOCRModelTier
-	}
-	var probe struct {
-		OCRModelTier string `json:"ocr_model_tier"`
-	}
-	if json.Unmarshal(data, &probe) != nil {
-		return corelib.DefaultOCRModelTier
-	}
-	return corelib.NormalizeOCRModelTier(probe.OCRModelTier)
+	var tier string
+	configdb.ReadValue(filepath.Join(home, ".maclaw"), "ocr_model_tier", &tier)
+	return corelib.NormalizeOCRModelTier(tier)
 }
 
 // ocrModelPaths returns the expected det/rec model paths for the configured

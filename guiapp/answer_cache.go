@@ -2,11 +2,14 @@ package guiapp
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -15,8 +18,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -48,38 +51,206 @@ type answerCacheFile struct {
 // Lansenger profile handler reaches the same store. The key is scoped to a bot
 // and its answer-generation policy, so identical safe questions can be reused
 // by different users of that bot.
+//
+// Rows live in answers.db. answers.json is only the pre-migration file: the
+// first open copies it once and does not rewrite it. A later empty database
+// stays empty. A put updates one row instead of rewriting every cached answer.
 type answerCacheStore struct {
-	mu      sync.Mutex
-	path    string
-	loaded  bool
-	entries map[string]answerCacheEntry
-	flights map[string]chan struct{}
+	mu          sync.Mutex
+	path        string
+	db          *sql.DB
+	flights     map[string]chan struct{}
+	rows        int
+	rowsKnown   bool
+	nextExpiry  int64
+	expiryKnown bool
+}
+
+func answerCacheDBPath(jsonPath string) string {
+	return filepath.Join(filepath.Dir(jsonPath), "answers.db")
 }
 
 func newAnswerCacheStore(path string) *answerCacheStore {
-	return &answerCacheStore{path: path, entries: make(map[string]answerCacheEntry), flights: make(map[string]chan struct{})}
+	s := &answerCacheStore{path: path, flights: make(map[string]chan struct{})}
+	dbPath := answerCacheDBPath(path)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		log.Printf("[answer-cache] create dir failed path=%q err=%v", dbPath, err)
+		return s
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		log.Printf("[answer-cache] open failed path=%q err=%v", dbPath, err)
+		return s
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := configureAnswerCacheDB(db); err != nil {
+		log.Printf("[answer-cache] schema failed path=%q err=%v", dbPath, err)
+		_ = db.Close()
+		return s
+	}
+	s.db = db
+	s.importLegacy()
+	runtime.SetFinalizer(s, func(store *answerCacheStore) { store.close() })
+	return s
 }
 
-func (s *answerCacheStore) loadLocked() {
-	if s == nil || s.loaded {
+func configureAnswerCacheDB(db *sql.DB) error {
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS answer_cache (
+    cache_key TEXT PRIMARY KEY,
+    answer TEXT NOT NULL,
+    question TEXT NOT NULL DEFAULT '',
+    scope_fingerprint TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_answer_cache_created ON answer_cache(created_at);
+CREATE TABLE IF NOT EXISTS answer_cache_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+`); err != nil {
+		return err
+	}
+	// CREATE INDEX IF NOT EXISTS keeps an older single-column index of the
+	// same name. Near-match reads filter scope, expiry, and age together.
+	var indexSQL string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_answer_cache_scope'`).Scan(&indexSQL)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if !strings.Contains(indexSQL, "expires_at") || !strings.Contains(indexSQL, "created_at") {
+		if _, err := db.Exec(`DROP INDEX IF EXISTS idx_answer_cache_scope`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX idx_answer_cache_scope ON answer_cache(scope_fingerprint, expires_at, created_at)`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_answer_cache_expires ON answer_cache(expires_at)`)
+	return err
+}
+
+func (s *answerCacheStore) close() {
+	if s == nil {
 		return
 	}
-	s.loaded = true
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("[answer-cache] load failed path=%q err=%v", s.path, err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		_ = s.db.Close()
+		s.db = nil
+	}
+	runtime.SetFinalizer(s, nil)
+}
+
+// importLegacy copies answers.json once. A later empty database must not read
+// that file again, or deleting or expiring every row would bring the old
+// answers back on the next open. The JSON file stays where it is.
+func (s *answerCacheStore) importLegacy() {
+	if s == nil || s.db == nil {
+		return
+	}
+	if done, err := answerCacheMetaDone(s.db); err != nil {
+		log.Printf("[answer-cache] import failed path=%q err=%v", s.path, err)
+		return
+	} else if done {
+		return
+	}
+	var rows int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM answer_cache`).Scan(&rows); err != nil {
+		log.Printf("[answer-cache] import failed path=%q err=%v", s.path, err)
+		return
+	}
+	if rows > 0 {
+		// An older build imported before the marker existed. Do not merge the
+		// JSON back in; a deleted row must stay deleted.
+		if _, err := s.db.Exec(`INSERT INTO answer_cache_meta(key, value) VALUES('legacy_json_imported', '1') ON CONFLICT(key) DO NOTHING`); err != nil {
+			log.Printf("[answer-cache] import failed path=%q err=%v", s.path, err)
 		}
 		return
 	}
 	var state answerCacheFile
-	if err := json.Unmarshal(data, &state); err != nil {
-		log.Printf("[answer-cache] ignored invalid cache file path=%q err=%v", s.path, err)
+	data, err := os.ReadFile(s.path)
+	if err != nil && !os.IsNotExist(err) {
+		log.Printf("[answer-cache] import failed path=%q err=%v", s.path, err)
 		return
 	}
-	if state.Entries != nil {
-		s.entries = state.Entries
+	if err == nil && len(data) > 0 {
+		if err := json.Unmarshal(data, &state); err != nil {
+			log.Printf("[answer-cache] ignored invalid cache file path=%q err=%v", s.path, err)
+		}
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		log.Printf("[answer-cache] import failed path=%q err=%v", s.path, err)
+		return
+	}
+	now := time.Now()
+	fresh := make([]struct {
+		key   string
+		entry answerCacheEntry
+	}, 0, len(state.Entries))
+	for key, entry := range state.Entries {
+		if key == "" || strings.TrimSpace(entry.Answer) == "" || !now.Before(entry.ExpiresAt) {
+			continue
+		}
+		fresh = append(fresh, struct {
+			key   string
+			entry answerCacheEntry
+		}{key, entry})
+	}
+	sort.Slice(fresh, func(i, j int) bool {
+		if fresh[i].entry.CreatedAt.Equal(fresh[j].entry.CreatedAt) {
+			return fresh[i].key < fresh[j].key
+		}
+		return fresh[i].entry.CreatedAt.After(fresh[j].entry.CreatedAt)
+	})
+	if len(fresh) > answerCacheMaxEntries {
+		fresh = fresh[:answerCacheMaxEntries]
+	}
+	for _, item := range fresh {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO answer_cache(cache_key, answer, question, scope_fingerprint, created_at, expires_at) VALUES(?,?,?,?,?,?)`,
+			item.key, item.entry.Answer, item.entry.Question, item.entry.ScopeFingerprint, item.entry.CreatedAt.UnixNano(), item.entry.ExpiresAt.UnixNano()); err != nil {
+			_ = tx.Rollback()
+			log.Printf("[answer-cache] import failed path=%q err=%v", s.path, err)
+			return
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO answer_cache_meta(key, value) VALUES('legacy_json_imported', '1') ON CONFLICT(key) DO NOTHING`); err != nil {
+		_ = tx.Rollback()
+		log.Printf("[answer-cache] import failed path=%q err=%v", s.path, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[answer-cache] import failed path=%q err=%v", s.path, err)
+		return
+	}
+	s.rows = len(fresh)
+	s.rowsKnown = true
+	s.expiryKnown = true
+	for _, item := range fresh {
+		exp := item.entry.ExpiresAt.UnixNano()
+		if s.nextExpiry == 0 || exp < s.nextExpiry {
+			s.nextExpiry = exp
+		}
+	}
+}
+
+func answerCacheMetaDone(db *sql.DB) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM answer_cache_meta WHERE key = 'legacy_json_imported'`).Scan(&n)
+	return n > 0, err
 }
 
 func (s *answerCacheStore) get(key string, now time.Time) (string, bool) {
@@ -96,20 +267,28 @@ func (s *answerCacheStore) getWithMaxAge(key string, now time.Time, maxAge time.
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.loadLocked()
-	entry, ok := s.entries[key]
-	if !ok {
+	if s.db == nil {
 		return "", false
 	}
-	policyExpired := maxAge > 0 && !now.Before(entry.CreatedAt.Add(maxAge))
-	if !now.Before(entry.ExpiresAt) || policyExpired || strings.TrimSpace(entry.Answer) == "" {
-		delete(s.entries, key)
+	var answer string
+	var createdNano, expiresNano int64
+	err := s.db.QueryRow(`SELECT answer, created_at, expires_at FROM answer_cache WHERE cache_key = ?`, key).Scan(&answer, &createdNano, &expiresNano)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[answer-cache] lookup failed: %v", err)
+		}
+		return "", false
+	}
+	createdAt := time.Unix(0, createdNano)
+	expiresAt := time.Unix(0, expiresNano)
+	policyExpired := maxAge > 0 && !now.Before(createdAt.Add(maxAge))
+	if !now.Before(expiresAt) || policyExpired || strings.TrimSpace(answer) == "" {
 		// Do not put a disk write on the reply path just to remove one stale
-		// entry. The next successful put prunes all expired entries and persists
-		// the compacted file; correctness comes from ExpiresAt, not deletion.
+		// entry. The next successful put prunes all expired entries; correctness
+		// comes from ExpiresAt, not deletion.
 		return "", false
 	}
-	return entry.Answer, true
+	return answer, true
 }
 
 func (s *answerCacheStore) put(key, answer string, ttl time.Duration, now time.Time) {
@@ -133,34 +312,105 @@ func (s *answerCacheStore) putWithMetadata(key, scopeFingerprint, question, answ
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.loadLocked()
-	for k, entry := range s.entries {
-		if !now.Before(entry.ExpiresAt) || strings.TrimSpace(entry.Answer) == "" {
-			delete(s.entries, k)
-		}
+	if s.db == nil {
+		return
 	}
-	if len(s.entries) >= answerCacheMaxEntries {
-		var oldestKey string
-		var oldest time.Time
-		for k, entry := range s.entries {
-			if oldestKey == "" || entry.CreatedAt.Before(oldest) {
-				oldestKey, oldest = k, entry.CreatedAt
-			}
-		}
-		if oldestKey != "" {
-			delete(s.entries, oldestKey)
-		}
-	}
-	s.entries[key] = answerCacheEntry{
-		Answer:           answer,
-		Question:         question,
-		ScopeFingerprint: strings.TrimSpace(scopeFingerprint),
-		CreatedAt:        now,
-		ExpiresAt:        now.Add(ttl),
-	}
-	if err := s.persistLocked(); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
 		log.Printf("[answer-cache] persist failed: %v", err)
+		return
 	}
+	if !s.rowsKnown {
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM answer_cache`).Scan(&s.rows); err != nil {
+			_ = tx.Rollback()
+			log.Printf("[answer-cache] persist failed: %v", err)
+			return
+		}
+		s.rowsKnown = true
+	}
+	// Remember the soonest expiry so a put can skip the delete while every
+	// cached answer is still live. A stale early value only causes one extra
+	// delete; it cannot keep an expired row in the count.
+	expiryKnown := s.expiryKnown
+	nextExpiry := s.nextExpiry
+	var removed int64
+	if !expiryKnown || (nextExpiry != 0 && now.UnixNano() >= nextExpiry) {
+		deleted, err := tx.Exec(`DELETE FROM answer_cache WHERE expires_at <= ?`, now.UnixNano())
+		if err != nil {
+			_ = tx.Rollback()
+			log.Printf("[answer-cache] persist failed: %v", err)
+			return
+		}
+		removed, err = deleted.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			log.Printf("[answer-cache] persist failed: %v", err)
+			return
+		}
+		var minExp sql.NullInt64
+		if err := tx.QueryRow(`SELECT MIN(expires_at) FROM answer_cache`).Scan(&minExp); err != nil {
+			_ = tx.Rollback()
+			log.Printf("[answer-cache] persist failed: %v", err)
+			return
+		}
+		expiryKnown = true
+		if minExp.Valid {
+			nextExpiry = minExp.Int64
+		} else {
+			nextExpiry = 0
+		}
+	}
+	var exists int
+	err = tx.QueryRow(`SELECT 1 FROM answer_cache WHERE cache_key = ?`, key).Scan(&exists)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		log.Printf("[answer-cache] persist failed: %v", err)
+		return
+	}
+	live := s.rows - int(removed)
+	if live < 0 {
+		live = 0
+	}
+	// Replacing a live row must not evict a different answer.
+	isNew := errors.Is(err, sql.ErrNoRows)
+	if isNew && live >= answerCacheMaxEntries {
+		if _, err := tx.Exec(`DELETE FROM answer_cache WHERE cache_key = (
+			SELECT cache_key FROM answer_cache ORDER BY created_at ASC, cache_key ASC LIMIT 1
+		)`); err != nil {
+			_ = tx.Rollback()
+			log.Printf("[answer-cache] persist failed: %v", err)
+			return
+		}
+		live--
+	}
+	expiresAt := now.Add(ttl).UnixNano()
+	if !expiryKnown || nextExpiry == 0 || expiresAt < nextExpiry {
+		nextExpiry = expiresAt
+		expiryKnown = true
+	}
+	if _, err := tx.Exec(`INSERT INTO answer_cache(cache_key, answer, question, scope_fingerprint, created_at, expires_at)
+		VALUES(?,?,?,?,?,?)
+		ON CONFLICT(cache_key) DO UPDATE SET
+			answer = excluded.answer,
+			question = excluded.question,
+			scope_fingerprint = excluded.scope_fingerprint,
+			created_at = excluded.created_at,
+			expires_at = excluded.expires_at`,
+		key, answer, question, strings.TrimSpace(scopeFingerprint), now.UnixNano(), expiresAt); err != nil {
+		_ = tx.Rollback()
+		log.Printf("[answer-cache] persist failed: %v", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[answer-cache] persist failed: %v", err)
+		return
+	}
+	if isNew {
+		live++
+	}
+	s.rows = live
+	s.expiryKnown = expiryKnown
+	s.nextExpiry = nextExpiry
 }
 
 // getSemanticWithMaxAge performs a deliberately strict, local near-match
@@ -180,21 +430,37 @@ func (s *answerCacheStore) getSemanticWithMaxAge(scopeFingerprint, question stri
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.loadLocked()
+	if s.db == nil {
+		return "", false
+	}
+	query := `SELECT cache_key, question, created_at, expires_at FROM answer_cache WHERE scope_fingerprint = ? AND question != '' AND expires_at > ?`
+	args := []any{scopeFingerprint, now.UnixNano()}
+	if maxAge > 0 {
+		query += ` AND created_at > ?`
+		args = append(args, now.Add(-maxAge).UnixNano())
+	}
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		log.Printf("[answer-cache] semantic lookup failed: %v", err)
+		return "", false
+	}
 
 	bestScore := 0.0
-	bestAnswer := ""
+	bestKey := ""
 	ambiguous := false
-	for key, entry := range s.entries {
-		policyExpired := maxAge > 0 && !now.Before(entry.CreatedAt.Add(maxAge))
-		if !now.Before(entry.ExpiresAt) || policyExpired || strings.TrimSpace(entry.Answer) == "" {
-			delete(s.entries, key)
+	for rows.Next() {
+		var cacheKey, cachedQuestion string
+		var createdNano, expiresNano int64
+		if err := rows.Scan(&cacheKey, &cachedQuestion, &createdNano, &expiresNano); err != nil {
 			continue
 		}
-		if entry.ScopeFingerprint != scopeFingerprint || strings.TrimSpace(entry.Question) == "" {
+		createdAt := time.Unix(0, createdNano)
+		expiresAt := time.Unix(0, expiresNano)
+		policyExpired := maxAge > 0 && !now.Before(createdAt.Add(maxAge))
+		if !now.Before(expiresAt) || policyExpired || strings.TrimSpace(cachedQuestion) == "" {
 			continue
 		}
-		score, ok := answerCacheSemanticMatchScore(question, entry.Question)
+		score, ok := answerCacheSemanticMatchScore(question, cachedQuestion)
 		if !ok {
 			continue
 		}
@@ -205,7 +471,7 @@ func (s *answerCacheStore) getSemanticWithMaxAge(scopeFingerprint, question stri
 			if bestScore > 0 && score-bestScore <= 0.10 {
 				ambiguous = true
 			} else {
-				bestScore, bestAnswer = score, entry.Answer
+				bestScore, bestKey = score, cacheKey
 			}
 		} else if score >= bestScore-0.10 {
 			// Two nearly-equivalent but independently generated answers are not a
@@ -213,10 +479,22 @@ func (s *answerCacheStore) getSemanticWithMaxAge(scopeFingerprint, question stri
 			ambiguous = true
 		}
 	}
-	if ambiguous || bestScore < answerCacheSemanticMatchThreshold {
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		log.Printf("[answer-cache] semantic lookup failed: %v", err)
 		return "", false
 	}
-	return bestAnswer, true
+	if ambiguous || bestScore < answerCacheSemanticMatchThreshold || bestKey == "" {
+		return "", false
+	}
+	// The answer body is loaded only for the winner. Scoring only needs the
+	// question, and one scope can hold the rest of the cache.
+	var answer string
+	if err := s.db.QueryRow(`SELECT answer FROM answer_cache WHERE cache_key = ?`, bestKey).Scan(&answer); err != nil || strings.TrimSpace(answer) == "" {
+		return "", false
+	}
+	return answer, true
 }
 
 const answerCacheSemanticMatchThreshold = 0.90
@@ -269,13 +547,6 @@ func waitAnswerCacheFlight(cancelCtx <-chan struct{}, done <-chan struct{}) bool
 	}
 }
 
-func (s *answerCacheStore) persistLocked() error {
-	if s == nil {
-		return nil
-	}
-	return configfile.AtomicWriteJSON(s.path, answerCacheFile{Entries: s.entries})
-}
-
 func (a *App) ensureAnswerCacheStore() *answerCacheStore {
 	if a == nil {
 		return nil
@@ -284,6 +555,9 @@ func (a *App) ensureAnswerCacheStore() *answerCacheStore {
 	a.answerCacheMu.Lock()
 	defer a.answerCacheMu.Unlock()
 	if a.answerCache == nil || a.answerCache.path != path {
+		if a.answerCache != nil {
+			a.answerCache.close()
+		}
 		a.answerCache = newAnswerCacheStore(path)
 	}
 	return a.answerCache

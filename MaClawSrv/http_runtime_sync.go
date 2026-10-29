@@ -87,25 +87,21 @@ func (s *HTTPServer) startConfiguredIMRuntimes(ctx context.Context) {
 	if s == nil || s.imRuntime == nil || s.svc == nil {
 		return
 	}
-	activeTenants, err := s.activeTenantSet(ctx)
+	users, err := s.svc.ListStartupUserConfigs(ctx)
 	if err != nil {
 		return
 	}
-	users, err := s.svc.ListAllUsers(ctx, agentservice.ListAllUsersAdminInput{Status: agentservice.UserStatusActive})
-	if err != nil {
-		return
-	}
-	for _, user := range users {
+	for _, item := range users {
+		user := item.User
 		p := agentservice.Principal{TenantID: user.TenantID, UserID: user.ID}
-		if _, ok := activeTenants[p.TenantID]; !ok {
+		if !item.TenantActive {
 			s.stopIMRuntimeForPrincipal(p)
 			continue
 		}
-		cfg, err := s.svc.GetRawUserConfig(ctx, p)
-		if err != nil || cfg == nil {
+		if item.Config == nil {
 			continue
 		}
-		s.imRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
+		s.imRuntime.SyncPrincipal(ctx, p, item.Config.AppConfig)
 	}
 }
 
@@ -126,24 +122,17 @@ func (s *HTTPServer) startConfiguredWeixinRuntimes(ctx context.Context) {
 	if s == nil || s.weixinRuntime == nil || s.svc == nil {
 		return
 	}
-	activeTenants, err := s.activeTenantSet(ctx)
+	users, err := s.svc.ListStartupUserConfigs(ctx)
 	if err != nil {
 		return
 	}
-	users, err := s.svc.ListAllUsers(ctx, agentservice.ListAllUsersAdminInput{Status: agentservice.UserStatusActive})
-	if err != nil {
-		return
-	}
-	for _, user := range users {
-		if _, ok := activeTenants[user.TenantID]; !ok {
+	for _, item := range users {
+		user := item.User
+		if !item.TenantActive || item.Config == nil || !item.Config.AppConfig.WeixinEnabled || strings.TrimSpace(item.Config.AppConfig.WeixinToken) == "" {
 			continue
 		}
 		p := agentservice.Principal{TenantID: user.TenantID, UserID: user.ID}
-		cfg, err := s.svc.GetRawUserConfig(ctx, p)
-		if err != nil || cfg == nil || !cfg.AppConfig.WeixinEnabled || strings.TrimSpace(cfg.AppConfig.WeixinToken) == "" {
-			continue
-		}
-		s.weixinRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
+		s.weixinRuntime.SyncPrincipal(ctx, p, item.Config.AppConfig)
 	}
 }
 

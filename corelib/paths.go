@@ -1,12 +1,12 @@
 package corelib
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/RapidAI/CodeClaw/corelib/configdb"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -17,7 +17,7 @@ var (
 	workspaceDirPath string
 
 	// customWorkspace is the user-configured working directory.
-	// Lazily loaded from ~/.maclaw/config.json on first EffectiveWorkspaceDir()
+	// Lazily loaded from ~/.maclaw/config.db on first EffectiveWorkspaceDir()
 	// call, and updated at runtime via SetWorkspaceDir().
 	customWorkspaceMu  sync.RWMutex
 	customWorkspaceDir string
@@ -64,7 +64,7 @@ func SetWorkspaceDir(dir string) {
 // EffectiveWorkspaceDir returns the user-configured working directory if set,
 // otherwise falls back to the built-in default (~/.maclaw/workspace).
 //
-// On first call, it lazily reads working_directory from ~/.maclaw/config.json
+// On first call, it lazily reads working_directory from ~/.maclaw/config.db
 // so that all entry points (GUI, TUI, tests) get the correct value without
 // requiring explicit SetWorkspaceDir() wiring at startup.
 func EffectiveWorkspaceDir() string {
@@ -93,47 +93,39 @@ func EffectiveWorkspaceDir() string {
 }
 
 // loadWorkingDirFromConfig reads the working_directory field from
-// ~/.maclaw/config.json. Returns empty string on any error.
+// ~/.maclaw/config.db. Returns empty string on any error.
 func loadWorkingDirFromConfig() string {
 	fields := loadConfigFields()
 	return fields.WorkingDirectory
 }
 
-// loadDataDirFromConfig reads the data_dir field from ~/.maclaw/config.json.
+// loadDataDirFromConfig reads the data_dir field from ~/.maclaw/config.db.
 // Returns empty string on any error or if not set.
 func loadDataDirFromConfig() string {
 	fields := loadConfigFields()
 	return fields.DataDir
 }
 
-// configFields holds the subset of config.json fields needed by paths.go.
+// configFields holds the subset of config.db fields needed by paths.go.
 type configFields struct {
 	WorkingDirectory string
 	DataDir          string
 }
 
-// loadConfigFields reads working_directory and data_dir from ~/.maclaw/config.json
-// in a single file read. Returns zero struct on any error.
+// loadConfigFields reads working_directory and data_dir from the default
+// config store. Returns zero values on any error.
 func loadConfigFields() configFields {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return configFields{}
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".maclaw", "config.json"))
-	if err != nil {
-		return configFields{}
-	}
-	var partial struct {
-		WorkingDirectory string `json:"working_directory"`
-		DataDir          string `json:"data_dir"`
-	}
-	if json.Unmarshal(data, &partial) != nil {
-		return configFields{}
-	}
-	return configFields{
-		WorkingDirectory: strings.TrimSpace(partial.WorkingDirectory),
-		DataDir:          strings.TrimSpace(partial.DataDir),
-	}
+	dataDir := filepath.Join(home, ".maclaw")
+	var fields configFields
+	configdb.ReadValue(dataDir, "working_directory", &fields.WorkingDirectory)
+	configdb.ReadValue(dataDir, "data_dir", &fields.DataDir)
+	fields.WorkingDirectory = strings.TrimSpace(fields.WorkingDirectory)
+	fields.DataDir = strings.TrimSpace(fields.DataDir)
+	return fields
 }
 
 // MaclawDefaultBaseDir returns ~/.maclaw — the default base directory.
@@ -144,13 +136,13 @@ func MaclawDefaultBaseDir() string {
 
 // MaclawBaseDir returns the effective maclaw base directory for all data
 // (memories, logs, skills, conversations, etc.). If the user configured a
-// custom data_dir in config.json, that path is returned. Otherwise returns
+// custom data_dir in config.db, that path is returned. Otherwise returns
 // ~/.maclaw. The result is cached after first call.
 //
 // If the configured data_dir is not accessible (e.g. removable disk unplugged,
 // network path unavailable), falls back to ~/.maclaw and logs a warning.
 //
-// config.json always stays at ~/.maclaw/config.json regardless of this value.
+// config.db always stays at ~/.maclaw/config.db regardless of this value.
 //
 // ALL code that needs a path under the maclaw data directory MUST use this
 // function as the single source of truth. Do NOT hardcode ~/.maclaw paths.
@@ -159,7 +151,7 @@ func MaclawBaseDir() string {
 }
 
 // SetMaclawBaseDirFromConfig refreshes the effective maclaw base directory from
-// a data_dir config value. config.json itself remains under ~/.maclaw.
+// a data_dir config value. config.db itself remains under ~/.maclaw.
 func SetMaclawBaseDirFromConfig(configuredDir string) {
 	maclawpath.SetBaseDirFromConfig(configuredDir)
 	SetMaclawBaseDir(maclawpath.BaseDir())

@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -112,28 +111,13 @@ func TestLoadLatestSessionForProjectUsesNewestMatchingSessionWithoutIndex(t *tes
 func TestLoadLatestSessionForProjectPrefersSavedTimestampOverNewerLegacyFile(t *testing.T) {
 	persist := NewProjectTabSessionPersistForBaseDir(t.TempDir())
 	projectPath := filepath.Join(t.TempDir(), "history-task")
-	olderAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	newerAt := time.Now().UTC().Format(time.RFC3339)
-	if err := persist.SaveSession(&TabSessionData{TabID: "current", ProjectPath: projectPath, LastActiveAt: newerAt}); err != nil {
+	if err := persist.putSessionSnapshot(&TabSessionData{TabID: "current", ProjectPath: projectPath, LastActiveAt: newerAt}); err != nil {
 		t.Fatal(err)
 	}
-	if err := persist.SaveSession(&TabSessionData{TabID: "legacy", ProjectPath: projectPath, LastActiveAt: olderAt}); err != nil {
-		t.Fatal(err)
-	}
-
-	// A legacy session without LastActiveAt falls back to its file timestamp,
-	// which is naturally newer because it was written last. It must not replace
-	// a session with an authoritative saved activity timestamp.
-	legacy := &TabSessionData{TabID: "legacy", ProjectPath: projectPath}
-	data, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyPath, err := persist.sessionFilePath("legacy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := atomicWriteFile(legacyPath, data); err != nil {
+	// Written later, so its row update time is newer, but it has no saved
+	// activity timestamp. That must not replace a session that recorded one.
+	if err := persist.putSessionSnapshot(&TabSessionData{TabID: "legacy", ProjectPath: projectPath}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -178,19 +162,8 @@ func TestLoadLatestSessionForProjectSameTimestamp(t *testing.T) {
 	stamp := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	write := func(session *TabSessionData) {
 		t.Helper()
-		if err := persist.SaveSession(session); err != nil {
-			t.Fatal(err)
-		}
 		session.LastActiveAt = stamp
-		data, err := json.Marshal(session)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path, err := persist.sessionFilePath(session.TabID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := atomicWriteFile(path, data); err != nil {
+		if err := persist.putSessionSnapshot(session); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -46,6 +46,60 @@ func (s *Service) GetRawUserConfig(ctx context.Context, p Principal) (*UserConfi
 	return &cfg, nil
 }
 
+// StartupUserConfig is one active user observed during a one-shot runtime
+// startup scan. Config is nil when its raw configuration cannot be loaded.
+type StartupUserConfig struct {
+	User         User
+	TenantActive bool
+	Config       *UserConfig
+}
+
+// ListStartupUserConfigs enumerates users and their raw configs from one
+// store snapshot. Legacy file fallback still imports through the live store.
+func (s *Service) ListStartupUserConfigs(ctx context.Context) ([]StartupUserConfig, error) {
+	_ = ctx
+	if s == nil || s.store == nil {
+		return nil, ErrServiceClosed
+	}
+	store, err := snapshotStore(s.store)
+	if err != nil {
+		return nil, err
+	}
+	tenants, err := store.ListTenants()
+	if err != nil {
+		return nil, err
+	}
+	activeTenants := make(map[string]bool, len(tenants))
+	for _, tenant := range tenants {
+		activeTenants[tenant.ID] = tenant.Status == TenantStatusActive
+	}
+	out := make([]StartupUserConfig, 0)
+	for _, tenant := range tenants {
+		users, err := store.ListUsers(tenant.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			if user.Status != UserStatusActive {
+				continue
+			}
+			item := StartupUserConfig{User: user, TenantActive: activeTenants[tenant.ID]}
+			if item.TenantActive {
+				cfg, cfgErr := store.GetUserConfig(tenant.ID, user.ID)
+				if errors.Is(cfgErr, ErrUserConfigNotFound) {
+					cfg, cfgErr = s.getOrLoadRawUserConfig(tenant.ID, user.ID)
+				}
+				if cfgErr == nil {
+					cfg.AppConfig = effectiveLLMFlatConfig(cfg.AppConfig)
+					item.Config = &cfg
+				}
+			}
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
 func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next corelib.AppConfig) (*UserConfig, error) {
 	_ = ctx
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {

@@ -40,6 +40,15 @@ func NewFileStore(path string) (*FileStore, error) {
 	return &FileStore{path: path, inner: inner}, nil
 }
 
+func (s *FileStore) Snapshot() (Store, error) {
+	if s == nil || s.inner == nil {
+		return nil, ErrServiceClosed
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inner.Snapshot()
+}
+
 func (s *FileStore) SaveTenant(v Tenant) error {
 	return s.mutate(func() error { return s.inner.SaveTenant(v) })
 }

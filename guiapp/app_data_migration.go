@@ -25,8 +25,8 @@ type DataMigrationProgress struct {
 }
 
 // migrateToCustomDataDir checks if data_dir is configured and different from
-// the default ~/.maclaw. If so, migrates all data (except config.json) from
-// ~/.maclaw to the new directory with progress reporting.
+// the default ~/.maclaw. If so, migrates all data (except app config storage)
+// from ~/.maclaw to the new directory with progress reporting.
 func (a *App) migrateToCustomDataDir() {
 	targetDir := corelib.MaclawBaseDir()
 	defaultDir := corelib.MaclawDefaultBaseDir()
@@ -53,9 +53,17 @@ func (a *App) migrateToCustomDataDir() {
 	a.performDataMigration(defaultDir, targetDir)
 }
 
+func isAppConfigRootFile(path string) bool {
+	switch path {
+	case "config.json", "config.json.migrated.bak", "config.db", "config.db-journal", "config.db-wal", "config.db-shm":
+		return true
+	}
+	return false
+}
+
 // needsDataMigration returns true if data should be migrated from src to dst.
 // Migration is needed when:
-// - src exists and has data files (beyond config.json)
+// - src exists and has data files (beyond app config storage)
 // - dst doesn't exist OR dst exists but has no "memories.json" (marker file)
 func (a *App) needsDataMigration(src, dst string) bool {
 	// Check if source has already been migrated to this exact target.
@@ -73,7 +81,7 @@ func (a *App) needsDataMigration(src, dst string) bool {
 	}
 	hasDataInSrc := false
 	for _, e := range srcEntries {
-		if e.Name() != "config.json" && e.Name() != ".migrated_to" {
+		if !isAppConfigRootFile(e.Name()) && e.Name() != ".migrated_to" {
 			hasDataInSrc = true
 			break
 		}
@@ -85,8 +93,8 @@ func (a *App) needsDataMigration(src, dst string) bool {
 	return true
 }
 
-// performDataMigration copies all files/dirs from src to dst (except config.json),
-// emitting progress events to the frontend.
+// performDataMigration copies all files/dirs from src to dst (except app config
+// storage), emitting progress events to the frontend.
 func (a *App) performDataMigration(src, dst string) {
 	start := time.Now()
 
@@ -100,8 +108,8 @@ func (a *App) performDataMigration(src, dst string) {
 			return nil // skip errors
 		}
 		rel, _ := filepath.Rel(src, path)
-		// Skip config.json and migration marker at root level.
-		if rel == "config.json" || rel == ".migrated_to" {
+		// Skip app config storage and migration marker at root level.
+		if isAppConfigRootFile(rel) || rel == ".migrated_to" {
 			return nil
 		}
 		// Skip the root directory itself.

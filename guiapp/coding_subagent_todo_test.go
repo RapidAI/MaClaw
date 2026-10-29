@@ -845,6 +845,11 @@ func TestOpenCodingAgentChecklistNudge(t *testing.T) {
 	local := &codingSubAgentCallbacks{}
 	local.todos.applyTodoWrite(items, false)
 	got := local.OpenChecklistNudge()
+	goalTurn := &codingSubAgentCallbacks{task: &TaskItem{Description: "[系统续接][execute] 按步骤执行目标：游戏"}}
+	goalTurn.todos.applyTodoWrite(items, false)
+	if nudge := goalTurn.OpenChecklistNudge(); nudge != "" {
+		t.Fatalf("goal turn nudged the local checklist: %q", nudge)
+	}
 	if !strings.Contains(got, "Implement the footer HUD split") || !strings.Contains(got, "id=3") || !strings.Contains(got, "definition") || strings.Contains(got, "expected_revision=") {
 		t.Fatalf("nudge=%q", got)
 	}

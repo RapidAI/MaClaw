@@ -590,6 +590,9 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 		if msg := remoteCodingBaselineBlockError(baselineErr, finishedAttempt, result.Error); msg != result.Error {
 			result.Error = msg
 		}
+		if finishedAttempt.ErrorCode == "workspace_before_probe_failed" {
+			log.Printf("[coding-runtime] remote read-only workspace baseline blocked project=%s: %s", r.projectDir, strings.TrimSpace(result.Error))
+		}
 	}
 	if result != nil && strings.EqualFold(result.Status, "waiting_child") {
 		result.RuntimeHandoff = true
@@ -2387,7 +2390,9 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 		prompt = buildRemoteFullCodingEnvironmentPromptPreamble() + buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
 	}
 	// In-agent plan/checklist (not workbench multi-task orchestration).
-	if !inspectionRole && !(c != nil && c.agent != nil && (c.agent.readOnlyInquiry || c.agent.operationalRequest)) {
+	// A host goal turn is recorded with goal, not todo_write.
+	goalTurn := goalContinuationPhase(phaseSource) != ""
+	if !inspectionRole && !goalTurn && !(c != nil && c.agent != nil && (c.agent.readOnlyInquiry || c.agent.operationalRequest)) {
 		prompt += codingAgentTodoPromptSection
 		prompt += codingAgentTodoControlPlanePromptSection
 	}
@@ -2582,7 +2587,10 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 		tools = append(tools, buildRemoteSpawnCodingAgentToolDefinition())
 	}
 	// In-agent requirement breakdown + step checklist (workers only).
-	if !inspectionRole {
+	// Host goal turns record the step with goal, so the local checklist
+	// stays off this surface.
+	goalTurn := c != nil && (goalContinuationPhase(c.task) != "" || goalContinuationPhase(c.taskContext) != "")
+	if !inspectionRole && !goalTurn {
 		tools = append(tools, buildCodingAgentTodoToolDefinition())
 	}
 	if c != nil && c.agent != nil {

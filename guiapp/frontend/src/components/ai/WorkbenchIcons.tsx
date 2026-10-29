@@ -552,7 +552,7 @@ export function StatusGlyph({
             return <IconInfo size={size} color={color ?? "var(--theme-primary, #2f5f98)"} />;
         case "offline":
             // Distinct from error (cross): muted hollow ring for disconnected/idle.
-            return <IconCircle size={size} color={color ?? "var(--theme-text-muted, #56677c)"} />;
+            return <IconCircle size={size} color={color ?? "var(--theme-text-muted, #5b6b80)"} />;
         case "pending":
         default:
             return <IconHourglass size={size} color={color ?? "currentColor"} style={color ? undefined : { opacity: 0.75 }} />;

@@ -47,7 +47,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			mobileDocuments.Unlock()
 			if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 				if repaired {
-					mobilePersistState()
+					mobilePersistDraft(record)
 				}
 				writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 				return
@@ -117,7 +117,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			}
 			if repaired {
 				// Drop dead blob paths / persist healed markdown.
-				mobilePersistState()
+				mobilePersistDraft(record)
 			}
 			payload := mobileDocumentDraftPayloadWithMarkdown(record, display)
 			mobileDocumentDraftAddMeetingRecordingParent(payload, record)
@@ -142,20 +142,20 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 		resultOwners := mobileMeetingRecordingResultOwners(ownerID, principal.TenantID)
 		mobileDocuments.Lock()
 		items := make([]mobileDocumentDraftRecord, 0)
-		repaired := false
+		repaired := make([]mobileDocumentDraftRecord, 0)
 		for id, rec := range mobileDocuments.drafts {
 			if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, rec.TenantID) {
 				continue
 			}
 			if mobileDraftRepairSourceMeta(&rec) {
 				mobileDocuments.drafts[id] = rec
-				repaired = true
+				repaired = append(repaired, rec)
 			}
 			items = append(items, rec)
 		}
 		mobileDocuments.Unlock()
-		if repaired {
-			mobilePersistState()
+		if len(repaired) > 0 {
+			mobilePersistDocumentChanges(mobileDocumentChanges{drafts: repaired})
 		}
 
 		sort.SliceStable(items, func(i, j int) bool {
@@ -258,7 +258,7 @@ func MobileDocumentDraftSourceHandler(identity *auth.IdentityService) http.Handl
 		hasOrig := mobileDraftHasOriginal(record)
 		mobileDocuments.Unlock()
 		if repaired {
-			mobilePersistState()
+			mobilePersistDraft(record)
 		}
 		if !ok || owner != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, tenantID) || !hasOrig {
 			writeError(w, http.StatusNotFound, "DRAFT_SOURCE_NOT_FOUND", "original file not found for this draft")
@@ -280,7 +280,7 @@ func MobileDocumentDraftSourceHandler(identity *auth.IdentityService) http.Handl
 						mobileClearDraftSourceMeta(&rec)
 						mobileDocuments.drafts[draftID] = rec
 						mobileDocuments.Unlock()
-						mobilePersistState()
+						mobilePersistDraft(rec)
 					} else {
 						mobileDocuments.Unlock()
 					}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -247,12 +248,17 @@ func TestBackwardCompat_NoArchiveJSON(t *testing.T) {
 		t.Fatal("archive should have entries after eviction")
 	}
 
-	// Flush archive and verify file was created.
+	// Flush archive and verify the sqlite database was created. The pre-migration
+	// JSON file stays absent when this store never had one.
 	if err := store.Archive().Flush(); err != nil {
 		t.Fatalf("archive Flush failed: %v", err)
 	}
-	if _, err := os.Stat(archivePath); os.IsNotExist(err) {
-		t.Fatal("archive.json should exist after eviction and flush")
+	dbPath := strings.TrimSuffix(archivePath, ".json") + ".db"
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		t.Fatal("archive.db should exist after eviction and flush")
+	}
+	if _, err := os.Stat(archivePath); err == nil {
+		t.Fatal("archive.json should stay absent when cold storage is sqlite")
 	}
 }
 

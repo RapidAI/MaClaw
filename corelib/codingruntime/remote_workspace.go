@@ -134,7 +134,16 @@ func (r *RemoteGitBaselineRequest) ExecResult(exitCode int, stdout, stderr strin
 // RemoteGitProbeCommand is the read-only exec-channel probe. Each step is
 // joined with &&, so a failing rev-parse or status does not print the closing
 // marker. A semicolon chain would still print that marker, and the parser
-// would treat the empty porcelain as a clean tree.
+// would treat the empty body as a clean tree.
+//
+// The attestation is a fixed-size digest, not the porcelain listing. The exec
+// channel keeps only a bounded prefix of stdout, and the end marker is written
+// after the payload. Shipping `git status --untracked-files=all` makes any
+// tree whose listing exceeds that prefix — a home directory, a dependency
+// folder — look like a missing baseline even though git itself succeeded.
+// The digest is the SHA-1 git blob id of those exact status bytes, computed
+// on the host that has them. hash-object is not passed -w, so it does not
+// store an object. --no-optional-locks keeps status from refreshing the index.
 func RemoteGitProbeCommand(workDir, markerStart, markerEnd string) (string, error) {
 	workDir, err := cleanRemoteProjectPath(workDir, "remote git probe")
 	if err != nil {
@@ -145,12 +154,54 @@ func RemoteGitProbeCommand(workDir, markerStart, markerEnd string) (string, erro
 	}
 	quoted := posixShellSingleQuote(workDir)
 	gitC := "git -C " + quoted
+	// Scratch lives outside the work tree. A file under $TMPDIR, or under /tmp
+	// when the project is /tmp, would be an untracked path and every probe
+	// would differ. hash-object then runs in that empty directory with a
+	// ceiling, reading stdin: the login repo cannot change the hash algorithm,
+	// apply a clean filter, or reject the digest. Semicolons stay inside this
+	// group so a failed status still deletes the scratch directory. The end
+	// marker is a later && step, so that failure cannot print it.
+	digest := "{ dir=" + quoted + "; probe_parent=/tmp; sample=$probe_parent/maclaw-ws; rest=${sample#\"$dir\"/}; " +
+		"if [ \"$dir\" = \"$probe_parent\" ] || [ \"$rest\" != \"$sample\" ]; then probe_parent=/var/tmp; fi; " +
+		"probe_hold=$(mktemp -d \"$probe_parent/maclaw-wsd.XXXXXX\") || exit 1; " +
+		gitC + " --no-optional-locks status --porcelain=v1 --untracked-files=all > \"$probe_hold/status\"; probe_st=$?; " +
+		"if [ \"$probe_st\" -eq 0 ]; then GIT_CEILING_DIRECTORIES=\"$probe_hold\" git -C \"$probe_hold\" hash-object --stdin < \"$probe_hold/status\"; probe_st=$?; fi; " +
+		"rm -rf -- \"$probe_hold\"; [ \"$probe_st\" -eq 0 ]; }"
 	return strings.Join([]string{
 		gitC + " rev-parse HEAD",
 		"printf '\\n%s\\n' " + posixShellSingleQuote(markerStart),
-		gitC + " status --porcelain=v1 --untracked-files=all",
+		digest,
 		"printf '\\n%s\\n' " + posixShellSingleQuote(markerEnd),
 	}, " && "), nil
+}
+
+// RemoteWorkspaceStatusDigest accepts only the fixed-size attestation printed
+// between the probe markers. A porcelain listing is rejected: treating it as
+// the baseline is what made a truncated capture indistinguishable from a
+// failed read. hash-object prints one object name and does not write it.
+func RemoteWorkspaceStatusDigest(body string) (string, error) {
+	lines := splitRemoteOutputLines(body)
+	if len(lines) != 1 || !remoteGitObjectName(lines[0]) {
+		return "", fmt.Errorf("remote read-only git probe returned no status digest")
+	}
+	return "gitblob:" + lines[0], nil
+}
+
+func remoteGitObjectName(value string) bool {
+	// The probe hashes outside any repository, so the id is SHA-1. A 64-hex
+	// SHA-256 id means a surrounding repo leaked into the digest; accepting it
+	// would let two probes of one tree disagree.
+	if len(value) != 40 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // RemoteProbeExecError reports a non-zero probe. Git writes the reason to

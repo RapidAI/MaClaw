@@ -305,7 +305,7 @@ function statusColor(status: DoctorStatus): string {
         case 'fail':
             return 'var(--theme-danger, #dc1f25)';
         case 'skip':
-            return 'var(--theme-text-muted, #56677c)';
+            return 'var(--theme-text-muted, #5b6b80)';
         default:
             return 'var(--theme-primary, #2e75cb)';
     }
@@ -318,7 +318,7 @@ function modeColor(mode: string | undefined): string {
         case 'shadow':
             return 'var(--theme-warning, #aa5d05)';
         default:
-            return 'var(--theme-text-muted, #56677c)';
+            return 'var(--theme-text-muted, #5b6b80)';
     }
 }
 
@@ -349,7 +349,7 @@ function PathBar({ shared, legacy }: { shared: number; legacy: number }) {
             title={`shared ${sharedPct}% · legacy ${100 - sharedPct}%`}
         >
             <div style={{ width: `${sharedPct}%`, background: 'var(--theme-primary, #2e75cb)' }} />
-            <div style={{ width: `${100 - sharedPct}%`, background: 'var(--theme-text-muted, #56677c)' }} />
+            <div style={{ width: `${100 - sharedPct}%`, background: 'var(--theme-text-muted, #5b6b80)' }} />
         </div>
     );
 }
@@ -908,7 +908,7 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                                         </div>
                                         <div>
                                             {t('sharedLoopLegacy')}:{' '}
-                                            <strong style={{ color: 'var(--theme-text-muted, #56677c)' }}>{legacy}</strong>
+                                            <strong style={{ color: 'var(--theme-text-muted, #5b6b80)' }}>{legacy}</strong>
                                             {total > 0 ? ` (${100 - sharedPct}%)` : ''}
                                         </div>
                                         <div>

@@ -2,7 +2,6 @@ package guiapp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/configdb"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -138,15 +138,9 @@ func ocrConfiguredEnabled() bool {
 	if err != nil {
 		return true
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".maclaw", "config.json"))
-	if err != nil {
+	var enabled *bool
+	if !configdb.ReadValue(filepath.Join(home, ".maclaw"), "ocr_enabled", &enabled) || enabled == nil {
 		return true
 	}
-	var probe struct {
-		OCREnabled *bool `json:"ocr_enabled"`
-	}
-	if json.Unmarshal(data, &probe) != nil || probe.OCREnabled == nil {
-		return true
-	}
-	return *probe.OCREnabled
+	return *enabled
 }

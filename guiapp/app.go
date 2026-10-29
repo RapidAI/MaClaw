@@ -450,7 +450,14 @@ type App struct {
 	// Prefer publishedConfig() / publishConfigLocked for all production paths.
 	configCache      corelib.AppConfig
 	configCacheValid bool
-	configDiskMu     sync.Mutex // serializes config.json writes
+	// configFileState validates disk-backed snapshots across processes. A nil
+	// state is used only before the first disk read/write or for legacy test seeds.
+	configFileState      atomic.Pointer[configFileFingerprint]
+	configWritesInFlight atomic.Int32
+	configDiskMu         sync.Mutex // serializes config storage writes
+	configStoreMu        sync.Mutex
+	configStore          *config.SQLiteStore
+	configStoreJSONPath  string
 	// pendingDataDirReset is set under configMu when the effective data dir
 	// changes; drainPendingDataDirReset must run only after releasing configMu
 	// so DB/memory teardown never blocks LoadConfig readers.
@@ -1552,6 +1559,7 @@ func (a *App) ensureScheduledTaskManager() {
 	}
 	a.ensureRemoteInfra()
 	baseDir := a.getMaclawBaseDir()
+	// scheduled_tasks.json is imported once. Later rows live in scheduled_tasks.db.
 	stm, err := scheduler.NewManager(filepath.Join(baseDir, "scheduled_tasks.json"))
 	if err == nil {
 		a.scheduledTaskManager = stm
@@ -2200,7 +2208,10 @@ func (a *App) ensureConversationMemory() *agent.ConversationMemory {
 	}
 	if strings.TrimSpace(a.testHomeDir) != "" {
 		storePath := filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json")
-		if _, err := os.Stat(storePath); err == nil {
+		databasePath := strings.TrimSuffix(storePath, filepath.Ext(storePath)) + ".db"
+		_, jsonErr := os.Stat(storePath)
+		_, databaseErr := os.Stat(databasePath)
+		if jsonErr == nil || databaseErr == nil {
 			log.Printf("[paths] ai_conversation_memory mode=persistent path=%q", storePath)
 			a.aiConversationMemory = agent.NewPersistentConversationMemory(storePath)
 		} else {
@@ -3414,6 +3425,10 @@ func (a *App) shutdown(ctx context.Context) {
 		_ = a.sessionSearchStore.Close()
 		a.sessionSearchStore = nil
 	}
+	if a.projectTabSessionPersist != nil {
+		_ = a.projectTabSessionPersist.Close()
+		a.projectTabSessionPersist = nil
+	}
 	a.stopSemanticEffectReceiptWorker()
 	a.closeSemanticInvocationStore()
 	if a.qqBotGateway != nil {
@@ -4081,10 +4096,11 @@ func (a *App) startConfigWatcher() {
 	}()
 	configPath, err := a.getConfigPath()
 	if err == nil {
-		if err := a.watcher.Add(configPath); err != nil {
-			a.log("Failed to watch config file: " + err.Error())
+		storagePath := a.configStoreForPath(configPath).StoragePath()
+		if err := a.watcher.Add(storagePath); err != nil {
+			a.log("Failed to watch config storage: " + err.Error())
 		} else {
-			a.log("Watching config file: " + configPath)
+			a.log("Watching config storage: " + storagePath)
 		}
 	}
 }
@@ -5493,7 +5509,28 @@ func (a *App) getConfigPath() (string, error) {
 	return filepath.Join(home, ".maclaw", "config.json"), nil
 }
 
+func (a *App) configStoreForPath(path string) *config.SQLiteStore {
+	a.configStoreMu.Lock()
+	defer a.configStoreMu.Unlock()
+	if a.configStore == nil || a.configStoreJSONPath != path {
+		a.configStore = config.NewSQLiteStore(filepath.Dir(path))
+		a.configStoreJSONPath = path
+	}
+	return a.configStore
+}
+
+func (a *App) getConfigDBPath() (string, error) {
+	path, err := a.getConfigPath()
+	if err != nil {
+		return "", err
+	}
+	return config.ConfigDBPathForJSON(path), nil
+}
+
 func (a *App) migrateLegacyConfigLocked(path string) error {
+	if _, err := os.Stat(config.ConfigDBPathForJSON(path)); err == nil {
+		return nil
+	}
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -5564,7 +5601,10 @@ func (a *App) LoadConfig() (corelib.AppConfig, error) {
 // The returned value owns its slices/maps (cloneAppConfigForMutation).
 func (a *App) getConfigForMutationLocked() (corelib.AppConfig, error) {
 	if a.configCacheValid {
-		return cloneAppConfigForMutation(a.configCache), nil
+		if a.configCacheMatchesDisk() {
+			return cloneAppConfigForMutation(a.configCache), nil
+		}
+		a.invalidateConfigCacheLocked()
 	}
 	cfg, err := a.loadConfigLocked()
 	if err != nil {
@@ -5638,7 +5678,7 @@ func (a *App) drainPendingDataDirReset() {
 
 // drainPendingConfigDiskWrite persists a config snapshot that was prepared
 // under configMu (bootstrap / migration / pet sanitize) without holding the
-// lock across AtomicWrite. Never call under configMu.
+// lock across storage writes. Never call under configMu.
 func (a *App) drainPendingConfigDiskWrite(cfg corelib.AppConfig) {
 	if a == nil || !a.pendingConfigDiskWrite.CompareAndSwap(true, false) {
 		return
@@ -5683,6 +5723,7 @@ func (a *App) sshHostEntries() []corelib.SSHHostEntry {
 func (a *App) invalidateConfigCacheLocked() {
 	a.configSnap.Store(nil)
 	a.nlSkillsSnap.Store(nil)
+	a.configFileState.Store(nil)
 	a.configCache = corelib.AppConfig{}
 	a.configCacheValid = false
 }
@@ -5701,6 +5742,8 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		log.Printf("[config] LoadConfig:migrate_failed after=%s err=%v", time.Since(start), err)
 		return corelib.AppConfig{}, err
 	}
+	configStore := a.configStoreForPath(path)
+	readPath := configStore.StoragePath()
 	// Helper for default models
 	defaultClaudeModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
@@ -5792,7 +5835,8 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	configFileInfo, statErr := os.Stat(readPath)
+	if os.IsNotExist(statErr) {
 		// Check for old config file for migration
 		home, _ := os.UserHomeDir()
 		oldPath := filepath.Join(home, ".claude_model_config.json")
@@ -5846,6 +5890,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 					// Publish in-memory only; disk write is deferred via
 					// pendingConfigDiskWrite → runConfigPostUnlock (no configMu held).
 					a.publishConfigLocked(config)
+					a.configFileState.Store(nil)
 					a.pendingConfigDiskWrite.Store(true)
 					// Optional: os.Remove(oldPath)
 					return config, nil
@@ -5892,20 +5937,16 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 		// K18: first-run figurative pet (must not come from UnmarshalJSON seed).
 		corelib.ApplyNewInstallPetDefaults(&defaultConfig)
-		// Defer AtomicWrite until after configMu is released.
+		// Defer the storage write until after configMu is released.
 		a.publishConfigLocked(defaultConfig)
+		a.configFileState.Store(nil)
 		a.pendingConfigDiskWrite.Store(true)
 		return defaultConfig, nil
 	}
-	var config corelib.AppConfig
-	data, err := os.ReadFile(path)
+	data, _ := os.ReadFile(path)
+	config, err := configStore.LoadConfig()
 	if err != nil {
-		return config, err
-	}
-
-	err = json.Unmarshal(data, &config)
-	if err != nil {
-		return config, err
+		return corelib.AppConfig{}, err
 	}
 	if corelib.ApplyOfficeReadFullScopeMigration(&config) {
 		// Persist this versioned promotion after the config lock is released.
@@ -6334,7 +6375,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		log.Printf("[config] LoadConfig:llm_cache_migrate_failed err=%v", err)
 	}
 	// Defer K18 pet migration disk write until after configMu is released so a
-	// cold LoadConfig does not hold the exclusive lock across AtomicWrite.
+	// cold LoadConfig does not hold the exclusive lock across storage writes.
 	if petConfigMutated {
 		a.pendingConfigDiskWrite.Store(true)
 	}
@@ -6342,6 +6383,11 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
 	// Publish immutable snap + data-dir pointer; heavy reset deferred.
 	a.publishConfigLocked(config)
+	recordedPath := configStore.StoragePath()
+	if recordedPath != readPath {
+		configFileInfo = nil
+	}
+	a.recordConfigFileStateAfterRead(recordedPath, configFileInfo)
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
 	return config, nil
@@ -6357,8 +6403,12 @@ func (a *App) applyDataDirFromConfig(config corelib.AppConfig) {
 func (a *App) resetPathBoundStateForDataDirChange() {
 	invalidateLatexVerifiedCache()
 	a.answerCacheMu.Lock()
+	answerCache := a.answerCache
 	a.answerCache = nil
 	a.answerCacheMu.Unlock()
+	if answerCache != nil {
+		answerCache.close()
+	}
 	a.conversationMemoryMu.Lock()
 	conversationMemory := a.aiConversationMemory
 	a.aiConversationMemory = nil
@@ -6406,7 +6456,10 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 	a.evidenceCollector = nil
 	a.evidenceCollectorMu = sync.Once{}
 	a.templateManager = nil
-	a.projectTabSessionPersist = nil
+	if a.projectTabSessionPersist != nil {
+		_ = a.projectTabSessionPersist.Close()
+		a.projectTabSessionPersist = nil
+	}
 	if a.memoryMaintenance != nil {
 		a.memoryMaintenance.Stop()
 		a.memoryMaintenance = nil
@@ -6774,6 +6827,9 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		log.Printf("[config] SaveConfig:migrate_failed after=%s err=%v", time.Since(start), err)
 		return err
 	}
+	if a.configCacheValid && !a.configCacheMatchesDisk() {
+		a.invalidateConfigCacheLocked()
+	}
 	// Sanitize: Ensure Custom models have a name (prevent empty tab button)
 	sanitizeCustomNames := func(models []corelib.ModelConfig) {
 		for i := range models {
@@ -6804,9 +6860,12 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	if a.configCacheValid {
 		oldConfig = a.configCache
 		oldConfigLoaded = true
-	} else if data, err := os.ReadFile(path); err == nil {
-		if json.Unmarshal(data, &oldConfig) == nil {
-			oldConfigLoaded = true
+	} else if configStore := a.configStoreForPath(path); configStore != nil {
+		if _, statErr := os.Stat(configStore.StoragePath()); statErr == nil {
+			if loaded, loadErr := configStore.LoadConfig(); loadErr == nil {
+				oldConfig = loaded
+				oldConfigLoaded = true
+			}
 		}
 	}
 	config.LLMPromptCache = config.LLMPromptCache.WithDefaults()
@@ -9779,11 +9838,11 @@ func (a *App) invalidateOutcomesFromExternalConfigChange(newCfg corelib.AppConfi
 	}
 }
 
-// PatchConfig performs an atomic read-modify-write on the config file.
+// PatchConfig performs an atomic read-modify-write on the config store.
 // The patchFn receives the current config and may modify any fields.
 // Mutation and cache publish run under configMu; disk I/O is serialized by
 // configDiskMu outside configMu so concurrent LoadConfig readers are not
-// blocked on AtomicWrite. This eliminates the TOCTOU race of LoadConfig-
+// blocked on a storage transaction. This eliminates the TOCTOU race of LoadConfig-
 // modify-SaveConfig while keeping the UI path responsive.
 //
 // Use PatchConfig when updating a small number of fields (credentials, flags)
@@ -9871,17 +9930,19 @@ func (a *App) patchConfig(patchFn func(cfg *corelib.AppConfig), allowHubManagedS
 	})
 }
 
-// saveToPath atomically writes config.json. All config disk writers must use
-// this helper so configDiskMu serializes AtomicWrite (including rare paths
-// inside loadConfigLocked such as first-run defaults / pet migration).
-// Do not call while holding configMu if the write can be deferred — holding
-// both locks is only safe when configMu is already held for a cold load.
+// saveToPath persists through the store selected for path. All config disk
+// writers use this helper so configDiskMu serializes their transactions.
+// Do not call while holding configMu if the write can be deferred.
 func (a *App) saveToPath(path string, config corelib.AppConfig) error {
 	a.configDiskMu.Lock()
 	defer a.configDiskMu.Unlock()
-	err := configfile.AtomicWriteJSON(path, config)
+	a.configWritesInFlight.Add(1)
+	defer a.configWritesInFlight.Add(-1)
+	store := a.configStoreForPath(path)
+	err := store.SaveConfig(config)
 	if err == nil {
 		a.configLastInternalWrite.Store(time.Now().UnixMilli())
+		a.recordConfigFileStateAfterWrite(store.StoragePath())
 	}
 	return err
 }

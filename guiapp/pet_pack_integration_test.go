@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,14 +145,7 @@ func TestLoadConfigNormalizesRetiredPetQualityStyle(t *testing.T) {
 		t.Fatal("expected migrated flag")
 	}
 	// Disk must persist the normalized default.
-	raw, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var disk corelib.AppConfig
-	if err := json.Unmarshal(raw, &disk); err != nil {
-		t.Fatal(err)
-	}
+	disk := readPersistedConfigForTest(t, home)
 	if disk.PetVariant != petpack.VariantDefault {
 		t.Fatalf("disk pet_variant = %q, want default", disk.PetVariant)
 	}

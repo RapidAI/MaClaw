@@ -291,6 +291,25 @@ func (s *Service) revokeSkillDynamicContract(p Principal, stableID string) error
 	return nil
 }
 
+// PrepareDynamicSemanticRoutingResources opens the durable semantic stores
+// without publishing routing or starting their projection worker.
+func (s *Service) PrepareDynamicSemanticRoutingResources() error {
+	if s == nil {
+		return fmt.Errorf("service is unavailable")
+	}
+	s.dynamicSemanticMu.Lock()
+	defer s.dynamicSemanticMu.Unlock()
+	if s.dynamicSemantic != nil {
+		return nil
+	}
+	resources, err := OpenDynamicSemanticRoutingResources(s.dataRoot)
+	if err != nil {
+		return err
+	}
+	s.dynamicSemantic = resources
+	return nil
+}
+
 // ConfigureDynamicSemanticRouting attaches the durable Core Agent semantic
 // execution boundary for one or more governed dynamic capability families.
 // The caller remains responsible for supplying the reviewed capability
@@ -320,15 +339,11 @@ func (s *Service) ConfigureDynamicSemanticRouting(registry *coretool.CapabilityR
 	if !ok {
 		return fmt.Errorf("executor does not support dynamic semantic routing")
 	}
+	if err := s.PrepareDynamicSemanticRoutingResources(); err != nil {
+		return err
+	}
 	s.dynamicSemanticMu.Lock()
 	defer s.dynamicSemanticMu.Unlock()
-	if s.dynamicSemantic == nil {
-		resources, err := OpenDynamicSemanticRoutingResources(s.dataRoot)
-		if err != nil {
-			return err
-		}
-		s.dynamicSemantic = resources
-	}
 	if len(coordinators) == 0 {
 		// The semantic coordinator owns operation, receipt, host-call and plan
 		// state together. A provider's synchronous text response therefore

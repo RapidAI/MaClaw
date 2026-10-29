@@ -1,7 +1,7 @@
 package agent
 
-// Conversation memory: sharded in-memory session store with disk persistence
-// and automatic TTL-based eviction.
+// Conversation memory: sharded in-memory session metadata with SQLite-backed
+// entries, legacy JSON import/fallback, and automatic TTL-based eviction.
 //
 // Migrated from gui/im_conversation_memory.go as part of the agent-unification
 // plan (Phase 1, Step 2). This is the single source of truth — gui/ will
@@ -301,6 +301,9 @@ type ConversationArchiver interface {
 
 type conversationSession struct {
 	entries              []ConversationEntry
+	persistedEntries     []ConversationEntry
+	entryOrder           map[string]int
+	entriesLoaded        bool
 	activeBranchTipID    string
 	lastAccess           time.Time
 	unfinishedSlot       *UnfinishedTaskSlot
@@ -412,6 +415,8 @@ type ConversationMemory struct {
 	// checkpoint as durable.
 	checkpointMu       sync.Mutex
 	storePath          string
+	sqlite             *conversationSQLiteStore
+	legacyJSON         bool
 	detachedMu         sync.Mutex
 	detached           map[string]string // userID -> separate transcript file
 	detachedRev        map[string]uint64 // bumps on each detached mutation
@@ -421,6 +426,8 @@ type ConversationMemory struct {
 	persistCh          chan struct{}
 	persistStateMu     sync.Mutex
 	dirty              bool
+	dirtySessions      map[string]struct{}
+	deletedSessions    map[string]struct{}
 	// loadOnce is set only for a background open. nil means the store was loaded
 	// before the constructor returned. loadFinished flips once that open has
 	// installed every session, so a flush cannot snapshot the empty store.
@@ -558,6 +565,12 @@ func (cm *ConversationMemory) persistentLoadFinished() bool {
 
 func (cm *ConversationMemory) shard(userID string) *memoryShard {
 	cm.ensureLoaded()
+	cm.ensureSessionEntriesLoaded(userID)
+	return cm.shardNoWait(userID)
+}
+
+func (cm *ConversationMemory) metadataShard(userID string) *memoryShard {
+	cm.ensureLoaded()
 	return cm.shardNoWait(userID)
 }
 
@@ -591,6 +604,9 @@ func (cm *ConversationMemory) evictionLoop() {
 // unfinished slot must survive until the user decides.
 func (cm *ConversationMemory) EvictExpired() {
 	cm.ensureLoaded()
+	if cm.Archiver != nil {
+		cm.ensureAllSessionEntriesLoaded()
+	}
 	now := time.Now()
 	type expiredEntry struct {
 		userID  string
@@ -624,6 +640,9 @@ func (cm *ConversationMemory) EvictExpired() {
 				}
 				delete(sh.sessions, uid)
 				cm.detachedMu.Unlock()
+				if cm.sqliteActive() {
+					cm.markSessionDeleted(uid)
+				}
 				changed = true
 			}
 			sh.mu.Unlock()
@@ -714,6 +733,10 @@ func (cm *ConversationMemory) markDirtyAndScheduleFlush() {
 // markSessionDirty records a mutation for one owner. A detached transcript
 // queues a side-file write and leaves the shared store alone.
 func (cm *ConversationMemory) markSessionDirty(userID string) {
+	if cm.sqliteActive() {
+		cm.markSQLiteSessionDirty(userID)
+		return
+	}
 	if _, ok := cm.detachedPath(userID); ok {
 		cm.noteDetachedPending(userID)
 		return
@@ -829,6 +852,13 @@ func (cm *ConversationMemory) flushDirty() error {
 }
 
 func (cm *ConversationMemory) flushDirtyLocked() error {
+	if cm.sqliteActive() {
+		err := cm.flushSQLiteDirty()
+		if errors.Is(err, errPersistentLoadPending) {
+			return nil
+		}
+		return err
+	}
 	cm.persistStateMu.Lock()
 	dirty := cm.dirty
 	if dirty {
@@ -870,9 +900,9 @@ func (cm *ConversationMemory) FlushNow() error {
 	return cm.flushDirty()
 }
 
-// FlushUser durably writes one owner's session. A detached transcript is a
-// small side file, so a tool checkpoint does not rewrite the shared store.
-// An owner that still lives in the shared store falls back to FlushNow.
+// FlushUser durably writes one owner's session without rewriting unrelated
+// sessions. Legacy detached owners use their side file; SQLite owners use a
+// single-session transaction.
 func (cm *ConversationMemory) FlushUser(userID string) error {
 	if cm == nil {
 		return nil
@@ -881,6 +911,10 @@ func (cm *ConversationMemory) FlushUser(userID string) error {
 	userID = strings.TrimSpace(userID)
 	cm.flushMu.Lock()
 	defer cm.flushMu.Unlock()
+	if cm.sqliteActive() {
+		cm.markSQLiteSessionDirty(userID)
+		return cm.flushSQLiteDirtyForUser(userID)
+	}
 	if path, ok := cm.detachedPath(userID); ok && strings.TrimSpace(path) != "" {
 		return cm.writeDetachedUser(userID)
 	}
@@ -888,7 +922,8 @@ func (cm *ConversationMemory) FlushUser(userID string) error {
 	return cm.flushDirtyLocked()
 }
 
-// StorePath returns the shared transcript file, or empty for a memory-only store.
+// StorePath returns the legacy path used to derive the SQLite database path,
+// or empty for a memory-only store.
 func (cm *ConversationMemory) StorePath() string {
 	if cm == nil {
 		return ""
@@ -902,6 +937,9 @@ func (cm *ConversationMemory) StorePath() string {
 // empty shell on disk before the first message is appended.
 func (cm *ConversationMemory) EnsureStoreFile() error {
 	if cm == nil || strings.TrimSpace(cm.storePath) == "" {
+		return nil
+	}
+	if cm.sqliteActive() {
 		return nil
 	}
 	if _, err := os.Stat(cm.storePath); err == nil {
@@ -921,6 +959,11 @@ func (cm *ConversationMemory) Stop() {
 		cm.evictionWG.Wait()
 		close(cm.persistStopCh)
 		cm.persistWG.Wait()
+		if cm.sqlite != nil {
+			if err := cm.sqlite.db.Close(); err != nil {
+				log.Printf("[conversation_memory] SQLite close failed: %v", err)
+			}
+		}
 	})
 }
 
@@ -932,7 +975,9 @@ func (cm *ConversationMemory) Load(userID string) []ConversationEntry {
 // LoadAll returns every persisted conversation entry, including inactive
 // branches. Most prompt-building code should use Load/LoadActiveBranch instead.
 func (cm *ConversationMemory) LoadAll(userID string) []ConversationEntry {
-	sh := cm.shard(userID)
+	cm.ensureLoaded()
+	cm.ensureSessionEntriesLoaded(userID)
+	sh := cm.shardNoWait(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 	s := sh.sessions[userID]
@@ -946,19 +991,32 @@ func (cm *ConversationMemory) LoadAll(userID string) []ConversationEntry {
 
 // LoadActiveBranch returns the active path through the user's conversation tree.
 func (cm *ConversationMemory) LoadActiveBranch(userID string) []ConversationEntry {
-	sh := cm.shard(userID)
+	sh := cm.metadataShard(userID)
 	sh.mu.RLock()
-	defer sh.mu.RUnlock()
 	s := sh.sessions[userID]
 	if s == nil {
+		sh.mu.RUnlock()
 		return nil
 	}
-	return NewConversationTreeWithTip(s.entries, s.activeBranchTipID).ActiveBranch()
+	if cm.sqliteActive() && !s.entriesLoaded {
+		tipID := s.activeBranchTipID
+		sh.mu.RUnlock()
+		entries, err := cm.sqlite.loadActiveBranch(userID, tipID)
+		if err != nil {
+			cm.loadBroken.Store(true)
+			log.Printf("[ConversationMemory] SQLite active-branch load failed user=%q err=%v", userID, err)
+			return nil
+		}
+		return entries
+	}
+	entries := NewConversationTreeWithTip(s.entries, s.activeBranchTipID).ActiveBranch()
+	sh.mu.RUnlock()
+	return entries
 }
 
 // ActiveBranchTipID returns the currently selected branch tip ID.
 func (cm *ConversationMemory) ActiveBranchTipID(userID string) string {
-	sh := cm.shard(userID)
+	sh := cm.metadataShard(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 	if s := sh.sessions[userID]; s != nil {
@@ -974,11 +1032,12 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 	cm.checkpointLockedMutation(func() {
 		entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
 		now := time.Now()
-		sh := cm.shard(userID)
+		cm.ensureSessionEntriesLoaded(userID)
+		sh := cm.shardNoWait(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
-			s = &conversationSession{}
+			s = &conversationSession{entriesLoaded: true}
 			sh.sessions[userID] = s
 		}
 		if s != nil {
@@ -986,6 +1045,16 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 		}
 		cm.saveEntriesLocked(s, entries, now)
 		sh.mu.Unlock()
+		if cm.sqliteActive() {
+			if _, detached := cm.detachedPath(userID); detached {
+				if err := cm.writeDetachedUser(userID); err != nil {
+					log.Printf("[conversation_memory] detached save failed user=%q err=%v", userID, err)
+				}
+			} else {
+				cm.markSQLiteSessionDirty(userID)
+			}
+			return
+		}
 		if _, detached := cm.detachedPath(userID); detached {
 			if err := cm.writeDetachedUser(userID); err != nil {
 				log.Printf("[conversation_memory] detached save failed user=%q err=%v", userID, err)
@@ -1006,7 +1075,8 @@ func (cm *ConversationMemory) ReplaceCompactionPlaceholder(userID, compactionID,
 	}
 	updated := false
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		cm.ensureSessionEntriesLoaded(userID)
+		sh := cm.shardNoWait(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
@@ -1134,11 +1204,12 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 			return
 		}
 		now := time.Now()
-		sh := cm.shard(userID)
+		cm.ensureSessionEntriesLoaded(userID)
+		sh := cm.shardNoWait(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
-			s = &conversationSession{}
+			s = &conversationSession{entriesLoaded: true}
 			sh.sessions[userID] = s
 		}
 		tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
@@ -1158,18 +1229,26 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 func (cm *ConversationMemory) SetActiveBranchTip(userID, tipID string) bool {
 	changed := false
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		defer sh.mu.Unlock()
 		s := sh.sessions[userID]
 		if s == nil {
 			return
 		}
-		tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
-		if !tree.BranchAt(tipID) {
-			return
+		if cm.sqliteActive() && !s.entriesLoaded {
+			_, found, err := cm.sqlite.loadEntry(userID, tipID)
+			if err != nil || !found {
+				return
+			}
+			s.activeBranchTipID = tipID
+		} else {
+			tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
+			if !tree.BranchAt(tipID) {
+				return
+			}
+			s.activeBranchTipID = tree.TipID()
 		}
-		s.activeBranchTipID = tree.TipID()
 		s.lastAccess = time.Now()
 		cm.markSessionDirty(userID)
 		changed = true
@@ -1302,7 +1381,7 @@ func containsString(values []string, target string) bool {
 // Clear removes all conversation data for a user.
 func (cm *ConversationMemory) Clear(userID string) {
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		delete(sh.sessions, userID)
 		sh.mu.Unlock()
@@ -1310,13 +1389,17 @@ func (cm *ConversationMemory) Clear(userID string) {
 		// transcript on the next start, because the shared snapshot no longer
 		// has this owner to win the timestamp check.
 		cm.forgetDetachedSession(userID)
+		if cm.sqliteActive() {
+			cm.markSessionDeleted(userID)
+			return
+		}
 		cm.markDirtyAndScheduleFlush()
 	})
 }
 
 // LastAccessTime returns the last access time for a user's session.
 func (cm *ConversationMemory) LastAccessTime(userID string) time.Time {
-	sh := cm.shard(userID)
+	sh := cm.metadataShard(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 	if s, ok := sh.sessions[userID]; ok {
@@ -1328,7 +1411,7 @@ func (cm *ConversationMemory) LastAccessTime(userID string) time.Time {
 // --- Unfinished task slot methods ---
 
 func (cm *ConversationMemory) GetUnfinishedSlot(userID string) *UnfinishedTaskSlot {
-	sh := cm.shard(userID)
+	sh := cm.metadataShard(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 	s := sh.sessions[userID]
@@ -1416,7 +1499,7 @@ func promoteNextRecoverySlotLocked(s *conversationSession) {
 }
 
 func (cm *ConversationMemory) ActiveUnfinishedSlot(userID string) *UnfinishedTaskSlot {
-	sh := cm.shard(userID)
+	sh := cm.metadataShard(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 	s := sh.sessions[userID]
@@ -1442,11 +1525,11 @@ func (cm *ConversationMemory) UpsertUnfinishedSlot(userID string, slot *Unfinish
 	}
 	clone.UpdatedAt = time.Now()
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
-			s = &conversationSession{}
+			s = &conversationSession{entriesLoaded: true}
 			sh.sessions[userID] = s
 		}
 		queueUnfinishedSlotLocked(s, clone)
@@ -1475,11 +1558,11 @@ func (cm *ConversationMemory) ReplaceInFlightWithUnfinishedSlot(userID string, s
 	clone.UpdatedAt = now
 	replaced := false
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
-			s = &conversationSession{}
+			s = &conversationSession{entriesLoaded: true}
 			sh.sessions[userID] = s
 		}
 		queueUnfinishedSlotLocked(s, clone)
@@ -1500,7 +1583,7 @@ func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
 	}
 	bound := false
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil || s.unfinishedSlot == nil {
@@ -1534,7 +1617,7 @@ func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
 
 func (cm *ConversationMemory) ClearActiveSlot(userID string) {
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		if s := sh.sessions[userID]; s != nil {
 			s.activeSlotID = ""
@@ -1547,7 +1630,7 @@ func (cm *ConversationMemory) ClearActiveSlot(userID string) {
 
 func (cm *ConversationMemory) DismissUnfinishedSlot(userID, slotID string) {
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		if s := sh.sessions[userID]; s != nil {
 			slotID = strings.TrimSpace(slotID)
@@ -1574,7 +1657,7 @@ func (cm *ConversationMemory) DismissUnfinishedSlot(userID, slotID string) {
 
 func (cm *ConversationMemory) CompleteUnfinishedSlot(userID, slotID string) {
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
 			if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
@@ -1589,7 +1672,7 @@ func (cm *ConversationMemory) CompleteUnfinishedSlot(userID, slotID string) {
 
 func (cm *ConversationMemory) ClearConversationButKeepSlot(userID string) {
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
@@ -1607,7 +1690,7 @@ func (cm *ConversationMemory) ClearConversationButKeepSlot(userID string) {
 
 func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
@@ -1658,11 +1741,11 @@ func (cm *ConversationMemory) SetInFlightTask(userID, task string, projectPath .
 
 func (cm *ConversationMemory) SetInFlightTaskForRun(userID, task, projectPath, runID string) {
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
-			s = &conversationSession{}
+			s = &conversationSession{entriesLoaded: true}
 			sh.sessions[userID] = s
 		}
 		now := time.Now()
@@ -1675,11 +1758,7 @@ func (cm *ConversationMemory) SetInFlightTaskForRun(userID, task, projectPath, r
 		s.inFlightSideEffect = ""
 		s.lastAccess = now
 		sh.mu.Unlock()
-		// A detached project transcript is flushed by FlushUser. Marking the
-		// shared store dirty here would rewrite every other session.
-		if _, detached := cm.detachedPath(userID); !detached {
-			cm.markDirtyAndScheduleFlush()
-		}
+		cm.markSessionDirty(userID)
 	})
 }
 
@@ -1699,12 +1778,13 @@ func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, ent
 		return fmt.Errorf("%w: empty run ID", ErrInFlightCheckpointRunConflict)
 	}
 	entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
-	sh := cm.shard(userID)
+	cm.ensureSessionEntriesLoaded(userID)
+	sh := cm.shardNoWait(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
 	createdSession := false
 	if s == nil {
-		s = &conversationSession{}
+		s = &conversationSession{entriesLoaded: true}
 		sh.sessions[userID] = s
 		createdSession = true
 	}
@@ -1780,7 +1860,7 @@ func (cm *ConversationMemory) RetireUserCancelCheckpoint(userID, runID string) e
 		return nil
 	}
 	scope := inFlightRunScopeKey(runID)
-	sh := cm.shard(userID)
+	sh := cm.metadataShard(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
 	if s == nil {
@@ -1836,7 +1916,7 @@ func (cm *ConversationMemory) CompleteInFlightCheckpointForRun(userID, runID str
 	cm.checkpointMu.Lock()
 	defer cm.checkpointMu.Unlock()
 	runID = strings.TrimSpace(runID)
-	sh := cm.shard(userID)
+	sh := cm.metadataShard(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
 	if s == nil || runID == "" {
@@ -1899,12 +1979,13 @@ func (cm *ConversationMemory) SaveAndCompleteInFlightCheckpointForRun(userID, ru
 	cm.checkpointMu.Lock()
 	defer cm.checkpointMu.Unlock()
 
-	sh := cm.shard(userID)
+	cm.ensureSessionEntriesLoaded(userID)
+	sh := cm.shardNoWait(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
 	createdSession := false
 	if s == nil {
-		s = &conversationSession{}
+		s = &conversationSession{entriesLoaded: true}
 		sh.sessions[userID] = s
 		createdSession = true
 	}
@@ -1970,7 +2051,7 @@ func cloneConversationSession(s *conversationSession) *conversationSession {
 // restoring the whole session here would erase a newer user turn, slot action,
 // or lease update that happened during that write.
 func (cm *ConversationMemory) restoreCheckpointMutation(userID string, before, candidate *conversationSession, createdSession bool) {
-	sh := cm.shard(userID)
+	sh := cm.metadataShard(userID)
 	sh.mu.Lock()
 	current := sh.sessions[userID]
 	if current == nil || candidate == nil {
@@ -2030,6 +2111,7 @@ func (cm *ConversationMemory) RewriteAllSessions(rewrite func(userID string, ent
 		return
 	}
 	cm.checkpointLockedMutation(func() {
+		cm.ensureAllSessionEntriesLoaded()
 		now := time.Now()
 		changed := false
 		for i := range cm.shards {
@@ -2046,7 +2128,7 @@ func (cm *ConversationMemory) RewriteAllSessions(rewrite func(userID string, ent
 				s.entries = next
 				s.lastAccess = now
 				changed = true
-				cm.noteDetachedPending(userID)
+				cm.markSessionDirty(userID)
 			}
 			sh.mu.Unlock()
 		}
@@ -2097,7 +2179,7 @@ func (cm *ConversationMemory) RefreshInFlightTaskForRun(userID, runID string) bo
 	found := false
 	reclaimed := false
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil {
@@ -2142,7 +2224,7 @@ func (cm *ConversationMemory) RefreshInFlightTaskForRun(userID, runID string) bo
 					log.Printf("[conversation_memory] detached lease reclaim flush failed user=%q err=%v", userID, err)
 				}
 			} else {
-				cm.markDirtyAndScheduleFlush()
+				cm.markSessionDirty(userID)
 			}
 		}
 	})
@@ -2154,7 +2236,7 @@ func (cm *ConversationMemory) RefreshInFlightTaskForRun(userID, runID string) bo
 func (cm *ConversationMemory) RefreshInFlightTask(userID string) bool {
 	found := false
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
@@ -2180,7 +2262,7 @@ func (cm *ConversationMemory) RefreshInFlightTask(userID string) bool {
 func (cm *ConversationMemory) ClearInFlightTask(userID string) {
 	changed := false
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		if s := sh.sessions[userID]; s != nil {
 			if s.inFlightTask != "" || s.inFlightProjectPath != "" || !s.inFlightSetAt.IsZero() || s.inFlightRunID != "" {
@@ -2196,9 +2278,7 @@ func (cm *ConversationMemory) ClearInFlightTask(userID string) {
 		}
 		sh.mu.Unlock()
 		if changed {
-			if _, detached := cm.detachedPath(userID); !detached {
-				cm.markDirtyAndScheduleFlush()
-			}
+			cm.markSessionDirty(userID)
 		}
 	})
 }
@@ -2210,7 +2290,7 @@ func (cm *ConversationMemory) ClearInFlightTaskForRun(userID, runID string) {
 	}
 	changed := false
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		if s := sh.sessions[userID]; s != nil {
 			if s.inFlightRunID == runID {
@@ -2226,9 +2306,7 @@ func (cm *ConversationMemory) ClearInFlightTaskForRun(userID, runID string) {
 		}
 		sh.mu.Unlock()
 		if changed {
-			if _, detached := cm.detachedPath(userID); !detached {
-				cm.markDirtyAndScheduleFlush()
-			}
+			cm.markSessionDirty(userID)
 		}
 	})
 }
@@ -2264,7 +2342,7 @@ func (cm *ConversationMemory) expireStaleInFlightTasks(now time.Time, lease time
 					continue
 				}
 				cm.convertExpiredInFlightLocked(userID, s, now)
-				cm.noteDetachedPending(userID)
+				cm.markSessionDirty(userID)
 				expired++
 			}
 			sh.mu.Unlock()
@@ -2401,7 +2479,7 @@ func (cm *ConversationMemory) promoteRecoverableCheckpoints(now time.Time) int {
 				clearInFlightFields(s)
 				s.lastAccess = now
 				changed = true
-				cm.noteDetachedPending(userID)
+				cm.markSessionDirty(userID)
 			}
 			sh.mu.Unlock()
 		}
@@ -2461,7 +2539,7 @@ func (cm *ConversationMemory) ConsumeInFlightRecovery(userID string) InFlightRec
 		return recovered
 	}
 	cm.checkpointLockedMutation(func() {
-		sh := cm.shard(userID)
+		sh := cm.metadataShard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
 		if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
@@ -2610,10 +2688,9 @@ func (cm *ConversationMemory) writePendingSideFiles(detached map[string]string, 
 	return nil
 }
 
-// UseSeparateSessionFile keeps one owner's transcript out of the main store.
-// Later flushes write that owner to path and omit them from storePath.
-// A repeated bind to the same path does not reload the side file: reloading
-// would replace newer in-memory turns with the previous checkpoint.
+// UseSeparateSessionFile marks one owner as detached. SQLite keeps the detached
+// path as isolation metadata in the same database; legacy JSON mode writes the
+// owner to that side file. A repeated bind never reloads over live turns.
 func (cm *ConversationMemory) UseSeparateSessionFile(userID, path string) error {
 	if cm == nil {
 		return fmt.Errorf("nil conversation memory")
@@ -2633,6 +2710,16 @@ func (cm *ConversationMemory) BindSeparateSessionFile(userID, path string) error
 	path = strings.TrimSpace(path)
 	if userID == "" || path == "" {
 		return fmt.Errorf("missing separate session file")
+	}
+	if cm.sqliteActive() {
+		if current, ok := cm.detachedPath(userID); ok && current == path {
+			return nil
+		}
+		if err := cm.bindSQLiteDetachedSession(userID, path); err != nil {
+			return err
+		}
+		log.Printf("[conversation_memory] detached session user=%q path=%q storage=sqlite", userID, path)
+		return nil
 	}
 	already, err := cm.bindDetachedSession(userID, path)
 	if err != nil {
@@ -2717,6 +2804,10 @@ func (cm *ConversationMemory) forgetDetachedSession(userID string) {
 	delete(cm.detached, userID)
 	delete(cm.detachedPendingGen, userID)
 	delete(cm.detachedRev, userID)
+	if cm.sqliteActive() {
+		cm.detachedMu.Unlock()
+		return
+	}
 	index := make(map[string]string, len(cm.detached))
 	for id, sessionPath := range cm.detached {
 		index[id] = sessionPath
@@ -2831,7 +2922,7 @@ func (cm *ConversationMemory) overlayDetachedSessions() error {
 			// Queue a side rewrite only when the shared copy is strictly newer.
 			// An equal timestamp is not enough evidence to overwrite the side file.
 			if current != nil && !side.LastAccess.IsZero() && side.LastAccess.Before(current.lastAccess) {
-				cm.noteDetachedPending(userID)
+				cm.markSessionDirty(userID)
 			}
 			continue
 		}
@@ -2903,6 +2994,7 @@ func (cm *ConversationMemory) installPersistedSession(userID string, session per
 func conversationSessionFromPersisted(session persistedSession) *conversationSession {
 	return &conversationSession{
 		entries:              append([]ConversationEntry(nil), session.Entries...),
+		entriesLoaded:        true,
 		activeBranchTipID:    session.ActiveBranchTipID,
 		lastAccess:           session.LastAccess,
 		unfinishedSlot:       CloneUnfinishedTaskSlot(session.UnfinishedSlot),
@@ -2923,6 +3015,12 @@ func conversationSessionFromPersisted(session persistedSession) *conversationSes
 }
 
 func (cm *ConversationMemory) writeDetachedUser(userID string) error {
+	if cm.sqliteActive() {
+		cm.markSQLiteSessionDirty(userID)
+		cm.flushMu.Lock()
+		defer cm.flushMu.Unlock()
+		return cm.flushSQLiteDirtyForUser(userID)
+	}
 	path, ok := cm.detachedPath(userID)
 	if !ok {
 		return fmt.Errorf("session %q is not detached", userID)
@@ -3028,8 +3126,8 @@ func (cm *ConversationMemory) loadDetachedSession(userID, path string) error {
 	return nil
 }
 
-// LoadSeparateSessionEntries reads one owner's entries from a detached
-// transcript file. It does not start a conversation memory or an agent loop.
+// LoadSeparateSessionEntries reads one owner's entries using the legacy detached
+// path as a lookup key. It supports JSON and SQLite without starting an agent loop.
 func LoadSeparateSessionEntries(path, userID string) ([]ConversationEntry, error) {
 	userID = strings.TrimSpace(userID)
 	path = strings.TrimSpace(path)
@@ -3039,7 +3137,7 @@ func LoadSeparateSessionEntries(path, userID string) ([]ConversationEntry, error
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return loadSQLiteSeparateSessionEntries(path, userID)
 		}
 		return nil, err
 	}
@@ -3083,6 +3181,19 @@ func (cm *ConversationMemory) loadFromDisk() error {
 	if cm.storePath == "" {
 		return nil
 	}
+	if !cm.legacyJSON {
+		store, err := openConversationSQLite(cm.storePath)
+		if err == nil {
+			cm.sqlite = store
+			return cm.loadFromSQLite()
+		}
+		cm.legacyJSON = true
+		log.Printf("[ConversationMemory] SQLite open/migration failed; using legacy JSON path=%q err=%v", cm.storePath, err)
+	}
+	return cm.loadFromDiskLegacyJSON()
+}
+
+func (cm *ConversationMemory) loadFromDiskLegacyJSON() error {
 	data, err := os.ReadFile(cm.storePath)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -234,6 +234,29 @@ func TestCodingGoalToolDefinitionAndExecute(t *testing.T) {
 	}
 }
 
+func TestGoalPlanWithoutActionKeepsDetailOnlySteps(t *testing.T) {
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	userID := "desktop-user:D:/goal-infer"
+	created := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":    "create",
+		"objective": "做一个游戏",
+	})
+	if !strings.Contains(created, "目标已创建") {
+		t.Fatalf("create = %q", created)
+	}
+	planned := h.toolGoalForUser(userID, map[string]interface{}{
+		"understanding": "交付可玩的窗口游戏",
+		"steps": []interface{}{
+			map[string]interface{}{"detail": "确认仓库为空并锁定技术选型，只写决策文档。"},
+		},
+		"acceptance_criteria": []interface{}{"窗口能打开"},
+		"project_path":        `E:\bird-test2`,
+	})
+	if !strings.Contains(planned, "计划已保存") || !strings.Contains(planned, "确认仓库为空并锁定技术选型，只写决策文档") {
+		t.Fatalf("plan = %q", planned)
+	}
+}
+
 func TestGoalPlanStepAndComplete(t *testing.T) {
 	h := &IMMessageHandler{goalStore: goal.NewStore("")}
 	userID := "desktop-user:D:/goal-loop"

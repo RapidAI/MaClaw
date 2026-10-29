@@ -419,6 +419,103 @@ func (s *Store) UpdateStep(userID, goalID string, index int, status StepStatus, 
 	return nil
 }
 
+// AppendStepNote records a follow-up on a step that is already done. It does
+// not reopen the step or move the current step. saved is false when the note
+// was already recorded.
+func (s *Store) AppendStepNote(userID, goalID string, index int, note string) (bool, error) {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return false, fmt.Errorf("result cannot be empty")
+	}
+
+	s.mu.Lock()
+	g := s.goals[userID]
+	if g == nil || g.GoalID != goalID {
+		s.mu.Unlock()
+		return false, fmt.Errorf("goal not found")
+	}
+	if g.IsTerminal() {
+		s.mu.Unlock()
+		return false, fmt.Errorf("goal is terminal")
+	}
+	found := false
+	for i := range g.Steps {
+		if g.Steps[i].Index != index {
+			continue
+		}
+		if g.Steps[i].Status != StepDone {
+			s.mu.Unlock()
+			return false, fmt.Errorf("step is not done")
+		}
+		next := joinStepNote(g.Steps[i].Result, note)
+		if next == g.Steps[i].Result {
+			s.mu.Unlock()
+			return false, nil
+		}
+		g.Steps[i].Result = next
+		found = true
+		break
+	}
+	if !found {
+		s.mu.Unlock()
+		return false, fmt.Errorf("step not found")
+	}
+	touchGoalClock(g, time.Now())
+	data := s.marshalLocked(g)
+	s.mu.Unlock()
+
+	s.persistBytes(userID, data)
+	return true, nil
+}
+
+// joinStepNote keeps the new note. A long existing result is shortened from
+// the end so the follow-up is not the part that gets cut off.
+func joinStepNote(result, note string) string {
+	note = strings.TrimSpace(note)
+	const maxNote = 2000
+	const maxTotal = 12000
+	noteRunes := []rune(note)
+	if len(noteRunes) > maxNote {
+		note = string(noteRunes[:maxNote])
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return note
+	}
+	if stepNoteRecorded(result, note) {
+		return result
+	}
+	suffix := "\n补充: " + note
+	room := maxTotal - len([]rune(suffix))
+	resultRunes := []rune(result)
+	if room < 1 {
+		suffixRunes := []rune(suffix)
+		if len(suffixRunes) > maxTotal {
+			return string(suffixRunes[:maxTotal])
+		}
+		return string(suffixRunes)
+	}
+	if len(resultRunes) > room {
+		result = string(resultRunes[:room])
+	}
+	return strings.TrimSpace(result) + suffix
+}
+
+// stepNoteRecorded reports an exact earlier copy of note. A sentence that
+// merely appears inside the original result is still a new follow-up.
+func stepNoteRecorded(result, note string) bool {
+	if strings.TrimSpace(result) == note {
+		return true
+	}
+	parts := strings.Split(result, "\n补充: ")
+	for _, part := range parts[1:] {
+		if strings.TrimSpace(part) == note {
+			return true
+		}
+	}
+	return false
+}
+
 // Clear removes the goal for a user entirely. Returns true if a goal existed.
 func (s *Store) Clear(userID string) bool {
 	s.mu.Lock()

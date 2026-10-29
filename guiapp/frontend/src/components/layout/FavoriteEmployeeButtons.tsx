@@ -399,7 +399,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             width: '8px',
                             height: '8px',
                             borderRadius: '50%',
-                            background: slot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #56677c)',
+                            background: slot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #5b6b80)',
                             border: '1.5px solid var(--theme-page-bg)',
                         }} />
                     </div>
@@ -631,7 +631,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                 <span style={{
                                     position: 'absolute', bottom: 2, right: 2,
                                     width: 14, height: 14, borderRadius: '50%',
-                                    background: viewInfoSlot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #56677c)',
+                                    background: viewInfoSlot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #5b6b80)',
                                     border: '2.5px solid var(--theme-page-bg)',
                                 }} />
                             </div>
@@ -650,7 +650,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             {/* Status */}
                             <div className="feb-info-row">
                                 <span className="feb-info-label">{text.infoStatus}</span>
-                                <span style={{ ...infoValueStyle, color: viewInfoSlot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #56677c)', fontWeight: 600 }}>
+                                <span style={{ ...infoValueStyle, color: viewInfoSlot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #5b6b80)', fontWeight: 600 }}>
                                     <span className="feb-info-status">
                                         <span
                                             aria-hidden="true"
@@ -660,7 +660,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                                 borderRadius: '50%',
                                                 background: viewInfoSlot.online
                                                     ? 'var(--theme-success, #11813a)'
-                                                    : 'var(--theme-text-muted, #56677c)',
+                                                    : 'var(--theme-text-muted, #5b6b80)',
                                                 flexShrink: 0,
                                             }}
                                         />

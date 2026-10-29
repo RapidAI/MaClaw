@@ -1,6 +1,10 @@
 package codingruntime
 
 import (
+	"bytes"
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -80,17 +84,22 @@ func TestRemoteGitProbeCommandStopsWhenGitFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(cmd, ";") {
-		t.Fatalf("a semicolon still prints the end marker after git fails: %s", cmd)
+	// Cleanup inside the digest group uses ';'. The end marker must still be a
+	// later conjunct, or a failed status would be framed as a clean tree.
+	if strings.Contains(cmd, "; printf") {
+		t.Fatalf("end marker is not gated on the digest: %s", cmd)
 	}
 	steps := strings.Split(cmd, " && ")
 	if len(steps) != 4 {
 		t.Fatalf("steps=%q", steps)
 	}
-	if !strings.Contains(steps[0], "git -C '/home/testprj' rev-parse HEAD") || !strings.Contains(steps[2], "status --porcelain=v1 --untracked-files=all") {
+	if !strings.Contains(steps[0], "git -C '/home/testprj' rev-parse HEAD") || !strings.Contains(steps[2], "status --porcelain=v1 --untracked-files=all") || !strings.Contains(steps[2], "hash-object --stdin") || !strings.Contains(steps[2], "mktemp -d") || !strings.Contains(steps[2], "probe_parent=/var/tmp") || !strings.Contains(steps[2], "--no-optional-locks") {
 		t.Fatalf("command=%s", cmd)
 	}
-	if !strings.Contains(steps[1], `printf '\n%s\n' 'BEGIN_marker'`) || !strings.Contains(steps[3], `'END_marker'`) {
+	if strings.Contains(steps[2], "status --porcelain=v1 --untracked-files=all &&") {
+		t.Fatalf("porcelain is still shipped as the attestation: %s", cmd)
+	}
+	if !strings.Contains(steps[1], `printf '\n%s\n' 'BEGIN_marker'`) || !strings.HasSuffix(steps[3], `'END_marker'`) {
 		t.Fatalf("markers=%s", cmd)
 	}
 	quoted, err := RemoteGitProbeCommand("/tmp/o'repo", "BEGIN_marker", "END_marker")
@@ -103,6 +112,113 @@ func TestRemoteGitProbeCommandStopsWhenGitFails(t *testing.T) {
 	if _, err := RemoteGitProbeCommand("/tmp/repo", "BEGIN marker", "END_marker"); err == nil {
 		t.Fatal("marker with a space was accepted")
 	}
+}
+
+func TestRemoteGitProbeCommandIsValidPOSIX(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is required to syntax-check the remote probe")
+	}
+	cmd, err := RemoteGitProbeCommand("/tmp/maclaw-probe-syntax", "BEGIN_marker", "END_marker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("bash", "-n", "-c", cmd).CombinedOutput()
+	if err != nil {
+		t.Fatalf("bash -n: %v\n%s\n%s", err, out, cmd)
+	}
+}
+
+func TestRemoteWorkspaceStatusDigestRejectsPorcelain(t *testing.T) {
+	const emptyBlob = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+	got, err := RemoteWorkspaceStatusDigest("\n" + emptyBlob + "\n")
+	if err != nil || got != "gitblob:"+emptyBlob {
+		t.Fatalf("digest=%q err=%v", got, err)
+	}
+	for _, body := range []string{"", "\n", " M real.go\n", emptyBlob + "\nextra\n", "E69DE29BB2D1D6434B8B29AE775AD8C2E48C5391", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"} {
+		if _, err := RemoteWorkspaceStatusDigest(body); err == nil {
+			t.Fatalf("accepted non-attestation %q", body)
+		}
+	}
+}
+
+func TestRemoteGitProbeAttestationDoesNotShipStatus(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is required to run the remote probe")
+	}
+	setup, err := exec.Command("bash", "-c", `command -v git >/dev/null && command -v mktemp >/dev/null && dir=$(mktemp -d) && git -C "$dir" init -q && git -C "$dir" -c user.name=MaClaw -c user.email=maclaw@localhost -c commit.gpgsign=false commit --allow-empty -q -m init && printf 'secret\n' > "$dir/secret-untracked.txt" && printf '%s' "$dir"`).Output()
+	if err != nil {
+		t.Skipf("bash git fixture unavailable: %v", err)
+	}
+	dir := strings.TrimSpace(string(setup))
+	t.Cleanup(func() {
+		_ = exec.Command("bash", "-c", `rm -rf -- "$1"`, "bash", dir).Run()
+	})
+	const begin = "BEGIN_marker"
+	const end = "END_marker"
+	cmd, err := RemoteGitProbeCommand(dir, begin, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	probe := exec.Command("bash", "-c", cmd)
+	probe.Stdout = &stdout
+	probe.Stderr = &stderr
+	if err := probe.Run(); err != nil {
+		t.Fatalf("probe: %v\nstderr=%s\nstdout=%s", err, stderr.String(), stdout.String())
+	}
+	text := stdout.String()
+	if strings.Contains(text, "secret-untracked") {
+		t.Fatalf("probe shipped the status listing:\n%s", text)
+	}
+	bodyStart := strings.LastIndex(text, begin)
+	if bodyStart < 0 {
+		t.Fatalf("start marker missing: %s", text)
+	}
+	bodyEnd := strings.Index(text[bodyStart+len(begin):], end)
+	if bodyEnd < 0 {
+		t.Fatalf("end marker missing: %s", text)
+	}
+	digest, err := RemoteWorkspaceStatusDigest(text[bodyStart+len(begin) : bodyStart+len(begin)+bodyEnd])
+	if err != nil {
+		t.Fatalf("digest: %v\n%s", err, text)
+	}
+	status, err := exec.Command("bash", "-c", `git -C "$1" --no-optional-locks status --porcelain=v1 --untracked-files=all`, "bash", dir).Output()
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	// The login cwd for this test is this repository. The digest must still be
+	// the SHA-1 blob of the status bytes, not an id derived from this repo.
+	if want := "gitblob:" + gitBlobSHA1(status); digest != want {
+		t.Fatalf("digest=%s want %s\nstdout=%s", digest, want, text)
+	}
+	leaked, err := exec.Command("bash", "-c", `find "$1" -name 'maclaw-wsd*' -print`, "bash", dir).Output()
+	if err != nil {
+		t.Fatalf("find scratch: %v", err)
+	}
+	if strings.TrimSpace(string(leaked)) != "" {
+		t.Fatalf("scratch directory leaked into the work tree:\n%s", leaked)
+	}
+
+	missing, err := RemoteGitProbeCommand("/tmp/maclaw-missing-probe-dir-not-real", begin, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed bytes.Buffer
+	bad := exec.Command("bash", "-c", missing)
+	bad.Stdout = &failed
+	if err := bad.Run(); err == nil {
+		t.Fatal("missing repository was attested")
+	}
+	if strings.Contains(failed.String(), end) {
+		t.Fatalf("failed probe still printed the end marker:\n%s", failed.String())
+	}
+}
+
+func gitBlobSHA1(content []byte) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	_, _ = h.Write(content)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func TestRemoteProbeExecErrorUsesGitStderr(t *testing.T) {

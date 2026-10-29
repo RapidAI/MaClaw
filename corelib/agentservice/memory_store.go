@@ -45,6 +45,22 @@ type Store interface {
 	DeleteAuditEvents(string, string) (int, error)
 }
 
+// StoreSnapshotter provides a detached, read-only view for one-shot startup
+// scans. Writes through the returned Store affect only the detached copy.
+type StoreSnapshotter interface {
+	Snapshot() (Store, error)
+}
+
+func snapshotStore(store Store) (Store, error) {
+	if store == nil {
+		return nil, ErrServiceClosed
+	}
+	if snapshotter, ok := store.(StoreSnapshotter); ok {
+		return snapshotter.Snapshot()
+	}
+	return store, nil
+}
+
 // MemoryStore is an in-process implementation of the agentservice control-plane
 // Store interface. Despite the historical name, it is not Maclaw long-term memory;
 // user/agent memory must go through corelib/memory.Store.
@@ -187,6 +203,13 @@ func (s *MemoryStore) snapshot() storeState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.snapshotLocked()
+}
+
+func (s *MemoryStore) Snapshot() (Store, error) {
+	if s == nil {
+		return nil, ErrServiceClosed
+	}
+	return newMemoryStoreFromState(s.snapshot()), nil
 }
 
 // restoreLocked replaces the mutable maps from a previously captured

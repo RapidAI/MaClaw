@@ -1456,28 +1456,17 @@ func readPetCompanionTranscript(path string) string {
 	if path == "" {
 		return ""
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil || len(raw) == 0 {
+	entries, err := agent.LoadSeparateSessionEntries(path, petCompanionUserID)
+	if err != nil || len(entries) == 0 {
 		return ""
 	}
-	var snap struct {
-		Sessions map[string]struct {
-			Entries []struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
-			} `json:"entries"`
-		} `json:"sessions"`
-	}
-	if err := json.Unmarshal(raw, &snap); err != nil {
-		return ""
-	}
-	session, ok := snap.Sessions[petCompanionUserID]
-	if !ok {
-		return ""
-	}
-	lines := make([]string, 0, len(session.Entries))
-	for _, entry := range session.Entries {
-		text := petEntryText(entry.Content)
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		content, err := json.Marshal(entry.Content)
+		if err != nil {
+			continue
+		}
+		text := petEntryText(content)
 		if text == "" {
 			continue
 		}

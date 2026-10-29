@@ -20,28 +20,21 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// SQLiteStore persists the agentservice control plane as normalized rows:
-// one table per entity collection (tenants, users, credentials, user configs,
-// instances, sessions, runs), plus per-row message, run-event and audit
-// tables. An in-memory MemoryStore is kept as the read model; it is loaded
-// once and then kept coherent with per-row catch-up driven by as_changes.
-//
-//   - Reads take a shared lock and only probe as_meta.write_seq.
-//   - Writes run BEGIN IMMEDIATE, catch up, run the mutation on the cache with
-//     dirty tracking, and write only the touched rows plus a change record.
-//
-// The legacy single-row agentservice_state blob is migrated once on first
-// start, verified (counts + full round trip), and then dropped.
+// SQLiteStore persists every control-plane entity in its own table. Normal
+// reads and writes query those tables directly; no process-wide JSON snapshot
+// is kept as a read model. agentservice_state_migrated retains the legacy blob
+// after a successful one-time import. If an old blob cannot be imported, the
+// store rolls the import back and continues through the legacy blob path.
 type SQLiteStore struct {
 	mu     sync.RWMutex
 	db     *sql.DB
 	path   string
-	inner  *MemoryStore
 	closed bool
-	seq    int64 // as_meta.write_seq the cache reflects
+	legacy bool
 }
 
 const sqliteRowsFormatVersion = 2
+const sqliteStoreStateVersion = 1
 
 const sqliteRowsSchema = `
 CREATE TABLE IF NOT EXISTS as_meta (
@@ -49,30 +42,46 @@ CREATE TABLE IF NOT EXISTS as_meta (
   format_version INTEGER NOT NULL,
   write_seq INTEGER NOT NULL,
   pruned_upto INTEGER NOT NULL DEFAULT 0,
-  migrated_at TEXT NOT NULL DEFAULT ''
+  migrated_at TEXT NOT NULL DEFAULT '',
+  scope_backfill INTEGER NOT NULL DEFAULT 0,
+  hotpath_backfill INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS as_tenants (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, v BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS as_users (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, v BLOB NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS as_credentials (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, v BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS as_credentials (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, credential_id TEXT NOT NULL DEFAULT '', v BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS as_user_configs (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, v BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS as_instances (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, v BLOB NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS as_sessions (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, v BLOB NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS as_runs (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, v BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS as_sessions (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, client_session_key TEXT NOT NULL DEFAULT '', v BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS as_runs (k TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, instance_id TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', user_message_id TEXT NOT NULL DEFAULT '', v BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS as_messages (session_id TEXT NOT NULL, idx INTEGER NOT NULL, id TEXT NOT NULL, client_message_id TEXT NOT NULL DEFAULT '', v BLOB NOT NULL, PRIMARY KEY (session_id, idx)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS as_run_events (scope TEXT NOT NULL, seq INTEGER NOT NULL, tenant_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '', id TEXT NOT NULL, v BLOB NOT NULL, PRIMARY KEY (scope, seq)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS as_audit_events (idx INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, v BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS as_changes (wseq INTEGER NOT NULL, coll TEXT NOT NULL, k TEXT NOT NULL);
+`
+
+const sqliteRowsIndexes = `
 CREATE INDEX IF NOT EXISTS as_users_scope ON as_users(tenant_id, user_id);
 CREATE INDEX IF NOT EXISTS as_credentials_scope ON as_credentials(tenant_id, user_id);
+CREATE INDEX IF NOT EXISTS as_credentials_id ON as_credentials(tenant_id, user_id, k);
+CREATE INDEX IF NOT EXISTS as_credentials_entity ON as_credentials(credential_id);
 CREATE INDEX IF NOT EXISTS as_instances_scope ON as_instances(tenant_id, user_id);
 CREATE INDEX IF NOT EXISTS as_sessions_scope ON as_sessions(tenant_id, user_id, instance_id);
+CREATE INDEX IF NOT EXISTS as_sessions_client ON as_sessions(tenant_id, user_id, instance_id, client_session_key);
 CREATE INDEX IF NOT EXISTS as_runs_scope ON as_runs(tenant_id, user_id, instance_id);
-CREATE TABLE IF NOT EXISTS as_messages (session_id TEXT NOT NULL, idx INTEGER NOT NULL, id TEXT NOT NULL, v BLOB NOT NULL, PRIMARY KEY (session_id, idx)) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS as_run_events (scope TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL, v BLOB NOT NULL, PRIMARY KEY (scope, seq)) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS as_audit_events (idx INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, v BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS as_runs_session ON as_runs(session_id);
+CREATE INDEX IF NOT EXISTS as_runs_user_message ON as_runs(tenant_id, user_id, instance_id, user_message_id);
+CREATE INDEX IF NOT EXISTS as_messages_id ON as_messages(session_id, id);
+CREATE INDEX IF NOT EXISTS as_messages_client ON as_messages(session_id, client_message_id);
+CREATE INDEX IF NOT EXISTS as_run_events_run ON as_run_events(tenant_id, user_id, run_id, seq);
+CREATE INDEX IF NOT EXISTS as_run_events_id ON as_run_events(scope, id);
 CREATE INDEX IF NOT EXISTS as_audit_scope ON as_audit_events(tenant_id, user_id);
-CREATE TABLE IF NOT EXISTS as_changes (wseq INTEGER NOT NULL, coll TEXT NOT NULL, k TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS as_changes_wseq ON as_changes(wseq);
 `
 
-// sqliteFullLoads counts full cache loads from rows (tests).
+// Kept for existing benchmarks and migration diagnostics. Direct stores do not
+// perform full cache loads or cache/row verification on each write.
 var sqliteFullLoads atomic.Int64
+var sqliteVerifyWrites = os.Getenv("MACLAW_AGENTSERVICE_SQLITE_VERIFY_WRITES") == "1"
 
 type sqlq interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
@@ -80,7 +89,8 @@ type sqlq interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-// mapColl adapts one map-backed MemoryStore collection to its table.
+// mapColl adapts one map-backed MemoryStore collection to its table for legacy
+// import, migration verification, and detached snapshots.
 type mapColl struct {
 	coll, table string
 	keys        func(*MemoryStore) []string
@@ -134,15 +144,6 @@ var sqliteMapColls = []mapColl{
 	newMapColl(collRuns, "as_runs", func(m *MemoryStore) *map[string]Run { return &m.runs }, func(v Run) (string, string, string) { return v.TenantID, v.UserID, v.InstanceID }),
 }
 
-func mapCollByName(name string) (mapColl, bool) {
-	for _, c := range sqliteMapColls {
-		if c.coll == name {
-			return c, true
-		}
-	}
-	return mapColl{}, false
-}
-
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if err := secureMkdirAll(filepath.Dir(path)); err != nil {
 		return nil, err
@@ -169,42 +170,255 @@ func (s *SQLiteStore) open() error {
 	if _, err := s.db.ExecContext(ctx, sqliteRowsSchema); err != nil {
 		return err
 	}
+	if err := s.ensureRowColumns(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, sqliteRowsIndexes); err != nil {
+		return err
+	}
 	var format int
 	err := s.db.QueryRowContext(ctx, `SELECT format_version FROM as_meta WHERE id=1`).Scan(&format)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		vacuum, err := s.initializeRows(ctx)
-		if err != nil {
-			return err
-		}
-		if vacuum {
-			// Outside the migration transaction; failure only leaves free pages.
-			if _, err := s.db.ExecContext(ctx, `VACUUM`); err != nil {
-				log.Printf("[agentservice] sqlite VACUUM after blob migration failed: %v", err)
+		if err := s.initializeRows(ctx); err != nil {
+			legacyErr := s.enableLegacyFallback(ctx)
+			if legacyErr == nil {
+				s.legacy = true
+				log.Printf("[agentservice] normalized SQLite migration failed; using preserved legacy state: %v", err)
+				return nil
 			}
+			return fmt.Errorf("migrate agentservice state: %w (legacy fallback: %v)", err, legacyErr)
 		}
 	case err != nil:
 		return err
 	case format != sqliteRowsFormatVersion:
 		return fmt.Errorf("unsupported agentservice SQLite format version %d", format)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.fullLoadLocked(s.db)
+	return nil
 }
 
-// initializeRows creates as_meta for a new database. A legacy
-// agentservice_state blob (or, for a brand new DB, the historical
-// state/store.json) is imported, verified and — for the blob — dropped, all
-// in one transaction. Any failure aborts startup with nothing deleted.
-func (s *SQLiteStore) initializeRows(ctx context.Context) (vacuum bool, err error) {
+// ensureRowColumns additively upgrades the earlier row format. Payload remains
+// authoritative for fields not needed by indexes.
+func (s *SQLiteStore) ensureRowColumns(ctx context.Context) error {
+	var scopeBackfill, hotpathBackfill int
+	err := s.db.QueryRowContext(ctx, `SELECT scope_backfill, hotpath_backfill FROM as_meta WHERE id=1`).Scan(&scopeBackfill, &hotpathBackfill)
+	if err == nil && scopeBackfill == 1 && hotpathBackfill == 1 {
+		return nil
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE as_runs ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE as_runs ADD COLUMN user_message_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE as_run_events ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE as_run_events ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE as_run_events ADD COLUMN run_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE as_meta ADD COLUMN scope_backfill INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE as_meta ADD COLUMN hotpath_backfill INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE as_credentials ADD COLUMN credential_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE as_sessions ADD COLUMN client_session_key TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE as_messages ADD COLUMN client_message_id TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	var backfilled int
+	err = s.db.QueryRowContext(ctx, `SELECT scope_backfill FROM as_meta WHERE id=1`).Scan(&backfilled)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && backfilled == 1) {
+		return s.ensureHotpathBackfill(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT k, v FROM as_runs WHERE session_id='' OR user_message_id=''`)
+	if err != nil {
+		return err
+	}
+	type runPatch struct {
+		key, session, message string
+	}
+	var patches []runPatch
+	for rows.Next() {
+		var key string
+		var payload []byte
+		if err := rows.Scan(&key, &payload); err != nil {
+			rows.Close()
+			return err
+		}
+		var run Run
+		if err := json.Unmarshal(payload, &run); err != nil {
+			rows.Close()
+			return err
+		}
+		patches = append(patches, runPatch{key, run.SessionID, run.UserMessageID})
+	}
+	if err := closeRows(rows); err != nil {
+		return err
+	}
+	for _, patch := range patches {
+		if _, err := s.db.ExecContext(ctx, `UPDATE as_runs SET session_id=?, user_message_id=? WHERE k=?`, patch.session, patch.message, patch.key); err != nil {
+			return err
+		}
+	}
+	rows, err = s.db.QueryContext(ctx, `SELECT scope, seq, v FROM as_run_events WHERE tenant_id='' OR user_id='' OR run_id=''`)
+	if err != nil {
+		return err
+	}
+	type eventPatch struct {
+		scope               string
+		seq                 uint64
+		tenant, user, runID string
+	}
+	var eventPatches []eventPatch
+	for rows.Next() {
+		var scope string
+		var seq uint64
+		var payload []byte
+		if err := rows.Scan(&scope, &seq, &payload); err != nil {
+			rows.Close()
+			return err
+		}
+		var event RunEvent
+		if err := json.Unmarshal(payload, &event); err != nil {
+			rows.Close()
+			return err
+		}
+		eventPatches = append(eventPatches, eventPatch{scope, seq, event.TenantID, event.UserID, event.RunID})
+	}
+	if err := closeRows(rows); err != nil {
+		return err
+	}
+	for _, patch := range eventPatches {
+		if _, err := s.db.ExecContext(ctx, `UPDATE as_run_events SET tenant_id=?, user_id=?, run_id=? WHERE scope=? AND seq=?`, patch.tenant, patch.user, patch.runID, patch.scope, patch.seq); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE as_meta SET scope_backfill=1 WHERE id=1`); err != nil {
+		return err
+	}
+	return s.ensureHotpathBackfill(ctx)
+}
+
+// ensureHotpathBackfill copies lookup fields out of JSON once. Later saves
+// keep the columns current, so identity checks do not reread every payload.
+func (s *SQLiteStore) ensureHotpathBackfill(ctx context.Context) error {
+	var done int
+	err := s.db.QueryRowContext(ctx, `SELECT hotpath_backfill FROM as_meta WHERE id=1`).Scan(&done)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && done == 1) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT k, v FROM as_credentials WHERE credential_id=''`)
+	if err != nil {
+		return err
+	}
+	type credPatch struct{ key, id string }
+	var creds []credPatch
+	for rows.Next() {
+		var key string
+		var payload []byte
+		if err := rows.Scan(&key, &payload); err != nil {
+			rows.Close()
+			return err
+		}
+		var cred Credential
+		if err := json.Unmarshal(payload, &cred); err != nil {
+			rows.Close()
+			return err
+		}
+		if cred.ID != "" {
+			creds = append(creds, credPatch{key, cred.ID})
+		}
+	}
+	if err := closeRows(rows); err != nil {
+		return err
+	}
+	for _, patch := range creds {
+		if _, err := s.db.ExecContext(ctx, `UPDATE as_credentials SET credential_id=? WHERE k=?`, patch.id, patch.key); err != nil {
+			return err
+		}
+	}
+	rows, err = s.db.QueryContext(ctx, `SELECT k, v FROM as_sessions WHERE client_session_key=''`)
+	if err != nil {
+		return err
+	}
+	type sessionPatch struct{ key, clientKey string }
+	var sessions []sessionPatch
+	for rows.Next() {
+		var key string
+		var payload []byte
+		if err := rows.Scan(&key, &payload); err != nil {
+			rows.Close()
+			return err
+		}
+		var session Session
+		if err := json.Unmarshal(payload, &session); err != nil {
+			rows.Close()
+			return err
+		}
+		if clientKey := sessionClientKey(session); clientKey != "" {
+			sessions = append(sessions, sessionPatch{key, clientKey})
+		}
+	}
+	if err := closeRows(rows); err != nil {
+		return err
+	}
+	for _, patch := range sessions {
+		if _, err := s.db.ExecContext(ctx, `UPDATE as_sessions SET client_session_key=? WHERE k=?`, patch.clientKey, patch.key); err != nil {
+			return err
+		}
+	}
+	rows, err = s.db.QueryContext(ctx, `SELECT session_id, idx, v FROM as_messages WHERE client_message_id=''`)
+	if err != nil {
+		return err
+	}
+	type messagePatch struct {
+		sessionID string
+		idx       int64
+		clientID  string
+	}
+	var messages []messagePatch
+	for rows.Next() {
+		var patch messagePatch
+		var payload []byte
+		if err := rows.Scan(&patch.sessionID, &patch.idx, &payload); err != nil {
+			rows.Close()
+			return err
+		}
+		var message Message
+		if err := json.Unmarshal(payload, &message); err != nil {
+			rows.Close()
+			return err
+		}
+		if clientID := messageClientID(message); clientID != "" {
+			patch.clientID = clientID
+			messages = append(messages, patch)
+		}
+	}
+	if err := closeRows(rows); err != nil {
+		return err
+	}
+	for _, patch := range messages {
+		if _, err := s.db.ExecContext(ctx, `UPDATE as_messages SET client_message_id=? WHERE session_id=? AND idx=?`, patch.clientID, patch.sessionID, patch.idx); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE as_meta SET hotpath_backfill=1 WHERE id=1`)
+	return err
+}
+
+// initializeRows imports a legacy blob (or historical store.json) and verifies
+// a complete row round trip before atomically publishing as_meta. The original
+// table is renamed, never dropped. Any error rolls back every inserted row.
+func (s *SQLiteStore) initializeRows(ctx context.Context) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer conn.Close()
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return false, err
+		return err
 	}
 	committed := false
 	defer func() {
@@ -214,16 +428,27 @@ func (s *SQLiteStore) initializeRows(ctx context.Context) (vacuum bool, err erro
 	}()
 	var exists int
 	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM as_meta`).Scan(&exists); err != nil {
-		return false, err
+		return err
 	}
-	if exists > 0 { // another process won the race
-		return false, nil
+	if exists > 0 {
+		if _, err := conn.ExecContext(ctx, `ROLLBACK`); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	}
+	empty, err := normalizedRowsEmpty(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if !empty {
+		return errors.New("normalized tables are not empty but as_meta is missing")
 	}
 	source := NewMemoryStore()
 	hasBlob := false
 	var blobTable int
 	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='agentservice_state'`).Scan(&blobTable); err != nil {
-		return false, err
+		return err
 	}
 	if blobTable > 0 {
 		var version int
@@ -232,47 +457,89 @@ func (s *SQLiteStore) initializeRows(ctx context.Context) (vacuum bool, err erro
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
-			return false, fmt.Errorf("read legacy agentservice_state: %w", err)
-		case version != 1:
-			return false, fmt.Errorf("unsupported legacy agentservice SQLite state schema version %d", version)
+			return fmt.Errorf("read legacy agentservice_state: %w", err)
+		case version != sqliteStoreStateVersion:
+			return fmt.Errorf("unsupported legacy agentservice SQLite state schema version %d", version)
 		default:
 			if source, err = memoryStoreFromJSON(payload); err != nil {
-				return false, fmt.Errorf("parse legacy agentservice_state: %w", err)
+				return fmt.Errorf("parse legacy agentservice_state: %w", err)
 			}
 		}
 		hasBlob = true
 	} else {
-		// MaClawSrv historically persisted the control plane as state/store.json.
-		// Import it once into a new database; the file is retained as a backup.
 		legacy, readErr := os.ReadFile(filepath.Join(filepath.Dir(s.path), "store.json"))
 		if readErr == nil && len(legacy) > 0 {
 			if source, err = memoryStoreFromJSON(legacy); err != nil {
-				return false, fmt.Errorf("parse legacy store.json: %w", err)
+				return fmt.Errorf("parse legacy store.json: %w", err)
 			}
 		}
 	}
 	if err := insertAllRows(ctx, conn, source); err != nil {
-		return false, fmt.Errorf("migrate agentservice state to rows: %w", err)
+		return fmt.Errorf("write normalized rows: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, `INSERT INTO as_meta(id, format_version, write_seq, pruned_upto, migrated_at) VALUES(1, ?, 1, 1, ?)`, sqliteRowsFormatVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return false, err
+	if _, err := conn.ExecContext(ctx, `INSERT INTO as_meta(id, format_version, write_seq, pruned_upto, migrated_at, scope_backfill, hotpath_backfill) VALUES(1, ?, 1, 1, ?, 1, 1)`, sqliteRowsFormatVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
 	}
 	if err := verifyRowsMatch(ctx, conn, source); err != nil {
-		return false, fmt.Errorf("agentservice migration verification failed (nothing deleted): %w", err)
+		return fmt.Errorf("migration verification failed: %w", err)
 	}
 	if hasBlob {
-		if _, err := conn.ExecContext(ctx, `DROP TABLE agentservice_state`); err != nil {
-			return false, err
+		if _, err := conn.ExecContext(ctx, `ALTER TABLE agentservice_state RENAME TO agentservice_state_migrated`); err != nil {
+			return fmt.Errorf("preserve legacy state backup: %w", err)
 		}
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return false, err
+		return err
 	}
 	committed = true
 	if hasBlob {
-		log.Printf("[agentservice] migrated agentservice_state blob to normalized rows (%s); blob dropped", rowCountsString(source))
+		log.Printf("[agentservice] migrated agentservice_state to normalized rows (%s); original preserved in agentservice_state_migrated", rowCountsString(source))
 	}
-	return hasBlob, nil
+	return nil
+}
+
+func normalizedRowsEmpty(ctx context.Context, q sqlq) (bool, error) {
+	tables := []string{"as_messages", "as_run_events", "as_audit_events"}
+	for _, c := range sqliteMapColls {
+		tables = append(tables, c.table)
+	}
+	for _, table := range tables {
+		var n int
+		if err := q.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&n); err != nil {
+			return false, err
+		}
+		if n != 0 {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (s *SQLiteStore) enableLegacyFallback(ctx context.Context) error {
+	var table int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='agentservice_state'`).Scan(&table); err != nil {
+		return err
+	}
+	if table == 0 {
+		return errors.New("legacy agentservice_state is unavailable")
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE agentservice_state ADD COLUMN write_seq INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
+	_, err := loadLegacyMemory(ctx, s.db)
+	return err
+}
+
+func loadLegacyMemory(ctx context.Context, q sqlq) (*MemoryStore, error) {
+	var version int
+	var payload []byte
+	if err := q.QueryRowContext(ctx, `SELECT schema_version, state_json FROM agentservice_state WHERE id=1`).Scan(&version, &payload); err != nil {
+		return nil, err
+	}
+	if version != sqliteStoreStateVersion {
+		return nil, fmt.Errorf("unsupported agentservice SQLite state schema version %d", version)
+	}
+	return memoryStoreFromJSON(payload)
 }
 
 func memoryStoreFromJSON(payload []byte) (*MemoryStore, error) {
@@ -285,9 +552,6 @@ func memoryStoreFromJSON(payload []byte) (*MemoryStore, error) {
 	return newMemoryStoreFromState(state), nil
 }
 
-// canonicalStateJSON is the comparison form for migration verification:
-// MemoryStore snapshot with empty per-session/per-run slices dropped (rows
-// cannot represent "present but empty").
 func canonicalStateJSON(m *MemoryStore) ([]byte, error) {
 	st := m.snapshot()
 	for k, v := range st.Messages {
@@ -332,8 +596,6 @@ func rowCountsString(m *MemoryStore) string {
 	return strings.Join(parts, " ")
 }
 
-// verifyRowsMatch checks per-table row counts in SQL and a full round trip
-// (rows -> MemoryStore -> canonical JSON) against the source.
 func verifyRowsMatch(ctx context.Context, q sqlq, source *MemoryStore) error {
 	want := rowCounts(source)
 	tables := map[string]string{collMessages: "as_messages", collRunEvents: "as_run_events", collAudit: "as_audit_events"}
@@ -390,20 +652,6 @@ func insertAllRows(ctx context.Context, q sqlq, m *MemoryStore) error {
 	return insertAudit(ctx, q, m.auditEvents, 0)
 }
 
-func deleteAllRows(ctx context.Context, q sqlq) error {
-	for _, c := range sqliteMapColls {
-		if _, err := q.ExecContext(ctx, `DELETE FROM `+c.table); err != nil {
-			return err
-		}
-	}
-	for _, t := range []string{"as_messages", "as_run_events", "as_audit_events"} {
-		if _, err := q.ExecContext(ctx, `DELETE FROM `+t); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func upsertMapRow(ctx context.Context, q sqlq, c mapColl, m *MemoryStore, k string, replace bool) error {
 	b, t, u, i, ok, err := c.encode(m, k)
 	if err != nil {
@@ -417,12 +665,18 @@ func upsertMapRow(ctx context.Context, q sqlq, c mapColl, m *MemoryStore, k stri
 	if replace {
 		verb = "INSERT OR REPLACE"
 	}
-	if _, err = q.ExecContext(ctx, verb+` INTO `+c.table+`(k, tenant_id, user_id, instance_id, v) VALUES(?,?,?,?,?)`, k, t, u, i, b); err != nil {
-		return err
+	switch c.coll {
+	case collRuns:
+		run := m.runs[k]
+		_, err = q.ExecContext(ctx, verb+` INTO as_runs(k, tenant_id, user_id, instance_id, session_id, user_message_id, v) VALUES(?,?,?,?,?,?,?)`, k, t, u, i, run.SessionID, run.UserMessageID, b)
+	case collCredentials:
+		_, err = q.ExecContext(ctx, verb+` INTO as_credentials(k, tenant_id, user_id, instance_id, credential_id, v) VALUES(?,?,?,?,?,?)`, k, t, u, i, m.credentials[k].ID, b)
+	case collSessions:
+		_, err = q.ExecContext(ctx, verb+` INTO as_sessions(k, tenant_id, user_id, instance_id, client_session_key, v) VALUES(?,?,?,?,?,?)`, k, t, u, i, sessionClientKey(m.sessions[k]), b)
+	default:
+		_, err = q.ExecContext(ctx, verb+` INTO `+c.table+`(k, tenant_id, user_id, instance_id, v) VALUES(?,?,?,?,?)`, k, t, u, i, b)
 	}
-	// Keep the cache identical to what a reload would produce (the blob
-	// store always served JSON-round-tripped values).
-	return c.set(m, k, b)
+	return err
 }
 
 func insertMessages(ctx context.Context, q sqlq, sid string, items []Message, from int) error {
@@ -431,7 +685,7 @@ func insertMessages(ctx context.Context, q sqlq, sid string, items []Message, fr
 		if err != nil {
 			return err
 		}
-		if _, err := q.ExecContext(ctx, `INSERT INTO as_messages(session_id, idx, id, v) VALUES(?,?,?,?)`, sid, idx, items[idx].ID, b); err != nil {
+		if _, err := q.ExecContext(ctx, `INSERT INTO as_messages(session_id, idx, id, client_message_id, v) VALUES(?,?,?,?,?)`, sid, idx, items[idx].ID, messageClientID(items[idx]), b); err != nil {
 			return err
 		}
 		var norm Message
@@ -452,7 +706,7 @@ func insertRunEvent(ctx context.Context, q sqlq, scope string, ev *RunEvent, rep
 	if replace {
 		verb = "INSERT OR REPLACE"
 	}
-	if _, err = q.ExecContext(ctx, verb+` INTO as_run_events(scope, seq, id, v) VALUES(?,?,?,?)`, scope, int64(ev.Sequence), ev.ID, b); err != nil {
+	if _, err = q.ExecContext(ctx, verb+` INTO as_run_events(scope, seq, tenant_id, user_id, run_id, id, v) VALUES(?,?,?,?,?,?,?)`, scope, ev.Sequence, ev.TenantID, ev.UserID, ev.RunID, ev.ID, b); err != nil {
 		return err
 	}
 	var norm RunEvent
@@ -572,329 +826,27 @@ func (s *SQLiteStore) ensureOpenLocked() error {
 	return nil
 }
 
-func (s *SQLiteStore) fullLoadLocked(q sqlq) error {
-	ctx := context.Background()
-	var seq int64
-	if err := q.QueryRowContext(ctx, `SELECT write_seq FROM as_meta WHERE id=1`).Scan(&seq); err != nil {
-		return err
-	}
-	m, err := loadAllRows(ctx, q)
-	if err != nil {
-		return err
-	}
-	s.inner = m
-	s.seq = seq
-	sqliteFullLoads.Add(1)
-	return nil
-}
-
-// catchUpLocked applies other handles' committed changes, row by row.
-func (s *SQLiteStore) catchUpLocked(q sqlq) error {
-	ctx := context.Background()
-	var seq, pruned int64
-	if err := q.QueryRowContext(ctx, `SELECT write_seq, pruned_upto FROM as_meta WHERE id=1`).Scan(&seq, &pruned); err != nil {
-		return err
-	}
-	if seq == s.seq && s.inner != nil {
-		return nil
-	}
-	if s.inner == nil || s.seq < pruned {
-		return s.fullLoadLocked(q)
-	}
-	type change struct{ coll, k string }
-	var changes []change
-	seen := map[change]bool{}
-	rows, err := q.QueryContext(ctx, `SELECT coll, k FROM as_changes WHERE wseq > ? AND wseq <= ? ORDER BY wseq`, s.seq, seq)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var c change
-		if err := rows.Scan(&c.coll, &c.k); err != nil {
-			rows.Close()
-			return err
-		}
-		if c.coll == "*" {
-			rows.Close()
-			return s.fullLoadLocked(q)
-		}
-		if !seen[c] {
-			seen[c] = true
-			changes = append(changes, c)
-		}
-	}
-	if err := closeRows(rows); err != nil {
-		return err
-	}
-	for _, c := range changes {
-		if err := reloadEntity(ctx, q, s.inner, c.coll, c.k); err != nil {
-			return err
-		}
-	}
-	s.seq = seq
-	return nil
-}
-
-// reloadEntity replaces one cached entity with its committed rows.
-func reloadEntity(ctx context.Context, q sqlq, m *MemoryStore, coll, k string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if c, ok := mapCollByName(coll); ok {
-		var b []byte
-		err := q.QueryRowContext(ctx, `SELECT v FROM `+c.table+` WHERE k=?`, k).Scan(&b)
-		if errors.Is(err, sql.ErrNoRows) {
-			c.del(m, k)
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return c.set(m, k, b)
-	}
-	switch coll {
-	case collMessages:
-		var items []Message
-		err := scanJSONRows(ctx, q, `SELECT session_id, v FROM as_messages WHERE session_id=? ORDER BY idx`, func(_ string, b []byte) error {
-			var v Message
-			if err := json.Unmarshal(b, &v); err != nil {
-				return err
-			}
-			items = append(items, v)
-			return nil
-		}, k)
-		if err != nil {
-			return err
-		}
-		if len(items) == 0 {
-			delete(m.messages, k)
-		} else {
-			m.messages[k] = items
-		}
-	case collRunEvents:
-		var items []RunEvent
-		err := scanJSONRows(ctx, q, `SELECT scope, v FROM as_run_events WHERE scope=? ORDER BY seq`, func(_ string, b []byte) error {
-			var v RunEvent
-			if err := json.Unmarshal(b, &v); err != nil {
-				return err
-			}
-			items = append(items, v)
-			return nil
-		}, k)
-		if err != nil {
-			return err
-		}
-		if len(items) == 0 {
-			delete(m.runEvents, k)
-		} else {
-			m.runEvents[k] = items
-		}
-	case collAudit:
-		from, _ := strconv.Atoi(k)
-		if from > len(m.auditEvents) {
-			from = len(m.auditEvents)
-		}
-		kept := append([]AuditEvent(nil), m.auditEvents[:from]...)
-		err := scanJSONRows(ctx, q, `SELECT '', v FROM as_audit_events WHERE idx >= ? ORDER BY idx`, func(_ string, b []byte) error {
-			var v AuditEvent
-			if err := json.Unmarshal(b, &v); err != nil {
-				return err
-			}
-			kept = append(kept, v)
-			return nil
-		}, from)
-		if err != nil {
-			return err
-		}
-		m.auditEvents = kept
-	default:
-		return fmt.Errorf("unknown agentservice change collection %q", coll)
-	}
-	return nil
-}
-
-// reloadDirty restores the entities a failed write touched from committed
-// rows, so a rejected mutation never lingers in the cache.
-func (s *SQLiteStore) reloadDirty(q sqlq, d *storeDirty) error {
-	if d.all || d.auditRewrite || d.auditAppend > 0 {
-		if d.all {
-			return s.fullLoadLocked(q)
-		}
-	}
-	ctx := context.Background()
-	for coll, keys := range d.keys {
-		for k := range keys {
-			if err := reloadEntity(ctx, q, s.inner, coll, k); err != nil {
-				return s.fullLoadLocked(q)
-			}
-		}
-	}
-	for sid := range d.msgRewrite {
-		if err := reloadEntity(ctx, q, s.inner, collMessages, sid); err != nil {
-			return s.fullLoadLocked(q)
-		}
-	}
-	for sid := range d.msgAppend {
-		if err := reloadEntity(ctx, q, s.inner, collMessages, sid); err != nil {
-			return s.fullLoadLocked(q)
-		}
-	}
-	for scope := range d.evRewrite {
-		if err := reloadEntity(ctx, q, s.inner, collRunEvents, scope); err != nil {
-			return s.fullLoadLocked(q)
-		}
-	}
-	for scope := range d.evInsert {
-		if err := reloadEntity(ctx, q, s.inner, collRunEvents, scope); err != nil {
-			return s.fullLoadLocked(q)
-		}
-	}
-	if d.auditRewrite || d.auditAppend > 0 {
-		if err := reloadEntity(ctx, q, s.inner, collAudit, "0"); err != nil {
-			return s.fullLoadLocked(q)
-		}
-	}
-	return nil
-}
-
-// persistDirty writes exactly the rows a write touched plus change records.
-func persistDirty(ctx context.Context, q sqlq, m *MemoryStore, d *storeDirty, wseq int64) error {
-	change := func(coll, k string) error {
-		_, err := q.ExecContext(ctx, `INSERT INTO as_changes(wseq, coll, k) VALUES(?,?,?)`, wseq, coll, k)
-		return err
-	}
-	if d.all {
-		if err := deleteAllRows(ctx, q); err != nil {
-			return err
-		}
-		if err := insertAllRows(ctx, q, m); err != nil {
-			return err
-		}
-		return change("*", "")
-	}
-	for coll, keys := range d.keys {
-		c, ok := mapCollByName(coll)
-		if !ok {
-			return fmt.Errorf("unknown agentservice collection %q", coll)
-		}
-		for k := range keys {
-			if err := upsertMapRow(ctx, q, c, m, k, true); err != nil {
-				return err
-			}
-			if err := change(coll, k); err != nil {
-				return err
-			}
-		}
-	}
-	for sid := range d.msgRewrite {
-		if _, err := q.ExecContext(ctx, `DELETE FROM as_messages WHERE session_id=?`, sid); err != nil {
-			return err
-		}
-		if err := insertMessages(ctx, q, sid, m.messages[sid], 0); err != nil {
-			return err
-		}
-		if err := change(collMessages, sid); err != nil {
-			return err
-		}
-	}
-	for sid, n := range d.msgAppend {
-		items := m.messages[sid]
-		from := len(items) - n
-		if from < 0 {
-			from = 0
-		}
-		if err := insertMessages(ctx, q, sid, items, from); err != nil {
-			return err
-		}
-		if err := change(collMessages, sid); err != nil {
-			return err
-		}
-	}
-	for scope := range d.evRewrite {
-		if _, err := q.ExecContext(ctx, `DELETE FROM as_run_events WHERE scope=?`, scope); err != nil {
-			return err
-		}
-		items := m.runEvents[scope]
-		for i := range items {
-			if err := insertRunEvent(ctx, q, scope, &items[i], false); err != nil {
-				return err
-			}
-		}
-		if err := change(collRunEvents, scope); err != nil {
-			return err
-		}
-	}
-	for scope, seqs := range d.evInsert {
-		want := make(map[uint64]bool, len(seqs))
-		for _, seq := range seqs {
-			want[seq] = true
-		}
-		items := m.runEvents[scope]
-		for i := range items {
-			if want[items[i].Sequence] {
-				if err := insertRunEvent(ctx, q, scope, &items[i], true); err != nil {
-					return err
-				}
-			}
-		}
-		if err := change(collRunEvents, scope); err != nil {
-			return err
-		}
-	}
-	if d.auditRewrite {
-		if _, err := q.ExecContext(ctx, `DELETE FROM as_audit_events`); err != nil {
-			return err
-		}
-		if err := insertAudit(ctx, q, m.auditEvents, 0); err != nil {
-			return err
-		}
-		if err := change(collAudit, "0"); err != nil {
-			return err
-		}
-	} else if d.auditAppend > 0 {
-		from := len(m.auditEvents) - d.auditAppend
-		if from < 0 {
-			from = 0
-		}
-		if err := insertAudit(ctx, q, m.auditEvents, from); err != nil {
-			return err
-		}
-		if err := change(collAudit, strconv.Itoa(from)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-const sqliteChangesKeep = 5000
-
-func (s *SQLiteStore) read(fn func(*MemoryStore) error) error {
+func (s *SQLiteStore) read(rowsFn func(context.Context, sqlq) error, legacyFn func(*MemoryStore) error) error {
 	if s == nil {
 		return ErrServiceClosed
 	}
 	s.mu.RLock()
-	if err := s.ensureOpenLocked(); err != nil {
-		s.mu.RUnlock()
-		return err
-	}
-	var seq int64
-	err := s.db.QueryRowContext(context.Background(), `SELECT write_seq FROM as_meta WHERE id=1`).Scan(&seq)
-	if err == nil && seq == s.seq && s.inner != nil {
-		defer s.mu.RUnlock()
-		return fn(s.inner)
-	}
-	s.mu.RUnlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.mu.RUnlock()
 	if err := s.ensureOpenLocked(); err != nil {
 		return err
 	}
-	if err := s.catchUpLocked(s.db); err != nil {
-		return err
+	ctx := context.Background()
+	if s.legacy {
+		m, err := loadLegacyMemory(ctx, s.db)
+		if err != nil {
+			return err
+		}
+		return legacyFn(m)
 	}
-	return fn(s.inner)
+	return rowsFn(ctx, s.db)
 }
 
-func (s *SQLiteStore) write(fn func(*MemoryStore) error) error {
+func (s *SQLiteStore) write(rowsFn func(context.Context, sqlq) error, legacyFn func(*MemoryStore) error) error {
 	if s == nil {
 		return ErrServiceClosed
 	}
@@ -904,7 +856,12 @@ func (s *SQLiteStore) write(fn func(*MemoryStore) error) error {
 		return err
 	}
 	for attempt := 0; ; attempt++ {
-		err := s.writeOnceLocked(fn)
+		var err error
+		if s.legacy {
+			err = s.writeLegacyOnce(legacyFn)
+		} else {
+			err = s.writeRowsOnce(rowsFn)
+		}
 		if !isSQLiteBusy(err) || attempt >= 6 {
 			return err
 		}
@@ -912,8 +869,7 @@ func (s *SQLiteStore) write(fn func(*MemoryStore) error) error {
 	}
 }
 
-// errSQLiteWriteRolledBack wraps a failure after the closure already ran.
-func (s *SQLiteStore) writeOnceLocked(fn func(*MemoryStore) error) (err error) {
+func (s *SQLiteStore) writeRowsOnce(fn func(context.Context, sqlq) error) error {
 	ctx := context.Background()
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -929,69 +885,71 @@ func (s *SQLiteStore) writeOnceLocked(fn func(*MemoryStore) error) (err error) {
 			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
 		}
 	}()
-	if err := s.catchUpLocked(conn); err != nil {
+	if err := fn(ctx, conn); err != nil {
 		return err
 	}
-	d := newStoreDirty()
-	s.inner.dirty = d
-	ferr := fn(s.inner)
-	s.inner.dirty = nil
-	fail := func(cause error) error {
-		_, _ = conn.ExecContext(ctx, `ROLLBACK`)
-		committed = true // rolled back explicitly
-		if rerr := s.reloadDirty(s.db, d); rerr != nil {
-			s.inner = nil // force a full reload on next access
-			s.seq = -1
-		}
-		return cause
+	var next int64
+	if err := conn.QueryRowContext(ctx, `UPDATE as_meta SET write_seq=write_seq+1 WHERE id=1 RETURNING write_seq`).Scan(&next); err != nil {
+		return err
 	}
-	if ferr != nil {
-		return fail(ferr)
-	}
-	if d.empty() {
-		return nil
-	}
-	next := s.seq + 1
-	s.inner.mu.Lock()
-	perr := persistDirty(ctx, conn, s.inner, d, next)
-	s.inner.mu.Unlock()
-	if perr != nil {
-		return fail(perr)
-	}
-	if _, err := conn.ExecContext(ctx, `UPDATE as_meta SET write_seq=? WHERE id=1`, next); err != nil {
-		return fail(err)
+	// A wildcard keeps older row-cache binaries coherent during rolling updates.
+	if _, err := conn.ExecContext(ctx, `INSERT INTO as_changes(wseq, coll, k) VALUES(?, '*', '')`, next); err != nil {
+		return err
 	}
 	if next%1000 == 0 && next > sqliteChangesKeep {
 		cut := next - sqliteChangesKeep
 		if _, err := conn.ExecContext(ctx, `DELETE FROM as_changes WHERE wseq <= ?`, cut); err != nil {
-			return fail(err)
+			return err
 		}
 		if _, err := conn.ExecContext(ctx, `UPDATE as_meta SET pruned_upto=? WHERE id=1`, cut); err != nil {
-			return fail(err)
-		}
-	}
-	if sqliteVerifyWrites {
-		got, lerr := loadAllRows(ctx, conn)
-		if lerr != nil {
-			return fail(lerr)
-		}
-		a, _ := canonicalStateJSON(s.inner)
-		b, _ := canonicalStateJSON(got)
-		if !bytes.Equal(a, b) {
-			return fail(fmt.Errorf("sqliteVerifyWrites: cache and rows diverged after write %d: %s", next, firstStateDiff(s.inner, got)))
+			return err
 		}
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return fail(err)
+		return err
 	}
 	committed = true
-	s.seq = next
 	return nil
 }
 
-// sqliteVerifyWrites makes every write compare the cache with a full reload
-// from rows (tests only; catches an un-instrumented mutation site).
-var sqliteVerifyWrites = os.Getenv("MACLAW_AGENTSERVICE_SQLITE_VERIFY_WRITES") == "1"
+func (s *SQLiteStore) writeLegacyOnce(fn func(*MemoryStore) error) error {
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+	working, err := loadLegacyMemory(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if err := fn(working); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(working.snapshot())
+	if err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `UPDATE agentservice_state SET state_json=?, updated_at=?, write_seq=write_seq+1 WHERE id=1`, payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+const sqliteChangesKeep = 5000
 
 func isSQLiteBusy(err error) bool {
 	if err == nil {
@@ -1000,288 +958,6 @@ func isSQLiteBusy(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "database is locked") || strings.Contains(text, "sqlite_busy") || strings.Contains(text, "database table is locked")
 }
-
-// Store methods. Reads are wrapped as well as writes so a second process's
-// committed changes are visible without requiring a service restart.
-func (s *SQLiteStore) SaveTenant(v Tenant) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveTenant(v) })
-}
-func (s *SQLiteStore) GetTenant(id string) (Tenant, error) {
-	var out Tenant
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetTenant(id); return e })
-	return out, err
-}
-func (s *SQLiteStore) ListTenants() ([]Tenant, error) {
-	var out []Tenant
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListTenants(); return e })
-	return out, err
-}
-func (s *SQLiteStore) DeleteTenant(id string) error {
-	return s.write(func(m *MemoryStore) error { return m.DeleteTenant(id) })
-}
-func (s *SQLiteStore) SaveUser(v User) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveUser(v) })
-}
-func (s *SQLiteStore) GetUser(t, u string) (User, error) {
-	var out User
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetUser(t, u); return e })
-	return out, err
-}
-func (s *SQLiteStore) ListUsers(t string) ([]User, error) {
-	var out []User
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListUsers(t); return e })
-	return out, err
-}
-func (s *SQLiteStore) DeleteUser(t, u string) error {
-	return s.write(func(m *MemoryStore) error { return m.DeleteUser(t, u) })
-}
-func (s *SQLiteStore) SaveCredential(v Credential) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveCredential(v) })
-}
-func (s *SQLiteStore) GetCredential(t, u, id string) (Credential, error) {
-	var out Credential
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetCredential(t, u, id); return e })
-	return out, err
-}
-func (s *SQLiteStore) ListCredentials(t, u string) ([]Credential, error) {
-	var out []Credential
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListCredentials(t, u); return e })
-	return out, err
-}
-func (s *SQLiteStore) GetCredentialByAPIKey(key string) (Credential, error) {
-	var out Credential
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetCredentialByAPIKey(key); return e })
-	return out, err
-}
-func (s *SQLiteStore) SaveUserConfig(v UserConfig) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveUserConfig(v) })
-}
-func (s *SQLiteStore) GetUserConfig(t, u string) (UserConfig, error) {
-	var out UserConfig
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetUserConfig(t, u); return e })
-	return out, err
-}
-func (s *SQLiteStore) SaveInstance(v Instance) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveInstance(v) })
-}
-func (s *SQLiteStore) GetInstance(t, u, id string) (Instance, error) {
-	var out Instance
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetInstance(t, u, id); return e })
-	return out, err
-}
-func (s *SQLiteStore) ListInstances(t, u string) ([]Instance, error) {
-	var out []Instance
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListInstances(t, u); return e })
-	return out, err
-}
-func (s *SQLiteStore) DeleteInstance(t, u, id string) error {
-	return s.write(func(m *MemoryStore) error { return m.DeleteInstance(t, u, id) })
-}
-func (s *SQLiteStore) SaveSession(v Session) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveSession(v) })
-}
-func (s *SQLiteStore) GetSession(t, u, i, id string) (Session, error) {
-	var out Session
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetSession(t, u, i, id); return e })
-	return out, err
-}
-func (s *SQLiteStore) ListSessions(t, u, i string) ([]Session, error) {
-	var out []Session
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListSessions(t, u, i); return e })
-	return out, err
-}
-func (s *SQLiteStore) DeleteSession(t, u, i, id string) error {
-	return s.write(func(m *MemoryStore) error { return m.DeleteSession(t, u, i, id) })
-}
-func (s *SQLiteStore) SaveMessage(v Message) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveMessage(v) })
-}
-func (s *SQLiteStore) GetMessage(sessionID, messageID string) (Message, error) {
-	var out Message
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetMessage(sessionID, messageID); return e })
-	return out, err
-}
-func (s *SQLiteStore) ListMessages(id string) ([]Message, error) {
-	var out []Message
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListMessages(id); return e })
-	return out, err
-}
-func (s *SQLiteStore) DeleteMessages(id string, ids []string) (int, error) {
-	var n int
-	err := s.write(func(m *MemoryStore) error { var e error; n, e = m.DeleteMessages(id, ids); return e })
-	return n, err
-}
-func (s *SQLiteStore) SaveRun(v Run) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveRun(v) })
-}
-func (s *SQLiteStore) GetRun(t, u, i, id string) (Run, error) {
-	var out Run
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetRun(t, u, i, id); return e })
-	return out, err
-}
-func (s *SQLiteStore) ListRuns(t, u, i string) ([]Run, error) {
-	var out []Run
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListRuns(t, u, i); return e })
-	return out, err
-}
-func (s *SQLiteStore) GetRunByUserMessageID(t, u, i, id string) (Run, error) {
-	var out Run
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.GetRunByUserMessageID(t, u, i, id); return e })
-	return out, err
-}
-func (s *SQLiteStore) SaveAuditEvent(v AuditEvent) error {
-	return s.write(func(m *MemoryStore) error { return m.SaveAuditEvent(v) })
-}
-func (s *SQLiteStore) ListAuditEvents(t, u string) ([]AuditEvent, error) {
-	var out []AuditEvent
-	err := s.read(func(m *MemoryStore) error { var e error; out, e = m.ListAuditEvents(t, u); return e })
-	return out, err
-}
-func (s *SQLiteStore) DeleteAuditEvents(t, u string) (int, error) {
-	var n int
-	err := s.write(func(m *MemoryStore) error { var e error; n, e = m.DeleteAuditEvents(t, u); return e })
-	return n, err
-}
-
-func (s *SQLiteStore) SaveRunAdmission(message Message, run Run) error {
-	return s.SaveRunAdmissionWithEvents(message, run, nil)
-}
-
-func (s *SQLiteStore) SaveRunAdmissionWithEvents(message Message, run Run, events []RunEvent) error {
-	return s.write(func(m *MemoryStore) error {
-		if err := m.SaveMessage(message); err != nil {
-			return err
-		}
-		if err := m.SaveRun(run); err != nil {
-			return err
-		}
-		for _, event := range events {
-			if _, err := m.Append(event); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (s *SQLiteStore) SaveRunCompletion(message Message, run Run) error {
-	return s.SaveRunCompletionWithEvents(message, run, nil)
-}
-
-func (s *SQLiteStore) SaveRunCompletionWithEvents(message Message, run Run, events []RunEvent) error {
-	return s.write(func(m *MemoryStore) error {
-		if err := m.SaveMessage(message); err != nil {
-			return err
-		}
-		if err := m.SaveRun(run); err != nil {
-			return err
-		}
-		for _, event := range events {
-			if _, err := m.Append(event); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (s *SQLiteStore) SaveRunTerminalWithEvents(run Run, events []RunEvent) error {
-	return s.write(func(m *MemoryStore) error {
-		if err := m.SaveRun(run); err != nil {
-			return err
-		}
-		for _, event := range events {
-			if _, err := m.Append(event); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// CommitRunLifecycle is the single transaction seam custom hosts can mirror
-// when they provide a SQL-backed Store. The generic contract is validated
-// before entering SQLite, then the phase-specific operation runs inside the
-// existing write transaction.
-func (s *SQLiteStore) CommitRunLifecycle(mutation RunLifecycleMutation) error {
-	if err := validateRunLifecycleMutation(mutation); err != nil {
-		return err
-	}
-	return s.write(func(m *MemoryStore) error {
-		switch mutation.Phase {
-		case RunLifecyclePhaseAdmission:
-			if err := m.SaveMessage(*mutation.Message); err != nil {
-				return err
-			}
-			if err := m.SaveRun(mutation.Run); err != nil {
-				return err
-			}
-		case RunLifecyclePhaseCompletion:
-			if err := m.SaveMessage(*mutation.Message); err != nil {
-				return err
-			}
-			if err := m.SaveRun(mutation.Run); err != nil {
-				return err
-			}
-		case RunLifecyclePhaseTerminal:
-			if err := m.SaveRun(mutation.Run); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unsupported run lifecycle phase %q", mutation.Phase)
-		}
-		for _, event := range mutation.Events {
-			if _, err := m.Append(event); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (s *SQLiteStore) Append(event RunEvent) (RunEvent, error) {
-	var out RunEvent
-	err := s.write(func(m *MemoryStore) error { var err error; out, err = m.Append(event); return err })
-	return out, err
-}
-
-func (s *SQLiteStore) SequenceForID(t, u, r, id string) (uint64, bool, error) {
-	var seq uint64
-	var found bool
-	err := s.read(func(m *MemoryStore) error { var err error; seq, found, err = m.SequenceForID(t, u, r, id); return err })
-	return seq, found, err
-}
-
-func (s *SQLiteStore) ListAfter(t, u, r string, after uint64, limit int) ([]RunEvent, error) {
-	var out []RunEvent
-	err := s.read(func(m *MemoryStore) error { var err error; out, err = m.ListAfter(t, u, r, after, limit); return err })
-	return out, err
-}
-
-func (s *SQLiteStore) Close() error {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil
-	}
-	s.closed = true
-	if s.db == nil {
-		return nil
-	}
-	return s.db.Close()
-}
-
-var (
-	_ Store                        = (*SQLiteStore)(nil)
-	_ RunEventStore                = (*SQLiteStore)(nil)
-	_ RunAdmissionEventStore       = (*SQLiteStore)(nil)
-	_ RunCompletionEventStore      = (*SQLiteStore)(nil)
-	_ RunTerminalEventStore        = (*SQLiteStore)(nil)
-	_ RunLifecycleTransactionStore = (*SQLiteStore)(nil)
-)
 
 func firstStateDiff(a, b *MemoryStore) string {
 	var ma, mb map[string]json.RawMessage

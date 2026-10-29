@@ -266,7 +266,10 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 			}
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probe_failed", digest, r.now())
 			if requiresWorkspaceGate && ctxLive {
-				return r.blockBeforeExecution(created, attempt, "workspace_before_probe_failed", "writer execution requires a successful read-only workspace baseline")
+				// The event digest is not reviewable. The block summary is the
+				// probe failure itself, bounded by the ledger, so a missing
+				// baseline still says why it was missing.
+				return r.blockBeforeExecution(created, attempt, "workspace_before_probe_failed", probeFailureSummary("writer execution requires a successful read-only workspace baseline", probeErr))
 			}
 		} else if updatedAttempt, recordErr := r.Store.RecordWorkspaceBefore(attempt.AttemptID, r.LeaseOwner, probe, r.now()); recordErr == nil {
 			attempt = updatedAttempt
@@ -342,7 +345,7 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 				result.Status = TaskBlocked
 				result.SideEffectState = SideEffectObserved
 				result.ErrorCode = "final_workspace_probe_failed"
-				result.ErrorSummary = "writer completion requires a successful read-only final workspace probe"
+				result.ErrorSummary = probeFailureSummary("writer completion requires a successful read-only final workspace probe", probeErr)
 			}
 		} else {
 			result.WorkspaceAfter = probe
@@ -546,6 +549,20 @@ func (r Runner) keepAttemptLease(attemptID string, leaseFor time.Duration) func(
 			close(stop)
 		})
 	}
+}
+
+// probeFailureSummary keeps a blocked writer reviewable. Callers used to
+// replace every probe error with one fixed sentence and store only a digest
+// of the real cause, so a transport failure, a missing HEAD, and a rejected
+// attestation were indistinguishable.
+func probeFailureSummary(fallback string, probeErr error) string {
+	if probeErr == nil {
+		return fallback
+	}
+	if detail := strings.TrimSpace(probeErr.Error()); detail != "" {
+		return detail
+	}
+	return fallback
 }
 
 // blockBeforeExecution closes a just-started Attempt without invoking its

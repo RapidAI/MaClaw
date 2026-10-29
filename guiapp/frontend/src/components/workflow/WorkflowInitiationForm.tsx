@@ -482,13 +482,13 @@ const headingStyle: CSSProperties = {
     margin: 0,
     fontSize: "1.2rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const subheadingStyle: CSSProperties = {
     margin: "4px 0 0",
     fontSize: "0.82rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
 };
 
 const formStyle: CSSProperties = {
@@ -506,7 +506,7 @@ const fieldContainerStyle: CSSProperties = {
 const labelStyle: CSSProperties = {
     fontSize: "0.82rem",
     fontWeight: 500,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const requiredMarkStyle: CSSProperties = {
@@ -516,13 +516,13 @@ const requiredMarkStyle: CSSProperties = {
 const inputStyle: CSSProperties = {
     padding: "10px 12px",
     fontSize: "0.85rem",
-    border: "1px solid var(--theme-border, #c9ddf6)",
+    border: "1px solid var(--theme-border, #d5e0ef)",
     borderRadius: "var(--radius-md, 8px)",
     outline: "none",
     transition: "border-color 0.15s",
     boxSizing: "border-box",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const inputErrorStyle: CSSProperties = {
@@ -574,7 +574,7 @@ const checkboxStyle: CSSProperties = {
 
 const checkboxTextStyle: CSSProperties = {
     fontSize: "0.85rem",
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const fieldErrorStyle: CSSProperties = {
@@ -585,7 +585,7 @@ const fieldErrorStyle: CSSProperties = {
 
 const hintStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
 };
 
 const submitContainerStyle: CSSProperties = {
@@ -654,5 +654,5 @@ const successHeadingStyle: CSSProperties = {
 const successTextStyle: CSSProperties = {
     margin: "8px 0 0",
     fontSize: "0.85rem",
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
 };

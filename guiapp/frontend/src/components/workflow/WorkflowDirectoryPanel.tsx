@@ -326,7 +326,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
 
 function CenteredMessage({ children, color }: { children: ReactNode; color?: string }) {
     return (
-        <div style={{ ...centeredStyle, color: color || "var(--theme-text-muted, #56677c)" }}>
+        <div style={{ ...centeredStyle, color: color || "var(--theme-text-muted, #5b6b80)" }}>
             {children}
         </div>
     );
@@ -388,7 +388,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function ResultBadge({ result }: { result: string }) {
-    const color = result === "approved" ? "var(--theme-success, #11813a)" : result === "rejected" ? "var(--theme-danger, #dc1f25)" : "var(--theme-text-muted, #56677c)";
+    const color = result === "approved" ? "var(--theme-success, #11813a)" : result === "rejected" ? "var(--theme-danger, #dc1f25)" : "var(--theme-text-muted, #5b6b80)";
     const label = result === "approved" ? "通过" : result === "rejected" ? "驳回" : result;
     return <span style={{ fontSize: "0.72rem", fontWeight: 500, color, marginLeft: 4 }}>{label}</span>;
 }
@@ -437,8 +437,8 @@ function getStatusBadgeColors(status: string): CSSProperties {
         case "withdrawn": return { background: "var(--theme-info-bg, rgba(47, 120, 208, 0.06))", color: "var(--theme-primary, #2e75cb)" };
         case "failed": return { background: "var(--theme-danger-bg, #fbf1f0)", color: "var(--theme-danger, #dc1f25)" };
         case "blocked": return { background: "var(--theme-warning-bg, rgba(217, 119, 6, 0.07))", color: "var(--theme-warning, #aa5d05)" };
-        case "cancelled": return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #56677c)" };
-        default: return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #56677c)" };
+        case "cancelled": return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #5b6b80)" };
+        default: return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #5b6b80)" };
     }
 }
 
@@ -466,7 +466,7 @@ const tabBarStyle: CSSProperties = {
     display: "flex",
     gap: 0,
     padding: "0 12px",
-    borderBottom: "1px solid var(--theme-border, #c9ddf6)",
+    borderBottom: "1px solid var(--theme-border, #d5e0ef)",
     flexShrink: 0,
     background: "var(--theme-surface-muted, #f8fafc)",
 };
@@ -475,7 +475,7 @@ const tabStyle: CSSProperties = {
     padding: "10px 16px",
     border: "none",
     background: "transparent",
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
     cursor: "pointer",
     fontSize: "0.82rem",
     fontWeight: 500,
@@ -511,17 +511,17 @@ const filterLabelStyle: CSSProperties = {
 
 const filterLabelTextStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
     fontWeight: 500,
 };
 
 const filterSelectStyle: CSSProperties = {
     padding: "4px 8px",
     fontSize: "0.78rem",
-    border: "1px solid var(--theme-border, #c9ddf6)",
+    border: "1px solid var(--theme-border, #d5e0ef)",
     borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     minWidth: "90px",
     outline: "none",
 };
@@ -529,10 +529,10 @@ const filterSelectStyle: CSSProperties = {
 const filterInputStyle: CSSProperties = {
     padding: "4px 8px",
     fontSize: "0.78rem",
-    border: "1px solid var(--theme-border, #c9ddf6)",
+    border: "1px solid var(--theme-border, #d5e0ef)",
     borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     minWidth: "100px",
     outline: "none",
 };
@@ -576,7 +576,7 @@ const itemRow1Style: CSSProperties = {
 const itemNameStyle: CSSProperties = {
     fontSize: "0.85rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const badgeBaseStyle: CSSProperties = {
@@ -593,13 +593,13 @@ const itemRow2Style: CSSProperties = {
     flexWrap: "wrap",
     gap: "12px",
     fontSize: "0.75rem",
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
     marginBottom: "2px",
 };
 
 const itemRow3Style: CSSProperties = {
     fontSize: "0.72rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
 };
 
 const paginationStyle: CSSProperties = {
@@ -608,7 +608,7 @@ const paginationStyle: CSSProperties = {
     alignItems: "center",
     gap: "12px",
     padding: "10px 12px",
-    borderTop: "1px solid var(--theme-border, #c9ddf6)",
+    borderTop: "1px solid var(--theme-border, #d5e0ef)",
     flexShrink: 0,
     background: "var(--theme-surface-muted, #f8fafc)",
 };
@@ -616,10 +616,10 @@ const paginationStyle: CSSProperties = {
 const paginationBtnStyle: CSSProperties = {
     padding: "5px 12px",
     fontSize: "0.78rem",
-    border: "1px solid var(--theme-border, #c9ddf6)",
+    border: "1px solid var(--theme-border, #d5e0ef)",
     borderRadius: "4px",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     cursor: "pointer",
 };
 
@@ -631,5 +631,5 @@ const paginationBtnDisabledStyle: CSSProperties = {
 
 const pageInfoStyle: CSSProperties = {
     fontSize: "0.78rem",
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
 };

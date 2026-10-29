@@ -291,7 +291,7 @@ func TestRunGUIRemoteCodingTaskWriterStillBlocksWhenEmptyDirectoryHasNoBaseline(
 			return &RemoteCodingSubAgentResult{Status: "success"}
 		},
 	)
-	if err != nil || calls != 0 || result == nil || attempt == nil || attempt.Status != codingruntime.TaskBlocked || attempt.ErrorCode != "workspace_before_probe_failed" {
+	if err != nil || calls != 0 || result == nil || attempt == nil || attempt.Status != codingruntime.TaskBlocked || attempt.ErrorCode != "workspace_before_probe_failed" || !strings.Contains(result.Error, "no unambiguous HEAD") {
 		t.Fatalf("result=%#v attempt=%#v calls=%d err=%v", result, attempt, calls, err)
 	}
 }

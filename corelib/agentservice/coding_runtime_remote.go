@@ -3,7 +3,6 @@ package agentservice
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -236,12 +235,14 @@ func serviceRemoteWorkspaceProbeFromOutput(task codingruntime.Task, binding remo
 	if len(strings.Fields(head)) != 1 {
 		return nil, fmt.Errorf("remote read-only git probe returned no unambiguous HEAD")
 	}
-	status := strings.Trim(output[begin+len(markerStart):end], "\r\n")
-	sum := sha256.Sum256([]byte(status))
+	statusHash, err := codingruntime.RemoteWorkspaceStatusDigest(output[begin+len(markerStart) : end])
+	if err != nil {
+		return nil, err
+	}
 	return &codingruntime.WorkspaceProbe{
 		ProjectRef: firstNonEmptyString(task.ProjectRef, binding.Target.WorkDir),
 		Head:       head,
-		StatusHash: fmt.Sprintf("sha256:%x", sum[:]),
+		StatusHash: statusHash,
 		HostKey:    binding.Identity,
 		WorkDir:    binding.Target.WorkDir,
 		ObservedAt: observedAt.UTC(),

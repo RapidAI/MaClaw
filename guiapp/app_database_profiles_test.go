@@ -232,14 +232,14 @@ func TestDatabaseProfileSetSecret(t *testing.T) {
 		t.Fatalf("schema_version = %d, want bump after secret write", p.SchemaVersion)
 	}
 
-	// The secret value must never reach the persisted config file.
-	configPath := filepath.Join(app.testHomeDir, ".maclaw", "config.json")
+	// The secret value must never reach the persisted config database.
+	configPath := filepath.Join(app.testHomeDir, ".maclaw", "config.db")
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
-		t.Fatalf("ReadFile(config.json) error = %v", err)
+		t.Fatalf("ReadFile(config.db) error = %v", err)
 	}
 	if strings.Contains(string(raw), "s3cret-value") {
-		t.Fatal("secret value leaked into config.json")
+		t.Fatal("secret value leaked into config.db")
 	}
 }
 

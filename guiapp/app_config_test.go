@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,28 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/user"
 )
 
+func readPersistedConfigForTest(t *testing.T, home string) corelib.AppConfig {
+	t.Helper()
+	cfg, err := coreconfig.NewSQLiteStore(filepath.Join(home, ".maclaw")).LoadConfig()
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	return cfg
+}
+
+func readPersistedConfigMapForTest(t *testing.T, home string) map[string]any {
+	t.Helper()
+	data, err := json.Marshal(readPersistedConfigForTest(t, home))
+	if err != nil {
+		t.Fatalf("marshal persisted config: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("unmarshal persisted config: %v", err)
+	}
+	return fields
+}
+
 func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -58,15 +81,8 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 		}
 	}
 
-	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("Read config.json error = %v", err)
-	}
-	var cfg corelib.AppConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("Unmarshal config.json error = %v", err)
-	}
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.db")
+	cfg := readPersistedConfigForTest(t, tmpHome)
 	if cfg.ActiveTool != "claude" {
 		t.Fatalf("ActiveTool = %q, want %q", cfg.ActiveTool, "claude")
 	}
@@ -127,14 +143,7 @@ func TestLoadConfigPromotesHistoricPPTOfficeReadScopeOnce(t *testing.T) {
 		t.Fatalf("promoted OfficeRead scope = %#v, want %#v", cfg, want)
 	}
 
-	persisted, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var disk corelib.AppConfig
-	if err := json.Unmarshal(persisted, &disk); err != nil {
-		t.Fatal(err)
-	}
+	disk := readPersistedConfigForTest(t, tmpHome)
 	if !disk.OfficeReadScopeMigrated || !reflect.DeepEqual(disk.OfficeReadFormats, want) {
 		t.Fatalf("persisted promoted OfficeRead scope = %#v, want %#v", disk, want)
 	}
@@ -591,17 +600,10 @@ func TestLoadConfigConcurrentLegacyMigration(t *testing.T) {
 		}
 	}
 
-	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("Read migrated config error = %v", err)
-	}
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.db")
 	// Migration normalizes the legacy file into the full config schema; the
 	// legacy values must survive, but the bytes are not preserved verbatim.
-	var migrated map[string]any
-	if err := json.Unmarshal(data, &migrated); err != nil {
-		t.Fatalf("Unmarshal migrated config error = %v", err)
-	}
+	migrated := readPersistedConfigMapForTest(t, tmpHome)
 	if migrated["active_tool"] != "claude" || migrated["current_project"] != "legacy-project" {
 		t.Fatalf("migrated config lost legacy values: active_tool=%v current_project=%v", migrated["active_tool"], migrated["current_project"])
 	}
@@ -635,15 +637,7 @@ func TestLoadConfigLegacyMigrationSanitizesRemovedCodingTools(t *testing.T) {
 		t.Fatalf("config not sanitized: active=%q default=%q", cfg.ActiveTool, cfg.DefaultTool)
 	}
 
-	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("Read migrated config error = %v", err)
-	}
-	var migrated map[string]any
-	if err := json.Unmarshal(data, &migrated); err != nil {
-		t.Fatalf("Unmarshal migrated config error = %v", err)
-	}
+	migrated := readPersistedConfigMapForTest(t, tmpHome)
 	if migrated["active_tool"] != "claude" || migrated["default_tool"] != "claude" {
 		t.Fatalf("migrated tools not sanitized: %#v", migrated)
 	}
@@ -652,7 +646,30 @@ func TestLoadConfigLegacyMigrationSanitizesRemovedCodingTools(t *testing.T) {
 	}
 }
 
-func TestLoadConfigCachesInMemoryUntilSave(t *testing.T) {
+func TestLoadConfigCacheSkipsUnchangedFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() seed error = %v", err)
+	}
+	firstSnapshot := app.PeekConfig()
+	if firstSnapshot == nil {
+		t.Fatal("expected a published config snapshot")
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := app.LoadConfig(); err != nil {
+			t.Fatalf("LoadConfig() cached error = %v", err)
+		}
+		if app.PeekConfig() != firstSnapshot {
+			t.Fatal("unchanged config file was deserialized and republished")
+		}
+	}
+}
+
+func TestLoadConfigRefreshesAfterExternalModification(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -662,60 +679,116 @@ func TestLoadConfigCachesInMemoryUntilSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() seed error = %v", err)
 	}
-
 	cfg.RemoteEmail = "first@example.com"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
-
-	cached, err := app.LoadConfig()
-	if err != nil {
+	if _, err := app.LoadConfig(); err != nil {
 		t.Fatalf("LoadConfig() cached error = %v", err)
 	}
-	if cached.RemoteEmail != "first@example.com" {
-		t.Fatalf("cached RemoteEmail = %q, want %q", cached.RemoteEmail, "first@example.com")
-	}
 
-	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
-	data, err := os.ReadFile(configPath)
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.db")
+	beforeInfo, err := os.Stat(configPath)
 	if err != nil {
-		t.Fatalf("Read config.json error = %v", err)
+		t.Fatalf("Stat config.db error = %v", err)
 	}
-	var diskCfg corelib.AppConfig
-	if err := json.Unmarshal(data, &diskCfg); err != nil {
-		t.Fatalf("Unmarshal config.json error = %v", err)
-	}
-	if diskCfg.RemoteEmail != "first@example.com" {
-		t.Fatalf("disk RemoteEmail = %q, want %q", diskCfg.RemoteEmail, "first@example.com")
-	}
-
-	diskCfg.RemoteEmail = "external@example.com"
-	updatedData, err := json.Marshal(diskCfg)
+	db, err := sql.Open("sqlite", configPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
-		t.Fatalf("Marshal external config error = %v", err)
+		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, updatedData, 0644); err != nil {
-		t.Fatalf("Write external config error = %v", err)
-	}
-
-	stale, err := app.LoadConfig()
+	result, err := db.Exec(`UPDATE config_entries SET value_json = '"other@example.com"', updated_at = updated_at + 1 WHERE key = 'remote_email' AND value_json = '"first@example.com"'`)
 	if err != nil {
-		t.Fatalf("LoadConfig() stale error = %v", err)
+		db.Close()
+		t.Fatalf("external config update: %v", err)
 	}
-	if stale.RemoteEmail != "first@example.com" {
-		t.Fatalf("stale RemoteEmail = %q, want cached %q before invalidation", stale.RemoteEmail, "first@example.com")
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		db.Close()
+		t.Fatalf("external update rows = %d, err = %v", changed, err)
 	}
-
-	app.configMu.Lock()
-	app.invalidateConfigCacheLocked()
-	app.configMu.Unlock()
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	changedTime := beforeInfo.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(configPath, changedTime, changedTime); err != nil {
+		t.Fatalf("Chtimes external config error = %v", err)
+	}
 
 	fresh, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() fresh error = %v", err)
 	}
-	if fresh.RemoteEmail != "external@example.com" {
-		t.Fatalf("fresh RemoteEmail = %q, want %q", fresh.RemoteEmail, "external@example.com")
+	if fresh.RemoteEmail != "other@example.com" {
+		t.Fatalf("fresh RemoteEmail = %q, want external value %q", fresh.RemoteEmail, "other@example.com")
+	}
+}
+
+func TestLoadConfigSQLiteMigrationFailureFallsBackToLegacyJSON(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	configDir := filepath.Join(tmpHome, ".maclaw")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	jsonPath := filepath.Join(configDir, "config.json")
+	if err := os.WriteFile(jsonPath, []byte(`{"remote_email":"fallback@example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(configDir, "config.db"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("migration fallback prevented startup: %v", err)
+	}
+	if cfg.RemoteEmail != "fallback@example.com" {
+		t.Fatalf("fallback RemoteEmail = %q", cfg.RemoteEmail)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteEmail = "fallback-updated@example.com"
+	}); err != nil {
+		t.Fatalf("PatchConfig through fallback: %v", err)
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted corelib.AppConfig
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.RemoteEmail != "fallback-updated@example.com" {
+		t.Fatalf("JSON fallback RemoteEmail = %q", persisted.RemoteEmail)
+	}
+}
+
+func TestLoadConfigReturnsPatchedConfigImmediately(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() seed error = %v", err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteEmail = "patched@example.com"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after patch error = %v", err)
+	}
+	if cfg.RemoteEmail != "patched@example.com" {
+		t.Fatalf("RemoteEmail = %q, want patched value", cfg.RemoteEmail)
+	}
+	diskCfg := readPersistedConfigForTest(t, tmpHome)
+	if diskCfg.RemoteEmail != cfg.RemoteEmail {
+		t.Fatalf("disk RemoteEmail = %q, memory RemoteEmail = %q", diskCfg.RemoteEmail, cfg.RemoteEmail)
 	}
 }
 
@@ -813,14 +886,7 @@ func TestCommitConfigToDiskFallsBackWhenCacheInvalid(t *testing.T) {
 	if err := app.commitConfigToDisk(path, cfg); err != nil {
 		t.Fatalf("commitConfigToDisk fallback: %v", err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	var disk corelib.AppConfig
-	if err := json.Unmarshal(data, &disk); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	disk := readPersistedConfigForTest(t, tmpHome)
 	if disk.RemoteEmail != "fallback@example.com" {
 		t.Fatalf("RemoteEmail = %q, want fallback@example.com", disk.RemoteEmail)
 	}
@@ -1587,8 +1653,8 @@ func TestPeekConfigSerializesLegacyCachePromotion(t *testing.T) {
 }
 
 // TestFirstRunConfigDefersDiskWriteOutsideLock ensures bootstrap does not hold
-// configMu across AtomicWrite: cache is valid immediately, file appears after
-// runConfigPostUnlock.
+// configMu across storage writes: cache is valid immediately, the DB appears
+// after runConfigPostUnlock.
 func TestFirstRunConfigDefersDiskWriteOutsideLock(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1603,9 +1669,9 @@ func TestFirstRunConfigDefersDiskWriteOutsideLock(t *testing.T) {
 		t.Fatal("expected default ActiveTool after first-run LoadConfig")
 	}
 	// After LoadConfig returns, deferred disk write must have completed.
-	path := filepath.Join(tmpHome, ".maclaw", "config.json")
+	path := filepath.Join(tmpHome, ".maclaw", "config.db")
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("config.json should exist after deferred bootstrap write: %v", err)
+		t.Fatalf("config.db should exist after deferred bootstrap write: %v", err)
 	}
 	if app.pendingConfigDiskWrite.Load() {
 		t.Fatal("pendingConfigDiskWrite should be clear after LoadConfig post-unlock drain")
@@ -1691,13 +1757,8 @@ func TestLoadConfigRefreshesLogDetailGateAfterCacheInvalidation(t *testing.T) {
 	}
 
 	cfg.LogDetailEnabled = false
-	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
-	updatedData, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("Marshal config error = %v", err)
-	}
-	if err := os.WriteFile(configPath, updatedData, 0644); err != nil {
-		t.Fatalf("Write config.json error = %v", err)
+	if err := coreconfig.NewSQLiteStore(filepath.Join(tmpHome, ".maclaw")).SaveConfig(cfg); err != nil {
+		t.Fatalf("Write config.db error = %v", err)
 	}
 
 	app.configMu.Lock()
@@ -2712,7 +2773,7 @@ func TestHardwareConfigurationDoesNotDependOnIMToken(t *testing.T) {
 	if !full.HardwareEnabled || full.ThirdPartyGatewayToken != "legacy-im-token" {
 		t.Fatalf("hardware configuration did not preserve the independent IM token: %#v", full)
 	}
-	persisted, err := os.ReadFile(configPath)
+	persisted, err := os.ReadFile(filepath.Join(tmpHome, ".maclaw", "config.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4358,15 +4419,8 @@ func TestSaveConfigConcurrentWritesValidJSON(t *testing.T) {
 		}
 	}
 
-	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("Read config.json error = %v", err)
-	}
-	var diskCfg corelib.AppConfig
-	if err := json.Unmarshal(data, &diskCfg); err != nil {
-		t.Fatalf("Unmarshal config.json error = %v", err)
-	}
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.db")
+	diskCfg := readPersistedConfigForTest(t, tmpHome)
 	if diskCfg.RemoteEmail == "" {
 		t.Fatal("expected RemoteEmail to be persisted")
 	}

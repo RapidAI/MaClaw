@@ -117,9 +117,9 @@ type Service struct {
 	// long as this process holds it, so a queue that outlived the process would
 	// hold input that can no longer be delivered. Supplement text is never
 	// written to logs or tables, which is also why it is not persisted.
-	supplements      *runSupplements
+	supplements *runSupplements
 	// pauses holds a run at its next step boundary (see run_pause.go).
-	pauses runPauses
+	pauses           runPauses
 	activeRequests   sync.WaitGroup
 	closed           bool
 	idempotencyMu    sync.Mutex
@@ -252,6 +252,40 @@ func mergeCorrelationMetadata(ctx context.Context, metadata map[string]string) m
 	return out
 }
 
+type serviceResourceOpen struct {
+	name string
+	open func() (interface{}, error)
+}
+
+func openServiceResources(resources []serviceResourceOpen) ([]interface{}, error) {
+	opened := make([]interface{}, len(resources))
+	errs := make([]error, len(resources))
+	limit := make(chan struct{}, 4)
+	var wait sync.WaitGroup
+	for i := range resources {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			limit <- struct{}{}
+			defer func() { <-limit }()
+			opened[index], errs[index] = resources[index].open()
+		}(i)
+	}
+	wait.Wait()
+	for i, err := range errs {
+		if err == nil {
+			continue
+		}
+		for _, resource := range opened {
+			if closer, ok := resource.(interface{ Close() error }); ok {
+				_ = closer.Close()
+			}
+		}
+		return nil, fmt.Errorf("%s: %w", resources[i].name, err)
+	}
+	return opened, nil
+}
+
 func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 	if strings.TrimSpace(cfg.DataRoot) == "" {
 		return nil, fmt.Errorf("data root is required")
@@ -343,39 +377,40 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 		}
 	}
 	if useFileStores {
-		sqliteRecords, err := NewSQLiteRecordStore(filepath.Join(cfg.DataRoot, "records", "records.db"))
-		if err != nil {
+		resources := []serviceResourceOpen{
+			{name: "create record store", open: func() (interface{}, error) {
+				return NewSQLiteRecordStore(filepath.Join(cfg.DataRoot, "records", "records.db"))
+			}},
+			{name: "create dynamic operation ledger", open: func() (interface{}, error) {
+				return NewSQLiteDynamicOperationLedger(filepath.Join(cfg.DataRoot, "operations", "dynamic_operations.db"))
+			}},
+			{name: "create dynamic capability registry", open: func() (interface{}, error) {
+				return NewSQLiteDynamicCapabilityRegistry(filepath.Join(cfg.DataRoot, "capabilities", "dynamic_contracts.db"))
+			}},
+		}
+		_, storeOwnsEvents := store.(RunEventStore)
+		if !storeOwnsEvents {
+			resources = append(resources, serviceResourceOpen{name: "create run event store", open: func() (interface{}, error) {
+				return NewSQLiteRunEventStore(filepath.Join(cfg.DataRoot, "events", "run_events.db"))
+			}})
+		}
+		opened, openErr := openServiceResources(resources)
+		if openErr != nil {
 			closeOwnedStore()
-			return nil, fmt.Errorf("create record store: %w", err)
+			return nil, openErr
 		}
-		records = sqliteRecords
-		sqliteOperations, err := NewSQLiteDynamicOperationLedger(filepath.Join(cfg.DataRoot, "operations", "dynamic_operations.db"))
-		if err != nil {
-			cleanupInitialized()
-			return nil, fmt.Errorf("create dynamic operation ledger: %w", err)
-		}
-		dynamicOperations = sqliteOperations
-		sqliteCapabilities, err := NewSQLiteDynamicCapabilityRegistry(filepath.Join(cfg.DataRoot, "capabilities", "dynamic_contracts.db"))
-		if err != nil {
-			cleanupInitialized()
-			return nil, fmt.Errorf("create dynamic capability registry: %w", err)
-		}
-		dynamicCapabilities = sqliteCapabilities
+		records = opened[0].(RecordStore)
+		dynamicOperations = opened[1].(DynamicOperationLedger)
+		dynamicCapabilities = opened[2].(DynamicCapabilityContractRegistry)
 		// FileStore now persists the run outbox in the same atomic document as
 		// messages and runs. Keep a SQLite fallback for custom file-backed
 		// stores supplied by embedders that do not implement RunEventStore.
-		if eventStore, ok := store.(RunEventStore); ok {
-			runEvents = eventStore
-			runEventsOwned = true
+		if storeOwnsEvents {
+			runEvents = store.(RunEventStore)
 		} else {
-			sqliteEvents, eventErr := NewSQLiteRunEventStore(filepath.Join(cfg.DataRoot, "events", "run_events.db"))
-			if eventErr != nil {
-				cleanupInitialized()
-				return nil, fmt.Errorf("create run event store: %w", eventErr)
-			}
-			runEvents = sqliteEvents
-			runEventsOwned = true
+			runEvents = opened[3].(RunEventStore)
 		}
+		runEventsOwned = true
 	} else {
 		records = NewMemoryRecordStore()
 		dynamicOperations = NewMemoryDynamicOperationLedger()

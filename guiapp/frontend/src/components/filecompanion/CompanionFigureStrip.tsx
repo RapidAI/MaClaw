@@ -94,7 +94,7 @@ export function CompanionFigureStrip({ figures, messageId }: { figures: Companio
 
     return (
         <div style={{ marginTop: 10 }} data-testid={`file-companion-figures-${messageId}`}>
-            <div style={{ fontSize: 12, color: "var(--theme-text-muted, #64748b)", marginBottom: 6 }}>{heading}</div>
+            <div style={{ fontSize: 12, color: "var(--theme-text-muted, #5b6b80)", marginBottom: 6 }}>{heading}</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {figures.map((figure) => {
                     const dataURL = loaded[figure.path] || figureDataURLs.get(figure.path) || "";

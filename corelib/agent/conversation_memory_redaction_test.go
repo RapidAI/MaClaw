@@ -26,7 +26,7 @@ func TestPersistentConversationMemoryRedactsSecretsBeforeDisk(t *testing.T) {
 	})
 	cm.Stop()
 
-	data, err := os.ReadFile(storePath)
+	data, err := readConversationStoreForTest(t, storePath)
 	if err != nil {
 		t.Fatalf("read persisted memory: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestBackgroundPersistentConversationMemoryServesRecoverySlot(t *testing.T) 
 	if err := cm.FlushNow(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(storePath)
+	got, err := readConversationStoreForTest(t, storePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestPersistentConversationMemoryKeepsCleanToolTranscript(t *testing.T) {
 	cm := NewPersistentConversationMemory(storePath)
 	cm.Stop()
 
-	got, err := os.ReadFile(storePath)
+	got, err := readConversationStoreForTest(t, storePath)
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestPersistentConversationMemoryKeepsSessionIDText(t *testing.T) {
 	}
 	cm := NewPersistentConversationMemory(storePath)
 	cm.Stop()
-	got, err := os.ReadFile(storePath)
+	got, err := readConversationStoreForTest(t, storePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +191,11 @@ func assertTranscriptEntriesUnchanged(t *testing.T, before, after []byte) {
 			t.Fatalf("session %q entries = %d, want %d", userID, len(gotSession.Entries), len(wantSession.Entries))
 		}
 		for i := range wantSession.Entries {
+			if wantSession.Entries[i].ID == "" {
+				gotSession.Entries[i].ID = ""
+				gotSession.Entries[i].ParentID = wantSession.Entries[i].ParentID
+				gotSession.Entries[i].Timestamp = 0
+			}
 			if !reflect.DeepEqual(gotSession.Entries[i], wantSession.Entries[i]) {
 				t.Fatalf("entry %d of session %q was rewritten:\n got %#v\nwant %#v",
 					i, userID, gotSession.Entries[i], wantSession.Entries[i])
@@ -212,7 +217,7 @@ func TestPersistentConversationMemoryRedactsLegacySecretsOnLoad(t *testing.T) {
 	cm := NewPersistentConversationMemory(storePath)
 	cm.Stop()
 
-	data, err := os.ReadFile(storePath)
+	data, err := readConversationStoreForTest(t, storePath)
 	if err != nil {
 		t.Fatalf("read rewritten memory: %v", err)
 	}
@@ -249,7 +254,7 @@ func TestPersistentConversationMemoryStripsRolePrefixLeakBeforeDisk(t *testing.T
 	})
 	cm.Stop()
 
-	data, err := os.ReadFile(storePath)
+	data, err := readConversationStoreForTest(t, storePath)
 	if err != nil {
 		t.Fatalf("read persisted memory: %v", err)
 	}
@@ -288,7 +293,7 @@ func TestPersistentConversationMemoryStripsPlainToolCallLeakBeforeDisk(t *testin
 	})
 	cm.Stop()
 
-	data, err := os.ReadFile(storePath)
+	data, err := readConversationStoreForTest(t, storePath)
 	if err != nil {
 		t.Fatalf("read persisted memory: %v", err)
 	}

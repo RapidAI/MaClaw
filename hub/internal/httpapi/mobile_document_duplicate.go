@@ -158,7 +158,7 @@ func mobileStoreContentHashes(ownerID, tenantID string, sums map[string]string) 
 		return
 	}
 	mobileDocuments.Lock()
-	changed := false
+	changed := make([]mobileDocumentDraftRecord, 0, len(sums))
 	for id, sum := range sums {
 		sum = mobileNormalizeContentSHA256(sum)
 		d, ok := mobileDocuments.drafts[id]
@@ -170,11 +170,11 @@ func mobileStoreContentHashes(ownerID, tenantID string, sums map[string]string) 
 		}
 		d.SourceContentSHA256 = sum
 		mobileDocuments.drafts[id] = d
-		changed = true
+		changed = append(changed, d)
 	}
 	mobileDocuments.Unlock()
-	if changed {
-		mobilePersistState()
+	if len(changed) > 0 {
+		mobilePersistDocumentChanges(mobileDocumentChanges{drafts: changed})
 	}
 }
 

@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
-import type { ChatMessage } from "./useAIAssistant";
+import type { AIAssistantInitStatus, ChatMessage } from "./useAIAssistant";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
+import { AssistantWarmupSplash } from "./AssistantWarmupSplash";
 import { t as translate } from "../../i18n";
 import { brandLineParts, formatBrandLine } from "../../utils/brandProductLine";
 
@@ -100,6 +101,8 @@ function playStartupChime() {
 interface AssistantConversationBodyProps {
     emptyContent?: ReactNode;
     initLabel: string;
+    /** Live warm-up stage; drives the stepper + progress on the pre-ready splash. */
+    initStatus?: AIAssistantInitStatus;
     lang: string;
     messages: ChatMessage[];
     onOpenOnboarding?: () => void;
@@ -121,6 +124,7 @@ interface AssistantConversationBodyProps {
 export function AssistantConversationBody({
     emptyContent,
     initLabel,
+    initStatus,
     lang,
     messages,
     onOpenOnboarding,
@@ -171,14 +175,18 @@ export function AssistantConversationBody({
                     </button>
                 </div>
             ) : !ready ? (
-                <div className="acb-loading">
-                    <div data-testid="assistant-brand-splash" aria-label={brandLabel} className="acb-brand">
-                        {brandParts.name ? <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "0" }}>{brandParts.name}</span> : null}
-                        <span className="brand-version-mark acb-brand-version">{brandParts.version}</span>
-                        {brandParts.generation ? <span className="acb-brand-gen">{brandParts.generation}</span> : null}
-                    </div>
-                    <div style={{ color: t.textMuted, fontSize: "11px", opacity: 0.7 }}>{initLabel}</div>
-                </div>
+                <AssistantWarmupSplash
+                    initLabel={initLabel}
+                    initStatus={initStatus}
+                    lang={lang}
+                    brandLine={
+                        <div data-testid="assistant-brand-splash" aria-label={brandLabel} className="acb-brand">
+                            {brandParts.name ? <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "0" }}>{brandParts.name}</span> : null}
+                            <span className="brand-version-mark acb-brand-version">{brandParts.version}</span>
+                            {brandParts.generation ? <span className="acb-brand-gen">{brandParts.generation}</span> : null}
+                        </div>
+                    }
+                />
             ) : messages.length === 0 ? (
                 emptyContent !== undefined ? emptyContent : (
                     liveActivityLabel ? null : (

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/fileutil"
+	_ "modernc.org/sqlite"
 )
 
 type archiveTransitionEvent struct {
@@ -22,16 +23,24 @@ type archiveTransitionEvent struct {
 }
 
 // ArchiveStore manages cold storage for evicted memory entries.
+// Live reads use the in-memory slice. Durable rows live in SQLite. archive.json
+// is only the pre-migration file: the first open copies it once and does not
+// rewrite it. An empty database after that stays empty.
 type ArchiveStore struct {
-	mu        sync.RWMutex
-	entries   []Entry
-	path      string
-	auditPath string
-	dirty     bool
-	saveCh    chan struct{}
-	stopCh    chan struct{}
-	stopOnce  sync.Once
-	maxItems  int
+	mu          sync.RWMutex
+	entries     []Entry
+	path        string
+	dbPath      string
+	db          *sql.DB
+	auditPath   string
+	dirty       bool
+	rewriteAll  bool
+	dirtyUpsert map[string]struct{}
+	dirtyDelete map[string]struct{}
+	saveCh      chan struct{}
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	maxItems    int
 }
 
 // NewArchiveStore creates an ArchiveStore that persists to the given path.
@@ -42,15 +51,22 @@ func NewArchiveStore(path string) (*ArchiveStore, error) {
 	}
 
 	a := &ArchiveStore{
-		entries:   make([]Entry, 0),
-		path:      absPath,
-		auditPath: absPath + ".transitions.jsonl",
-		saveCh:    make(chan struct{}, 1),
-		stopCh:    make(chan struct{}),
-		maxItems:  1000,
+		entries:     make([]Entry, 0),
+		path:        absPath,
+		dbPath:      archiveDBPath(absPath),
+		auditPath:   absPath + ".transitions.jsonl",
+		dirtyUpsert: make(map[string]struct{}),
+		dirtyDelete: make(map[string]struct{}),
+		saveCh:      make(chan struct{}, 1),
+		stopCh:      make(chan struct{}),
+		maxItems:    1000,
 	}
 
 	if err := a.load(); err != nil {
+		if a.db != nil {
+			_ = a.db.Close()
+			a.db = nil
+		}
 		return nil, err
 	}
 
@@ -92,6 +108,7 @@ func (a *ArchiveStore) AddDurable(entries ...Entry) error {
 }
 
 func (a *ArchiveStore) addLocked(entries []Entry) {
+	before := archiveIDSet(a.entries)
 	byID := make(map[string]int, len(a.entries)+len(entries))
 	for i := range a.entries {
 		if a.entries[i].ID != "" {
@@ -110,12 +127,15 @@ func (a *ArchiveStore) addLocked(entries []Entry) {
 	}
 
 	// Enforce capacity: evict oldest entries by UpdatedAt.
+	evicted := false
 	if len(a.entries) > a.maxItems {
+		evicted = true
 		sort.SliceStable(a.entries, func(i, j int) bool {
 			return a.entries[i].UpdatedAt.Before(a.entries[j].UpdatedAt)
 		})
 		a.entries = a.entries[len(a.entries)-a.maxItems:]
 	}
+	a.noteArchiveWrite(before, entries, evicted)
 }
 
 // RemoveIDs removes and returns all archived entries whose IDs are present.
@@ -193,6 +213,7 @@ func (a *ArchiveStore) removeIDsLocked(ids []string) []Entry {
 	for _, id := range ordered {
 		if entry, ok := removedByID[id]; ok {
 			removed = append(removed, entry)
+			a.noteArchiveDelete(entry.ID)
 		}
 	}
 	return removed
@@ -326,12 +347,15 @@ func (a *ArchiveStore) Stop() {
 
 		if dirty {
 			_ = a.flush()
-			a.mu.Lock()
-			a.dirty = false
-			a.mu.Unlock()
 		}
 
 		close(a.stopCh)
+		a.mu.Lock()
+		if a.db != nil {
+			_ = a.db.Close()
+			a.db = nil
+		}
+		a.mu.Unlock()
 	})
 }
 
@@ -339,24 +363,155 @@ func (a *ArchiveStore) Stop() {
 // Persistence internals
 // ---------------------------------------------------------------------------
 
+func archiveDBPath(jsonPath string) string {
+	ext := filepath.Ext(jsonPath)
+	if strings.EqualFold(ext, ".json") {
+		return strings.TrimSuffix(jsonPath, ext) + ".db"
+	}
+	return jsonPath + ".db"
+}
+
 func (a *ArchiveStore) load() error {
-	dir := filepath.Dir(a.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := a.openDB(); err != nil {
+		return err
+	}
+	done, err := a.legacyImportDone()
+	if err != nil {
+		return err
+	}
+	n, err := a.countDB()
+	if err != nil {
+		return err
+	}
+	if done || n > 0 {
+		// Rows without a marker were imported by an older build. Mark them
+		// and do not merge archive.json back in, or a deleted row returns.
+		if !done {
+			if err := a.markLegacyImportDone(); err != nil {
+				return err
+			}
+		}
+		if n == 0 {
+			return nil
+		}
+		return a.loadDB()
+	}
+	if err := a.loadJSON(); err != nil {
+		return err
+	}
+	if len(a.entries) > 0 {
+		a.rewriteAll = true
+		a.dirty = true
+		if err := a.flushLocked(); err != nil {
+			return err
+		}
+	}
+	return a.markLegacyImportDone()
+}
+
+func (a *ArchiveStore) legacyImportDone() (bool, error) {
+	var n int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM archive_meta WHERE key = 'legacy_json_imported'`).Scan(&n); err != nil {
+		return false, fmt.Errorf("archive_store: import marker: %w", err)
+	}
+	return n > 0, nil
+}
+
+func (a *ArchiveStore) markLegacyImportDone() error {
+	if _, err := a.db.Exec(`INSERT INTO archive_meta(key, value) VALUES('legacy_json_imported', '1') ON CONFLICT(key) DO NOTHING`); err != nil {
+		return fmt.Errorf("archive_store: mark import: %w", err)
+	}
+	return nil
+}
+
+func (a *ArchiveStore) openDB() error {
+	if err := os.MkdirAll(filepath.Dir(a.dbPath), 0o755); err != nil {
 		return fmt.Errorf("archive_store: create dir: %w", err)
 	}
+	db, err := sql.Open("sqlite", a.dbPath)
+	if err != nil {
+		return fmt.Errorf("archive_store: open db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			_ = db.Close()
+			return fmt.Errorf("archive_store: pragma: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS archive_entries (
+		id TEXT PRIMARY KEY,
+		position INTEGER NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT '',
+		entry_json TEXT NOT NULL
+	)`); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("archive_store: schema: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS archive_meta (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("archive_store: schema: %w", err)
+	}
+	a.db = db
+	return nil
+}
 
+func (a *ArchiveStore) countDB() (int, error) {
+	if a.db == nil {
+		return 0, fmt.Errorf("archive_store: database is closed")
+	}
+	var n int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM archive_entries`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("archive_store: count: %w", err)
+	}
+	return n, nil
+}
+
+func (a *ArchiveStore) loadDB() error {
+	rows, err := a.db.Query(`SELECT entry_json FROM archive_entries ORDER BY position ASC, id ASC`)
+	if err != nil {
+		return fmt.Errorf("archive_store: read db: %w", err)
+	}
+	defer rows.Close()
+	entries := make([]Entry, 0)
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return err
+		}
+		var entry Entry
+		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
+			log.Printf("[archive_store] WARNING: skipped unreadable archived row: %v", err)
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	a.entries = entries
+	return nil
+}
+
+func (a *ArchiveStore) loadJSON() error {
 	data, err := os.ReadFile(a.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // silently create empty archive
+			return nil
 		}
 		return fmt.Errorf("archive_store: read file: %w", err)
 	}
-
 	if len(data) == 0 {
 		return nil
 	}
-
 	var entries []Entry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		backupPath := a.path + ".corrupt." + time.Now().Format("20060102_150405")
@@ -370,31 +525,210 @@ func (a *ArchiveStore) load() error {
 }
 
 func (a *ArchiveStore) flush() error {
-	a.mu.RLock()
-	data, err := json.MarshalIndent(a.entries, "", "  ")
-	a.mu.RUnlock()
-	if err != nil {
-		return fmt.Errorf("archive_store: marshal: %w", err)
-	}
-	if err := fileutil.AtomicWriteFile(a.path, data, 0o644); err != nil {
-		return fmt.Errorf("archive_store: write file: %w", err)
-	}
 	a.mu.Lock()
-	a.dirty = false
-	a.mu.Unlock()
-	return nil
+	defer a.mu.Unlock()
+	return a.flushLocked()
 }
 
 func (a *ArchiveStore) flushLocked() error {
-	data, err := json.MarshalIndent(a.entries, "", "  ")
+	if a.db == nil {
+		return fmt.Errorf("archive_store: database is closed")
+	}
+	full := a.rewriteAll || archiveSliceNeedsFullRewrite(a.entries)
+	if !full && len(a.dirtyDelete) == 0 && len(a.dirtyUpsert) == 0 {
+		a.dirty = false
+		return nil
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return fmt.Errorf("archive_store: begin: %w", err)
+	}
+	if full {
+		if _, err := tx.Exec(`DELETE FROM archive_entries`); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("archive_store: clear: %w", err)
+		}
+		for i := range a.entries {
+			if err := insertArchiveEntry(tx, i, a.entries[i]); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+	} else {
+		if err := deleteArchiveIDs(tx, a.dirtyDelete); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if len(a.dirtyUpsert) > 0 {
+			var nextPos int
+			if err := tx.QueryRow(`SELECT COALESCE(MAX(position), -1) FROM archive_entries`).Scan(&nextPos); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("archive_store: next position: %w", err)
+			}
+			nextPos++
+			for i := range a.entries {
+				id := strings.TrimSpace(a.entries[i].ID)
+				if _, ok := a.dirtyUpsert[id]; !ok {
+					continue
+				}
+				// A conflict keeps the row's position. New rows append. Unused
+				// position numbers from an update are only gaps.
+				if err := upsertArchiveEntry(tx, nextPos, a.entries[i]); err != nil {
+					_ = tx.Rollback()
+					return err
+				}
+				nextPos++
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("archive_store: commit: %w", err)
+	}
+	a.dirty = false
+	a.rewriteAll = false
+	a.dirtyUpsert = make(map[string]struct{})
+	a.dirtyDelete = make(map[string]struct{})
+	return nil
+}
+
+func deleteArchiveIDs(tx *sql.Tx, ids map[string]struct{}) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	list := make([]any, 0, len(ids))
+	for id := range ids {
+		list = append(list, id)
+	}
+	const chunk = 200
+	for start := 0; start < len(list); start += chunk {
+		end := start + chunk
+		if end > len(list) {
+			end = len(list)
+		}
+		part := list[start:end]
+		query := `DELETE FROM archive_entries WHERE id IN (?` + strings.Repeat(",?", len(part)-1) + `)`
+		if _, err := tx.Exec(query, part...); err != nil {
+			return fmt.Errorf("archive_store: delete: %w", err)
+		}
+	}
+	return nil
+}
+
+func upsertArchiveEntry(tx *sql.Tx, position int, entry Entry) error {
+	raw, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("archive_store: marshal: %w", err)
 	}
-	if err := fileutil.AtomicWriteFile(a.path, data, 0o644); err != nil {
-		return fmt.Errorf("archive_store: write file: %w", err)
+	id := strings.TrimSpace(entry.ID)
+	if id == "" {
+		return fmt.Errorf("archive_store: entry id is required")
 	}
-	a.dirty = false
+	updated := ""
+	if !entry.UpdatedAt.IsZero() {
+		updated = entry.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	_, err = tx.Exec(`INSERT INTO archive_entries(id, position, updated_at, entry_json) VALUES(?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET
+			updated_at = excluded.updated_at,
+			entry_json = excluded.entry_json`,
+		id, position, updated, string(raw))
+	if err != nil {
+		return fmt.Errorf("archive_store: write %s: %w", id, err)
+	}
 	return nil
+}
+
+func insertArchiveEntry(tx *sql.Tx, position int, entry Entry) error {
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("archive_store: marshal: %w", err)
+	}
+	id := strings.TrimSpace(entry.ID)
+	if id == "" {
+		id = fmt.Sprintf("~anon~%d", position)
+	}
+	updated := ""
+	if !entry.UpdatedAt.IsZero() {
+		updated = entry.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	_, err = tx.Exec(`INSERT INTO archive_entries(id, position, updated_at, entry_json) VALUES(?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET
+			position = excluded.position,
+			updated_at = excluded.updated_at,
+			entry_json = excluded.entry_json`,
+		id, position, updated, string(raw))
+	if err != nil {
+		return fmt.Errorf("archive_store: write %s: %w", id, err)
+	}
+	return nil
+}
+
+func archiveIDSet(entries []Entry) map[string]struct{} {
+	ids := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if id := strings.TrimSpace(entry.ID); id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
+}
+
+func archiveSliceNeedsFullRewrite(entries []Entry) bool {
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *ArchiveStore) noteArchiveWrite(before map[string]struct{}, added []Entry, evicted bool) {
+	if a.dirtyUpsert == nil {
+		a.dirtyUpsert = make(map[string]struct{})
+	}
+	if a.dirtyDelete == nil {
+		a.dirtyDelete = make(map[string]struct{})
+	}
+	if evicted || archiveSliceNeedsFullRewrite(a.entries) || archiveSliceNeedsFullRewrite(added) {
+		a.rewriteAll = true
+		a.dirty = true
+		return
+	}
+	after := archiveIDSet(a.entries)
+	for id := range before {
+		if _, ok := after[id]; !ok {
+			a.dirtyDelete[id] = struct{}{}
+			delete(a.dirtyUpsert, id)
+		}
+	}
+	for _, entry := range added {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			a.rewriteAll = true
+			a.dirty = true
+			return
+		}
+		a.dirtyUpsert[id] = struct{}{}
+		delete(a.dirtyDelete, id)
+	}
+	a.dirty = true
+}
+
+func (a *ArchiveStore) noteArchiveDelete(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		a.rewriteAll = true
+		a.dirty = true
+		return
+	}
+	if a.dirtyDelete == nil {
+		a.dirtyDelete = make(map[string]struct{})
+	}
+	a.dirtyDelete[id] = struct{}{}
+	if a.dirtyUpsert != nil {
+		delete(a.dirtyUpsert, id)
+	}
+	a.dirty = true
 }
 
 func (a *ArchiveStore) persistLoop() {

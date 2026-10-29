@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,6 +53,21 @@ func TestMobilePushPendingEnqueueAndAck(t *testing.T) {
 	}
 	if len(mobilePushListPending(tenant, user)) != 0 {
 		t.Fatal("want empty after ack")
+	}
+}
+
+func TestMobilePushUpsertEmptyTokenReleasesPurgeLock(t *testing.T) {
+	mobilePushUpsertDevice("t_empty", "u_empty", mobilePushDevice{})
+	done := make(chan struct{})
+	go func() {
+		mobileKnowledgePurgeState.Lock()
+		mobileKnowledgePurgeState.Unlock()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("purge lock still held after rejected device upsert")
 	}
 }
 
@@ -147,7 +161,7 @@ func TestMobilePushDevicesHandlerAuth(t *testing.T) {
 func TestMobilePushStatePersistence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mobile-state.json")
-	t.Setenv(mobileStatePathEnv, path)
+	setMobileStatePathForTest(t, path)
 	mobileResetStatePersistenceForTest()
 	// load empty path as loaded
 	mobileEnsureStateLoaded()
@@ -161,16 +175,8 @@ func TestMobilePushStatePersistence(t *testing.T) {
 		Status: "completed", TaskID: "task-p1",
 		DedupeKey: "ssh_task:task-p1:completed",
 	})
-	// Allow async schedulePersist to flush.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	// Force sync write in case go routine raced.
-	mobilePersistState()
+	// Force sync write in case a scheduled write raced.
+	mobilePersistPushUser(tenant, user)
 
 	// Clear memory and reload from disk.
 	mobilePushResetForTest()

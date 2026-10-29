@@ -24,8 +24,7 @@ func (h *IMMessageHandler) toolGoal(args map[string]interface{}) string {
 // use desktop-user:<projectPath> as the store key).
 func (h *IMMessageHandler) toolGoalForUser(userID string, args map[string]interface{}) string {
 	userID = h.resolveGoalUserID(userID)
-	action, _ := args["action"].(string)
-	action = strings.TrimSpace(strings.ToLower(action))
+	action := goal.ApplyMissingAction(args)
 
 	switch action {
 	case "create":
@@ -243,17 +242,30 @@ func (h *IMMessageHandler) goalStepForUser(userID string, args map[string]interf
 	if g.EffectivePhase() != goal.PhaseExecute {
 		return "错误: 目标仍在规划阶段，请先调用 goal(action=\"plan\")"
 	}
-	index, ok := getIntArg(args, "index")
-	if !ok || index <= 0 {
-		return "错误: 缺少 index 参数"
-	}
+	index, indexOK := goal.IndexArg(args, "index")
 	statusRaw, _ := args["status"].(string)
 	result, _ := args["result"].(string)
 	if strings.TrimSpace(result) == "" {
 		result, _ = args["reason"].(string)
 	}
-	if refusal := g.StepReportRefusal(index); refusal != "" {
-		return "错误: " + refusal
+	resolved := g.ResolveReportedStep(index, indexOK && index > 0)
+	if resolved.Refusal != "" {
+		return "错误: " + resolved.Refusal
+	}
+	if resolved.FollowUp.Index > 0 {
+		saved := false
+		if strings.TrimSpace(result) != "" {
+			var err error
+			saved, err = store.AppendStepNote(userID, g.GoalID, resolved.FollowUp.Index, result)
+			if err != nil {
+				return "错误: " + err.Error()
+			}
+		}
+		return goal.FormatDoneStepNote(resolved.FollowUp, resolved.Current, saved)
+	}
+	index = resolved.Index
+	if strings.TrimSpace(statusRaw) == "" {
+		statusRaw = string(goal.StepProgress)
 	}
 	if err := store.UpdateStep(userID, g.GoalID, index, goal.StepStatus(statusRaw), result); err != nil {
 		return "错误: " + err.Error()

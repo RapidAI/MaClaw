@@ -7,7 +7,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -174,7 +173,7 @@ func TestMobilePersistAndStripDraftBlob(t *testing.T) {
 func TestMobilePersistStateStripsSourceBytesToDisk(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "mobile-state.json")
 	blobRoot := t.TempDir()
-	t.Setenv(mobileStatePathEnv, statePath)
+	setMobileStatePathForTest(t, statePath)
 	t.Setenv(mobileBlobDirEnv, blobRoot)
 	// Reset loaded flag so ensure-load can run cleanly if needed.
 	mobileStatePersistence.Lock()
@@ -198,24 +197,16 @@ func TestMobilePersistStateStripsSourceBytesToDisk(t *testing.T) {
 	}
 	mobileDocuments.Unlock()
 
-	mobilePersistState()
+	mobilePersistDraft(mobileDocuments.drafts["pd1"])
 
-	// state.json must not embed the raw blob.
-	data, err := os.ReadFile(statePath)
+	payload, err := mobileStateRowPayloadForTest(mobileStateDBForTest(t, statePath), "drafts", "", "pd1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(data, raw) {
-		t.Fatalf("state.json still contains raw source bytes")
+	if bytes.Contains([]byte(payload), raw) {
+		t.Fatalf("SQLite payload still contains raw source bytes")
 	}
-	var state mobilePersistentState
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatal(err)
-	}
-	rec, ok := state.Drafts["pd1"]
-	if !ok {
-		t.Fatal("draft missing from state")
-	}
+	rec := readMobileDraftForTest(t, statePath, "", "pd1")
 	if len(rec.SourceBytes) != 0 {
 		t.Fatal("persisted SourceBytes should be empty")
 	}
@@ -227,7 +218,7 @@ func TestMobilePersistStateStripsSourceBytesToDisk(t *testing.T) {
 	if err != nil || !bytes.Equal(got, raw) {
 		t.Fatalf("disk blob err=%v got=%q", err, got)
 	}
-	// Live in-memory record must be backfilled with SourcePath (not only state.json).
+	// Live in-memory record must be backfilled with SourcePath (not only the DB payload).
 	mobileDocuments.Lock()
 	live := mobileDocuments.drafts["pd1"]
 	mobileDocuments.Unlock()
@@ -433,7 +424,7 @@ func TestMobileReleaseUploadOriginalKeepsUploadWhenDraftGhost(t *testing.T) {
 func TestMobileStripKeepsBytesWhenBlobWriteFails(t *testing.T) {
 	// No blob dir / empty state path → write fails → must keep SourceBytes.
 	t.Setenv(mobileBlobDirEnv, "")
-	t.Setenv(mobileStatePathEnv, "")
+	setMobileStatePathForTest(t, "")
 	mobileStatePathOverride = ""
 
 	raw := []byte("only-in-memory")
@@ -558,7 +549,7 @@ func TestMobileDraftRepairPersistsOutOfStateJSON(t *testing.T) {
 	// After repair, path must not reappear from a subsequent strip/persist cycle.
 	statePath := filepath.Join(t.TempDir(), "mobile-state.json")
 	blobRoot := t.TempDir()
-	t.Setenv(mobileStatePathEnv, statePath)
+	setMobileStatePathForTest(t, statePath)
 	t.Setenv(mobileBlobDirEnv, blobRoot)
 	mobileStatePersistence.Lock()
 	mobileStatePersistence.loaded = true
@@ -585,16 +576,8 @@ func TestMobileDraftRepairPersistsOutOfStateJSON(t *testing.T) {
 	mobileDocuments.drafts["gone1"] = rec
 	mobileDocuments.Unlock()
 
-	mobilePersistState()
-	raw, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state mobilePersistentState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		t.Fatal(err)
-	}
-	got := state.Drafts["gone1"]
+	mobilePersistDraft(rec)
+	got := readMobileDraftForTest(t, statePath, "", "gone1")
 	if got.SourcePath != "" || got.SourceSize != 0 {
 		t.Fatalf("persisted stale original meta: path=%q size=%d", got.SourcePath, got.SourceSize)
 	}
@@ -633,7 +616,7 @@ func TestMobileDocumentOriginalDiskHTTPRoundTrip(t *testing.T) {
 
 	statePath := filepath.Join(t.TempDir(), "mobile-state.json")
 	blobRoot := t.TempDir()
-	t.Setenv(mobileStatePathEnv, statePath)
+	setMobileStatePathForTest(t, statePath)
 	t.Setenv(mobileBlobDirEnv, blobRoot)
 	mobileStatePersistence.Lock()
 	mobileStatePersistence.loaded = true
@@ -746,7 +729,7 @@ func TestMobileUploadSource404ClearsGhostDraftFallbackMeta(t *testing.T) {
 	blobRoot := t.TempDir()
 	t.Setenv(mobileBlobDirEnv, blobRoot)
 	statePath := filepath.Join(t.TempDir(), "mobile-state.json")
-	t.Setenv(mobileStatePathEnv, statePath)
+	setMobileStatePathForTest(t, statePath)
 	mobileStatePersistence.Lock()
 	mobileStatePersistence.loaded = true
 	mobileStatePersistence.Unlock()
@@ -794,7 +777,7 @@ func TestMobileDocumentUploadMultipartPersistsOriginalToDisk(t *testing.T) {
 
 	statePath := filepath.Join(t.TempDir(), "mobile-state.json")
 	blobRoot := t.TempDir()
-	t.Setenv(mobileStatePathEnv, statePath)
+	setMobileStatePathForTest(t, statePath)
 	t.Setenv(mobileBlobDirEnv, blobRoot)
 	mobileStatePersistence.Lock()
 	mobileStatePersistence.loaded = true
@@ -879,22 +862,10 @@ func TestMobileDocumentUploadMultipartPersistsOriginalToDisk(t *testing.T) {
 		t.Fatalf("source status=%d body=%q", srcRec.Code, srcRec.Body.Bytes())
 	}
 
-	// state.json must not embed SourceBytes (markdown may still hold text extract).
-	mobilePersistState()
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state mobilePersistentState
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatal(err)
-	}
-	persisted, ok := state.Drafts[draftID]
-	if !ok {
-		t.Fatal("draft missing from state")
-	}
+	// SQLite payload must not embed SourceBytes (markdown may still hold text extract).
+	persisted := readMobileDraftForTest(t, statePath, enroll.TenantID, draftID)
 	if len(persisted.SourceBytes) != 0 {
-		t.Fatal("state.json still embeds SourceBytes")
+		t.Fatal("SQLite payload still embeds SourceBytes")
 	}
 	if persisted.SourcePath == "" || persisted.SourceSize != draft.SourceSize || persisted.SourceEncoding != "gzip" || persisted.SourceOriginalSize != len(raw) {
 		t.Fatalf("path=%q stored=%d encoding=%q original=%d", persisted.SourcePath, persisted.SourceSize, persisted.SourceEncoding, persisted.SourceOriginalSize)

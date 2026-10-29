@@ -431,7 +431,7 @@ const headingStyle: CSSProperties = {
     margin: 0,
     fontSize: "1rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const warningStyle: CSSProperties = {
@@ -467,13 +467,13 @@ const sectionHeadingStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.88rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const sectionDescStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.75rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
 };
 
 const searchContainerStyle: CSSProperties = {
@@ -484,10 +484,10 @@ const searchInputStyle: CSSProperties = {
     width: "100%",
     padding: "8px 12px",
     fontSize: "0.82rem",
-    border: "1px solid var(--theme-border, #c9ddf6)",
+    border: "1px solid var(--theme-border, #d5e0ef)",
     borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     outline: "none",
     boxSizing: "border-box",
 };
@@ -508,7 +508,7 @@ const searchResultsStyle: CSSProperties = {
     margin: 0,
     padding: 0,
     background: "var(--theme-surface, #ffffff)",
-    border: "1px solid var(--theme-border, #c9ddf6)",
+    border: "1px solid var(--theme-border, #d5e0ef)",
     borderTop: "none",
     borderRadius: "0 0 6px 6px",
     maxHeight: "180px",
@@ -528,12 +528,12 @@ const searchResultItemStyle: CSSProperties = {
 
 const userNameStyle: CSSProperties = {
     fontWeight: 500,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
 };
 
 const userEmailStyle: CSSProperties = {
     fontSize: "0.72rem",
-    color: "var(--theme-text-muted, #56677c)",
+    color: "var(--theme-text-muted, #5b6b80)",
 };
 
 const userListStyle: CSSProperties = {
@@ -561,7 +561,7 @@ const userItemHeaderStyle: CSSProperties = {
 
 const userItemNameStyle: CSSProperties = {
     fontWeight: 600,
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     fontSize: "0.82rem",
 };
 
@@ -587,17 +587,17 @@ const configLabelStyle: CSSProperties = {
     flexDirection: "column",
     gap: "3px",
     fontSize: "0.72rem",
-    color: "var(--theme-text-secondary, #546479)",
+    color: "var(--theme-text-secondary, #46586f)",
 };
 
 const configInputStyle: CSSProperties = {
     width: "80px",
     padding: "4px 8px",
     fontSize: "0.8rem",
-    border: "1px solid var(--theme-border, #c9ddf6)",
+    border: "1px solid var(--theme-border, #d5e0ef)",
     borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #526277)",
+    color: "var(--theme-text-primary, #24364e)",
     outline: "none",
 };
 

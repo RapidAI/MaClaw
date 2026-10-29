@@ -112,6 +112,7 @@ func TestLoadFromDisk_RepairsOrphanedToolEntries(t *testing.T) {
 	os.WriteFile(storePath, data, 0644)
 
 	cm := NewConversationMemory()
+	defer cm.Stop()
 	cm.storePath = storePath
 	if err := cm.loadFromDisk(); err != nil {
 		t.Fatalf("loadFromDisk failed: %v", err)

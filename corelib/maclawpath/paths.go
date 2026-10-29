@@ -1,12 +1,13 @@
 package maclawpath
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/configdb"
 )
 
 var (
@@ -32,7 +33,7 @@ func DefaultBaseDir() string {
 	return defaultBasePath
 }
 
-// BaseDir returns the effective MaClaw base dir. config.json remains in
+// BaseDir returns the effective MaClaw base dir. config.db remains in
 // DefaultBaseDir(), while data_dir can move logs/data/runtime payloads.
 func BaseDir() string {
 	baseOnce.Do(func() {
@@ -106,15 +107,7 @@ func resolveBaseDir(configuredDir string) string {
 }
 
 func loadConfiguredDataDir() string {
-	data, err := os.ReadFile(filepath.Join(DefaultBaseDir(), "config.json"))
-	if err != nil {
-		return ""
-	}
-	var partial struct {
-		DataDir string `json:"data_dir"`
-	}
-	if json.Unmarshal(data, &partial) != nil {
-		return ""
-	}
-	return strings.TrimSpace(partial.DataDir)
+	var configured string
+	configdb.ReadValue(DefaultBaseDir(), "data_dir", &configured)
+	return strings.TrimSpace(configured)
 }

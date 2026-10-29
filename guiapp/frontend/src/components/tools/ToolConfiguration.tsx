@@ -40,9 +40,9 @@ export const ToolConfiguration = ({
         if (model.has_subscription) return { bg: 'var(--theme-primary-strong, #1e6bc5)', fg: themed, label: t("subscription") };
         if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax"))
             return { bg: 'var(--theme-primary-strong, #1e6bc5)', fg: themed, label: t("monthly") };
-        if (name.includes("deepseek")) return { bg: 'var(--theme-text-muted, #56677c)', fg: themed, label: t("premium") };
-        if (name.includes("xiaomi")) return { bg: 'var(--theme-text-muted, #56677c)', fg: themed, label: t("bigSpender") };
-        if (model.is_custom) return { bg: 'var(--theme-text-muted, #56677c)', fg: themed, label: t("customized") };
+        if (name.includes("deepseek")) return { bg: 'var(--theme-text-muted, #5b6b80)', fg: themed, label: t("premium") };
+        if (name.includes("xiaomi")) return { bg: 'var(--theme-text-muted, #5b6b80)', fg: themed, label: t("bigSpender") };
+        if (model.is_custom) return { bg: 'var(--theme-text-muted, #5b6b80)', fg: themed, label: t("customized") };
         if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "coderelay"].some(p => name.includes(p)))
             return { bg: 'var(--theme-success, #11813a)', fg: themed, label: t("forward") };
         return null;

@@ -22,7 +22,7 @@ const riskColor = (level: string) => {
         case 'critical': return 'var(--theme-danger, #dc1f25)';
         case 'high': return 'var(--theme-warning, #aa5d05)';
         case 'medium': return 'var(--theme-accent, #b7791f)';
-        default: return 'var(--theme-text-muted, #56677c)';
+        default: return 'var(--theme-text-muted, #5b6b80)';
     }
 };
 

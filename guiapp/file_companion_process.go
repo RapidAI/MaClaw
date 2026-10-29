@@ -827,8 +827,9 @@ func (a *App) startFileCompanionConfigWatcher() {
 	if err != nil {
 		return
 	}
-	if err := watcher.Add(configPath); err != nil {
-		logFileCompanion("watch %s: %v", configPath, err)
+	storagePath := a.configStoreForPath(configPath).StoragePath()
+	if err := watcher.Add(storagePath); err != nil {
+		logFileCompanion("watch %s: %v", storagePath, err)
 	}
 }
 

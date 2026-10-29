@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -121,6 +122,9 @@ func runServer(ctx context.Context) error {
 		RuntimeModules:              srvDesktopRuntimeModules(),
 	}, nil, executor)
 	if err != nil {
+		if closer, ok := distributedLimiter.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 		return fmt.Errorf("create service: %w", err)
 	}
 	// The executor needs the service host so the agent loop can reach per-run
@@ -151,6 +155,21 @@ func runServer(ctx context.Context) error {
 		}
 		_ = svc.Close()
 	}()
+	var semanticErr, kmErr error
+	var storageWait sync.WaitGroup
+	storageWait.Add(2)
+	go func() {
+		defer storageWait.Done()
+		semanticErr = svc.PrepareDynamicSemanticRoutingResources()
+	}()
+	go func() {
+		defer storageWait.Done()
+		knowledgeMgr, kmErr = newKnowledgeStoreManager(dataRoot)
+	}()
+	storageWait.Wait()
+	if semanticErr != nil {
+		return semanticErr
+	}
 	if err := configureSrvDynamicSemanticRouting(svc); err != nil {
 		return err
 	}
@@ -166,12 +185,10 @@ func runServer(ctx context.Context) error {
 	wireSkillSourceFilter(svc, skillSourceSvc)
 
 	// Initialize knowledge store (non-fatal: degrades to no-knowledge mode).
-	km, kmErr := newKnowledgeStoreManager(dataRoot)
 	if kmErr != nil {
 		srvLog().Warn("knowledge initialization failed (non-fatal, knowledge features disabled)", slog.String("error", kmErr.Error()))
 	} else {
-		knowledgeMgr = km
-		executor.SetKnowledgeStore(km.AgentStore())
+		executor.SetKnowledgeStore(knowledgeMgr.AgentStore())
 		srvLog().Info("knowledge initialized")
 	}
 

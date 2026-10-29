@@ -156,7 +156,10 @@ func mobilePushSnapshotInto(state *mobilePersistentState) {
 	}
 }
 
+var mobilePushPersistWG sync.WaitGroup
+
 func mobilePushResetForTest() {
+	mobilePushPersistWG.Wait()
 	mobilePushState.Lock()
 	mobilePushState.devices = make(map[string][]mobilePushDevice)
 	mobilePushState.pending = make(map[string][]mobilePushPendingItem)
@@ -164,9 +167,12 @@ func mobilePushResetForTest() {
 	mobilePushState.Unlock()
 }
 
-func mobilePushSchedulePersist() {
-	// Best-effort: reuse the shared mobile state file (documents/employees/push).
-	go mobilePersistState()
+func mobilePushSchedulePersist(tenantID, userID string) {
+	mobilePushPersistWG.Add(1)
+	go func() {
+		defer mobilePushPersistWG.Done()
+		mobilePersistPushUser(tenantID, userID)
+	}()
 }
 
 func mobileNewPushID() string {
@@ -203,6 +209,7 @@ func mobilePushUpsertDevice(tenantID, userID string, dev mobilePushDevice) {
 	dev.Token = strings.TrimSpace(dev.Token)
 	dev.DeviceID = strings.TrimSpace(dev.DeviceID)
 	if dev.Platform == "" || dev.Token == "" {
+		mobileKnowledgePurgeState.RUnlock()
 		return
 	}
 	dev.UpdatedAt = time.Now().UTC()
@@ -222,7 +229,7 @@ func mobilePushUpsertDevice(tenantID, userID string, dev mobilePushDevice) {
 	mobilePushState.devices[key] = out
 	mobilePushState.Unlock()
 	mobileKnowledgePurgeState.RUnlock()
-	mobilePushSchedulePersist()
+	mobilePushSchedulePersist(tenantID, userID)
 }
 
 func mobilePushRemoveDevice(tenantID, userID, token string) bool {
@@ -255,7 +262,7 @@ func mobilePushRemoveDevice(tenantID, userID, token string) bool {
 	}
 	mobilePushState.Unlock()
 	if removed {
-		mobilePushSchedulePersist()
+		mobilePushSchedulePersist(tenantID, userID)
 	}
 	return removed
 }
@@ -312,7 +319,7 @@ func mobilePushEnqueue(tenantID, userID string, item mobilePushPendingItem) mobi
 	mobilePushState.pending[key] = kept
 	mobilePushState.Unlock()
 	mobileKnowledgePurgeState.RUnlock()
-	mobilePushSchedulePersist()
+	mobilePushSchedulePersist(tenantID, userID)
 	return item
 }
 
@@ -369,7 +376,7 @@ func mobilePushAck(tenantID, userID string, ids []string) int {
 	}
 	mobilePushState.Unlock()
 	if acked > 0 {
-		mobilePushSchedulePersist()
+		mobilePushSchedulePersist(tenantID, userID)
 	}
 	return acked
 }
@@ -598,21 +605,24 @@ func mobilePushOnRealtimeEvent(tenantID, userID string, event map[string]any, re
 
 func mobilePushDeliverRemote(tenantID, userID string, item mobilePushPendingItem) {
 	mobileKnowledgePurgeState.RLock()
-	defer mobileKnowledgePurgeState.RUnlock()
 	if !mobileOwnerWriteAllowedLocked(tenantID, userID) || !mobilePushRemoteConfigured() {
+		mobileKnowledgePurgeState.RUnlock()
 		return
 	}
-	// Throttle identical remote pushes (5s).
+	// Throttle identical remote pushes (5s). Copy devices before any network
+	// call so a slow provider does not hold the purge lock.
 	mobilePushState.Lock()
 	if item.DedupeKey != "" {
 		if t, ok := mobilePushState.lastPush[item.DedupeKey]; ok && time.Since(t) < 5*time.Second {
 			mobilePushState.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			return
 		}
 		mobilePushState.lastPush[item.DedupeKey] = time.Now()
 	}
 	devices := append([]mobilePushDevice(nil), mobilePushState.devices[mobilePushUserKey(tenantID, userID)]...)
 	mobilePushState.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 
 	if len(devices) == 0 {
 		// Webhook without devices: still notify ops sink once.

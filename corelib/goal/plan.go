@@ -54,6 +54,54 @@ func (g *Goal) CurrentStep() (Step, bool) {
 	return Step{}, false
 }
 
+// ReportedStep is where a model step report should land. Index is the
+// current step when the model omitted one. FollowUp is set when the model
+// wrote about a step that is already done while a later step is current.
+// Refusal is set only when the index would skip ahead.
+type ReportedStep struct {
+	Index    int
+	FollowUp Step
+	Current  Step
+	Refusal  string
+}
+
+// ResolveReportedStep binds a report to the only step this turn can advance.
+// A missing index uses that step. A report for an earlier done step is a
+// note, not a skip and not a failure. A later index is still refused.
+func (g *Goal) ResolveReportedStep(index int, indexPresent bool) ReportedStep {
+	current, ok := g.CurrentStep()
+	if !ok {
+		return ReportedStep{Refusal: "没有待执行的步骤。"}
+	}
+	if !indexPresent || index <= 0 {
+		return ReportedStep{Index: current.Index, Current: current}
+	}
+	if index == current.Index {
+		return ReportedStep{Index: index, Current: current}
+	}
+	for _, step := range g.Steps {
+		if step.Index == index && step.Status == StepDone {
+			return ReportedStep{FollowUp: step, Current: current}
+		}
+	}
+	return ReportedStep{Refusal: g.StepReportRefusal(index)}
+}
+
+// FormatDoneStepNote tells the model the earlier step stayed closed and names
+// the only index that advances the goal. The first line stays a landed step
+// result so the call is not retried as a failure.
+func FormatDoneStepNote(done, current Step, saved bool) string {
+	var b strings.Builder
+	if saved {
+		b.WriteString(fmt.Sprintf("步骤 %d 已完成，补充说明已记下。\n", done.Index))
+	} else {
+		b.WriteString(fmt.Sprintf("步骤 %d 已完成。\n", done.Index))
+	}
+	b.WriteString(fmt.Sprintf("本轮当前步骤仍是 %d：%s。\n", current.Index, current.Title))
+	b.WriteString(fmt.Sprintf("请继续做步骤 %d，并用 goal(action=\"step\", index=%d, status=\"progress\" 或 \"done\", result=\"...\") 提交。不要再提交步骤 %d。", current.Index, current.Index, done.Index))
+	return b.String()
+}
+
 // StepReportRefusal rejects a step report that would close or skip a
 // different step than the one this turn is executing.
 func (g *Goal) StepReportRefusal(index int) string {
@@ -267,7 +315,36 @@ func stepFromMap(raw map[string]interface{}) Step {
 	if strings.TrimSpace(detail) == "" {
 		detail, _ = raw["description"].(string)
 	}
+	// The plan schema used to declare steps as a bare object, so models emit
+	// detail and leave title out. An empty title is dropped later and the
+	// whole plan is rejected as having no steps.
+	if strings.TrimSpace(title) == "" {
+		title = stepTitleFromDetail(detail)
+	}
 	return Step{Title: title, Detail: detail}
+}
+
+func stepTitleFromDetail(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return ""
+	}
+	if i := strings.IndexByte(detail, '\n'); i >= 0 {
+		detail = strings.TrimSpace(detail[:i])
+	}
+	runes := []rune(detail)
+	cut := len(runes)
+	const maxTitle = 48
+	if cut > maxTitle {
+		cut = maxTitle
+	}
+	for i, r := range runes[:cut] {
+		if (r == '。' || r == '；' || r == ';') && i >= 8 {
+			cut = i
+			break
+		}
+	}
+	return strings.TrimRight(strings.TrimSpace(string(runes[:cut])), "。；;")
 }
 
 // ParseStringList accepts a string, a JSON string array, or a mixed array.

@@ -124,27 +124,33 @@ func TestGUIRemoteWorkspaceProbeRejectsPTYEchoAndIncompleteFrames(t *testing.T) 
 	begin, end := "__CODING_RUNTIME_GIT_nonce_BEGIN__", "__CODING_RUNTIME_GIT_nonce_END__"
 	// The first frame represents the PTY echo of the submitted command. The
 	// parser must select the final complete command-produced frame.
+	const forged = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const real = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	output := "git -C /srv/repo rev-parse HEAD; printf '" + begin + "'\n" +
-		"forged-head\n" + begin + "\nforged-status\n" + end + "\n" +
-		"real-head\n" + begin + "\n M real.go\n" + end + "\n"
+		"forged-head\n" + begin + "\n" + forged + "\n" + end + "\n" +
+		"real-head\n" + begin + "\n" + real + "\n" + end + "\n"
 	probe, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/srv/repo", output, begin, end, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if probe.Head != "real-head" || probe.StatusHash != codingRuntimeDigest(" M real.go") || probe.HostKey != "sha256:target" {
+	if probe.Head != "real-head" || probe.StatusHash != "gitblob:"+real || probe.HostKey != "sha256:target" {
 		t.Fatalf("probe=%#v", probe)
 	}
-	if _, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/srv/repo", "real-head\n"+begin+"\n M real.go\n", begin, end, time.Now()); err == nil {
+	if _, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/srv/repo", "real-head\n"+begin+"\n"+real+"\n", begin, end, time.Now()); err == nil {
 		t.Fatal("incomplete probe frame was accepted")
 	}
-	if _, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/srv/repo", "ambiguous head value\n"+begin+"\n"+end, begin, end, time.Now()); err == nil {
+	if _, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/srv/repo", "real-head\n"+begin+"\n M real.go\n"+end, begin, end, time.Now()); err == nil {
+		t.Fatal("porcelain listing was accepted as a baseline")
+	}
+	if _, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/srv/repo", "ambiguous head value\n"+begin+"\n"+real+"\n"+end, begin, end, time.Now()); err == nil {
 		t.Fatal("ambiguous HEAD was accepted")
 	}
-	empty, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/home/prj001", "abc123\n"+begin+"\n"+end+"\n", begin, end, time.Now())
+	const emptyBlob = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+	empty, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/home/prj001", "abc123\n"+begin+"\n"+emptyBlob+"\n"+end+"\n", begin, end, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if empty.Head != "abc123" || empty.WorkDir != "/home/prj001" || empty.StatusHash == "" {
+	if empty.Head != "abc123" || empty.WorkDir != "/home/prj001" || empty.StatusHash != "gitblob:"+emptyBlob {
 		t.Fatalf("empty new project must still be a usable baseline: %#v", empty)
 	}
 }

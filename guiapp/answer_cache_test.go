@@ -2,6 +2,10 @@ package guiapp
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +18,7 @@ import (
 func TestAnswerCacheStoreExpiresAndPersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "answer_cache", "answers.json")
 	store := newAnswerCacheStore(path)
+	defer store.close()
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	store.put("one", "cached answer", time.Hour, now)
 	if got, ok := store.get("one", now.Add(30*time.Minute)); !ok || got != "cached answer" {
@@ -24,6 +29,7 @@ func TestAnswerCacheStoreExpiresAndPersists(t *testing.T) {
 	}
 	store.put("two", "persisted", time.Hour, now)
 	reloaded := newAnswerCacheStore(path)
+	defer reloaded.close()
 	if got, ok := reloaded.get("two", now.Add(time.Minute)); !ok || got != "persisted" {
 		t.Fatalf("reloaded cache get = %q, %v; want persisted, true", got, ok)
 	}
@@ -60,8 +66,127 @@ func TestAnswerCacheConfigUsesTheCurrentLansengerBotProfile(t *testing.T) {
 	}
 }
 
+func TestAnswerCacheStoreDoesNotResurrectClearedJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "answers.json")
+	raw := []byte(`{"entries":{"keep":{"answer":"from json","created_at":"2026-08-10T12:00:00Z","expires_at":"2099-01-01T00:00:00Z"}}}`)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := newAnswerCacheStore(path)
+	if got, ok := store.get("keep", time.Now()); !ok || got != "from json" {
+		store.close()
+		t.Fatalf("imported cache get = %q, %v", got, ok)
+	}
+	store.close()
+
+	db, err := sql.Open("sqlite", filepath.Join(dir, "answers.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM answer_cache`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := newAnswerCacheStore(path)
+	defer reloaded.close()
+	if _, ok := reloaded.get("keep", time.Now()); ok {
+		t.Fatal("deleted answer came back from answers.json")
+	}
+	kept, err := os.ReadFile(path)
+	if err != nil || string(kept) != string(raw) {
+		t.Fatal("answers.json was rewritten or removed")
+	}
+}
+
+func TestAnswerCacheStoreEvictsOnlyWhenTheKeyIsNew(t *testing.T) {
+	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < answerCacheMaxEntries; i++ {
+		store.put(fmt.Sprintf("k-%04d", i), "answer", time.Hour, now.Add(time.Duration(i)))
+	}
+	later := now.Add(time.Duration(answerCacheMaxEntries))
+	store.put("newest", "answer", time.Hour, later)
+	if _, ok := store.get("k-0000", later); ok {
+		t.Fatal("oldest entry was kept past the cap")
+	}
+	if _, ok := store.get("k-0001", later); !ok {
+		t.Fatal("inserting one new row removed a second entry")
+	}
+	store.put("newest", "replaced", time.Hour, later.Add(time.Nanosecond))
+	if got, ok := store.get("newest", later.Add(time.Nanosecond)); !ok || got != "replaced" {
+		t.Fatalf("replaced cache get = %q, %v", got, ok)
+	}
+	if _, ok := store.get("k-0001", later.Add(time.Nanosecond)); !ok {
+		t.Fatal("replacing a live row evicted another answer")
+	}
+}
+
+func TestAnswerCachePutDropsExpiredRowsBeforeEvicting(t *testing.T) {
+	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < answerCacheMaxEntries; i++ {
+		store.put(fmt.Sprintf("old-%04d", i), "answer", time.Hour, now)
+	}
+	later := now.Add(2 * time.Hour)
+	store.put("fresh", "answer", time.Hour, later)
+	if _, ok := store.get("old-0000", later); ok {
+		t.Fatal("expired row survived the next put")
+	}
+	if _, ok := store.get("fresh", later); !ok {
+		t.Fatal("fresh answer missing after expired rows were dropped")
+	}
+	store.put("fresh-2", "answer", time.Hour, later)
+	if _, ok := store.get("fresh", later); !ok {
+		t.Fatal("expired rows were still counted toward the cap")
+	}
+	if store.rows != 2 {
+		t.Fatalf("live rows = %d, want 2", store.rows)
+	}
+}
+
+func TestAnswerCacheImportKeepsTheNewestEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "answers.json")
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	entries := make(map[string]answerCacheEntry, answerCacheMaxEntries+1)
+	for i := 0; i < answerCacheMaxEntries+1; i++ {
+		entries[fmt.Sprintf("k-%04d", i)] = answerCacheEntry{
+			Answer:    "a",
+			CreatedAt: base.Add(time.Duration(i)),
+			ExpiresAt: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
+		}
+	}
+	raw, err := json.Marshal(answerCacheFile{Entries: entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := newAnswerCacheStore(path)
+	defer store.close()
+	if _, ok := store.get("k-0000", time.Now()); ok {
+		t.Fatal("import kept the oldest entry past the cap")
+	}
+	newest := fmt.Sprintf("k-%04d", answerCacheMaxEntries)
+	if got, ok := store.get(newest, time.Now()); !ok || got != "a" {
+		t.Fatalf("import dropped the newest entry, get = %q, %v", got, ok)
+	}
+	if store.rows != answerCacheMaxEntries {
+		t.Fatalf("imported rows = %d, want %d", store.rows, answerCacheMaxEntries)
+	}
+}
+
 func TestAnswerCacheStoreBoundsPersistedQuestionMetadata(t *testing.T) {
 	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	store.putWithMetadata("large-question", "scope-a", strings.Repeat("q", answerCacheMaxQuestionRunes+1), "answer", time.Hour, now)
 	if got, ok := store.get("large-question", now); !ok || got != "answer" {
@@ -80,6 +205,7 @@ func TestAnswerCacheStoreBoundsPersistedQuestionMetadata(t *testing.T) {
 
 func TestAnswerCacheStoreAppliesReducedConfiguredTTLToExistingEntries(t *testing.T) {
 	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	store.put("answer", "cached answer", 7*24*time.Hour, now)
 
@@ -93,6 +219,7 @@ func TestAnswerCacheStoreAppliesReducedConfiguredTTLToExistingEntries(t *testing
 
 func TestAnswerCacheStoreFindsOnlyStrictUniqueSemanticMatches(t *testing.T) {
 	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	store.putWithMetadata("refund-policy", "scope-a", "What is the refund policy?", "Refunds are available within 30 days.", time.Hour, now)
 
@@ -109,6 +236,7 @@ func TestAnswerCacheStoreFindsOnlyStrictUniqueSemanticMatches(t *testing.T) {
 
 func TestAnswerCacheSemanticLookupRejectsAmbiguousCandidates(t *testing.T) {
 	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	store.putWithMetadata("one", "scope-a", "What is the refund policy?", "answer one", time.Hour, now)
 	store.putWithMetadata("two", "scope-a", "Refund policy?", "answer two", time.Hour, now)
@@ -119,6 +247,7 @@ func TestAnswerCacheSemanticLookupRejectsAmbiguousCandidates(t *testing.T) {
 
 func TestAnswerCacheSemanticFeaturesHandleConservativeSurfaceVariants(t *testing.T) {
 	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	store.putWithMetadata("plural", "scope-a", "What are the refund policies?", "refund policy answer", time.Hour, now)
 	if got, ok := store.getSemanticWithMaxAge("scope-a", "What is the refund policy?", now.Add(time.Minute), time.Hour); !ok || got != "refund policy answer" {
@@ -136,6 +265,7 @@ func TestAnswerCacheSemanticFeaturesHandleConservativeSurfaceVariants(t *testing
 
 func TestAnswerCacheStoreCoalescesMissesUntilLeaderWrites(t *testing.T) {
 	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
 	leader, done, finish := store.beginFlight("shared-question")
 	if !leader || done != nil {
 		t.Fatalf("first flight = leader:%v done:%v, want leader", leader, done)
@@ -165,6 +295,7 @@ func TestAnswerCacheStoreCoalescesMissesUntilLeaderWrites(t *testing.T) {
 
 func TestWaitAnswerCacheFlightCancellationDoesNotReleaseLeader(t *testing.T) {
 	store := newAnswerCacheStore(filepath.Join(t.TempDir(), "answer_cache", "answers.json"))
+	defer store.close()
 	leader, _, finish := store.beginFlight("shared-question")
 	if !leader {
 		t.Fatal("initial request did not become the flight leader")

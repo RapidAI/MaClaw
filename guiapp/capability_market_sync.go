@@ -1334,6 +1334,7 @@ func (a *App) commitMarketplaceMCPConfig(ctx context.Context, item HubCapability
 	if !preflightChanged {
 		return false, nil
 	}
+	configPath = a.configStoreForPath(configPath).StoragePath()
 	original, readErr := os.ReadFile(configPath)
 	exists := readErr == nil
 	if readErr != nil && !os.IsNotExist(readErr) {

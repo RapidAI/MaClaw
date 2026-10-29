@@ -1785,7 +1785,7 @@ func buildUncorrelatedLocalCodingCompatibilityPrompt(c *codingSubAgentCallbacks)
 		inspectionRole = c.subagent.nestDepth > 0 &&
 			(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer)
 	}
-	if c == nil || c.task == nil || codingTaskLooksInquiry(c.task) || inspectionRole {
+	if c == nil || c.task == nil || codingTaskLooksInquiry(c.task) || inspectionRole || taskCarriesGoalContinuation(c.task, c.reqCtx) {
 		includeTodo = false
 	}
 
@@ -2039,7 +2039,10 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	}
 
 	// In-agent requirement breakdown + step checklist (workers only).
-	if !inspectionRole {
+	// A host goal turn records progress with goal, not this checklist.
+	// Leaving todo_write listed makes the model spend the turn on a stale
+	// revision instead of the current goal step.
+	if !inspectionRole && !taskCarriesGoalContinuation(c.task, c.reqCtx) {
 		tools = append(tools, buildCodingAgentTodoToolDefinition())
 	}
 
@@ -17930,8 +17933,10 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 	b.WriteString(`你是一个专注的编码执行器。目标是像资深工程师一样：先定位和理解，再做最小改动，最后验证并说明风险。
 `)
-	b.WriteString(codingAgentTodoPromptSection)
-	b.WriteString(codingAgentTodoControlPlanePromptSection)
+	if goalContinuationPhase(source) == "" {
+		b.WriteString(codingAgentTodoPromptSection)
+		b.WriteString(codingAgentTodoControlPlanePromptSection)
+	}
 	b.WriteString(`
 ## 工作流
 - 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。code_navigation 不可用或检索失败时，用 Glob、ripgrep、list_directory 完成同样的定位再读文件。code_navigation 已经给出的符号正文就是当前源码，不要为同一个符号再 read_file 或 ripgrep。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
@@ -18643,13 +18648,28 @@ func buildCodingGoalToolDefinition() map[string]interface{} {
 			"parameters": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"action":              map[string]interface{}{"type": "string", "description": "create | plan | step | complete | fail | get"},
-					"objective":           map[string]interface{}{"type": "string", "description": "Goal description (create)"},
-					"understanding":       map[string]interface{}{"type": "string", "description": "Task restatement (plan)"},
-					"steps":               map[string]interface{}{"type": "array", "description": "Ordered steps (plan)", "items": map[string]interface{}{"type": "object"}},
+					"action": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"create", "plan", "step", "complete", "fail", "get"},
+						"description": "Required discriminator. Planning turn: plan. Execution turn: step, then complete or fail.",
+					},
+					"objective":     map[string]interface{}{"type": "string", "description": "Goal description (create)"},
+					"understanding": map[string]interface{}{"type": "string", "description": "Task restatement (plan)"},
+					"steps": map[string]interface{}{
+						"type":        "array",
+						"description": "Ordered steps (plan). Every item needs title.",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"title":  map[string]interface{}{"type": "string", "description": "Short step name"},
+								"detail": map[string]interface{}{"type": "string", "description": "What this step delivers"},
+							},
+							"required": []string{"title"},
+						},
+					},
 					"acceptance_criteria": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Verifiable completion conditions (plan)"},
-					"index":               map[string]interface{}{"type": "integer", "description": "1-based step index (step)"},
-					"status":              map[string]interface{}{"type": "string", "description": "done or failed (step)"},
+					"index":               map[string]interface{}{"type": "integer", "description": "Host goal step number for this turn (本轮只能提交步骤 N). Not a todo_write item number. Omit it to use the current step."},
+					"status":              map[string]interface{}{"type": "string", "enum": []string{"progress", "done", "failed"}, "description": "progress keeps this step current; done closes it; failed ends the goal. Omit it and the report stays progress."},
 					"result":              map[string]interface{}{"type": "string", "description": "Step result (step)"},
 					"summary":             map[string]interface{}{"type": "string", "description": "Completion summary that quotes each acceptance criterion (complete)"},
 					"reason":              map[string]interface{}{"type": "string", "description": "Failure reason (fail)"},

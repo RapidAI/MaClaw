@@ -8,9 +8,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
-// purgeMobileUserData removes Mobile state that lives outside SQLite. Its
-// persistent maps are rewritten to state.json, preventing data resurrection
-// after an account is unbound and the Hub restarts.
+// purgeMobileUserData removes Mobile runtime state and commits matching SQLite
+// rows before external blobs are deleted, preventing data resurrection after restart.
 func (p *UserDataPurger) purgeMobileUserData(ctx context.Context, tenantID, userID string, ownerAliases []string, logErr func(string, error)) {
 	ownerIDs := mobilePurgeOwnerIDs(userID, ownerAliases)
 	if len(ownerIDs) == 0 {
@@ -22,7 +21,7 @@ func (p *UserDataPurger) purgeMobileUserData(ctx context.Context, tenantID, user
 		return found && mobileMeetingRecordingTenantMatches(tenantID, recordTenantID)
 	}
 
-	// Knowledge sources live in a separate SQLite database from state.json.
+	// Knowledge sources live in a separate SQLite database from Mobile state.
 	// Mark the owners first so an already-authorized request or background
 	// document worker cannot write a source while this cleanup is underway.
 	p.purgeMobileUserKnowledgeData(ctx, tenantID, ownerIDs, logErr)
@@ -33,10 +32,8 @@ func (p *UserDataPurger) purgeMobileUserData(ctx context.Context, tenantID, user
 		logErr("mobile_agent_runtime", err)
 	}
 
-	// Serialize the map deletions with the full state.json snapshot and commit
-	// the clean snapshot before allowing a pre-existing persistence operation to
-	// finish. Without this, an older snapshot can rename over this purge's
-	// state.json and resurrect deleted data after a restart.
+	// Serialize map deletions with incremental writes, then delete all matching
+	// rows in one transaction before allowing another writer to commit.
 	mobileStateWriteMu.Lock()
 
 	// Remove recordings before documents. A meeting worker checks this map right
@@ -198,9 +195,9 @@ func (p *UserDataPurger) purgeMobileUserData(ctx context.Context, tenantID, user
 		}
 	}
 
-	// Persist while holding mobileStateWriteMu. External work below intentionally
+	// Commit while holding mobileStateWriteMu. External work below intentionally
 	// happens after this durable cleanup and does not need to block state writes.
-	mobilePersistStateLocked()
+	mobilePersistPurgeLocked(tenantID, ownerIDs)
 	mobileStateWriteMu.Unlock()
 
 	// Do external work only after releasing state-map locks.

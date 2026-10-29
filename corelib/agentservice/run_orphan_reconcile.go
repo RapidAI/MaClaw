@@ -2,9 +2,9 @@ package agentservice
 
 import (
 	"log"
-	"time"
 	"os"
 	"strings"
+	"time"
 )
 
 // Orphaned runs. A run's goroutine and cancel func live only in the process
@@ -38,24 +38,29 @@ func (s *Service) reconcileOrphanRuns() int {
 	if s == nil || s.store == nil || !orphanRunReconcileEnabled() {
 		return 0
 	}
-	tenants, err := s.store.ListTenants()
+	store, err := snapshotStore(s.store)
+	if err != nil {
+		log.Printf("[agentservice] orphan run reconcile: snapshot: %v", err)
+		return 0
+	}
+	tenants, err := store.ListTenants()
 	if err != nil {
 		log.Printf("[agentservice] orphan run reconcile: list tenants: %v", err)
 		return 0
 	}
 	n := 0
 	for _, t := range tenants {
-		users, err := s.store.ListUsers(t.ID)
+		users, err := store.ListUsers(t.ID)
 		if err != nil {
 			continue
 		}
 		for _, u := range users {
-			instances, err := s.store.ListInstances(t.ID, u.ID)
+			instances, err := store.ListInstances(t.ID, u.ID)
 			if err != nil {
 				continue
 			}
 			for _, inst := range instances {
-				runs, err := s.store.ListRuns(t.ID, u.ID, inst.ID)
+				runs, err := store.ListRuns(t.ID, u.ID, inst.ID)
 				if err != nil {
 					continue
 				}

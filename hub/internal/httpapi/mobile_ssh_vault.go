@@ -260,7 +260,7 @@ func MobileSSHVaultHandler(identity *auth.IdentityService) http.HandlerFunc {
 			mobileSSHVault.secrets[key] = rec
 			mobileSSHVault.Unlock()
 			mobileKnowledgePurgeState.RUnlock()
-			go mobilePersistState()
+			go mobilePersistSSHConfig(rec)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"profile_id": profileID,
 				"has_secret": true,
@@ -272,7 +272,7 @@ func MobileSSHVaultHandler(identity *auth.IdentityService) http.HandlerFunc {
 			mobileSSHVault.Lock()
 			delete(mobileSSHVault.secrets, key)
 			mobileSSHVault.Unlock()
-			go mobilePersistState()
+			go mobileDeleteSSHConfig(tenantID, ownerID, profileID)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"profile_id": profileID,
 				"has_secret": false,

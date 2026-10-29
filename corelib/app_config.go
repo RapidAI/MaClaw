@@ -603,7 +603,7 @@ type AppConfig struct {
 	WorkingDirectory string `json:"working_directory,omitempty"`
 	// DataDir is the user-configured data directory for all maclaw persistent
 	// data (memories, logs, skills, conversations, etc.). When empty, defaults
-	// to ~/.maclaw. config.json always stays at ~/.maclaw/config.json regardless
+	// to ~/.maclaw. config.db always stays at ~/.maclaw/config.db regardless
 	// of this setting. Changes take effect after restart.
 	DataDir string `json:"data_dir,omitempty"`
 	// Coding knowledge base settings (experience accumulation by CodingSubAgent)

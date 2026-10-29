@@ -840,8 +840,8 @@
 }
 
 .ve-status-badge[data-status="disabled"] {
-    color: var(--theme-text-muted, #56677c);
-    border-color: var(--theme-text-muted, #56677c);
+    color: var(--theme-text-muted, #5b6b80);
+    border-color: var(--theme-text-muted, #5b6b80);
 }
 
 .ve-status-badge[data-status="rejected"] {

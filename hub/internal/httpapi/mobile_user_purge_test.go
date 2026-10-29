@@ -2,7 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +22,7 @@ func TestUserDataPurgerRemovesMobileUserDataAndPreservesOtherTenant(t *testing.T
 	tmp := t.TempDir()
 	initMobileCoreAgentForTest(t, tmp)
 	statePath := filepath.Join(tmp, "mobile", "state.json")
-	t.Setenv(mobileStatePathEnv, statePath)
+	setMobileStatePathForTest(t, statePath)
 	t.Setenv(mobileBlobDirEnv, filepath.Join(tmp, "blobs"))
 
 	resetMobilePurgeState(t)
@@ -98,6 +98,9 @@ func TestUserDataPurgerRemovesMobileUserDataAndPreservesOtherTenant(t *testing.T
 	mobileHubFiles.blobs["blob-1"] = mobileHubFileBlob{Token: "blob-1", OwnerID: user, TenantID: tenantA, Content: []byte("private"), ExpiresAt: time.Now().Add(time.Hour)}
 	mobileHubFiles.blobs["blob-other"] = mobileHubFileBlob{Token: "blob-other", OwnerID: user, TenantID: tenantB, Content: []byte("other"), ExpiresAt: time.Now().Add(time.Hour)}
 	mobileHubFiles.Unlock()
+	mobilePersistDocumentChanges(mobileDocumentChanges{drafts: []mobileDocumentDraftRecord{
+		mobileDocuments.drafts["draft-1"], mobileDocuments.drafts["other-draft"],
+	}})
 
 	(&UserDataPurger{}).purgeMobileUserData(context.Background(), tenantA, user, nil, func(area string, err error) {
 		t.Errorf("%s: %v", area, err)
@@ -128,19 +131,12 @@ func TestUserDataPurgerRemovesMobileUserDataAndPreservesOtherTenant(t *testing.T
 		t.Fatal("other tenant mobile data was removed")
 	}
 
-	raw, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
+	db := mobileStateDBForTest(t, statePath)
+	if _, err := mobileStateRowPayloadForTest(db, "drafts", tenantA, "draft-1"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("purged draft row err = %v, want sql.ErrNoRows", err)
 	}
-	var state mobilePersistentState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		t.Fatal(err)
-	}
-	if _, found := state.Drafts["draft-1"]; found {
-		t.Fatal("removed draft was written back to state.json")
-	}
-	if _, found := state.Drafts["other-draft"]; !found {
-		t.Fatal("other-tenant draft was not retained in state.json")
+	if _, err := mobileStateRowPayloadForTest(db, "drafts", tenantB, "other-draft"); err != nil {
+		t.Fatalf("other-tenant draft row was not retained: %v", err)
 	}
 }
 
@@ -363,65 +359,21 @@ func TestUserDataPurgerPreventsMeetingWorkerFromRestoringDeletedData(t *testing.
 	}
 }
 
-func TestUserDataPurgerMakesCleanStateSnapshotWinOverOlderSnapshot(t *testing.T) {
+func TestUserDataPurgerKeepsIncrementalDeleteDurable(t *testing.T) {
 	resetMobilePurgeState(t)
 	statePath := filepath.Join(t.TempDir(), "mobile", "state.json")
-	t.Setenv(mobileStatePathEnv, statePath)
+	setMobileStatePathForTest(t, statePath)
 	const tenantID, userID, draftID = "tenant-state-purge", "user-state-purge", "draft-state-purge"
 
+	draft := mobileDocumentDraftRecord{ID: draftID, OwnerID: userID, TenantID: tenantID, Markdown: "private"}
 	mobileDocuments.Lock()
-	mobileDocuments.drafts[draftID] = mobileDocumentDraftRecord{ID: draftID, OwnerID: userID, TenantID: tenantID, Markdown: "private"}
+	mobileDocuments.drafts[draftID] = draft
 	mobileDocuments.Unlock()
+	mobilePersistDraft(draft)
+	(&UserDataPurger{}).purgeMobileUserData(context.Background(), tenantID, userID, nil, func(string, error) {})
 
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	mobilePersistStateBeforeRenameForTest = func() {
-		once.Do(func() {
-			close(entered)
-			<-release
-		})
-	}
-	t.Cleanup(func() { mobilePersistStateBeforeRenameForTest = nil })
-
-	stalePersisted := make(chan struct{})
-	go func() {
-		mobilePersistState()
-		close(stalePersisted)
-	}()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("stale snapshot did not reach durable-write barrier")
-	}
-
-	purgeDone := make(chan struct{})
-	go func() {
-		(&UserDataPurger{}).purgeMobileUserData(context.Background(), tenantID, userID, nil, func(string, error) {})
-		close(purgeDone)
-	}()
-	close(release)
-	select {
-	case <-stalePersisted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("stale snapshot did not finish")
-	}
-	select {
-	case <-purgeDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("purge did not finish")
-	}
-
-	raw, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state mobilePersistentState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		t.Fatal(err)
-	}
-	if _, found := state.Drafts[draftID]; found {
-		t.Fatal("stale state snapshot restored purged draft")
+	if _, err := mobileStateRowPayloadForTest(mobileStateDBForTest(t, statePath), "drafts", tenantID, draftID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("purged draft row err = %v, want sql.ErrNoRows", err)
 	}
 }
 
