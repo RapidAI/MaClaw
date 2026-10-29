@@ -57,5 +57,13 @@ describe("companion Mongolian copy", () => {
         expect(companionSay("mn", "分享密码不正确")).toBe("Хуваалцах нууц үг буруу.");
         expect(companionSay("mn", "云端群组无法读取（HTTP 502）")).toBe("Үүлэн бүлгийг уншиж чадсангүй (HTTP 502)");
         expect(companionSay("mn", "只有视频或音频可以生成笔记")).not.toMatch(/[\u3400-\u9fff]/);
+        expect(companionSay("zh-Hans", "分享链接已过期")).toBe("分享链接已过期");
+        expect(companionSay("mn", "分享链接已过期")).toBe("Хуваалцах холбоосын хугацаа дууссан");
+        expect(companionSay("mn", "没有可用的中文字体，无法生成 PDF")).toBe("Хятад фонт алга тул PDF үүсгэх боломжгүй");
+        expect(companionSay("mn", "未找到可嵌入 PDF 的中文字体，无法生成 PDF（最后一个候选不可用原因: missing）")).toBe("Суулгах Хятад фонт олдсонгүй тул PDF үүсгэх боломжгүй (сүүлийн нэр дэвшигч амжилтгүй: missing)");
+        expect(companionSay("mn", "这份文档已经以相同的范围分享过了，请先删除原分享，或修改原分享")).not.toMatch(/[\u3400-\u9fff]/);
+        expect(companionSay("zh-Hans", "登录后可以查看云端分享")).toBe("登录后可以查看云端分享");
+        expect(companionSay("mn", "登录后可以查看云端分享")).toBe("Нэвтэрсний дараа үүлэн хуваалцалтыг харж болно");
+        expect(companionSay("mn", "暂时无法连接云端，本机文档仍可查看")).toBe("Үүлэнтэй түр холбогдож чадсангүй. Энэ компьютерийн баримтыг харж болно.");
     });
 });

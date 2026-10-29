@@ -137,13 +137,15 @@ const companionGroupIcons = ["book", "people", "star", "pen", "leaf", "flask"] a
 
 type CompanionGroupIcon = (typeof companionGroupIcons)[number];
 
+// Chinese keys. cs() at module load would freeze zh-Hans, because activeLang
+// is still the default until a screen calls setCompanionUiLang.
 const companionGroupIconLabel: Record<CompanionGroupIcon, string> = {
-    book: cs("书"),
-    people: cs("同伴"),
-    star: cs("星"),
-    pen: cs("笔"),
-    leaf: cs("叶"),
-    flask: cs("实验"),
+    book: "书",
+    people: "同伴",
+    star: "星",
+    pen: "笔",
+    leaf: "叶",
+    flask: "实验",
 };
 
 function companionGroupIcon(value: string): CompanionGroupIcon {
@@ -1283,7 +1285,7 @@ export function CompanionLibraryView({
                     </div>
                 </header>
                 <div className="file-companion-dialog-body">
-                    {notice ? <p className="file-companion-library-notice" data-testid="file-companion-library-notice" role="status">{notice}</p> : null}
+                    {notice ? <p className="file-companion-library-notice" data-testid="file-companion-library-notice" role="status">{cs(notice)}</p> : null}
                     {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
                     <section className="file-companion-library-section" data-testid="file-companion-library-local" aria-label={cs("本机项目")}>
                         <h3 className="file-companion-dialog-label">{cs("本机项目")}<span className="file-companion-dialog-optional">{localItems.length}</span></h3>
@@ -1676,8 +1678,8 @@ export function CompanionGroupsDialog({
                                                         type="button"
                                                         className="file-companion-group-mark-button"
                                                         data-testid={`file-companion-group-icon-${selected.id}-${icon}`}
-                                                        aria-label={companionGroupIconLabel[icon]}
-                                                        title={companionGroupIconLabel[icon]}
+                                                        aria-label={cs(companionGroupIconLabel[icon])}
+                                                        title={cs(companionGroupIconLabel[icon])}
                                                         aria-pressed={selectedEdit?.icon === icon}
                                                         disabled={groupBusy}
                                                         onClick={() => setGroupEdits((current) => ({

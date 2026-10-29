@@ -9,7 +9,15 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     GetCurrentLanguage: vi.fn(async () => "mn"),
     GetFileCompanionBoot: vi.fn(async () => ({ paths: [] })),
     GetBrandInfo: vi.fn(async () => ({ displayName: "MaClaw" })),
-    ListFileCompanionLibrary: vi.fn(async () => ({ items: [], notice: "" })),
+    ListFileCompanionLibrary: vi.fn(async () => ({ items: [], notice: "登录后可以查看云端分享" })),
+    ListFileCompanionGroups: vi.fn(async () => [{
+        id: "cg_0123456789abcdef0123456789abcdef",
+        name: "уншлагын бүлэг",
+        owner: "me@example.com",
+        admin: true,
+        icon: "book",
+        members: [],
+    }]),
     FileCompanionResumePaths: vi.fn(async () => []),
     FileCompanionUIReady: vi.fn(async () => []),
     FileCompanionPlayerSupported: vi.fn(async () => false),
@@ -65,5 +73,11 @@ describe("file companion Mongolian chrome", () => {
         await waitFor(() => expect(screen.getByTestId("file-companion-library-panel").textContent || "").toContain("Баримтын сан"));
         const panel = screen.getByTestId("file-companion-library-panel").textContent || "";
         expect(panel).not.toMatch(/文档管理|还没有本机项目/);
+        expect(screen.getByTestId("file-companion-library-notice").textContent).toBe("Нэвтэрсний дараа үүлэн хуваалцалтыг харж болно");
+        fireEvent.click(screen.getByTestId("file-companion-groups-open"));
+        const star = await screen.findByTestId("file-companion-group-icon-cg_0123456789abcdef0123456789abcdef-star");
+        expect(star.getAttribute("aria-label")).toBe("Од");
+        expect(star.getAttribute("title")).toBe("Од");
+        expect(screen.getByTestId("file-companion-group-icon-cg_0123456789abcdef0123456789abcdef-book").getAttribute("aria-label")).toBe("Ном");
     });
 });

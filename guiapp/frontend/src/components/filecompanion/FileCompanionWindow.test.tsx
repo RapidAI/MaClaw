@@ -1967,6 +1967,7 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-library-panel");
         await waitFor(() => expect(screen.getByTestId("file-companion-library-local").textContent).toContain("a.md"));
         expect(screen.getByTestId("file-companion-library-cloud").textContent).toContain("shared.pdf");
+        expect(screen.queryByTestId("file-companion-library-notice")).toBeNull();
         expect(screen.getByTestId("file-companion-library-cloud").textContent).toContain("https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef");
         // 分享 is its own popup, opened from the row or the title bar.
         fireEvent.click(screen.getByTestId("file-companion-library-share-action-local:a"));
@@ -3016,6 +3017,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId(`file-companion-group-save-${groupID}`));
         expect(updateGroup).not.toHaveBeenCalled();
         fireEvent.change(screen.getByTestId(`file-companion-group-rename-${groupID}`), { target: { value: "新论文组" } });
+        expect(screen.getByTestId(`file-companion-group-icon-${groupID}-star`).getAttribute("aria-label")).toBe("星");
         fireEvent.click(screen.getByTestId(`file-companion-group-icon-${groupID}-star`));
         const save = screen.getByTestId(`file-companion-group-save-${groupID}`);
         fireEvent.click(save);
@@ -6056,6 +6058,21 @@ describe("FileCompanionWindow", () => {
         }, { timeout: 2000 });
         expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("v2");
         expect(screen.queryByTestId("file-companion-file-error")).toBeNull();
+    });
+
+    it("shows a host sentence when send rejects with a plain string", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha", sessionId: "a.md" }));
+        send.mockRejectedValue("只有视频或音频可以生成笔记");
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-editor");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "hello" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-answer").textContent).toContain("只有视频或音频可以生成笔记");
+        });
+        expect(screen.getByTestId("file-companion-answer").textContent).not.toContain("发送失败");
     });
 
     it("does not overwrite on Ctrl+S while the file is in conflict", async () => {

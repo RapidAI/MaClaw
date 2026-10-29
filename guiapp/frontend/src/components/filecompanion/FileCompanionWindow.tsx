@@ -517,6 +517,13 @@ function bindingErrorText(err: unknown): string {
     return "";
 }
 
+// Wails delivers a Go error as a string, not an Error. Read that sentence
+// first, then translate once. Callers that match 需要分享密码 must keep the
+// raw sentence from bindingErrorText.
+function shownHostError(err: unknown, fallbackZh: string): string {
+    return turnErrorText(bindingErrorText(err) || fallbackZh);
+}
+
 function exportErrorText(err: unknown): string {
     const raw = bindingErrorText(err);
     if (raw.includes("MaClaw Hub login is required")) return cs("需要先在主窗口登录，才能上传到云盘");
@@ -2703,7 +2710,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             try {
                 doc = await FileCompanionOpen(trimmed) as CompanionDoc;
             } catch (err) {
-                doc = { path: trimmed, error: bindingErrorText(err) || cs("打不开这个文件") };
+                doc = { path: trimmed, error: bindingErrorText(err) || "打不开这个文件" };
             }
             if (openEpoch.current.get(trimmed) !== serial) return;
             const error = field(doc, "error", "Error", "");
@@ -3338,7 +3345,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             try {
                 result = await FileCompanionSaveText(latest.path, sent, useHash) as SaveResult;
             } catch (err) {
-                const message = err instanceof Error ? err.message : cs("保存失败");
+                const message = bindingErrorText(err) || "保存失败";
                 setTabs((current) => current.map((item) => item.path === latest.path ? { ...item, saveError: message } : item));
                 outcome = "error";
                 return;
@@ -3352,7 +3359,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setTabs((current) => current.map((item) => {
                 if (item.path !== latest.path) return item;
                 if (conflict) return { ...item, conflict: true, diskHash, confirmOverwrite: false, saveError: "" };
-                if (!saved) return { ...item, saveError: String(result.error ?? result.Error ?? cs("保存失败")) };
+                if (!saved) {
+                    const raw = result.error ?? result.Error;
+                    const message = typeof raw === "string" && raw.trim() ? raw.trim() : "保存失败";
+                    return { ...item, saveError: message };
+                }
                 if (userEditedSince) {
                     return { ...item, dirty: true, conflict: false, confirmOverwrite: false, loadedHash: diskHash || item.loadedHash, saveError: "" };
                 }
@@ -4086,7 +4097,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             // read, so it goes out like a turn does.
             if (tab.kind !== "web") pushShareTranscriptRef.current(tab.path);
         } catch (err) {
-            showToast(turnErrorText(err instanceof Error ? err.message : cs("没能清空聊天")), "error", 6000);
+            showToast(shownHostError(err, "没能清空聊天"), "error", 6000);
         }
         return true;
     };
@@ -4107,7 +4118,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
             return true;
         }).catch((err) => {
-            showToast(turnErrorText(err instanceof Error ? err.message : cs("批注没有同步出去")), "error", 6000);
+            showToast(shownHostError(err, "批注没有同步出去"), "error", 6000);
             return false;
         });
     };
@@ -4132,7 +4143,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setTabs((tabsNow) => tabsNow.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
             showToast(decision === "approve" ? cs("已通过，主持人 Agent 会处理这条批注") : cs("已忽略这条批注，参与者会看到忽略标记"), "success", 5000);
         } catch (err) {
-            showToast(turnErrorText(err instanceof Error ? err.message : cs("审核没有保存")), "error", 6000);
+            showToast(shownHostError(err, "审核没有保存"), "error", 6000);
         } finally {
             reviewingNoteRef.current = "";
             setReviewingNoteID("");
@@ -4291,7 +4302,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             } catch (err) {
                 if (paperTurn) paperRequestIds.current.delete(requestID);
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
-                const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
+                const note = shownHostError(err, "发送失败");
                 const assistantID = `${requestID}:assistant`;
                 setTabs((current) => current.map((tab) => {
                     if (tab.path !== tabPath) return tab;
@@ -4338,7 +4349,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             } catch (err) {
                 paperRequestIds.current.delete(requestID);
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
-                const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
+                const note = shownHostError(err, "发送失败");
                 const assistantID = `${requestID}:assistant`;
                 setTabs((current) => current.map((tab) => {
                     if (tab.path !== tabPath) return tab;
@@ -4514,7 +4525,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         } catch (err) {
             videoNoteRequestIds.current.delete(requestID);
             if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
-            const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
+            const note = shownHostError(err, "发送失败");
             const assistantID = `${requestID}:assistant`;
             setTabs((current) => current.map((tab) => {
                 if (tab.path !== tabPath) return tab;
@@ -4563,7 +4574,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 await SendFileCompanionMessage({ path: tabPath, text, request_id: requestID });
             } catch (err) {
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
-                const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
+                const note = shownHostError(err, "发送失败");
                 const assistantID = `${requestID}:assistant`;
                 setTabs((current) => current.map((item) => {
                     if (item.path !== tabPath) return item;
