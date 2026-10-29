@@ -112,3 +112,11 @@ func TestToolHeadInjectionUsesQueryVec(t *testing.T) {
 	}
 	_ = embedding.IsNoop
 }
+
+func TestToolHeadSkippedForCyrillic(t *testing.T) {
+	for q, want := range map[string]bool{"查询服务器状态": true, "查詢伺服器狀態": true, "search the web for maclaw": true, "Вэбээс maclaw хайж олоорой": false} {
+		if got := toolHeadAllowedFor(q); got != want {
+			t.Errorf("toolHeadAllowedFor(%q)=%v want %v", q, got, want)
+		}
+	}
+}

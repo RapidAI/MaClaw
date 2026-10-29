@@ -771,6 +771,11 @@ func (r *Router) HybridActive() bool {
 // embedder (CheckEmbedderOf); a mismatch is refused and leaves the previous
 // head unchanged. Pass nil to disable. theta/k ≤ 0 use the head's defaults
 // (file theta/top_k, else 0.3/5).
+// toolHeadAllowedFor reports whether the first-party tool head may inject
+// tools for userMessage: Cyrillic (Mongolian) input bypasses the local heads
+// (intent.BypassLocalHeads); retrieval / UIC conditional tools still apply.
+func toolHeadAllowedFor(userMessage string) bool { return !intent.BypassLocalHeads(userMessage) }
+
 func (r *Router) SetToolHead(h *ToolHead, emb embedding.Embedder, theta float64, k int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1583,7 +1588,8 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		// First-party tool head: inject top-k (p≥θ) into condKeep using the
 		// same RoleClassification query vector intent L2/L3 already computed
 		// (uicResult.QueryVec). No extra embed; fail-closed on dim mismatch.
-		if h, theta, k := r.toolHeadInjectParams(); h != nil && len(uicResult.QueryVec) > 0 {
+		// Cyrillic (Mongolian) input skips the head (intent.BypassLocalHeads).
+		if h, theta, k := r.toolHeadInjectParams(); h != nil && len(uicResult.QueryVec) > 0 && toolHeadAllowedFor(userMessage) {
 			if probs, err := h.Predict(uicResult.QueryVec); err == nil {
 				for _, s := range h.TopK(probs, k, theta) {
 					if uicToolNameActivatable(s.Tool) {

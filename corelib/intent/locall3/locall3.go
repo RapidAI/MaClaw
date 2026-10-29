@@ -135,6 +135,9 @@ func (r *Runtime) ProbeFunc() intent.LocalHeadProbeFunc {
 		return nil
 	}
 	return func(ctx context.Context, text string) (string, float64, float64, bool) {
+		if intent.BypassLocalHeads(text) {
+			return "", 0, 0, false
+		}
 		s := r.st.Load()
 		if s == nil || s.head == nil {
 			return "", 0, 0, false
@@ -160,6 +163,16 @@ func (r *Runtime) ContextFunc(remote intent.LLMClassifyContextFunc) intent.LLMCl
 	}
 	strict := r.mode == intent.LocalL3Strict
 	return func(ctx, parent context.Context, sys, user string) (string, error) {
+		if intent.BypassLocalHeads(user) {
+			// Cyrillic (Mongolian): local heads fail their gates; use the
+			// remote tree LLM. Without a remote (strict / nil) abstain with
+			// a label-less uncertain error so L2 hint / unknown applies.
+			if strict || remote == nil {
+				return "", intent.NewLocalHeadUncertainError("", 0, 0)
+			}
+			r.logf("[intent] L3 routed to remote tree LLM (Cyrillic input bypasses local head)")
+			return remote(ctx, parent, sys, user)
+		}
 		if s := r.st.Load(); s != nil {
 			out, err := s.fn(ctx, parent, sys, user)
 			if err == nil {
