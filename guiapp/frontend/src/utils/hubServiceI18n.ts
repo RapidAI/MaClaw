@@ -1,8 +1,35 @@
+import { localizeText, normalizeLang } from '../i18n/langSelect';
+
+const mnByEnglish: Record<string, string> = {
+    'Current period credit limit is exhausted.': 'Одоогийн мөчлөгийн кредит дууссан.',
+    'Grant credits are exhausted.': 'Олголтын кредит дууссан.',
+    'Grant is not active yet.': 'Олголт хараахан идэвхжээгүй.',
+    'Grant has expired.': 'Олголтын хугацаа дууссан.',
+    'Hub access token is missing. Reconnect Hub and try again.': 'Hub хандалтын Token алга. Hub-д дахин холбогдож үзнэ үү.',
+    'This redeem code has already been used.': 'Энэ идэвхжүүлэх кодыг аль хэдийн ашигласан.',
+    'Redeem code can contain only letters or digits.': 'Идэвхжүүлэх код зөвхөн үсэг эсвэл цифр агуулна.',
+    'The redeem code is invalid. Check the code and try again.': 'Идэвхжүүлэх код буруу. Кодоо шалгаад дахин оролдоно уу.',
+    'Please enter a redeem code.': 'Идэвхжүүлэх код оруулна уу.',
+    'Account email is missing. Complete Hub activation first.': 'Дансны имэйл алга. Эхлээд Hub идэвхжүүлэлтийг дуусгана уу.',
+    'This code has no service group configured. Contact the administrator.': 'Энэ кодод үйлчилгээний бүлэг тохируулаагүй. Админтай холбогдоно уу.',
+    'This code has no valid service group configured. Contact the administrator.': 'Энэ кодод хүчинтэй үйлчилгээний бүлэг тохируулаагүй. Админтай холбогдоно уу.',
+    'Hub URL is not configured. Complete Hub activation first.': 'Hub URL тохируулаагүй. Эхлээд Hub идэвхжүүлэлтийг дуусгана уу.',
+    'This reset voucher has already been used.': 'Энэ дахин тохируулах эрхийг аль хэдийн ашигласан.',
+    'This reset voucher does not belong to the current account.': 'Энэ дахин тохируулах эрх одоогийн дансных биш.',
+    'This reset voucher has expired.': 'Энэ дахин тохируулах эрхийн хугацаа дууссан.',
+    'This reset voucher can be used only while the new-user limit card is still active.': 'Энэ эрхийг зөвхөн шинэ хэрэглэгчийн хязгаарын карт идэвхтэй үед ашиглана.',
+    'This reset voucher was not found.': 'Энэ дахин тохируулах эрх олдсонгүй.',
+    'Reset voucher could not be used. Please try again later.': 'Дахин тохируулах эрхийг ашиглаж чадсангүй. Дараа дахин оролдоно уу.',
+    'Hub authorization has expired. Reconnect Hub and try again.': 'Hub зөвшөөрлийн хугацаа дууссан. Hub-д дахин холбогдож үзнэ үү.',
+    'Hub tenant information is invalid. Complete Hub activation again.': 'Hub түрээслэгчийн мэдээлэл буруу. Hub идэвхжүүлэлтийг дахин дуусгана уу.',
+    'Hub usage report is temporarily unavailable. Refresh later.': 'Hub хэрэглээний тайлан түр боломжгүй. Дараа шинэчилнэ үү.',
+    'Redeem failed. Please try again later.': 'Идэвхжүүлэлт амжилтгүй. Дараа дахин оролдоно уу.',
+    'Service status unavailable.': 'Үйлчилгээний төлөв боломжгүй.',
+};
+
 export function localizeByLang(lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans): string {
-    const normalizedLang = String(lang || "").toLowerCase();
-    if (normalizedLang === "zh-hant" || normalizedLang === "zh-tw" || normalizedLang === "zh-hk" || normalizedLang === "zh-mo") return zhHant;
-    if (normalizedLang === "zh" || normalizedLang === "zh-hans" || normalizedLang.startsWith("zh-cn") || normalizedLang.startsWith("zh-sg")) return zhHans;
-    return en;
+    if (normalizeLang(lang) === 'mn' && mnByEnglish[en]) return mnByEnglish[en];
+    return localizeText(lang, en, zhHans, zhHant);
 }
 
 const HUB_SERVICE_REASON_TRANSLATIONS: Array<[string, string, string, string?]> = [
@@ -46,6 +73,10 @@ export function localizeHubServiceReason(reason: unknown, lang?: string): string
         const heldEn = held ? ` (${held} held by in-flight requests)` : '';
         const heldZh = held ? `，其中 ${held} Credits 被在途请求冻结` : '';
         const heldZhHant = held ? `，其中 ${held} Credits 被在途請求凍結` : '';
+        if (normalizeLang(lang) === 'mn') {
+            const heldMn = held ? ` (${held} Credits замд байгаа хүсэлтэд түгжигдсэн)` : '';
+            return `Энэ хүсэлтэд кредит хүрэлцэхгүй: ${need} кредит хэрэгтэй, боломжтой ${available} кредит${heldMn}.`;
+        }
         return localizeByLang(
             lang,
             `Insufficient credits for this request: need ${need} credits, available ${available} credits${heldEn}.`,
@@ -80,6 +111,7 @@ export function localizeHubServiceRedeemError(error: unknown, lang?: string, emp
     const lengthError = normalized.match(/redeem code must be (\d+) letters or digits/);
     if (lengthError) {
         const count = lengthError[1];
+        if (normalizeLang(lang) === 'mn') return `Идэвхжүүлэх код ${count} үсэг эсвэл цифр байх ёстой.`;
         return localizeByLang(
             lang,
             `Redeem code must be ${count} letters or digits.`,
@@ -90,11 +122,13 @@ export function localizeHubServiceRedeemError(error: unknown, lang?: string, emp
     const redeemFailed = raw.match(/^redeem failed:\s*(.+)$/i);
     if (redeemFailed) {
         const detail = redeemFailed[1];
+        if (normalizeLang(lang) === 'mn') return `Идэвхжүүлэлт амжилтгүй: ${detail}`;
         return localizeByLang(lang, `Redeem failed: ${detail}`, `兑换失败：${detail}`, `兌換失敗：${detail}`);
     }
     const resetFailed = raw.match(/^reset voucher failed:\s*(.+)$/i);
     if (resetFailed) {
         const detail = resetFailed[1];
+        if (normalizeLang(lang) === 'mn') return `Дахин тохируулах эрх амжилтгүй: ${detail}`;
         return localizeByLang(lang, `Reset voucher failed: ${detail}`, `重置券使用失败：${detail}`, `重置券使用失敗：${detail}`);
     }
     return raw || emptyFallback || localizeByLang(lang, "Redeem failed. Please try again later.", "兑换失败，请稍后重试。", "兌換失敗，請稍後重試。");
@@ -112,7 +146,29 @@ export function localizeHubServiceStatusError(error: unknown, lang?: string): st
     const queryFailed = raw.match(/^(?:account status query failed|status query failed):\s*(.+)$/i);
     if (queryFailed) {
         const detail = queryFailed[1].trim();
+        if (normalizeLang(lang) === 'mn') return `Үйлчилгээний төлөв шалгах амжилтгүй: ${detail}`;
         return localizeByLang(lang, `Service status query failed: ${detail}`, `服务状态查询失败：${detail}`, `服務狀態查詢失敗：${detail}`);
     }
     return raw;
+}
+
+export type MnDurationUnit = 'second' | 'minute' | 'hour' | 'day';
+
+/** Khalkha unit for a retry countdown. Callers keep their own rounding. */
+export function mnDurationUnit(count: number, unit: MnDurationUnit): string {
+    switch (unit) {
+        case 'second': return `${count} секунд`;
+        case 'minute': return `${count} минут`;
+        case 'hour': return `${count} цаг`;
+        case 'day': return `${count} өдөр`;
+    }
+}
+
+/** "2 цаг 1 минут" → "ойролцоогоор 2 цаг 1 минутын дараа". Genitive attaches to the last unit. */
+export function mnApproxAfter(duration: string): string {
+    let phrase = duration;
+    if (duration.endsWith('секунд') || duration.endsWith('минут')) phrase = `${duration}ын`;
+    else if (duration.endsWith('цаг')) phrase = `${duration}ийн`;
+    else if (duration.endsWith('өдөр')) phrase = `${duration.slice(0, -2)}рийн`;
+    return `ойролцоогоор ${phrase} дараа`;
 }

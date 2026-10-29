@@ -51,6 +51,7 @@ import type { CodingTaskLaunch } from '../ai/codingTaskLaunch';
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON } from '../ai/expertTypes';
 import { VirtualRepositoryWorkspace } from './VirtualRepositoryWorkspace';
 import { utilitiesPageTitle } from '../../i18n/utilitiesLabels';
+import { tailText } from '../../i18n/mnTail'
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
@@ -366,7 +367,7 @@ export const UtilitiesPage = ({
     onOpenExpert?: (expert: ExpertDefinition) => void;
     onOpenVirtualRepositoryTask?: (launch: { project_path: CodingTaskLaunch['projectPath']; task_title: CodingTaskLaunch['taskTitle']; agent_mode: NonNullable<CodingTaskLaunch['agentMode']>; remote_host?: CodingTaskLaunch['remoteHost'] }) => void;
 }) => {
-    const isZh = !lang || lang.startsWith('zh');
+    const isZh = !!lang?.startsWith('zh');
     const showToolSurface = mode !== 'experts';
     const showExpertSurface = mode !== 'tools';
     const { showConfirm } = useDialog();
@@ -415,7 +416,7 @@ export const UtilitiesPage = ({
     const [draftDeadlineLocal, setDraftDeadlineLocal] = useState('');
     const [draftTargetCount, setDraftTargetCount] = useState('');
     const [editQuestions, setEditQuestions] = useState<EditorQuestion[]>([
-        createEmptyQuestion('single_choice', [], { title: isZh ? '满意吗' : 'Satisfied?', optA: isZh ? '是' : 'Yes', optB: isZh ? '否' : 'No' }),
+        createEmptyQuestion('single_choice', [], { title: tailText(lang ?? "", 'Satisfied?', '满意吗'), optA: tailText(lang ?? "", 'Yes', '是'), optB: tailText(lang ?? "", 'No', '否') }),
     ]);
     const [groups, setGroups] = useState<Array<{ group_id: string; name: string }>>([]);
     const [groupsLoading, setGroupsLoading] = useState(false);
@@ -509,24 +510,20 @@ export const UtilitiesPage = ({
                 const addr = st.address || (st.host && st.port ? `${st.host}:${st.port}` : '');
                 if (!enabled) {
                     setAcpState('disabled');
-                    setAcpStatusLine(isZh ? 'ACP Mode B：已关闭' : 'ACP Mode B: disabled');
+                    setAcpStatusLine(tailText(lang ?? "", 'ACP Mode B: disabled', 'ACP Mode B：已关闭'));
                 } else if (running) {
                     setAcpState('running');
-                    setAcpStatusLine(isZh
-                        ? `ACP Mode B：运行中 ${addr}（GUI AI 助手 = 编程 agent）`
-                        : `ACP Mode B: running ${addr} (GUI AI assistant = programming agent)`);
+                    setAcpStatusLine(tailText(lang ?? "", `ACP Mode B: running ${addr} (GUI AI assistant = programming agent)`, `ACP Mode B：运行中 ${addr}（GUI AI 助手 = 编程 agent）`));
                 } else {
                     setAcpState('stopped');
-                    setAcpStatusLine(isZh
-                        ? 'ACP Mode B：未运行（打开 GUI 后自动启动，或点「启动 VS Code」）'
-                        : 'ACP Mode B: not running (starts with GUI, or use Launch VS Code)');
+                    setAcpStatusLine(tailText(lang ?? "", 'ACP Mode B: not running (starts with GUI, or use Launch VS Code)', 'ACP Mode B：未运行（打开 GUI 后自动启动，或点「启动 VS Code」）'));
                 }
             } catch {
                 // ignore
             }
         })();
         return () => { cancelled = true; };
-    }, [active, isZh, view, showToolSurface]);
+    }, [active, lang, view, showToolSurface]);
 
     // AI experts: load the card list whenever the home view is shown.
     const loadExperts = useCallback(async () => {
@@ -562,12 +559,12 @@ export const UtilitiesPage = ({
 		setExpertActionBusy(true);
 		try {
 			const mod = await getApp();
-			if (!mod?.PurchaseAndInstallManagedIndustryExpert) throw new Error(isZh ? '当前版本不支持购买行业专家' : 'This build cannot purchase industry experts');
+			if (!mod?.PurchaseAndInstallManagedIndustryExpert) throw new Error(tailText(lang ?? "", 'This build cannot purchase industry experts', '当前版本不支持购买行业专家'));
 			await mod.PurchaseAndInstallManagedIndustryExpert(expert.industry_asset_id, expert.industry_listing_id);
 			await loadExperts();
 		} catch (e: any) { if (mountedRef.current) setError(String(e?.message || e)); }
 		finally { if (mountedRef.current) setExpertActionBusy(false); }
-	}, [expertActionBusy, isZh, loadExperts]);
+	}, [expertActionBusy, lang, loadExperts]);
 
     useEffect(() => {
         if (!active || view !== 'home' || !showExpertSurface) return;
@@ -668,9 +665,9 @@ export const UtilitiesPage = ({
         const listing = expertMarketUploads[expert.id];
         if (!listing || expertPackageBusyRef.current) return;
         const confirmed = await showConfirm(
-            isZh ? '下架后不再接受新用户获取，已购用户仍可下载。' : 'New users will no longer be able to get this expert. Existing buyers retain downloads.',
-            isZh ? '下架专家' : 'Unlist expert',
-            { confirmText: isZh ? '下架' : 'Unlist', cancelText: isZh ? '取消' : 'Cancel' },
+            tailText(lang ?? "", 'New users will no longer be able to get this expert. Existing buyers retain downloads.', '下架后不再接受新用户获取，已购用户仍可下载。'),
+            tailText(lang ?? "", 'Unlist expert', '下架专家'),
+            { confirmText: tailText(lang ?? "", 'Unlist', '下架'), cancelText: tailText(lang ?? "", 'Cancel', '取消') },
         );
         if (!confirmed) return;
         expertPackageBusyRef.current = true;
@@ -678,7 +675,7 @@ export const UtilitiesPage = ({
         setError('');
         try {
             const mod = await getApp();
-            if (!mod?.WithdrawExpertMarketListing) throw new Error(isZh ? '当前版本不支持下架专家' : 'Unlisting experts is not supported by this build');
+            if (!mod?.WithdrawExpertMarketListing) throw new Error(tailText(lang ?? "", 'Unlisting experts is not supported by this build', '当前版本不支持下架专家'));
             await mod.WithdrawExpertMarketListing(listing.id);
             // The mutation succeeded, so do not leave a second actionable
             // Unlist button behind while the best-effort account reload is
@@ -693,15 +690,15 @@ export const UtilitiesPage = ({
             expertPackageBusyRef.current = false;
             if (mountedRef.current) setExpertPackageBusy(false);
         }
-    }, [expertMarketUploads, isZh, loadExpertMarketUploads, showConfirm]);
+    }, [expertMarketUploads, lang, loadExpertMarketUploads, showConfirm]);
 
     const handleDeletePrivateExpertMarketListing = useCallback(async (expert: ExpertDefinition) => {
         const listing = expertMarketUploads[expert.id];
         if (!listing || listing.status !== 'private' || expertPackageBusyRef.current) return;
         const confirmed = await showConfirm(
-            isZh ? '删除后无法恢复。该私有分享会从你的市场提交中永久移除。' : 'This cannot be undone. The private share will be permanently removed from your market submissions.',
-            isZh ? '删除私有分享' : 'Delete private share',
-            { confirmText: isZh ? '永久删除' : 'Delete permanently', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' },
+            tailText(lang ?? "", 'This cannot be undone. The private share will be permanently removed from your market submissions.', '删除后无法恢复。该私有分享会从你的市场提交中永久移除。'),
+            tailText(lang ?? "", 'Delete private share', '删除私有分享'),
+            { confirmText: tailText(lang ?? "", 'Delete permanently', '永久删除'), cancelText: tailText(lang ?? "", 'Cancel', '取消'), confirmVariant: 'danger' },
         );
         if (!confirmed) return;
         expertPackageBusyRef.current = true;
@@ -709,7 +706,7 @@ export const UtilitiesPage = ({
         setError('');
         try {
             const mod = await getApp();
-            if (!mod?.DeletePrivateExpertMarketListing) throw new Error(isZh ? '当前版本不支持删除私有分享' : 'Deleting private shares is not supported by this build');
+            if (!mod?.DeletePrivateExpertMarketListing) throw new Error(tailText(lang ?? "", 'Deleting private shares is not supported by this build', '当前版本不支持删除私有分享'));
             await mod.DeletePrivateExpertMarketListing(listing.id);
             // Remove both the local state and any mutation override. The next
             // account refresh may be stale, so keep a deletion sentinel until
@@ -726,7 +723,7 @@ export const UtilitiesPage = ({
             expertPackageBusyRef.current = false;
             if (mountedRef.current) setExpertPackageBusy(false);
         }
-    }, [expertMarketUploads, isZh, loadExpertMarketUploads, showConfirm]);
+    }, [expertMarketUploads, lang, loadExpertMarketUploads, showConfirm]);
 
     const handleDeleteExpert = useCallback(async () => {
         const target = expertDeleteTarget;
@@ -734,7 +731,7 @@ export const UtilitiesPage = ({
         setExpertActionBusy(true);
         try {
             const mod = await getApp();
-            if (!mod?.DeleteExpert) throw new Error(isZh ? '当前版本不支持删除专家' : 'Deleting experts is not supported by this build');
+            if (!mod?.DeleteExpert) throw new Error(tailText(lang ?? "", 'Deleting experts is not supported by this build', '当前版本不支持删除专家'));
             await mod.DeleteExpert(target.id);
             delete expertMarketUploadOverridesRef.current[target.id];
             deletedExpertMarketUploadsRef.current.delete(target.id);
@@ -750,7 +747,7 @@ export const UtilitiesPage = ({
         } finally {
             if (mountedRef.current) setExpertActionBusy(false);
         }
-    }, [expertDeleteTarget, expertActionBusy, loadExperts, isZh]);
+    }, [expertDeleteTarget, expertActionBusy, loadExperts, lang]);
 
     const handleResetBuiltinExpert = useCallback(async () => {
         const target = expertResetTarget;
@@ -758,7 +755,7 @@ export const UtilitiesPage = ({
         setExpertActionBusy(true);
         try {
             const mod = await getApp();
-            if (!mod?.ResetBuiltinExpert) throw new Error(isZh ? '当前版本不支持恢复默认专家' : 'Resetting builtin experts is not supported by this build');
+            if (!mod?.ResetBuiltinExpert) throw new Error(tailText(lang ?? "", 'Resetting builtin experts is not supported by this build', '当前版本不支持恢复默认专家'));
             await mod.ResetBuiltinExpert(target.id);
             setExpertResetTarget(null);
             // The override is gone — close any open tab so it reopens with defaults.
@@ -769,7 +766,7 @@ export const UtilitiesPage = ({
         } finally {
             if (mountedRef.current) setExpertActionBusy(false);
         }
-    }, [expertResetTarget, expertActionBusy, loadExperts, isZh]);
+    }, [expertResetTarget, expertActionBusy, loadExperts, lang]);
 
     const handleExportExpertPackage = useCallback(async (expert: ExpertDefinition) => {
         if (expertPackageBusyRef.current || expert.builtin) return;
@@ -778,10 +775,10 @@ export const UtilitiesPage = ({
         setError('');
         try {
             const mod = await getApp();
-            if (!mod?.ExportExpertPackage) throw new Error(isZh ? '当前版本不支持导出专家' : 'Exporting experts is not supported by this build');
+            if (!mod?.ExportExpertPackage) throw new Error(tailText(lang ?? "", 'Exporting experts is not supported by this build', '当前版本不支持导出专家'));
             const savedPath = await mod.ExportExpertPackage(expert.id);
             if (savedPath && mountedRef.current) {
-                setCopyHint(isZh ? `已导出「${expert.name}」` : `Exported “${expert.name}”`);
+                setCopyHint(tailText(lang ?? "", `Exported “${expert.name}”`, `已导出「${expert.name}」`));
                 setTimeout(() => setCopyHint(''), 2500);
             }
         } catch (e: any) {
@@ -790,7 +787,7 @@ export const UtilitiesPage = ({
             expertPackageBusyRef.current = false;
             if (mountedRef.current) setExpertPackageBusy(false);
         }
-    }, [isZh]);
+    }, [lang]);
 
     const handleImportExpertPackage = useCallback(async () => {
         if (expertPackageBusyRef.current) return;
@@ -799,7 +796,7 @@ export const UtilitiesPage = ({
         setError('');
         try {
             const mod = await getApp();
-            if (!mod?.ImportExpertPackage) throw new Error(isZh ? '当前版本不支持导入专家' : 'Importing experts is not supported by this build');
+            if (!mod?.ImportExpertPackage) throw new Error(tailText(lang ?? "", 'Importing experts is not supported by this build', '当前版本不支持导入专家'));
             const result = await mod.ImportExpertPackage();
             if (!result || !mountedRef.current) return;
             await loadExperts();
@@ -807,14 +804,14 @@ export const UtilitiesPage = ({
             const skipped = Array.isArray(result.skipped_skills) ? result.skipped_skills.length : 0;
             const expertName = String(result.expert?.name || '');
             if (result.already_imported) {
-                setCopyHint(isZh ? `“${expertName}” 已导入，无需重复创建` : `“${expertName}” is already imported`);
+                setCopyHint(tailText(lang ?? "", `“${expertName}” is already imported`, `“${expertName}” 已导入，无需重复创建`));
                 setTimeout(() => setCopyHint(''), 3500);
                 return;
             }
             const skillNote = installed || skipped
-                ? (isZh ? `（已导入 ${installed} 个技能，跳过 ${skipped} 个已有技能）` : ` (${installed} skill(s) imported, ${skipped} already installed)`)
+                ? (tailText(lang ?? "", ` (${installed} skill(s) imported, ${skipped} already installed)`, `（已导入 ${installed} 个技能，跳过 ${skipped} 个已有技能）`))
                 : '';
-            setCopyHint(isZh ? `已导入「${expertName}」${skillNote}` : `Imported “${expertName}”${skillNote}`);
+            setCopyHint(tailText(lang ?? "", `Imported “${expertName}”${skillNote}`, `已导入「${expertName}」${skillNote}`));
             setTimeout(() => setCopyHint(''), 3500);
         } catch (e: any) {
             if (mountedRef.current) setError(String(e?.message || e));
@@ -824,7 +821,7 @@ export const UtilitiesPage = ({
                 setExpertPackageBusy(false);
             }
         }
-    }, [isZh, loadExperts]);
+    }, [lang, loadExperts]);
 
     const copyText = async (text: string, okMsg: string) => {
         const value = (text || '').trim();
@@ -843,7 +840,7 @@ export const UtilitiesPage = ({
             setCopyHint(okMsg);
             setTimeout(() => setCopyHint(''), 2000);
         } catch {
-            setCopyHint(isZh ? '复制失败' : 'Copy failed');
+            setCopyHint(tailText(lang ?? "", 'Copy failed', '复制失败'));
         }
     };
 
@@ -921,14 +918,14 @@ export const UtilitiesPage = ({
                 deadline: deadlineISO,
             },
             {
-                draft: isZh ? '状态为草稿' : 'Status is draft',
-                hasQuestions: isZh ? '至少一道有效题目' : 'At least one valid question',
-                choiceOptions: isZh ? '选择题 ≥2 个选项' : 'Choice questions have ≥2 options',
-                hasBindings: isZh ? '至少绑定 1 个蓝信群' : 'At least one Lansenger group bound',
-                deadlineOk: isZh ? '截止时间未过期' : 'Deadline not already past',
+                draft: tailText(lang ?? "", 'Status is draft', '状态为草稿'),
+                hasQuestions: tailText(lang ?? "", 'At least one valid question', '至少一道有效题目'),
+                choiceOptions: tailText(lang ?? "", 'Choice questions have ≥2 options', '选择题 ≥2 个选项'),
+                hasBindings: tailText(lang ?? "", 'At least one Lansenger group bound', '至少绑定 1 个蓝信群'),
+                deadlineOk: tailText(lang ?? "", 'Deadline not already past', '截止时间未过期'),
             },
         );
-    }, [selected, editQuestions, draftDeadlineLocal, isZh]);
+    }, [selected, editQuestions, draftDeadlineLocal, lang]);
 
     const canPublishNow = publishChecklistReady(publishChecks);
 
@@ -958,10 +955,10 @@ export const UtilitiesPage = ({
     const batchArchive = async () => {
         const ids = archivableSelected;
         if (ids.length === 0) {
-            setError(isZh ? '请勾选草稿或已关闭的问卷' : 'Select draft or closed surveys');
+            setError(tailText(lang ?? "", 'Select draft or closed surveys', '请勾选草稿或已关闭的问卷'));
             return;
         }
-        if (!await showConfirm(isZh ? `确认归档 ${ids.length} 个问卷？` : `Archive ${ids.length} survey(s)?`, isZh ? '归档问卷' : 'Archive surveys', { confirmText: isZh ? '归档' : 'Archive', cancelText: isZh ? '取消' : 'Cancel' })) return;
+        if (!await showConfirm(tailText(lang ?? "", `Archive ${ids.length} survey(s)?`, `确认归档 ${ids.length} 个问卷？`), tailText(lang ?? "", 'Archive surveys', '归档问卷'), { confirmText: tailText(lang ?? "", 'Archive', '归档'), cancelText: tailText(lang ?? "", 'Cancel', '取消') })) return;
         setBusy(true);
         setError('');
         try {
@@ -974,9 +971,9 @@ export const UtilitiesPage = ({
             setSelectedIds([]);
             await loadList();
             if (failures.length) {
-                setError((isZh ? '部分归档失败：' : 'Some failed: ') + failures.join('; '));
+                setError((tailText(lang ?? "", 'Some failed: ', '部分归档失败：')) + failures.join('; '));
             } else {
-                setCopyHint(isZh ? `已归档 ${ids.length} 个` : `Archived ${ids.length}`);
+                setCopyHint(tailText(lang ?? "", `Archived ${ids.length}`, `已归档 ${ids.length} 个`));
                 setTimeout(() => setCopyHint(''), 2500);
             }
         } catch (e: any) {
@@ -989,10 +986,10 @@ export const UtilitiesPage = ({
     const batchDelete = async () => {
         const ids = deletableSelected;
         if (ids.length === 0) {
-            setError(isZh ? '请勾选草稿或已归档的问卷' : 'Select draft or archived surveys');
+            setError(tailText(lang ?? "", 'Select draft or archived surveys', '请勾选草稿或已归档的问卷'));
             return;
         }
-        if (!await showConfirm(isZh ? `确认永久删除 ${ids.length} 个问卷？不可恢复。` : `Permanently delete ${ids.length} survey(s)?`, isZh ? '永久删除问卷' : 'Permanently delete surveys', { confirmText: isZh ? '永久删除' : 'Delete', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' })) return;
+        if (!await showConfirm(tailText(lang ?? "", `Permanently delete ${ids.length} survey(s)?`, `确认永久删除 ${ids.length} 个问卷？不可恢复。`), tailText(lang ?? "", 'Permanently delete surveys', '永久删除问卷'), { confirmText: tailText(lang ?? "", 'Delete', '永久删除'), cancelText: tailText(lang ?? "", 'Cancel', '取消'), confirmVariant: 'danger' })) return;
         setBusy(true);
         setError('');
         try {
@@ -1008,9 +1005,9 @@ export const UtilitiesPage = ({
             }
             await loadList();
             if (failures.length) {
-                setError((isZh ? '部分删除失败：' : 'Some failed: ') + failures.join('; '));
+                setError((tailText(lang ?? "", 'Some failed: ', '部分删除失败：')) + failures.join('; '));
             } else {
-                setCopyHint(isZh ? `已删除 ${ids.length} 个` : `Deleted ${ids.length}`);
+                setCopyHint(tailText(lang ?? "", `Deleted ${ids.length}`, `已删除 ${ids.length} 个`));
                 setTimeout(() => setCopyHint(''), 2500);
             }
         } catch (e: any) {
@@ -1022,161 +1019,137 @@ export const UtilitiesPage = ({
 
     const t = useMemo(() => ({
         title: mode === 'tools'
-            ? (lang === 'zh-Hant' ? '工具' : isZh ? '工具' : 'Tools')
+            ? (lang === 'zh-Hant' ? '工具' : tailText(lang ?? "", 'Tools', '工具'))
             : mode === 'experts'
-                ? (lang === 'zh-Hant' ? 'AI 專家' : isZh ? 'AI 专家' : 'AI Experts')
+                ? (lang === 'zh-Hant' ? 'AI 專家' : tailText(lang ?? "", 'AI Experts', 'AI 专家'))
                 : utilitiesPageTitle(lang),
         subtitle: mode === 'tools'
-            ? (isZh ? '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）' : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)')
+            ? (tailText(lang ?? "", 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)', '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）'))
             : mode === 'experts'
-                ? (lang === 'zh-Hant' ? '點擊卡片與專家對話；也可以建立自己的專家' : isZh ? '点击卡片与专家对话；也可以创建自己的专家' : 'Click a card to chat with an expert, or create your own')
-                : (isZh
-                    ? '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）'
-                    : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)'),
-        surveyCard: isZh ? '调查问卷' : 'Surveys',
-        surveyDesc: isZh ? '创建问卷、绑定蓝信群、查看结果并导出 Excel' : 'Create surveys, bind Lansenger groups, view results, export Excel',
+                ? (lang === 'zh-Hant' ? '點擊卡片與專家對話；也可以建立自己的專家' : tailText(lang ?? "", 'Click a card to chat with an expert, or create your own', '点击卡片与专家对话；也可以创建自己的专家'))
+                : (tailText(lang ?? "", 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)', '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）')),
+        surveyCard: tailText(lang ?? "", 'Surveys', '调查问卷'),
+        surveyDesc: tailText(lang ?? "", 'Create surveys, bind Lansenger groups, view results, export Excel', '创建问卷、绑定蓝信群、查看结果并导出 Excel'),
         meetingCard: meetingRecordBaseTitle(lang),
         meetingDesc: meetingRecordCardDesc(lang),
-        vscodeCard: isZh ? '启动 VS Code' : 'Launch VS Code',
-        vscodeDesc: isZh
-            ? '自动开启 Gateway、配置 ACP Bridge，在 VS Code 中调用 MaClaw GUI 能力'
-            : 'Enable Gateway, configure ACP Bridge, use MaClaw GUI from VS Code',
-        vscodeExtCard: isZh ? '启动 VS Code（扩展）' : 'Launch VS Code (Extension)',
-        vscodeExtDesc: isZh
-            ? '安装 MaClaw 一方扩展，聊天固定在 VS Code 底部面板，不遮挡文件管理器'
-            : 'Install the first-party MaClaw extension — chat stays in the bottom panel, never hides the Explorer',
-        virtualRepositoryCard: isZh ? '虚拟仓库' : 'Virtual Repository',
-        virtualRepositoryDesc: isZh
-            ? '将 Git、SVN 与编译输出等本地目录组织成一棵可移植的虚拟目录树'
-            : 'Organize Git, SVN, and local build-output directories in a portable virtual tree',
-        vscodeMissingTitle: isZh ? '未检测到 VS Code' : 'VS Code not found',
-        vscodeMissingMsg: isZh
-            ? '启动前需要先安装 Visual Studio Code。是否打开官方下载页面？'
-            : 'Visual Studio Code is required before launching. Open the official download page?',
-        openDownload: isZh ? '打开下载页' : 'Open download',
-        cancel: isZh ? '取消' : 'Cancel',
-        open: isZh ? '进入' : 'Open',
-        start: lang === 'zh-Hant' ? '開始' : isZh ? '开始' : 'Start',
-        starting: lang === 'zh-Hant' ? '啟動中…' : isZh ? '启动中…' : 'Starting…',
-        configureLaunch: isZh ? '配置并启动' : 'Configure & launch',
-        back: isZh ? '返回' : 'Back',
-        hubOffline: isZh ? '未连接 Hub。问卷数据保存在 Hub，请先注册/连接 Hub。' : 'Hub is offline. Survey data lives on Hub — connect first.',
-        create: isZh ? '新建问卷' : 'New survey',
-        save: isZh ? '保存草稿' : 'Save draft',
-        publish: isZh ? '发布' : 'Publish',
-        bind: isZh ? '绑定选中群' : 'Bind selected group',
-        unbind: isZh ? '解绑' : 'Unbind',
-        results: isZh ? '结果' : 'Results',
-        export: isZh ? '导出 Excel' : 'Export Excel',
-        empty: isZh ? '暂无问卷' : 'No surveys yet',
-        refresh: isZh ? '刷新' : 'Refresh',
-        close: isZh ? '关闭' : 'Close',
-        reopen: isZh ? '重新打开' : 'Reopen',
-        archive: isZh ? '归档' : 'Archive',
-        duplicate: isZh ? '复制' : 'Duplicate',
-        delete: isZh ? '删除' : 'Delete',
-        announce: isZh ? '群内公告' : 'Announce',
-        responses: isZh ? '答卷明细' : 'Responses',
-        count: isZh ? '回收份数' : 'Responses',
-        addQ: isZh ? '添加题目' : 'Add question',
-        addOpt: isZh ? '加选项' : 'Add option',
-        remove: isZh ? '删除' : 'Remove',
-        deadline: isZh ? '截止时间' : 'Deadline',
-        target: isZh ? '目标回收数' : 'Target responses',
-        completion: isZh ? '完成率' : 'Completion',
-        search: isZh ? '搜索标题或短码…' : 'Search title or code…',
-        noMatch: isZh ? '没有匹配的问卷' : 'No matching surveys',
-        sort: isZh ? '排序' : 'Sort',
-        exporting: isZh ? '正在导出…' : 'Exporting…',
-        copyCode: isZh ? '复制短码' : 'Copy code',
-        copyCmd: isZh ? '复制命令' : 'Copy /survey',
-        copied: isZh ? '已复制' : 'Copied',
-        groups: isZh ? '群' : 'groups',
-        questions: isZh ? '题' : 'qs',
-        batchArchive: isZh ? '批量归档' : 'Archive selected',
-        batchDelete: isZh ? '批量删除' : 'Delete selected',
-        selectAll: isZh ? '全选可见' : 'Select visible',
-        filterOption: isZh ? '按选项筛选答卷' : 'Filter by option',
-        allOptions: isZh ? '全部答卷' : 'All responses',
-        showing: isZh ? '显示' : 'Showing',
-        exportFiltered: isZh ? '导出当前筛选' : 'Export filtered',
-        expired: isZh ? '已截止' : 'Expired',
-        notExpired: isZh ? '未截止' : 'Open',
-        responsesShort: isZh ? '答' : 'resp',
-        publishReady: isZh ? '可发布' : 'Ready to publish',
-        publishBlocked: isZh ? '发布前请完成以下项' : 'Complete before publish',
-        allowP2P: isZh ? '允许私聊填写（凭短码；默认关闭）' : 'Allow P2P fill by short code (default off)',
-        searchResponses: isZh ? '搜索答卷…' : 'Search responses…',
-        searchTextAnswers: isZh ? '搜索文本答案…' : 'Search text answers…',
-        textAnswers: isZh ? '文本答案' : 'Text answers',
-        bindings: isZh ? '绑定群' : 'Bound groups',
-        liveHint: isZh ? '有新答卷，已自动刷新' : 'New response — refreshed',
-        status: isZh ? '状态' : 'Status',
-        moveUp: isZh ? '上移' : 'Up',
-        moveDown: isZh ? '下移' : 'Down',
-        byGroup: isZh ? '按群回收' : 'By group',
-        p2pUnknown: isZh ? '私聊/未知群' : 'P2P / unknown',
-        exportPiiWarn: isZh
-            ? '导出文件将保存在本机，并可能包含答卷人姓名等个人信息。确认继续导出？'
-            : 'The export file will be saved locally and may include respondent names (PII). Continue?',
-        exportPiiNote: isZh
-            ? '提示：非匿名问卷导出会含姓名等 PII，请妥善保管本地文件。'
-            : 'Note: non-anonymous exports include names (PII). Keep local files secure.',
-        exportAnonNote: isZh
-            ? '匿名导出：respondent 列为 anonymous，不含真实姓名。'
-            : 'Anonymous export: respondent columns are redacted (anonymous).',
-        filterByGroup: isZh ? '点击群筛选答卷；再点取消' : 'Click group to filter; click again to clear',
-        allGroups: isZh ? '全部群' : 'All groups',
-        copySummary: isZh ? '复制摘要' : 'Copy summary',
-        summaryCopied: isZh ? '摘要已复制' : 'Summary copied',
-        print: isZh ? '打印' : 'Print',
-        emptyHint: isZh ? '创建第一份问卷，绑定蓝信群后即可开始收集。' : 'Create a survey, bind Lansenger groups, then collect responses.',
-        shortcutSave: isZh ? 'Ctrl+S 保存草稿' : 'Ctrl+S save draft',
-        help: isZh ? '使用说明' : 'How to use',
-        hideHelp: isZh ? '收起说明' : 'Hide help',
-        dismiss: isZh ? '关闭提示' : 'Dismiss',
-        expertsTitle: lang === 'zh-Hant' ? 'AI 專家' : isZh ? 'AI 专家' : 'AI Experts',
+        vscodeCard: tailText(lang ?? "", 'Launch VS Code', '启动 VS Code'),
+        vscodeDesc: tailText(lang ?? "", 'Enable Gateway, configure ACP Bridge, use MaClaw GUI from VS Code', '自动开启 Gateway、配置 ACP Bridge，在 VS Code 中调用 MaClaw GUI 能力'),
+        vscodeExtCard: tailText(lang ?? "", 'Launch VS Code (Extension)', '启动 VS Code（扩展）'),
+        vscodeExtDesc: tailText(lang ?? "", 'Install the first-party MaClaw extension — chat stays in the bottom panel, never hides the Explorer', '安装 MaClaw 一方扩展，聊天固定在 VS Code 底部面板，不遮挡文件管理器'),
+        virtualRepositoryCard: tailText(lang ?? "", 'Virtual Repository', '虚拟仓库'),
+        virtualRepositoryDesc: tailText(lang ?? "", 'Organize Git, SVN, and local build-output directories in a portable virtual tree', '将 Git、SVN 与编译输出等本地目录组织成一棵可移植的虚拟目录树'),
+        vscodeMissingTitle: tailText(lang ?? "", 'VS Code not found', '未检测到 VS Code'),
+        vscodeMissingMsg: tailText(lang ?? "", 'Visual Studio Code is required before launching. Open the official download page?', '启动前需要先安装 Visual Studio Code。是否打开官方下载页面？'),
+        openDownload: tailText(lang ?? "", 'Open download', '打开下载页'),
+        cancel: tailText(lang ?? "", 'Cancel', '取消'),
+        open: tailText(lang ?? "", 'Open', '进入'),
+        start: lang === 'zh-Hant' ? '開始' : tailText(lang ?? "", 'Start', '开始'),
+        starting: lang === 'zh-Hant' ? '啟動中…' : tailText(lang ?? "", 'Starting…', '启动中…'),
+        configureLaunch: tailText(lang ?? "", 'Configure & launch', '配置并启动'),
+        back: tailText(lang ?? "", 'Back', '返回'),
+        hubOffline: tailText(lang ?? "", 'Hub is offline. Survey data lives on Hub — connect first.', '未连接 Hub。问卷数据保存在 Hub，请先注册/连接 Hub。'),
+        create: tailText(lang ?? "", 'New survey', '新建问卷'),
+        save: tailText(lang ?? "", 'Save draft', '保存草稿'),
+        publish: tailText(lang ?? "", 'Publish', '发布'),
+        bind: tailText(lang ?? "", 'Bind selected group', '绑定选中群'),
+        unbind: tailText(lang ?? "", 'Unbind', '解绑'),
+        results: tailText(lang ?? "", 'Results', '结果'),
+        export: tailText(lang ?? "", 'Export Excel', '导出 Excel'),
+        empty: tailText(lang ?? "", 'No surveys yet', '暂无问卷'),
+        refresh: tailText(lang ?? "", 'Refresh', '刷新'),
+        close: tailText(lang ?? "", 'Close', '关闭'),
+        reopen: tailText(lang ?? "", 'Reopen', '重新打开'),
+        archive: tailText(lang ?? "", 'Archive', '归档'),
+        duplicate: tailText(lang ?? "", 'Duplicate', '复制'),
+        delete: tailText(lang ?? "", 'Delete', '删除'),
+        announce: tailText(lang ?? "", 'Announce', '群内公告'),
+        responses: tailText(lang ?? "", 'Responses', '答卷明细'),
+        count: tailText(lang ?? "", 'Responses', '回收份数'),
+        addQ: tailText(lang ?? "", 'Add question', '添加题目'),
+        addOpt: tailText(lang ?? "", 'Add option', '加选项'),
+        remove: tailText(lang ?? "", 'Remove', '删除'),
+        deadline: tailText(lang ?? "", 'Deadline', '截止时间'),
+        target: tailText(lang ?? "", 'Target responses', '目标回收数'),
+        completion: tailText(lang ?? "", 'Completion', '完成率'),
+        search: tailText(lang ?? "", 'Search title or code…', '搜索标题或短码…'),
+        noMatch: tailText(lang ?? "", 'No matching surveys', '没有匹配的问卷'),
+        sort: tailText(lang ?? "", 'Sort', '排序'),
+        exporting: tailText(lang ?? "", 'Exporting…', '正在导出…'),
+        copyCode: tailText(lang ?? "", 'Copy code', '复制短码'),
+        copyCmd: tailText(lang ?? "", 'Copy /survey', '复制命令'),
+        copied: tailText(lang ?? "", 'Copied', '已复制'),
+        groups: tailText(lang ?? "", 'groups', '群'),
+        questions: tailText(lang ?? "", 'qs', '题'),
+        batchArchive: tailText(lang ?? "", 'Archive selected', '批量归档'),
+        batchDelete: tailText(lang ?? "", 'Delete selected', '批量删除'),
+        selectAll: tailText(lang ?? "", 'Select visible', '全选可见'),
+        filterOption: tailText(lang ?? "", 'Filter by option', '按选项筛选答卷'),
+        allOptions: tailText(lang ?? "", 'All responses', '全部答卷'),
+        showing: tailText(lang ?? "", 'Showing', '显示'),
+        exportFiltered: tailText(lang ?? "", 'Export filtered', '导出当前筛选'),
+        expired: tailText(lang ?? "", 'Expired', '已截止'),
+        notExpired: tailText(lang ?? "", 'Open', '未截止'),
+        responsesShort: tailText(lang ?? "", 'resp', '答'),
+        publishReady: tailText(lang ?? "", 'Ready to publish', '可发布'),
+        publishBlocked: tailText(lang ?? "", 'Complete before publish', '发布前请完成以下项'),
+        allowP2P: tailText(lang ?? "", 'Allow P2P fill by short code (default off)', '允许私聊填写（凭短码；默认关闭）'),
+        searchResponses: tailText(lang ?? "", 'Search responses…', '搜索答卷…'),
+        searchTextAnswers: tailText(lang ?? "", 'Search text answers…', '搜索文本答案…'),
+        textAnswers: tailText(lang ?? "", 'Text answers', '文本答案'),
+        bindings: tailText(lang ?? "", 'Bound groups', '绑定群'),
+        liveHint: tailText(lang ?? "", 'New response — refreshed', '有新答卷，已自动刷新'),
+        status: tailText(lang ?? "", 'Status', '状态'),
+        moveUp: tailText(lang ?? "", 'Up', '上移'),
+        moveDown: tailText(lang ?? "", 'Down', '下移'),
+        byGroup: tailText(lang ?? "", 'By group', '按群回收'),
+        p2pUnknown: tailText(lang ?? "", 'P2P / unknown', '私聊/未知群'),
+        exportPiiWarn: tailText(lang ?? "", 'The export file will be saved locally and may include respondent names (PII). Continue?', '导出文件将保存在本机，并可能包含答卷人姓名等个人信息。确认继续导出？'),
+        exportPiiNote: tailText(lang ?? "", 'Note: non-anonymous exports include names (PII). Keep local files secure.', '提示：非匿名问卷导出会含姓名等 PII，请妥善保管本地文件。'),
+        exportAnonNote: tailText(lang ?? "", 'Anonymous export: respondent columns are redacted (anonymous).', '匿名导出：respondent 列为 anonymous，不含真实姓名。'),
+        filterByGroup: tailText(lang ?? "", 'Click group to filter; click again to clear', '点击群筛选答卷；再点取消'),
+        allGroups: tailText(lang ?? "", 'All groups', '全部群'),
+        copySummary: tailText(lang ?? "", 'Copy summary', '复制摘要'),
+        summaryCopied: tailText(lang ?? "", 'Summary copied', '摘要已复制'),
+        print: tailText(lang ?? "", 'Print', '打印'),
+        emptyHint: tailText(lang ?? "", 'Create a survey, bind Lansenger groups, then collect responses.', '创建第一份问卷，绑定蓝信群后即可开始收集。'),
+        shortcutSave: tailText(lang ?? "", 'Ctrl+S save draft', 'Ctrl+S 保存草稿'),
+        help: tailText(lang ?? "", 'How to use', '使用说明'),
+        hideHelp: tailText(lang ?? "", 'Hide help', '收起说明'),
+        dismiss: tailText(lang ?? "", 'Dismiss', '关闭提示'),
+        expertsTitle: lang === 'zh-Hant' ? 'AI 專家' : tailText(lang ?? "", 'AI Experts', 'AI 专家'),
         expertsSubtitle: lang === 'zh-Hant'
             ? '點擊卡片與專家對話；也可以建立自己的專家'
-            : isZh
-                ? '点击卡片与专家对话；也可以创建自己的专家'
-                : 'Click a card to chat with an expert, or create your own',
-        expertNew: lang === 'zh-Hant' ? '新建專家' : isZh ? '新建专家' : 'New expert',
-        expertImport: lang === 'zh-Hant' ? '匯入專家' : isZh ? '导入专家' : 'Import expert',
-        expertMarket: lang === 'zh-Hant' ? '專家市場' : isZh ? '专家市场' : 'Expert Market',
-        expertExport: lang === 'zh-Hant' ? '匯出' : isZh ? '导出' : 'Export',
+            : tailText(lang ?? "", 'Click a card to chat with an expert, or create your own', '点击卡片与专家对话；也可以创建自己的专家'),
+        expertNew: lang === 'zh-Hant' ? '新建專家' : tailText(lang ?? "", 'New expert', '新建专家'),
+        expertImport: lang === 'zh-Hant' ? '匯入專家' : tailText(lang ?? "", 'Import expert', '导入专家'),
+        expertMarket: lang === 'zh-Hant' ? '專家市場' : tailText(lang ?? "", 'Expert Market', '专家市场'),
+        expertExport: lang === 'zh-Hant' ? '匯出' : tailText(lang ?? "", 'Export', '导出'),
         expertExchangeHint: lang === 'zh-Hant'
             ? '匯出自訂專家時，會一併打包其所依賴的技能'
-            : isZh
-                ? '导出自定义专家时，会一并打包其依赖的技能'
-                : 'Exporting a custom expert also packages its dependent skills',
-        expertEdit: lang === 'zh-Hant' ? '編輯' : isZh ? '编辑' : 'Edit',
-        expertResetDefault: lang === 'zh-Hant' ? '恢復預設' : isZh ? '恢复默认' : 'Reset default',
-        expertDeleteTitle: lang === 'zh-Hant' ? '刪除專家' : isZh ? '删除专家' : 'Delete expert',
-        expertResetTitle: lang === 'zh-Hant' ? '恢復預設專家' : isZh ? '恢复默认专家' : 'Reset builtin expert',
-        expertOpen: lang === 'zh-Hant' ? '開始對話' : isZh ? '开始对话' : 'Start chat',
-        expertOpenHint: lang === 'zh-Hant' ? '點擊打開' : isZh ? '点击打开' : 'Click to open',
-        expertAbout: lang === 'zh-Hant' ? '關於' : isZh ? '关于' : 'About',
-        expertAboutClose: lang === 'zh-Hant' ? '關閉' : isZh ? '关闭' : 'Close',
+            : tailText(lang ?? "", 'Exporting a custom expert also packages its dependent skills', '导出自定义专家时，会一并打包其依赖的技能'),
+        expertEdit: lang === 'zh-Hant' ? '編輯' : tailText(lang ?? "", 'Edit', '编辑'),
+        expertResetDefault: lang === 'zh-Hant' ? '恢復預設' : tailText(lang ?? "", 'Reset default', '恢复默认'),
+        expertDeleteTitle: lang === 'zh-Hant' ? '刪除專家' : tailText(lang ?? "", 'Delete expert', '删除专家'),
+        expertResetTitle: lang === 'zh-Hant' ? '恢復預設專家' : tailText(lang ?? "", 'Reset builtin expert', '恢复默认专家'),
+        expertOpen: lang === 'zh-Hant' ? '開始對話' : tailText(lang ?? "", 'Start chat', '开始对话'),
+        expertOpenHint: lang === 'zh-Hant' ? '點擊打開' : tailText(lang ?? "", 'Click to open', '点击打开'),
+        expertAbout: lang === 'zh-Hant' ? '關於' : tailText(lang ?? "", 'About', '关于'),
+        expertAboutClose: lang === 'zh-Hant' ? '關閉' : tailText(lang ?? "", 'Close', '关闭'),
         expertOptimizedFrom: (sourceName: string) => lang === 'zh-Hant'
             ? `優化自：${sourceName}`
-            : isZh
-                ? `优化自：${sourceName}`
-                : `Optimized from: ${sourceName}`,
-        expertOptimizedFromDeleted: lang === 'zh-Hant' ? '優化自：已刪除專家' : isZh ? '优化自：已删除专家' : 'Optimized from: deleted expert',
-        expertSearchPlaceholder: lang === 'zh-Hant' ? '搜尋專家' : isZh ? '搜索专家' : 'Search experts',
-        expertFilterLabel: lang === 'zh-Hant' ? '篩選專家' : isZh ? '筛选专家' : 'Filter experts',
-        expertFilterAll: lang === 'zh-Hant' ? '全部' : isZh ? '全部' : 'All',
-        expertFilterSystem: lang === 'zh-Hant' ? '系統預設' : isZh ? '系统默认' : 'System',
-        expertFilterCustom: lang === 'zh-Hant' ? '我的專家' : isZh ? '我的专家' : 'My experts',
-        expertBadgeSystem: lang === 'zh-Hant' ? '系統預設' : isZh ? '系统默认' : 'Built-in',
-        expertBadgeIndustry: lang === 'zh-Hant' ? '行業專家' : isZh ? '行业专家' : 'Industry',
-        expertBadgeCustom: lang === 'zh-Hant' ? '自訂' : isZh ? '自定义' : 'Custom',
+            : tailText(lang ?? "", `Optimized from: ${sourceName}`, `优化自：${sourceName}`),
+        expertOptimizedFromDeleted: lang === 'zh-Hant' ? '優化自：已刪除專家' : tailText(lang ?? "", 'Optimized from: deleted expert', '优化自：已删除专家'),
+        expertSearchPlaceholder: lang === 'zh-Hant' ? '搜尋專家' : tailText(lang ?? "", 'Search experts', '搜索专家'),
+        expertFilterLabel: lang === 'zh-Hant' ? '篩選專家' : tailText(lang ?? "", 'Filter experts', '筛选专家'),
+        expertFilterAll: lang === 'zh-Hant' ? '全部' : tailText(lang ?? "", 'All', '全部'),
+        expertFilterSystem: lang === 'zh-Hant' ? '系統預設' : tailText(lang ?? "", 'System', '系统默认'),
+        expertFilterCustom: lang === 'zh-Hant' ? '我的專家' : tailText(lang ?? "", 'My experts', '我的专家'),
+        expertBadgeSystem: lang === 'zh-Hant' ? '系統預設' : tailText(lang ?? "", 'Built-in', '系统默认'),
+        expertBadgeIndustry: lang === 'zh-Hant' ? '行業專家' : tailText(lang ?? "", 'Industry', '行业专家'),
+        expertBadgeCustom: lang === 'zh-Hant' ? '自訂' : tailText(lang ?? "", 'Custom', '自定义'),
         expertFilterEmpty: lang === 'zh-Hant'
             ? '沒有符合條件的專家，試試其他篩選或關鍵詞'
-            : isZh
-                ? '没有符合条件的专家，试试其他筛选或关键词'
-                : 'No experts match this filter or search',
+            : tailText(lang ?? "", 'No experts match this filter or search', '没有符合条件的专家，试试其他筛选或关键词'),
     }), [isZh, lang, mode]);
 
     const handleMeetingRecord = useCallback(async () => {
@@ -1215,15 +1188,11 @@ export const UtilitiesPage = ({
                 : undefined);
             const jsFn = mod?.[method];
             if (typeof jsFn !== 'function' && typeof nativeFn !== 'function') {
-                throw new Error(isZh
-                    ? `当前构建未包含 ${method}，请重新编译并重启 GUI（不仅 bridge）`
-                    : `${method} is not available — rebuild and restart the GUI (not only the bridge)`);
+                throw new Error(tailText(lang ?? "", `${method} is not available — rebuild and restart the GUI (not only the bridge)`, `当前构建未包含 ${method}，请重新编译并重启 GUI（不仅 bridge）`));
             }
             if (typeof nativeFn !== 'function' && typeof jsFn === 'function') {
                 // JS stub exists but Go binary is old — fail early with clear message.
-                throw new Error(isZh
-                    ? '前端已有绑定，但正在运行的 MaClaw.exe 过旧。请用新编译的 GUI 重启应用。'
-                    : 'Frontend bindings exist but the running MaClaw.exe is outdated. Restart with a freshly built GUI.');
+                throw new Error(tailText(lang ?? "", 'Frontend bindings exist but the running MaClaw.exe is outdated. Restart with a freshly built GUI.', '前端已有绑定，但正在运行的 MaClaw.exe 过旧。请用新编译的 GUI 重启应用。'));
             }
             const raw = typeof jsFn === 'function'
                 ? await jsFn()
@@ -1253,7 +1222,7 @@ export const UtilitiesPage = ({
                 if (mountedRef.current) {
                     setVscodeFeedback({
                         kind: 'error',
-                        message: res.message || (isZh ? '启动失败' : 'Launch failed'),
+                        message: res.message || (tailText(lang ?? "", 'Launch failed', '启动失败')),
                         steps: [],
                         warnings,
                     });
@@ -1263,7 +1232,7 @@ export const UtilitiesPage = ({
             if (mountedRef.current) {
                 const feedback: LaunchFeedback = {
                     kind: 'success',
-                    message: res.message || (isZh ? '已启动 VS Code' : 'VS Code launched'),
+                    message: res.message || (tailText(lang ?? "", 'VS Code launched', '已启动 VS Code')),
                     steps,
                     warnings,
                 };
@@ -1282,9 +1251,7 @@ export const UtilitiesPage = ({
                         const addr = st.address || (st.host && st.port ? `${st.host}:${st.port}` : '');
                         if (running) {
                             setAcpState('running');
-                            setAcpStatusLine(isZh
-                                ? `ACP Mode B：运行中 ${addr}（GUI AI 助手 = 编程 agent）`
-                                : `ACP Mode B: running ${addr} (GUI AI assistant = programming agent)`);
+                            setAcpStatusLine(tailText(lang ?? "", `ACP Mode B: running ${addr} (GUI AI assistant = programming agent)`, `ACP Mode B：运行中 ${addr}（GUI AI 助手 = 编程 agent）`));
                         }
                     }
                 } catch { /* ignore */ }
@@ -1302,7 +1269,7 @@ export const UtilitiesPage = ({
             startingRef.current = false;
             if (mountedRef.current) setStarting(false);
         }
-    }, [isZh]);
+    }, [lang]);
 
     const handleLaunchVSCode = useCallback(
         () => launchVSCodeVia('LaunchVSCodeWithACP', vscodeStartingRef, setVscodeStarting),
@@ -1314,7 +1281,7 @@ export const UtilitiesPage = ({
         [launchVSCodeVia],
     );
 
-    const operatorHelp = useMemo(() => buildSurveyOperatorHelp(isZh), [isZh]);
+    const operatorHelp = useMemo(() => buildSurveyOperatorHelp(lang || (isZh ? "zh-Hans" : "en")), [lang]);
 
     const loadEditorFromDetail = (detail: SurveyDetail) => {
         setDraftTitle(detail.title || '');
@@ -1375,7 +1342,7 @@ export const UtilitiesPage = ({
             if (!mountedRef.current || !activeRef.current || requestID !== bindableGroupsRequestRef.current) return;
             if (!mod?.ListLansengerGroups) {
                 setGroups([]);
-                setGroupsError(isZh ? '当前版本不支持拉取群列表' : 'Group list API unavailable in this build');
+                setGroupsError(tailText(lang ?? "", 'Group list API unavailable in this build', '当前版本不支持拉取群列表'));
                 return;
             }
             const res = await mod.ListLansengerGroups();
@@ -1387,11 +1354,11 @@ export const UtilitiesPage = ({
         } catch (e: any) {
             if (!mountedRef.current || !activeRef.current || requestID !== bindableGroupsRequestRef.current) return;
             setGroups([]);
-            setGroupsError(String(e?.message || e || (isZh ? '拉取群列表失败' : 'Failed to load groups')));
+            setGroupsError(String(e?.message || e || (tailText(lang ?? "", 'Failed to load groups', '拉取群列表失败'))));
         } finally {
             if (mountedRef.current && activeRef.current && requestID === bindableGroupsRequestRef.current) setGroupsLoading(false);
         }
-    }, [isZh]);
+    }, [lang]);
 
     // After create/open, always (re)load joinable groups so "可绑定群" is not stuck empty.
     useEffect(() => {
@@ -1401,15 +1368,15 @@ export const UtilitiesPage = ({
     }, [active, view, selected?.id, loadBindableGroups]);
 
     const mapCreateError = (code: string) => {
-        if (code === 'choice_needs_two_options') return isZh ? '选择题至少需要 2 个选项' : 'Choice needs 2 options';
-        if (code === 'question_title_required') return isZh ? '题目不能为空' : 'Question title required';
-        if (code === 'at_least_one_question') return isZh ? '至少一道题' : 'Need at least one question';
-        if (code === 'invalid_deadline') return isZh ? '截止时间无效' : 'Invalid deadline';
-        if (code === 'invalid_target_count') return isZh ? '目标回收数无效' : 'Invalid target count';
-        if (code === 'rating_min_max') return isZh ? '评分题 min 不能大于 max' : 'Rating min cannot exceed max';
-        if (code === 'invalid_max_length') return isZh ? '文本最大字数无效' : 'Invalid max length';
+        if (code === 'choice_needs_two_options') return tailText(lang ?? "", 'Choice needs 2 options', '选择题至少需要 2 个选项');
+        if (code === 'question_title_required') return tailText(lang ?? "", 'Question title required', '题目不能为空');
+        if (code === 'at_least_one_question') return tailText(lang ?? "", 'Need at least one question', '至少一道题');
+        if (code === 'invalid_deadline') return tailText(lang ?? "", 'Invalid deadline', '截止时间无效');
+        if (code === 'invalid_target_count') return tailText(lang ?? "", 'Invalid target count', '目标回收数无效');
+        if (code === 'rating_min_max') return tailText(lang ?? "", 'Rating min cannot exceed max', '评分题 min 不能大于 max');
+        if (code === 'invalid_max_length') return tailText(lang ?? "", 'Invalid max length', '文本最大字数无效');
         if (code.includes('截止时间已过') || /deadline already passed|deadline.*past/i.test(code)) {
-            return isZh ? '截止时间已过，请先修改截止时间再发布' : 'Deadline already past; update deadline before publish';
+            return tailText(lang ?? "", 'Deadline already past; update deadline before publish', '截止时间已过，请先修改截止时间再发布');
         }
         return code;
     };
@@ -1431,7 +1398,7 @@ export const UtilitiesPage = ({
             let input;
             try {
                 input = buildUpdateSurveyPayload({
-                    title: draftTitle.trim() || (isZh ? '未命名问卷' : 'Untitled survey'),
+                    title: draftTitle.trim() || (tailText(lang ?? "", 'Untitled survey', '未命名问卷')),
                     description: draftDesc,
                     questions: editQuestions,
                     settings: settingsForPayload(),
@@ -1441,7 +1408,7 @@ export const UtilitiesPage = ({
             }
             const raw = await mod.CreateSurvey(JSON.stringify(input));
             const created = parseWailsJSON<SurveyDetail>(raw);
-            if (!created?.id) throw new Error(isZh ? '创建失败：无效响应' : 'Create failed: invalid response');
+            if (!created?.id) throw new Error(tailText(lang ?? "", 'Create failed: invalid response', '创建失败：无效响应'));
             setSelected(created);
             loadEditorFromDetail(created);
             setView('survey-edit');
@@ -1478,7 +1445,7 @@ export const UtilitiesPage = ({
             loadEditorFromDetail(detail);
             await loadList();
             setError('');
-            setCopyHint(isZh ? '已保存' : 'Saved');
+            setCopyHint(tailText(lang ?? "", 'Saved', '已保存'));
             setTimeout(() => setCopyHint(''), 2000);
             return true;
         } catch (e: any) {
@@ -1496,7 +1463,7 @@ export const UtilitiesPage = ({
             const mod = await getApp();
             const raw = await mod.GetSurvey(id);
             const detail = parseWailsJSON<SurveyDetail>(raw);
-            if (!detail?.id) throw new Error(isZh ? '加载失败' : 'Load failed');
+            if (!detail?.id) throw new Error(tailText(lang ?? "", 'Load failed', '加载失败'));
             setSelected(detail);
             loadEditorFromDetail(detail);
             setView('survey-edit');
@@ -1520,9 +1487,9 @@ export const UtilitiesPage = ({
         setGroupQuery('');
         setEditQuestions([
             createEmptyQuestion('single_choice', [], {
-                title: isZh ? '满意吗' : 'Satisfied?',
-                optA: isZh ? '是' : 'Yes',
-                optB: isZh ? '否' : 'No',
+                title: tailText(lang ?? "", 'Satisfied?', '满意吗'),
+                optA: tailText(lang ?? "", 'Yes', '是'),
+                optB: tailText(lang ?? "", 'No', '否'),
             }),
         ]);
         setView('survey-edit');
@@ -1588,7 +1555,7 @@ export const UtilitiesPage = ({
     const publish = async () => {
         if (!selected?.id) return;
         if (!canPublishNow) {
-            setError(isZh ? '发布前请完成检查清单' : 'Complete publish checklist first');
+            setError(tailText(lang ?? "", 'Complete publish checklist first', '发布前请完成检查清单'));
             return;
         }
         // Save draft first so editor questions/settings hit Hub before publish.
@@ -1607,11 +1574,11 @@ export const UtilitiesPage = ({
             await loadList();
             if (published?.announce_failures && published.announce_failures.length > 0) {
                 setError(
-                    (isZh ? '已发布，但部分群公告失败：' : 'Published, but some announces failed: ') +
+                    (tailText(lang ?? "", 'Published, but some announces failed: ', '已发布，但部分群公告失败：')) +
                         published.announce_failures.join('; '),
                 );
             } else {
-                setCopyHint(isZh ? '已发布' : 'Published');
+                setCopyHint(tailText(lang ?? "", 'Published', '已发布'));
                 setTimeout(() => setCopyHint(''), 2000);
             }
         } catch (e: any) {
@@ -1689,7 +1656,7 @@ export const UtilitiesPage = ({
 
     const deleteSurvey = async () => {
         if (!selected?.id) return;
-        if (!await showConfirm(isZh ? '确认删除该问卷？不可恢复。' : 'Delete this survey? This cannot be undone.', isZh ? '删除问卷' : 'Delete survey', { confirmText: isZh ? '删除' : 'Delete', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' })) return;
+        if (!await showConfirm(tailText(lang ?? "", 'Delete this survey? This cannot be undone.', '确认删除该问卷？不可恢复。'), tailText(lang ?? "", 'Delete survey', '删除问卷'), { confirmText: tailText(lang ?? "", 'Delete', '删除'), cancelText: tailText(lang ?? "", 'Cancel', '取消'), confirmVariant: 'danger' })) return;
         setBusy(true);
         setError('');
         try {
@@ -1714,9 +1681,9 @@ export const UtilitiesPage = ({
             const raw = await mod.AnnounceSurveyToBoundGroups(selected.id);
             const res = parseWailsJSON<{ failures?: string[] }>(raw) || {};
             if (res.failures && res.failures.length > 0) {
-                setError((isZh ? '部分群公告失败：' : 'Some announces failed: ') + res.failures.join('; '));
+                setError((tailText(lang ?? "", 'Some announces failed: ', '部分群公告失败：')) + res.failures.join('; '));
             } else {
-                setCopyHint(isZh ? '已向绑定群发送公告' : 'Announced to bound groups');
+                setCopyHint(tailText(lang ?? "", 'Announced to bound groups', '已向绑定群发送公告'));
                 setTimeout(() => setCopyHint(''), 2500);
             }
         } catch (e: any) {
@@ -1772,7 +1739,7 @@ export const UtilitiesPage = ({
             void loadList();
             if (viewRef.current === 'survey-results' && sid && sid === selectedIdRef.current) {
                 void openResults({ soft: true });
-                setCopyHint(isZh ? '有新答卷，已自动刷新' : 'New response — refreshed');
+                setCopyHint(tailText(lang ?? "", 'New response — refreshed', '有新答卷，已自动刷新'));
                 setTimeout(() => setCopyHint(''), 2500);
             }
         };
@@ -1790,7 +1757,7 @@ export const UtilitiesPage = ({
             if (typeof off === 'function') off();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps -- openResults uses refs for soft refresh
-    }, [active, loadList, isZh]);
+    }, [active, loadList, lang]);
 
     const saveDraftRef = useRef(saveDraft);
     const createSurveyRef = useRef(createSurvey);
@@ -1838,7 +1805,7 @@ export const UtilitiesPage = ({
     const exportXlsx = async (filteredOnly: boolean) => {
         if (!selected?.id) return;
         if (shouldWarnExportPII(selected.settings?.anonymous)) {
-            if (!await showConfirm(t.exportPiiWarn, isZh ? '导出提醒' : 'Export reminder', { confirmText: isZh ? '继续导出' : 'Continue', cancelText: isZh ? '取消' : 'Cancel' })) return;
+            if (!await showConfirm(t.exportPiiWarn, tailText(lang ?? "", 'Export reminder', '导出提醒'), { confirmText: tailText(lang ?? "", 'Continue', '继续导出'), cancelText: tailText(lang ?? "", 'Cancel', '取消') })) return;
         }
         setBusy(true);
         setExportHint(t.exporting);
@@ -1853,10 +1820,10 @@ export const UtilitiesPage = ({
                 path = await mod.ExportSurveyXLSX(selected.id);
             }
             const piiTail = shouldWarnExportPII(selected.settings?.anonymous)
-                ? (isZh ? '（含 PII，请妥善保管）' : ' (contains PII — keep secure)')
+                ? (tailText(lang ?? "", ' (contains PII — keep secure)', '（含 PII，请妥善保管）'))
                 : '';
             const msg = path
-                ? (isZh ? `已导出：${path}${piiTail}` : `Exported: ${path}${piiTail}`)
+                ? (tailText(lang ?? "", `Exported: ${path}${piiTail}`, `已导出：${path}${piiTail}`))
                 : '';
             // Success path uses exportHint only — do not paint success as utilities-error.
             setExportHint(msg);
@@ -1870,7 +1837,7 @@ export const UtilitiesPage = ({
     };
 
     if (view === 'virtual-repository') {
-        return <VirtualRepositoryWorkspace isZh={isZh} onBack={() => setView('home')} onOpenCodingTask={onOpenVirtualRepositoryTask} />;
+        return <VirtualRepositoryWorkspace isZh={lang || (isZh ? "zh-Hans" : "en")} onBack={() => setView('home')} onOpenCodingTask={onOpenVirtualRepositoryTask} />;
     }
 
     if (view === 'home') {
@@ -2054,7 +2021,7 @@ export const UtilitiesPage = ({
 									</button> : <div className="utilities-expert-card__main utilities-expert-card__main--disabled">
 										<ExpertCardSummary expert={expert} badge={t.expertBadgeIndustry} />
 									</div>}
-									{installed ? null : autoInstalling ? <div className="utilities-expert-card__industry-install utilities-expert-card__industry-install--pending" role="status">{isZh ? '正在自动安装…' : 'Installing automatically…'}</div> : autoInstallFailed ? <button type="button" className="utilities-expert-card__industry-install" disabled={expertActionBusy} onClick={() => { void handlePurchaseAndInstallManagedIndustryExpert(expert); }}>{expertActionBusy ? (isZh ? '处理中…' : 'Working…') : (isZh ? '重新安装' : 'Retry install')}</button> : purchaseRequired ? <button type="button" className="utilities-expert-card__industry-install" disabled={expertActionBusy} onClick={() => { void handlePurchaseAndInstallManagedIndustryExpert(expert); }}>{expertActionBusy ? (isZh ? '处理中…' : 'Working…') : (isZh ? `购买并安装 (${Number(expert.industry_price || 0)} Credits)` : `Buy & install (${Number(expert.industry_price || 0)} Credits)`)}</button> : null}
+									{installed ? null : autoInstalling ? <div className="utilities-expert-card__industry-install utilities-expert-card__industry-install--pending" role="status">{tailText(lang ?? "", 'Installing automatically…', '正在自动安装…')}</div> : autoInstallFailed ? <button type="button" className="utilities-expert-card__industry-install" disabled={expertActionBusy} onClick={() => { void handlePurchaseAndInstallManagedIndustryExpert(expert); }}>{expertActionBusy ? (tailText(lang ?? "", 'Working…', '处理中…')) : (tailText(lang ?? "", 'Retry install', '重新安装'))}</button> : purchaseRequired ? <button type="button" className="utilities-expert-card__industry-install" disabled={expertActionBusy} onClick={() => { void handlePurchaseAndInstallManagedIndustryExpert(expert); }}>{expertActionBusy ? (tailText(lang ?? "", 'Working…', '处理中…')) : (tailText(lang ?? "", `Buy & install (${Number(expert.industry_price || 0)} Credits)`, `购买并安装 (${Number(expert.industry_price || 0)} Credits)`))}</button> : null}
 								</div>
 							);
 						})}
@@ -2113,7 +2080,7 @@ export const UtilitiesPage = ({
                                             >{t.expertExport}</button>
                                             {expertMarketUploads[expert.id] ? expertMarketUploads[expert.id].status === 'unlisted' ? (
                                                 <span className="utilities-expert-card__state" data-testid={`utilities-expert-unlisted-${expert.id}`}>
-                                                    {isZh ? '已下架' : 'Unlisted'}
+                                                    {tailText(lang ?? "", 'Unlisted', '已下架')}
                                                 </span>
                                             ) : ['pending_review', 'approved', 'listed', 'rejected'].includes(expertMarketUploads[expert.id].status) ? (
                                                 <button
@@ -2122,7 +2089,7 @@ export const UtilitiesPage = ({
                                                     className="utilities-expert-card__action"
                                                     disabled={expertPackageBusy}
                                                     onClick={() => { void handleWithdrawExpertMarketListing(expert); }}
-                                                >{isZh ? '下架' : 'Unlist'}</button>
+                                                >{tailText(lang ?? "", 'Unlist', '下架')}</button>
                                             ) : (
                                                 <button
                                                     type="button"
@@ -2130,7 +2097,7 @@ export const UtilitiesPage = ({
                                                     className="utilities-expert-card__action utilities-expert-card__action--danger"
                                                     disabled={expertPackageBusy}
                                                     onClick={() => { void handleDeletePrivateExpertMarketListing(expert); }}
-                                                >{isZh ? '删除私有分享' : 'Delete private share'}</button>
+                                                >{tailText(lang ?? "", 'Delete private share', '删除私有分享')}</button>
                                             ) : (
                                                 <button
                                                     type="button"
@@ -2138,7 +2105,7 @@ export const UtilitiesPage = ({
                                                     className="utilities-expert-card__action"
                                                     disabled={expertPackageBusy}
                                                     onClick={() => setExpertShareTarget(expert)}
-                                                >{isZh ? '分享' : 'Share'}</button>
+                                                >{tailText(lang ?? "", 'Share', '分享')}</button>
                                             )}
                                             <button
                                                 type="button"
@@ -2188,9 +2155,7 @@ export const UtilitiesPage = ({
                         title={t.expertDeleteTitle}
                         message={lang === 'zh-Hant'
                             ? `確定刪除專家「${expertDeleteTarget.name}」嗎？此操作無法復原。`
-                            : isZh
-                                ? `确定删除专家「${expertDeleteTarget.name}」吗？此操作无法撤销。`
-                                : `Delete expert "${expertDeleteTarget.name}"? This cannot be undone.`}
+                            : tailText(lang ?? "", `Delete expert "${expertDeleteTarget.name}"? This cannot be undone.`, `确定删除专家「${expertDeleteTarget.name}」吗？此操作无法撤销。`)}
                         t={(key: string) => (key === 'confirm' ? t.delete : t.cancel)}
                         onCancel={() => setExpertDeleteTarget(null)}
                         onConfirm={() => { void handleDeleteExpert(); }}
@@ -2201,9 +2166,7 @@ export const UtilitiesPage = ({
                         title={t.expertResetTitle}
                         message={lang === 'zh-Hant'
                             ? `恢復「${expertResetTarget.name}」為預設定義？你的自訂修改將被覆蓋。`
-                            : isZh
-                                ? `恢复「${expertResetTarget.name}」为默认定义？你的自定义修改将被覆盖。`
-                                : `Reset "${expertResetTarget.name}" to its default definition? Your customizations will be overwritten.`}
+                            : tailText(lang ?? "", `Reset "${expertResetTarget.name}" to its default definition? Your customizations will be overwritten.`, `恢复「${expertResetTarget.name}」为默认定义？你的自定义修改将被覆盖。`)}
                         t={(key: string) => (key === 'confirm' ? t.expertResetDefault : t.cancel)}
                         onCancel={() => setExpertResetTarget(null)}
                         onConfirm={() => { void handleResetBuiltinExpert(); }}
@@ -2281,14 +2244,14 @@ export const UtilitiesPage = ({
                             className="utilities-select"
                             value={statusFilter}
                             onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-                            aria-label={isZh ? '状态筛选' : 'Status filter'}
+                            aria-label={tailText(lang ?? "", 'Status filter', '状态筛选')}
                             data-testid="survey-status-filter"
                         >
-                            <option value="all">{isZh ? '全部状态' : 'All'}</option>
-                            <option value="draft">{isZh ? '草稿' : 'Draft'}</option>
-                            <option value="published">{isZh ? '收集中' : 'Published'}</option>
-                            <option value="closed">{isZh ? '已关闭' : 'Closed'}</option>
-                            <option value="archived">{isZh ? '已归档' : 'Archived'}</option>
+                            <option value="all">{tailText(lang ?? "", 'All', '全部状态')}</option>
+                            <option value="draft">{tailText(lang ?? "", 'Draft', '草稿')}</option>
+                            <option value="published">{tailText(lang ?? "", 'Published', '收集中')}</option>
+                            <option value="closed">{tailText(lang ?? "", 'Closed', '已关闭')}</option>
+                            <option value="archived">{tailText(lang ?? "", 'Archived', '已归档')}</option>
                         </select>
                         <select
                             className="utilities-select"
@@ -2297,11 +2260,11 @@ export const UtilitiesPage = ({
                             aria-label={t.sort}
                             data-testid="survey-list-sort"
                         >
-                            <option value="updated_desc">{isZh ? '最近更新' : 'Updated ↓'}</option>
-                            <option value="updated_asc">{isZh ? '最早更新' : 'Updated ↑'}</option>
-                            <option value="title_asc">{isZh ? '标题 A→Z' : 'Title A→Z'}</option>
-                            <option value="title_desc">{isZh ? '标题 Z→A' : 'Title Z→A'}</option>
-                            <option value="code_asc">{isZh ? '短码' : 'Code'}</option>
+                            <option value="updated_desc">{tailText(lang ?? "", 'Updated ↓', '最近更新')}</option>
+                            <option value="updated_asc">{tailText(lang ?? "", 'Updated ↑', '最早更新')}</option>
+                            <option value="title_asc">{tailText(lang ?? "", 'Title A→Z', '标题 A→Z')}</option>
+                            <option value="title_desc">{tailText(lang ?? "", 'Title Z→A', '标题 Z→A')}</option>
+                            <option value="code_asc">{tailText(lang ?? "", 'Code', '短码')}</option>
                         </select>
                         <button type="button" className="utilities-btn" onClick={() => void loadList()} disabled={busy}>{t.refresh}</button>
                         <button
@@ -2343,7 +2306,7 @@ export const UtilitiesPage = ({
                     />
                     {listQuery && (
                         <button type="button" className="utilities-btn" onClick={() => setListQuery('')}>
-                            {isZh ? '清除' : 'Clear'}
+                            {tailText(lang ?? "", 'Clear', '清除')}
                         </button>
                     )}
                 </div>
@@ -2381,7 +2344,7 @@ export const UtilitiesPage = ({
                                 <strong>
                                     {s.title}
                                     <span className={surveyStatusBadgeClass(s.status)} data-testid="survey-status-badge">
-                                        {surveyStatusLabel(s.status, isZh)}
+                                        {surveyStatusLabel(s.status, (lang || (isZh ? "zh-Hans" : "en")))}
                                     </span>
                                     {deadlineListBadge(s.settings?.deadline, { expired: t.expired, open: t.notExpired }) && (
                                         <span className={`utilities-badge ${isDeadlineExpired(s.settings?.deadline) ? 'utilities-badge--danger' : 'utilities-badge--ok'}`}>
@@ -2441,7 +2404,7 @@ export const UtilitiesPage = ({
         const bindings = selected?.bindings || [];
         const textQuestions = (selected?.questions || []).filter((q) => q.type === 'text');
         const groupRows = buildGroupBreakdown(responses, bindings, t.p2pUnknown);
-        const statusLabel = surveyStatusLabel(selected?.status || '', isZh);
+        const statusLabel = surveyStatusLabel(selected?.status || '', (lang || (isZh ? "zh-Hans" : "en")));
         return (
             <div className="utilities-page utilities-page--print" data-testid="survey-results-page">
                 <header className="utilities-results-header">
@@ -2465,7 +2428,7 @@ export const UtilitiesPage = ({
                 {copyHint && <p className="utilities-hint" role="status" data-testid="survey-live-hint">{copyHint}</p>}
                 <div className="utilities-results-layout">
                 <main className="utilities-results-main">
-                <section className="utilities-stat-tiles" aria-label={isZh ? '回收概览' : 'Collection overview'}>
+                <section className="utilities-stat-tiles" aria-label={tailText(lang ?? "", 'Collection overview', '回收概览')}>
                     <div className="utilities-stat-tile">
                         <span>{t.count}</span>
                         <strong>{count}</strong>
@@ -2559,7 +2522,7 @@ export const UtilitiesPage = ({
                                 </ul>
                             )}
                             {q.type === 'rating' && (
-                                <p className="utilities-meta">{isZh ? '平均分' : 'Avg'}: {(q.rating_avg ?? 0).toFixed?.(2) ?? q.rating_avg} (n={q.rating_n ?? 0})</p>
+                                <p className="utilities-meta">{tailText(lang ?? "", 'Avg', '平均分')}: {(q.rating_avg ?? 0).toFixed?.(2) ?? q.rating_avg} (n={q.rating_n ?? 0})</p>
                             )}
                             {isText && (
                                 <>
@@ -2580,7 +2543,7 @@ export const UtilitiesPage = ({
                                                 </div>
                                             )}
                                             {textRows.length === 0 ? (
-                                                <p className="utilities-empty">{isZh ? '无匹配文本' : 'No matching text'}</p>
+                                                <p className="utilities-empty">{tailText(lang ?? "", 'No matching text', '无匹配文本')}</p>
                                             ) : (
                                                 <ul className="utilities-text-answer-list">
                                                     {textRows.map((row) => (
@@ -2604,11 +2567,11 @@ export const UtilitiesPage = ({
                 </main>
                 <aside className="utilities-results-aside">
                     <section className="utilities-results-aside__section">
-                        <h2>{isZh ? '收集设置' : 'Collection'}</h2>
+                        <h2>{tailText(lang ?? "", 'Collection', '收集设置')}</h2>
                         <dl>
                             <div><dt>{t.status}</dt><dd>{statusLabel}</dd></div>
-                            <div><dt>{isZh ? '匿名' : 'Anonymous'}</dt><dd>{selected?.settings?.anonymous ? (isZh ? '是' : 'Yes') : (isZh ? '否' : 'No')}</dd></div>
-                            <div><dt>{isZh ? '私聊填写' : 'P2P fill'}</dt><dd>{selected?.settings?.allow_p2p ? (isZh ? '允许' : 'Allowed') : (isZh ? '关闭' : 'Off')}</dd></div>
+                            <div><dt>{tailText(lang ?? "", 'Anonymous', '匿名')}</dt><dd>{selected?.settings?.anonymous ? (tailText(lang ?? "", 'Yes', '是')) : (tailText(lang ?? "", 'No', '否'))}</dd></div>
+                            <div><dt>{tailText(lang ?? "", 'P2P fill', '私聊填写')}</dt><dd>{selected?.settings?.allow_p2p ? (tailText(lang ?? "", 'Allowed', '允许')) : (tailText(lang ?? "", 'Off', '关闭'))}</dd></div>
                         </dl>
                     </section>
                     <section className="utilities-results-aside__section">
@@ -2617,7 +2580,7 @@ export const UtilitiesPage = ({
                             <ul className="utilities-results-aside__groups">
                                 {bindings.map((binding) => <li key={`${binding.platform}-${binding.group_id}`}>{binding.group_name || binding.group_id}</li>)}
                             </ul>
-                        ) : <p className="utilities-meta">{isZh ? '尚未绑定群' : 'No groups bound'}</p>}
+                        ) : <p className="utilities-meta">{tailText(lang ?? "", 'No groups bound', '尚未绑定群')}</p>}
                     </section>
                     <p className="utilities-meta utilities-export-pii-note" data-testid="survey-export-pii-note">
                         {shouldWarnExportPII(selected?.settings?.anonymous) ? t.exportPiiNote : t.exportAnonNote}
@@ -2669,15 +2632,15 @@ export const UtilitiesPage = ({
                     )}
                 </div>
                 {responses.length === 0 ? (
-                    <p className="utilities-empty">{isZh ? '暂无答卷' : 'No responses yet'}</p>
+                    <p className="utilities-empty">{tailText(lang ?? "", 'No responses yet', '暂无答卷')}</p>
                 ) : filteredResponses.length === 0 ? (
-                    <p className="utilities-empty">{isZh ? '当前筛选下无答卷' : 'No responses for this filter'}</p>
+                    <p className="utilities-empty">{tailText(lang ?? "", 'No responses for this filter', '当前筛选下无答卷')}</p>
                 ) : (
                     <div className="utilities-response-cards">
                         {filteredResponses.map((r, i) => {
                             const lines = expandResponseAnswers(qMetaForFilter, r.answers);
                             const displayName = selected?.settings?.anonymous
-                                ? (isZh ? '匿名' : 'Anonymous')
+                                ? (tailText(lang ?? "", 'Anonymous', '匿名'))
                                 : (r.respondent_name || r.respondent_key || '—');
                             return (
                                 <div key={r.id || i} className="utilities-response-card">
@@ -2735,7 +2698,7 @@ export const UtilitiesPage = ({
                                         textCount: q.text_count,
                                     })),
                                 },
-                                isZh,
+                                (lang || (isZh ? "zh-Hans" : "en")),
                             );
                             void copyText(summary, t.summaryCopied);
                         }}
@@ -2789,8 +2752,8 @@ export const UtilitiesPage = ({
             {showHelp && <SurveyHelpPanel title={t.help} groups={operatorHelp} />}
             {selected && (
                 <p className="utilities-meta utilities-survey-editor__meta">
-                    {selected.short_code} · <span className={surveyStatusBadgeClass(selected.status)}>{surveyStatusLabel(selected.status, isZh)}</span>
-                    {selected.settings?.anonymous ? (isZh ? ' · 匿名' : ' · anonymous') : ''}
+                    {selected.short_code} · <span className={surveyStatusBadgeClass(selected.status)}>{surveyStatusLabel(selected.status, (lang || (isZh ? "zh-Hans" : "en")))}</span>
+                    {selected.settings?.anonymous ? (tailText(lang ?? "", ' · anonymous', ' · 匿名')) : ''}
                     {selected.settings?.deadline
                         ? ` · ${t.deadline} ${new Date(selected.settings.deadline).toLocaleString()}`
                         : ''}
@@ -2812,9 +2775,9 @@ export const UtilitiesPage = ({
                 </p>
             )}
             {selected && (
-                <div className="utilities-actions utilities-survey-editor__actions" aria-label={isZh ? '问卷操作' : 'Survey actions'}>
+                <div className="utilities-actions utilities-survey-editor__actions" aria-label={tailText(lang ?? "", 'Survey actions', '问卷操作')}>
                     {selected.status === 'draft' && (
-                        <button type="button" className="utilities-btn" disabled={busy} aria-busy={busy} onClick={() => void saveDraft()}>{busy ? (isZh ? '保存中…' : 'Saving…') : t.save}</button>
+                        <button type="button" className="utilities-btn" disabled={busy} aria-busy={busy} onClick={() => void saveDraft()}>{busy ? (tailText(lang ?? "", 'Saving…', '保存中…')) : t.save}</button>
                     )}
                     {selected.status === 'draft' && (
                         <button
@@ -2824,7 +2787,7 @@ export const UtilitiesPage = ({
                             disabled={busy || !canPublishNow}
                             aria-busy={busy}
                             onClick={() => void publish()}
-                        >{busy ? (isZh ? '处理中…' : 'Working…') : t.publish}</button>
+                        >{busy ? (tailText(lang ?? "", 'Working…', '处理中…')) : t.publish}</button>
                     )}
                     <div className="utilities-survey-editor__secondary-actions">
                         {selected.status === 'published' && <button type="button" className="utilities-btn" disabled={busy} onClick={() => void closeSurvey()}>{t.close}</button>}
@@ -2857,25 +2820,25 @@ export const UtilitiesPage = ({
                 <div className="utilities-create-panel utilities-create-panel--wide">
                     <section className="utilities-survey-section utilities-survey-section--details">
                         <div className="utilities-survey-section__heading">
-                            <h2>{isZh ? '基本信息' : 'Details'}</h2>
+                            <h2>{tailText(lang ?? "", 'Details', '基本信息')}</h2>
                         </div>
                         <div className="utilities-survey-fields">
-                            <label>{isZh ? '标题' : 'Title'}<input value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} /></label>
-                            <label>{isZh ? '说明' : 'Description'}<input value={draftDesc} onChange={(e) => setDraftDesc(e.target.value)} /></label>
+                            <label>{tailText(lang ?? "", 'Title', '标题')}<input value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} /></label>
+                            <label>{tailText(lang ?? "", 'Description', '说明')}<input value={draftDesc} onChange={(e) => setDraftDesc(e.target.value)} /></label>
                         </div>
                     </section>
                     <section className="utilities-survey-section">
                         <div className="utilities-survey-section__heading">
-                            <h2>{isZh ? '收集设置' : 'Collection settings'}</h2>
+                            <h2>{tailText(lang ?? "", 'Collection settings', '收集设置')}</h2>
                         </div>
                         <div className="utilities-survey-settings">
                             <label className="utilities-check">
                                 <input type="checkbox" checked={draftAnonymous} onChange={(e) => setDraftAnonymous(e.target.checked)} disabled={!!selected && selected.status !== 'draft'} />
-                                {isZh ? '匿名收集（发布后不可改）' : 'Anonymous (locked after publish)'}
+                                {tailText(lang ?? "", 'Anonymous (locked after publish)', '匿名收集（发布后不可改）')}
                             </label>
                             <label className="utilities-check">
                                 <input type="checkbox" checked={draftAllowUpdate} onChange={(e) => setDraftAllowUpdate(e.target.checked)} />
-                                {isZh ? '允许修改已提交答卷' : 'Allow update after submit'}
+                                {tailText(lang ?? "", 'Allow update after submit', '允许修改已提交答卷')}
                             </label>
                             <label className="utilities-check">
                                 <input type="checkbox" data-testid="survey-allow-p2p" checked={draftAllowP2P} onChange={(e) => setDraftAllowP2P(e.target.checked)} />
@@ -2894,17 +2857,17 @@ export const UtilitiesPage = ({
                                     />
                                     {draftDeadlineLocal && (
                                         <button type="button" className="utilities-btn utilities-btn--ghost utilities-deadline-clear" onClick={() => setDraftDeadlineLocal('')}>
-                                            {isZh ? '清除' : 'Clear'}
+                                            {tailText(lang ?? "", 'Clear', '清除')}
                                         </button>
                                     )}
                                 </span>
-                                <span className="utilities-meta">{isZh ? '留空表示不截止；仅在提交时校验' : 'Empty = no deadline; checked on submit only'}</span>
+                                <span className="utilities-meta">{tailText(lang ?? "", 'Empty = no deadline; checked on submit only', '留空表示不截止；仅在提交时校验')}</span>
                             </div>
                             <label>{t.target}
                                 <input
                                     type="number"
                                     min={0}
-                                    placeholder={isZh ? '0 表示不展示完成率' : '0 = hide completion %'}
+                                    placeholder={tailText(lang ?? "", '0 = hide completion %', '0 表示不展示完成率')}
                                     value={draftTargetCount}
                                     onChange={(e) => setDraftTargetCount(e.target.value)}
                                 />
@@ -2914,12 +2877,12 @@ export const UtilitiesPage = ({
 
                     <section className="utilities-survey-section utilities-survey-section--questions">
                     <div className="utilities-survey-section__heading">
-                        <h2>{isZh ? '题目' : 'Questions'} <span>{editQuestions.length}</span></h2>
+                        <h2>{tailText(lang ?? "", 'Questions', '题目')} <span>{editQuestions.length}</span></h2>
                         <div className="utilities-actions utilities-question-add-actions">
-                            <button type="button" className="utilities-btn" aria-label={isZh ? '添加单选题' : 'Add single-choice question'} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('single_choice', prev)])}>+ {isZh ? '单选' : 'Choice'}</button>
-                            <button type="button" className="utilities-btn" aria-label={isZh ? '添加文本题' : 'Add text question'} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('text', prev)])}>+ {isZh ? '文本' : 'Text'}</button>
-                            <button type="button" className="utilities-btn" aria-label={isZh ? '添加评分题' : 'Add rating question'} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('rating', prev)])}>+ {isZh ? '评分' : 'Rating'}</button>
-                            <button type="button" className="utilities-btn" aria-label={isZh ? '添加多选题' : 'Add multiple-choice question'} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('multi_choice', prev)])}>+ {isZh ? '多选' : 'Multiple'}</button>
+                            <button type="button" className="utilities-btn" aria-label={tailText(lang ?? "", 'Add single-choice question', '添加单选题')} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('single_choice', prev)])}>+ {tailText(lang ?? "", 'Choice', '单选')}</button>
+                            <button type="button" className="utilities-btn" aria-label={tailText(lang ?? "", 'Add text question', '添加文本题')} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('text', prev)])}>+ {tailText(lang ?? "", 'Text', '文本')}</button>
+                            <button type="button" className="utilities-btn" aria-label={tailText(lang ?? "", 'Add rating question', '添加评分题')} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('rating', prev)])}>+ {tailText(lang ?? "", 'Rating', '评分')}</button>
+                            <button type="button" className="utilities-btn" aria-label={tailText(lang ?? "", 'Add multiple-choice question', '添加多选题')} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('multi_choice', prev)])}>+ {tailText(lang ?? "", 'Multiple', '多选')}</button>
                         </div>
                     </div>
                     <div className="utilities-question-list">
@@ -2928,10 +2891,10 @@ export const UtilitiesPage = ({
                             <div className="utilities-q-card__row">
                                 <div className="utilities-q-card__identity">
                                     <strong>Q{qi + 1}</strong>
-                                    <label className="utilities-inline-field">{isZh ? '题型' : 'Type'}
+                                    <label className="utilities-inline-field">{tailText(lang ?? "", 'Type', '题型')}
                                         <select
                                             value={q.type}
-                                            aria-label={isZh ? `第 ${qi + 1} 题类型` : `Question ${qi + 1} type`}
+                                            aria-label={tailText(lang ?? "", `Question ${qi + 1} type`, `第 ${qi + 1} 题类型`)}
                                             onChange={(e) => {
                                                 const type = e.target.value as EditorQuestion['type'];
                                                 const next = createEmptyQuestion(type, editQuestions.filter((_, i) => i !== qi), { title: q.title });
@@ -2939,15 +2902,15 @@ export const UtilitiesPage = ({
                                                 updateQuestion(qi, next);
                                             }}
                                         >
-                                            <option value="single_choice">{isZh ? '单选' : 'Single choice'}</option>
-                                            <option value="multi_choice">{isZh ? '多选' : 'Multi choice'}</option>
-                                            <option value="text">{isZh ? '文本' : 'Text'}</option>
-                                            <option value="rating">{isZh ? '评分' : 'Rating'}</option>
+                                            <option value="single_choice">{tailText(lang ?? "", 'Single choice', '单选')}</option>
+                                            <option value="multi_choice">{tailText(lang ?? "", 'Multi choice', '多选')}</option>
+                                            <option value="text">{tailText(lang ?? "", 'Text', '文本')}</option>
+                                            <option value="rating">{tailText(lang ?? "", 'Rating', '评分')}</option>
                                         </select>
                                     </label>
                                     <label className="utilities-check">
                                         <input type="checkbox" checked={q.required} onChange={(e) => updateQuestion(qi, { required: e.target.checked })} />
-                                        {isZh ? '必填' : 'Required'}
+                                        {tailText(lang ?? "", 'Required', '必填')}
                                     </label>
                                 </div>
                                 <div className="utilities-q-card__actions">
@@ -2978,14 +2941,14 @@ export const UtilitiesPage = ({
                                     >{t.remove}</button>
                                 </div>
                             </div>
-                            <label className="utilities-field-label">{isZh ? '题干' : 'Title'}
+                            <label className="utilities-field-label">{tailText(lang ?? "", 'Title', '题干')}
                                 <input required value={q.title} onChange={(e) => updateQuestion(qi, { title: e.target.value })} />
                             </label>
                             {(q.type === 'single_choice' || q.type === 'multi_choice') && (
                                 <div className="utilities-opts">
                                     {(q.options || []).map((o, oi) => (
                                         <div key={o.id} className="utilities-opts__row">
-                                            <label className="utilities-option-label" htmlFor={`survey-option-${q.id}-${o.id}`}>{isZh ? `选项 ${oi + 1}` : `Option ${oi + 1}`}</label>
+                                            <label className="utilities-option-label" htmlFor={`survey-option-${q.id}-${o.id}`}>{tailText(lang ?? "", `Option ${oi + 1}`, `选项 ${oi + 1}`)}</label>
                                             <input id={`survey-option-${q.id}-${o.id}`} required value={o.label} onChange={(e) => updateOption(qi, oi, e.target.value)} />
                                             <div className="utilities-option-actions">
                                                 <button
@@ -2994,7 +2957,7 @@ export const UtilitiesPage = ({
                                                     data-testid={`survey-opt-up-${qi}-${oi}`}
                                                     disabled={oi === 0}
                                                     title={t.moveUp}
-                                                    aria-label={`${t.moveUp} ${isZh ? '选项' : 'option'} ${oi + 1}`}
+                                                    aria-label={`${t.moveUp} ${tailText(lang ?? "", 'option', '选项')} ${oi + 1}`}
                                                     onClick={() =>
                                                         updateQuestion(qi, {
                                                             options: moveOptionAt(q.options || [], oi, -1),
@@ -3007,7 +2970,7 @@ export const UtilitiesPage = ({
                                                     data-testid={`survey-opt-down-${qi}-${oi}`}
                                                     disabled={oi >= (q.options || []).length - 1}
                                                     title={t.moveDown}
-                                                    aria-label={`${t.moveDown} ${isZh ? '选项' : 'option'} ${oi + 1}`}
+                                                    aria-label={`${t.moveDown} ${tailText(lang ?? "", 'option', '选项')} ${oi + 1}`}
                                                     onClick={() =>
                                                         updateQuestion(qi, {
                                                             options: moveOptionAt(q.options || [], oi, 1),
@@ -3018,7 +2981,7 @@ export const UtilitiesPage = ({
                                                     type="button"
                                                     className="utilities-btn utilities-btn--quiet-danger"
                                                     disabled={(q.options || []).length <= 2}
-                                                    aria-label={`${t.remove} ${isZh ? '选项' : 'option'} ${oi + 1}`}
+                                                    aria-label={`${t.remove} ${tailText(lang ?? "", 'option', '选项')} ${oi + 1}`}
                                                     onClick={() =>
                                                         updateQuestion(qi, {
                                                             options: (q.options || []).filter((_, j) => j !== oi),
@@ -3031,7 +2994,7 @@ export const UtilitiesPage = ({
                                     <button
                                         type="button"
                                         className="utilities-btn utilities-add-option"
-                                        aria-label={isZh ? `为第 ${qi + 1} 题添加选项` : `Add option to question ${qi + 1}`}
+                                        aria-label={tailText(lang ?? "", `Add option to question ${qi + 1}`, `为第 ${qi + 1} 题添加选项`)}
                                         onClick={() => {
                                             const options = [...(q.options || [])];
                                             options.push({ id: newOptionId(options), label: '' });
@@ -3042,19 +3005,19 @@ export const UtilitiesPage = ({
                             )}
                             {q.type === 'rating' && (
                                 <div className="utilities-rating-fields">
-                                    <label className="utilities-inline-number-field">{isZh ? '最低分' : 'Minimum'}<input type="number" min={0} step={1} aria-label={isZh ? `第 ${qi + 1} 题最低分` : `Question ${qi + 1} minimum rating`} value={q.min ?? 1} onChange={(e) => {
+                                    <label className="utilities-inline-number-field">{tailText(lang ?? "", 'Minimum', '最低分')}<input type="number" min={0} step={1} aria-label={tailText(lang ?? "", `Question ${qi + 1} minimum rating`, `第 ${qi + 1} 题最低分`)} value={q.min ?? 1} onChange={(e) => {
                                         const min = Math.max(0, Number(e.target.value) || 0);
                                         updateQuestion(qi, { min, ...(min > (q.max ?? 5) ? { max: min } : {}) });
                                     }} /></label>
-                                    <label className="utilities-inline-number-field">{isZh ? '最高分' : 'Maximum'}<input type="number" min={q.min ?? 1} step={1} aria-label={isZh ? `第 ${qi + 1} 题最高分` : `Question ${qi + 1} maximum rating`} value={q.max ?? 5} onChange={(e) => {
+                                    <label className="utilities-inline-number-field">{tailText(lang ?? "", 'Maximum', '最高分')}<input type="number" min={q.min ?? 1} step={1} aria-label={tailText(lang ?? "", `Question ${qi + 1} maximum rating`, `第 ${qi + 1} 题最高分`)} value={q.max ?? 5} onChange={(e) => {
                                         const max = Math.max(0, Number(e.target.value) || 0);
                                         updateQuestion(qi, { max, ...(max < (q.min ?? 1) ? { min: max } : {}) });
                                     }} /></label>
                                 </div>
                             )}
                             {q.type === 'text' && (
-                                <label className="utilities-compact-field">{isZh ? '最大字数' : 'Max length'}
-                                    <input type="number" min={0} max={10000} step={1} aria-label={isZh ? `第 ${qi + 1} 题最大字数` : `Question ${qi + 1} maximum length`} value={q.max_length ?? 500} onChange={(e) => updateQuestion(qi, { max_length: Math.min(10000, Math.max(0, Number(e.target.value) || 0)) })} />
+                                <label className="utilities-compact-field">{tailText(lang ?? "", 'Max length', '最大字数')}
+                                    <input type="number" min={0} max={10000} step={1} aria-label={tailText(lang ?? "", `Question ${qi + 1} maximum length`, `第 ${qi + 1} 题最大字数`)} value={q.max_length ?? 500} onChange={(e) => updateQuestion(qi, { max_length: Math.min(10000, Math.max(0, Number(e.target.value) || 0)) })} />
                                 </label>
                             )}
                         </div>
@@ -3062,7 +3025,7 @@ export const UtilitiesPage = ({
                     </div>
                     </section>
                     {!selected && (
-                        <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} aria-busy={busy} onClick={() => void createSurvey()}>{busy ? (isZh ? '创建中…' : 'Creating…') : t.create}</button>
+                        <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} aria-busy={busy} onClick={() => void createSurvey()}>{busy ? (tailText(lang ?? "", 'Creating…', '创建中…')) : t.create}</button>
                     )}
                 </div>
             )}
@@ -3072,8 +3035,8 @@ export const UtilitiesPage = ({
                 <section className="utilities-survey-readonly" aria-labelledby="survey-questions-heading">
                     <div className="utilities-survey-readonly__header">
                         <div>
-                            <h2 id="survey-questions-heading">{isZh ? '题目' : 'Questions'}</h2>
-                            <p className="utilities-meta">{isZh ? '问卷已发布，题目内容不可修改。' : 'This survey is published; questions are locked.'}</p>
+                            <h2 id="survey-questions-heading">{tailText(lang ?? "", 'Questions', '题目')}</h2>
+                            <p className="utilities-meta">{tailText(lang ?? "", 'This survey is published; questions are locked.', '问卷已发布，题目内容不可修改。')}</p>
                         </div>
                         <span>{selected.questions?.length || 0}</span>
                     </div>
@@ -3097,11 +3060,9 @@ export const UtilitiesPage = ({
                 <section className="utilities-bindings" aria-labelledby="survey-bindings-heading">
                     <div className="utilities-bindings__header">
                         <div>
-                            <h3 id="survey-bindings-heading">{isZh ? '群绑定（蓝信）' : 'Group bindings (Lansenger)'}</h3>
+                            <h3 id="survey-bindings-heading">{tailText(lang ?? "", 'Group bindings (Lansenger)', '群绑定（蓝信）')}</h3>
                             <p className="utilities-meta">
-                                {isZh
-                                    ? `已绑定 ${selected.bindings?.length || 0} 个群；发布前至少需要绑定 1 个群。机器人入群后可点「刷新」更新列表。`
-                                    : `${selected.bindings?.length || 0} bound; bind at least one group before publishing. Refresh after the bot joins a group.`}
+                                {tailText(lang ?? "", `${selected.bindings?.length || 0} bound; bind at least one group before publishing. Refresh after the bot joins a group.`, `已绑定 ${selected.bindings?.length || 0} 个群；发布前至少需要绑定 1 个群。机器人入群后可点「刷新」更新列表。`)}
                             </p>
                         </div>
                         <button
@@ -3111,18 +3072,18 @@ export const UtilitiesPage = ({
                             aria-busy={groupsLoading}
                             data-testid="survey-refresh-groups"
                             onClick={() => void loadBindableGroups()}
-                            title={isZh ? '从蓝信重新拉取机器人已加入的群' : 'Reload groups the bot has joined from Lansenger'}
+                            title={tailText(lang ?? "", 'Reload groups the bot has joined from Lansenger', '从蓝信重新拉取机器人已加入的群')}
                         >
                             {groupsLoading
-                                ? (isZh ? '刷新中…' : 'Refreshing…')
-                                : (isZh ? '刷新群列表' : 'Refresh groups')}
+                                ? (tailText(lang ?? "", 'Refreshing…', '刷新中…'))
+                                : (tailText(lang ?? "", 'Refresh groups', '刷新群列表'))}
                         </button>
                     </div>
                     <div className="utilities-bindings__grid">
                         <div className="utilities-bindings__panel">
-                            <h4>{isZh ? '已绑定群' : 'Bound groups'}</h4>
+                            <h4>{tailText(lang ?? "", 'Bound groups', '已绑定群')}</h4>
                             {(selected.bindings || []).length === 0 ? (
-                                <p className="utilities-meta utilities-bindings__empty">{isZh ? '尚未绑定群' : 'No groups bound yet'}</p>
+                                <p className="utilities-meta utilities-bindings__empty">{tailText(lang ?? "", 'No groups bound yet', '尚未绑定群')}</p>
                             ) : (
                                 <ul className="utilities-bindings__list">
                                     {(selected.bindings || []).map((b) => (
@@ -3138,9 +3099,9 @@ export const UtilitiesPage = ({
                         </div>
                         <div className="utilities-bindings__panel">
                             <div className="utilities-bindings__available-head">
-                                <h4>{isZh ? '可绑定群' : 'Available groups'}</h4>
+                                <h4>{tailText(lang ?? "", 'Available groups', '可绑定群')}</h4>
                                 <div className="utilities-bindings__available-actions">
-                                    <span aria-label={isZh ? '可绑定群数量' : 'Available group count'}>{availableGroups.length}</span>
+                                    <span aria-label={tailText(lang ?? "", 'Available group count', '可绑定群数量')}>{availableGroups.length}</span>
                                     <button
                                         type="button"
                                         className="utilities-btn utilities-btn--ghost utilities-bindings__refresh"
@@ -3148,9 +3109,9 @@ export const UtilitiesPage = ({
                                         aria-busy={groupsLoading}
                                         data-testid="survey-refresh-groups-inline"
                                         onClick={() => void loadBindableGroups()}
-                                        title={isZh ? '刷新可用群列表' : 'Refresh available groups'}
+                                        title={tailText(lang ?? "", 'Refresh available groups', '刷新可用群列表')}
                                     >
-                                        {groupsLoading ? (isZh ? '…' : '…') : (isZh ? '刷新' : 'Refresh')}
+                                        {groupsLoading ? (tailText(lang ?? "", '…', '…')) : (tailText(lang ?? "", 'Refresh', '刷新'))}
                                     </button>
                                 </div>
                             </div>
@@ -3163,18 +3124,16 @@ export const UtilitiesPage = ({
                                         disabled={groupsLoading}
                                         onClick={() => void loadBindableGroups()}
                                     >
-                                        {isZh ? '重试' : 'Retry'}
+                                        {tailText(lang ?? "", 'Retry', '重试')}
                                     </button>
                                 </p>
                             ) : groupsLoading && groups.length === 0 ? (
                                 <p className="utilities-meta utilities-bindings__empty">
-                                    {isZh ? '正在拉取机器人已加入的群…' : 'Loading groups the bot has joined…'}
+                                    {tailText(lang ?? "", 'Loading groups the bot has joined…', '正在拉取机器人已加入的群…')}
                                 </p>
                             ) : groups.length === 0 ? (
                                 <p className="utilities-meta utilities-bindings__empty">
-                                    {isZh
-                                        ? '暂无群列表。请确认蓝信已配置、机器人已入群，并开通群列表查询权限，然后点「刷新群列表」。'
-                                        : 'No groups yet. Confirm Lansenger config, bot membership, and group-list API access, then refresh.'}
+                                    {tailText(lang ?? "", 'No groups yet. Confirm Lansenger config, bot membership, and group-list API access, then refresh.', '暂无群列表。请确认蓝信已配置、机器人已入群，并开通群列表查询权限，然后点「刷新群列表」。')}
                                 </p>
                             ) : (
                                 <>
@@ -3182,11 +3141,11 @@ export const UtilitiesPage = ({
                                         className="utilities-search utilities-bindings__search"
                                         value={groupQuery}
                                         onChange={(e) => setGroupQuery(e.target.value)}
-                                        placeholder={isZh ? '搜索群名称…' : 'Search groups…'}
-                                        aria-label={isZh ? '搜索可绑定群' : 'Search available groups'}
+                                        placeholder={tailText(lang ?? "", 'Search groups…', '搜索群名称…')}
+                                        aria-label={tailText(lang ?? "", 'Search available groups', '搜索可绑定群')}
                                     />
                                     {availableGroups.length === 0 ? (
-                                        <p className="utilities-meta utilities-bindings__empty">{isZh ? '没有匹配的可绑定群（可能已全部绑定，或搜索无结果）' : 'No matching groups (all bound, or search empty)'}</p>
+                                        <p className="utilities-meta utilities-bindings__empty">{tailText(lang ?? "", 'No matching groups (all bound, or search empty)', '没有匹配的可绑定群（可能已全部绑定，或搜索无结果）')}</p>
                                     ) : (
                                         <ul className="utilities-bindings__list utilities-bindings__list--available">
                                             {availableGroups.map((g) => (

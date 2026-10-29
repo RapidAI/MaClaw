@@ -20,9 +20,7 @@ import {
 } from "./remoteStreamMarks";
 import { useDialog } from "../CustomDialog";
 
-const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
-);
+import { localizeText } from "../../i18n";
 
 const getCurrentLang = () => document.documentElement.lang || navigator.language || "en";
 

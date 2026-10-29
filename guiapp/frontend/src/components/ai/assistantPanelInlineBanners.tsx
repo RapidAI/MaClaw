@@ -1,5 +1,6 @@
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
-import { localizeText } from "./aiAssistantI18n";
+import { chromeText } from "../../i18n/chromeText";
+
 
 type BannerTheme = {
     bg: string;
@@ -42,13 +43,13 @@ export function ProjectPreparingBanner({ prepareMode, isRemoteCodingDev, isRemot
                 <span>{prepareMode === "new-agent"
                     ? (isRemoteCodingDev
                         ? (isRemoteMaintenance
-                            ? localizeText(lang, "Preparing remote maintenance", "正在准备远程维护", "正在準備遠端維護")
-                            : localizeText(lang, "Creating remote coding environment", "正在创建远程编程环境", "正在建立遠端程式開發環境"))
+                            ? chromeText(lang, "Preparing remote maintenance", "正在准备远程维护", "正在準備遠端維護")
+                            : chromeText(lang, "Creating remote coding environment", "正在创建远程编程环境", "正在建立遠端程式開發環境"))
                         : isCodingDev
-                        ? localizeText(lang, "Creating coding environment", "正在创建编程环境", "正在建立程式開發環境")
-                        : (lang === "en" ? "Creating project session" : "正在创建项目会话"))
-                    : (lang === "en" ? "Restoring task context" : "正在恢复任务上下文")}</span>
-                <span className="aap-restore-note">{lang === "en" ? "Input will wait" : "输入会先等待"}</span>
+                        ? chromeText(lang, "Creating coding environment", "正在创建编程环境", "正在建立程式開發環境")
+                        : ((chromeText(lang, "Creating project session", "正在创建项目会话"))))
+                    : ((chromeText(lang, "Restoring task context", "正在恢复任务上下文")))}</span>
+                <span className="aap-restore-note">{(chromeText(lang, "Input will wait", "输入会先等待"))}</span>
             </div>
             <div style={{ height: 3, overflow: "hidden", borderRadius: 999, background: `color-mix(in srgb, ${theme.headingColor} 16%, transparent)` }}>
                 <div style={{ width: "38%", height: "100%", borderRadius: "inherit", background: theme.headingColor, animation: "sidebar-task-restore-progress 0.9s ease-in-out infinite alternate" }} />

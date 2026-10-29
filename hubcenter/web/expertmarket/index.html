@@ -1,10 +1,41 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="MaClaw AI 专家市场：发现、获取和发布可复用的 AI 专家配置。">
-  <title>MaClaw AI 专家市场</title>
+  <meta name="description" content="MaClaw AI Expert Market: discover, acquire, and publish reusable AI expert configurations.">
+  <title>MaClaw AI Expert Market</title>
+  <script src="/i18n/lang.js"></script>
+  <script>
+  (function () {
+    var TITLE = {
+      en: 'MaClaw AI Expert Market',
+      zh: 'MaClaw AI 专家市场',
+      mn: 'MaClaw AI шинжээчийн зах зээл'
+    };
+    try {
+      var params = new URLSearchParams(location.search);
+      var queryLang = params.get('lang');
+      var saved = null;
+      try { saved = localStorage.getItem('hubcenter_expertmarket_lang'); } catch (e) {}
+      var lang = (queryLang != null && String(queryLang).trim() !== '')
+        ? window.HubCenterI18n.normalizeHubLang(queryLang)
+        : window.HubCenterI18n.detectHubLang(navigator.languages, saved);
+      document.documentElement.lang = window.HubCenterI18n.htmlLang(lang);
+      document.documentElement.setAttribute('data-hub-lang', lang);
+      document.title = window.HubCenterI18n.pick(TITLE, lang);
+      var desc = document.querySelector('meta[name="description"]');
+      if (desc) desc.setAttribute('content', window.HubCenterI18n.pick({
+        en: 'MaClaw AI Expert Market: discover, acquire, and publish reusable AI expert configurations.',
+        zh: 'MaClaw AI 专家市场：发现、获取和发布可复用的 AI 专家配置。',
+        mn: 'MaClaw AI шинжээчийн зах зээл: дахин ашиглах AI шинжээчийн тохиргоог олж, авч, нийтэлнэ.'
+      }, lang));
+      window.__hubExpertLang = lang;
+    } catch (e) {
+      document.documentElement.setAttribute('data-i18n-ready', '1');
+    }
+  })();
+  </script>
   <link rel="stylesheet" href="/pro-ui.css?v=modern-polish-20261028-5">
   <style>
     :root{--bg:#f5f7fb;--card:#fff;--ink:#172033;--muted:#667386;--line:#dce3ed;--blue:#2563eb;--soft:#eaf1ff;--shadow:0 10px 26px rgba(15,23,42,.05)}

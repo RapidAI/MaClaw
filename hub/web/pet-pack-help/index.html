@@ -11,7 +11,7 @@
 </head>
 <body>
   <main>
-    <header><div><h1 data-zh>MaClaw 宠物角色表演包规范 3.0</h1><h1 data-en hidden>MaClaw Pet Performance Pack Specification 3.0</h1><p class="lede" data-zh>面向 AI Agent 的、可校验的声明式桌面角色表演格式。</p><p class="lede" data-en hidden>A declarative, verifiable desktop character-performance format for AI agents.</p></div><div class="language" role="group" aria-label="Language"><button type="button" data-language="zh" aria-pressed="true">中文</button><button type="button" data-language="en" aria-pressed="false">EN</button></div></header>
+    <header><div><h1 data-zh>MaClaw 宠物角色表演包规范 3.0</h1><h1 data-en hidden>MaClaw Pet Performance Pack Specification 3.0</h1><h1 data-mn hidden>MaClaw тэжээвэр амьтны дүрийн тоглолтын багцын тодорхойлолт 3.0</h1><p class="lede" data-zh>面向 AI Agent 的、可校验的声明式桌面角色表演格式。</p><p class="lede" data-en hidden>A declarative, verifiable desktop character-performance format for AI agents.</p><p class="lede" data-mn hidden>AI Agent-д зориулсан тунхаглалт, баталгаажуулж болох ширээний дүрийн тоглолтын формат.</p></div><div class="language" role="group" aria-label="Language"><button type="button" data-language="zh" aria-pressed="true">中文</button><button type="button" data-language="en" aria-pressed="false">EN</button><button type="button" data-language="mn" aria-pressed="false">Монгол</button></div></header>
 
     <section data-zh>
       <p class="warning"><strong>兼容性规则。</strong><code>native-character</code> 与 <code>schema_version: 3</code> 已由桌面端和宠物市场校验支持。Agent 必须先检查目标客户端能力：声明 <code>pet-performance-v3</code> 时生成 3.0；未声明时生成 2.0 兼容包。</p>
@@ -443,9 +443,131 @@ fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
       <ul><li>Keep 2.0 budgets: 24 bones, 32 slots/textures, 240 keyframes per track, 1,200 keyframes total; images are 512 KiB and 1024×1024 each; total texture pixels ≤ 4,194,304.</li><li>ZIP file maximum: 3 MiB. Unpacked resource total: 2 MiB (to prevent compression bombs). Maximum 64 files; single file ≤ 512 KiB; path ≤ 180 characters; no unsafe or duplicate paths.</li><li>Local PNG/WebP, YAML, JSON, TXT, MD, SVG only. No JS/WASM/URL/executables.</li><li>Fallback is fixed: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
       <h2>Agent self-check</h2><ol class="checklist"><li>Target supports <code>pet-performance-v3</code>, or a 2.0 fallback was emitted.</li><li><code>schema_version</code> is integer 3; every referenced clip and allowlisted image exists and decodes.</li><li>Timing, weights, cooldowns, state/event names, and interrupt modes are valid.</li><li>Idle has ten or more varied behaviors and <code>no_repeat_last</code> is at least three.</li><li>Multi-part join QA for <strong>all seven states</strong>: no horizontal crack, no floating head, no double face, no double chin, no exposed neck plug; body has no leftover face; long-hair packs keep hair silhouette fixed across states.</li><li>Expression heads/faces are full-size; speaking mouth is open; default variant lists all seven native frames; textures list is complete (incl. hair/face/collar_overlay if used).</li><li>The static idle remains recognizable at 56px, 88px, and 120px; black/blonde hair intact.</li><li>No code, remote URL, executable content, or unauthorized data access is present.</li></ol>
     </section>
+
+    <section data-mn hidden>
+      <p class="warning"><strong>Нийцлийн дүрэм.</strong> Ширээний бүртгэл болон Pet Store-ийн шалгагч <code>native-character</code> болон <code>schema_version: 3</code>-ийг дэмжинэ. Зөвхөн <code>pet-performance-v3</code> зарласан зорилтод 3.0 гаргана; эс бөгөөс 2.0-д нийцэх багц гаргана.</p>
+      <p class="notice">Зорилго нь зүгээр нэг ганхах зураг биш. Энэ нь анзаарч, бодож, хариу үйлдэл үзүүлж, тайвширдаг дүр юм. Багцууд зөвхөн дотоод зураг, YAML болон JSON агуулна; JavaScript, WASM, гүйцэтгэх файл, URL, shader, callback болон динамик скрипт хориотой.</p>
+      <h2>AI Agent-ийн заавал мөрдөх ажлын урсгал</h2><ol><li>Зорилтын чадварыг уншина. Зөвхөн <code>pet-performance-v3</code> байвал 3.0 гаргана; эс бөгөөс 2.0 гаргана.</li><li>Эхлээд дүрийн товчоо, дараа нь файлын модыг үүсгэнэ.</li><li>Зарласан manifest, performer, rig болон PNG/WebP хөрөнгө бүрийг үүсгэнэ.</li><li>Төлөвийн машин, clip, текстурын зөвшөөрлийн жагсаалт, хугацаа, төсөв болон ZIP-ийн үндсийг баталгаажуулна.</li><li>Хавтасын агуулгыг ZIP архивт хийж, яг нэг <code>pet-pack.yaml</code> байлгана.</li></ol>
+      <pre><code>Даалгавар: MaClaw тэжээвэр амьтны дүрийн тоглолтын багц 3.0 үүсгэ.
+Дүр: тодорхой, зөөлөн, танигдахуйц; амьтан, эд зүйл, хүн эсвэл бусад дүрслэмэл сэдэв.
+Тоглолт: үндсэн төлөв бүрт enter / loop / exit; body, expression, gaze болон secondary хөдөлгөөн зэрэгцэн холилдоно.
+Idle: дор хаяж арав жинтэй, cooldown-той behavior; сүүлийн гурвын алийг нь ч давтахгүй.
+Үйл явдал: click, hover, task_started, task_done, task_failed, long_idle, drag_start, drag_end. thinking болон speaking нь ажиллах үеийн төлөв бөгөөд үйл явдал биш.
+Аюулгүй байдал: зөвхөн дотоод PNG/WebP, YAML, JSON. JS/WASM/URL/гүйцэтгэх код байхгүй.
+Нөөц горим: бүрэн тоглолт → native-skeleton → native/idle.png.</code></pre>
+      <h2>3.0 формат</h2><p><code>native-character</code> нь одоо байгаа дотоод bone/slot дүрслэгч дээрх тунхаглалт тоглолтын төлөвийн машин юм. <code>character.definition</code> хэзээ тоглохыг, <code>rig.definition</code> хэрхэн дүрслэхийг заана. Аль аль нь гүйцэтгэх код биш. Чадварын тохиролцоог <code>capabilities.pet_performance_v3: true</code> гэж зарлана. Тохиргооны урьдчилсан харагдац амьд rig-ийг илүүд үздэг; native зураглал нөөц хэвээр үлдэнэ — тэнд долоон төлөвийг бүгдийг нь жагсаана, зөвхөн idle биш.</p><pre><code>schema_version: 3
+id: my-desk-lamp
+name: My Desk Lamp
+version: 1.0.0
+renderer: native-character
+capabilities: { pet_performance_v3: true }
+assets:
+  native:
+    idle: native/idle.png
+    listening: native/listening.png
+    thinking: native/thinking.png
+    speaking: native/speaking.png
+    done: native/done.png
+    alert: native/alert.png
+    quiet: native/quiet.png
+  rig:
+    definition: rig/character.rig.json
+    textures: [rig/body.png, rig/head_idle.png, rig/head_speak.png]
+  character: { definition: character/performer.json }
+fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
+      <h2>performer.json-ийн гэрээ</h2><p><code>version: 1</code> нь <code>moods</code>, <code>layers</code>, <code>behaviors</code>, <code>states</code>, <code>events</code>, <code>reactions</code> болон <code>rules</code>-ийг тодорхойлно. Behavior-ийн бичлэг rig-ийн clip-ийг <code>enter</code>, <code>loop</code>, <code>exit</code>-ээр зааж, эерэг <code>weight</code>, <code>min_ms</code>, <code>max_ms</code>, <code>cooldown_ms</code> болон сонголтот mood өгнө. State-ийн бичлэг behavior-ийн сан эсвэл entry/loop/exit clip-ийг, мөн expression болон gaze clip-ийг сонгоно. Үйл явдал <code>play</code>, <code>interrupt</code> (<code>soft</code> эсвэл <code>after_loop</code>), mood болон cooldown ашиглаж болно. <code>reactions</code> дор хаяж 12 жинтэй хувилбар агуулна; тус бүр яг тэр найман зөвшөөрөгдсөн үйл явдлын нэгийг болон дотоод rig clip-ийг нэрлэнэ. Ингэснээр илүү баялаг хариу үйлдэл хостын үйл явдлын хүрээг хэзээ ч тэлэхгүй. Дүрэмд <code>no_repeat_last: 3..10</code>, <code>crossfade_ms: 80..500</code>, <code>max_interrupt_ms: 80..2000</code> шаардлагатай; idle-ийн сан <code>no_repeat_last</code>-аас олон ялгаатай behavior агуулна.</p>
+      <p>Яг дараах ажиллах үеийн төлөвийг ашиглана: <code>idle</code>, <code>listening</code>, <code>thinking</code>, <code>speaking</code>, <code>done</code>, <code>alert</code> болон <code>quiet</code>. Төлөв бүр <code>expression</code>, <code>gaze</code>, <code>secondary</code> clip зарлаж болно; багц дор хаяж зургаан ялгаатай expression болон дөрвөн ялгаатай gaze clip агуулна. Зөвшөөрөгдсөн үйл явдал: <code>click</code>, <code>hover</code>, <code>drag_start</code>, <code>drag_end</code>, <code>task_started</code>, <code>task_done</code>, <code>task_failed</code> болон <code>long_idle</code>. Gaze зөвхөн дотоод хийсвэр зорилт хүлээн авна: <code>gaze_user</code>, <code>gaze_task</code>, <code>gaze_wander</code>, <code>gaze_none</code>; дэлгэцийн агуулгыг хэзээ ч уншихгүй, хадгалахгүй, дэлгэцийн зураг болгон авахгүй, байршуулахгүй.</p>
+      <h2>Байгалийн хөдөлгөөний чанарын доод босго</h2><p>Баялаг хөдөлгөөн гэдэг нь илүү хурдан ганхах биш. Үйлдэл бүрд санаа, урьдчилсан бэлтгэл, гүйцэтгэл, барилт болон үргэлжлэл байх ёстой бөгөөд дор хаяж хоёр хэсэг өөр хугацаанд хөдөлнө. Цэвэр нааш цааш шилжилт, синхрон масштабчлал, зорилгогүй чичиргээ хүчингүй.</p><ul><li>Чухал үйлдлийн өмнө 100–300 мс-ийн эсрэг чиглэлийн урьдчилсан бэлтгэл, дараа нь 120–500 мс-ийн үргэлжлэл ба тогтворжилтыг ашиглана.</li><li>Эхлээд биеийг, дараа нь толгой/gaze-ийг хөдөлгөнө; толин тэгш хэмтэй эсвэл бүрэн синхрон мөчний хөдөлгөөнөөс зайлсхийнэ.</li><li>Дор хаяж 10 idle-ийн нэр дэвшигч, 12 богино хариу үйлдэл, 6 илэрхийлэл, 4 харцын үйлдэл, мөн үндсэн төлөв бүрт enter/loop/exit ашиглана. Сүүлийн 3 idle behavior-ийг давтахгүй; <code>no_repeat_last</code>-аас олон ялгаатай idle behavior зарлана.</li><li><code>after_loop</code> үйл явдал боломжтой үед байгалийн заагийг хүлээнэ. <code>max_interrupt_ms</code> нь хатуу 80–2000 мс-ийн дээд хязгаар: тэр хугацаа дуусахад ажиллах үе одоогийн үйлдлийн багцад заасан <code>exit</code>-ийг эхлүүлнэ. Ингэснээр хариу үйлдэл хязгааргүй дараалалд үлдэхгүй.</li><li>Idle-ийн нэр дэвшигчдэд амьсгал, байгалийн нүд ирмэх, ажиглалт, хүндийн төвийн шилжилт, түр сатаарал, сунгалт, байрлал засах, амралт, анхааралдаа эргэж орох болон орчны хариу үйлдлийг оруулна.</li><li>Хоёрдогч хэсэг үндсэн хөдөлгөөнийг 80–280 мс-ийн хоцрогдолтой дагаж, бага далайцаар тогтворжино. Loop нь заадас дээрээ байрлал ба хурдыг тасралтгүй байлгаж, дор хаяж нэг жигд бус хугацаатай өөрчлөлт агуулна.</li><li>Санал болгож буй хугацаа: бичил илэрхийлэл 80–220 мс, харц шилжих 180–450 мс, байрлалын өөрчлөлт 350–900 мс, хариу үйлдэл 600–1800 мс, idle behavior 2.5–10 секунд.</li></ul>
+
+      <h2>Олон хэсэгт дүрийн зураг (үйлдвэрлэлийн сургамж)</h2>
+      <p class="notice">3.0 тоглолт ясаар хөдөлдөг. <strong>Цаасан хүүхэлдэйн задаргаа</strong>-г илүүд үзэж, үргэлж <strong>бүтэн бие</strong> бүтээнэ — хагас биеийн хөргийг цорын ганц хөрөнгө болгож болохгүй.</p>
+      <p>Дүрийн төрлөөр бүдүүвч сонгоно (богино үстэй chibi болон урт үстэй оддын дүрд нэг автомат зүсэлтийн дамжлагыг тулгахгүй):</p>
+      <table><thead><tr><th>Бүдүүвч</th><th>Зориулалт</th><th>Зурах дараалал (доороос → дээш)</th><th>Илэрхийлэл солих</th></tr></thead><tbody>
+        <tr><td><strong>A. body + head_*</strong></td><td>Богино үс, малгай, амьтан, энгийн хүзүүний шугам</td><td>body → head_*</td><td>Бүтэн толгойн alpha солих</td></tr>
+        <tr><td><strong>B. body + hair + face_*</strong></td><td>Урт үс, мөр дамжсан үс, бодит хэв маягийн chibi</td><td>body → hair (тогтмол) → face_*</td><td><strong>Зөвхөн нүүрний зууван</strong>; үс/захын геометр тогтмол</td></tr>
+      </tbody></table>
+      <p class="warning">Урт үсэнд B бүдүүвчийг илүүд үзнэ. Төлөв бүрийн бүтэн толгойн тайралт дээр хажуугийн үс болон хүзүүний залгуур тэгш бус байх нь «listening/thinking/alert дээр хүзүүний залгуур харагдах»-ын гол шалтгаан юм.</p>
+
+      <h3>Мод A — body + head_*</h3>
+      <pre><code>my-character/
+  pet-pack.yaml
+  preview.png
+  native/{idle,listening,thinking,speaking,done,alert,quiet}.png
+  rig/my-character.rig.json
+  rig/body.png
+  rig/head_idle.png … head_quiet.png
+  rig/tail.png                 # нэмэлт
+  character/performer.json</code></pre>
+
+      <h3>Мод B — body + hair + face_* (урт үс)</h3>
+      <pre><code>my-character/
+  pet-pack.yaml
+  preview.png
+  native/{idle,listening,thinking,speaking,done,alert,quiet}.png
+  rig/my-character.rig.json
+  rig/body.png                 # захтай тэгш, нүүргүй
+  rig/hair.png                 # тогтмол силуэт; нүүрний нүх тунгалаг
+  rig/face_idle.png … face_quiet.png
+  rig/collar_overlay.png       # нэмэлт
+  character/performer.json</code></pre>
+      <p>Яс: <code>root → body → head → { hair, f_idle…f_quiet }</code>. Илэрхийллийн alpha <code>f_*</code> ясны зам дээр (эсвэл <code>slot_f_*</code>). Жишээ багц: <code>demo-hair-face/</code>.</p>
+      <p>Том бол ажлын эх файлыг суулгалтын ZIP-ээс гадна үлдээнэ: <code>_src/</code>, <code>native_src/</code>. Цорын ганц эх зургийг хэзээ ч дарж бичиж болохгүй.</p>
+
+      <h3>Ажлын урсгал: эхлээд заадас, дараа нь илэрхийлэл</h3>
+      <ol>
+        <li><strong>Idle бүтэн биеийн алтан эталон</strong>-ыг түгжинэ.</li>
+        <li>Биеийг (захтай тэгш) болон толгой/үсийг (нийтлэг эрүүний Y + тулгуур цэг) салгана.</li>
+        <li><strong>Гадна силуэтийг түгжинэ</strong>: A бүдүүвч долоон толгойн эрүүний шугамыг түгжинэ; B бүдүүвч үсийг төлөв бүрээр хэзээ ч өөрчлөхгүй.</li>
+        <li>Зөвхөн <strong>нүүрний аюулгүй хүрээнд</strong> засварлана (нүд/хөмсөг/ам); илэрхийлэл бүрт бүтэн толгойг масштаблах буюу шилжүүлэхгүй.</li>
+        <li>Долоон <code>native/*.png</code> болон <code>preview.png</code>-ийг бүгдийг нь бэлтгэн гаргана (тохиргоо амьд rig-ийг илүүд үздэг; native нь нөөц).</li>
+        <li>Долоон төлөвийг бүгдийг нь <code>variants.default.assets.native</code> дээр жагсаана; ZIP-ээс өмнө шалгах жагсаалтыг гүйцэтгэнэ.</li>
+      </ol>
+
+      <h3>Хатуу дүрэм</h3>
+      <ul>
+        <li><strong>Бүтэн бие</strong>: толгойноос хөл хүртэл (эсвэл бүтэн суух байрлал), эргэн тойронд тунгалаг зах. Үнэмлэхний цээж зураг зотонг дүүргэж болохгүй.</li>
+        <li><strong>Биеийн текстур</strong>: зөвхөн их бие/мөч/хувцас; <strong>үлдэгдэл нүүр байхгүй</strong>; захтай тэгш тайрна — халзан толгойн бүрхүүл байхгүй.</li>
+        <li><strong>Толгой / нүүр</strong>: A = бүтэн толгой + богино эрүү; B = зөвхөн нүүрний зууван; чих наалдсан.</li>
+        <li><strong>Үсний давхарга (B)</strong>: тогтмол; нүүрний нүх цэвэр; хажуугийн үе мөрийг дарж болно.</li>
+        <li><strong>Хүзүүний уулзварыг хувцас дор нууна</strong>: body → (hair) → head/face; эрүүг зах руу 8–16px шургуулна. «Хүзүүний залгуур» харагдахгүй.</li>
+        <li><strong>Нийтлэг хүзүүний тулгуур</strong>: center-on-bone; толгойн шилжилт адил; нүүрний өндөр / эрүүний Y адил (A бүдүүвч).</li>
+        <li><strong>Илэрхийллийн alpha</strong>: зөвхөн 0 эсвэл 1; ясны нэр (<code>h_*</code>/<code>f_*</code>) эсвэл slot нэр дээрх зам хоёул хүчинтэй. Тохиргооны урьдчилсан харагдац эхлээд амьд rig, дараа нь native.</li>
+        <li><strong>Speaking</strong> төлөвт ам тод ангайсан байна; долоон толгойд idle-ийг хэзээ ч хуулбарлахгүй.</li>
+      </ul>
+
+      <h3>Хөдөлгүүрийн заадсын тусламж (Join v1)</h3>
+      <p>≥2 <code>head_*</code>/<code>h_*</code> slot, эсвэл <code>hair</code> + ≥2 <code>face_*</code>/<code>f_*</code> үед автоматаар идэвхжинэ. Rig JSON дээрх нэмэлт <code>join</code>: <code>collar_cover</code>, <code>collar_overlay</code>, <code>head_neck_fade_px</code>, <code>state_head_offset</code>. Үзнэ үү: <code>docs/maclaw-pet-engine-join-v1.md</code>. Үйлдвэрлэлийн шалгах жагсаалт: <code>PRODUCTION-STANDARDS.md</code>. Заадсын автомат QA: <code>python _refs/validate_pack_seam.py</code>. Хөдөлгүүрийн тусламж биеийн текстур дээр үлдээсэн нүүрийг уучлахгүй.</p>
+
+      <h3>Автомат зүсэлт / өнгөөр ялгах алдааны горим</h3>
+      <ul>
+        <li>Амыг дайрсан хэт нам зүсэлт → эрүүгүй толгой / speaking-ийн ам эвдэрнэ.</li>
+        <li>Бие дээр нүүр үлдсэн → давхар нүүр (жишээ нь хоёр толгойтой амьтны багц).</li>
+        <li>Толгойг бүтэн өргөнөөр хатуу зүсэх → мөр дагуу хар зураас; хажуугийн үс огтлогдоно.</li>
+        <li>Урт махан хүзүүний хожуул + гүехэн шургуулалт → listening/thinking/alert дээр «хүзүүний залгуур».</li>
+        <li>Урт эрүүтэй силуэтийг илэрхийлэл бүрт түгжих → давхар эрүү.</li>
+        <li>Idle-ийн гадна хүрээ + жижиг дотор нүүр → давхар нүүрний хүрээ.</li>
+        <li>Глобал ойролцоо хар өнгөөр ялгалт → хар үс, костюм, нарны шил устгагдана (Shin-chan, Matrix, Yu Qian).</li>
+        <li>Глобал ойролцоо цагаан өнгөөр ялгалт → шаргал үс, цагаан банзал, зах устгагдана (Trump, Scarlett, Margot).</li>
+        <li>Default хувилбарын native зураглал зөвхөн <code>idle</code> жагсаасан → тохиргооны төлөвийн товч бүгд idle харуулна.</li>
+      </ul>
+      <h3>Manifest талбарын урхи</h3>
+      <ul>
+        <li><code>schema_version</code> нь <strong>бүхэл тоо</strong> <code>3</code> байх ёстой. <code>schema_version</code> дээр <code>5.0.1</code> бичвэл суулгалт амжилтгүй болж, <code>cannot unmarshal ... into int</code> алдаа өгнө.</li>
+        <li>Багцын <code>version</code> нь <code>1.0.0</code> / <code>5.0.1</code> зэрэг semver мөр байж болно.</li>
+        <li><code>version:</code> дэд мөр бүрийг бөөнөөр сольж болохгүй — энэ нь <code>schema_version</code>-ийг гэмтээнэ.</li>
+        <li>Body/hair/head/face текстур бүрийг <code>assets.rig.textures</code> дээр жагсаана (ашигласан бол <code>collar_overlay</code>-г оруулна).</li>
+        <li><strong>Долоон төлөвийг бүгдийг нь зарла</strong>: дээд түвшний assets болон <code>variants.default</code> дээрх <code>native/*</code> (тохиргооны урьдчилсан харагдац default хувилбараар шийдвэрлэнэ).</li>
+      </ul>
+      <h3>Ясны бүдүүвчийн зөвлөмж</h3>
+      <p><code>root</code> доод төвийн ойролцоо (~y = 0.56×256); <code>body</code> хүзүүний тулгуур дээр; <code>head</code> нь хүүхэд яс бөгөөд бага зэрэг дээш шилжсэнээр эрүү мөрний хонхорыг хаана; B бүдүүвч <code>head</code>-ийн дор <code>hair</code> + <code>f_*</code> нэмнэ. Бие түрүүлж, толгой 80–280 мс хоцорно.</p>
+
+      <h2>Төсөв, аюулгүй байдал, нөөц горим</h2>
+      <ul><li>2.0-ийн төсвийг хэвээр барина: 24 яс, 32 slot/текстур, зам бүрт 240 түлхүүр кадр, нийт 1,200 түлхүүр кадр; зураг тус бүр 512 KiB ба 1024×1024; текстурын нийт пиксел ≤ 4,194,304.</li><li>ZIP файлын дээд хэмжээ: 3 MiB. Задласан ресурсын нийлбэр: 2 MiB (шахалтын бөмбөгөөс сэргийлнэ). Хамгийн ихдээ 64 файл; нэг файл ≤ 512 KiB; зам ≤ 180 тэмдэгт; аюултай эсвэл давхардсан зам байхгүй.</li><li>Зөвхөн дотоод PNG/WebP, YAML, JSON, TXT, MD, SVG. JS/WASM/URL/гүйцэтгэх файл байхгүй.</li><li>Нөөц горим тогтмол: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
+      <h2>Agent-ийн өөрийн шалгалт</h2><ol class="checklist"><li>Зорилт <code>pet-performance-v3</code>-ийг дэмждэг, эсвэл 2.0 нөөц багц гарсан.</li><li><code>schema_version</code> бүхэл тоо 3; иш татсан clip болон зөвшөөрлийн жагсаалтын зураг бүр байна, тайлагдана.</li><li>Хугацаа, жин, cooldown, төлөв/үйл явдлын нэр болон interrupt горим хүчинтэй.</li><li>Idle нь арав буюу түүнээс олон ялгаатай behavior-тэй, <code>no_repeat_last</code> дор хаяж гурав.</li><li>Олон хэсгийн заадсын QA <strong>бүх долоон төлөвт</strong>: хэвтээ ан цавгүй, хөвөх толгойгүй, давхар нүүргүй, давхар эрүүгүй, ил хүзүүний залгуургүй; бие дээр үлдэгдэл нүүр байхгүй; урт үстэй багцын үсний силуэт төлөв даяар тогтмол.</li><li>Илэрхийллийн толгой/нүүр бүтэн хэмжээтэй; speaking-ийн ам ангайсан; default хувилбар долоон native кадрыг бүгдийг жагсаасан; текстурын жагсаалт бүрэн (ашигласан бол hair/face/collar_overlay орно).</li><li>Статик idle 56px, 88px, 120px дээр танигдах хэвээр; хар/шаргал үс бүтэн.</li><li>Код, алсын URL, гүйцэтгэх агуулга эсвэл зөвшөөрөлгүй өгөгдлийн хандалт байхгүй.</li></ol>
+    </section>
   </main>
   <script>
-    (()=>{const params=new URLSearchParams(location.search),buttons=document.querySelectorAll('[data-language]'),setLanguage=language=>{const lang=language==='en'?'en':'zh';document.documentElement.lang=lang==='en'?'en':'zh-CN';document.title=lang==='en'?'MaClaw Pet Performance Pack Specification 3.0':'MaClaw 宠物角色表演包规范 3.0';document.querySelectorAll('[data-zh]').forEach(el=>el.hidden=lang!=='zh');document.querySelectorAll('[data-en]').forEach(el=>el.hidden=lang!=='en');buttons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.language===lang)));const next=new URL(location.href);next.searchParams.set('lang',lang);history.replaceState(null,'',next)};buttons.forEach(button=>button.addEventListener('click',()=>setLanguage(button.dataset.language)));setLanguage(params.get('lang'))})();
+    (()=>{const params=new URLSearchParams(location.search),buttons=document.querySelectorAll('[data-language]'),setLanguage=language=>{const raw=String(language||'').trim().toLowerCase().replace(/_/g,'-');let lang='en';if(raw==='zh'||raw.indexOf('zh-')===0)lang='zh';else if(raw==='mn-mong'||raw.indexOf('mn-mong-')===0)lang='en';else if(raw==='mn'||raw==='mn-mn'||raw==='mn-cyrl'||raw==='mn-cyrl-mn'||raw.indexOf('mn-cyrl-')===0||raw.indexOf('mn-mn-')===0)lang='mn';document.documentElement.lang=lang==='zh'?'zh-CN':lang==='mn'?'mn':'en';document.title=lang==='zh'?'MaClaw 宠物角色表演包规范 3.0':lang==='mn'?'MaClaw тэжээвэр амьтны дүрийн тоглолтын багцын тодорхойлолт 3.0':'MaClaw Pet Performance Pack Specification 3.0';document.querySelectorAll('[data-zh]').forEach(el=>el.hidden=lang!=='zh');document.querySelectorAll('[data-en]').forEach(el=>el.hidden=lang!=='en');document.querySelectorAll('[data-mn]').forEach(el=>el.hidden=lang!=='mn');buttons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.language===lang)));const next=new URL(location.href);next.searchParams.set('lang',lang);history.replaceState(null,'',next)};buttons.forEach(button=>button.addEventListener('click',()=>setLanguage(button.dataset.language)));setLanguage(params.get('lang')||(navigator.language||''))})();
   </script>
 </body>
 </html>

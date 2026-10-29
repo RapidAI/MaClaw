@@ -136,7 +136,7 @@
     }
   };
 
-  function text() { return copy[global.currentLang === 'en' ? 'en' : 'zh']; }
+  function text() { return copy[global.currentLang === 'zh' ? 'zh' : 'en']; }
   function byID(id) { return document.getElementById(id); }
   function host() { return byID('botDesktopHost'); }
   function api(path, opts) {

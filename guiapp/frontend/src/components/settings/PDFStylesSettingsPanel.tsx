@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { localizeText } from '../../i18n';
+import { localizeText, normalizeLang } from '../../i18n';
 import './PDFStylesSettingsPanel.css';
 
 export type PDFStyleCard = {
@@ -43,6 +43,7 @@ function hex(value: string): string {
 }
 
 function styleText(style: PDFStyleCard, lang: string, field: 'label' | 'summary'): string {
+    if (normalizeLang(lang) === 'mn') return style[`${field}_en`] || '';
     const code = String(lang || '').toLowerCase();
     if (code.startsWith('en') && style[`${field}_en`]) return style[`${field}_en`] || '';
     if ((code.includes('hant') || code.endsWith('-tw') || code.endsWith('-hk')) && style[`${field}_hant`]) {

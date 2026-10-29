@@ -12,6 +12,7 @@ import {
     type WelcomePromptParamSubmitMode,
 } from "./WelcomePromptParamDialog";
 import { getComposeActionPlaceholder, type ComposeAction, type FireSlashCommand, type PlusMenuActionId } from "./composeAction";
+import { surfaceText } from "../../i18n/mnSurface";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { PromptHistoryAttachment } from "./promptHistory";
 import type { UseVoiceInputResult } from "./useVoiceInput";
@@ -213,6 +214,10 @@ function requestCreateCodingTask(
         autoCreate: codingEnv?.autoCreate === true,
     };
     window.dispatchEvent(new CustomEvent(EVENT_OPEN_CREATE_CODING_TASK, { detail }));
+}
+
+function st(lang: string, en: string, zh: string): string {
+    return surfaceText(lang, en, zh);
 }
 
 /** Multi-path professional icons (24×24) for scenario cards — not single-stroke “AI slop” glyphs. */
@@ -497,7 +502,7 @@ export function AssistantWelcomeView({
     composer: cp,
     taskConfig,
 }: AssistantWelcomeViewProps) {
-    const isZh = !lang?.startsWith("en");
+    const isZh = !!lang?.startsWith("zh");
 
     // Drop retired industry-tab key once (no longer read).
     useEffect(() => {
@@ -723,8 +728,8 @@ export function AssistantWelcomeView({
         // accidentally downgrading them to an ordinary local chat prompt.
         const resolvedPrompt = tabId === "ops" ? getWelcomeOpsPrompt(prompt, opsMode) : prompt;
         const text = isZh ? (resolvedPrompt.template || resolvedPrompt.text) : (resolvedPrompt.templateEn || resolvedPrompt.textEn);
-        const title = isZh ? resolvedPrompt.text : resolvedPrompt.textEn;
-        const description = isZh ? resolvedPrompt.desc : resolvedPrompt.descEn;
+        const title = st(lang, resolvedPrompt.textEn, resolvedPrompt.text);
+        const description = st(lang, resolvedPrompt.descEn, resolvedPrompt.desc);
         const taskKey = options?.taskKeyOverride
             || (tabId === "custom" ? `custom::${resolvedPrompt.textEn}` : welcomePromptKey(tabId, resolvedPrompt.textEn));
         const submitMode: WelcomePromptParamSubmitMode =
@@ -747,7 +752,7 @@ export function AssistantWelcomeView({
             initialCodingEnv: options?.initialCodingEnv,
             remoteSafety: resolvedPrompt.remoteSafety,
         });
-    }, [isZh, opsMode]);
+    }, [lang, opsMode]);
 
     const clipboardScanInFlightRef = useRef(false);
     const clipboardFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -854,7 +859,7 @@ export function AssistantWelcomeView({
     ) => {
         const meta = paramDialog;
         const { templates, saved } = saveWelcomeCustomTemplate({
-            title: title || (isZh ? "未命名模板" : "Untitled"),
+            title: title || (st(lang, "Untitled", "未命名模板")),
             body: filledPrompt,
             sourceKey: meta?.taskKey,
             sourceTabId: meta?.tabId === "custom" ? undefined : meta?.tabId,
@@ -868,7 +873,7 @@ export function AssistantWelcomeView({
         setCustomTemplates(templates);
 		syncLocalStartMenuTemplates(templates);
         return !!saved;
-    }, [paramDialog, isZh]);
+    }, [paramDialog, lang]);
 
     const openCustomTemplate = useCallback((tpl: WelcomeCustomTemplate) => {
         if (renamingTemplateId === tpl.id) return;
@@ -978,14 +983,12 @@ export function AssistantWelcomeView({
             a.remove();
             URL.revokeObjectURL(url);
             showTemplateIoNote(
-                isZh
-                    ? `已导出备份（模板 ${customTemplates.length} + 角色/最近）`
-                    : `Backup exported (${customTemplates.length} template(s) + role/recent)`,
+                st(lang, `Backup exported (${customTemplates.length} template(s) + role/recent)`, `已导出备份（模板 ${customTemplates.length} + 角色/最近）`),
             );
         } catch {
-            showTemplateIoNote(isZh ? "导出失败" : "Export failed");
+            showTemplateIoNote(st(lang, "Export failed", "导出失败"));
         }
-    }, [customTemplates, isZh, userRole, recentEntries, activeTab, showTemplateIoNote]);
+    }, [customTemplates, lang, userRole, recentEntries, activeTab, showTemplateIoNote]);
 
     const applyImportedWelcomePayload = useCallback((
         raw: string,
@@ -1027,23 +1030,19 @@ export function AssistantWelcomeView({
         // File/JSON import — allow auto-sync to push the merged result.
         const result = applyImportedWelcomePayload(preview.raw, preview.mode, { fromCloud: false });
         if (!result.ok) {
-            showTemplateIoNote(isZh ? "导入失败" : "Import failed");
+            showTemplateIoNote(st(lang, "Import failed", "导入失败"));
             setImportPreview(null);
             return;
         }
-        const modeLabel = result.mode === "replace"
-            ? (isZh ? "替换" : "replace")
-            : (isZh ? "合并" : "merge");
-        const extras = result.restoredExtras
-            ? (isZh ? "，已恢复角色/最近" : ", restored role/recent")
-            : "";
+        const enMode = result.mode === "replace" ? "replace" : "merge";
+        const zhMode = result.mode === "replace" ? "替换" : "合并";
+        const enExtras = result.restoredExtras ? ", restored role/recent" : "";
+        const zhExtras = result.restoredExtras ? "，已恢复角色/最近" : "";
         showTemplateIoNote(
-            isZh
-                ? `${modeLabel}导入：新增 ${result.added}，跳过 ${result.skipped}${extras}`
-                : `${modeLabel}: +${result.added}, skipped ${result.skipped}${extras}`,
+            st(lang, `${enMode}: +${result.added}, skipped ${result.skipped}${enExtras}`, `${zhMode}导入：新增 ${result.added}，跳过 ${result.skipped}${zhExtras}`),
         );
         setImportPreview(null);
-    }, [applyImportedWelcomePayload, isZh, showTemplateIoNote]);
+    }, [applyImportedWelcomePayload, lang, showTemplateIoNote]);
 
     const importCustomTemplatesFromFile = useCallback((file: File | null) => {
         if (!file) return;
@@ -1054,10 +1053,10 @@ export function AssistantWelcomeView({
             const previewed = previewWelcomeTemplatesImport(text, mode, customTemplates);
             if (!previewed.ok) {
                 const msg =
-                    previewed.error === "invalid_json" ? (isZh ? "JSON 无效" : "Invalid JSON")
-                    : previewed.error === "empty" ? (isZh ? "文件中没有有效模板" : "No valid templates in file")
-                    : previewed.error === "unknown_kind" ? (isZh ? "不是 MaClaw 备份文件" : "Not a MaClaw backup file")
-                    : (isZh ? "导入失败" : "Import failed");
+                    previewed.error === "invalid_json" ? (st(lang, "Invalid JSON", "JSON 无效"))
+                    : previewed.error === "empty" ? (st(lang, "No valid templates in file", "文件中没有有效模板"))
+                    : previewed.error === "unknown_kind" ? (st(lang, "Not a MaClaw backup file", "不是 MaClaw 备份文件"))
+                    : (st(lang, "Import failed", "导入失败"));
                 showTemplateIoNote(msg);
                 setImportPreview(null);
                 return;
@@ -1066,10 +1065,10 @@ export function AssistantWelcomeView({
             setImportPreview(previewed.preview);
         };
         reader.onerror = () => {
-            showTemplateIoNote(isZh ? "读取文件失败" : "Failed to read file");
+            showTemplateIoNote(st(lang, "Failed to read file", "读取文件失败"));
         };
         reader.readAsText(file, "utf-8");
-    }, [isZh, customTemplates, showTemplateIoNote]);
+    }, [lang, customTemplates, showTemplateIoNote]);
 
     const pushWelcomeToCloud = useCallback(async (opts?: {
         quiet?: boolean;
@@ -1086,12 +1085,12 @@ export function AssistantWelcomeView({
         if (cloudBusyRef.current) return false;
         if (!isWailsWelcomeSyncAvailable()) {
             if (!opts?.quiet) {
-                showTemplateIoNote(isZh ? "当前环境不支持云同步" : "Cloud sync unavailable in this environment");
+                showTemplateIoNote(st(lang, "Cloud sync unavailable in this environment", "当前环境不支持云同步"));
             }
             return false;
         }
         if (cloudSync.unsupported) {
-            if (!opts?.quiet) showTemplateIoNote(welcomeCloudUserNote("unsupported", isZh));
+            if (!opts?.quiet) showTemplateIoNote(welcomeCloudUserNote("unsupported", lang));
             return false;
         }
         const templates = opts?.fromStorage ? loadWelcomeCustomTemplates() : customTemplates;
@@ -1117,9 +1116,7 @@ export function AssistantWelcomeView({
         ) {
             confirmEmptyCloudPushRef.current = true;
             showTemplateIoNote(
-                isZh
-                    ? `云端有 ${cloudSync.templateCount} 个模板，本地为空。再点一次上传将覆盖云端。`
-                    : `Cloud has ${cloudSync.templateCount} template(s); local is empty. Click upload again to overwrite.`,
+                st(lang, `Cloud has ${cloudSync.templateCount} template(s); local is empty. Click upload again to overwrite.`, `云端有 ${cloudSync.templateCount} 个模板，本地为空。再点一次上传将覆盖云端。`),
             );
             return false;
         }
@@ -1157,9 +1154,7 @@ export function AssistantWelcomeView({
             const count = Number(status.template_count ?? status.templateCount ?? templates.length) || templates.length;
             if (!opts?.quiet) {
                 showTemplateIoNote(
-                    isZh
-                        ? `已上传云端（模板 ${count}）`
-                        : `Uploaded to cloud (${count} template(s))`,
+                    st(lang, `Uploaded to cloud (${count} template(s))`, `已上传云端（模板 ${count}）`),
                 );
             }
             return true;
@@ -1184,7 +1179,7 @@ export function AssistantWelcomeView({
             // Quiet auto-sync: only surface conflict / login / unsupported.
             if (!opts?.quiet || kind === "conflict" || kind === "login" || kind === "unsupported") {
                 const noteKind = kind === "conflict" && force ? "generic" : kind;
-                showTemplateIoNote(welcomeCloudUserNote(noteKind, isZh, msg, "push", !!opts?.quiet));
+                showTemplateIoNote(welcomeCloudUserNote(noteKind, lang, msg, "push", !!opts?.quiet));
             }
             return false;
         } finally {
@@ -1199,7 +1194,7 @@ export function AssistantWelcomeView({
         userRole,
         recentEntries,
         activeTab,
-        isZh,
+        lang,
         applyCloudStatus,
         showTemplateIoNote,
         isWailsWelcomeSyncAvailable,
@@ -1286,11 +1281,11 @@ export function AssistantWelcomeView({
     ): Promise<boolean> => {
         if (cloudBusyRef.current) return false;
         if (!isWailsWelcomeSyncAvailable()) {
-            showTemplateIoNote(isZh ? "当前环境不支持云同步" : "Cloud sync unavailable in this environment");
+            showTemplateIoNote(st(lang, "Cloud sync unavailable in this environment", "当前环境不支持云同步"));
             return false;
         }
         if (cloudSync.unsupported) {
-            showTemplateIoNote(welcomeCloudUserNote("unsupported", isZh));
+            showTemplateIoNote(welcomeCloudUserNote("unsupported", lang));
             return false;
         }
         confirmCloudDeleteRef.current = false;
@@ -1303,18 +1298,18 @@ export function AssistantWelcomeView({
             applyCloudStatus({ ...result, logged_in: true }, { keepBusy: true });
             const text = welcomeCloudPayloadText(result);
             if (!text) {
-                showTemplateIoNote(welcomeCloudUserNote("empty", isZh));
+                showTemplateIoNote(welcomeCloudUserNote("empty", lang));
                 return false;
             }
             // Validate first so we don't half-apply junk.
             const previewed = previewWelcomeTemplatesImport(text, mode, customTemplates);
             if (!previewed.ok) {
-                showTemplateIoNote(welcomeCloudUserNote("invalid", isZh));
+                showTemplateIoNote(welcomeCloudUserNote("invalid", lang));
                 return false;
             }
             const applied = applyImportedWelcomePayload(text, mode, { fromCloud: true });
             if (!applied.ok) {
-                showTemplateIoNote(isZh ? "导入失败" : "Import failed");
+                showTemplateIoNote(st(lang, "Import failed", "导入失败"));
                 return false;
             }
             forceNextCloudPushRef.current = false;
@@ -1332,16 +1327,12 @@ export function AssistantWelcomeView({
                 recent: loadWelcomeRecentEntries(),
             });
             if (!opts?.quiet) {
-                const modeLabel = mode === "replace"
-                    ? (isZh ? "替换" : "replace")
-                    : (isZh ? "合并" : "merge");
-                const extras = applied.restoredExtras
-                    ? (isZh ? "，已恢复角色/最近" : ", restored role/recent")
-                    : "";
+                const enMode = mode === "replace" ? "replace" : "merge";
+                const zhMode = mode === "replace" ? "替换" : "合并";
+                const enExtras = applied.restoredExtras ? ", restored role/recent" : "";
+                const zhExtras = applied.restoredExtras ? "，已恢复角色/最近" : "";
                 showTemplateIoNote(
-                    isZh
-                        ? `已拉取并${modeLabel}：新增 ${applied.added}，跳过 ${applied.skipped}${extras}`
-                        : `Pulled (${modeLabel}): +${applied.added}, skipped ${applied.skipped}${extras}`,
+                    st(lang, `Pulled (${enMode}): +${applied.added}, skipped ${applied.skipped}${enExtras}`, `已拉取并${zhMode}：新增 ${applied.added}，跳过 ${applied.skipped}${zhExtras}`),
                 );
             }
             return true;
@@ -1353,7 +1344,7 @@ export function AssistantWelcomeView({
             } else if (kind === "login") {
                 setCloudSync((prev) => ({ ...prev, loggedIn: false }));
             }
-            showTemplateIoNote(welcomeCloudUserNote(kind, isZh, msg, "pull"));
+            showTemplateIoNote(welcomeCloudUserNote(kind, lang, msg, "pull"));
             return false;
         } finally {
             cloudBusyRef.current = false;
@@ -1362,7 +1353,7 @@ export function AssistantWelcomeView({
     }, [
         customTemplates,
         cloudSync.unsupported,
-        isZh,
+        lang,
         applyCloudStatus,
         applyImportedWelcomePayload,
         showTemplateIoNote,
@@ -1373,28 +1364,26 @@ export function AssistantWelcomeView({
     const deleteWelcomeCloud = useCallback(async () => {
         if (cloudBusyRef.current) return;
         if (!isWailsWelcomeSyncAvailable()) {
-            showTemplateIoNote(isZh ? "当前环境不支持云同步" : "Cloud sync unavailable in this environment");
+            showTemplateIoNote(st(lang, "Cloud sync unavailable in this environment", "当前环境不支持云同步"));
             return;
         }
         if (cloudSync.unsupported) {
-            showTemplateIoNote(welcomeCloudUserNote("unsupported", isZh));
+            showTemplateIoNote(welcomeCloudUserNote("unsupported", lang));
             return;
         }
         if (!cloudSync.loggedIn) {
-            showTemplateIoNote(welcomeCloudUserNote("login", isZh));
+            showTemplateIoNote(welcomeCloudUserNote("login", lang));
             return;
         }
         if (!cloudSync.hasDocument) {
-            showTemplateIoNote(welcomeCloudUserNote("empty", isZh));
+            showTemplateIoNote(welcomeCloudUserNote("empty", lang));
             return;
         }
         if (!confirmCloudDeleteRef.current) {
             confirmCloudDeleteRef.current = true;
             confirmEmptyCloudPushRef.current = false;
             showTemplateIoNote(
-                isZh
-                    ? "再点一次「删除云端」将永久删除 Hub 上的引导页备份。"
-                    : "Click Delete cloud again to permanently remove the Hub backup.",
+                st(lang, "Click Delete cloud again to permanently remove the Hub backup.", "再点一次「删除云端」将永久删除 Hub 上的引导页备份。"),
             );
             return;
         }
@@ -1414,7 +1403,7 @@ export function AssistantWelcomeView({
                 template_count: 0,
                 revision: "",
             });
-            showTemplateIoNote(isZh ? "已删除云端引导页备份" : "Cloud welcome backup deleted");
+            showTemplateIoNote(st(lang, "Cloud welcome backup deleted", "已删除云端引导页备份"));
         } catch (err) {
             const kind = classifyWelcomeCloudError(err);
             const msg = welcomeCloudErrorMessage(err);
@@ -1424,9 +1413,7 @@ export function AssistantWelcomeView({
                 setCloudSync((prev) => ({ ...prev, unsupported: true }));
             }
             showTemplateIoNote(
-                isZh
-                    ? `删除失败：${msg.slice(0, 80) || "未知错误"}`
-                    : `Delete failed: ${msg.slice(0, 80) || "unknown error"}`,
+                st(lang, `Delete failed: ${msg.slice(0, 80) || "unknown error"}`, `删除失败：${msg.slice(0, 80) || "未知错误"}`),
             );
         } finally {
             cloudBusyRef.current = false;
@@ -1436,7 +1423,7 @@ export function AssistantWelcomeView({
         cloudSync.unsupported,
         cloudSync.loggedIn,
         cloudSync.hasDocument,
-        isZh,
+        lang,
         applyCloudStatus,
         showTemplateIoNote,
         isWailsWelcomeSyncAvailable,
@@ -1456,7 +1443,7 @@ export function AssistantWelcomeView({
         setCloudConflictOpen(true);
         setConflictPhase("pulling");
         showTemplateIoNote(
-            isZh ? "正在拉取合并并回传…" : "Merging from cloud, then uploading…",
+            st(lang, "Merging from cloud, then uploading…", "正在拉取合并并回传…"),
         );
         const pulled = await pullWelcomeFromCloud("merge", {
             quiet: true,
@@ -1481,13 +1468,13 @@ export function AssistantWelcomeView({
             setCloudConflictOpen(false);
             setConflictPhase("idle");
             showTemplateIoNote(
-                isZh ? "冲突已解决：已合并并上传云端" : "Conflict resolved: merged and uploaded",
+                st(lang, "Conflict resolved: merged and uploaded", "冲突已解决：已合并并上传云端"),
             );
         } else {
             setCloudConflictOpen(true);
             setConflictPhase("idle");
         }
-    }, [isZh, showTemplateIoNote, pullWelcomeFromCloud, pushWelcomeToCloud, setConflictPhase]);
+    }, [lang, showTemplateIoNote, pullWelcomeFromCloud, pushWelcomeToCloud, setConflictPhase]);
 
     const currentTab = SCENARIO_TAB_BY_ID.get(activeTab) || SCENARIO_TABS[0];
     const visiblePrompts = currentTab.id === "ops"
@@ -1504,7 +1491,15 @@ export function AssistantWelcomeView({
     );
     const quickHints = useMemo(() => resolveWelcomeQuickHints(), []);
     const showQuickHints = !(cp.inputValue || "").trim();
-    const roleLabels = isZh ? ROLE_LABELS_ZH : ROLE_LABELS_EN;
+    const roleLabels: Record<WelcomeUserRole, string> = {
+        auto: st(lang, ROLE_LABELS_EN.auto, ROLE_LABELS_ZH.auto),
+        dev: st(lang, ROLE_LABELS_EN.dev, ROLE_LABELS_ZH.dev),
+        ops: st(lang, ROLE_LABELS_EN.ops, ROLE_LABELS_ZH.ops),
+        business: st(lang, ROLE_LABELS_EN.business, ROLE_LABELS_ZH.business),
+        research: st(lang, ROLE_LABELS_EN.research, ROLE_LABELS_ZH.research),
+        writing: st(lang, ROLE_LABELS_EN.writing, ROLE_LABELS_ZH.writing),
+        general: st(lang, ROLE_LABELS_EN.general, ROLE_LABELS_ZH.general),
+    };
     const hasQuickAccess = visibleCustomTemplates.length > 0 || recentPrompts.length > 0;
     /** Always show the quick section header so users can import even with zero templates. */
     const showQuickSection = true;
@@ -1539,7 +1534,7 @@ export function AssistantWelcomeView({
             role="region"
             className="mc-welcome awv-region"
             data-testid="mc-workbench-home"
-            aria-label={isZh ? "工作台任务入口" : "Workbench task entry"}
+            aria-label={st(lang, "Workbench task entry", "工作台任务入口")}
         >
             {/* Pinned news cards pinned to top */}
             {hasNews && (
@@ -1569,26 +1564,26 @@ export function AssistantWelcomeView({
                 justifyContent: "center",
                 gap: "6px",
             }}>
-                {isZh ? "今天要完成什么？" : "What do you want to finish today?"}
+                {st(lang, "What do you want to finish today?", "今天要完成什么？")}
             </h2>
 
             {/* Legacy role/clipboard controls stay mounted for existing flows, but
                 are collapsed so the reference home has no toolbar placeholder. */}
             <details className="mc-welcome-advanced-tools" data-testid="welcome-advanced-tools" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
                 <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, textAlign: "center", userSelect: "none" }}>
-                    {isZh ? "更多工作台工具" : "More workbench tools"}
+                    {st(lang, "More workbench tools", "更多工作台工具")}
                 </summary>
                 <div className="mc-welcome__composer awv-toolbar" data-testid="welcome-toolbar">
                     <label data-testid="welcome-role-picker" style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, color: t.textMuted, fontFamily: "system-ui, -apple-system, sans-serif" }}>
-                        <span>{isZh ? "角色" : "Role"}</span>
-                        <select aria-label={isZh ? "工作角色" : "Workbench role"} data-testid="welcome-role-select" value={userRole} onChange={(e) => applyUserRole(e.target.value as WelcomeUserRole)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12, fontFamily: "system-ui, -apple-system, sans-serif", cursor: "pointer", maxWidth: 160 }}>
+                        <span>{st(lang, "Role", "角色")}</span>
+                        <select aria-label={st(lang, "Workbench role", "工作角色")} data-testid="welcome-role-select" value={userRole} onChange={(e) => applyUserRole(e.target.value as WelcomeUserRole)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12, fontFamily: "system-ui, -apple-system, sans-serif", cursor: "pointer", maxWidth: 160 }}>
                             {(Object.keys(ROLE_LABELS_ZH) as WelcomeUserRole[]).map((role) => (
                                 <option key={role} value={role} data-testid={`welcome-role-${role}`}>{roleLabels[role]}</option>
                             ))}
                         </select>
                     </label>
-                    <button type="button" data-testid="welcome-clipboard-refresh" title={isZh ? "根据剪贴板内容推荐任务" : "Suggest tasks from clipboard"} onClick={() => void refreshClipboardSuggestions({ force: true })} disabled={clipboardBusy} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.textMuted, fontSize: 11, cursor: clipboardBusy ? "wait" : "pointer", fontFamily: "system-ui, -apple-system, sans-serif" }}>
-                        {clipboardBusy ? (isZh ? "识别中…" : "Scanning…") : (isZh ? "剪贴板识别" : "Scan clipboard")}
+                    <button type="button" data-testid="welcome-clipboard-refresh" title={st(lang, "Suggest tasks from clipboard", "根据剪贴板内容推荐任务")} onClick={() => void refreshClipboardSuggestions({ force: true })} disabled={clipboardBusy} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.textMuted, fontSize: 11, cursor: clipboardBusy ? "wait" : "pointer", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+                        {clipboardBusy ? (st(lang, "Scanning…", "识别中…")) : (st(lang, "Scan clipboard", "剪贴板识别"))}
                     </button>
                 </div>
             </details>
@@ -1635,10 +1630,12 @@ export function AssistantWelcomeView({
                     taskCommandAllowed={cp.taskCommandAllowed}
                     showWorkspacePermissionOption={cp.showWorkspacePermissionOption}
                     onPermissionModeChange={cp.onPermissionModeChange}
-                    placeholderText={
-                        getComposeActionPlaceholder(cp.composeAction, isZh)
-                            || (isZh ? "告诉 MaClaw 你要完成什么办公任务……" : "Tell MaClaw what work you need to finish...")
-                    }
+                    placeholderText={(() => {
+                        const en = getComposeActionPlaceholder(cp.composeAction, false);
+                        const zh = getComposeActionPlaceholder(cp.composeAction, true);
+                        return (en && zh ? st(lang, en, zh) : null)
+                            || st(lang, "Tell MaClaw what work you need to finish...", "告诉 MaClaw 你要完成什么办公任务……");
+                    })()}
                     ready={cp.ready}
                     recallHistory={cp.recallHistory}
                     rememberHistoryEdit={cp.rememberHistoryEdit}
@@ -1672,7 +1669,7 @@ export function AssistantWelcomeView({
                 {taskConfig ? (
                     // WorkBuddy-style config strip：卡片下方独立一行（左对齐），
                     // 与卡片内的输入动作分组，工具条不再因宽度不足折行。
-                    <div className="awv-task-config" data-testid="welcome-task-config" role="group" aria-label={isZh ? "任务配置" : "Task config"}>
+                    <div className="awv-task-config" data-testid="welcome-task-config" role="group" aria-label={st(lang, "Task config", "任务配置")}>
                         <TaskConfigBar
                             draft={taskConfig.draft}
                             onChange={taskConfig.onDraftChange}
@@ -1716,7 +1713,7 @@ export function AssistantWelcomeView({
             {/* Reference quick tasks: exactly four composer fills. */}
             <div data-testid="welcome-reference-quick-tasks" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 8 }}>
                 <h3 style={{ margin: 0, fontSize: 15, lineHeight: 1.3, fontWeight: 650, color: t.text, fontFamily: "system-ui, -apple-system, sans-serif" }}>
-                    {isZh ? "快捷任务" : "Quick tasks"}
+                    {st(lang, "Quick tasks", "快捷任务")}
                 </h3>
                 <div className="awv-quick-tasks">
                     {REFERENCE_QUICK_TASKS.map((task) => (
@@ -1724,12 +1721,12 @@ export function AssistantWelcomeView({
                             key={task.id}
                             type="button"
                             data-testid={`welcome-reference-quick-task-${task.id}`}
-                            aria-label={isZh ? task.label : task.labelEn}
-                            onClick={() => onPromptSelect(isZh ? task.prompt : task.promptEn, { title: isZh ? task.label : task.labelEn, tabId: "reference" })}
+                            aria-label={st(lang, task.labelEn, task.label)}
+                            onClick={() => onPromptSelect(isZh ? task.prompt : task.promptEn, { title: st(lang, task.labelEn, task.label), tabId: "reference" })}
                             style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, minHeight: 44, flex: "1 1 160px", padding: "9px 14px", borderRadius: 12, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, cursor: "pointer", fontSize: 13, fontWeight: 500, lineHeight: 1.3, fontFamily: "system-ui, -apple-system, sans-serif", textAlign: "left" }}
                         >
                             <WelcomePromptIcon name={task.icon} color={t.textMuted} />
-                            <span>{isZh ? task.label : task.labelEn}</span>
+                            <span>{st(lang, task.labelEn, task.label)}</span>
                         </button>
                     ))}
                 </div>
@@ -1739,13 +1736,13 @@ export function AssistantWelcomeView({
                 default workbench composition. */}
             <details className="mc-welcome-legacy-hints" data-testid="welcome-legacy-quick-hints" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
                 <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
-                    {isZh ? "更多模板建议" : "More template suggestions"}
+                    {st(lang, "More template suggestions", "更多模板建议")}
                 </summary>
                 {showQuickHints && quickHints.length > 0 && (
                     <div className="awv-hints" data-testid="welcome-quick-hints">
                         {quickHints.map((hint) => (
                             <button key={hint.id} type="button" data-testid={`welcome-quick-hint-${hint.id}`} onClick={() => openPrompt(hint.prompt, hint.tabId)} style={{ padding: "3px 9px", borderRadius: 999, border: `1px dashed ${t.fieldBorder}`, background: "transparent", color: t.textMuted, fontSize: 11, cursor: "pointer", fontFamily: "system-ui, -apple-system, sans-serif" }}>
-                                {isZh ? hint.label : hint.labelEn}
+                                {st(lang, hint.labelEn, hint.label)}
                             </button>
                         ))}
                     </div>
@@ -1756,7 +1753,7 @@ export function AssistantWelcomeView({
             {clipboardHits.length > 0 && (
                 <details className="mc-welcome-legacy-clipboard" data-testid="welcome-legacy-clipboard" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
                     <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
-                        {isZh ? "剪贴板推荐" : "Clipboard suggestions"}
+                        {st(lang, "Clipboard suggestions", "剪贴板推荐")}
                     </summary>
                     <div className="awv-clipboard" data-testid="welcome-clipboard-suggest">
                     <div style={{
@@ -1765,7 +1762,7 @@ export function AssistantWelcomeView({
                         color: t.textMuted,
                         fontFamily: "system-ui, -apple-system, sans-serif",
                     }}>
-                        {isZh ? "剪贴板推荐" : "From clipboard"}
+                        {st(lang, "From clipboard", "剪贴板推荐")}
                     </div>
                     {clipboardSnippet && (
                         <p style={{
@@ -1789,7 +1786,7 @@ export function AssistantWelcomeView({
                                 key={hit.key}
                                 type="button"
                                 data-testid={`welcome-clipboard-hit-${hit.key}`}
-                                title={isZh ? hit.prompt.desc : hit.prompt.descEn}
+                                title={st(lang, hit.prompt.descEn, hit.prompt.desc)}
                                 onClick={() => openPrompt(hit.prompt, hit.tabId, {
                                     clipboardPrefill: clipboardFullTextRef.current || undefined,
                                 })}
@@ -1814,10 +1811,10 @@ export function AssistantWelcomeView({
                                 <WelcomePromptIcon name={hit.prompt.icon} color={t.textMuted} />
                                 <span className="awv-hit-text">
                                     <span className="awv-hit-label">
-                                        {isZh ? hit.prompt.text : hit.prompt.textEn}
+                                        {st(lang, hit.prompt.textEn, hit.prompt.text)}
                                     </span>
                                     <span style={{ fontSize: 10, color: t.textMuted }}>
-                                        {isZh ? hit.reason : hit.reasonEn}
+                                        {st(lang, hit.reasonEn, hit.reason)}
                                     </span>
                                 </span>
                             </button>
@@ -1829,7 +1826,7 @@ export function AssistantWelcomeView({
 
             {/* Reference category rail and secondary task starters. */}
             <div data-testid="welcome-reference-suggestions" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 10 }}>
-                <div className="awv-cat-tabs" role="tablist" aria-label={isZh ? "任务分类" : "Task categories"}>
+                <div className="awv-cat-tabs" role="tablist" aria-label={st(lang, "Task categories", "任务分类")}>
                     {REFERENCE_TASK_CATEGORIES.map((category) => {
                         const selected = referenceTaskCategory === category.id;
                         return (
@@ -1854,21 +1851,21 @@ export function AssistantWelcomeView({
                                     fontWeight: selected ? 650 : 500,
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
-                            >{isZh ? category.label : category.labelEn}</button>
+                            >{st(lang, category.labelEn, category.label)}</button>
                         );
                     })}
                 </div>
-                <div className="mc-reference-suggestion-grid" role="tabpanel" aria-label={isZh ? "推荐任务" : "Suggested tasks"}>
+                <div className="mc-reference-suggestion-grid" role="tabpanel" aria-label={st(lang, "Suggested tasks", "推荐任务")}>
                     {(REFERENCE_TASK_SUGGESTIONS[referenceTaskCategory] || REFERENCE_TASK_SUGGESTIONS.business).map((suggestion) => (
                         <button
                             key={suggestion.id}
                             type="button"
                             data-testid={`welcome-reference-suggestion-${suggestion.id}`}
-                            onClick={() => onPromptSelect(isZh ? suggestion.prompt : suggestion.promptEn, { title: isZh ? suggestion.title : suggestion.titleEn, tabId: `reference-${referenceTaskCategory}` })}
+                            onClick={() => onPromptSelect(isZh ? suggestion.prompt : suggestion.promptEn, { title: st(lang, suggestion.titleEn, suggestion.title), tabId: `reference-${referenceTaskCategory}` })}
                             className="mc-reference-suggestion-card"
                         >
                             <span className="mc-reference-suggestion-card__icon"><WelcomePromptIcon name={suggestion.icon} color={t.btnColor || "#2f80ed"} /></span>
-                            <span className="mc-reference-suggestion-card__copy"><strong>{isZh ? suggestion.title : suggestion.titleEn}</strong><small>{isZh ? suggestion.detail : suggestion.detailEn}</small></span>
+                            <span className="mc-reference-suggestion-card__copy"><strong>{st(lang, suggestion.titleEn, suggestion.title)}</strong><small>{st(lang, suggestion.detailEn, suggestion.detail)}</small></span>
                             <span className="mc-reference-suggestion-card__arrow" aria-hidden="true">›</span>
                         </button>
                     ))}
@@ -1880,7 +1877,7 @@ export function AssistantWelcomeView({
             {showQuickSection && (
                 <details className="mc-welcome-legacy-quick-access" data-testid="welcome-quick-access" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
                     <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
-                        {isZh ? "更多模板与同步" : "More templates and sync"}
+                        {st(lang, "More templates and sync", "更多模板与同步")}
                     </summary>
                     <div className="awv-templates">
                     <div className="awv-templates-head">
@@ -1891,19 +1888,21 @@ export function AssistantWelcomeView({
                                 color: t.textMuted,
                                 fontFamily: "system-ui, -apple-system, sans-serif",
                             }}>
-                                {isZh ? "我的模板" : "My templates"}
+                                {st(lang, "My templates", "我的模板")}
                             </div>
                             {(cloudSync.loggedIn || cloudSync.unsupported) && (
                                 <span
                                     data-testid="welcome-cloud-status"
                                     title={
                                         cloudSync.unsupported
-                                            ? (isZh ? "Hub 需升级后才支持引导页云同步" : "Upgrade Hub for welcome cloud sync")
+                                            ? (st(lang, "Upgrade Hub for welcome cloud sync", "Hub 需升级后才支持引导页云同步"))
                                             : cloudSync.hasDocument
-                                            ? (isZh
-                                                ? `云端已备份 ${cloudSync.templateCount} 个模板${cloudSync.updatedAt ? ` · ${formatWelcomeCloudUpdatedAt(cloudSync.updatedAt, true)}` : ""}`
-                                                : `Cloud backup: ${cloudSync.templateCount} template(s)${cloudSync.updatedAt ? ` · ${formatWelcomeCloudUpdatedAt(cloudSync.updatedAt, false)}` : ""}`)
-                                            : (isZh ? "已登录 Hub，云端尚无备份" : "Hub signed in · no cloud backup yet")
+                                            ? (st(
+                                                lang,
+                                                `Cloud backup: ${cloudSync.templateCount} template(s)${cloudSync.updatedAt ? ` · ${formatWelcomeCloudUpdatedAt(cloudSync.updatedAt, lang)}` : ""}`,
+                                                `云端已备份 ${cloudSync.templateCount} 个模板${cloudSync.updatedAt ? ` · ${formatWelcomeCloudUpdatedAt(cloudSync.updatedAt, true)}` : ""}`,
+                                            ))
+                                            : (st(lang, "Hub signed in · no cloud backup yet", "已登录 Hub，云端尚无备份"))
                                     }
                                     style={{
                                         fontSize: 10,
@@ -1912,7 +1911,7 @@ export function AssistantWelcomeView({
                                         opacity: 0.9,
                                     }}
                                 >
-                                    {welcomeCloudStatusLabel(cloudSync, isZh)}
+                                    {welcomeCloudStatusLabel(cloudSync, lang)}
                                 </span>
                             )}
                         </div>
@@ -1924,13 +1923,9 @@ export function AssistantWelcomeView({
                                 disabled={cloudSync.unsupported}
                                 onClick={toggleCloudAutoSync}
                                 title={
-                                    isZh
-                                        ? (cloudAutoSync
-                                            ? "自动同步已开：本地变更将防抖上传（不会用空本地覆盖云端）"
-                                            : "自动同步已关：点击开启，本地变更后自动上传云端")
-                                        : (cloudAutoSync
-                                            ? "Auto-sync on: local changes upload after a short debounce (never wipes rich cloud with empty local)"
-                                            : "Auto-sync off: click to upload local changes automatically")
+                                    cloudAutoSync
+                                        ? st(lang, "Auto-sync on: local changes upload after a short debounce (never wipes rich cloud with empty local)", "自动同步已开：本地变更将防抖上传（不会用空本地覆盖云端）")
+                                        : st(lang, "Auto-sync off: click to upload local changes automatically", "自动同步已关：点击开启，本地变更后自动上传云端")
                                 }
                                 style={{
                                     padding: "2px 8px",
@@ -1945,9 +1940,9 @@ export function AssistantWelcomeView({
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
                             >
-                                {isZh
-                                    ? (cloudAutoSync ? "自动开" : "自动关")
-                                    : (cloudAutoSync ? "Auto on" : "Auto off")}
+                                {cloudAutoSync
+                                    ? st(lang, "Auto on", "自动开")
+                                    : st(lang, "Auto off", "自动关")}
                             </button>
                             <button
                                 type="button"
@@ -1960,10 +1955,10 @@ export function AssistantWelcomeView({
                                 }}
                                 title={
                                     cloudSync.unsupported
-                                        ? (isZh ? "Hub 需升级" : "Upgrade Hub")
+                                        ? (st(lang, "Upgrade Hub", "Hub 需升级"))
                                         : cloudSync.loggedIn
-                                        ? (isZh ? "手动上传到 Hub 云端（按账号保存一份）" : "Manual upload to Hub cloud (one copy per account)")
-                                        : (isZh ? "需先登录 Hub" : "Hub login required")
+                                        ? (st(lang, "Manual upload to Hub cloud (one copy per account)", "手动上传到 Hub 云端（按账号保存一份）"))
+                                        : (st(lang, "Hub login required", "需先登录 Hub"))
                                 }
                                 style={{
                                     padding: "2px 8px",
@@ -1977,7 +1972,7 @@ export function AssistantWelcomeView({
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
                             >
-                                {isZh ? "上传云端" : "Cloud ↑"}
+                                {st(lang, "Cloud ↑", "上传云端")}
                             </button>
                             <button
                                 type="button"
@@ -1990,10 +1985,8 @@ export function AssistantWelcomeView({
                                 }}
                                 title={
                                     cloudSync.unsupported
-                                        ? (isZh ? "Hub 需升级" : "Upgrade Hub")
-                                        : isZh
-                                        ? "从 Hub 拉取并直接合并写入本地（Alt/Shift = 替换写入）"
-                                        : "Pull from Hub and merge into local immediately (Alt/Shift = replace)"
+                                        ? (st(lang, "Upgrade Hub", "Hub 需升级"))
+                                        : st(lang, "Pull from Hub and merge into local immediately (Alt/Shift = replace)", "从 Hub 拉取并直接合并写入本地（Alt/Shift = 替换写入）")
                                 }
                                 style={{
                                     padding: "2px 8px",
@@ -2007,7 +2000,7 @@ export function AssistantWelcomeView({
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
                             >
-                                {isZh ? "拉取云端" : "Cloud ↓"}
+                                {st(lang, "Cloud ↓", "拉取云端")}
                             </button>
                             <button
                                 type="button"
@@ -2017,10 +2010,10 @@ export function AssistantWelcomeView({
                                 onClick={() => { void deleteWelcomeCloud(); }}
                                 title={
                                     cloudSync.unsupported
-                                        ? (isZh ? "Hub 需升级" : "Upgrade Hub")
+                                        ? (st(lang, "Upgrade Hub", "Hub 需升级"))
                                         : !cloudSync.hasDocument
-                                        ? (isZh ? "云端暂无备份" : "No cloud backup")
-                                        : (isZh ? "删除 Hub 上的引导页备份（需点两次确认）" : "Delete Hub welcome backup (click twice to confirm)")
+                                        ? (st(lang, "No cloud backup", "云端暂无备份"))
+                                        : (st(lang, "Delete Hub welcome backup (click twice to confirm)", "删除 Hub 上的引导页备份（需点两次确认）"))
                                 }
                                 style={{
                                     padding: "2px 8px",
@@ -2034,13 +2027,13 @@ export function AssistantWelcomeView({
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
                             >
-                                {isZh ? "删除云端" : "Delete cloud"}
+                                {st(lang, "Delete cloud", "删除云端")}
                             </button>
                             <button
                                 type="button"
                                 data-testid="welcome-templates-export"
                                 onClick={exportCustomTemplates}
-                                title={isZh ? "导出完整备份（模板+角色+最近）" : "Export full backup (templates+role+recent)"}
+                                title={st(lang, "Export full backup (templates+role+recent)", "导出完整备份（模板+角色+最近）")}
                                 style={{
                                     padding: "2px 8px",
                                     borderRadius: 6,
@@ -2052,7 +2045,7 @@ export function AssistantWelcomeView({
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
                             >
-                                {isZh ? "导出" : "Export"}
+                                {st(lang, "Export", "导出")}
                             </button>
                             <button
                                 type="button"
@@ -2061,7 +2054,7 @@ export function AssistantWelcomeView({
                                     importModeRef.current = "merge";
                                     importFileInputRef.current?.click();
                                 }}
-                                title={isZh ? "合并导入（保留本地，跳过相同正文）" : "Merge import (keep local, skip same body)"}
+                                title={st(lang, "Merge import (keep local, skip same body)", "合并导入（保留本地，跳过相同正文）")}
                                 style={{
                                     padding: "2px 8px",
                                     borderRadius: 6,
@@ -2073,7 +2066,7 @@ export function AssistantWelcomeView({
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
                             >
-                                {isZh ? "合并导入" : "Merge"}
+                                {st(lang, "Merge", "合并导入")}
                             </button>
                             <button
                                 type="button"
@@ -2082,7 +2075,7 @@ export function AssistantWelcomeView({
                                     importModeRef.current = "replace";
                                     importFileInputRef.current?.click();
                                 }}
-                                title={isZh ? "替换导入（用文件覆盖本地模板列表）" : "Replace import (overwrite local templates)"}
+                                title={st(lang, "Replace import (overwrite local templates)", "替换导入（用文件覆盖本地模板列表）")}
                                 style={{
                                     padding: "2px 8px",
                                     borderRadius: 6,
@@ -2094,7 +2087,7 @@ export function AssistantWelcomeView({
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
                             >
-                                {isZh ? "替换导入" : "Replace"}
+                                {st(lang, "Replace", "替换导入")}
                             </button>
                             <input
                                 ref={importFileInputRef}
@@ -2145,7 +2138,7 @@ export function AssistantWelcomeView({
                                 data-testid="welcome-cloud-conflict-phase"
                                 style={{ fontSize: 11, color: t.text, flex: "1 1 160px", lineHeight: 1.4 }}
                             >
-                                {welcomeCloudConflictPhaseLabel(cloudConflictPhase, isZh)}
+                                {welcomeCloudConflictPhaseLabel(cloudConflictPhase, lang)}
                             </span>
                             <button
                                 type="button"
@@ -2165,7 +2158,7 @@ export function AssistantWelcomeView({
                                     opacity: cloudSync.busy || cloudConflictPhase !== "idle" ? 0.55 : 1,
                                 }}
                             >
-                                {welcomeCloudConflictResolveButtonLabel(cloudConflictPhase, isZh)}
+                                {welcomeCloudConflictResolveButtonLabel(cloudConflictPhase, lang)}
                             </button>
                             <button
                                 type="button"
@@ -2186,7 +2179,7 @@ export function AssistantWelcomeView({
                                     cursor: cloudSync.busy || cloudConflictPhase !== "idle" ? "default" : "pointer",
                                 }}
                             >
-                                {isZh ? "忽略" : "Dismiss"}
+                                {st(lang, "Dismiss", "忽略")}
                             </button>
                         </div>
                     )}
@@ -2198,7 +2191,7 @@ export function AssistantWelcomeView({
                             onConfirm={() => applyImportPreview(importPreview)}
                             onCancel={() => {
                                 setImportPreview(null);
-                                showTemplateIoNote(isZh ? "已取消导入" : "Import cancelled");
+                                showTemplateIoNote(st(lang, "Import cancelled", "已取消导入"));
                             }}
                         />
                     )}
@@ -2208,16 +2201,14 @@ export function AssistantWelcomeView({
                             color: t.textMuted,
                             fontFamily: "system-ui, -apple-system, sans-serif",
                         }}>
-                            {isZh
-                                ? "暂无模板。可从任务表单「保存为常用」，或导入 JSON 备份。"
-                                : "No templates yet. Save from a task form, or import a JSON backup."}
+                            {st(lang, "No templates yet. Save from a task form, or import a JSON backup.", "暂无模板。可从任务表单「保存为常用」，或导入 JSON 备份。")}
                         </div>
                     )}
                     <div
                         data-testid="welcome-custom-templates"
                         className="awv-custom-templates"
                         role="list"
-                        aria-label={isZh ? "我的模板" : "My templates"}
+                        aria-label={st(lang, "My templates", "我的模板")}
                     >
                         {visibleCustomTemplates.map((tpl) => {
                             const isRenaming = renamingTemplateId === tpl.id;
@@ -2255,7 +2246,7 @@ export function AssistantWelcomeView({
                                             value={renameDraft}
                                             autoFocus
                                             maxLength={80}
-                                            aria-label={isZh ? "重命名模板" : "Rename template"}
+                                            aria-label={st(lang, "Rename template", "重命名模板")}
                                             onChange={(e) => setRenameDraft(e.target.value)}
                                             onClick={(e) => e.stopPropagation()}
                                             onKeyDown={(e) => {
@@ -2286,14 +2277,10 @@ export function AssistantWelcomeView({
                                             type="button"
                                             data-testid={`welcome-custom-${tpl.id}`}
                                             aria-label={
-                                                isZh
-                                                    ? `打开模板 ${tpl.title}。F2 或铅笔重命名，Alt+左右键排序`
-                                                    : `Open template ${tpl.title}. F2 or pencil to rename, Alt+arrows reorder`
+                                                st(lang, `Open template ${tpl.title}. F2 or pencil to rename, Alt+arrows reorder`, `打开模板 ${tpl.title}。F2 或铅笔重命名，Alt+左右键排序`)
                                             }
                                             title={
-                                                isZh
-                                                    ? `${tpl.body.slice(0, 100)}\n（单击打开 · F2/✎ 重命名 · Alt+←/→ 排序）`
-                                                    : `${tpl.body.slice(0, 100)}\n(Click to open · F2/✎ rename · Alt+←/→ reorder)`
+                                                st(lang, `${tpl.body.slice(0, 100)}\n(Click to open · F2/✎ rename · Alt+←/→ reorder)`, `${tpl.body.slice(0, 100)}\n（单击打开 · F2/✎ 重命名 · Alt+←/→ 排序）`)
                                             }
                                             // Single click opens. Rename via F2 or ✎ only —
                                             // double-click used to race open+rename and looked like "data lost".
@@ -2335,7 +2322,7 @@ export function AssistantWelcomeView({
                                     {!isRenaming && (
                                         <button
                                             type="button"
-                                            aria-label={isZh ? `重命名 ${tpl.title}` : `Rename ${tpl.title}`}
+                                            aria-label={st(lang, `Rename ${tpl.title}`, `重命名 ${tpl.title}`)}
                                             data-testid={`welcome-custom-rename-${tpl.id}`}
                                             onClick={(e) => beginRenameCustomTemplate(tpl, e)}
                                             style={chipBtnStyle}
@@ -2345,7 +2332,7 @@ export function AssistantWelcomeView({
                                     )}
                                     <button
                                         type="button"
-                                        aria-label={isZh ? `左移 ${tpl.title}` : `Move ${tpl.title} left`}
+                                        aria-label={st(lang, `Move ${tpl.title} left`, `左移 ${tpl.title}`)}
                                         data-testid={`welcome-custom-move-up-${tpl.id}`}
                                         disabled={!canMoveLeft}
                                         onClick={(e) => moveCustomTemplate(tpl.id, "up", e)}
@@ -2359,7 +2346,7 @@ export function AssistantWelcomeView({
                                     </button>
                                     <button
                                         type="button"
-                                        aria-label={isZh ? `右移 ${tpl.title}` : `Move ${tpl.title} right`}
+                                        aria-label={st(lang, `Move ${tpl.title} right`, `右移 ${tpl.title}`)}
                                         data-testid={`welcome-custom-move-down-${tpl.id}`}
                                         disabled={!canMoveRight}
                                         onClick={(e) => moveCustomTemplate(tpl.id, "down", e)}
@@ -2373,7 +2360,7 @@ export function AssistantWelcomeView({
                                     </button>
                                     <button
                                         type="button"
-                                        aria-label={isZh ? `删除 ${tpl.title}` : `Delete ${tpl.title}`}
+                                        aria-label={st(lang, `Delete ${tpl.title}`, `删除 ${tpl.title}`)}
                                         data-testid={`welcome-custom-delete-${tpl.id}`}
                                         onClick={(e) => removeCustomTemplate(tpl.id, e)}
                                         style={chipBtnStyle}
@@ -2389,8 +2376,8 @@ export function AssistantWelcomeView({
                                 role="listitem"
                                 key={key}
                                 data-testid={`welcome-recent-${key}`}
-                                title={isZh ? prompt.desc : prompt.descEn}
-                                aria-label={isZh ? `最近：${prompt.text}` : `Recent: ${prompt.textEn}`}
+                                title={st(lang, prompt.descEn, prompt.desc)}
+                                aria-label={st(lang, `Recent: ${prompt.textEn}`, `最近：${prompt.text}`)}
                                 onClick={() => openPrompt(prompt, tabId)}
                                 style={{
                                     display: "inline-flex",
@@ -2412,7 +2399,7 @@ export function AssistantWelcomeView({
                             >
                                 <WelcomePromptIcon name={prompt.icon} color={t.textMuted} />
                                 <span className="awv-prompt-text">
-                                    {isZh ? prompt.text : prompt.textEn}
+                                    {st(lang, prompt.textEn, prompt.text)}
                                 </span>
                             </button>
                         ))}
@@ -2425,7 +2412,7 @@ export function AssistantWelcomeView({
                 default workbench stays focused on the four reference starters. */}
             <details className="mc-welcome-legacy-scenarios" data-testid="welcome-legacy-scenarios" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
                 <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
-                    {isZh ? "更多任务模板" : "More task templates"}
+                    {st(lang, "More task templates", "更多任务模板")}
                 </summary>
                 <div className="awv-more-templates">
             {/* Scenario tabs — outer scroll container + inner centering wrapper.
@@ -2434,7 +2421,7 @@ export function AssistantWelcomeView({
                 justify-content:center on overflow would clip left-side tabs. */}
             <div
                 role="tablist"
-                aria-label={isZh ? "场景分类" : "Scenario categories"}
+                aria-label={st(lang, "Scenario categories", "场景分类")}
                 className="no-scrollbar"
                 style={{
                     width: "100%",
@@ -2485,7 +2472,7 @@ export function AssistantWelcomeView({
                                 }
                             }}
                         >
-                            {isZh ? tab.label : tab.labelEn}
+                            {st(lang, tab.labelEn, tab.label)}
                         </button>
                     );
                 })}
@@ -2494,7 +2481,7 @@ export function AssistantWelcomeView({
 
             {currentTab.id === "ops" && (
                 <div
-                    aria-label={isZh ? "运维执行位置" : "Ops execution location"}
+                    aria-label={st(lang, "Ops execution location", "运维执行位置")}
                     style={{
                         display: "flex",
                         alignItems: "center",
@@ -2511,17 +2498,17 @@ export function AssistantWelcomeView({
                 >
                     <div className="awv-min-w-0">
                         <div style={{ color: t.text, fontSize: "12px", fontWeight: 600, lineHeight: 1.35 }}>
-                            {isZh ? "选择运维任务类型" : "Choose an ops task type"}
+                            {st(lang, "Choose an ops task type", "选择运维任务类型")}
                         </div>
                         <div style={{ color: t.textMuted, fontSize: "11px", lineHeight: 1.35, marginTop: "2px" }}>
                             {opsMode === "remote"
-                                ? (isZh ? "需填写 SSH 服务器连接信息；首轮仅收集证据，不执行变更。" : "SSH connection details are required; the first turn gathers evidence only.")
-                                : (isZh ? "仅分析当前本机提供的日志、配置或现象，不连接服务器。" : "Analyze local evidence only; no server connection is opened.")}
+                                ? (st(lang, "SSH connection details are required; the first turn gathers evidence only.", "需填写 SSH 服务器连接信息；首轮仅收集证据，不执行变更。"))
+                                : (st(lang, "Analyze local evidence only; no server connection is opened.", "仅分析当前本机提供的日志、配置或现象，不连接服务器。"))}
                         </div>
                     </div>
                     <div
                         role="group"
-                        aria-label={isZh ? "本地或远程运维" : "Local or remote operations"}
+                        aria-label={st(lang, "Local or remote operations", "本地或远程运维")}
                         style={{
                             display: "inline-flex",
                             flexShrink: 0,
@@ -2532,8 +2519,8 @@ export function AssistantWelcomeView({
                         }}
                     >
                         {([
-                            ["local", isZh ? "本地运维" : "Local ops"],
-                            ["remote", isZh ? "远程运维" : "Remote ops"],
+                            ["local", st(lang, "Local ops", "本地运维")],
+                            ["remote", st(lang, "Remote ops", "远程运维")],
                         ] as const).map(([mode, label]) => {
                             const selected = opsMode === mode;
                             return (
@@ -2584,14 +2571,14 @@ export function AssistantWelcomeView({
                         key={`${currentTab.id}-${prompt.textEn}`}
                         data-agent-mode={prompt.agentMode || undefined}
                         data-testid={prompt.agentMode ? `welcome-coding-card-${prompt.agentMode}-${promptIndex}` : undefined}
-                        title={isZh ? prompt.desc : prompt.descEn}
+                        title={st(lang, prompt.descEn, prompt.desc)}
                         aria-label={
                             prompt.agentMode === "coding_dev"
-                                ? (isZh ? `${prompt.text}（本地编程）` : `${prompt.textEn} (local coding)`)
+                                ? (st(lang, `${prompt.textEn} (local coding)`, `${prompt.text}（本地编程）`))
                                 : prompt.agentMode === "remote_coding_dev"
                                     ? (prompt.remoteSafety === "diagnosis"
-                                        ? (isZh ? `${prompt.text}（远程维护）` : `${prompt.textEn} (remote maintenance)`)
-                                        : (isZh ? `${prompt.text}（远程编程）` : `${prompt.textEn} (remote coding)`))
+                                        ? (st(lang, `${prompt.textEn} (remote maintenance)`, `${prompt.text}（远程维护）`))
+                                        : (st(lang, `${prompt.textEn} (remote coding)`, `${prompt.text}（远程编程）`)))
                                     : undefined
                         }
                         onClick={() => openPrompt(prompt, currentTab.id)}
@@ -2636,7 +2623,7 @@ export function AssistantWelcomeView({
                                 overflowWrap: "anywhere",
                                 fontFamily: "system-ui, -apple-system, sans-serif",
                             }}>
-                                {isZh ? prompt.text : prompt.textEn}
+                                {st(lang, prompt.textEn, prompt.text)}
                             </span>
                             <span style={{
                                 fontSize: "11px",
@@ -2645,7 +2632,7 @@ export function AssistantWelcomeView({
                                 overflowWrap: "anywhere",
                                 fontFamily: "system-ui, -apple-system, sans-serif",
                             }}>
-                                {isZh ? prompt.desc : prompt.descEn}
+                                {st(lang, prompt.descEn, prompt.desc)}
                             </span>
                         </div>
                     </button>

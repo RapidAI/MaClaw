@@ -13,9 +13,11 @@
   'use strict';
 
   function t(key, fallback) {
-    var lang = (window.currentLang || 'en').startsWith('zh') ? 'zh' : 'en';
+    var lang = window.currentLang === 'zh' ? 'zh' : window.currentLang === 'mn' ? 'mn' : 'en';
     var table = TBK_I18N[lang] || TBK_I18N.en;
-    return table[key] || TBK_I18N.en[key] || fallback || key;
+    var value = table[key];
+    if (lang === 'mn' && !value) value = TBK_I18N.en[key];
+    return value || TBK_I18N.en[key] || fallback || key;
   }
   function esc(s) {
     return String(s == null ? '' : s)
@@ -29,7 +31,8 @@
   function num(v, digits) {
     var n = Number(v);
     if (!isFinite(n)) return '0';
-    return n.toLocaleString(undefined, { maximumFractionDigits: digits == null ? 2 : digits });
+    var loc = window.currentLang === 'mn' ? 'mn-MN' : undefined;
+    return n.toLocaleString(loc, { maximumFractionDigits: digits == null ? 2 : digits });
   }
   // Credits are stored as integer microcredits. Every credit figure the operator
   // sees goes through here, so the 1e6 scale appears once rather than at each
@@ -52,7 +55,7 @@
     if (!v) return '—';
     var d = new Date(v);
     if (isNaN(d.getTime())) return String(v);
-    return d.toLocaleString();
+    return d.toLocaleString(window.currentLang === 'mn' ? 'mn-MN' : undefined);
   }
 
   var state = {

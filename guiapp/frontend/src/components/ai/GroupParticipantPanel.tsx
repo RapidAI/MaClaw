@@ -18,6 +18,7 @@ import { addParticipantIdentityKeys, participantIdentityKeys } from "./participa
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { tailText } from "../../i18n/mnTail"
 
 export interface Participant {
     id: string;
@@ -41,8 +42,8 @@ function loadParticipantAvatarEmployees(listFn: (() => Promise<unknown>) | undef
 }
 
 
-function participantFallbackName(index: number, isZh: boolean): string {
-    return isZh ? "\u53c2\u4e0e\u8005 " + (index + 1) : "Participant " + (index + 1);
+function participantFallbackName(index: number, isZh: boolean | string): string {
+    return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Participant " + (index + 1), "\u53c2\u4e0e\u8005 " + (index + 1));
 }
 
 function participantDisplayNameFor(p: Participant, index: number, isZh: boolean, lang?: string): string {
@@ -50,7 +51,7 @@ function participantDisplayNameFor(p: Participant, index: number, isZh: boolean,
     const name = String(p.name || "").trim();
     const id = String(p.id || "").trim();
     if (name && name !== id && !looksLikeRawParticipantId(name)) return name;
-    return participantFallbackName(index, isZh);
+    return participantFallbackName(index, (lang || (isZh ? "zh-Hans" : "en")));
 }
 
 function dedupeParticipants(participants: Participant[]): Participant[] {
@@ -157,7 +158,7 @@ export function GroupParticipantPanel({
     active = true,
     onTalkTo,
 }: GroupParticipantPanelProps) {
-    const isZh = !lang || lang.startsWith("zh");
+    const isZh = !!lang?.startsWith("zh");
     const { maxGroupParticipants } = useGroupConfig(maxParticipants);
     const participantIdKey = useMemo(() => participants
         .map((p) => normalizeParticipantId(p.id))
@@ -380,11 +381,11 @@ export function GroupParticipantPanel({
                 borderBottom: `1px solid ${theme.divider}`,
             }}>
                 <span className="gpp-head-title">
-                    {isZh ? `\u53c2\u4e0e\u8005 (${visibleParticipants.length})` : `Participants (${visibleParticipants.length})`}
+                    {tailText(lang ?? "", `Participants (${visibleParticipants.length})`, `\u53c2\u4e0e\u8005 (${visibleParticipants.length})`)}
                 </span>
                 {readOnly && (
                     <span style={{ flexShrink: 0, border: `1px solid ${theme.divider}`, borderRadius: 4, padding: "1px 4px", fontSize: 10, fontWeight: 500, color: theme.textMuted }}>
-                        {isZh ? "\u53ea\u8bfb" : "Read-only"}
+                        {tailText(lang ?? "", "Read-only", "\u53ea\u8bfb")}
                     </span>
                 )}
             </div>
@@ -424,7 +425,7 @@ export function GroupParticipantPanel({
                         color: theme.textMuted,
                         textAlign: "center",
                     }}>
-                        {isZh ? "\u6682\u65e0\u53c2\u4e0e\u8005" : "No participants"}
+                        {tailText(lang ?? "", "No participants", "\u6682\u65e0\u53c2\u4e0e\u8005")}
                     </div>
                 )}
             </div>
@@ -460,11 +461,11 @@ export function GroupParticipantPanel({
                             opacity: limitReached ? 0.5 : 1,
                         }}
                         title={limitReached
-                            ? (isZh ? `\u5df2\u8fbe\u4e0a\u9650 (${maxGroupParticipants})` : `Limit reached (${maxGroupParticipants})`)
-                            : (isZh ? "\u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "Invite")
+                            ? (tailText(lang ?? "", `Limit reached (${maxGroupParticipants})`, `\u5df2\u8fbe\u4e0a\u9650 (${maxGroupParticipants})`))
+                            : (tailText(lang ?? "", "Invite", "\u9080\u8bf7\u6570\u5b57\u5458\u5de5"))
                         }
                     >
-                        {isZh ? "+ \u9080\u8bf7" : "+ Invite"}
+                        {tailText(lang ?? "", "+ Invite", "+ \u9080\u8bf7")}
                     </button>}
                 </div>
             )}
@@ -499,7 +500,7 @@ export function GroupParticipantPanel({
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = (theme.sendBtnBg || "#2f5f98") + "20"; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        {isZh ? "\u4e0e\u5b83\u4ea4\u8c08" : "Talk to"}
+                        {tailText(lang ?? "", "Talk to", "\u4e0e\u5b83\u4ea4\u8c08")}
                     </div>
                 </div>
             )}

@@ -7,6 +7,7 @@ import type { AttachmentInfo, BufferEntry } from "./useBufferQueue";
 import type { PromptHistoryAttachment } from "./promptHistory";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
+import { tailText } from "../../i18n/mnTail"
 
 interface AssistantInputStackProps {
     /** Whether the retained assistant panel is visible in the app shell. */
@@ -136,7 +137,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
             {showResizeHandle && <div
                 data-testid="ai-input-resize-handle"
                 onMouseDown={startInputResize}
-                title={lang?.startsWith("zh") ? "拖动调整输入区高度" : "Drag to resize the input area"}
+                title={tailText(lang ?? "", "Drag to resize the input area", "拖动调整输入区高度")}
                 style={{
                     height: "8px",
                     cursor: "ns-resize",

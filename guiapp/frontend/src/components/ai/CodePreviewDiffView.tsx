@@ -29,6 +29,7 @@ import {
     clampCodePreviewFontSize,
     codePreviewLineHeight,
 } from './codePreviewFindHelpers';
+import { tailText } from '../../i18n/mnTail'
 
 /** `split` = 旧 | 新 side by side, `inline` = single unified column. */
 export type CodeDiffMode = 'split' | 'inline';
@@ -477,14 +478,12 @@ export const CodePreviewDiffView = React.memo(function CodePreviewDiffView({
         return { added, removed };
     };
 
-    const collapseLabel = isZhHant ? '摺疊' : isZh ? '折叠' : 'collapse';
-    const expandLabel = isZhHant ? '展開' : isZh ? '展开' : 'expand';
+    const collapseLabel = isZhHant ? '摺疊' : tailText(lang, 'collapse', '折叠');
+    const expandLabel = isZhHant ? '展開' : tailText(lang, 'expand', '展开');
     const hiddenLabel = (count: number) =>
         isZhHant
             ? `展開 ${count} 行未變更`
-            : isZh
-                ? `展开 ${count} 行未变更`
-                : `Show ${count} unchanged lines`;
+            : tailText(lang, `Show ${count} unchanged lines`, `展开 ${count} 行未变更`);
 
     // Table layout on purpose: auto table sizing keeps the old/new columns
     // aligned across rows and grows past the pane so the body scrolls sideways
@@ -609,15 +608,15 @@ export function CodeDiffSummaryBar({
     const vars = useMemo(() => codeDiffCssVars(theme), [theme]);
 
     const noChanges = stats.added === 0 && stats.removed === 0;
-    const splitLabel = isZhHant ? '並排' : isZh ? '并排' : 'Split';
-    const inlineLabel = isZhHant ? '內聯' : isZh ? '内联' : 'Inline';
-    const onlyLabel = isZhHant ? '只看變更' : isZh ? '只看变更' : 'Changes only';
+    const splitLabel = isZhHant ? '並排' : tailText(lang, 'Split', '并排');
+    const inlineLabel = isZhHant ? '內聯' : tailText(lang, 'Inline', '内联');
+    const onlyLabel = isZhHant ? '只看變更' : tailText(lang, 'Changes only', '只看变更');
     const foldLabel = foldUnchanged
-        ? (isZhHant ? '展開全文' : isZh ? '展开全文' : 'Full file')
-        : (isZhHant ? '摺疊未變更' : isZh ? '折叠未变更' : 'Fold context');
-    const navLabel = isZhHant ? '變更' : isZh ? '变更' : 'change';
-    const prevTitle = isZhHant ? '上一處變更 (Alt+↑)' : isZh ? '上一处变更 (Alt+↑)' : 'Previous change (Alt+Up)';
-    const nextTitle = isZhHant ? '下一處變更 (Alt+↓)' : isZh ? '下一处变更 (Alt+↓)' : 'Next change (Alt+Down)';
+        ? (isZhHant ? '展開全文' : tailText(lang, 'Full file', '展开全文'))
+        : (isZhHant ? '摺疊未變更' : tailText(lang, 'Fold context', '折叠未变更'));
+    const navLabel = isZhHant ? '變更' : tailText(lang, 'change', '变更');
+    const prevTitle = isZhHant ? '上一處變更 (Alt+↑)' : tailText(lang, 'Previous change (Alt+Up)', '上一处变更 (Alt+↑)');
+    const nextTitle = isZhHant ? '下一處變更 (Alt+↓)' : tailText(lang, 'Next change (Alt+Down)', '下一处变更 (Alt+↓)');
 
     return (
         <div
@@ -625,15 +624,15 @@ export function CodeDiffSummaryBar({
             className="cp-diff-bar"
             style={vars}
         >
-            <span className="cp-diff-stat-add" title={isZh ? '新增行 / 改写行' : 'added / rewritten lines'}>+{stats.added}</span>
-            <span className="cp-diff-stat-del" title={isZh ? '删除行 / 被改写行' : 'removed / rewritten lines'}>-{stats.removed}</span>
+            <span className="cp-diff-stat-add" title={tailText(lang, 'added / rewritten lines', '新增行 / 改写行')}>+{stats.added}</span>
+            <span className="cp-diff-stat-del" title={tailText(lang, 'removed / rewritten lines', '删除行 / 被改写行')}>-{stats.removed}</span>
             {stats.modified > 0 && (
-                <span className="cp-diff-stat-mod" title={isZh ? '被改写的行（成对显示）' : 'rewritten lines (paired)'}>
+                <span className="cp-diff-stat-mod" title={tailText(lang, 'rewritten lines (paired)', '被改写的行（成对显示）')}>
                     ~{stats.modified}
                 </span>
             )}
             {noChanges && (
-                <span className="cp-diff-bar-note">{isZhHant ? '無變更' : isZh ? '无变更' : 'No changes'}</span>
+                <span className="cp-diff-bar-note">{isZhHant ? '無變更' : tailText(lang, 'No changes', '无变更')}</span>
             )}
             <span className="cp-diff-bar-spacer" />
             <button

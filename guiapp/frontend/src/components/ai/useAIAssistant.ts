@@ -7160,8 +7160,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const eventLang = typeof data.lang === 'string' ? data.lang : '';
             const normalizedEventLang = eventLang.trim().toLowerCase();
             const actionPayload = Array.isArray(data.actions) ? data.actions as Array<Record<string, unknown>> : [];
-            const fallbackConfirmLabel = normalizedEventLang === 'en' ? 'Confirm install' : (normalizedEventLang.startsWith('zh-hant') || normalizedEventLang.startsWith('zh-tw') || normalizedEventLang.startsWith('zh-hk')) ? '確認安裝' : '确认安装';
-            const fallbackRejectLabel = normalizedEventLang === 'en' ? 'Reject install' : (normalizedEventLang.startsWith('zh-hant') || normalizedEventLang.startsWith('zh-tw') || normalizedEventLang.startsWith('zh-hk')) ? '拒絕安裝' : '拒绝安装';
+            const eventIsHant = normalizedEventLang === 'zh-hant' || normalizedEventLang.startsWith('zh-hant-') || normalizedEventLang === 'zh-tw' || normalizedEventLang.startsWith('zh-tw-') || normalizedEventLang === 'zh-hk' || normalizedEventLang.startsWith('zh-hk-') || normalizedEventLang === 'zh-mo' || normalizedEventLang.startsWith('zh-mo-');
+            const eventIsHans = normalizedEventLang === 'zh' || normalizedEventLang === 'zh-hans' || normalizedEventLang.startsWith('zh-hans-') || normalizedEventLang === 'zh-cn' || normalizedEventLang.startsWith('zh-cn-') || normalizedEventLang === 'zh-sg' || normalizedEventLang.startsWith('zh-sg-') || normalizedEventLang === 'chinese' || normalizedEventLang === 'cn';
+            const fallbackConfirmLabel = eventIsHant ? '確認安裝' : eventIsHans ? '确认安装' : 'Confirm install';
+            const fallbackRejectLabel = eventIsHant ? '拒絕安裝' : eventIsHans ? '拒绝安装' : 'Reject install';
+            const fallbackEventLang = eventIsHant ? 'zh-Hant' : eventIsHans ? 'zh-Hans' : 'en';
             const confirmLabel = typeof actionPayload[0]?.label === 'string' ? actionPayload[0].label : fallbackConfirmLabel;
             const rejectLabel = typeof actionPayload[1]?.label === 'string' ? actionPayload[1].label : fallbackRejectLabel;
             if (!confirmID) return;
@@ -7173,8 +7176,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 role: 'assistant',
                 content: summary,
                 actions: [
-                    { label: confirmLabel, command: `__resolve_critical_confirm__ ${confirmID} confirm ${eventLang || 'zh-Hans'}`, style: 'default' as const },
-                    { label: rejectLabel, command: `__resolve_critical_confirm__ ${confirmID} reject ${eventLang || 'zh-Hans'}`, style: 'danger' as const },
+                    { label: confirmLabel, command: `__resolve_critical_confirm__ ${confirmID} confirm ${eventLang || fallbackEventLang}`, style: 'default' as const },
+                    { label: rejectLabel, command: `__resolve_critical_confirm__ ${confirmID} reject ${eventLang || fallbackEventLang}`, style: 'danger' as const },
                 ],
                 sessionKey: 'desktop-user',
                 timestamp: Date.now(),

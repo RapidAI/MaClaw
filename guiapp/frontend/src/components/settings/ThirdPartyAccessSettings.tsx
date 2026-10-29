@@ -29,10 +29,13 @@ import {
 import { corelib } from '../../../wailsjs/go/models';
 import { useDialog } from '../CustomDialog';
 import { getPetSkinOption, packInfoToSkinOption, petSkinOptions, type PetSkinOption } from '../petSkins';
-import { channelModeLabel, textForLang, watchLabel } from './imSettingsShared';
+import { channelModeLabel, watchLabel } from './imSettingsShared';
 import { WelcomeResetButton } from './WelcomeResetButton';
 import { ttsVoiceOptions } from '../../constants/ttsVoices';
 import { parseExpertListJSON, type ExpertDefinition } from '../ai/expertTypes';
+import { isChineseLang } from '../../i18n';
+import { tailText } from '../../i18n/mnTail';
+
 
 type ThirdPartyAccessSettingsProps = {
     config: corelib.AppConfig | null;
@@ -132,76 +135,59 @@ type HardwarePairing = {
 };
 
 const gatewayStatusLabel = (status: string, lang: string) => ({
-    connected: lang === 'en' ? 'Running' : '已启动',
-    connecting: lang === 'en' ? 'Starting' : '启动中',
-    disconnected: lang === 'en' ? 'Stopped' : '未连接',
-    disabled: lang === 'en' ? 'Disabled' : '未启用',
-    error: lang === 'en' ? 'Error' : '错误',
+    connected: tailText(lang, 'Running', '已启动'),
+    connecting: tailText(lang, 'Starting', '启动中'),
+    disconnected: tailText(lang, 'Stopped', '未连接'),
+    disabled: tailText(lang, 'Disabled', '未启用'),
+    error: tailText(lang, 'Error', '错误'),
 }[status] || status);
 
-const welcomePreviewErrorMessage = (error: unknown, isZh: boolean) => {
+const welcomePreviewErrorMessage = (error: unknown, lang: string) => {
     const message = (error as any)?.message || String(error);
     const errorCode = message.toUpperCase();
     if (message.includes('welcome audio is too long after conversion')) {
-        return isZh
-            ? '欢迎音频超过硬件约 3 秒的容量。已自动尝试加快语速；请再缩短欢迎词后重试。'
-            : 'The welcome audio exceeds the hardware’s roughly 3-second capacity. It was automatically sped up; shorten the message and try again.';
+        return tailText(lang, 'The welcome audio exceeds the hardware’s roughly 3-second capacity. It was automatically sped up; shorten the message and try again.', '欢迎音频超过硬件约 3 秒的容量。已自动尝试加快语速；请再缩短欢迎词后重试。');
     }
     if (errorCode.includes('HARDWARE_NOT_OWNED')) {
-        return isZh
-            ? '当前设备的绑定身份与 Hub 不一致。请刷新设备列表并等待设备重连；若问题持续，请检查它是否连接到了正确的 Hub。'
-            : 'This device’s binding identity no longer matches the Hub. Refresh the device list and wait for it to reconnect; if this persists, check that it is connected to the correct Hub.';
+        return tailText(lang, 'This device’s binding identity no longer matches the Hub. Refresh the device list and wait for it to reconnect; if this persists, check that it is connected to the correct Hub.', '当前设备的绑定身份与 Hub 不一致。请刷新设备列表并等待设备重连；若问题持续，请检查它是否连接到了正确的 Hub。');
     }
     if (errorCode.includes('HARDWARE_OFFLINE')) {
-        return isZh
-            ? '该硬件当前离线或刚断开连接。请等待设备重连后再试。'
-            : 'This hardware is offline or was just disconnected. Wait for it to reconnect and try again.';
+        return tailText(lang, 'This hardware is offline or was just disconnected. Wait for it to reconnect and try again.', '该硬件当前离线或刚断开连接。请等待设备重连后再试。');
     }
     if (errorCode.includes('HARDWARE_UNSUPPORTED')) {
-        return isZh
-            ? '该硬件不支持欢迎音频远程播放。请升级 ESP32 固件并检查播放能力。'
-            : 'This hardware does not support remote welcome-audio playback. Update the ESP32 firmware and check its playback capability.';
+        return tailText(lang, 'This hardware does not support remote welcome-audio playback. Update the ESP32 firmware and check its playback capability.', '该硬件不支持欢迎音频远程播放。请升级 ESP32 固件并检查播放能力。');
     }
     if (errorCode.includes('HARDWARE_DISABLED')) {
-        return isZh
-            ? '当前 GUI 未启用硬件控制。请先启用硬件后重试。'
-            : 'Hardware control is disabled in this GUI. Enable hardware and try again.';
+        return tailText(lang, 'Hardware control is disabled in this GUI. Enable hardware and try again.', '当前 GUI 未启用硬件控制。请先启用硬件后重试。');
     }
     if (errorCode.includes('HARDWARE_STALE_REPLY')) {
-        return isZh
-            ? '该硬件连接已更新，之前的播放请求已失效。请等待设备稳定连接后再试。'
-            : 'The hardware connection changed and the earlier playback request expired. Wait for it to reconnect steadily and try again.';
+        return tailText(lang, 'The hardware connection changed and the earlier playback request expired. Wait for it to reconnect steadily and try again.', '该硬件连接已更新，之前的播放请求已失效。请等待设备稳定连接后再试。');
     }
     if (errorCode.includes('HARDWARE_UNAVAILABLE')) {
-        return isZh
-            ? 'Hub 暂时无法向该硬件下发命令。请稍后重试；若持续出现，请检查 Hub 与设备连接。'
-            : 'The Hub cannot send a command to this hardware right now. Try again shortly; if this persists, check the Hub and device connection.';
+        return tailText(lang, 'The Hub cannot send a command to this hardware right now. Try again shortly; if this persists, check the Hub and device connection.', 'Hub 暂时无法向该硬件下发命令。请稍后重试；若持续出现，请检查 Hub 与设备连接。');
     }
-    if (!isZh) return message;
     if (message.includes('NO_COMPATIBLE_HARDWARE') || message.includes('no online remote ESP32')) {
-        return '没有在线且支持欢迎音频播放的远程 ESP32。请检查设备联网、配对状态和固件能力。';
+        return tailText(lang, 'No online remote ESP32 supports welcome-audio playback. Check the device network, pairing status, and firmware capability.', '没有在线且支持欢迎音频播放的远程 ESP32。请检查设备联网、配对状态和固件能力。');
     }
     if (message.includes('Hub is not connected') || message.includes('Hub disconnected') || message.includes('Hub connection lost')) {
-        return 'Hub 当前未连接，无法进行远程硬件测试。请先恢复 MaClaw 与 Hub 的连接。';
+        return tailText(lang, 'Hub is not connected, so remote hardware testing is unavailable. Restore the MaClaw connection to Hub first.', 'Hub 当前未连接，无法进行远程硬件测试。请先恢复 MaClaw 与 Hub 的连接。');
     }
     if (message.includes('timed out waiting for ESP32') || message.includes('playback confirmation')) {
-        return '已下发音频，但未收到 ESP32 的播放完成确认。请检查设备网络、扬声器和固件日志。';
+        return tailText(lang, 'The audio was sent, but no playback-complete confirmation arrived from the ESP32. Check the device network, speaker, and firmware logs.', '已下发音频，但未收到 ESP32 的播放完成确认。请检查设备网络、扬声器和固件日志。');
     }
     if (message.toLowerCase().includes('muted')) {
-        return '硬件音量为 0，无法进行远程播放测试。请先调高音量。';
+        return tailText(lang, 'Hardware volume is 0, so remote playback cannot be tested. Raise the volume first.', '硬件音量为 0，无法进行远程播放测试。请先调高音量。');
     }
     return message;
 };
 
-const welcomeTextCapacityHint = (text: string, isZh: boolean) => {
+const welcomeTextCapacityHint = (text: string, lang: string) => {
     const characters = Array.from(text.trim()).length;
     if (characters === 0) return '';
     if (characters > 40) {
-        return isZh
-            ? `当前 ${characters}/80 字，较长的欢迎词可能超过硬件约 3 秒的容量。`
-            : `${characters}/80 characters — a longer greeting may exceed the hardware’s roughly 3-second capacity.`;
+        return tailText(lang, `${characters}/80 characters — a longer greeting may exceed the hardware’s roughly 3-second capacity.`, `当前 ${characters}/80 字，较长的欢迎词可能超过硬件约 3 秒的容量。`);
     }
-    return isZh ? `${characters}/80 字` : `${characters}/80 characters`;
+    return tailText(lang, `${characters}/80 characters`, `${characters}/80 字`);
 };
 
 // Modern track/thumb switch shell. The input stays the accessible checkbox;
@@ -327,8 +313,7 @@ export const ThirdPartyAccessSettings = ({
     showToastMessageRef.current = showToastMessage;
     saveRemoteConfigFieldRef.current = saveRemoteConfigField;
 
-    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
-    const isZhHant = lang === 'zh-Hant';
+    const isZh = isChineseLang(lang);
     const hardwareOnly = mode === 'hardware';
     const imGatewayEnabled = Boolean((config as any)?.thirdparty_gateway_enabled);
     const hardwareEnabled = Boolean((config as any)?.hardware_enabled);
@@ -369,10 +354,10 @@ export const ThirdPartyAccessSettings = ({
 		}
 		const timer = window.setTimeout(() => {
 			setPairing((current) => current?.expiresAt === expiresAt ? null : current);
-			showToastMessageRef.current(isZh ? '配对码已过期，请重新生成。' : 'Pairing code expired. Generate a new one.');
+			showToastMessageRef.current(tailText(lang, 'Pairing code expired. Generate a new one.', '配对码已过期，请重新生成。'));
 		}, remaining);
 		return () => window.clearTimeout(timer);
-	}, [isZh, pairing?.expiresAt]);
+	}, [lang, pairing?.expiresAt]);
 
 	useEffect(() => {
 		if (hardwareOnly) return;
@@ -636,7 +621,7 @@ export const ThirdPartyAccessSettings = ({
             };
             localPreviewCleanupRef.current = cleanup;
             audio.onended = () => finish(true);
-            audio.onerror = () => finish(false, new Error(isZh ? 'GUI 无法播放该欢迎音频。' : 'The GUI could not play this welcome audio.'));
+            audio.onerror = () => finish(false, new Error(tailText(lang, 'The GUI could not play this welcome audio.', 'GUI 无法播放该欢迎音频。')));
             try {
                 const playback = audio.play();
                 if (playback && typeof playback.catch === 'function') {
@@ -878,7 +863,7 @@ export const ThirdPartyAccessSettings = ({
 	const saveDeviceAgentBinding = (device: HardwareDevice, next: HardwareAgentBindingValue) => {
 		const lifecycle = deviceLifecycle(device.clientId);
 		if (next.assistantMode === 'expert' && !next.expertId) {
-			showToastMessage(isZh ? '请先选择 AI 专家。' : 'Select an AI expert first.');
+			showToastMessage(tailText(lang, 'Select an AI expert first.', '请先选择 AI 专家。'));
 			return;
 		}
 		const request = (agentBindingRequestRef.current.get(device.clientId) ?? 0) + 1;
@@ -928,7 +913,7 @@ export const ThirdPartyAccessSettings = ({
 		try {
 			await SendHardwareDevicePetProfile(device.clientId, skin);
 				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
-			showToastMessage(isZh ? `${device.clientName || device.clientId} 的宠物已更新。` : `Pet updated for ${device.clientName || device.clientId}.`);
+			showToastMessage(tailText(lang, `Pet updated for ${device.clientName || device.clientId}.`, `${device.clientName || device.clientId} 的宠物已更新。`));
 		} catch (err: any) {
 				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
 			setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, petSkin: previous } : item));
@@ -951,17 +936,17 @@ export const ThirdPartyAccessSettings = ({
 			const lifecycle = deviceLifecycle(device.clientId);
 		const alias = deviceNameDraft.trim();
 		if (!alias) {
-			showToastMessage(isZh ? '硬件名称不能为空。' : 'Hardware name cannot be empty.');
+			showToastMessage(tailText(lang, 'Hardware name cannot be empty.', '硬件名称不能为空。'));
 			return;
 		}
 		if ([...alias].length > 48) {
-			showToastMessage(isZh ? '硬件名称不能超过 48 个字符。' : 'Hardware name must be at most 48 characters.');
+			showToastMessage(tailText(lang, 'Hardware name must be at most 48 characters.', '硬件名称不能超过 48 个字符。'));
 			return;
 		}
 		const normalizedAlias = alias.toLocaleLowerCase();
 		const duplicate = devices.some((item) => item.clientId !== device.clientId && (item.clientName || item.clientId).trim().toLocaleLowerCase() === normalizedAlias);
 		if (duplicate) {
-			showToastMessage(isZh ? '硬件名称不能重复。' : 'Hardware names must be unique.');
+			showToastMessage(tailText(lang, 'Hardware names must be unique.', '硬件名称不能重复。'));
 			return;
 		}
 		setSavingDeviceNameClientIds((current) => new Set(current).add(device.clientId));
@@ -970,7 +955,7 @@ export const ThirdPartyAccessSettings = ({
 				if (!mountedRef.current || deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
 			setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, clientName: alias } : item));
 			setEditingDeviceNameClientId(null);
-			showToastMessage(isZh ? '硬件名称已保存，仅在本机显示。' : 'Hardware name saved locally.');
+			showToastMessage(tailText(lang, 'Hardware name saved locally.', '硬件名称已保存，仅在本机显示。'));
 		} catch (err: any) {
 				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
 			showToastMessage(err?.message || String(err));
@@ -1016,10 +1001,10 @@ export const ThirdPartyAccessSettings = ({
 		try {
 			await SendHardwareWelcomeAudioRemote(device.clientId);
 				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
-			showToastMessage(isZh ? `${device.clientName || device.clientId} 已确认播放完成。` : `${device.clientName || device.clientId} confirmed playback.`);
+			showToastMessage(tailText(lang, `${device.clientName || device.clientId} confirmed playback.`, `${device.clientName || device.clientId} 已确认播放完成。`));
 		} catch (err: any) {
 				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
-			showToastMessage(welcomePreviewErrorMessage(err, isZh));
+			showToastMessage(welcomePreviewErrorMessage(err, lang));
 		} finally {
 			if (mountedRef.current && isCurrentDeviceLifecycle(device.clientId, lifecycle)) setPreviewingClientIds((current) => {
 				const next = new Set(current);
@@ -1045,7 +1030,7 @@ export const ThirdPartyAccessSettings = ({
             await ResetHardwareWelcomeAudio();
             await refreshConfig();
             await refreshLocalWelcomePreviewSource(true).catch(() => undefined);
-            showToastMessage(isZh ? '已恢复默认 Welcome 录音。' : 'Default Welcome recording restored.');
+            showToastMessage(tailText(lang, 'Default Welcome recording restored.', '已恢复默认 Welcome 录音。'));
         } catch (err: any) {
             showToastMessage(err?.message || String(err));
         }
@@ -1074,8 +1059,8 @@ export const ThirdPartyAccessSettings = ({
 			setThirdPartyGatewayStatus(status);
             await refreshConfig();
             showToastMessage(next
-                ? (isZh ? '硬件已启用，系统将通过 Hub 管理硬件连接。' : 'Hardware enabled. The system now manages hardware connections through Hub.')
-                : (isZh ? '硬件已停用。第三方接入保持当前状态。' : 'Hardware disabled. Third-party access remains unchanged.'));
+                ? (tailText(lang, 'Hardware enabled. The system now manages hardware connections through Hub.', '硬件已启用，系统将通过 Hub 管理硬件连接。'))
+                : (tailText(lang, 'Hardware disabled. Third-party access remains unchanged.', '硬件已停用。第三方接入保持当前状态。')));
         } catch (err: any) {
             await refreshConfig().catch(() => undefined);
             showToastMessage(err?.message || String(err));
@@ -1141,7 +1126,7 @@ export const ThirdPartyAccessSettings = ({
         await saveRemoteConfigField({
             thirdparty_gateway_token: Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(''),
         });
-        showToastMessage(isZh ? '已生成 Token' : 'Token generated');
+        showToastMessage(tailText(lang, 'Token generated', '已生成 Token'));
     };
 
     const saveAmbientCity = useCallback(async (city: string, version: number) => {
@@ -1226,24 +1211,24 @@ export const ThirdPartyAccessSettings = ({
     return <section className="im-settings-card im-settings-channel">
         {!hardwareOnly && <>
         <p className="im-settings-description">
-            {isZh ? '开放本机 HTTP 消息接入端口，第三方软件主动连接 MaClaw，无需提供回调地址。' : 'Expose a local HTTP message gateway. Third-party software connects to MaClaw without a callback URL.'}
+            {tailText(lang, 'Expose a local HTTP message gateway. Third-party software connects to MaClaw without a callback URL.', '开放本机 HTTP 消息接入端口，第三方软件主动连接 MaClaw，无需提供回调地址。')}
         </p>
         <div className="im-settings-toolbar">
             <label className="im-settings-toggle">
                 <input
                     type="checkbox"
                     disabled={settingsBusy}
-                    aria-label={textForLang(lang, 'Enable third-party access', '开启第三方软件接入', '開啟第三方軟體接入')}
+                    aria-label={tailText(lang, 'Enable third-party access', '开启第三方软件接入', '開啟第三方軟體接入')}
                     checked={imGatewayEnabled}
                     onChange={(e) => void changeGatewayEnabled(e.target.checked)}
                 />
-                <span>{textForLang(lang, 'Enable third-party access', '开启第三方软件接入', '開啟第三方軟體接入')}</span>
+                <span>{tailText(lang, 'Enable third-party access', '开启第三方软件接入', '開啟第三方軟體接入')}</span>
             </label>
             <span className="im-settings-status" data-status={thirdPartyGatewayStatus} aria-live="polite">
                 {gatewayStatusLabel(thirdPartyGatewayStatus, lang)}
             </span>
             <button type="button" className="im-settings-button" disabled={!imGatewayEnabled || settingsBusy} onClick={() => void restartGateway()}>
-                {gatewayBusy ? (isZh ? '处理中…' : 'Working…') : textForLang(lang, 'Restart', '重启接口', '重啟介面')}
+                {gatewayBusy ? (tailText(lang, 'Working…', '处理中…')) : tailText(lang, 'Restart', '重启接口', '重啟介面')}
             </button>
             <button type="button" className="im-settings-button im-settings-button--audit" onClick={() => setIMAuditPlatform('thirdparty')}>
                 {watchLabel(lang)}
@@ -1254,8 +1239,8 @@ export const ThirdPartyAccessSettings = ({
             <span>{channelModeLabel(lang)}</span>
             <div className="im-settings-segmented">
                 {[
-                    { value: true, label: isZh ? '单机' : 'Local', desc: isZh ? '本机 Agent 直接处理' : 'Handle with local Agent' },
-                    { value: false, label: isZh ? '多机' : 'Hub', desc: isZh ? '通过 Hub 转发到在线设备' : 'Forward through Hub' },
+                    { value: true, label: tailText(lang, 'Local', '单机'), desc: tailText(lang, 'Handle with local Agent', '本机 Agent 直接处理') },
+                    { value: false, label: tailText(lang, 'Hub', '多机'), desc: tailText(lang, 'Forward through Hub', '通过 Hub 转发到在线设备') },
                 ].map((option) => <button
                     key={String(option.value)}
                     type="button"
@@ -1282,7 +1267,7 @@ export const ThirdPartyAccessSettings = ({
                 <span className="im-settings-token-row">
                     <input type="password" disabled={settingsBusy} value={(config as any)?.thirdparty_gateway_token || ''} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_token: e.target.value })} placeholder="Bearer token" autoComplete="off" />
                     <button type="button" className="im-settings-button im-settings-button--accent" disabled={settingsBusy} onClick={() => void generateToken()}>
-                        {isZh ? '生成 Token' : 'Generate Token'}
+                        {tailText(lang, 'Generate Token', '生成 Token')}
                     </button>
                 </span>
             </label>
@@ -1293,39 +1278,39 @@ export const ThirdPartyAccessSettings = ({
             <button type="button" className="im-settings-button im-settings-button--accent" onClick={() => {
                 const base = String((config as any)?.remote_hub_url || '').replace(/\/+$/, '');
                 BrowserOpenURL(base ? base + '/connector' : '/connector');
-            }}>{textForLang(lang, 'Open docs', '打开接入文档', '開啟接入文件')}</button>
+            }}>{tailText(lang, 'Open docs', '打开接入文档', '開啟接入文件')}</button>
         </div>
         </>}
 
-		{hardwareOnly && <div className="im-settings-hardware" aria-label={isZh ? '硬件配置' : 'Hardware configuration'} aria-busy={settingsBusy}>
+		{hardwareOnly && <div className="im-settings-hardware" aria-label={tailText(lang, 'Hardware configuration', '硬件配置')} aria-busy={settingsBusy}>
             <header className="im-settings-hardware__heading">
                 <span className="im-settings-hardware__heading-badge" aria-hidden="true">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" /><path d="M6.5 1.75v2.75M9.5 1.75v2.75M6.5 11.5v2.75M9.5 11.5v2.75M1.75 6.5h2.75M1.75 9.5h2.75M11.5 6.5h2.75M11.5 9.5h2.75" /></svg>
                 </span>
                 <div className="im-settings-hardware__heading-text">
-                    <strong>{isZh ? '硬件配置' : 'Hardware configuration'}</strong>
-                    <span>{isZh ? '玛卡龙 ESP32 的配对、欢迎音频与扬声器设置。' : 'Pairing, welcome audio, and speaker settings for Macaron ESP32.'}</span>
+                    <strong>{tailText(lang, 'Hardware configuration', '硬件配置')}</strong>
+                    <span>{tailText(lang, 'Pairing, welcome audio, and speaker settings for Macaron ESP32.', '玛卡龙 ESP32 的配对、欢迎音频与扬声器设置。')}</span>
                 </div>
                 <HardwareSwitch
-                    ariaLabel={isZh ? '启用硬件' : 'Enable hardware'}
-                    label={isZh ? '启用硬件' : 'Enable hardware'}
+                    ariaLabel={tailText(lang, 'Enable hardware', '启用硬件')}
+                    label={tailText(lang, 'Enable hardware', '启用硬件')}
                     disabled={settingsBusy}
                     checked={hardwareEnabled}
                     onChange={(next) => void changeHardwareEnabled(next)}
                 />
             </header>
             <p className="im-settings-hardware__mode-note">
-                {isZh ? '硬件连接由系统通过 Hub 管理，不会修改第三方接入的模式或 Token。' : 'Hardware connections are system-managed through Hub and do not change the IM gateway mode or token.'}
+                {tailText(lang, 'Hardware connections are system-managed through Hub and do not change the IM gateway mode or token.', '硬件连接由系统通过 Hub 管理，不会修改第三方接入的模式或 Token。')}
             </p>
 
             <div className="im-settings-hardware__preferences">
                 <div className="im-settings-hardware__preference">
                     <div className="im-settings-hardware__preference-text">
-                        <span>{isZh ? '允许个性宠物' : 'Allow individual pets'}</span>
-                        <small>{isZh ? '开启后可为每台硬件单独选择宠物；关闭时全部跟随系统宠物设置。' : 'When enabled, each device can use its own pet. Otherwise all devices follow the system pet setting.'}</small>
+                        <span>{tailText(lang, 'Allow individual pets', '允许个性宠物')}</span>
+                        <small>{tailText(lang, 'When enabled, each device can use its own pet. Otherwise all devices follow the system pet setting.', '开启后可为每台硬件单独选择宠物；关闭时全部跟随系统宠物设置。')}</small>
                     </div>
                     <HardwareSwitch
-                        ariaLabel={isZh ? '允许个性宠物' : 'Allow individual pets'}
+                        ariaLabel={tailText(lang, 'Allow individual pets', '允许个性宠物')}
                         disabled={settingsBusy}
                         checked={allowCustomHardwarePets}
                         onChange={(next) => void changeAllowCustomHardwarePets(next)}
@@ -1333,8 +1318,8 @@ export const ThirdPartyAccessSettings = ({
                 </div>
                 <div className="im-settings-hardware__preference im-settings-hardware__weather">
                     <div className="im-settings-hardware__preference-text">
-                        <label htmlFor="hardware-weather-city">{textForLang(lang, 'Hardware weather city', '硬件天气城市', '硬體天氣城市')}</label>
-                        <small>{textForLang(lang, 'Leave blank to detect from the desktop network', '留空时按电脑当前网络位置自动识别', '留空時按電腦目前網路位置自動辨識')}</small>
+                        <label htmlFor="hardware-weather-city">{tailText(lang, 'Hardware weather city', '硬件天气城市', '硬體天氣城市')}</label>
+                        <small>{tailText(lang, 'Leave blank to detect from the desktop network', '留空时按电脑当前网络位置自动识别', '留空時按電腦目前網路位置自動辨識')}</small>
                     </div>
                     <div className="im-settings-hardware__weather-side">
                         <div className="im-settings-hardware__weather-controls">
@@ -1344,17 +1329,17 @@ export const ThirdPartyAccessSettings = ({
                                 value={ambientCityDraft !== '' ? ambientCityDraft : (detectedAmbientCity || '')}
                                 disabled={ambientRefreshState === 'refreshing'}
                                 maxLength={32}
-                                placeholder={textForLang(lang, 'e.g. Shanghai', '例如：上海', '例如：上海')}
+                                placeholder={tailText(lang, 'e.g. Shanghai', '例如：上海', '例如：上海')}
                                 onChange={(event) => changeAmbientCity(event.target.value)}
                             />
                             <button type="button" className="im-settings-button" disabled={ambientRefreshState === 'refreshing'} onClick={() => void refreshAmbientWeather()}>
                                 {ambientRefreshState === 'refreshing'
-                                    ? textForLang(lang, 'Checking…', '查询中…', '查詢中…')
-                                    : textForLang(lang, 'Sync now', '立即同步', '立即同步')}
+                                    ? tailText(lang, 'Checking…', '查询中…', '查詢中…')
+                                    : tailText(lang, 'Sync now', '立即同步', '立即同步')}
                             </button>
                         </div>
-                        {ambientRefreshState === 'done' && <small className="im-settings-hardware__weather-status" role="status">{textForLang(lang, 'Weather sent to hardware', '天气已推送到硬件', '天氣已推送到硬體')}</small>}
-                        {ambientRefreshState === 'error' && <small className="im-settings-hardware__weather-error" role="alert">{textForLang(lang, 'Weather sync failed; check Hub and network', '天气同步失败，请检查 Hub 与网络连接', '天氣同步失敗，請檢查 Hub 與網路連線')}</small>}
+                        {ambientRefreshState === 'done' && <small className="im-settings-hardware__weather-status" role="status">{tailText(lang, 'Weather sent to hardware', '天气已推送到硬件', '天氣已推送到硬體')}</small>}
+                        {ambientRefreshState === 'error' && <small className="im-settings-hardware__weather-error" role="alert">{tailText(lang, 'Weather sync failed; check Hub and network', '天气同步失败，请检查 Hub 与网络连接', '天氣同步失敗，請檢查 Hub 與網路連線')}</small>}
                     </div>
                 </div>
             </div>
@@ -1364,10 +1349,10 @@ export const ThirdPartyAccessSettings = ({
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="8" height="8" rx="2" /><path d="M5.5 6V4.5A2.5 2.5 0 0 1 8 2h3.5A2.5 2.5 0 0 1 14 4.5V8a2.5 2.5 0 0 1-2.5 2.5H10" /></svg>
                 </span>
                 <div className="im-settings-hardware__pairing-info">
-                    <span>{isZh ? '配对码' : 'Pairing code'}</span>
+                    <span>{tailText(lang, 'Pairing code', '配对码')}</span>
                     {pairing?.pairCode
                         ? <strong className="im-settings-pair-code">{pairing.pairCode}</strong>
-                        : <small>{isZh ? '点击获取后，在硬件配置页输入。' : 'Get a code, then enter it in the hardware setup portal.'}</small>}
+                        : <small>{tailText(lang, 'Get a code, then enter it in the hardware setup portal.', '点击获取后，在硬件配置页输入。')}</small>}
                 </div>
                 <div className="im-settings-hardware__actions">
                     <button type="button" className="im-settings-button im-settings-button--accent" disabled={hardwareControlsDisabled || hardwareBindingAtCapacity || pairingBusy} onClick={async () => {
@@ -1377,7 +1362,7 @@ export const ThirdPartyAccessSettings = ({
 							const nextPairing = await CreateThirdPartyDevicePairing() as HardwarePairing;
 							if (!mountedRef.current || requestID !== pairingRequestRef.current) return;
 							setPairing(nextPairing);
-							showToastMessage(isZh ? '已生成配对码，有效期 30 分钟。' : 'Pairing code generated; valid for 30 minutes.');
+							showToastMessage(tailText(lang, 'Pairing code generated; valid for 30 minutes.', '已生成配对码，有效期 30 分钟。'));
                         } catch (err: any) {
 							if (!mountedRef.current || requestID !== pairingRequestRef.current) return;
                             showToastMessage(err?.message || String(err));
@@ -1385,42 +1370,42 @@ export const ThirdPartyAccessSettings = ({
 							if (mountedRef.current && requestID === pairingRequestRef.current) setPairingBusy(false);
                         }
 					}}>{pairingBusy
-						? (isZh ? '生成中…' : 'Generating…')
-						: (pairing?.pairCode ? (isZh ? '重新生成' : 'Regenerate') : (isZh ? '获取配对码' : 'Get code'))}</button>
+						? (tailText(lang, 'Generating…', '生成中…'))
+						: (pairing?.pairCode ? (tailText(lang, 'Regenerate', '重新生成')) : (tailText(lang, 'Get code', '获取配对码')))}</button>
 					{pairing?.gatewayURL && <code>{pairing.gatewayURL}</code>}
                 </div>
             </div>
 
-            <div className="im-settings-hardware__devices" aria-label={isZh ? '接入硬件列表' : 'Connected hardware list'}>
+            <div className="im-settings-hardware__devices" aria-label={tailText(lang, 'Connected hardware list', '接入硬件列表')}>
                 <div className="im-settings-hardware__devices-heading">
                     <div className="im-settings-hardware__devices-title">
-                        <strong>{isZh ? '接入硬件' : 'Connected hardware'}</strong>
-                        <span>{isZh ? '每台 ESP32 使用独立身份与 Token。解绑后设备须重新配对。' : 'Each ESP32 has its own identity and token. Removed devices must pair again.'}</span>
+                        <strong>{tailText(lang, 'Connected hardware', '接入硬件')}</strong>
+                        <span>{tailText(lang, 'Each ESP32 has its own identity and token. Removed devices must pair again.', '每台 ESP32 使用独立身份与 Token。解绑后设备须重新配对。')}</span>
                     </div>
 					<div className="im-settings-hardware__devices-tools">
 						<span className="im-settings-hardware__device-limit" data-at-capacity={hardwareBindingAtCapacity}>
-							{isZh ? '最多绑定 ' : 'Up to '}<strong>{boundDeviceCount} / {hardwareBindingLimit}</strong>{isZh ? ' 台' : ' devices'}{hardwareBindingAtCapacity
-								? (isZh ? '；已满额，请先解绑再绑定新设备。' : '; limit reached — remove a device before binding a new one.')
+							{tailText(lang, 'Up to ', '最多绑定 ')}<strong>{boundDeviceCount} / {hardwareBindingLimit}</strong>{tailText(lang, ' devices', ' 台')}{hardwareBindingAtCapacity
+								? (tailText(lang, '; limit reached — remove a device before binding a new one.', '；已满额，请先解绑再绑定新设备。'))
 								: (isZh ? '。' : '.')}
 						</span>
                     <button type="button" className="im-settings-button" disabled={devicesLoading || hardwareControlsDisabled} onClick={() => void refreshDevices()}>
-                        {devicesLoading ? (isZh ? '刷新中…' : 'Refreshing…') : (isZh ? '刷新' : 'Refresh')}
+                        {devicesLoading ? (tailText(lang, 'Refreshing…', '刷新中…')) : (tailText(lang, 'Refresh', '刷新'))}
                     </button>
 					</div>
                 </div>
                 {devicesError && devices.length > 0 && <div className="im-settings-hardware__devices-error" role="status">
-                    <span>{isZh ? '刷新失败，当前显示上次成功读取的列表。' : 'Refresh failed. Showing the last successfully loaded list.'}</span>
-                    <button type="button" className="im-settings-button" onClick={() => void refreshDevices()}>{isZh ? '重试' : 'Retry'}</button>
+                    <span>{tailText(lang, 'Refresh failed. Showing the last successfully loaded list.', '刷新失败，当前显示上次成功读取的列表。')}</span>
+                    <button type="button" className="im-settings-button" onClick={() => void refreshDevices()}>{tailText(lang, 'Retry', '重试')}</button>
                 </div>}
                 {devicesLoading && devices.length === 0
-                    ? <div className="im-settings-hardware__devices-loading" aria-live="polite">{isZh ? '正在读取硬件…' : 'Loading hardware…'}</div>
+                    ? <div className="im-settings-hardware__devices-loading" aria-live="polite">{tailText(lang, 'Loading hardware…', '正在读取硬件…')}</div>
                     : devicesError && devices.length === 0
                         ? <div className="im-settings-hardware__devices-error" role="alert">
-                            <span>{isZh ? '无法读取硬件列表。请检查 Hub 连接后重试。' : 'Could not load hardware. Check the Hub connection and try again.'}</span>
-                            <button type="button" className="im-settings-button" onClick={() => void refreshDevices()}>{isZh ? '重试' : 'Retry'}</button>
+                            <span>{tailText(lang, 'Could not load hardware. Check the Hub connection and try again.', '无法读取硬件列表。请检查 Hub 连接后重试。')}</span>
+                            <button type="button" className="im-settings-button" onClick={() => void refreshDevices()}>{tailText(lang, 'Retry', '重试')}</button>
                         </div>
                         : devices.length === 0
-                            ? <div className="im-settings-hardware__devices-empty">{isZh ? '暂无已绑定硬件。生成配对码并完成一次配对后，设备会显示在这里。' : 'No hardware is bound yet. Generate a pairing code and complete pairing to see the device here.'}</div>
+                            ? <div className="im-settings-hardware__devices-empty">{tailText(lang, 'No hardware is bound yet. Generate a pairing code and complete pairing to see the device here.', '暂无已绑定硬件。生成配对码并完成一次配对后，设备会显示在这里。')}</div>
                             : <div className="im-settings-hardware__device-list">{devices.map((device) => {
                                 const name = device.clientName || device.clientId;
                                 const parsedLastSeen = device.lastSeenAt ? new Date(device.lastSeenAt) : null;
@@ -1446,7 +1431,7 @@ export const ThirdPartyAccessSettings = ({
 									<div className="im-settings-hardware__device-details">
 										<div className="im-settings-hardware__device-name">
 											{editingDeviceNameClientId === device.clientId ? <input
-													aria-label={`${isZh ? '硬件名称' : 'Hardware name'} ${device.clientId}`}
+													aria-label={`${tailText(lang, 'Hardware name', '硬件名称')} ${device.clientId}`}
 													value={deviceNameDraft}
 													maxLength={48}
 													disabled={savingDeviceNameClientIds.has(device.clientId)}
@@ -1460,35 +1445,35 @@ export const ThirdPartyAccessSettings = ({
 											<button
 												type="button"
 												className="im-settings-hardware__device-rename"
-												aria-label={`${editingDeviceNameClientId === device.clientId ? (isZh ? '保存名称' : 'Save name') : (isZh ? '更名' : 'Rename')} ${name}`}
+												aria-label={`${editingDeviceNameClientId === device.clientId ? (tailText(lang, 'Save name', '保存名称')) : (tailText(lang, 'Rename', '更名'))} ${name}`}
 												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId) || savingDeviceNameClientIds.has(device.clientId)}
 												onClick={() => editingDeviceNameClientId === device.clientId ? void saveDeviceName(device) : beginDeviceNameEdit(device)}
-											>{editingDeviceNameClientId === device.clientId ? (isZh ? '保存' : 'Save') : (isZh ? '更名' : 'Rename')}</button>
+											>{editingDeviceNameClientId === device.clientId ? (tailText(lang, 'Save', '保存')) : (tailText(lang, 'Rename', '更名'))}</button>
 										</div>
                                         <code title={device.clientId}>{device.clientId}</code>
                                         <small>
-                                            {device.online ? (isZh ? '在线' : 'Online') : (lastSeen ? `${isZh ? '最后连接' : 'Last seen'} ${lastSeen}` : (isZh ? '尚未连接' : 'Not seen yet'))}
+                                            {device.online ? (tailText(lang, 'Online', '在线')) : (lastSeen ? `${tailText(lang, 'Last seen', '最后连接')} ${lastSeen}` : (tailText(lang, 'Not seen yet', '尚未连接')))}
                                             {device.protocolVersion ? ` · v${device.protocolVersion}` : ''}
                                         </small>
                                     </div>
 									<div className="im-settings-hardware__device-actions">
 										<div className="im-settings-hardware__device-adjustments">
 										<div className="im-settings-hardware__device-screen-sleep">
-											<label htmlFor={`hardware-screen-sleep-${device.clientId}`}>{isZh ? '休眠时间' : 'Screen sleep'}</label>
+											<label htmlFor={`hardware-screen-sleep-${device.clientId}`}>{tailText(lang, 'Screen sleep', '休眠时间')}</label>
 											<select
 												id={`hardware-screen-sleep-${device.clientId}`}
-												aria-label={`${isZh ? '休眠时间' : 'Screen sleep'} ${name}`}
-												title={isZh ? '无操作后关闭屏幕。' : 'Turns the screen off after inactivity.'}
+												aria-label={`${tailText(lang, 'Screen sleep', '休眠时间')} ${name}`}
+												title={tailText(lang, 'Turns the screen off after inactivity.', '无操作后关闭屏幕。')}
 												value={deviceScreenSleepSeconds}
 												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)}
 												onChange={(event) => changeDeviceScreenSleepTimeout(device.clientId, Number(event.target.value))}
 											>
-												{screenSleepOptions.map((option) => <option key={option.seconds} value={option.seconds}>{isZh ? option.zh : option.en}</option>)}
+												{screenSleepOptions.map((option) => <option key={option.seconds} value={option.seconds}>{tailText(lang, option.en, option.zh)}</option>)}
 											</select>
 										</div>
 										<div className="im-settings-hardware__device-brightness">
-										<label htmlFor={`hardware-brightness-${device.clientId}`}><span>{isZh ? '亮度' : 'Brightness'}</span> <strong>{deviceBrightness}%</strong></label>
-											<input id={`hardware-brightness-${device.clientId}`} aria-label={`${isZh ? '亮度' : 'Brightness'} ${name}`} title={device.online ? (isZh ? '调整仅应用于此设备。' : 'Changes apply only to this device.') : (isZh ? '设备离线；设置会在下次连接时生效。' : 'Offline; applied when this device reconnects.')} type="range" min={0} max={100} step={1} value={deviceBrightness} disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)} onPointerDown={() => rememberDeviceBrightnessBeforeEdit(device.clientId)} onKeyDown={(event) => {
+										<label htmlFor={`hardware-brightness-${device.clientId}`}><span>{tailText(lang, 'Brightness', '亮度')}</span> <strong>{deviceBrightness}%</strong></label>
+											<input id={`hardware-brightness-${device.clientId}`} aria-label={`${tailText(lang, 'Brightness', '亮度')} ${name}`} title={device.online ? (tailText(lang, 'Changes apply only to this device.', '调整仅应用于此设备。')) : (tailText(lang, 'Offline; applied when this device reconnects.', '设备离线；设置会在下次连接时生效。'))} type="range" min={0} max={100} step={1} value={deviceBrightness} disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)} onPointerDown={() => rememberDeviceBrightnessBeforeEdit(device.clientId)} onKeyDown={(event) => {
 											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) rememberDeviceBrightnessBeforeEdit(device.clientId);
 										}} onChange={(event) => {
 											const next = Number(event.target.value);
@@ -1499,8 +1484,8 @@ export const ThirdPartyAccessSettings = ({
 										}} />
 										</div>
 										<div className="im-settings-hardware__device-volume">
-										<label htmlFor={`hardware-volume-${device.clientId}`}><span>{isZh ? '音量' : 'Volume'}</span> <strong>{deviceVolume}%</strong></label>
-											<input id={`hardware-volume-${device.clientId}`} aria-label={`${isZh ? '音量' : 'Volume'} ${name}`} title={device.online ? (isZh ? '调整仅应用于此设备。' : 'Changes apply only to this device.') : (isZh ? '设备离线；设置会在下次连接时生效。' : 'Offline; applied when this device reconnects.')} type="range" min={0} max={100} step={1} value={deviceVolume} disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)} onPointerDown={() => rememberDeviceVolumeBeforeEdit(device.clientId)} onKeyDown={(event) => {
+										<label htmlFor={`hardware-volume-${device.clientId}`}><span>{tailText(lang, 'Volume', '音量')}</span> <strong>{deviceVolume}%</strong></label>
+											<input id={`hardware-volume-${device.clientId}`} aria-label={`${tailText(lang, 'Volume', '音量')} ${name}`} title={device.online ? (tailText(lang, 'Changes apply only to this device.', '调整仅应用于此设备。')) : (tailText(lang, 'Offline; applied when this device reconnects.', '设备离线；设置会在下次连接时生效。'))} type="range" min={0} max={100} step={1} value={deviceVolume} disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)} onPointerDown={() => rememberDeviceVolumeBeforeEdit(device.clientId)} onKeyDown={(event) => {
 											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) rememberDeviceVolumeBeforeEdit(device.clientId);
 										}} onChange={(event) => {
 											const next = Number(event.target.value);
@@ -1511,10 +1496,10 @@ export const ThirdPartyAccessSettings = ({
 										}} />
 										</div>
 										<div className="im-settings-hardware__device-agent">
-											<label htmlFor={`hardware-agent-${device.clientId}`}>{isZh ? 'AI 专家' : 'AI assistant'}</label>
+											<label htmlFor={`hardware-agent-${device.clientId}`}>{tailText(lang, 'AI assistant', 'AI 专家')}</label>
 											<select
 												id={`hardware-agent-${device.clientId}`}
-												aria-label={`${isZh ? 'AI 专家' : 'AI assistant'} ${name}`}
+												aria-label={`${tailText(lang, 'AI assistant', 'AI 专家')} ${name}`}
 												value={assistantMode === 'expert' ? selectedExpertID : '__general__'}
 												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)}
 												onChange={(event) => {
@@ -1526,13 +1511,13 @@ export const ThirdPartyAccessSettings = ({
 													});
 												}}
 									>
-										<option value="__general__">{isZh ? 'AI 助手（默认）' : 'AI assistant (default)'}</option>
-										{selectedExpertUnavailable && <option value={selectedExpertID} disabled>{isZh ? `已不可用：${selectedExpertID}` : `Unavailable: ${selectedExpertID}`}</option>}
+										<option value="__general__">{tailText(lang, 'AI assistant (default)', 'AI 助手（默认）')}</option>
+										{selectedExpertUnavailable && <option value={selectedExpertID} disabled>{tailText(lang, `Unavailable: ${selectedExpertID}`, `已不可用：${selectedExpertID}`)}</option>}
 										{experts.map((expert) => <option key={expert.id} value={expert.id}>{expert.icon ? `${expert.icon} ` : ''}{expert.name || expert.id}</option>)}
 									</select>
 										</div>
 										{allowCustomHardwarePets && <div className="im-settings-hardware__device-pet" title={devicePet.label} ref={openPetPickerClientId === device.clientId ? petPickerRootRef : undefined}>
-											<span className="im-settings-hardware__device-pet-label">{isZh ? '宠物' : 'Pet'}</span>
+											<span className="im-settings-hardware__device-pet-label">{tailText(lang, 'Pet', '宠物')}</span>
 											<div className="im-settings-hardware__device-pet-field">
 												<span className="im-settings-hardware__device-pet-preview"><img src={devicePet.image} alt="" /></span>
 												<button
@@ -1540,7 +1525,7 @@ export const ThirdPartyAccessSettings = ({
 													type="button"
 													className="im-settings-hardware__device-pet-trigger"
 													role="combobox"
-													aria-label={`${isZh ? '宠物' : 'Pet'} ${name}`}
+													aria-label={`${tailText(lang, 'Pet', '宠物')} ${name}`}
 													aria-controls={`hardware-pet-list-${device.clientId}`}
 													aria-expanded={openPetPickerClientId === device.clientId}
 													aria-haspopup="listbox"
@@ -1556,7 +1541,7 @@ export const ThirdPartyAccessSettings = ({
 													<span>{devicePet.label}</span><span className="im-settings-hardware__device-pet-chevron" aria-hidden="true" />
 												</button>
 											</div>
-											{openPetPickerClientId === device.clientId && <div id={`hardware-pet-list-${device.clientId}`} className="im-settings-hardware__device-pet-menu" role="listbox" aria-label={`${isZh ? '宠物' : 'Pet'} ${name}`}>
+											{openPetPickerClientId === device.clientId && <div id={`hardware-pet-list-${device.clientId}`} className="im-settings-hardware__device-pet-menu" role="listbox" aria-label={`${tailText(lang, 'Pet', '宠物')} ${name}`}>
 												{availablePetOptions.map((pet) => <button
 													key={pet.id}
 													type="button"
@@ -1572,25 +1557,25 @@ export const ThirdPartyAccessSettings = ({
 											</div>}
 										</div>}
 										<div className="im-settings-hardware__device-agent">
-											<label htmlFor={`hardware-reply-voice-${device.clientId}`}>{isZh ? '回复音色' : 'Reply voice'}</label>
+											<label htmlFor={`hardware-reply-voice-${device.clientId}`}>{tailText(lang, 'Reply voice', '回复音色')}</label>
 											<select
 												id={`hardware-reply-voice-${device.clientId}`}
-												aria-label={`${isZh ? '回复音色' : 'Reply voice'} ${name}`}
+												aria-label={`${tailText(lang, 'Reply voice', '回复音色')} ${name}`}
 												value={replyVoiceID}
 												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)}
 												onChange={(event) => void saveDeviceAgentBinding(device, { assistantMode, expertId: selectedExpertID, ttsVoiceId: event.target.value })}
 											>
-												{ttsVoiceOptions.map((voice) => <option key={voice.id} value={voice.id}>{isZh ? voice.zh : voice.label}</option>)}
+												{ttsVoiceOptions.map((voice) => <option key={voice.id} value={voice.id}>{tailText(lang, voice.label, voice.zh)}</option>)}
 											</select>
 										</div>
 										</div>
 										<div className="im-settings-hardware__device-command-actions">
-		                                        <button type="button" className="im-settings-button im-settings-button--accent" aria-label={`${isZh ? '远程播放' : 'Play remotely'} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientIds.has(device.clientId) || previewingClientIds.has(device.clientId)} title={!device.online ? (isZh ? '设备离线，无法远程播放。' : 'This device is offline.') : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientIds.has(device.clientId) ? (isZh ? '播放中…' : 'Playing…') : (isZh ? '远程播放' : 'Play remotely')}</button>
-		                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${isZh ? '解绑' : 'Remove'} ${name}`} disabled={deletingClientIds.has(device.clientId) || savingDeviceNameClientIds.has(device.clientId)} onClick={async () => {
+		                                        <button type="button" className="im-settings-button im-settings-button--accent" aria-label={`${tailText(lang, 'Play remotely', '远程播放')} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientIds.has(device.clientId) || previewingClientIds.has(device.clientId)} title={!device.online ? (tailText(lang, 'This device is offline.', '设备离线，无法远程播放。')) : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientIds.has(device.clientId) ? (tailText(lang, 'Playing…', '播放中…')) : (tailText(lang, 'Play remotely', '远程播放'))}</button>
+		                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${tailText(lang, 'Remove', '解绑')} ${name}`} disabled={deletingClientIds.has(device.clientId) || savingDeviceNameClientIds.has(device.clientId)} onClick={async () => {
                                         const confirmed = await showConfirm(
-                                            isZh ? `解绑后，${name} 的 Token 将立即失效；如需再次使用，必须重新配对。` : `${name}'s token will be revoked immediately. The device must pair again before it can reconnect.`,
-                                            isZh ? '解绑硬件？' : 'Remove hardware?',
-                                            { confirmText: isZh ? '解绑' : 'Remove', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' },
+                                            tailText(lang, `${name}'s token will be revoked immediately. The device must pair again before it can reconnect.`, `解绑后，${name} 的 Token 将立即失效；如需再次使用，必须重新配对。`),
+                                            tailText(lang, 'Remove hardware?', '解绑硬件？'),
+                                            { confirmText: tailText(lang, 'Remove', '解绑'), cancelText: tailText(lang, 'Cancel', '取消'), confirmVariant: 'danger' },
                                         );
 	                                        if (!confirmed || !mountedRef.current) return;
 	                                        pendingDeletedClientIdsRef.current.add(device.clientId);
@@ -1626,14 +1611,14 @@ export const ThirdPartyAccessSettings = ({
                                                 setDevicesLoading(false);
                                                 setDevices((current) => current.filter((item) => item.clientId !== device.clientId));
 												setBoundDeviceCount((count) => Math.max(0, count - 1));
-                                                showToastMessage(isZh ? '硬件已解绑。' : 'Hardware removed.');
+                                                showToastMessage(tailText(lang, 'Hardware removed.', '硬件已解绑。'));
 																		void refreshDevicesRef.current();
                                             }
 	                                        } catch (err: any) {
 										pendingDeletedClientIdsRef.current.delete(device.clientId);
 										deletedClientIdsRef.current.delete(device.clientId);
 										deletedAtClientIdsRef.current.delete(device.clientId);
-										if (mountedRef.current) showToastMessage(welcomePreviewErrorMessage(err, isZh));
+										if (mountedRef.current) showToastMessage(welcomePreviewErrorMessage(err, lang));
                                         } finally {
 	                                            if (mountedRef.current) setDeletingClientIds((current) => {
 												const next = new Set(current);
@@ -1641,7 +1626,7 @@ export const ThirdPartyAccessSettings = ({
 												return next;
 											});
 	                                        }
-		                                    }}>{deletingClientIds.has(device.clientId) ? (isZh ? '解绑中…' : 'Removing…') : (isZh ? '解绑' : 'Remove')}</button>
+		                                    }}>{deletingClientIds.has(device.clientId) ? (tailText(lang, 'Removing…', '解绑中…')) : (tailText(lang, 'Remove', '解绑'))}</button>
 										</div>
 									</div>
                                 </div>;
@@ -1650,70 +1635,70 @@ export const ThirdPartyAccessSettings = ({
 
             <div className="im-settings-hardware__welcome" aria-busy={welcomeAction !== null}>
                 <div className="im-settings-hardware__welcome-title">
-                    <strong>{isZh ? 'Welcome 信息' : 'Welcome message'}</strong>
+                    <strong>{tailText(lang, 'Welcome message', 'Welcome 信息')}</strong>
                     <div className="im-settings-hardware__welcome-title-actions">
-                        <WelcomeResetButton disabled={settingsBusy} isZh={isZh} resetting={welcomeAction === 'reset'} onReset={resetWelcomeAudio} />
+                        <WelcomeResetButton disabled={settingsBusy} isZh={lang} resetting={welcomeAction === 'reset'} onReset={resetWelcomeAudio} />
                         <HardwareSwitch
-                            ariaLabel={isZh ? '启用' : 'Enabled'}
-                            label={isZh ? '启用' : 'Enabled'}
+                            ariaLabel={tailText(lang, 'Enabled', '启用')}
+                            label={tailText(lang, 'Enabled', '启用')}
                             disabled={welcomeEditingDisabled}
                             checked={Boolean((config as any)?.hardware_welcome_enabled)}
                             onChange={(next) => void setWelcomeEnabled(next)}
                         />
                     </div>
                 </div>
-                <p>{isZh ? '设备每次开机初始化完成后仅播放一次。输入文字生成 WAV，或选择 MP3、WAV、Ogg / Opus 自动转换为硬件可播放的 16 kHz 单声道 WAV。' : 'Plays once after each device boot finishes initializing. Generate WAV from text, or import MP3, WAV, Ogg / Opus and convert it to 16 kHz mono WAV.'}</p>
+                <p>{tailText(lang, 'Plays once after each device boot finishes initializing. Generate WAV from text, or import MP3, WAV, Ogg / Opus and convert it to 16 kHz mono WAV.', '设备每次开机初始化完成后仅播放一次。输入文字生成 WAV，或选择 MP3、WAV、Ogg / Opus 自动转换为硬件可播放的 16 kHz 单声道 WAV。')}</p>
                 <label className="im-settings-field im-settings-hardware__welcome-voice">
-                    <span>{isZhHant ? '發音模型' : isZh ? '发音模型' : 'Voice model'}</span>
+                    <span>{tailText(lang, 'Voice model', '发音模型', '發音模型')}</span>
                     <select
-                        aria-label={isZhHant ? '發音模型' : isZh ? '发音模型' : 'Voice model'}
+                        aria-label={tailText(lang, 'Voice model', '发音模型', '發音模型')}
                         disabled={welcomeEditingDisabled || welcomeVoiceSaving}
                         value={welcomeVoiceID}
                         onChange={(event) => void changeWelcomeVoice(event.target.value)}
                     >
                         {ttsVoiceOptions.map((voice) => (
-                            <option key={voice.id} value={voice.id}>{isZhHant ? voice.welcomeZhHant : isZh ? voice.welcomeZh : voice.welcomeEn}</option>
+                            <option key={voice.id} value={voice.id}>{tailText(lang, voice.welcomeEn, voice.welcomeZh, voice.welcomeZhHant)}</option>
                         ))}
                     </select>
-                    <small>{isZhHant ? '可選擇內置的全部發音模型；中文歡迎詞建議使用中文音色。選擇後請重新生成音頻。' : isZh ? '可选择内置的全部发音模型；中文欢迎词建议使用中文音色。选择后请重新生成音频。' : 'All bundled voice models are available. For Chinese welcome text, choose a Chinese voice and regenerate the audio.'}</small>
+                    <small>{tailText(lang, 'All bundled voice models are available. For Chinese welcome text, choose a Chinese voice and regenerate the audio.', '可选择内置的全部发音模型；中文欢迎词建议使用中文音色。选择后请重新生成音频。', '可選擇內置的全部發音模型；中文歡迎詞建議使用中文音色。選擇後請重新生成音頻。')}</small>
                 </label>
                 <div className="im-settings-hardware__welcome-controls">
 					<div className="im-settings-hardware__welcome-text-field">
-						<textarea disabled={welcomeEditingDisabled} value={welcomeText} maxLength={80} onChange={(e) => setWelcomeText(e.target.value)} placeholder={isZh ? '例如：Hello, Maclaw' : 'For example: Hello, Maclaw'} aria-describedby="hardware-welcome-capacity" />
-						<small id="hardware-welcome-capacity" className="im-settings-hardware__welcome-text-status">{welcomeTextCapacityHint(welcomeText, isZh)}</small>
+						<textarea disabled={welcomeEditingDisabled} value={welcomeText} maxLength={80} onChange={(e) => setWelcomeText(e.target.value)} placeholder={tailText(lang, 'For example: Hello, Maclaw', '例如：Hello, Maclaw')} aria-describedby="hardware-welcome-capacity" />
+						<small id="hardware-welcome-capacity" className="im-settings-hardware__welcome-text-status">{welcomeTextCapacityHint(welcomeText, lang)}</small>
 					</div>
                     <button type="button" className="im-settings-button" disabled={welcomeEditingDisabled || welcomeVoiceSaving || !welcomeText.trim()} onClick={() => void runWelcomeAction('generate', async () => {
                         try {
                             await GenerateHardwareWelcomeAudio(welcomeText, welcomeVoiceID);
                             await refreshConfig();
                             await refreshLocalWelcomePreviewSource(true).catch(() => undefined);
-                            showToastMessage(isZh ? '欢迎音频已生成。' : 'Welcome audio generated.');
+                            showToastMessage(tailText(lang, 'Welcome audio generated.', '欢迎音频已生成。'));
                         } catch (err: any) {
-                            showToastMessage(welcomePreviewErrorMessage(err, isZh));
+                            showToastMessage(welcomePreviewErrorMessage(err, lang));
                         }
-                    })}>{welcomeAction === 'generate' ? (isZh ? '生成中…' : 'Generating…') : (isZh ? '生成音频' : 'Generate audio')}</button>
+                    })}>{welcomeAction === 'generate' ? (tailText(lang, 'Generating…', '生成中…')) : (tailText(lang, 'Generate audio', '生成音频'))}</button>
                     <button type="button" className="im-settings-button" disabled={welcomeEditingDisabled} onClick={() => void runWelcomeAction('import', async () => {
                         try {
                             await SelectHardwareWelcomeAudio();
                             await refreshConfig();
                             await refreshLocalWelcomePreviewSource(true).catch(() => undefined);
-                            showToastMessage(isZh ? '欢迎音频已导入。' : 'Welcome audio imported.');
+                            showToastMessage(tailText(lang, 'Welcome audio imported.', '欢迎音频已导入。'));
                         } catch (err: any) {
                             showToastMessage(err?.message || String(err));
                         }
-                    })}>{welcomeAction === 'import' ? (isZh ? '导入中…' : 'Importing…') : (isZh ? '选择音频文件' : 'Choose audio')}</button>
+                    })}>{welcomeAction === 'import' ? (tailText(lang, 'Importing…', '导入中…')) : (tailText(lang, 'Choose audio', '选择音频文件'))}</button>
                     <button type="button" className="im-settings-button im-settings-button--accent" disabled={busy || !welcomeAudioPath} onClick={() => void runWelcomeAction('preview-local', async () => {
                         try {
-                            if (await playLocalWelcomePreview()) showToastMessage(isZh ? 'GUI 本地播放完成。' : 'Local GUI playback completed.');
+                            if (await playLocalWelcomePreview()) showToastMessage(tailText(lang, 'Local GUI playback completed.', 'GUI 本地播放完成。'));
                         } catch (err: any) {
-                            showToastMessage(welcomePreviewErrorMessage(err, isZh));
+                            showToastMessage(welcomePreviewErrorMessage(err, lang));
                         }
-                    })}>{welcomeAction === 'preview-local' ? (isZh ? 'GUI 播放中…' : 'Playing in GUI…') : (isZh ? 'GUI 本地试听' : 'Preview in GUI')}</button>
+                    })}>{welcomeAction === 'preview-local' ? (tailText(lang, 'Playing in GUI…', 'GUI 播放中…')) : (tailText(lang, 'Preview in GUI', 'GUI 本地试听'))}</button>
 	                </div>
                 <div className="im-settings-hardware__welcome-notes">
-                    {welcomeAudioPath && <small className="im-settings-hardware__audio-status">{isZh ? '已准备硬件 WAV：' : 'Hardware WAV ready: '}{welcomeAudioPath.split(/[\\/]/).pop()}</small>}
-                    <small className="im-settings-hardware__welcome-capacity">{isZh ? '硬件容量约 3 秒；接近上限时会自动加快语速，仍超出时请缩短欢迎词。' : 'Hardware capacity is roughly 3 seconds. Near the limit, speech is automatically sped up; shorten the message if it still does not fit.'}</small>
-                    <small className="im-settings-hardware__preview-note">{isZh ? 'GUI 本地试听用于检查生成质量；请在上方对应的已绑定硬件旁点击“远程播放”，仅向该 ESP32 下发并等待“播放完成”确认。' : 'GUI preview checks generated audio quality. Use the remote-play button beside a bound device to send only to that ESP32 and wait for its playback receipt.'}</small>
+                    {welcomeAudioPath && <small className="im-settings-hardware__audio-status">{tailText(lang, 'Hardware WAV ready: ', '已准备硬件 WAV：')}{welcomeAudioPath.split(/[\\/]/).pop()}</small>}
+                    <small className="im-settings-hardware__welcome-capacity">{tailText(lang, 'Hardware capacity is roughly 3 seconds. Near the limit, speech is automatically sped up; shorten the message if it still does not fit.', '硬件容量约 3 秒；接近上限时会自动加快语速，仍超出时请缩短欢迎词。')}</small>
+                    <small className="im-settings-hardware__preview-note">{tailText(lang, 'GUI preview checks generated audio quality. Use the remote-play button beside a bound device to send only to that ESP32 and wait for its playback receipt.', 'GUI 本地试听用于检查生成质量；请在上方对应的已绑定硬件旁点击“远程播放”，仅向该 ESP32 下发并等待“播放完成”确认。')}</small>
                 </div>
             </div>
         </div>}

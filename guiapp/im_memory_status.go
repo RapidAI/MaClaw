@@ -37,14 +37,7 @@ func (h *IMMessageHandler) handleMemoryStatusCommandWithLang(lang string) *IMAge
 }
 
 func localizedIMMemoryNotInitializedMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Memory system is not initialized."
-	case appLanguageZhHant:
-		return "記憶系統尚未初始化。"
-	default:
-		return "记忆系统尚未初始化。"
-	}
+	return pickUI(lang, "Memory system is not initialized.", "记忆系统尚未初始化。", "記憶系統尚未初始化。")
 }
 
 // catLabelZh maps category string to Chinese display label.
@@ -70,10 +63,10 @@ func formatMemoryStatusText(hr *memory.HealthReport) string {
 }
 
 func formatMemoryStatusTextWithLang(hr *memory.HealthReport, lang string) string {
-	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
-		return formatMemoryStatusTextEnglish(hr)
+	if normalizeAppLanguageKind(lang).IsChinese() {
+		return formatMemoryStatusTextChinese(hr)
 	}
-	return formatMemoryStatusTextChinese(hr)
+	return formatMemoryStatusTextEnglish(hr, lang)
 }
 
 func formatMemoryStatusTextChinese(hr *memory.HealthReport) string {
@@ -175,10 +168,10 @@ func formatMemoryStatusTextChinese(hr *memory.HealthReport) string {
 	return sb.String()
 }
 
-func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
+func formatMemoryStatusTextEnglish(hr *memory.HealthReport, lang string) string {
 	var sb strings.Builder
 
-	sb.WriteString("**Memory Status**\n\n")
+	sb.WriteString(pickUI(lang, "**Memory Status**\n\n", "**记忆状态**\n\n", "**记忆状态**\n\n"))
 
 	active := hr.ActiveEntries
 	maxCap := hr.MaxCapacity
@@ -186,13 +179,13 @@ func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
 		maxCap = 2000
 	}
 	pct := float64(active) / float64(maxCap) * 100
-	sb.WriteString(fmt.Sprintf("**Capacity**: %d / %d (%.1f%%)\n", active, maxCap, pct))
-	sb.WriteString(fmt.Sprintf("Recallable: %d, including %d expired\n", hr.RecallableEntries, hr.InvalidEntries))
-	sb.WriteString(fmt.Sprintf("Dormant: %d, superseded: %d\n", hr.DormantEntries, hr.SupersededEntries))
+	sb.WriteString(fmt.Sprintf(pickUI(lang, "**Capacity**: %d / %d (%.1f%%)\n", "**容量**: %d / %d (%.1f%%)\n", "**容量**: %d / %d (%.1f%%)\n"), active, maxCap, pct))
+	sb.WriteString(fmt.Sprintf(pickUI(lang, "Recallable: %d, including %d expired\n", "可召回: %d，其中已失效 %d\n", "可召回: %d，其中已失效 %d\n"), hr.RecallableEntries, hr.InvalidEntries))
+	sb.WriteString(fmt.Sprintf(pickUI(lang, "Dormant: %d, superseded: %d\n", "休眠: %d，已取代: %d\n", "休眠: %d，已取代: %d\n"), hr.DormantEntries, hr.SupersededEntries))
 	sb.WriteString(renderBarGauge(pct, 20))
 	sb.WriteString("\n\n")
 
-	sb.WriteString("**Category Breakdown**:\n")
+	sb.WriteString(pickUI(lang, "**Category Breakdown**:\n", "**分类占比**:\n", "**分类占比**:\n"))
 	type catRow struct {
 		cat   string
 		count int
@@ -207,9 +200,16 @@ func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
 	if total == 0 {
 		total = 1
 	}
+	categoryLabel := func(cat string) string {
+		label := pickUI(lang, cat, catLabelZh[cat], catLabelZh[cat])
+		if label == "" {
+			return cat
+		}
+		return label
+	}
 	maxLabelW := 0
 	for _, r := range rows {
-		if w := runeWidth(r.cat); w > maxLabelW {
+		if w := runeWidth(categoryLabel(r.cat)); w > maxLabelW {
 			maxLabelW = w
 		}
 	}
@@ -222,35 +222,36 @@ func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
 			barLen = 1
 		}
 		bar := strings.Repeat("#", barLen) + strings.Repeat("-", barMaxWidth-barLen)
-		padding := strings.Repeat(" ", maxLabelW-runeWidth(r.cat))
-		sb.WriteString(fmt.Sprintf("%s%s %s %3d item(s) (%4.1f%%)\n", r.cat, padding, bar, r.count, rowPct))
+		label := categoryLabel(r.cat)
+		padding := strings.Repeat(" ", maxLabelW-runeWidth(label))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "%s%s %s %3d item(s) (%4.1f%%)\n", "%s%s %s %3d条 (%4.1f%%)\n", "%s%s %s %3d条 (%4.1f%%)\n"), label, padding, bar, r.count, rowPct))
 	}
 
-	sb.WriteString("\n**Details**:\n")
+	sb.WriteString(pickUI(lang, "\n**Details**:\n", "\n**详细信息**:\n", "\n**详细信息**:\n"))
 	if hr.ArchivedEntries > 0 {
-		sb.WriteString(fmt.Sprintf("  Archived: %d item(s)\n", hr.ArchivedEntries))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "  Archived: %d item(s)\n", "  已归档: %d 条\n", "  已归档: %d 条\n"), hr.ArchivedEntries))
 	}
 	if hr.StaleEntries > 0 {
-		sb.WriteString(fmt.Sprintf("  Stale: %d item(s)\n", hr.StaleEntries))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "  Stale: %d item(s)\n", "  可能过时: %d 条\n", "  可能过时: %d 条\n"), hr.StaleEntries))
 	}
 	if hr.PinnedEntries > 0 {
-		sb.WriteString(fmt.Sprintf("  Pinned: %d item(s)\n", hr.PinnedEntries))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "  Pinned: %d item(s)\n", "  固定: %d 条\n", "  固定: %d 条\n"), hr.PinnedEntries))
 	}
 	if hr.EmbedderActive {
 		noEmbed := hr.NoEmbedding
 		embedded := active - noEmbed
-		sb.WriteString(fmt.Sprintf("  Embeddings: %d / %d\n", embedded, active))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "  Embeddings: %d / %d\n", "  向量化: %d / %d\n", "  向量化: %d / %d\n"), embedded, active))
 	} else {
-		sb.WriteString("  Embeddings: disabled\n")
+		sb.WriteString(pickUI(lang, "  Embeddings: disabled\n", "  向量化: 未启用\n", "  向量化: 未启用\n"))
 	}
 	if hr.OldestEntry != "" {
 		if t, err := time.Parse(time.RFC3339, hr.OldestEntry); err == nil {
-			sb.WriteString(fmt.Sprintf("  Oldest memory: %s\n", t.Format("2006-01-02 15:04")))
+			sb.WriteString(fmt.Sprintf(pickUI(lang, "  Oldest memory: %s\n", "  最早记忆: %s\n", "  最早记忆: %s\n"), t.Format("2006-01-02 15:04")))
 		}
 	}
 	if hr.NewestEntry != "" {
 		if t, err := time.Parse(time.RFC3339, hr.NewestEntry); err == nil {
-			sb.WriteString(fmt.Sprintf("  Newest memory: %s\n", t.Format("2006-01-02 15:04")))
+			sb.WriteString(fmt.Sprintf(pickUI(lang, "  Newest memory: %s\n", "  最新记忆: %s\n", "  最新记忆: %s\n"), t.Format("2006-01-02 15:04")))
 		}
 	}
 

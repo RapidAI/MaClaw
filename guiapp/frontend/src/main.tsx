@@ -12,6 +12,7 @@ import { installWindowDragHandler } from './utils/windowDrag'
 import { hideBootSplash } from './components/startup/hideBootSplash'
 import { installMermaidPdfRaster } from './components/ai/mermaidPdfRaster'
 import { installPerfReporting } from './perfReporting'
+import { normalizeLang } from './i18n/langSelect'
 
 const App = React.lazy(() => import('./App'))
 const FileCompanionWindow = React.lazy(() => import('./components/filecompanion/FileCompanionWindow'))
@@ -41,15 +42,19 @@ window.addEventListener('dragover', (e) => { if (maclawIsFileDrag(e)) e.preventD
 window.addEventListener('drop', (e) => { if (maclawIsFileDrag(e)) e.preventDefault() })
 
 function getStartupLang() {
-    const lang = document.documentElement.lang || navigator.language || 'en'
-    if (lang === 'zh-Hans') return 'zh-Hans'
-    if (lang === 'zh-Hant') return 'zh-Hant'
-    return 'en'
+    return normalizeLang(document.documentElement.lang || navigator.language || 'en')
 }
 
 function localizeStartupText(en: string, zhHans: string, zhHant: string = zhHans) {
     const lang = getStartupLang()
-    return lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+    if (lang === 'zh-Hans') return zhHans
+    if (lang === 'zh-Hant') return zhHant
+    if (lang === 'mn') {
+        if (en === 'Startup error') return 'Эхлүүлэх алдаа'
+        if (en === 'Loading…') return 'Ачаалж байна…'
+        return en
+    }
+    return en
 }
 
 let startupErrorShown = false

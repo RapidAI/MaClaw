@@ -51,6 +51,8 @@ import {
     type PdfTranslationSize,
 } from "../filecompanion/pdfTranslations";
 import { subscribeCompanionReaderState } from "../filecompanion/companionReaderState";
+import { normalizeLang } from "../../i18n/langSelect";
+import { tailText } from "../../i18n/mnTail";
 
 export interface CompanionPdfReaderProps {
     absPath: string;
@@ -100,14 +102,49 @@ function clipTranslateText(text: string): string {
     return chars.slice(0, PDF_TRANSLATE_CHARS).join("");
 }
 
-function translateErrorText(err: unknown): string {
+const PDF_COLOR_NAME: Record<PdfMarkColor, { en: string; zh: string; mn: string }> = {
+    yellow: { en: "Yellow", zh: "黄色", mn: "Шар" },
+    green: { en: "Green", zh: "绿色", mn: "Ногоон" },
+    blue: { en: "Blue", zh: "蓝色", mn: "Цэнхэр" },
+    pink: { en: "Pink", zh: "粉色", mn: "Ягаан" },
+};
+
+function pdfSwatchLabel(id: PdfMarkColor, lang: string, kind: "highlight" | "pen"): string {
+    const color = PDF_COLOR_NAME[id];
+    if (normalizeLang(lang) === "mn") {
+        return kind === "pen" ? `${color.mn} үзэг` : `${color.mn} тодотгол`;
+    }
+    return kind === "pen"
+        ? tailText(lang, `${color.en} pen`, `${color.zh}笔`)
+        : tailText(lang, `${color.en} highlight`, `${color.zh}高亮`);
+}
+
+function translateErrorText(err: unknown, lang: string): string {
     const raw = err instanceof Error ? err.message : String(err ?? "");
     const text = raw.trim();
-    if (!text) return "翻译失败，请稍后重试";
-    if (text.includes("path is outside the open file")) return "这个文件没有打开";
-    if (text.includes("file companion is not running")) return "伴读还没有打开";
-    if (text.includes("MaClaw Hub login is required")) return "需要先在主窗口登录";
-    if (text.includes("LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST") || /insufficient credits/i.test(text)) return "本次请求额度不足";
+    const say = (en: string, zh: string) => tailText(lang, en, zh);
+    if (!text || text === "翻译失败，请稍后重试") {
+        return say("Translation failed. Please try again later.", "翻译失败，请稍后重试");
+    }
+    if (text.includes("path is outside the open file") || text === "这个文件没有打开") {
+        return say("This file is not open", "这个文件没有打开");
+    }
+    if (text.includes("file companion is not running") || text === "伴读还没有打开") {
+        return say("File companion is not open", "伴读还没有打开");
+    }
+    if (text.includes("MaClaw Hub login is required") || text === "需要先在主窗口登录") {
+        return say("Sign in from the main window first", "需要先在主窗口登录");
+    }
+    if (
+        text.includes("LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST")
+        || /insufficient credits/i.test(text)
+        || text === "本次请求额度不足"
+    ) {
+        return say("Insufficient credits for this request", "本次请求额度不足");
+    }
+    if (text === "没有得到译文") {
+        return say("No translation was returned", "没有得到译文");
+    }
     return text;
 }
 
@@ -485,6 +522,7 @@ function menuQuote(text: string): string {
 }
 
 type PdfSelectionMenuProps = {
+    lang: string;
     state: MenuState;
     selectionText: string;
     onTranslate: () => void;
@@ -503,6 +541,7 @@ const MENU_VIEWPORT_GAP = 8;
  * item, arrows move between items, and it never renders past the window edge.
  */
 function PdfSelectionMenu({
+    lang,
     state,
     selectionText,
     onTranslate,
@@ -627,7 +666,7 @@ function PdfSelectionMenu({
             className="companion-pdf-menu"
             data-testid="pdf-highlight-menu"
             role="menu"
-            aria-label="选中文本操作"
+            aria-label={tailText(lang, "Selection actions", "选中文本操作")}
             style={{ left: place.left, top: place.top }}
             onMouseDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => {
@@ -649,8 +688,8 @@ function PdfSelectionMenu({
                         {...activate(onTranslate)}
                     >
                         <PdfMenuGlyph kind="translate" />
-                        <span className="companion-pdf-menu-item-label">翻译</span>
-                        <span className="companion-pdf-menu-item-hint">中文</span>
+                        <span className="companion-pdf-menu-item-label">{tailText(lang, "Translate", "翻译")}</span>
+                        <span className="companion-pdf-menu-item-hint">{tailText(lang, "Chinese", "中文")}</span>
                     </button>
                     <button
                         type="button"
@@ -660,7 +699,7 @@ function PdfSelectionMenu({
                         {...activate(onCopy)}
                     >
                         <PdfMenuGlyph kind="copy" />
-                        <span className="companion-pdf-menu-item-label">复制原文</span>
+                        <span className="companion-pdf-menu-item-label">{tailText(lang, "Copy source", "复制原文")}</span>
                     </button>
                 </div>
             ) : null}
@@ -673,7 +712,7 @@ function PdfSelectionMenu({
                                 value={annotationText}
                                 autoFocus
                                 rows={3}
-                                placeholder="写批注…"
+                                placeholder={tailText(lang, "Write a note…", "写批注…")}
                                 style={{ resize: "vertical", minHeight: 64, font: "inherit", padding: "6px 8px" }}
                                 onChange={(event) => setAnnotationText(event.target.value)}
                                 onKeyDown={(event) => {
@@ -697,7 +736,7 @@ function PdfSelectionMenu({
                                     onClick={() => { setAnnotationOpen(false); setAnnotationText(""); }}
                                     onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
                                     style={{ padding: "4px 8px" }}
-                                >取消</button>
+                                >{tailText(lang, "Cancel", "取消")}</button>
                                 <button
                                     type="button"
                                     data-testid="pdf-annotation-save"
@@ -705,7 +744,7 @@ function PdfSelectionMenu({
                                     onClick={submitAnnotation}
                                     onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
                                     style={{ padding: "4px 8px" }}
-                                >保存批注</button>
+                                >{tailText(lang, "Save note", "保存批注")}</button>
                             </div>
                         </div>
                     ) : (
@@ -717,15 +756,15 @@ function PdfSelectionMenu({
                             {...activate(() => setAnnotationOpen(true))}
                         >
                             <PdfMenuGlyph kind="note" />
-                            <span className="companion-pdf-menu-item-label">批注</span>
+                            <span className="companion-pdf-menu-item-label">{tailText(lang, "Note", "批注")}</span>
                         </button>
                     )}
                 </div>
             ) : null}
             {state.parts.length > 0 ? (
                 <div className="companion-pdf-menu-group">
-                    <p className="companion-pdf-menu-title"><PdfMenuGlyph kind="highlight" />高亮</p>
-                    <div className="companion-pdf-menu-colors" role="group" aria-label="高亮颜色">
+                    <p className="companion-pdf-menu-title"><PdfMenuGlyph kind="highlight" />{tailText(lang, "Highlight", "高亮")}</p>
+                    <div className="companion-pdf-menu-colors" role="group" aria-label={tailText(lang, "Highlight colour", "高亮颜色")}>
                         {PDF_MARK_COLORS.map((color) => (
                             <button
                                 key={color.id}
@@ -733,8 +772,8 @@ function PdfSelectionMenu({
                                 role="menuitem"
                                 data-testid={`pdf-highlight-${color.id}`}
                                 className="companion-pdf-menu-color"
-                                aria-label={`${color.label}高亮`}
-                                title={`${color.label}高亮`}
+                                aria-label={pdfSwatchLabel(color.id, lang, "highlight")}
+                                title={pdfSwatchLabel(color.id, lang, "highlight")}
                                 {...activate(() => onPaint(color.id))}
                             >
                                 <span style={{ background: color.fill }} />
@@ -754,7 +793,7 @@ function PdfSelectionMenu({
                             {...activate(onClearNote)}
                         >
                             <PdfMenuGlyph kind="erase" />
-                            <span className="companion-pdf-menu-item-label">{state.hitNoteKind === "annotation" ? "删除批注" : "取消翻译"}</span>
+                            <span className="companion-pdf-menu-item-label">{state.hitNoteKind === "annotation" ? tailText(lang, "Delete note", "删除批注") : tailText(lang, "Remove translation", "取消翻译")}</span>
                         </button>
                     ) : null}
                     {state.hitId ? (
@@ -766,7 +805,7 @@ function PdfSelectionMenu({
                             {...activate(onClearMark)}
                         >
                             <PdfMenuGlyph kind="erase" />
-                            <span className="companion-pdf-menu-item-label">取消高亮</span>
+                            <span className="companion-pdf-menu-item-label">{tailText(lang, "Remove highlight", "取消高亮")}</span>
                         </button>
                     ) : null}
                 </div>
@@ -1101,6 +1140,7 @@ function PdfDrawingLayer({
 }
 
 function PdfPageView({
+    lang,
     pdf,
     pageNumber,
     width,
@@ -1118,6 +1158,7 @@ function PdfPageView({
     onResizeNote,
     active,
 }: {
+    lang: string;
     pdf: PdfDocument;
     pageNumber: number;
     width: number;
@@ -1484,7 +1525,7 @@ function PdfPageView({
                                 data-testid={`pdf-translate-icon-${note.id}`}
                                 data-pdf-translation-icon=""
                                 {...(note.pending ? {} : { "data-pdf-translation-id": note.id })}
-                                aria-label={annotation ? "批注" : note.pending ? "正在翻译" : "译文"}
+                                aria-label={annotation ? tailText(lang, "Note", "批注") : note.pending ? tailText(lang, "Translating…", "正在翻译") : tailText(lang, "Translation", "译文")}
                                 aria-busy={note.pending ? true : undefined}
                                 onMouseDown={(event) => {
                                     if (event.button !== 0) return;
@@ -1509,14 +1550,14 @@ function PdfPageView({
                                         <path d="M14.4 17.2h4.4" />
                                     </svg>
                                 )}
-                                {annotation ? "批注" : "译文"}
+                                {annotation ? tailText(lang, "Note", "批注") : tailText(lang, "Translation", "译文")}
                             </button>
                         ) : null}
                         {iconHere && index === 0 && openNoteId === note.id ? (
                             <span
                                 className={(note.place ? note.place.above === true : popAbove) ? "companion-pdf-translation-pop companion-pdf-translation-pop--above" : "companion-pdf-translation-pop"}
                                 role="dialog"
-                                aria-label={annotation ? "批注" : "译文"}
+                                aria-label={annotation ? tailText(lang, "Note", "批注") : tailText(lang, "Translation", "译文")}
                                 data-testid={`pdf-translate-pop-${note.id}`}
                                 data-pdf-translation-pop=""
                                 style={popStyle}
@@ -1529,12 +1570,12 @@ function PdfPageView({
                                 <span
                                     className="companion-pdf-translation-grip"
                                     data-pdf-translation-grip=""
-                                    title="拖动"
+                                    title={tailText(lang, "Drag", "拖动")}
                                     aria-hidden="true"
                                 />
                                 <span className="companion-pdf-translation-head">
                                     <span className="companion-pdf-translation-kicker">
-                                        {annotation ? "批注" : note.pending ? "正在翻译" : "中文译文"}
+                                        {annotation ? tailText(lang, "Note", "批注") : note.pending ? tailText(lang, "Translating…", "正在翻译") : tailText(lang, "Chinese translation", "中文译文")}
                                     </span>
                                     <span className="companion-pdf-translation-actions">
                                         <button
@@ -1542,8 +1583,8 @@ function PdfPageView({
                                             className="companion-pdf-translation-action"
                                             data-testid={`pdf-translate-copy-${note.id}`}
                                             data-copy-state={copyFailedId === note.id ? "failed" : copiedId === note.id ? "copied" : undefined}
-                                            title={copyFailedId === note.id ? "复制失败" : copiedId === note.id ? "已复制" : (annotation ? "复制批注" : "复制译文")}
-                                            aria-label={copyFailedId === note.id ? "复制失败" : copiedId === note.id ? "已复制" : (annotation ? "复制批注" : "复制译文")}
+                                            title={copyFailedId === note.id ? tailText(lang, "Copy failed", "复制失败") : copiedId === note.id ? tailText(lang, "Copied", "已复制") : (annotation ? tailText(lang, "Copy note", "复制批注") : tailText(lang, "Copy translation", "复制译文"))}
+                                            aria-label={copyFailedId === note.id ? tailText(lang, "Copy failed", "复制失败") : copiedId === note.id ? tailText(lang, "Copied", "已复制") : (annotation ? tailText(lang, "Copy note", "复制批注") : tailText(lang, "Copy translation", "复制译文"))}
                                             disabled={note.pending || !note.translation}
                                             onMouseDown={(event) => {
                                                 event.preventDefault();
@@ -1570,8 +1611,8 @@ function PdfPageView({
                                             type="button"
                                             className="companion-pdf-translation-action"
                                             data-testid={`pdf-translate-close-${note.id}`}
-                                            title="关闭"
-                                            aria-label={annotation ? "关闭批注" : "关闭译文"}
+                                            title={tailText(lang, "Close", "关闭")}
+                                            aria-label={annotation ? tailText(lang, "Close note", "关闭批注") : tailText(lang, "Close translation", "关闭译文")}
                                             onMouseDown={(event) => {
                                                 event.preventDefault();
                                                 event.stopPropagation();
@@ -1584,7 +1625,7 @@ function PdfPageView({
                                 </span>
                                 </span>
                                 <span className="companion-pdf-translation-body" style={sized ? { flex: "1 1 auto", minHeight: 0, overflow: "auto" } : undefined}>
-                                    {!note.pending && note.clipped ? <span className="companion-pdf-translation-clip">仅翻译了前 4000 字</span> : null}
+                                    {!note.pending && note.clipped ? <span className="companion-pdf-translation-clip">{tailText(lang, "Only the first 4,000 characters were translated", "仅翻译了前 4000 字")}</span> : null}
                                     {note.pending ? (
                                         <span className="companion-pdf-translation-skeleton" aria-hidden="true">
                                             <span />
@@ -1595,13 +1636,13 @@ function PdfPageView({
                                 </span>
                                 {!note.pending && note.text ? (
                                     <span className="companion-pdf-translation-source" style={sized ? { flex: "0 0 auto" } : undefined} title={note.text}>
-                                        <span className="companion-pdf-translation-source-label">原文</span>
+                                        <span className="companion-pdf-translation-source-label">{tailText(lang, "Source", "原文")}</span>
                                         {note.text}
                                     </span>
                                 ) : null}
                                 <span
                                     data-pdf-translation-resize=""
-                                    title="调整大小"
+                                    title={tailText(lang, "Resize", "调整大小")}
                                     aria-hidden="true"
                                     onMouseDown={(event) => startPopResize(event, note)}
                                     style={{
@@ -1672,13 +1713,13 @@ function scrollPdfPageToTop(scroller: HTMLElement, el: HTMLElement) {
 }
 
 function PdfPager({
-    isZh,
+    lang,
     total,
     scrollerRef,
     pagesBoxRef,
     onReveal,
 }: {
-    isZh: boolean;
+    lang: string;
     total: number;
     scrollerRef: React.RefObject<HTMLDivElement | null>;
     pagesBoxRef: React.RefObject<HTMLDivElement | null>;
@@ -1845,7 +1886,7 @@ function PdfPager({
         <form
             className="companion-pdf-pager"
             data-testid="companion-pdf-pager"
-            aria-label={isZh ? `PDF 页码，第 ${current} 页，共 ${total} 页` : `PDF pages, page ${current} of ${total}`}
+            aria-label={tailText(lang, `PDF pages, page ${current} of ${total}`, `PDF 页码，第 ${current} 页，共 ${total} 页`)}
             onSubmit={(event) => {
                 event.preventDefault();
                 commitGoto(draftRef.current);
@@ -1855,8 +1896,8 @@ function PdfPager({
             <button
                 type="button"
                 data-testid="companion-pdf-page-prev"
-                aria-label={isZh ? "前一页" : "Previous page"}
-                title={isZh ? "前一页" : "Previous page"}
+                aria-label={tailText(lang, "Previous page", "前一页")}
+                title={tailText(lang, "Previous page", "前一页")}
                 disabled={current <= 1}
                 onMouseDown={(event) => press(event, () => stepPage(-1))}
                 onClick={(event) => activate(event, () => stepPage(-1))}
@@ -1867,7 +1908,7 @@ function PdfPager({
                 </svg>
             </button>
             <label className="companion-pdf-pager-field">
-                {isZh ? <span>第</span> : null}
+                {lang.startsWith("zh") ? <span>第</span> : null}
                 <input
                     ref={inputRef}
                     className="companion-pdf-pager-input"
@@ -1875,8 +1916,8 @@ function PdfPager({
                     inputMode="numeric"
                     autoComplete="off"
                     spellCheck={false}
-                    aria-label={isZh ? "跳转到页码" : "Go to page"}
-                    title={isZh ? "输入页码，回车或点前往" : "Type a page, then press Enter or Go"}
+                    aria-label={tailText(lang, "Go to page", "跳转到页码")}
+                    title={tailText(lang, "Type a page, then press Enter or Go", "输入页码，回车或点前往")}
                     value={draft}
                     onChange={(event) => {
                         const value = event.target.value.replace(/\D/g, "").slice(0, 6);
@@ -1898,24 +1939,24 @@ function PdfPager({
                         commitGoto(draftRef.current);
                     }}
                 />
-                <span data-testid="companion-pdf-page-total">/ {total}{isZh ? " 页" : ""}</span>
+                <span data-testid="companion-pdf-page-total">/ {total}{tailText(lang, "", " 页")}</span>
             </label>
             <button
                 type="button"
                 className="companion-pdf-pager-go"
                 data-testid="companion-pdf-goto-go"
-                aria-label={isZh ? "前往" : "Go"}
-                title={isZh ? "前往该页" : "Go to this page"}
+                aria-label={tailText(lang, "Go", "前往")}
+                title={tailText(lang, "Go to this page", "前往该页")}
                 onMouseDown={(event) => press(event, () => commitGoto(draftRef.current))}
                 onClick={(event) => activate(event, () => commitGoto(draftRef.current))}
             >
-                {isZh ? "前往" : "Go"}
+                {tailText(lang, "Go", "前往")}
             </button>
             <button
                 type="button"
                 data-testid="companion-pdf-page-next"
-                aria-label={isZh ? "后一页" : "Next page"}
-                title={isZh ? "后一页" : "Next page"}
+                aria-label={tailText(lang, "Next page", "后一页")}
+                title={tailText(lang, "Next page", "后一页")}
                 disabled={current >= total}
                 onMouseDown={(event) => press(event, () => stepPage(1))}
                 onClick={(event) => activate(event, () => stepPage(1))}
@@ -2054,7 +2095,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                     useSrc(next);
                     return;
                 }
-                fail(isZh ? "该 PDF 没有可预览的内容" : "This PDF has no content to preview");
+                fail(tailText(lang, "This PDF has no content to preview", "该 PDF 没有可预览的内容"));
             } catch (err) {
                 fail(err instanceof Error ? err.message : String(err || ""));
             }
@@ -2232,7 +2273,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                 return;
             }
             // A silent no-op looks like a broken menu, so say it plainly.
-            setTranslateError(isZh ? "复制失败，请手动选中后复制" : "Copy failed. Select the text and copy it manually.");
+            setTranslateError(tailText(lang, "Copy failed. Select the text and copy it manually.", "复制失败，请手动选中后复制"));
         });
     };
 
@@ -2366,7 +2407,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                 savePdfTranslations(requestPath, [...stored, row]);
                 finishPdfTranslation(requestPath, id);
             } catch (err) {
-                failPdfTranslation(requestPath, id, translateErrorText(err));
+                failPdfTranslation(requestPath, id, translateErrorText(err, lang));
             }
         })();
     };
@@ -2453,7 +2494,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         return <div data-testid="companion-pdf-error" className="companion-pdf-status" style={fill}>{error}</div>;
     }
     if (loading || !pdf) {
-        return <div data-testid="companion-pdf-loading" role="status" className="companion-pdf-status" style={fill}>{isZh ? "正在加载 PDF…" : "Loading PDF…"}</div>;
+        return <div data-testid="companion-pdf-loading" role="status" className="companion-pdf-status" style={fill}>{tailText(lang, "Loading PDF…", "正在加载 PDF…")}</div>;
     }
 
     const pages = [];
@@ -2465,7 +2506,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     return (
         <div className="companion-pdf-reader" data-testid="companion-pdf-reader" style={fill} onContextMenu={onContextMenu}>
             <PdfPager
-                isZh={isZh}
+                lang={lang}
                 total={pdf.numPages}
                 scrollerRef={scrollerRef}
                 pagesBoxRef={pagesBoxRef}
@@ -2487,9 +2528,9 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                     type="button"
                     className="companion-pdf-draw-toggle"
                     data-testid="pdf-draw-toggle"
-                    aria-label={isZh ? "手绘" : "Draw"}
+                    aria-label={tailText(lang, "Draw", "手绘")}
                     aria-pressed={drawMode}
-                    title={isZh ? (drawMode ? "退出手绘" : "手绘 — 在 PDF 上画线或框") : (drawMode ? "Exit drawing" : "Draw on the PDF")}
+                    title={drawMode ? tailText(lang, "Exit drawing", "退出手绘") : tailText(lang, "Draw on the PDF", "手绘 — 在 PDF 上画线或框")}
                     onClick={toggleDrawMode}
                 >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2499,17 +2540,17 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                 </button>
                 {drawMode ? (
                     <div className="companion-pdf-draw-panel" data-testid="pdf-draw-panel">
-                        <div className="companion-pdf-draw-colors" role="group" aria-label={isZh ? "手绘颜色" : "Drawing colour"}>
+                        <div className="companion-pdf-draw-colors" role="group" aria-label={tailText(lang, "Drawing colour", "手绘颜色")}>
                             {PDF_MARK_COLORS.map((option) => (
                                 <button
                                     key={option.id}
                                     type="button"
                                     className="companion-pdf-menu-color"
                                     data-testid={`pdf-draw-color-${option.id}`}
-                                    aria-label={isZh ? `${option.label}笔` : `${option.label} pen`}
+                                    aria-label={pdfSwatchLabel(option.id, lang, "pen")}
                                     aria-pressed={drawColor === option.id}
                                     disabled={drawTool === "eraser"}
-                                    title={isZh ? `${option.label}笔` : `${option.label} pen`}
+                                    title={pdfSwatchLabel(option.id, lang, "pen")}
                                     onClick={() => setDrawColor(option.id)}
                                 >
                                     <span style={{ background: PDF_DRAWING_INK[option.id] }} />
@@ -2517,13 +2558,13 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                             ))}
                         </div>
                         <span className="companion-pdf-draw-sep" aria-hidden="true" />
-                        <div className="companion-pdf-draw-tools" role="group" aria-label={isZh ? "手绘工具" : "Drawing tools"}>
+                        <div className="companion-pdf-draw-tools" role="group" aria-label={tailText(lang, "Drawing tools", "手绘工具")}>
                             <button
                                 type="button"
                                 data-testid="pdf-draw-line"
-                                aria-label={isZh ? "画线" : "Draw a line"}
+                                aria-label={tailText(lang, "Draw a line", "画线")}
                                 aria-pressed={drawTool === "line"}
-                                title={isZh ? "画线" : "Draw a line"}
+                                title={tailText(lang, "Draw a line", "画线")}
                                 onClick={() => selectDrawTool("line")}
                             >
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2535,9 +2576,9 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                             <button
                                 type="button"
                                 data-testid="pdf-draw-box"
-                                aria-label={isZh ? "画框" : "Draw a box"}
+                                aria-label={tailText(lang, "Draw a box", "画框")}
                                 aria-pressed={drawTool === "box"}
-                                title={isZh ? "画框" : "Draw a box"}
+                                title={tailText(lang, "Draw a box", "画框")}
                                 onClick={() => selectDrawTool("box")}
                             >
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2547,9 +2588,9 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                             <button
                                 type="button"
                                 data-testid="pdf-draw-eraser"
-                                aria-label={isZh ? "擦除" : "Erase"}
+                                aria-label={tailText(lang, "Erase", "擦除")}
                                 aria-pressed={drawTool === "eraser"}
-                                title={isZh ? "擦除 — 圈选要清除的线或框" : "Erase — drag a box over strokes or frames"}
+                                title={tailText(lang, "Erase — drag a box over strokes or frames", "擦除 — 圈选要清除的线或框")}
                                 onClick={() => selectDrawTool(drawTool === "eraser" ? lastShapeToolRef.current : "eraser")}
                             >
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2564,9 +2605,9 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                             <button
                                 type="button"
                                 data-testid="pdf-draw-undo"
-                                aria-label={isZh ? "撤销上一笔" : "Undo the last stroke"}
+                                aria-label={tailText(lang, "Undo the last stroke", "撤销上一笔")}
                                 disabled={!drawings.some((item) => !item.shared)}
-                                title={isZh ? "撤销上一笔" : "Undo the last stroke"}
+                                title={tailText(lang, "Undo the last stroke", "撤销上一笔")}
                                 onClick={undoDrawing}
                             >
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2583,6 +2624,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                 {pages.map((page) => (
                     <PdfPageView
                         key={page}
+                        lang={lang}
                         pdf={pdf}
                         pageNumber={page}
                         width={width}
@@ -2606,6 +2648,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             </div>
             {menu ? (
                 <PdfSelectionMenu
+                    lang={lang}
                     state={menu}
                     selectionText={selectionText}
                     onTranslate={translateSelection}

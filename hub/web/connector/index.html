@@ -16,6 +16,7 @@
   <div class="toolbar" aria-label="Language">
     <button class="lang-btn active" data-lang="zh" type="button" aria-pressed="true">中文</button>
     <button class="lang-btn" data-lang="en" type="button" aria-pressed="false">English</button>
+    <button class="lang-btn" data-lang="mn" type="button" aria-pressed="false">Монгол</button>
   </div>
 </header>
 
@@ -477,6 +478,193 @@ POST /api/device-gateway/v1/meeting-recordings/{recording_id}/process
         <tr><td>5xx</td><td>Temporary Hub failure</td><td>Retry according to the endpoint; for <code>/incoming</code>, reuse the original IDs and retry only when at-least-once semantics are acceptable.</td></tr>
       </tbody></table>
       <p class="source-note">Contract sources: <code>iot-agentos/main/main.c</code>, <code>hub/internal/im/device_gateway.go</code>, and <code>hub/internal/httpapi/hardware_meeting_recordings.go</code>.</p>
+    </section>
+  </section>
+
+  <section class="lang-panel" data-lang-panel="mn">
+    <div class="hero">
+      <p class="version">MaClaw гуравдагч талын техник хангамжийн протокол · Протокол 1.1 · одоогийн ESP32-S3 клиенттэй тааруулсан</p>
+      <h1>Гуравдагч талын техник хангамжийг MaClaw Hub-д холбох</h1>
+      <p class="lead">Төхөөрөмж нэг удаагийн хослуулах кодыг тогтвортой Bearer Token-оор сольж, бодит оролт, гаралт, техник хангамжийн чадвараа зарлан, текст, аудио, тохиргоо болон үргэлжлүүлж болох хурлын бичлэгийг HTTPS JSON, курсорын урт лавлагаа, зурвас бүрийн ACK-аар солилцоно.</p>
+      <div class="facts" aria-label="Протоколын товч">
+        <span><strong>Эх</strong> <code>https://&lt;hub&gt;</code></span>
+        <span><strong>Зурвас</strong> <code>/api/im-gateway/v1</code></span>
+        <span><strong>Хослуулалт</strong> <code>/api/device-gateway/v1</code></span>
+        <span><strong>Дамжуулалт</strong> HTTPS + JSON</span>
+      </div>
+      <aside class="scope-note"><strong>Хамрах хүрээ</strong>Энэ хуудас Hub-ийн нийтийн техник хангамжийн протоколыг тодорхойлно. MaClaw GUI-ийн <code>127.0.0.1:18777</code> дээрх буцах холболтын гуравдагч талын програм хангамжийн гарц үндсэн зурвасын бүтцийг хуваалцдаг боловч энд дурдсан Hub-ийн хослуулалт, төхөөрөмжийн чадвар, хурлын бичлэгийн өргөтгөлийг ашигладаггүй.</aside>
+    </div>
+
+    <nav class="toc" aria-label="Агуулга">
+      <strong>Энэ хуудсанд</strong>
+      <a href="#mn-flow">Урсгал</a><a href="#mn-pair">Хослуулалт</a><a href="#mn-handshake">Чадвар</a>
+      <a href="#mn-message">Зурвас ба медиа</a><a href="#mn-poll">Лавлагаа ба ACK</a><a href="#mn-meeting">Хурал</a>
+      <a href="#mn-runtime">Ажиллагааны гэрээ</a><a href="#mn-errors">Алдаа</a>
+    </nav>
+
+    <section id="mn-flow" class="doc-section">
+      <h2>1. Нэгтгэлийн урсгал</h2>
+      <ol class="flow-list">
+        <li><span>1</span><div><strong>Хослуулах код үүсгэх</strong><p>MaClaw GUI-д Тохиргоо / Зурвасын хандалт / Гуравдагч талын хандалт / Техник хангамжийн тохиргоо хэсгийг нээнэ. 6 оронтой код үүсгэнэ. Код 30 минутын дараа хүчингүй болж, нэг л удаа хэрэглэгдэнэ.</p></div></li>
+        <li><span>2</span><div><strong>Баталгаажуулалтын мэдээллээр солих</strong><p>Тогтвортой <code>clientId</code>-ээр <code>POST /pair</code> дуудна. Буцаасан <code>gatewayToken</code>-ийг аюулгүй хадгалж, локал хослуулах кодыг устгана.</p></div></li>
+        <li><span>3</span><div><strong>Чадвар тохиролцох</strong><p>Асаах бүрд шинэ <code>bootSessionId</code> болон бодит чадвартайгаар <code>POST /handshake</code> дуудна. Энгийн гар барилтын шинэчлэлд <code>bootSessionId</code>-ийг солихгүй.</p></div></li>
+        <li><span>4</span><div><strong>Зурвас солилцох</strong><p>Оролтыг <code>POST /incoming</code> дуудлагаар илгээнэ. Яг нэг <code>GET /outgoing</code> уншигч ажиллуулж, боловсруулсан зурвасыг <code>POST /ack</code> дуудлагаар ACK хийнэ.</p></div></li>
+        <li><span>5</span><div><strong>Сэргээх төлөвийг хадгалах</strong><p>Token болон хурлын байршуулалтын явцыг хадгална. Курсорыг зөвхөн клиент тогтвортой давхардал арилгах төлөвтэй үед хадгална. Одоогийн ESP32 курсороо RAM-д байлгаж, дахин ачаалсны дараа тэгээс эхэлдэг бөгөөд баталгаажсан зурвасыг алгасахдаа Hub-ийн ACK төлөвт тулгуурлана.</p></div></li>
+      </ol>
+    </section>
+
+    <section id="mn-pair" class="doc-section">
+      <h2>2. Хослуулалт ба баталгаажуулалт</h2>
+      <h3>POST /api/device-gateway/v1/pair</h3>
+      <pre><code>{"clientId":"esp32s3-pet-001","pairCode":"123456"}</code></pre>
+      <p><code>pairCode</code> нь үндсэн талбар. Сервер хуучин <code>code</code> талбарыг зөвхөн аль хэдийн суулгасан програм хангамжид хүлээн авна. Амжилттай үед <code>201 Created</code> буцаана:</p>
+      <pre><code>{"ok":true,"gatewayToken":"&lt;64 тэмдэгттэй төхөөрөмжийн Token&gt;","clientId":"esp32s3-pet-001"}</code></pre>
+      <p>Ижил <code>clientId</code>-ийг дахин хослуулахад өмнөх Token хүчингүй болж, хуучирсан төхөөрөмжийн дараалал цэвэрлэгдэнэ. Эрүүл байдлын шалгалт, хослуулалт болон <code>mediaToken</code>-оор хамгаалагдсан URL-аас бусад хүсэлтэд дараахыг илгээнэ:</p>
+      <pre><code>Authorization: Bearer &lt;gatewayToken&gt;</code></pre>
+      <aside class="warning"><strong>Татгалзсан Token-ийг бүү устга</strong>Гар барилтын <code>401</code> эсвэл <code>403</code> дээр хослуулалт сэргээх горимд орж, оношилгоонд зориулж хуучин Token-ийг хадгална. Сүлжээний алдаа, <code>408</code>, <code>429</code> болон <code>5xx</code> нь дахин оролдох боломжтой бөгөөд дахин хослуулалт эхлүүлж болохгүй.</aside>
+      <details><summary>Сонголтот дуут хослуулалт</summary><div class="details-body"><p><code>POST /api/device-gateway/v1/pair/voice</code> нь хамгийн ихдээ 512 KiB богино WAV хүлээн авч, <code>X-MaClaw-Client-ID</code> шаардана. Сервер яг 6 хэлсэн цифрийг ялгана. Энэ цэг хурдны хязгаартай бөгөөд ASR боломжгүй үед <code>503</code> буцаана.</p><pre><code>Content-Type: audio/wav
+X-MaClaw-Client-ID: esp32s3-pet-001
+
+&lt;WAV-ын түүхий байт&gt;</code></pre></div></details>
+    </section>
+
+    <section id="mn-handshake" class="doc-section">
+      <h2>3. Эхлэлийн гар барилт ба чадварын тохиролцоо</h2>
+      <h3>POST /api/im-gateway/v1/handshake</h3>
+      <p>Үндсэн <code>clientCapabilities</code> талбарыг ашиглана. Сервер хуучин <code>capabilities</code> талбарт ижил бүтэцтэй объектыг хүлээн авсаар байгаа боловч шинэ нэгтгэл тэр өөр нэрийг ашиглах ёсгүй.</p>
+      <pre><code>{
+  "clientId": "esp32s3-pet-001", "clientName": "ESP32-S3 Pet",
+  "bootSessionId": "9f1c...32-hex-тэмдэгт", "protocolVersion": "1.1",
+  "clientCapabilities": {
+    "input": {"modalities":["text","audio"],"audio":{"mimeTypes":["audio/wav"],"sampleRates":[16000],"channels":1}},
+    "output": {
+      "modalities":["text","audio"],"preferred":["audio","text"],
+      "combinations":[["text"],["audio","text"]],
+      "text":{"maxChars":240,"markdown":false,"locale":"mn"},
+      "audio":{"mimeTypes":["audio/wav"],"sampleRates":[16000],"channels":1,"playback":true,"deliveryModes":["url"],"maxDownloadBytes":98304}
+    },
+    "features":{"petStates":true,"petAnimation":false,"petAsset":false,"ambientDisplay":true,"meetingRecorder":true,"volumeControl":true}
+  },
+  "tools":[
+    {"name":"alarm_create","risk":"low","inputSchema":{"type":"object","properties":{"triggerAtEpochMs":{"type":"integer"},"label":{"type":"string","maxLength":48}},"required":["triggerAtEpochMs"]}},
+    {"name":"alarm_clear_all","risk":"medium","inputSchema":{"type":"object","properties":{}}},
+    {"name":"alarm_clear","risk":"medium","inputSchema":{"type":"object","properties":{"index":{"type":"integer","minimum":1}},"required":["index"]}},
+    {"name":"alarm_list","risk":"low","inputSchema":{"type":"object","properties":{}}}
+  ]
+}</code></pre>
+      <p>Төхөөрөмж үнэхээр гүйцэтгэж чадах боломжийг л зарлана. Тохиролцсоны дараа Hub зарлаагүй оролтыг татгалзаж, гаралтыг хүлээн зөвшөөрсөн гэрээнд нийцүүлэн шүүж, танаж эсвэл хөрвүүлнэ. Гаралт зарлаагүй хуучин клиент зөвхөн текст болно.</p>
+      <pre><code>{
+  "ok":true,"mode":"maclaw","protocolVersion":"1.1",
+  "channelId":"thirdparty:esp32s3-pet-001","serverTime":1781028000000,
+  "poll":{"timeoutSec":30,"maxTimeoutSec":30,"maxBatchSize":20,"maxLimit":20},
+  "limits":{"maxBodyBytes":1048576,"maxMediaBytes":10485760},
+  "capabilitiesAccepted":{"input":{},"output":{},"features":{}},
+  "meetingRecording":{"basePath":"/api/device-gateway/v1/meeting-recordings","chunkSize":1048576,"contentTypes":["audio/wav"],"modes":{"keep":true,"transcript":true,"minutes":true}}
+}</code></pre>
+      <p><code>meetingRecording</code> боломжгүй үед орхигдоно. Боловсруулалтын горим нь ажиллагч нь тохируулагдсан үед л зарлагдана; үргэлж хариуг дагана.</p>
+      <h3>Клиентийн талын хэрэгсэл</h3>
+      <p>Дээд түвшний <code>tools</code> массив нь энэ гар барилтын төхөөрөмжийн хэрэгслийн каталог юм. Hub үүнийг тухайн төхөөрөмжөөс ирэх дараагийн зурваст хавсаргана. Одоогийн ESP32 нь <code>alarm_create</code>, <code>alarm_clear_all</code>, <code>alarm_clear</code>, <code>alarm_list</code>-ийг бүртгэнэ. Хамгийн ихдээ 16 сэрүүлэг болон төлөв өөрчилдөг хэрэгслийн дуудлагын хамгийн сүүлийн найман үр дүнг NVS-д хадгална. Үр дүнгийн кэш нь тогтмол тооны эргэлддэг слот бөгөөд амжилт болон тодорхой үр дүнтэй алдааг агуулна. Энэ нь байнгын дуудлагын түүх биш. Зөвхөн уншдаг <code>alarm_list</code> дуудлага кэшлэгдэхгүй, дахин гүйцэтгэхэд аюулгүй. Шинэчлэгдсэн гар барилт каталогийг бүхэлд нь сольдог тул төхөөрөмжийн цаашид дэмжихгүй хэрэгслийг хасна.</p>
+      <p>Hub/GUI энгийн гарах дарааллаар <code>tool_call</code> хүргэж болно. Төхөөрөмж зөвхөн өөрөө бүртгэж, хэрэгжүүлсэн нэрийг гүйцэтгэнэ. Давхардлыг <code>toolCall.idempotencyKey</code>-ээр арилгаж, байхгүй бол <code>toolCall.id</code>-д шилжинэ. Ерөнхий протокол 128 хүртэлх тэмдэгт бүхий танигчийг зөвшөөрдөг. Харин одоогийн ESP32 64 байтын тогтвортой үр дүнгийн слот ашигладаг тул төлөв өөрчилдөг дуудлагын идемпотент түлхүүр хамгийн ихдээ 63 ASCII тэмдэгт байх ёстой. Үүнээс урт буюу ASCII бус түлхүүрийг гүйцэтгэхээс өмнө <code>invalid_arguments</code> гэж татгалзана. Гүйцэтгэсний дараа <code>POST /api/im-gateway/v1/tool-result</code> дуудна. Үр дүн амжилттай илгээгдсэний дараа л анхны <code>tool_call</code>-ийг ACK хийнэ.</p>
+      <pre><code>{"id":"hub_out_...","type":"tool_call","conversationId":"default","toolCall":{"id":"call-1","name":"alarm_create","arguments":{"triggerAtEpochMs":1781031600000,"label":"Ус уух"},"idempotencyKey":"call-1"}}</code></pre>
+      <pre><code>POST /api/im-gateway/v1/tool-result
+{"clientId":"esp32s3-pet-001","resultId":"call-1","toolCallId":"call-1","conversationId":"default","status":"success","idempotencyKey":"call-1","result":{"count":1}}</code></pre>
+      <p><code>status</code>-ийн үндсэн утга нь <code>success</code>, <code>error</code>, <code>rejected</code>, <code>cancelled</code>, <code>timeout</code> юм. Сервер <code>succeeded/failed</code> зэрэг нийцлийн бичлэгийг мөн нормчилдог. Хэрэгслийн үр дүн шинэ Agent оролт болж асинхроноор дамжина. Тиймээс <code>200 accepted=true</code> нь зөвхөн Hub хүлээн авсныг батална.</p>
+    </section>
+
+    <section id="mn-message" class="doc-section">
+      <h2>4. Ирэх зурвас ба серверийн медиа</h2>
+      <h3>Текст: POST /api/im-gateway/v1/incoming</h3>
+      <pre><code>{
+  "clientId":"esp32s3-pet-001","eventId":"text-1781028000000","messageId":"text-1781028000000",
+  "conversationId":"default","user":{"id":"local-user","displayName":"ESP32-S3 хэрэглэгч"},
+  "message":{"id":"text-1781028000000","type":"text","text":"/cancel"}
+}</code></pre>
+      <p><code>200</code> ирэхэд <code>maclawMessageId</code> эсвэл <code>messageId</code>-ийг хариуны холбоос түлхүүрээр хадгална. Хуучин сервер аль алиныг нь буцаахгүй бол илгээсэн <code>eventId</code>-д шилжинэ.</p>
+
+      <h3>Аудио: URL бэлтгэх → PUT → медиа ID ишлэх</h3>
+      <pre><code>POST /api/im-gateway/v1/media/upload-url
+{"clientId":"esp32s3-pet-001","type":"voice","fileName":"voice.wav","mimeType":"audio/wav","sizeBytes":48236}</code></pre>
+      <pre><code>{
+  "ok":true,"media":{"id":"server-media-id","type":"voice","mimeType":"audio/wav","sizeBytes":48236},
+  "upload":{"method":"PUT","url":"https://&lt;hub&gt;/api/im-gateway/v1/media/server-media-id/upload?mediaToken=...","contentType":"audio/wav","maxBytes":10485760},
+  "download":{"url":"https://&lt;hub&gt;/api/im-gateway/v1/media/server-media-id?mediaToken=..."},"expiresAt":1781114400000
+}</code></pre>
+      <p><code>upload.url</code> руу түүхий байтыг PUT хийнэ. URL өөрийн <code>mediaToken</code>-ийг агуулна; бүү угсарч, бүү өөрчил. Тэг биш <code>sizeBytes</code> зарласан бол байршуулсан байтын тоо яг таарах ёстой. Hub одоогоор төхөөрөмжийн медиа объект бүрт 10 MiB зөвшөөрч, объектыг ойролцоогоор 24 цагийн дараа цэвэрлэнэ.</p>
+      <pre><code>{
+  "clientId":"esp32s3-pet-001","eventId":"voice-1781028000000","messageId":"voice-1781028000000","conversationId":"default",
+  "user":{"id":"local-user","displayName":"ESP32-S3 хэрэглэгч"},
+  "message":{"id":"voice-1781028000000","type":"voice","mimeType":"audio/wav","attachments":[{"id":"server-media-id","type":"voice","mimeType":"audio/wav"}]}
+}</code></pre>
+      <aside class="info"><strong>ESP32-ийн хязгаар</strong>Hub-ийн техник хангамжийн гарц байршуулсан <code>attachments[].id</code>-ийг танина. Техник хангамжийн зурваст base64-ийг мөрөнд бүү оруулж, Hub-аас дурын гадаад URL татахыг бүү хүс. Одоогийн ESP32 зөвхөн 16 kHz, нэг суваг, PCM WAV байршуулна.</aside>
+    </section>
+
+    <section id="mn-poll" class="doc-section">
+      <h2>5. Гарах лавлагаа, холбоос ба ACK</h2>
+      <pre><code>GET /api/im-gateway/v1/outgoing?clientId=esp32s3-pet-001&amp;cursor=0&amp;limit=16&amp;timeout=5</code></pre>
+      <ul>
+        <li>Төхөөрөмж бүрт нэг гарах уншигч ажиллуулна. Одоогийн ESP32 идэвхтэй команд үед 2 секундын лавлагаа, сул үед 5 секунд ашиглана.</li>
+        <li><code>limit</code> нь 1–20, <code>timeout</code> нь 0–30 секундын хязгаарт хавчигдана.</li>
+        <li><code>nextCursor</code> нь тухайн хуудасны сүүлийн зурвасыг заана. Хуудсыг бүхэлд нь боловсруулсан эсвэл аюулгүй давхардал арилгаж чадсаны дараа л хадгална. Дахин оролдох медиа тоглогдоогүй үед хуучин курсорыг үргэлжлүүлэн ашиглана.</li>
+      </ul>
+      <pre><code>{"ok":true,"messages":[{"id":"hub_out_1781028005123_12","seq":12,"conversationId":"default","replyTo":"voice-1781028000000","type":"text","text":"Нартай, 27°C.","metadata":{"acp_turn":"final"}}],"nextCursor":"12","hasMore":false}</code></pre>
+      <p>Холбоосыг энэ дарааллаар тогтооно: <code>replyTo</code>, <code>replyToMessageId</code>, <code>source_message_id</code>, <code>sourceMessageId</code>, <code>sourceMessageID</code>. Эдгээр талбар <code>metadata</code> эсвэл <code>extra</code> дотор байж болно. <code>progress: true</code> эсвэл <code>metadata.acp_turn=progress/working</code> нь завсрын төлөв, <code>final/complete/completed</code> нь төгсгөлийн төлөв юм.</p>
+      <p>Одоогийн төхөөрөмжийн гаралтын төрөлд <code>text</code>, <code>error</code>, <code>audio/voice</code>, <code>ambient</code>, <code>pet_state</code>, <code>hardware_config</code>, <code>meeting_result</code> болон нэг алхмын <code>tool_call</code> багтана. Ерөнхий протокол <code>tool_plan</code>/<code>tool_cancel</code>-ийг мөн илэрхийлж чадна. Гэвч одоогийн ESP32 эдгээр зурвасын төрлийг гүйцэтгэдэггүй тул сервер тэдгээрийг энэ клиентэд илгээх ёсгүй. Одоогийн ESP32 мөр доторх <code>data/file_data</code>-тай нийцтэй хэвээр боловч зөвхөн URL хүргэлтийг зарлана. Шинэ сервер <code>/api/im-gateway/v1/media/</code> гэж эхэлсэн ижил эх үүсвэрийн харьцангуй URL буцаах ёстой. 96 KiB ба түүнээс их хариуны бие татгалзагдана.</p>
+      <h3>POST /api/im-gateway/v1/ack</h3>
+      <pre><code>{"clientId":"esp32s3-pet-001","messageIds":["hub_out_1781028005123_12"],"status":"delivered"}</code></pre>
+      <p>Үндсэн төлөв нь <code>delivered</code>, <code>read</code> болон <code>failed</code> юм. Сервер байхгүй эсвэл танигдаагүй утгыг <code>delivered</code> болгож нормчилдог тул шинэ клиент тусгай төлөвт найдах ёсгүй. Нэг хүсэлт хамгийн ихдээ 100 хоосон биш зурвасын ID-г ACK хийж болно. Текст, тохиргоо болон амжилттай тоглуулсан аудиог <code>delivered</code> гэж ACK хийнэ. Байнгын формат, чадвар, тоглуулалтын алдааг <code>failed</code> гэж ACK хийнэ. Түр зуурын таталт, санах ойн хуваарилалт, I2S эсвэл завгүй байдлын алдааг ACK бүү хий; дараагийн лавлагаанд үлдээнэ.</p>
+    </section>
+
+    <section id="mn-meeting" class="doc-section">
+      <h2>6. Үргэлжлүүлж болох хурлын бичлэг</h2>
+      <p>Энэ урсгалыг гар барилт <code>meetingRecording</code> агуулсан үед л идэвхжүүлнэ. Буцаасан <code>basePath</code> болон <code>chunkSize</code>-ийг ашиглана.</p>
+      <table><thead><tr><th>Алхам</th><th>Хүсэлт</th><th>Амжилт</th></tr></thead><tbody>
+        <tr><td>Үүсгэх</td><td><code>POST {basePath}</code></td><td><code>201</code></td></tr>
+        <tr><td>Хэсэг</td><td><code>PUT {basePath}/{id}/chunks/{index}</code></td><td><code>204</code></td></tr>
+        <tr><td>Дуусгах</td><td><code>POST {basePath}/{id}/complete</code></td><td><code>200</code></td></tr>
+        <tr><td>Боловсруулах</td><td><code>POST {basePath}/{id}/process</code></td><td><code>202</code></td></tr>
+        <tr><td>Төлөв</td><td><code>GET {basePath}/{id}</code></td><td><code>200</code></td></tr>
+      </tbody></table>
+      <pre><code>POST /api/device-gateway/v1/meeting-recordings
+{"title":"Техник хангамжийн хурал","purpose":"","conversation_id":"default","content_type":"audio/wav"}
+
+PUT /api/device-gateway/v1/meeting-recordings/{recording_id}/chunks/0
+X-Chunk-SHA256: &lt;энэ хэсгийн sha256&gt;
+
+POST /api/device-gateway/v1/meeting-recordings/{recording_id}/complete
+{"chunks":3,"sha256":"&lt;бүтэн WAV-ын sha256&gt;","duration_sec":82.125}
+
+POST /api/device-gateway/v1/meeting-recordings/{recording_id}/process
+{"mode":"minutes"}</code></pre>
+      <p>Хэсгүүд тэгээс тасралтгүй дугаарлагдаж, 1 байтаас 1 MiB хүртэлх хэмжээтэй байх бөгөөд SHA-256 шаардана. Ижил индексийг ижил байтаар дахин оролдох нь аюулгүй. Hub нэгтгэсэн файлыг шалгана. Бичлэгийн квот 512 MiB. 16 kHz, нэг суваг, S16LE WAV-ын зарлаж болох хамгийн урт хугацаа ойролцоогоор 16,777 секунд (4 цаг 39 минут). Бичлэгийн төлөв анхдагчаар 30 хоног хадгалагдана. Зөвхөн зарлагдсан <code>keep</code>, <code>transcript</code> эсвэл <code>minutes</code> горимыг сонгоно.</p>
+      <aside class="info"><strong>Үргэлжлүүлэх гэрээ</strong><code>recording_id</code>, дараагийн хэсэг болон үе шатыг амжилттай хэсэг бүрийн дараа хадгална. Дахин ассаны дараа төлвийг GET хийнэ: <code>uploading</code> үед хэсгийг үргэлжлүүлж, <code>uploaded/failed</code> үед боловсруулалтыг үргэлжлүүлж, <code>processing/ready</code> үед дахин бүү илгээ. Төгсгөлийн үр дүн энгийн гарах дарааллаар <code>meeting_result</code> болж ирнэ.</aside>
+    </section>
+
+    <section id="mn-runtime" class="doc-section">
+      <h2>7. Ажиллагаа ба аюулгүй байдлын гэрээ</h2>
+      <div class="contract-grid">
+        <article><h3>Тогтвортой танигч</h3><p><code>clientId</code>-ийг физик төхөөрөмж бүрт тогтвортой байлгана. Token болон хурлын сэргээх төлөвийг хадгална. Одоогийн ESP32 гарах курсороо RAM-д байлгаж, хүйтэн асаалтын дараа тэгээс үргэлжлүүлнэ. 96-аас ихгүй тэмдэгт бүхий хүйтэн асаалтын <code>bootSessionId</code> үүсгэнэ.</p></article>
+        <article><h3>Нэг HTTP төлөвлөгч</h3><p>Нөөц хязгаартай төхөөрөмж энгийн HTTP ажлыг цуваа болгож, лавлагаа, аудио байршуулалт болон ACK нь TLS санах ойн төлөө өрсөлдөхгүй байх ёстой. Уншигч нэмэхийн оронд идэвхтэй лавлагааг богиносгоно.</p></article>
+        <article><h3>Хамгийн бага бодит чадвар</h3><p>Бодит дэлгэц, чанга яригч, микрофон, кодчилогч болон санах ойн хязгаарыг тодорхойлно. Hub энэ гэрээгээр том аудиог URL болгож, текстийг танаж, дэмжигдээгүй гаралтыг шүүнэ.</p></article>
+        <article><h3>Медиагийн аюулгүй байдал</h3><p>Зөвхөн Hub-ийн буцаасан, ижил эх үүсвэрийн медиа URL ашиглана. Одоогийн ESP32 аудио зам <code>/api/im-gateway/v1/media/</code> гэж эхлэхийг нэмж шаардана.</p></article>
+      </div>
+      <h3>Санал болгох дахин оролдлого</h3>
+      <p>Хослуулалт ба гар барилтад 2 секундээс 60 секунд хүртэлх экспоненциал хоцролт ашиглана. Лавлагаа амжилтгүй болсны дараа дор хаяж 3 секунд хүлээнэ. <code>accepted=true</code> бүхий <code>200</code> хүлээн авсны дараа <code>/incoming</code> хүсэлтийг хэзээ ч дахин бүү илгээ. Тодорхой амжилтын хариу ирээгүй, бизнесийн үйлдэл дор хаяж нэг удаагийн боловсруулалтыг тэсвэрлэх үед л хязгаарлагдмал тоогоор хоцролттой дахин оролдож, ижил <code>eventId</code>/<code>messageId</code>-ийг дахин ашиглана. Одоогийн ESP32 дуу илгээлтийг хамгийн ихдээ гурван удаа оролдоно.</p>
+      <aside class="warning"><strong><code>/incoming</code> тогтвортой идемпотент биш</strong>Hub IM цөм одоогоор <code>messageId</code>-ээр ойролцоогоор 10 секундын турш санах ойд, боломжийн хэрээр давхардал арилгана. Энэ төлөв хадгалагдахгүй. Цонх өнгөрсний дараа эсвэл Hub дахин ассаны дараа дахин илгээвэл дахин боловсруулагдаж болно. Төхөөрөмжийн гарцын хариу энгийн ажиллагаанд <code>duplicate</code>-ийг <code>false</code> гэж мэдээлдэг тул энэ нь тогтвортой идемпотентийн баталгаа биш. Хязгааргүй дахин оролдлогоос зайлсхийнэ.</aside>
+    </section>
+
+    <section id="mn-errors" class="doc-section">
+      <h2>8. Алдааны боловсруулалт</h2>
+      <pre><code>{"ok":false,"error":{"code":"unauthorized","message":"Bearer Token дутуу эсвэл буруу"}}</code></pre>
+      <table><thead><tr><th>HTTP</th><th>Утга</th><th>Үйлдэл</th></tr></thead><tbody>
+        <tr><td>400</td><td>Буруу JSON, талбар, чадвар, медиа эсвэл хэсэг</td><td>Хүсэлтийг засна. Өөрчлөлгүйгээр тасралтгүй бүү давтана.</td></tr>
+        <tr><td>401 / 403</td><td>Буруу код, баталгаажуулалт эсвэл клиент тохирохгүй</td><td>Хамгаалагдсан дуудлагыг зогсоож, хослуулалт сэргээх горимд орно.</td></tr>
+        <tr><td>404</td><td>Медиа эсвэл хурлын объект олдсонгүй</td><td>Медиаг дахин бэлтгэх эсвэл шинэ бичлэг үүсгэнэ.</td></tr>
+        <tr><td>409</td><td>Байршуулалт эсвэл боловсруулалтын үе шат зөрчилдсөн</td><td>Төлвийг GET хийж, серверийн төлвөөс үргэлжлүүлнэ.</td></tr>
+        <tr><td>429</td><td>Хурд хязгаарлагдсан</td><td><code>Retry-After</code>-ийг мөрдөж, хоцролт хийнэ.</td></tr>
+        <tr><td>503</td><td>GUI дамжуулагч, ASR эсвэл боловсруулагч боломжгүй</td><td>Локал өгөгдлийг хадгалж, дараа дахин оролдох эсвэл боломжтой горим сонгоно.</td></tr>
+        <tr><td>5xx</td><td>Hub-ийн түр алдаа</td><td>Төгсгөлийн цэгт тохируулан дахин оролдоно. <code>/incoming</code>-ийн хувьд анхны ID-г дахин ашиглаж, зөвхөн дор хаяж нэг удаагийн утгыг хүлээн зөвшөөрөх үед дахин оролдоно.</td></tr>
+      </tbody></table>
+      <p class="source-note">Гэрээний эх сурвалж: <code>iot-agentos/main/main.c</code>, <code>hub/internal/im/device_gateway.go</code>, <code>hub/internal/httpapi/hardware_meeting_recordings.go</code>.</p>
     </section>
   </section>
 </main>

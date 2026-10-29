@@ -30,6 +30,30 @@ func TestParseNonStreamOpenAIResponseBodySurfacesErrorObject(t *testing.T) {
 	}
 }
 
+func TestParseSSEStreamKeepsQoderBillingCode(t *testing.T) {
+	body := "data: {\"error\":{\"message\":\"Qoder 上游错误 (110): Billing daily count exceeded\",\"code\":\"110\",\"type\":\"upstream_error\"}}\n\n"
+	_, err := parseSSEStreamWithReasoning(strings.NewReader(body), nil, nil)
+	var upstream *UpstreamModelError
+	if !errors.As(err, &upstream) || upstream.Code != "110" {
+		t.Fatalf("error = %#v", err)
+	}
+	if got := UserFacingError(err); got != "Qoder 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("user facing = %q", got)
+	}
+}
+
+func TestParseSSEStreamKeepsNumericQoderBillingCode(t *testing.T) {
+	body := "data: {\"code\":110,\"message\":\"Billing daily count exceeded\"}\n\n"
+	_, err := parseSSEStreamWithReasoning(strings.NewReader(body), nil, nil)
+	var upstream *UpstreamModelError
+	if !errors.As(err, &upstream) || upstream.Code != "110" {
+		t.Fatalf("error = %#v", err)
+	}
+	if got := UserFacingError(err); !strings.Contains(got, "日调用额度已用尽") {
+		t.Fatalf("user facing = %q", got)
+	}
+}
+
 func TestParseSSEStreamKeepsNormalChunk(t *testing.T) {
 	body := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
 	resp, err := parseSSEStreamWithReasoning(strings.NewReader(body), nil, nil)

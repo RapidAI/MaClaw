@@ -4,8 +4,13 @@ import { isLocalAIName, isLocalHumanParticipantId, isLocalParticipant, isLocalPa
 describe("localAIIdentity", () => {
     it("uses valid localized Local labels", () => {
         expect(localAINameForLang("en")).toBe("Local");
+        expect(localAINameForLang(undefined)).toBe("Local");
+        expect(localAINameForLang("mn")).toBe("Local");
+        expect(localAINameForLang("ja")).toBe("Local");
         expect(localAINameForLang("zh-CN")).toBe("\u672c\u673a");
+        expect(localAINameForLang("chinese")).toBe("\u672c\u673a");
         expect(localAINameForLang("zh-Hant")).toBe("\u672c\u6a5f");
+        expect(localAINameForLang("zh-TW")).toBe("\u672c\u6a5f");
     });
 
     it("recognizes localized Local labels with optional spaces", () => {

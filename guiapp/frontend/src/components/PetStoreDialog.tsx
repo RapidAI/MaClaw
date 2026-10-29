@@ -11,6 +11,8 @@ import {
 } from '../../wailsjs/go/main/App';
 import { useDialog } from './CustomDialog';
 import { openSettingsTab } from '../utils/settingsNavigation';
+import { intlLocale } from '../i18n';
+import { chromeText } from '../i18n/chromeText';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type StorePack = Record<string, any>;
@@ -20,8 +22,8 @@ type AccountTab = (typeof ACCOUNT_TABS)[number];
 const REPORT_PERIODS = ['day', 'month', 'year'] as const;
 type ReportPeriod = (typeof REPORT_PERIODS)[number];
 
-const t = (lang: Lang, zh: string, en: string) => lang === 'zh-Hans' || lang === 'zh-Hant' ? zh : en;
-const localeFor = (lang: Lang) => lang === 'zh-Hans' ? 'zh-CN' : lang === 'zh-Hant' ? 'zh-TW' : 'en-US';
+const t = (lang: Lang, zh: string, en: string) => chromeText(lang, en, zh);
+const localeFor = (lang: Lang) => intlLocale(lang);
 const errText = (err: unknown) => err instanceof Error ? err.message : String(err || 'Unknown error');
 const petStoreErrorText = (lang: Lang, err: unknown) => {
     const message = errText(err);
@@ -331,7 +333,9 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     const purchase = async (pack: StorePack) => {
         const price = Number(pack.price || 0);
         const ok = await showConfirm(
-            price > 0 ? t(lang, `确认使用 ${price} Credits 买断「${pack.name}」？购买后永久可下载。`, `Buy “${pack.name}” permanently for ${price} Credits?`) : t(lang, `确认免费获取「${pack.name}」？`, `Get “${pack.name}” for free?`),
+            price > 0
+                ? t(lang, '确认使用 {price} Credits 买断「{name}」？购买后永久可下载。', 'Buy “{name}” permanently for {price} Credits?').replace('{price}', String(price)).replace('{name}', String(pack.name))
+                : t(lang, '确认免费获取「{name}」？', 'Get “{name}” for free?').replace('{name}', String(pack.name)),
             t(lang, '确认购买', 'Confirm purchase'),
             { confirmText: t(lang, '获取', 'Get'), cancelText: t(lang, '取消', 'Cancel') },
         );
@@ -365,13 +369,13 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                 setInstalledPackIDs((current) => new Set(current).add(sourcePackID));
             }
             await loadRankings();
-            await showAlert(t(lang, `已安装宠物包：${id}`, `Installed pet pack: ${id}`), t(lang, '安装完成', 'Installed'));
+            await showAlert(t(lang, '已安装宠物包：{id}', 'Installed pet pack: {id}').replace('{id}', String(id)), t(lang, '安装完成', 'Installed'));
         }
         catch (err) { await showAlert(petStoreErrorText(lang, err), t(lang, '安装失败', 'Install failed')); }
         finally { setBusyID(''); }
     };
     const withdraw = async (pack: StorePack) => {
-        const ok = await showConfirm(t(lang, `下架「${pack.name}」后不会再被新用户获取；已购买用户仍可下载。`, `Unlist “${pack.name}”? Existing buyers keep lifetime downloads.`), t(lang, '下架宠物包', 'Unlist pet pack'), { confirmText: t(lang, '下架', 'Unlist'), cancelText: t(lang, '取消', 'Cancel'), confirmVariant: 'danger' });
+        const ok = await showConfirm(t(lang, '下架「{name}」后不会再被新用户获取；已购买用户仍可下载。', 'Unlist “{name}”? Existing buyers keep lifetime downloads.').replace('{name}', String(pack.name)), t(lang, '下架宠物包', 'Unlist pet pack'), { confirmText: t(lang, '下架', 'Unlist'), cancelText: t(lang, '取消', 'Cancel'), confirmVariant: 'danger' });
         if (!ok) return;
         setBusyID(packBusyKey(pack));
         try { await WithdrawPetStorePack(String(pack.id)); await loadAccount(); await loadPacks(); await loadReport(); }
@@ -452,7 +456,7 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                                     const owned = ownedSourcePackIDs.has(String(pack.source_pack_id || ''));
                                     const installed = isPackInstalled(pack);
                                     return <article className="pet-store-pack" key={String(pack.id)}>
-                                    <div className="pet-store-pack-art">{pack.preview_data_url ? <img src={String(pack.preview_data_url)} alt={t(lang, `${pack.name} 预览`, `${pack.name} preview`)} loading={index < 4 ? 'eager' : 'lazy'} decoding="async" /> : <span aria-hidden="true">{[...String(pack.name || '?')][0]}</span>}</div>
+                                    <div className="pet-store-pack-art">{pack.preview_data_url ? <img src={String(pack.preview_data_url)} alt={t(lang, '{name} 预览', '{name} preview').replace('{name}', String(pack.name))} loading={index < 4 ? 'eager' : 'lazy'} decoding="async" /> : <span aria-hidden="true">{[...String(pack.name || '?')][0]}</span>}</div>
                                     <div className="pet-store-pack-copy"><h3 title={String(pack.name || '')}>{pack.name}</h3><p>{pack.description || t(lang, '创作者未填写简介。', 'No description from the creator.')}</p></div>
                                     <dl><div><dt>{t(lang, '下载', 'Downloads')}</dt><dd>{number(pack.download_count)}</dd></div><div><dt>{t(lang, '销售额', 'Sales')}</dt><dd>{number(pack.sales_amount)}</dd></div><div><dt>{t(lang, '发布', 'Published')}</dt><dd>{date(pack.created_at, lang)}</dd></div></dl>
                                     <footer><span className={Number(pack.price) > 0 ? 'pet-store-price' : 'pet-store-free'}>{Number(pack.price) > 0 ? `${number(pack.price)} Credits` : t(lang, '免费', 'Free')}</span><button type="button" className="btn-primary" disabled={busyID !== '' || installed} onClick={() => void (owned ? install(pack) : purchase(pack))}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : installed ? t(lang, '已安装', 'Installed') : owned ? t(lang, '安装', 'Install') : t(lang, '获取', 'Get')}</button></footer>

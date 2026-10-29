@@ -310,6 +310,7 @@
   };
 
   function cat(key) {
+    if (global.hubDict) return global.hubDict('OVERVIEW_AGENT', CAI18N, key);
     var lang = global.currentLang === 'zh' ? 'zh' : 'en';
     return (CAI18N[lang] && CAI18N[lang][key]) || (CAI18N.en && CAI18N.en[key]) || key;
   }

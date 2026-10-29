@@ -2,6 +2,7 @@
  * Pure helpers for AppsPage one-click AppView workspace launch feedback.
  * Kept free of React so Vitest can cover message mapping without full page mounts.
  */
+import { tailText } from '../../i18n/mnTail';
 
 export type WorkspaceLaunchResult = {
     app_view_opened?: boolean;
@@ -27,22 +28,27 @@ export function formatWorkspaceLaunchIssue(
     if (!result || result.app_view_opened === true) {
         return null;
     }
-    const zh = !lang || lang.startsWith('zh');
-    const name = String(appName || '').trim() || (zh ? '应用' : 'App');
+    const name = String(appName || '').trim() || tailText(lang, 'App', '应用');
     const reason = String(result.reason || result.app_view_error || '').trim();
     if (reason === 'no_approval_instances') {
-        return zh
-            ? `「${name}」暂无待办审批实例，已打开应用页。`
-            : `"${name}" has no pending approval instances; app page opened.`;
+        return tailText(
+            lang,
+            `"${name}" has no pending approval instances; app page opened.`,
+            `「${name}」暂无待办审批实例，已打开应用页。`,
+        );
     }
     if (reason) {
-        return zh
-            ? `「${name}」工作区未打开：${reason}`
-            : `"${name}" workspace did not open: ${reason}`;
+        return tailText(
+            lang,
+            `"${name}" workspace did not open: ${reason}`,
+            `「${name}」工作区未打开：${reason}`,
+        );
     }
-    return zh
-        ? `「${name}」工作区未打开（可能未启用 MIS 数据服务或未配置 DataSrv 绑定）。`
-        : `"${name}" workspace did not open (MIS may be off or DataSrv bindings missing).`;
+    return tailText(
+        lang,
+        `"${name}" workspace did not open (MIS may be off or DataSrv bindings missing).`,
+        `「${name}」工作区未打开（可能未启用 MIS 数据服务或未配置 DataSrv 绑定）。`,
+    );
 }
 
 export function formatWorkspaceLaunchError(
@@ -50,12 +56,16 @@ export function formatWorkspaceLaunchError(
     error: unknown,
     lang?: string,
 ): string {
-    const zh = !lang || lang.startsWith('zh');
-    const name = String(appName || '').trim() || (zh ? '应用' : 'App');
+    const name = String(appName || '').trim() || tailText(lang, 'App', '应用');
     const detail = String((error as { message?: string })?.message || error || '').trim();
-    return zh
-        ? `「${name}」工作区打开失败${detail ? `：${detail}` : '。'}`
-        : `"${name}" workspace open failed${detail ? `: ${detail}` : '.'}`;
+    if (detail) {
+        return tailText(
+            lang,
+            `"${name}" workspace open failed: ${detail}`,
+            `「${name}」工作区打开失败：${detail}`,
+        );
+    }
+    return tailText(lang, `"${name}" workspace open failed.`, `「${name}」工作区打开失败。`);
 }
 
 /** Clear one app id from the per-tile issue map. */

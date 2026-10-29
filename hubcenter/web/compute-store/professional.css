@@ -173,7 +173,7 @@ svg { display: block; }
 
 .lang-switch {
   display: inline-grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, auto);
   height: 40px;
   padding: 3px;
   border: 1px solid var(--line);

@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { apiStoreProviders } from '../../config/apiStoreProviders';
+import { localizeText } from '../../i18n';
 import { useChatFontSizeCommit, type ChatFontSizeDraftRef } from '../settings/useChatFontSizeCommit';
 import { ApiStoreProviderCard } from './ApiStoreProviderCard';
 
@@ -26,20 +27,20 @@ export const ApiStorePage = ({ lang, t, chatFontSize, setChatFontSize, chatFontS
                                     ))}
                                 </div>
                                 <div className="form-group" style={{ marginBottom: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u804a\u5929\u5b57\u4f53\u5927\u5c0f' : lang === 'zh-Hant' ? '\u804a\u5929\u5b57\u9ad4\u5927\u5c0f' : 'Chat Font Size'}</h4>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{localizeText(lang, 'Chat Font Size', '聊天字体大小', '聊天字體大小')}</h4>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                                         <input type="range" min={12} max={24} step={1} value={chatFontSize}
                                             {...chatFontSizeHandlers}
-                                            aria-label={lang === 'zh-Hans' ? '\u804a\u5929\u5b57\u4f53\u5927\u5c0f' : lang === 'zh-Hant' ? '\u804a\u5929\u5b57\u9ad4\u5927\u5c0f' : 'Chat Font Size'}
+                                            aria-label={localizeText(lang, 'Chat Font Size', '聊天字体大小', '聊天字體大小')}
                                             style={{ flex: 1, accentColor: 'var(--theme-primary)' }} />
                                         <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{chatFontSize}px</span>
                                         <button onClick={() => commitChatFontSize(14)}
                                             style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}>
-                                            {lang === 'zh-Hans' ? '\u91cd\u7f6e' : lang === 'zh-Hant' ? '\u91cd\u7f6e' : 'Reset'}
+                                            {localizeText(lang, 'Reset', '重置', '重置')}
                                         </button>
                                     </div>
                                     <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
-                                        {lang === 'zh-Hans' ? '\u72ec\u7acb\u8c03\u6574 AI \u52a9\u624b\u804a\u5929\u533a\u7684\u5b57\u4f53\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u54cd\u754c\u9762\u7f29\u653e\u3002' : lang === 'zh-Hant' ? '\u7368\u7acb\u8abf\u6574 AI \u52a9\u624b\u804a\u5929\u5340\u7684\u5b57\u9ad4\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u97ff\u4ecb\u9762\u7e2e\u653e\u3002' : 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.'}
+                                        {localizeText(lang, 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.', '独立调整 AI 助手聊天区的字体大小（12-24px），不影响界面缩放。', '獨立調整 AI 助手聊天區的字體大小（12-24px），不影響介面縮放。')}
                                     </p>
                                 </div>
                             </div>

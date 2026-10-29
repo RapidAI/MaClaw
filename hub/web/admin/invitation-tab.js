@@ -4,25 +4,32 @@
  */
 
 function invExtra(key) {
-  const en = {
-    llmServiceGroup: "LLM service group",
-    llmGrantDays: "LLM grant days",
-    llmGrantCredits: "LLM credits",
-    llmGrantInfo: "LLM grant",
-    noGrant: "-",
-    grantSummary: "{group} / {days}d / {credits} credits",
-    incompleteGrant: "LLM grant requires service group, days, and credits."
+  const tables = {
+    en: {
+      llmServiceGroup: "LLM service group",
+      llmGrantDays: "LLM grant days",
+      llmGrantCredits: "LLM credits",
+      llmGrantInfo: "LLM grant",
+      noGrant: "-",
+      grantSummary: "{group} / {days}d / {credits} credits",
+      incompleteGrant: "LLM grant requires service group, days, and credits.",
+      statusColumn: "Status",
+      selectPlaceholder: "-- select --"
+    },
+    zh: {
+      llmServiceGroup: "LLM \u670d\u52a1\u7ec4",
+      llmGrantDays: "\u6388\u6743\u5929\u6570",
+      llmGrantCredits: "\u6388\u6743\u989d\u5ea6",
+      llmGrantInfo: "LLM \u6388\u6743",
+      noGrant: "-",
+      grantSummary: "{group} / {days} \u5929 / {credits} \u989d\u5ea6",
+      incompleteGrant: "LLM \u6388\u6743\u9700\u540c\u65f6\u586b\u5199\u670d\u52a1\u7ec4\u3001\u5929\u6570\u548c\u989d\u5ea6\u3002",
+      statusColumn: "Status",
+      selectPlaceholder: "-- \u8bf7\u9009\u62e9 --"
+    }
   };
-  const zh = {
-    llmServiceGroup: "LLM \u670d\u52a1\u7ec4",
-    llmGrantDays: "\u6388\u6743\u5929\u6570",
-    llmGrantCredits: "\u6388\u6743\u989d\u5ea6",
-    llmGrantInfo: "LLM \u6388\u6743",
-    noGrant: "-",
-    grantSummary: "{group} / {days} \u5929 / {credits} \u989d\u5ea6",
-    incompleteGrant: "LLM \u6388\u6743\u9700\u540c\u65f6\u586b\u5199\u670d\u52a1\u7ec4\u3001\u5929\u6570\u548c\u989d\u5ea6\u3002"
-  };
-  const dict = (typeof currentLang !== "undefined" && currentLang === "zh") ? zh : en;
+  if (window.hubDict) return window.hubDict("INVITATION_TAB", tables, key);
+  const dict = (typeof currentLang !== "undefined" && currentLang === "zh") ? tables.zh : tables.en;
   return dict[key] || key;
 }
 
@@ -50,9 +57,7 @@ async function populateInvCodeServiceGroupDropdown() {
     }
   }
   const currentValue = select.value;
-  const placeholder = (typeof currentLang !== "undefined" && currentLang === "zh")
-    ? "-- \u8bf7\u9009\u62e9 --"
-    : "-- select --";
+  const placeholder = invExtra("selectPlaceholder");
   select.innerHTML = "";
   const emptyOpt = document.createElement("option");
   emptyOpt.value = "";
@@ -234,7 +239,7 @@ function renderInvitationCodeList() {
     return;
   }
   const columns = "1.15fr .62fr .72fr 1.1fr .86fr .78fr .58fr";
-  const header = '<div class="row header" style="grid-template-columns:' + columns + '"><div>' + inv("codeLabel") + "</div><div>Status</div><div>" + inv("validityInfo") + "</div><div>" + invExtra("llmGrantInfo") + "</div><div>" + inv("usedBy") + "</div><div>" + inv("createdAt") + "</div><div></div></div>";
+  const header = '<div class="row header" style="grid-template-columns:' + columns + '"><div>' + inv("codeLabel") + "</div><div>" + invExtra("statusColumn") + "</div><div>" + inv("validityInfo") + "</div><div>" + invExtra("llmGrantInfo") + "</div><div>" + inv("usedBy") + "</div><div>" + inv("createdAt") + "</div><div></div></div>";
   const rows = invitationCodesCache.map(c => {
     const isUsed = c.status === "used";
     const validity = getValidityDisplay(c);

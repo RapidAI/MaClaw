@@ -5,6 +5,7 @@ import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { inputStyle } from "./LLMConfigPanelShared";
 import type { LLMProvider } from "./LLMConfigPanelShared";
+import { panelText } from '../../i18n/mnPanel';
 
 type MoAStatsSnapshot = {
     fanouts?: number;
@@ -112,14 +113,14 @@ function loadState(cfg: MoAConfig): SimpleState {
  * cannot wipe multi-preset configs used by sticky pickers.
  * Writes back to the same preset id that was loaded (editPresetId).
  */
-function buildConfig(state: SimpleState, isZh: boolean, existing?: MoAConfig | null): MoAConfig {
+function buildConfig(state: SimpleState, lang: string | undefined, existing?: MoAConfig | null): MoAConfig {
     const reference_models: MoAModelRef[] = state.advisors
         .map((p) => p.trim())
         .filter(Boolean)
         .map((provider) => ({ provider }));
     const display =
         state.displayName.trim() ||
-        (isZh ? DEFAULT_DISPLAY.zh : DEFAULT_DISPLAY.en);
+        panelText(lang ?? "", DEFAULT_DISPLAY.en, DEFAULT_DISPLAY.zh);
     const editId = (state.editPresetId || DEFAULT_PRESET_ID).trim() || DEFAULT_PRESET_ID;
     const prev = existing?.presets?.[editId];
     const presets: Record<string, MoAPresetConfig> = { ...(existing?.presets || {}) };
@@ -216,11 +217,9 @@ interface Props {
 export function MoAConfigSection({ lang, providers }: Props) {
     const t = useCallback(
         (en: string, zhHans: string, zhHant: string = zhHans) =>
-            lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en,
+            panelText(lang ?? "", en, zhHans, zhHant),
         [lang],
     );
-    const isZh = !lang?.startsWith("en");
-
     const providerNames = useMemo(
         () =>
             providers
@@ -369,7 +368,7 @@ export function MoAConfigSection({ lang, providers }: Props) {
         setError(null);
         setSavedOk(false);
         try {
-            const next = buildConfig(state, isZh, baseCfg);
+            const next = buildConfig(state, lang, baseCfg);
             if (next.enabled) {
                 const editId = state.editPresetId || DEFAULT_PRESET_ID;
                 const refs = next.presets?.[editId]?.reference_models || [];
@@ -462,7 +461,7 @@ export function MoAConfigSection({ lang, providers }: Props) {
                                 style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.75rem", flexWrap: "wrap" }}
                             >
                                 <span style={{ minWidth: 72, color: colors.textSecondary || colors.textMuted }}>
-                                    {t(`Other model ${idx + 1}`, `其他模型 ${idx + 1}`)}
+                                    {t("Other model {n}", "其他模型 {n}").replaceAll("{n}", String(idx + 1))}
                                 </span>
                                 <select
                                     value={adv}
@@ -574,7 +573,7 @@ export function MoAConfigSection({ lang, providers }: Props) {
                                 {t("Name shown in UI", "界面显示名称")}
                                 <input
                                     value={state.displayName}
-                                    placeholder={isZh ? DEFAULT_DISPLAY.zh : DEFAULT_DISPLAY.en}
+                                    placeholder={t(DEFAULT_DISPLAY.en, DEFAULT_DISPLAY.zh)}
                                     onChange={(e) => patch({ displayName: e.target.value })}
                                     style={inputStyle}
                                 />

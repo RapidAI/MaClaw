@@ -38,9 +38,12 @@ const PET_ADMIN_TEXT = {
   }
 };
 
+function petAdminLang() { return window.currentLang === 'zh' ? 'zh' : window.currentLang === 'mn' ? 'mn' : 'en'; }
 function petAdminText(key, vars = {}) {
-  const lang = window.currentLang === 'zh' ? 'zh' : 'en';
-  return (PET_ADMIN_TEXT[lang][key] || PET_ADMIN_TEXT.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+  const lang = petAdminLang();
+  const table = PET_ADMIN_TEXT[lang] || PET_ADMIN_TEXT.en;
+  const raw = (lang === 'mn' ? (table[key] || PET_ADMIN_TEXT.en[key]) : (table[key] || PET_ADMIN_TEXT.en[key])) || key;
+  return String(raw).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 }
 
 function petAdminStatusText(status) { return petAdminText(String(status || '').toLowerCase()) || status || '-'; }
@@ -52,7 +55,7 @@ function petAdminEscape(value) {
   if (typeof window.escapeHtml === 'function') return window.escapeHtml(text);
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-function petAdminNumber(value) { return new Intl.NumberFormat(window.currentLang === 'zh' ? 'zh-CN' : 'en-US').format(Number(value || 0)); }
+function petAdminNumber(value) { return new Intl.NumberFormat(petAdminLang() === 'zh' ? 'zh-CN' : petAdminLang() === 'mn' ? 'mn-MN' : 'en-US').format(Number(value || 0)); }
 function petAdminDate(value) { return value && typeof fmtDate === 'function' ? fmtDate(value) : (value || '-'); }
 function petAdminErrorMessage(err) { return err && err.message ? err.message : String(err || petAdminText('actionFailed')); }
 function petAdminDataURL(value) {

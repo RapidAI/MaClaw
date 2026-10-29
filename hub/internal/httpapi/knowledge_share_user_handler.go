@@ -732,6 +732,7 @@ func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
 	shareURL := html.EscapeString(knowledgeShareSafeHref(view.ShareURL))
 	expires := html.EscapeString(firstNonEmptyKnowledgeShare(view.ExpiresAt, "Permanent"))
 	expiresZH := html.EscapeString(firstNonEmptyKnowledgeShare(view.ExpiresAt, "永久"))
+	expiresMN := html.EscapeString(firstNonEmptyKnowledgeShare(view.ExpiresAt, "Хязгааргүй"))
 	sourceCount := knowledgeShareSummaryNumber(view.SourceSummary, "source_count")
 	contentSources := knowledgeShareSummaryNumber(view.SourceSummary, "content_sources")
 	if contentSources == 0 {
@@ -758,42 +759,42 @@ func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
 <title>{{TITLE}} - MaClaw Knowledge Share</title>
 <style>
 :root{--page:#eef3f7;--panel:#fff;--panel-soft:#f7f9fb;--ink:#172234;--muted:#5f6e82;--line:#dbe4ed;--line-strong:#c5d1de;--brand:#385875;--brand-strong:#263f59;--brand-soft:#e8f0f7;--success:#2f7a55}
-*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 18% 10%,rgba(104,135,163,.16),transparent 28%),linear-gradient(135deg,#f8fafc 0%,var(--page) 58%,#e6edf4 100%);color:var(--ink)}a{color:var(--brand-strong)}.shell{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:44px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:10px;color:var(--brand-strong);font-weight:900;letter-spacing:.02em}.mark{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--brand-strong);color:#fff;font-weight:950}.lang-toggle{display:inline-flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.78)}.lang-toggle button{border:0;border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;font-weight:850;padding:7px 11px}.lang-toggle button[aria-pressed=true]{background:var(--brand);color:#fff}.hero{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:rgba(255,255,255,.92);box-shadow:0 24px 70px rgba(38,61,84,.14)}.hero-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.9fr);gap:0}.main{padding:34px}.side{display:grid;align-content:start;gap:14px;border-left:1px solid var(--line);background:linear-gradient(180deg,#fbfcfe 0%,#f4f7fa 100%);padding:28px}.kicker{display:inline-flex;align-items:center;gap:8px;width:max-content;padding:5px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel-soft);color:var(--brand);font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.kicker::before{content:"";width:7px;height:7px;border-radius:99px;background:var(--success)}.hero-title{margin:16px 0 12px;font-size:clamp(30px,4vw,48px);line-height:1.08;letter-spacing:-.03em;color:var(--ink);overflow-wrap:anywhere}.desc{max-width:72ch;margin:16px 0 0;color:#415166;font-size:17px;line-height:1.78;white-space:pre-wrap}.stats{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:10px;margin-top:26px}.stat{padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--panel-soft)}.stat strong{display:block;color:var(--ink);font-size:22px;line-height:1.05}.stat span{display:block;margin-top:5px;color:var(--muted);font-size:12px;font-weight:850}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:28px}.button{display:inline-flex;min-height:44px;align-items:center;justify-content:center;gap:8px;padding:11px 15px;border-radius:10px;border:1px solid var(--line-strong);background:#fff;text-decoration:none;font-weight:900;color:var(--ink);cursor:pointer}.button.primary{border-color:var(--brand);background:var(--brand);color:#fff}.button:hover{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}.section-title{margin:0;color:var(--ink);font-size:14px;font-weight:950}.meta{display:grid;gap:10px}.meta-row{display:grid;gap:4px;padding:12px;border:1px solid var(--line);border-radius:12px;background:#fff}.meta-row span{color:var(--muted);font-size:12px;font-weight:850}.meta-row code,.meta-row strong{min-width:0;color:var(--ink);font-size:13px;overflow-wrap:anywhere}.linkbox{display:grid;gap:8px;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fff}.linkbox a{overflow-wrap:anywhere;font-size:13px}.note{margin:0;color:var(--muted);font-size:13px;line-height:1.55}.copied{color:var(--success);font-weight:850}.footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}.zh [data-lang=en],.en [data-lang=zh]{display:none}@media(max-width:840px){.shell{padding-top:24px}.hero-grid{grid-template-columns:1fr}.side{border-left:0;border-top:1px solid var(--line)}.main{padding:24px}.topbar{align-items:flex-start}.brand{font-size:14px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(prefers-reduced-motion:no-preference){.button,.lang-toggle button{transition:border-color .18s ease,box-shadow .18s ease,background .18s ease,color .18s ease}}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 18% 10%,rgba(104,135,163,.16),transparent 28%),linear-gradient(135deg,#f8fafc 0%,var(--page) 58%,#e6edf4 100%);color:var(--ink)}a{color:var(--brand-strong)}.shell{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:44px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:10px;color:var(--brand-strong);font-weight:900;letter-spacing:.02em}.mark{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--brand-strong);color:#fff;font-weight:950}.lang-toggle{display:inline-flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.78)}.lang-toggle button{border:0;border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;font-weight:850;padding:7px 11px}.lang-toggle button[aria-pressed=true]{background:var(--brand);color:#fff}.hero{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:rgba(255,255,255,.92);box-shadow:0 24px 70px rgba(38,61,84,.14)}.hero-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.9fr);gap:0}.main{padding:34px}.side{display:grid;align-content:start;gap:14px;border-left:1px solid var(--line);background:linear-gradient(180deg,#fbfcfe 0%,#f4f7fa 100%);padding:28px}.kicker{display:inline-flex;align-items:center;gap:8px;width:max-content;padding:5px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel-soft);color:var(--brand);font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.kicker::before{content:"";width:7px;height:7px;border-radius:99px;background:var(--success)}.hero-title{margin:16px 0 12px;font-size:clamp(30px,4vw,48px);line-height:1.08;letter-spacing:-.03em;color:var(--ink);overflow-wrap:anywhere}.desc{max-width:72ch;margin:16px 0 0;color:#415166;font-size:17px;line-height:1.78;white-space:pre-wrap}.stats{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:10px;margin-top:26px}.stat{padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--panel-soft)}.stat strong{display:block;color:var(--ink);font-size:22px;line-height:1.05}.stat span{display:block;margin-top:5px;color:var(--muted);font-size:12px;font-weight:850}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:28px}.button{display:inline-flex;min-height:44px;align-items:center;justify-content:center;gap:8px;padding:11px 15px;border-radius:10px;border:1px solid var(--line-strong);background:#fff;text-decoration:none;font-weight:900;color:var(--ink);cursor:pointer}.button.primary{border-color:var(--brand);background:var(--brand);color:#fff}.button:hover{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}.section-title{margin:0;color:var(--ink);font-size:14px;font-weight:950}.meta{display:grid;gap:10px}.meta-row{display:grid;gap:4px;padding:12px;border:1px solid var(--line);border-radius:12px;background:#fff}.meta-row span{color:var(--muted);font-size:12px;font-weight:850}.meta-row code,.meta-row strong{min-width:0;color:var(--ink);font-size:13px;overflow-wrap:anywhere}.linkbox{display:grid;gap:8px;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fff}.linkbox a{overflow-wrap:anywhere;font-size:13px}.note{margin:0;color:var(--muted);font-size:13px;line-height:1.55}.copied{color:var(--success);font-weight:850}.footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}.zh [data-lang=en],.zh [data-lang=mn],.en [data-lang=zh],.en [data-lang=mn],.mn [data-lang=zh],.mn [data-lang=en]{display:none}@media(max-width:840px){.shell{padding-top:24px}.hero-grid{grid-template-columns:1fr}.side{border-left:0;border-top:1px solid var(--line)}.main{padding:24px}.topbar{align-items:flex-start}.brand{font-size:14px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(prefers-reduced-motion:no-preference){.button,.lang-toggle button{transition:border-color .18s ease,box-shadow .18s ease,background .18s ease,color .18s ease}}
 </style>
 </head>
 <body class="zh">
 <main class="shell">
 <div class="topbar">
 <div class="brand"><div class="mark">M</div><span>MaClaw Hub</span></div>
-<div class="lang-toggle" aria-label="Language / 语言"><button type="button" data-set-lang="zh" aria-pressed="true">中文</button><button type="button" data-set-lang="en" aria-pressed="false">English</button></div>
+<div class="lang-toggle" aria-label="Language / 语言"><button type="button" data-set-lang="zh" aria-pressed="true">中文</button><button type="button" data-set-lang="en" aria-pressed="false">English</button><button type="button" data-set-lang="mn" aria-pressed="false">Монгол</button></div>
 </div>
 <article class="hero">
 <div class="hero-grid">
 <section class="main">
-<div class="kicker" data-lang="zh">知识分享</div><div class="kicker" data-lang="en">Knowledge Share</div>
+<div class="kicker" data-lang="zh">知识分享</div><div class="kicker" data-lang="en">Knowledge Share</div><div class="kicker" data-lang="mn">Мэдлэгийн хуваалцал</div>
 {{TITLE_HEADING}}
 <p class="desc">{{DESCRIPTION}}</p>
 <div class="stats" aria-label="Knowledge share statistics">
-<div class="stat"><strong>{{SOURCE_COUNT}}</strong><span data-lang="zh">来源条目</span><span data-lang="en">Sources</span></div>
-<div class="stat"><strong>{{CONTENT_SOURCES}}</strong><span data-lang="zh">可导入内容</span><span data-lang="en">Importable</span></div>
-<div class="stat"><strong>{{VIEW_COUNT}}</strong><span data-lang="zh">浏览次数</span><span data-lang="en">Views</span></div>
-<div class="stat"><strong>{{IMPORT_COUNT}}</strong><span data-lang="zh">导入次数</span><span data-lang="en">Imports</span></div>
+<div class="stat"><strong>{{SOURCE_COUNT}}</strong><span data-lang="zh">来源条目</span><span data-lang="en">Sources</span><span data-lang="mn">Эх сурвалж</span></div>
+<div class="stat"><strong>{{CONTENT_SOURCES}}</strong><span data-lang="zh">可导入内容</span><span data-lang="en">Importable</span><span data-lang="mn">Импортлох боломжтой</span></div>
+<div class="stat"><strong>{{VIEW_COUNT}}</strong><span data-lang="zh">浏览次数</span><span data-lang="en">Views</span><span data-lang="mn">Үзсэн тоо</span></div>
+<div class="stat"><strong>{{IMPORT_COUNT}}</strong><span data-lang="zh">导入次数</span><span data-lang="en">Imports</span><span data-lang="mn">Импортын тоо</span></div>
 </div>
 <div class="actions">
-<a class="button primary" href="{{JSON_URL}}"><span data-lang="zh">Agent 导入 JSON</span><span data-lang="en">Agent import JSON</span></a>
-<button class="button" type="button" data-copy="{{SHARE_URL}}"><span data-lang="zh">复制分享链接</span><span data-lang="en">Copy share link</span></button>
-<a class="button" href="/hub/knowledge/shares/mine" data-manage-shares><span data-lang="zh">管理我的分享</span><span data-lang="en">Manage my shares</span></a>
+<a class="button primary" href="{{JSON_URL}}"><span data-lang="zh">Agent 导入 JSON</span><span data-lang="en">Agent import JSON</span><span data-lang="mn">Agent импортын JSON</span></a>
+<button class="button" type="button" data-copy="{{SHARE_URL}}"><span data-lang="zh">复制分享链接</span><span data-lang="en">Copy share link</span><span data-lang="mn">Хуваалцах холбоос хуулах</span></button>
+<a class="button" href="/hub/knowledge/shares/mine" data-manage-shares><span data-lang="zh">管理我的分享</span><span data-lang="en">Manage my shares</span><span data-lang="mn">Миний хуваалцал</span></a>
 </div>
 </section>
 <aside class="side">
-<h2 class="section-title" data-lang="zh">分享信息</h2><h2 class="section-title" data-lang="en">Share Details</h2>
+<h2 class="section-title" data-lang="zh">分享信息</h2><h2 class="section-title" data-lang="en">Share Details</h2><h2 class="section-title" data-lang="mn">Хуваалцлын мэдээлэл</h2>
 <div class="meta">
-<div class="meta-row"><span data-lang="zh">知识 ID</span><span data-lang="en">Knowledge ID</span><code>{{KNOWLEDGE_ID}}</code></div>
-<div class="meta-row"><span data-lang="zh">可见范围</span><span data-lang="en">Visibility</span><strong>{{VISIBILITY}}</strong></div>
-<div class="meta-row"><span data-lang="zh">发布时间</span><span data-lang="en">Published</span><strong>{{PUBLISHED}}</strong></div>
-<div class="meta-row"><span data-lang="zh">有效期</span><span data-lang="en">Expiry</span><strong data-lang="zh">{{EXPIRES_ZH}}</strong><strong data-lang="en">{{EXPIRES}}</strong></div>
+<div class="meta-row"><span data-lang="zh">知识 ID</span><span data-lang="en">Knowledge ID</span><span data-lang="mn">Мэдлэгийн ID</span><code>{{KNOWLEDGE_ID}}</code></div>
+<div class="meta-row"><span data-lang="zh">可见范围</span><span data-lang="en">Visibility</span><span data-lang="mn">Харагдах хүрээ</span><strong>{{VISIBILITY}}</strong></div>
+<div class="meta-row"><span data-lang="zh">发布时间</span><span data-lang="en">Published</span><span data-lang="mn">Нийтэлсэн</span><strong>{{PUBLISHED}}</strong></div>
+<div class="meta-row"><span data-lang="zh">有效期</span><span data-lang="en">Expiry</span><span data-lang="mn">Хүчинтэй хугацаа</span><strong data-lang="zh">{{EXPIRES_ZH}}</strong><strong data-lang="en">{{EXPIRES}}</strong><strong data-lang="mn">{{EXPIRES_MN}}</strong></div>
 </div>
-<div class="linkbox"><strong data-lang="zh">人可阅读，Agent 可导入</strong><strong data-lang="en">Readable by people, importable by agents</strong><a href="{{SHARE_URL}}">{{SHARE_URL}}</a><p class="note" data-lang="zh">把此链接发给其他用户即可查看说明；Agent 也可以根据该链接或知识 ID 导入数据。</p><p class="note" data-lang="en">Share this link for a human-readable page; agents can also import the knowledge by link or ID.</p><span class="copied" hidden data-copied aria-live="polite" data-lang="zh">已复制</span><span class="copied" hidden data-copied aria-live="polite" data-lang="en">Copied</span></div>
+<div class="linkbox"><strong data-lang="zh">人可阅读，Agent 可导入</strong><strong data-lang="en">Readable by people, importable by agents</strong><strong data-lang="mn">Хүн уншиж, Agent импортлож болно</strong><a href="{{SHARE_URL}}">{{SHARE_URL}}</a><p class="note" data-lang="zh">把此链接发给其他用户即可查看说明；Agent 也可以根据该链接或知识 ID 导入数据。</p><p class="note" data-lang="en">Share this link for a human-readable page; agents can also import the knowledge by link or ID.</p><p class="note" data-lang="mn">Энэ холбоосыг бусдад өгвөл тайлбарыг уншина. Agent мөн холбоос эсвэл мэдлэгийн ID-гаар импортлож болно.</p><span class="copied" hidden data-copied aria-live="polite" data-lang="zh">已复制</span><span class="copied" hidden data-copied aria-live="polite" data-lang="en">Copied</span><span class="copied" hidden data-copied aria-live="polite" data-lang="mn">Хуулсан</span></div>
 </aside>
 </div>
 </article>
@@ -804,18 +805,27 @@ func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
   const root = document.body;
   const buttons = Array.from(document.querySelectorAll('[data-set-lang]'));
   const apply = (lang) => {
-    const next = lang === 'en' ? 'en' : 'zh';
+    const raw = String(lang || '').trim().toLowerCase().replace(/_/g, '-');
+    const next = (raw === 'zh' || raw.indexOf('zh-') === 0 || raw === 'chinese' || raw === 'cn') ? 'zh'
+      : (raw === 'mn-mong' || raw.indexOf('mn-mong-') === 0) ? 'en'
+      : (raw === 'mn' || raw === 'mn-mn' || raw === 'mn-cyrl' || raw === 'mn-cyrl-mn' || raw.indexOf('mn-cyrl-') === 0 || raw.indexOf('mn-mn-') === 0) ? 'mn'
+      : 'en';
     root.classList.toggle('en', next === 'en');
-    root.classList.toggle('zh', next !== 'en');
-    document.documentElement.lang = next === 'en' ? 'en' : 'zh-CN';
+    root.classList.toggle('zh', next === 'zh');
+    root.classList.toggle('mn', next === 'mn');
+    document.documentElement.lang = next === 'zh' ? 'zh-CN' : next === 'mn' ? 'mn' : 'en';
     buttons.forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.setLang === next)));
     try { localStorage.setItem('maclawKnowledgeShareLang', next); } catch (_) {}
   };
   buttons.forEach((button) => button.addEventListener('click', () => apply(button.dataset.setLang)));
+  let detected = 'en';
   try {
-    const saved = localStorage.getItem('maclawKnowledgeShareLang');
-    apply(saved || ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en'));
-  } catch (_) { apply('zh'); }
+    const nav = (navigator.languages && navigator.languages[0]) || navigator.language || '';
+    detected = nav;
+  } catch (_) {}
+  let saved = '';
+  try { saved = localStorage.getItem('maclawKnowledgeShareLang') || ''; } catch (_) {}
+  apply(saved || detected);
   const copyText = async (value) => {
     try { await navigator.clipboard.writeText(value); return true; } catch (_) {}
     const area = document.createElement('textarea');
@@ -860,6 +870,7 @@ func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
 		"{{PUBLISHED}}", html.EscapeString(view.PublishedAt),
 		"{{EXPIRES}}", expires,
 		"{{EXPIRES_ZH}}", expiresZH,
+		"{{EXPIRES_MN}}", expiresMN,
 		"{{SOURCE_COUNT}}", sourceCountText,
 		"{{CONTENT_SOURCES}}", contentSourcesText,
 		"{{VIEW_COUNT}}", viewCountText,

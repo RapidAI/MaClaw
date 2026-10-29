@@ -18,6 +18,16 @@ import {
     FinishRecordedAudioUpload,
     LoadConfig,
 } from "../../../wailsjs/go/main/App";
+import { normalizeLang } from "../../i18n";
+import { tailText } from "../../i18n/mnTail";
+
+function recordingLang(lang: string | boolean): string {
+    return typeof lang === "boolean" ? (lang ? "zh-Hans" : "en") : lang;
+}
+
+function recText(lang: string | boolean, en: string, zh: string): string {
+    return tailText(recordingLang(lang), en, zh);
+}
 import { EventsOn } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { startRecordCapture, type RecordCaptureHandle } from "./recordAudioCapture";
@@ -475,27 +485,31 @@ async function settleLiveUploadChain(chain: Promise<unknown>): Promise<void> {
 }
 
 /** Map backend/IPC errors to short user-facing text. */
-function formatRecordingSaveError(err: unknown, zh: boolean): string {
+function formatRecordingSaveError(err: unknown, lang: string | boolean): string {
     const raw = err instanceof Error ? err.message : String(err);
     const lower = raw.toLowerCase();
     if (lower.includes("chunk too large")) {
-        return zh
-            ? "录音分片过大，请重试；若反复失败请升级到最新版本"
-            : "Recording chunk too large; please retry or update the app";
+        return recText(
+            lang,
+            "Recording chunk too large; please retry or update the app",
+            "录音分片过大，请重试；若反复失败请升级到最新版本",
+        );
     }
     if (lower.includes("upload session") || lower.includes("session_id missing")) {
-        return zh ? "录音上传会话失效，请重试" : "Recording upload session lost; please retry";
+        return recText(lang, "Recording upload session lost; please retry", "录音上传会话失效，请重试");
     }
     if (lower.includes("too many concurrent")) {
-        return zh ? "同时进行的录音过多，请稍后再试" : "Too many concurrent recordings; try again later";
+        return recText(lang, "Too many concurrent recordings; try again later", "同时进行的录音过多，请稍后再试");
     }
     if (lower.includes("audio data too large") || lower.includes("upload size mismatch")) {
-        return zh ? "录音过长或数据不完整，已超出上限" : "Recording exceeds the maximum size or is incomplete";
+        return recText(lang, "Recording exceeds the maximum size or is incomplete", "录音过长或数据不完整，已超出上限");
     }
     if (lower.includes("buffer overrun") || lower.includes("disk/ipc too slow")) {
-        return zh
-            ? "录音写入跟不上采集速度，请重试或关闭其他占用磁盘的程序"
-            : "Recording could not keep up with capture; please retry";
+        return recText(
+            lang,
+            "Recording could not keep up with capture; please retry",
+            "录音写入跟不上采集速度，请重试或关闭其他占用磁盘的程序",
+        );
     }
     // Mic permission only — do not match generic OS "access denied" on disk paths.
     if (
@@ -504,9 +518,9 @@ function formatRecordingSaveError(err: unknown, zh: boolean): string {
         lower.includes("permission dismissed") ||
         (lower.includes("microphone") && (lower.includes("permission") || lower.includes("denied")))
     ) {
-        return zh ? "无法访问麦克风，请检查系统权限" : "Microphone permission denied";
+        return recText(lang, "Microphone permission denied", "无法访问麦克风，请检查系统权限");
     }
-    return raw || (zh ? "保存录音失败" : "Failed to save recording");
+    return raw || recText(lang, "Failed to save recording", "保存录音失败");
 }
 
 /** Exported for unit tests. */
@@ -564,7 +578,6 @@ export function RecordingSessionCard({
     active = true,
     onComplete,
 }: RecordingSessionCardProps): React.ReactElement {
-    const zh = lang.startsWith("zh");
     const [phase, setPhase] = useState<"starting" | "recording" | "paused" | "saving" | "done" | "error">(
         active ? "starting" : "done",
     );
@@ -773,7 +786,7 @@ export function RecordingSessionCard({
             const err = liveStreamErrorRef.current;
             liveSessionIdRef.current = "";
             await abortLiveSession(liveSid);
-            const msg = formatRecordingSaveError(err, zh);
+            const msg = formatRecordingSaveError(err, lang);
             setError(msg);
             finishWithResult({
                 status: "error",
@@ -797,7 +810,7 @@ export function RecordingSessionCard({
                 status: "cancelled",
                 title: titleRef.current,
                 durationSec,
-                error: zh ? "录音过短，已取消" : "Recording too short; cancelled",
+                error: recText(lang, "Recording too short; cancelled", "录音过短，已取消"),
             });
             return;
         }
@@ -856,7 +869,7 @@ export function RecordingSessionCard({
                     await abortLiveSession(uploadSessionId);
                 }
                 const raw = err instanceof Error ? err.message : String(err);
-                const msg = formatRecordingSaveError(err, zh);
+                const msg = formatRecordingSaveError(err, lang);
                 recordDebug("live save failed", { error: raw, display: msg }, true);
                 setError(msg);
                 finishWithResult({
@@ -882,7 +895,7 @@ export function RecordingSessionCard({
             }
             if (actualSamples <= 0) actualSamples = totalSamples;
             if (actualSamples <= 0) {
-                throw new Error(zh ? "没有可保存的录音数据" : "No audio samples to save");
+                throw new Error(recText(lang, "No audio samples to save", "没有可保存的录音数据"));
             }
             const dataBytes = actualSamples * 2;
             const wavBytes = 44 + dataBytes;
@@ -940,7 +953,7 @@ export function RecordingSessionCard({
                 }
             }
             const raw = err instanceof Error ? err.message : String(err);
-            const msg = formatRecordingSaveError(err, zh);
+            const msg = formatRecordingSaveError(err, lang);
             recordDebug("save failed", { error: raw, display: msg }, true);
             setError(msg);
             finishWithResult({
@@ -950,7 +963,7 @@ export function RecordingSessionCard({
                 error: msg,
             });
         }
-    }, [abortLiveSession, cleanupAudio, finishWithResult, flushLivePending, zh]);
+    }, [abortLiveSession, cleanupAudio, finishWithResult, flushLivePending, lang]);
 
     stopAndSaveRef.current = stopAndSave;
 
@@ -1119,7 +1132,7 @@ export function RecordingSessionCard({
                 status: "cancelled",
                 title: titleRef.current,
                 durationSec: dur,
-                error: zh ? "录音界面已关闭" : "Recording UI closed",
+                error: recText(lang, "Recording UI closed", "录音界面已关闭"),
             });
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1128,17 +1141,17 @@ export function RecordingSessionCard({
     const statusLabel = (() => {
         switch (phase) {
             case "starting":
-                return zh ? "正在打开麦克风…" : "Opening microphone…";
+                return recText(lang, "Opening microphone…", "正在打开麦克风…");
             case "recording":
-                return zh ? "录音中" : "Recording";
+                return normalizeLang(lang) === "mn" ? "Бичиж байна" : recText(lang, "Recording", "录音中");
             case "paused":
-                return zh ? "已暂停" : "Paused";
+                return recText(lang, "Paused", "已暂停");
             case "saving":
-                return zh ? "正在保存…" : "Saving…";
+                return recText(lang, "Saving…", "正在保存…");
             case "done":
-                return zh ? "已结束" : "Finished";
+                return recText(lang, "Finished", "已结束");
             case "error":
-                return zh ? "出错" : "Error";
+                return recText(lang, "Error", "出错");
             default:
                 return "";
         }
@@ -1163,7 +1176,7 @@ export function RecordingSessionCard({
             <div className="rsc-head">
                 <div className="rsc-title-wrap">
                     <div style={{ fontWeight: 600, color: t.text, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {title || (zh ? "录音" : "Recording")}
+                        {title || (normalizeLang(lang) === "mn" ? "Бичлэг" : recText(lang, "Recording", "录音"))}
                     </div>
                     {purpose ? (
                         <div style={{ color: t.textMuted, fontSize: 11, marginTop: 2 }}>{purpose}</div>
@@ -1237,7 +1250,7 @@ export function RecordingSessionCard({
                             fontSize: 13,
                         }}
                     >
-                        {phase === "paused" ? (zh ? "继续" : "Resume") : zh ? "暂停" : "Pause"}
+                        {phase === "paused" ? recText(lang, "Resume", "继续") : recText(lang, "Pause", "暂停")}
                     </button>
                     <button
                         type="button"
@@ -1256,16 +1269,16 @@ export function RecordingSessionCard({
                             fontWeight: 600,
                         }}
                     >
-                        {zh ? "停止" : "Stop"}
+                        {recText(lang, "Stop", "停止")}
                     </button>
                 </div>
             ) : phase === "saving" ? (
                 <div style={{ color: t.textMuted, fontSize: 12 }}>
-                    {zh ? "正在保存录音文件…" : "Saving recording…"}
+                    {recText(lang, "Saving recording…", "正在保存录音文件…")}
                 </div>
             ) : (
                 <div style={{ color: t.textMuted, fontSize: 12 }}>
-                    {zh ? "录音会话已结束" : "Recording session ended"}
+                    {recText(lang, "Recording session ended", "录音会话已结束")}
                 </div>
             )}
 
@@ -1317,22 +1330,24 @@ export function formatRecordingCompletionMessage(result: RecordingCompleteResult
 }
 
 export function formatRecordingCompletionDisplay(result: RecordingCompleteResult, lang = "zh"): string {
-    const zh = lang.startsWith("zh");
     if (result.status === "error") {
-        return zh ? `录音失败：${result.error || "未知错误"}` : `Recording failed: ${result.error || "unknown error"}`;
+        const err = result.error || recText(lang, "unknown error", "未知错误");
+        return recText(lang, `Recording failed: ${err}`, `录音失败：${err}`);
     }
     if (result.status === "cancelled") {
-        return zh ? "已取消录音（过短或未采集到有效音频）" : "Recording cancelled (too short or empty)";
+        return recText(lang, "Recording cancelled (too short or empty)", "已取消录音（过短或未采集到有效音频）");
     }
     const dur =
-        typeof result.durationSec === "number" ? formatDuration(result.durationSec) : zh ? "未知" : "unknown";
+        typeof result.durationSec === "number" ? formatDuration(result.durationSec) : recText(lang, "unknown", "未知");
     if (result.path) {
         if (result.mp3Path) {
-            return zh
-                ? `录音已保存（时长 ${dur}，已生成 MP3 存档）`
-                : `Recording saved (duration ${dur}, MP3 archive ready)`;
+            return recText(
+                lang,
+                `Recording saved (duration ${dur}, MP3 archive ready)`,
+                `录音已保存（时长 ${dur}，已生成 MP3 存档）`,
+            );
         }
-        return zh ? `录音已保存（时长 ${dur}）` : `Recording saved (duration ${dur})`;
+        return recText(lang, `Recording saved (duration ${dur})`, `录音已保存（时长 ${dur}）`);
     }
-    return zh ? "录音已结束" : "Recording finished";
+    return recText(lang, "Recording finished", "录音已结束");
 }

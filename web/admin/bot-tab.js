@@ -207,7 +207,7 @@
   };
 
   function text() {
-    return copy[global.currentLang === 'en' ? 'en' : 'zh'];
+    return copy[global.currentLang === 'zh' ? 'zh' : 'en'];
   }
 
   function byID(id) {

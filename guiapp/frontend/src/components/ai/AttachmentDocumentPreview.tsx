@@ -19,6 +19,7 @@ import {
 } from "./attachmentOpeningPreview";
 import { rasterizePdfShot } from "./pdfShotRaster";
 import { isTaskResultPdfPreviewURL, type TaskResultPreviewPayload } from "./taskResultPreview";
+import { tailText } from "../../i18n/mnTail"
 
 const FOOTER_HEIGHT = 28;
 const CARD_BORDER = 1;
@@ -79,7 +80,6 @@ export function AttachmentDocumentPreview({
     /** card is the reading window. shot fits one whole page into the chat thumbnail. */
     variant?: "card" | "shot";
 }) {
-    const isZh = lang.startsWith("zh");
     const onFailRef = useRef(onFail);
     onFailRef.current = onFail;
     const [ready, setReady] = useState<PreviewReady | null>(null);
@@ -163,7 +163,7 @@ export function AttachmentDocumentPreview({
                 data-testid="attachment-document-shot"
                 data-shot-width={ATTACHMENT_DOC_SHOT_WIDTH}
                 data-shot-height={ATTACHMENT_DOC_SHOT_HEIGHT}
-                aria-label={isZh ? `预览 ${name}` : `Preview ${name}`}
+                aria-label={tailText(lang, `Preview ${name}`, `预览 ${name}`)}
                 title={filePath}
                 style={shotFrameStyle(theme)}
             >
@@ -185,7 +185,7 @@ export function AttachmentDocumentPreview({
                         />
                     ) : null}
                     {ready && ready.mode !== "pdf" ? (
-                        <DocumentContentShot ready={ready} isZh={isZh} title={name} onFail={() => onFailRef.current()} />
+                        <DocumentContentShot ready={ready} lang={lang} title={name} onFail={() => onFailRef.current()} />
                     ) : null}
                 </div>
             </div>
@@ -223,7 +223,7 @@ export function AttachmentDocumentPreview({
                 data-page-count={pageCount}
                 data-preview-max-width={ATTACHMENT_DOC_PREVIEW_MAX_WIDTH}
                 data-preview-max-height={ATTACHMENT_DOC_PREVIEW_MAX_HEIGHT}
-                aria-label={isZh ? `预览 ${name}` : `Preview ${name}`}
+                aria-label={tailText(lang, `Preview ${name}`, `预览 ${name}`)}
                 title={filePath}
                 style={cardStyle(theme, fixedWindow ? "window" : "content")}
             >
@@ -237,11 +237,11 @@ export function AttachmentDocumentPreview({
                     {ready.mode === "images" ? <ImagePages pages={ready.pages} /> : null}
                     {ready.mode === "sheets" ? <SheetPages sheets={ready.sheets} /> : null}
                     {ready.mode === "html" && showPdfFrame ? <HtmlPageFrame markup={ready.markup} title={name} /> : null}
-                    {ready.mode === "text" ? <TextPages pages={ready.pages} rich={ready.rich} mono={ready.mono} isZh={isZh} /> : null}
+                    {ready.mode === "text" ? <TextPages pages={ready.pages} rich={ready.rich} mono={ready.mono} lang={lang} /> : null}
                 </div>
                 <div style={footerStyle(theme)}>
                     <span style={footerNameStyle}>{compactAttachmentLabel(name, extension || "")}</span>
-                    <span>{pageCaption(pageCount, isZh)}</span>
+                    <span>{pageCaption(pageCount, lang)}</span>
                 </div>
             </div>
         );
@@ -329,9 +329,9 @@ const footerNameStyle: CSSProperties = {
     whiteSpace: "nowrap",
 };
 
-function pageCaption(pageCount: number, isZh: boolean): string {
-    if (pageCount <= 1) return isZh ? "第 1 页" : "Page 1";
-    return isZh ? `第 1–${pageCount} 页` : `Pages 1–${pageCount}`;
+function pageCaption(pageCount: number, isZh: boolean | string): string {
+    if (pageCount <= 1) return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Page 1", "第 1 页");
+    return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `Pages 1–${pageCount}`, `第 1–${pageCount} 页`);
 }
 
 function compactAttachmentLabel(fileName: string, extension: string): string {
@@ -489,14 +489,14 @@ function trimPreviewPage(page: string): string {
     return trimmed || " ";
 }
 
-function TextPages({ pages, rich, mono, isZh }: { pages: string[]; rich: boolean; mono: boolean; isZh: boolean }) {
+function TextPages({ pages, rich, mono, lang }: { pages: string[]; rich: boolean; mono: boolean; lang: string }) {
     return (
         <div>
             {pages.map((page, index) => (
                 <section key={index} data-testid="attachment-document-page" style={{ borderTop: index === 0 ? "none" : "1px solid #e7e5e4" }}>
                     {pages.length > 1 ? (
                         <div style={{ padding: "8px 16px 0", fontSize: 11, color: "#78716c" }}>
-                            {isZh ? `第 ${index + 1} 页` : `Page ${index + 1}`}
+                            {tailText(lang, `Page ${index + 1}`, `第 ${index + 1} 页`)}
                         </div>
                     ) : null}
                     {rich ? (
@@ -956,7 +956,7 @@ function HtmlContentShot({ markup, title }: { markup: string; title: string }) {
 }
 
 /** One qualifying page, fitted whole, with no viewer chrome. */
-function DocumentContentShot({ ready, isZh, title, onFail }: { ready: Exclude<PreviewReady, { mode: "pdf" }>; isZh: boolean; title: string; onFail: () => void }) {
+function DocumentContentShot({ ready, lang, title, onFail }: { ready: Exclude<PreviewReady, { mode: "pdf" }>; lang: string; title: string; onFail: () => void }) {
     if (ready.mode === "images") {
         const index = openingPreviewShotPageIndex(ready.pages.map((page) => page.text));
         const page = ready.pages[index] || ready.pages[0];
@@ -986,7 +986,7 @@ function DocumentContentShot({ ready, isZh, title, onFail }: { ready: Exclude<Pr
         const page = ready.pages[index] ?? ready.pages[0] ?? "";
         return (
             <FitContentShot contentWidth={ATTACHMENT_DOC_PREVIEW_MAX_WIDTH}>
-                <TextPages pages={[page]} rich={ready.rich} mono={ready.mono} isZh={isZh} />
+                <TextPages pages={[page]} rich={ready.rich} mono={ready.mono} lang={lang} />
             </FitContentShot>
         );
     }

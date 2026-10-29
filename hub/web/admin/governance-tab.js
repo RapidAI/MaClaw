@@ -81,6 +81,7 @@
   };
 
   function gt(key) {
+    if (global.hubEntry) return global.hubEntry('GOV', GOV_I18N, key);
     var entry = GOV_I18N[key];
     return entry ? (currentLang === 'zh' ? entry.zh : entry.en) : key;
   }

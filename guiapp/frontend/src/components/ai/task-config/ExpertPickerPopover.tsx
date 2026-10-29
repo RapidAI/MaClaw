@@ -4,6 +4,7 @@ import { DEFAULT_EXPERT_ICON } from "../expertTypes";
 import { TaskConfigIcon } from "./taskConfigIcons";
 import { TaskConfigPopoverShell, popoverItemKeyDown, popoverSearchInputStyle } from "./TaskConfigPopoverShell";
 import { popoverHeadStyle, popoverItemStyle, popoverListStyle, popoverSepStyle } from "./taskConfigPopoverStyles";
+import { tailText } from "../../../i18n/mnTail"
 
 export interface ExpertOption {
     id: string;
@@ -40,7 +41,6 @@ export function ExpertPickerPopover({
     onOpenMarket,
     onClose,
 }: ExpertPickerPopoverProps) {
-    const isZh = !lang?.startsWith("en");
     const [query, setQuery] = useState("");
     const q = query.trim().toLowerCase();
     const filtered = useMemo(
@@ -66,7 +66,7 @@ export function ExpertPickerPopover({
                 style={v.item}
                 onClick={opts.disabled ? undefined : opts.onPick}
                 onKeyDown={popoverItemKeyDown(opts.disabled ? undefined : opts.onPick)}
-                title={opts.disabled ? (isZh ? "已指定工作流，不能再指定专家" : "Workflow specified") : desc}
+                title={opts.disabled ? (tailText(lang ?? "", "Workflow specified", "已指定工作流，不能再指定专家")) : desc}
             >
                 <span style={v.icon}>{icon}</span>
                 <span style={v.meta}>
@@ -89,8 +89,8 @@ export function ExpertPickerPopover({
                 <input
                     value={query}
                     onChange={(e) => setQuery(e.currentTarget.value)}
-                    placeholder={isZh ? "搜索专家（名称 / 领域）" : "Search experts"}
-                    aria-label={isZh ? "搜索专家" : "Search experts"}
+                    placeholder={tailText(lang ?? "", "Search experts", "搜索专家（名称 / 领域）")}
+                    aria-label={tailText(lang ?? "", "Search experts", "搜索专家")}
                     style={popoverSearchInputStyle(t)}
                     autoFocus
                 />
@@ -99,8 +99,8 @@ export function ExpertPickerPopover({
                 {renderItem(
                     "generic",
                     <TaskConfigIcon name="robot" size={15} />,
-                    isZh ? "通用专家" : "General expert",
-                    isZh ? "默认；由系统通用能力处理，不指定领域专家" : "Default; general system capability",
+                    tailText(lang ?? "", "General expert", "通用专家"),
+                    tailText(lang ?? "", "Default; general system capability", "默认；由系统通用能力处理，不指定领域专家"),
                     {
                         selected: !selectedExpertId,
                         onPick: () => onSelect(null, null),
@@ -112,7 +112,7 @@ export function ExpertPickerPopover({
                     expert.id,
                     <span aria-hidden="true" style={{ fontSize: 16, lineHeight: 1 }}>{expert.icon?.trim() || DEFAULT_EXPERT_ICON}</span>,
                     expert.name,
-                    expert.description || (isZh ? "领域专家" : "Expert"),
+                    expert.description || (tailText(lang ?? "", "Expert", "领域专家")),
                     {
                         selected: selectedExpertId === expert.id,
                         disabled: workflowLocked,
@@ -122,7 +122,7 @@ export function ExpertPickerPopover({
                 ))}
                 {filtered.length === 0 && (
                     <div style={{ padding: "10px", fontSize: 12.5, color: t.textMuted }}>
-                        {isZh ? "没有匹配的专家" : "No matching experts"}
+                        {tailText(lang ?? "", "No matching experts", "没有匹配的专家")}
                     </div>
                 )}
                 <div style={popoverSepStyle(t)} />
@@ -130,16 +130,16 @@ export function ExpertPickerPopover({
                     renderItem(
                         "market",
                         <TaskConfigIcon name="grid" size={15} />,
-                        isZh ? "专家市场…" : "Expert market…",
-                        isZh ? "浏览并安装更多专家" : "Browse and install more experts",
+                        tailText(lang ?? "", "Expert market…", "专家市场…"),
+                        tailText(lang ?? "", "Browse and install more experts", "浏览并安装更多专家"),
                         { onPick: onOpenMarket, testId: "expert-item-market" },
                     )
                 ) : (
                     renderItem(
                         "market-disabled",
                         <TaskConfigIcon name="lock" size={14} />,
-                        isZh ? "专家市场…" : "Expert market…",
-                        isZh ? "请在「专家管理」中打开专家市场" : "Open Expert Management to browse",
+                        tailText(lang ?? "", "Expert market…", "专家市场…"),
+                        tailText(lang ?? "", "Open Expert Management to browse", "请在「专家管理」中打开专家市场"),
                         { disabled: true },
                     )
                 )}

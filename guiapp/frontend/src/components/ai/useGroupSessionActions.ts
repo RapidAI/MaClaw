@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useRef, useState } from "react";
+import { tailText } from "../../i18n/mnTail";
 import { isLocalParticipantId, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
@@ -63,7 +64,12 @@ export interface UseGroupSessionActionsResult {
 }
 
 function t(lang: string | undefined, zh: string, en: string): string {
-    return (!lang || lang.startsWith("zh")) ? zh : en;
+    return tailText(lang, en, zh);
+}
+
+function errorDetail(lang: string | undefined, err: { message?: string } | null | undefined, enFallback: string, zhFallback: string): string {
+    const message = String(err?.message || "").trim();
+    return message || tailText(lang, enFallback, zhFallback);
 }
 
 function hasParticipant(participants: string[], participantId: string): boolean {
@@ -213,7 +219,7 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
             emit(t(optRef.current.lang, "已邀请加入会话", "Invited to session"), "success");
             return { success: true, sessionId };
         } catch (err: any) {
-            emit(t(optRef.current.lang, "邀请失败：" + (err?.message || "未知错误"), "Invite failed: " + (err?.message || "unknown error")), "error");
+            emit(t(optRef.current.lang, "邀请失败：" + errorDetail(optRef.current.lang, err, "unknown error", "未知错误"), "Invite failed: " + errorDetail(optRef.current.lang, err, "unknown error", "未知错误")), "error");
             return { success: false, sessionId };
         }
     }, [requireCapacity, ensureSession, loadAppModule, emit]);
@@ -243,7 +249,7 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
             emit(t(optRef.current.lang, "本机已加入会话", "Local node added to session"), "success");
             return { success: true, sessionId, participantId, displayName: localExecutorDisplayName(registered) };
         } catch (err: any) {
-            emit(t(optRef.current.lang, "添加失败：" + (err?.message || "未知错误"), "Failed to add: " + (err?.message || "unknown error")), "error");
+            emit(t(optRef.current.lang, "添加失败：" + errorDetail(optRef.current.lang, err, "unknown error", "未知错误"), "Failed to add: " + errorDetail(optRef.current.lang, err, "unknown error", "未知错误")), "error");
             return { success: false, sessionId };
         }
     }, [requireCapacity, ensureSession, loadAppModule, emit]);

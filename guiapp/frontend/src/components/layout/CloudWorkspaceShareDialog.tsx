@@ -7,18 +7,13 @@ import { useToast } from '../Toast';
 import { extractErrorMessage } from '../ai/participantAddError';
 import { useDialog } from '../CustomDialog';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+import { localizeText as textForLang } from '../../i18n';
 
 const getPortalThemeMode = (themeMode?: string) => (
     themeMode || document.getElementById('App')?.getAttribute('data-ai-theme') || undefined
 );
 const getPortalDarkScheme = () => document.getElementById('App')?.getAttribute('data-ai-dark-scheme') || undefined;
 const getPortalLightScheme = () => document.getElementById('App')?.getAttribute('data-ai-light-scheme') || undefined;
-
-const textForLang = (lang: string, en: string, zh: string, zhHant = zh) => {
-    if (lang === 'zh-Hant') return zhHant;
-    if (lang.startsWith('zh')) return zh;
-    return en;
-};
 
 type ShareFieldKeyEvent = {
     isComposing?: boolean;

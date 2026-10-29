@@ -55,12 +55,14 @@ type Props = {
 const LANG_CYCLE: Record<string, string> = {
     "zh-Hans": "en",
     "en": "zh-Hant",
-    "zh-Hant": "zh-Hans",
+    "zh-Hant": "mn",
+    "mn": "zh-Hans",
 };
 
 function langShortLabel(lang: string): string {
     if (lang === "en") return "EN";
     if (lang === "zh-Hant") return "繁";
+    if (lang === "mn") return "МН";
     return "中";
 }
 

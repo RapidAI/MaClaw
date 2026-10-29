@@ -50,6 +50,57 @@ func TestUserFacingErrorNestedOpenAIEnvelopeHubCode(t *testing.T) {
 	}
 }
 
+func TestUserFacingErrorQoderDailyBillingQuota(t *testing.T) {
+	const raw = "Qoder 上游错误 (110): Billing daily count exceeded"
+	got := UserFacingError(errors.New(raw))
+	if got != "Qoder 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("got %q", got)
+	}
+	upstream := &UpstreamModelError{Message: raw, Code: "110"}
+	if got = UserFacingError(upstream); got != "Qoder 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("structured got %q", got)
+	}
+	// The stream client wraps the typed denial with the endpoint. Classification
+	// has to see through that wrap; the URL is not part of the user message.
+	wrapped := fmt.Errorf("[https://api2-v2.qoder.sh/model/v1/chat/completions] %w", upstream)
+	if got = UserFacingError(wrapped); got != "Qoder 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("wrapped got %q", got)
+	}
+	body := []byte(`{"code":"110","message":"Billing daily count exceeded"}`)
+	if got = UserFacingHTTPStatus(http.StatusOK, body); got != "模型服务 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("http body got %q", got)
+	}
+	// The code is the signal. A rewritten upstream sentence must still classify,
+	// and a body that kept only the sentence must not fall through to a generic
+	// HTTP status line. The chat probe uses a different wrapper than the stream.
+	if got = UserFacingError(&UpstreamModelError{Code: "110", Message: "quota"}); got != "模型服务 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("code-only got %q", got)
+	}
+	phraseOnly := []byte(`{"message":"Billing daily count exceeded"}`)
+	if got = UserFacingHTTPStatus(http.StatusForbidden, phraseOnly); got != "模型服务 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("phrase-only body got %q", got)
+	}
+	chatProbe := errors.New("Qoder 聊天被上游拒绝 (110): quota")
+	if got = UserFacingError(chatProbe); got != "Qoder 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("chat probe got %q", got)
+	}
+	if got = UserFacingError(errors.New("Qoder 上游错误 (1100): something else")); strings.Contains(got, "日调用额度") {
+		t.Fatalf("code 1100 must stay raw, got %q", got)
+	}
+	// 1100 earlier in the sentence must not hide a later 110, and a JSON
+	// number must classify the same way a string code does.
+	if got = UserFacingError(errors.New("Qoder 上游错误 (1100) then 上游错误 (110): quota")); !strings.Contains(got, "日调用额度已用尽") {
+		t.Fatalf("later 110 hidden by 1100: %q", got)
+	}
+	numeric := []byte(`{"code":110,"message":"quota"}`)
+	if got = UserFacingHTTPStatus(http.StatusOK, numeric); got != "模型服务 日调用额度已用尽，请明日再试或切换其他模型提供方。" {
+		t.Fatalf("numeric code got %q", got)
+	}
+	if got = UserFacingError(errors.New("Qoder 上游错误 (500): Internal Server Error")); strings.Contains(got, "日调用额度") {
+		t.Fatalf("http 500 must stay raw, got %q", got)
+	}
+}
+
 func TestUserFacingErrorFallsBackToErrorString(t *testing.T) {
 	err := errors.New("connection reset")
 	if got := UserFacingError(err); got != "connection reset" {

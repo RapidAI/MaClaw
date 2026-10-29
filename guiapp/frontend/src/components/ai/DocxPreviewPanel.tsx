@@ -4,6 +4,7 @@ import type { CodePreviewTheme } from "./FileTabBar";
 import { isTaskResultPdfPreviewURL, localizeTaskResultPreviewError, type TaskResultPreviewPayload } from "./taskResultPreview";
 import { isPreviewAbortError, readPreviewBody } from "./previewBytes";
 import { PREVIEW_BAR_DELAY_MS, PREVIEW_HEAVY_PARSE_BYTES, PreviewLoadingStatus, yieldPreviewPaint, type PreviewProgress } from "./PreviewProgressBar";
+import { tailText } from "../../i18n/mnTail"
 
 /** .docx is the OOXML word processor file the in-app renderer can lay out. */
 export function isDocxFileName(name: string): boolean {
@@ -178,9 +179,9 @@ export function DocxPreviewPanel({ absPath, theme, lang }: DocxPreviewPanelProps
                     ratio={progress.ratio}
                     showBar={barOn}
                     phrases={{
-                        wait: isZh ? "正在加载 Word 预览…" : "Loading Word preview…",
-                        read: isZh ? "正在读取 Word…" : "Reading Word…",
-                        parse: isZh ? "正在解析 Word…" : "Parsing Word…",
+                        wait: tailText(lang, "Loading Word preview…", "正在加载 Word 预览…"),
+                        read: tailText(lang, "Reading Word…", "正在读取 Word…"),
+                        parse: tailText(lang, "Parsing Word…", "正在解析 Word…"),
                     }}
                 />
             ) : null}

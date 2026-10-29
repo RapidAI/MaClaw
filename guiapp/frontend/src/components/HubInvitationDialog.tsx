@@ -5,6 +5,7 @@ import { GetHubUserInvitationsPage, RotateHubUserInvitation } from '../../wailsj
 import { useDialog } from './CustomDialog';
 import { usePortalThemeAttributes } from '../hooks/usePortalThemeAttributes';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
+import { localizeText, normalizeLang } from '../i18n/langSelect';
 
 type Invitee = { user_id?: string; contact?: string; registered_at?: string; status?: string };
 type InvitationData = {
@@ -13,9 +14,10 @@ type InvitationData = {
 };
 
 export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; onClose: () => void; lang: string }) {
-  const isSimplifiedChinese = lang === 'zh-Hans';
-  const isTraditionalChinese = lang === 'zh-Hant';
-  const t = (en: string, simplified: string, traditional = simplified) => isSimplifiedChinese ? simplified : isTraditionalChinese ? traditional : en;
+  const t = (en: string, simplified: string, traditional = simplified) => localizeText(lang, en, simplified, traditional);
+  const td = (en: string, simplified: string, mn: string, traditional = simplified) => (
+    normalizeLang(lang) === 'mn' ? mn : localizeText(lang, en, simplified, traditional)
+  );
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -199,7 +201,11 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
               {initialLoading
                 ? t('Fetching your invitation information…', '正在获取你的邀请信息…')
                 : data?.enabled
-                ? t(`A successful registration earns you ${data.inviter_credits || 0} Credits and your friend ${data.invitee_credits || 0} Credits.`, `好友成功注册后，你获得 ${data.inviter_credits || 0} Credits，好友获得 ${data.invitee_credits || 0} Credits。`)
+                ? td(
+                  `A successful registration earns you ${data.inviter_credits || 0} Credits and your friend ${data.invitee_credits || 0} Credits.`,
+                  `好友成功注册后，你获得 ${data.inviter_credits || 0} Credits，好友获得 ${data.invitee_credits || 0} Credits。`,
+                  `Амжилттай бүртгэлээр танд ${data.inviter_credits || 0} Credits, найздаа ${data.invitee_credits || 0} Credits олгоно.`,
+                )
         : t('Invitations are unavailable.', '邀请功能暂不可用。', '邀請功能暫不可用。')}
             </p>
           </div>
@@ -223,7 +229,11 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
               </div>
               {rotateError && <p className="hub-invitation-dialog__rotate-error" role="alert">{t('Could not refresh the invitation link. Your current link is still active.', '无法刷新邀请链接，当前链接仍然有效。')}</p>}
               {copyUnavailable && <p className="hub-invitation-dialog__copy-hint" role="status">{t('Copy is unavailable here. Select the link and copy it manually.', '当前无法自动复制，请选中链接后手动复制。')}</p>}
-              <p>{t(`Each reward expires ${data.duration_days || 30} days after the invited user registers.`, `每笔奖励从受邀用户注册成功起 ${data.duration_days || 30} 天内有效。`)}</p>
+              <p>{td(
+                `Each reward expires ${data.duration_days || 30} days after the invited user registers.`,
+                `每笔奖励从受邀用户注册成功起 ${data.duration_days || 30} 天内有效。`,
+                `Шагнал бүр уригдсан хүн бүртгүүлснээс хойш ${data.duration_days || 30} хоног хүчинтэй.`,
+              )}</p>
             </div>
             <div className="hub-invitation-dialog__qr" aria-label={t('Invitation link QR code', '邀请链接二维码')}>
               <QRCodeSVG value={data.invite_url} size={128} level="M" bgColor="#fff" fgColor="#101318" />
@@ -233,7 +243,7 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
           <div className="hub-invitation-dialog__invitees">
             <div className="hub-invitation-dialog__invitees-heading">
               <h3>{t('Users you invited', '我邀请的用户')}</h3>
-              <span>{t(`${total} total`, `共 ${total} 人`)}</span>
+              <span>{td(`${total} total`, `共 ${total} 人`, `${total} хүн`)}</span>
             </div>
             {(data.invitees || []).length === 0 ? (
               <p className="hub-invitation-dialog__empty">{t('Share your link to invite your first friend.', '分享邀请链接，邀请第一位好友。')}</p>
@@ -249,7 +259,7 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
             )}
             {totalPages > 1 && <nav className="hub-invitation-dialog__pagination" aria-label={t('Invited users pages', '受邀用户分页')} aria-busy={pageLoading}>
               <button className="hub-invitation-dialog__button" type="button" disabled={page <= 1 || pageLoading} onClick={() => void load(page - 1)}>{t('Previous', '上一页')}</button>
-              <span>{t(`Page ${page} / ${totalPages}`, `第 ${page} / ${totalPages} 页`)}</span>
+              <span>{td(`Page ${page} / ${totalPages}`, `第 ${page} / ${totalPages} 页`, `Хуудас ${page} / ${totalPages}`)}</span>
               <button className="hub-invitation-dialog__button" type="button" disabled={page >= totalPages || pageLoading} onClick={() => void load(page + 1)}>{t('Next', '下一页')}</button>
               {pageLoading && <span className="hub-invitation-dialog__pagination-loading" role="status">{t('Loading…', '正在加载…')}</span>}
             </nav>}

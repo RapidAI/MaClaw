@@ -1,3 +1,4 @@
+import { tailText } from "../../i18n/mnTail"
 /** Pure helpers for multi-question survey draft editing (unit-tested). */
 
 export type EditorOption = { id: string; label: string };
@@ -670,9 +671,14 @@ export type SurveyOperatorHelpGroup = {
     lines: string[];
 };
 
+function surveyLang(isZh: boolean | string): string {
+    return typeof isZh === 'string' ? isZh : (isZh ? 'zh-Hans' : 'en');
+}
+
 /** Operator-facing IM command help, grouped for the desktop help panel. */
-export function buildSurveyOperatorHelp(isZh: boolean): SurveyOperatorHelpGroup[] {
-    if (isZh) {
+export function buildSurveyOperatorHelp(isZh: boolean | string): SurveyOperatorHelpGroup[] {
+    const lang = surveyLang(isZh);
+    if (typeof isZh === 'string' ? (lang === 'zh-Hans' || lang === 'zh-Hant' || lang.toLowerCase().startsWith('zh')) : !!isZh) {
         return [
             {
                 heading: '群内使用',
@@ -705,28 +711,28 @@ export function buildSurveyOperatorHelp(isZh: boolean): SurveyOperatorHelpGroup[
     }
     return [
         {
-            heading: 'In a group',
+            heading: tailText(lang, 'In a group', '群内使用'),
             lines: [
-                '@the survey bot only (not other AIs); survey published & bound',
-                '/survey <code> — start',
-                '/survey <code> <answer> — answer Q1 (submit if single-Q; else advance)',
-                '/survey list · status · cancel · help',
+                tailText(lang, '@the survey bot only (not other AIs); survey published & bound', '必须 @出问卷的机器人（勿 @ 其他 AI），问卷须已发布且绑定本群'),
+                tailText(lang, '/survey <code> — start', '/survey <短码> — 开始填写'),
+                tailText(lang, '/survey <code> <answer> — answer Q1 (submit if single-Q; else advance)', '/survey <短码> <答案> — 答第 1 题（单题可直接交卷；多题进入下一题）'),
+                tailText(lang, '/survey list · status · cancel · help', '/survey status · cancel · help'),
             ],
         },
         {
-            heading: 'Answering',
+            heading: tailText(lang, 'Answering', '答题与修改'),
             lines: [
-                'Multi-question: one answer per message; bot advances [1/N] → [2/N]',
-                '@this bot with option number (1) or text; fullwidth １ OK',
-                'prev / cancel / skip (optional questions)',
-                'If updates allowed: /survey <code> then modify',
+                tailText(lang, 'Multi-question: one answer per message; bot advances [1/N] → [2/N]', '多题：一题一答，【1/N】答完自动【2/N】…'),
+                tailText(lang, '@this bot with option number (1) or text; fullwidth １ OK', '答题中：@本机器人 回复选项序号（如 1）或文字；也可用全角数字 １'),
+                tailText(lang, 'prev / cancel / skip (optional questions)', '「上一题」回退；「取消」结束；选填题「跳过」'),
+                tailText(lang, 'If updates allowed: /survey <code> then modify', '允许修改时：提交后 /survey <短码> 再选「修改」'),
             ],
         },
         {
-            heading: 'Desktop',
+            heading: tailText(lang, 'Desktop', '桌面端'),
             lines: [
-                'Ctrl+S saves draft; results support summary / print / Excel export',
-                'Use Refresh groups under bindings after the bot joins a group',
+                tailText(lang, 'Ctrl+S saves draft; results support summary / print / Excel export', 'Ctrl+S 保存草稿；结果页可复制摘要 / 打印 / 导出 Excel'),
+                tailText(lang, 'Use Refresh groups under bindings after the bot joins a group', '群绑定区可点「刷新群列表」拉取机器人已入群'),
             ],
         },
     ];
@@ -735,66 +741,51 @@ export function buildSurveyOperatorHelp(isZh: boolean): SurveyOperatorHelpGroup[
 /** Localized short status label for badges. */
 export function surveyStatusLabel(
     status: string | undefined | null,
-    isZh: boolean,
+    isZh: boolean | string,
 ): string {
+    const lang = surveyLang(isZh);
     const s = String(status || '').toLowerCase();
-    if (isZh) {
-        switch (s) {
-            case 'draft':
-                return '草稿';
-            case 'published':
-                return '收集中';
-            case 'closed':
-                return '已关闭';
-            case 'archived':
-                return '已归档';
-            default:
-                return status || '—';
-        }
-    }
     switch (s) {
         case 'draft':
-            return 'Draft';
+            return tailText(lang, 'Draft', '草稿');
         case 'published':
-            return 'Open';
+            return tailText(lang, 'Open', '收集中');
         case 'closed':
-            return 'Closed';
+            return tailText(lang, 'Closed', '已关闭');
         case 'archived':
-            return 'Archived';
+            return tailText(lang, 'Archived', '已归档');
         default:
             return status || '—';
     }
 }
 
 /** Plain-text summary suitable for paste into IM / email. */
-export function buildSurveyShareSummary(input: ShareSummaryInput, isZh: boolean = true): string {
+export function buildSurveyShareSummary(input: ShareSummaryInput, isZh: boolean | string = true): string {
     const lines: string[] = [];
-    const title = (input.title || '').trim() || (isZh ? '未命名问卷' : 'Untitled survey');
+    const title = (input.title || '').trim() || (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'Untitled survey', '未命名问卷'));
     lines.push(title);
     if (input.shortCode) {
         lines.push(formatSurveyIMCommand(input.shortCode));
     }
     const meta: string[] = [];
     if (input.status) meta.push(input.status);
-    if (input.anonymous) meta.push(isZh ? '匿名' : 'anonymous');
-    meta.push(isZh ? `回收 ${input.responseCount}` : `responses ${input.responseCount}`);
+    if (input.anonymous) meta.push(tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'anonymous', '匿名'));
+    meta.push(tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `responses ${input.responseCount}`, `回收 ${input.responseCount}`));
     if (input.targetCount && input.targetCount > 0) {
         const pct = completionPercent(input.responseCount, input.targetCount);
         meta.push(
-            isZh
-                ? `目标 ${input.targetCount}${pct != null ? ` (${pct}%)` : ''}`
-                : `target ${input.targetCount}${pct != null ? ` (${pct}%)` : ''}`,
+            tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `target ${input.targetCount}${pct != null ? ` (${pct}%)` : ''}`, `目标 ${input.targetCount}${pct != null ? ` (${pct}%)` : ''}`),
         );
     }
     if (input.deadline) {
         const d = new Date(input.deadline);
         const ds = Number.isNaN(d.getTime()) ? input.deadline : d.toLocaleString();
-        meta.push((isZh ? '截止 ' : 'deadline ') + ds);
+        meta.push((tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'deadline ', '截止 ')) + ds);
     }
     lines.push(meta.join(' · '));
 
     if (input.groups && input.groups.length > 0) {
-        lines.push(isZh ? '【按群】' : '[By group]');
+        lines.push(tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), '[By group]', '【按群】'));
         for (const g of input.groups) {
             const pct =
                 typeof g.percent === 'number' && input.responseCount > 0
@@ -805,7 +796,7 @@ export function buildSurveyShareSummary(input: ShareSummaryInput, isZh: boolean 
     }
 
     if (input.questions && input.questions.length > 0) {
-        lines.push(isZh ? '【题目】' : '[Questions]');
+        lines.push(tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), '[Questions]', '【题目】'));
         input.questions.forEach((q, i) => {
             lines.push(`${i + 1}. ${q.title || '—'}`);
             if (q.options && q.options.length > 0) {
@@ -816,10 +807,10 @@ export function buildSurveyShareSummary(input: ShareSummaryInput, isZh: boolean 
             }
             if (q.type === 'rating' && (q.ratingN || 0) > 0) {
                 const avg = typeof q.ratingAvg === 'number' ? q.ratingAvg.toFixed(2) : String(q.ratingAvg ?? '');
-                lines.push(isZh ? `   平均 ${avg} (n=${q.ratingN})` : `   avg ${avg} (n=${q.ratingN})`);
+                lines.push(tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `   avg ${avg} (n=${q.ratingN})`, `   平均 ${avg} (n=${q.ratingN})`));
             }
             if (q.type === 'text' && (q.textCount || 0) > 0) {
-                lines.push(isZh ? `   文本 ${q.textCount} 条` : `   text answers: ${q.textCount}`);
+                lines.push(tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `   text answers: ${q.textCount}`, `   文本 ${q.textCount} 条`));
             }
         });
     }

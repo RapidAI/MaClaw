@@ -136,7 +136,14 @@
     }
   };
 
-  function text() { return copy[global.currentLang === 'en' ? 'en' : 'zh']; }
+  function text() {
+    var lang = global.hubAdminLang ? global.hubAdminLang() : (global.currentLang === 'zh' ? 'zh' : 'en');
+    if (lang === 'mn') {
+      var mn = global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.DESKTOP;
+      return Object.assign({}, copy.en, mn || {});
+    }
+    return copy[lang] || copy.en;
+  }
   function byID(id) { return document.getElementById(id); }
   function host() { return byID('botDesktopHost'); }
   function api(path, opts) {

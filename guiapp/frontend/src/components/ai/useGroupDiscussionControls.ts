@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
+import { chromeText } from "../../i18n/chromeText";
 import { localizeText } from "./aiAssistantI18n";
 
 export function useGroupDiscussionControls(groupDiscussion: GroupDiscussionPanelControl | undefined, inline: boolean | undefined, lang: string) {
@@ -16,9 +17,11 @@ export function useGroupDiscussionControls(groupDiscussion: GroupDiscussionPanel
         const groupWaitingTalks = groupDiscussionStatus?.waiting_discussion_count ?? 0;
         const groupActiveTalks = groupDiscussionStatus?.active_discussion_count ?? 0;
         const groupStaleTalks = groupDiscussionStatus?.stale_discussion_count ?? 0;
-        const groupDiscussionLabel = lang === "en"
-            ? (groupDiscussionEnabled ? (groupDiscussionDiscoverable ? "Group Listed" : "Group Private") : "Group Off")
-            : (groupDiscussionEnabled ? (groupDiscussionDiscoverable ? "\u7fa4\u7ec4\u53ef\u89c1" : "\u7fa4\u7ec4\u79c1\u5bc6") : "\u7fa4\u7ec4\u5173\u95ed");
+        const groupDiscussionLabel = groupDiscussionEnabled
+            ? (groupDiscussionDiscoverable
+                ? chromeText(lang, "Group Listed", "群组可见")
+                : chromeText(lang, "Group Private", "群组私密"))
+            : chromeText(lang, "Group Off", "群组关闭");
         const groupDiscussionScopeText = localizeText(lang, "Current Hub only", "\u4ec5\u5f53\u524d Hub");
         return {
             groupActiveTalks,

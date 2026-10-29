@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { EventsOn, EventsOff } from '../../../wailsjs/runtime';
 import { KnowledgeDeepCrawlCancel } from '../../../wailsjs/go/main/App';
+import { localizeText } from '../../i18n';
+
 
 /**
  * DeepCrawlPanel — UI for configuring and launching a deep crawl from a seed URL.
@@ -72,7 +74,7 @@ export interface DeepCrawlPanelProps {
 }
 
 function t(lang: string | undefined, en: string, zh: string): string {
-    return lang === 'en' ? en : zh;
+    return localizeText(lang, en, zh);
 }
 
 /** Validates that a URL starts with http:// or https:// */

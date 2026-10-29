@@ -178,6 +178,7 @@
     return 'zh';
   }
   function dialogTrFallback(en, zh) {
+    if (global.hubLine) return global.hubLine('ADMIN_DIALOG', zh, en);
     return dialogLang() === 'zh' ? zh : en;
   }
   function dialogCancelLabel(options) {

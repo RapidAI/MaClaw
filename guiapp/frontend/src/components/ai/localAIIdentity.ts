@@ -1,4 +1,5 @@
 import type { AITab } from "./AITabTypes";
+import { localizeText } from "../../i18n";
 
 export const LEGACY_LOCAL_AI_PARTICIPANT_ID = "local-maclaw";
 // Display names avoid consumer "AI persona" branding; this is the local worker node.
@@ -72,9 +73,7 @@ export function hasLocalAIParticipant(tab: Pick<AITab, "participants" | "localPa
 }
 
 export function localAINameForLang(lang?: string): string {
-    if (lang === "zh-Hant") return LOCAL_AI_DISPLAY_NAME_ZH_HANT;
-    if (!lang || lang.startsWith("zh")) return LOCAL_AI_DISPLAY_NAME_ZH_HANS;
-    return LOCAL_AI_DISPLAY_NAME_EN;
+    return localizeText(lang, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT);
 }
 
 export function localExecutorParticipantID(value: LocalGroupExecutorRegistration | null | undefined): string {

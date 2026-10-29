@@ -301,6 +301,8 @@
       digitalAssetsKindBadgeBusiness: '\u4e1a\u52a1',
       digitalAssetsKindBadgeTechnical: '\u6280\u672f'
     });
+    var digitalAssetsMn = (global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.DIGITAL_ASSETS) || {};
+    I18N.mn = Object.assign({}, I18N.mn || {}, digitalAssetsMn);
   }
 
   const state = {
@@ -414,6 +416,7 @@
 
   function tr(key, vars) {
     if (typeof global.tr === 'function') return global.tr(key, vars || {});
+    if (global.hubDict) return global.hubDict('DIGITAL_ASSETS', I18N, key, vars);
     const lang = (typeof global.getAdminLang === 'function' ? global.getAdminLang() : global.currentLang) || 'en';
     const normalized = String(lang).toLowerCase().startsWith('zh') ? 'zh' : 'en';
     const table = (I18N && I18N[normalized]) || (I18N && I18N.en) || {};

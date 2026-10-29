@@ -8,6 +8,7 @@ import {
 import { EventsOn } from "../../../wailsjs/runtime";
 import { TokenUsageTrend } from "./TokenUsageTrend";
 import type { TokenUsageDayPoint } from "./tokenUsageSeries";
+import { panelText } from "../../i18n/mnPanel";
 
 interface TokenUsageStat {
     input_tokens?: number;
@@ -134,7 +135,7 @@ const getPreferredProvider = (providerNames: string[], currentProviderName: stri
 
 export function TokenUsagePanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en, [lang]);
+        panelText(lang, en, zhHans, zhHant), [lang]);
 
     const [providers, setProviders] = useState<string[]>([]);
     const [currentProvider, setCurrentProvider] = useState("");

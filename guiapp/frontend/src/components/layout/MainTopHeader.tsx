@@ -4,6 +4,8 @@ import { windowDragHandleProps } from '../../utils/windowDrag';
 import { getHeaderTitle } from './mainTopHeaderTitle';
 import { MainTopHeaderActions } from './MainTopHeaderActions';
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from './WindowControlIcons';
+import { localizeText } from '../../i18n';
+
 
 interface MainTopHeaderProps {
     navTab: string;
@@ -89,7 +91,7 @@ export const MainTopHeader = ({
                     <select
                         className="top-header-tool-select"
                         value={safeActiveTool}
-                        aria-label={lang === 'en' ? 'Coding tool' : '\u7f16\u7a0b\u5de5\u5177'}
+                        aria-label={localizeText(lang, 'Coding tool', '编程工具')}
                         onMouseDown={(event) => event.stopPropagation()}
                         onClick={(event) => event.stopPropagation()}
                         onDoubleClick={(event) => event.stopPropagation()}
@@ -118,20 +120,20 @@ export const MainTopHeader = ({
                 />
             </h2>
             <div className="top-header-window-controls mth-window-controls">
-                <button className="mc-header-notification" data-testid="main-header-notifications" type="button" onClick={openNotifications} aria-label={lang === 'en' ? 'Notifications' : '通知'} title={lang === 'en' ? 'Notifications' : '通知'}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></button>
-                <span className="mc-header-ready"><i aria-hidden="true" />{lang === 'en' ? 'Ready' : '准备就绪'}</span>
+                <button className="mc-header-notification" data-testid="main-header-notifications" type="button" onClick={openNotifications} aria-label={localizeText(lang, 'Notifications', '通知')} title={localizeText(lang, 'Notifications', '通知')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></button>
+                <span className="mc-header-ready"><i aria-hidden="true" />{localizeText(lang, 'Ready', '准备就绪')}</span>
                 <button
                     onMouseDown={handleWindowHide}
-                    aria-label={lang === 'en' ? 'Hide window' : zhHans.hideWindow}
-                    title={lang === 'en' ? 'Hide window' : zhHans.hideWindow}
+                    aria-label={localizeText(lang, 'Hide window', zhHans.hideWindow)}
+                    title={localizeText(lang, 'Hide window', zhHans.hideWindow)}
                     style={windowControlBtnStyle}
                 >
                     <WindowCloseIcon />
                 </button>
                 <button
                     onMouseDown={handleWindowMaximizeToggle}
-                    aria-label={windowMaximized ? (lang === 'en' ? 'Restore window' : zhHans.restoreWindow) : (lang === 'en' ? 'Maximize window' : zhHans.maximizeWindow)}
-                    title={windowMaximized ? (lang === 'en' ? 'Restore window' : zhHans.restoreWindow) : (lang === 'en' ? 'Maximize window' : zhHans.maximizeWindow)}
+                    aria-label={windowMaximized ? localizeText(lang, 'Restore window', zhHans.restoreWindow) : localizeText(lang, 'Maximize window', zhHans.maximizeWindow)}
+                    title={windowMaximized ? localizeText(lang, 'Restore window', zhHans.restoreWindow) : localizeText(lang, 'Maximize window', zhHans.maximizeWindow)}
                     style={windowControlBtnStyle}
                 >
                     {windowMaximized ? <WindowRestoreIcon /> : <WindowMaximizeIcon />}

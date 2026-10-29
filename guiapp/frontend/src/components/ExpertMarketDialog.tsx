@@ -12,13 +12,14 @@ import {
 } from '../../wailsjs/go/main/App';
 import { useDialog } from './CustomDialog';
 import { openSettingsTab } from '../utils/settingsNavigation';
+import { tailText } from '../i18n/mnTail'
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type Listing = Record<string, any>;
 
 const LIBRARY_PAGE_SIZE = 8;
 
-const t = (lang: Lang, zh: string, en: string) => lang.startsWith('zh') ? zh : en;
+const t = (lang: Lang, zh: string, en: string) => tailText(lang, en, zh);
 const number = (value: unknown) => Number(value || 0).toLocaleString();
 const message = (err: unknown) => err instanceof Error ? err.message : String(err || 'Unknown error');
 const marketErrorText = (lang: Lang, err: unknown) => {

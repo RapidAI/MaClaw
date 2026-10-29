@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { cs, setCompanionUiLang } from "../../i18n/mnCompanion";
 import { InputHistoryAutocomplete } from "../ai/InputHistoryAutocomplete";
 import { useCompanionAppearance } from "./useCompanionAppearance";
 import { useAssistantInputHistory } from "../ai/useAssistantInputHistory";
@@ -15,9 +16,11 @@ interface FileCompanionComposerProps {
     // false means the turn was not accepted, so the line stays out of history.
     onSubmit: () => void | boolean | Promise<void | boolean>;
     busy?: boolean;
+    lang?: string;
 }
 
-export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = false }: FileCompanionComposerProps) {
+export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = false, lang = "zh-Hans" }: FileCompanionComposerProps) {
+    setCompanionUiLang(lang);
     const { assistantTheme } = useCompanionAppearance();
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const pathRef = useRef(path);
@@ -154,7 +157,7 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
                 onSelectIndex={autocomplete.setSelectedIndex}
                 onAccept={autocomplete.accept}
                 theme={assistantTheme}
-                lang="zh-Hans"
+                lang={lang}
                 testId="file-companion-input-history"
                 itemTestIdPrefix="file-companion-input-history-item"
             />
@@ -167,7 +170,7 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
                     aria-controls={autocomplete.open ? historyListboxId : undefined}
                     aria-activedescendant={autocomplete.open ? `${historyListboxId}-option-${autocomplete.selectedIndex}` : undefined}
                     value={value}
-                    placeholder="输入问题，Enter 发送"
+                    placeholder={cs("输入问题，Enter 发送")}
                     onChange={(event) => {
                         rememberHistoryEdit(event.target.value);
                         onChange(event.target.value);
@@ -183,9 +186,9 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
                     onKeyDown={onKeyDown}
                     style={{ flex: 1, minHeight: 44, maxHeight: 160, border: "none", outline: "none", resize: "none", padding: "6px 4px", font: "inherit", fontSize: 14, lineHeight: 1.5, background: "transparent", color: "var(--theme-text-primary, #1e293b)" }}
                 />
-                <button type="submit" className="file-companion-send" data-testid="file-companion-send" disabled={!busy && !value.trim()} aria-busy={busy}>{busy ? "处理中" : "发送"}</button>
+                <button type="submit" className="file-companion-send" data-testid="file-companion-send" disabled={!busy && !value.trim()} aria-busy={busy}>{busy ? cs("处理中") : cs("发送")}</button>
             </div>
-            <p style={{ margin: "6px 2px 0", fontSize: 12, color: "var(--theme-text-muted, #94a3b8)" }}>Enter 发送，Shift+Enter 换行，↑↓ 翻看已发送的内容，/clear 清空</p>
+            <p style={{ margin: "6px 2px 0", fontSize: 12, color: "var(--theme-text-muted, #94a3b8)" }}>{cs("Enter 发送，Shift+Enter 换行，↑↓ 翻看已发送的内容，/clear 清空")}</p>
         </form>
     );
 }

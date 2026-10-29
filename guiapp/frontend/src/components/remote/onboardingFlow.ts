@@ -46,10 +46,22 @@ const STEP_LABELS: Record<OnboardingStepId, { en: string; zhHans: string; zhHant
     },
 };
 
+const STEP_MN: Record<OnboardingStepId, string> = {
+    mode: 'Горим',
+    register: 'Бүртгэл',
+    sso: 'SSO баталгаажуулалт',
+    llm: 'LLM',
+    wechat: 'WeChat',
+};
+
 const localizeLabel = (lang: OnboardingLang, step: OnboardingStepId): string => {
     const labels = STEP_LABELS[step];
     if (lang === 'zh-Hans') return labels.zhHans;
     if (lang === 'zh-Hant') return labels.zhHant;
+    const raw = String(lang || '').trim().toLowerCase().replace(/_/g, '-');
+    if (raw === 'mn' || raw === 'mn-mn' || raw === 'mn-cyrl' || raw === 'mn-cyrl-mn' || raw.startsWith('mn-cyrl-') || raw.startsWith('mn-mn-')) {
+        return STEP_MN[step];
+    }
     return labels.en;
 };
 

@@ -167,6 +167,13 @@ func registerSharedStaticAssets(mux *http.ServeMux, staticDir string) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		http.ServeFile(w, r, cssPath)
 	})
+	langPath := filepath.Join(staticDir, "i18n", "lang.js")
+	mux.HandleFunc("GET /i18n/lang.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", staticHTMLCacheControl)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		http.ServeFile(w, r, langPath)
+	})
 }
 
 func shouldCacheStaticAsset(relPath string) bool {

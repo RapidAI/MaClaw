@@ -35,10 +35,12 @@ describe('utilitiesLabels', () => {
         expect(utilitiesBackHint('en')).toContain(utilitiesLabels.title.en);
     });
 
-    it('treats missing lang as Simplified Chinese, matching localizeText', () => {
-        expect(utilitiesNavLabel()).toBe('专家&工具');
+    it('uses English when lang is omitted, and Chinese only for a Chinese tag', () => {
+        expect(utilitiesNavLabel()).toBe('Experts');
         expect(utilitiesNavLabel('zh')).toBe('专家&工具');
-        expect(utilitiesPageTitle()).toBe('专家&工具');
+        expect(utilitiesPageTitle()).toBe('Experts & Tools');
+        expect(utilitiesNavLabel('mn')).toBe('Мэргэжилтэн');
+        expect(utilitiesPageTitle('mn')).toBe('Мэргэжилтэн ба багаж');
     });
 
     it('keeps split tools and AI expert copy separate from the legacy combined labels', () => {
@@ -46,5 +48,7 @@ describe('utilitiesLabels', () => {
         expect(toolsBackLabel('zh-Hans')).toBe('返回工具');
         expect(toolsBackHintLabel('en')).toBe('Return to the Tools page');
         expect(expertsEntryLabel('zh-Hans')).toBe('AI 专家入口');
+        expect(toolsEntryLabel('mn')).toBe('Багаж орох цэг');
+        expect(expertsEntryLabel('mn')).toBe('AI мэргэжилтэн орох цэг');
     });
 });

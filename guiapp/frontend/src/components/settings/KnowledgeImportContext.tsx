@@ -10,6 +10,8 @@ import {
 } from 'react';
 import { KnowledgeImportJobStatus } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { normalizeLang } from '../../i18n/langSelect';
+import { surfaceText } from '../../i18n/mnSurface';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { startVisibleInterval } from '../../utils/visibleInterval';
 import {
@@ -61,6 +63,7 @@ function resolveDocT(): KnowledgeImportTFunc {
     return (en, zhHans, zhHant = zhHans) => {
         if (lang === 'zh-Hans') return zhHans;
         if (lang === 'zh-Hant') return zhHant;
+        if (normalizeLang(raw) === 'mn') return surfaceText(raw || 'mn', en, zhHans, zhHant);
         return en;
     };
 }

@@ -16,6 +16,7 @@ import {
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { usePortalThemeAttributes } from "../../hooks/usePortalThemeAttributes";
 import { useDialog } from "../CustomDialog";
+import { tailText } from "../../i18n/mnTail"
 
 interface IMAuditMessage {
     id: number;
@@ -57,14 +58,10 @@ const platformLabels: Record<string, { zh: string; en: string }> = {
     thirdparty: { zh: "\u7b2c\u4e09\u65b9\u63a5\u5165", en: "Third-party" },
 };
 
-function isZhLang(lang: string) {
-    return lang === "zh-Hans" || lang === "zh-Hant";
-}
-
 function labelForPlatform(platform: string, lang: string) {
     const item = platformLabels[platform];
     if (!item) return platform;
-    return isZhLang(lang) ? item.zh : item.en;
+    return tailText(lang, item.en, item.zh);
 }
 
 function formatTimestamp(ts: string): string {
@@ -149,27 +146,28 @@ function formatFileSize(bytes?: number) {
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function auditAttachmentSubtitle(message: IMAuditMessage, isZh: boolean) {
+function auditAttachmentSubtitle(message: IMAuditMessage, isZh: boolean | string) {
     const size = formatFileSize(message.attachment_size);
 	const action = message.attachment_path
-		? (isZh ? "打开所在目录" : "Open containing folder")
-		: (isZh ? "未保存到本地" : "Not saved locally");
+		? (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Open containing folder", "打开所在目录"))
+		: (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Not saved locally", "未保存到本地"));
 	return size ? `${size} · ${action}` : action;
 }
 
 type AuditMessageCardProps = {
     message: IMAuditMessage;
-    isZh: boolean;
+    isZh: boolean | string;
     onRevealError: () => void;
 };
 
 /** Isolate expensive GFM parsing from toolbar-only state changes. */
 const AuditMessageCard = memo(function AuditMessageCard({ message, isZh, onRevealError }: AuditMessageCardProps) {
+    const lang = typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en");
     const isUser = message.role === "user";
     return (
         <div className="im-audit-item" data-role={isUser ? "user" : "assistant"}>
             <div className="im-audit-meta">
-                <span>{isUser ? (message.user_id || (isZh ? "\u7528\u6237" : "User")) : "MaClaw"}</span>
+                <span>{isUser ? (message.user_id || (tailText(lang, "User", "\u7528\u6237"))) : "MaClaw"}</span>
                 <span>{formatTimestamp(message.timestamp)}</span>
             </div>
             <div className="im-audit-bubble">
@@ -178,7 +176,7 @@ const AuditMessageCard = memo(function AuditMessageCard({ message, isZh, onRevea
                     <button type="button" className="im-audit-attachment" onClick={() => void Promise.resolve(RevealIMAuditAttachment(message.attachment_path!)).catch(onRevealError)}>
                         <span className="im-audit-attachment__icon" aria-hidden="true">↗</span>
                         <span className="im-audit-attachment__copy">
-                            <strong>{message.attachment_name || (isZh ? "文件附件" : "File attachment")}</strong>
+                            <strong>{message.attachment_name || (tailText(lang, "File attachment", "文件附件"))}</strong>
                             <small>{auditAttachmentSubtitle(message, isZh)}</small>
                         </span>
                     </button>
@@ -227,12 +225,11 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
 
     // Keep async completions scoped to the platform rendered in this commit.
     platformRef.current = platform;
-    const isZh = isZhLang(lang);
-    const isZhRef = useRef(isZh);
+    const langRef = useRef(lang);
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
-    const title = labelForPlatform(platform, lang) + (isZh ? " \u804a\u5929\u5386\u53f2" : " Chat History");
+    const title = labelForPlatform(platform, lang) + (tailText(lang, " Chat History", " \u804a\u5929\u5386\u53f2"));
 
-    useEffect(() => { isZhRef.current = isZh; }, [isZh]);
+    useEffect(() => { langRef.current = lang; }, [lang]);
 
     // This panel is a true modal even though it is rendered through a portal:
     // keep keyboard dismissal, focus entry, and background scroll behavior
@@ -346,7 +343,7 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
         } catch (err) {
             if (querySequence !== querySequenceRef.current || platformRef.current !== platform) return;
             console.error("[im-audit] query error:", err);
-            setMessage(isZhRef.current ? "\u52a0\u8f7d\u6d88\u606f\u8bb0\u5f55\u5931\u8d25" : "Failed to load audit messages");
+            setMessage(tailText(langRef.current, "Failed to load audit messages", "\u52a0\u8f7d\u6d88\u606f\u8bb0\u5f55\u5931\u8d25"));
         } finally {
             if (querySequence === querySequenceRef.current && platformRef.current === platform) setLoading(false);
         }
@@ -385,7 +382,7 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
     };
 
     const handleRevealError = useCallback(() => {
-		setMessage(isZhRef.current ? "无法打开文件所在目录，文件可能已被移动或删除" : "Could not open the containing folder; the file may have moved or been deleted");
+		setMessage(tailText(langRef.current, "Could not open the containing folder; the file may have moved or been deleted", "无法打开文件所在目录，文件可能已被移动或删除"));
 	}, []);
 
     const handleCleanup = async () => {
@@ -394,11 +391,11 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
         const cleanupPlatform = platform;
         let confirmed = false;
         try {
-            confirmed = await showConfirm(isZh ? "确定删除 " + cleanupDays + " 天前的记录？" : "Delete records older than " + cleanupDays + " days?", isZh ? '清理记录' : 'Clean up records', { confirmText: isZh ? '删除' : 'Delete', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' });
+            confirmed = await showConfirm(tailText(lang, "Delete records older than " + cleanupDays + " days?", "确定删除 " + cleanupDays + " 天前的记录？"), tailText(lang, 'Clean up records', '清理记录'), { confirmText: tailText(lang, 'Delete', '删除'), cancelText: tailText(lang, 'Cancel', '取消'), confirmVariant: 'danger' });
         } catch (err) {
             console.error("[im-audit] cleanup confirmation error:", err);
             if (platformRef.current === cleanupPlatform) {
-                setMessage(isZhRef.current ? "清理消息记录失败" : "Failed to clean up audit messages");
+                setMessage(tailText(langRef.current, "Failed to clean up audit messages", "清理消息记录失败"));
             }
         }
         if (!confirmed) {
@@ -409,7 +406,7 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
         try {
             const n = await DeleteIMAuditMessagesBefore(cleanupDays);
             if (platformRef.current !== cleanupPlatform) return;
-            setMessage(isZh ? "\u5df2\u5220\u9664 " + n + " \u6761\u8bb0\u5f55" : "Deleted " + n + " records");
+            setMessage(tailText(lang, "Deleted " + n + " records", "\u5df2\u5220\u9664 " + n + " \u6761\u8bb0\u5f55"));
             setPage(1);
             setKeyword("");
             setSearchInput("");
@@ -424,7 +421,7 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
         } catch (err) {
             console.error("[im-audit] cleanup error:", err);
             if (platformRef.current === cleanupPlatform) {
-                setMessage(isZh ? "\u6e05\u7406\u6d88\u606f\u8bb0\u5f55\u5931\u8d25" : "Failed to clean up audit messages");
+                setMessage(tailText(lang, "Failed to clean up audit messages", "\u6e05\u7406\u6d88\u606f\u8bb0\u5f55\u5931\u8d25"));
             }
         } finally {
             cleanupPendingRef.current = false;
@@ -441,10 +438,10 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
                 : ExportIMAuditCSV(platform, userID, keyword));
             if (!filePath) throw new Error("empty export path");
             await OpenFileOrShowInFolder(filePath);
-            setMessage(isZh ? "\u5df2\u5bfc\u51fa CSV" : "CSV exported");
+            setMessage(tailText(lang, "CSV exported", "\u5df2\u5bfc\u51fa CSV"));
         } catch (err) {
             console.error("[im-audit] export error:", err);
-            setMessage(isZh ? "\u5bfc\u51fa CSV \u5931\u8d25" : "Failed to export CSV");
+            setMessage(tailText(lang, "Failed to export CSV", "\u5bfc\u51fa CSV \u5931\u8d25"));
         } finally {
             setExporting(false);
         }
@@ -460,9 +457,9 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
                 <div className="im-audit-header">
                     <div className="im-audit-title-wrap">
                         <span className="im-audit-title">{title}</span>
-                        <span className="im-audit-total">{isZh ? "\u5171 " + total + " \u6761" : total + " total"}</span>
+                        <span className="im-audit-total">{tailText(lang, total + " total", "\u5171 " + total + " \u6761")}</span>
                     </div>
-                    <button ref={closeButtonRef} type="button" onClick={onClose} aria-label={isZh ? "\u5173\u95ed" : "Close"} className="im-audit-close">{"\u00d7"}</button>
+                    <button ref={closeButtonRef} type="button" onClick={onClose} aria-label={tailText(lang, "Close", "\u5173\u95ed")} className="im-audit-close">{"\u00d7"}</button>
                 </div>
 
                 <div className="im-audit-toolbar">
@@ -471,38 +468,38 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
                         value={searchInput}
                         onChange={e => setSearchInput(e.target.value)}
                         onKeyDown={e => { if (e.key === "Enter") handleSearch(); }}
-                        placeholder={isZh ? "\u641c\u7d22\u6d88\u606f\u5185\u5bb9..." : "Search messages..."}
-                        aria-label={isZh ? "\u641c\u7d22\u6d88\u606f\u5185\u5bb9" : "Search message content"}
+                        placeholder={tailText(lang, "Search messages...", "\u641c\u7d22\u6d88\u606f\u5185\u5bb9...")}
+                        aria-label={tailText(lang, "Search message content", "\u641c\u7d22\u6d88\u606f\u5185\u5bb9")}
                         className="im-audit-input"
                     />
-                    <button type="button" onClick={handleSearch} className="im-audit-toolbar-button">{isZh ? "\u641c\u7d22" : "Search"}</button>
-                    <button type="button" onClick={handleRefresh} disabled={loading} className="im-audit-toolbar-button">{loading ? "..." : (isZh ? "\u5237\u65b0" : "Refresh")}</button>
+                    <button type="button" onClick={handleSearch} className="im-audit-toolbar-button">{tailText(lang, "Search", "\u641c\u7d22")}</button>
+                    <button type="button" onClick={handleRefresh} disabled={loading} className="im-audit-toolbar-button">{loading ? "..." : (tailText(lang, "Refresh", "\u5237\u65b0"))}</button>
 
                     {users.length > 0 && (
-                        <select aria-label={isZh ? "\u7528\u6237\u7b5b\u9009" : "User filter"} value={userID} onChange={e => { setUserID(e.target.value); setPage(1); }} className="im-audit-select">
-                            <option value="">{isZh ? "\u5168\u90e8\u7528\u6237" : "All users"}</option>
+                        <select aria-label={tailText(lang, "User filter", "\u7528\u6237\u7b5b\u9009")} value={userID} onChange={e => { setUserID(e.target.value); setPage(1); }} className="im-audit-select">
+                            <option value="">{tailText(lang, "All users", "\u5168\u90e8\u7528\u6237")}</option>
                             {users.map(u => <option key={u} value={u}>{u}</option>)}
                         </select>
                     )}
 
-                    <button type="button" onClick={handleExport} disabled={exporting} className="im-audit-toolbar-button">{exporting ? "..." : (isZh ? "\u5bfc\u51fa CSV" : "Export CSV")}</button>
+                    <button type="button" onClick={handleExport} disabled={exporting} className="im-audit-toolbar-button">{exporting ? "..." : (tailText(lang, "Export CSV", "\u5bfc\u51fa CSV"))}</button>
 
                     <div className="im-audit-cleanup-wrap">
                         <button type="button" onClick={() => setShowCleanup(!showCleanup)} disabled={cleaning} aria-expanded={showCleanup} className="im-audit-toolbar-button im-audit-toolbar-button--danger">
-                            {isZh ? "\u6e05\u7406" : "Cleanup"}
+                            {tailText(lang, "Cleanup", "\u6e05\u7406")}
                         </button>
                         {showCleanup && (
-                            <div className="im-audit-cleanup-popover" role="dialog" aria-label={isZh ? "\u6e05\u7406\u6d88\u606f\u8bb0\u5f55" : "Clean up audit messages"}>
+                            <div className="im-audit-cleanup-popover" role="dialog" aria-label={tailText(lang, "Clean up audit messages", "\u6e05\u7406\u6d88\u606f\u8bb0\u5f55")}>
                                 <div className="im-audit-cleanup-copy">
-                                    {isZh ? "\u5220\u9664\u591a\u5c11\u5929\u524d\u7684\u8bb0\u5f55\uff1f" : "Delete records older than:"}
+                                    {tailText(lang, "Delete records older than:", "\u5220\u9664\u591a\u5c11\u5929\u524d\u7684\u8bb0\u5f55\uff1f")}
                                 </div>
                                 <div className="im-audit-cleanup-days">
                                     {[7, 14, 30, 60, 90].map(d => (
-                                        <button type="button" key={d} onClick={() => setCleanupDays(d)} disabled={cleaning} className="im-audit-day-button" data-active={cleanupDays === d ? "true" : "false"}>{d} {isZh ? "\u5929" : "days"}</button>
+                                        <button type="button" key={d} onClick={() => setCleanupDays(d)} disabled={cleaning} className="im-audit-day-button" data-active={cleanupDays === d ? "true" : "false"}>{d} {tailText(lang, "days", "\u5929")}</button>
                                     ))}
                                 </div>
                                 <button type="button" onClick={handleCleanup} disabled={cleaning} className="im-audit-cleanup-confirm">
-                                    {cleaning ? "..." : (isZh ? "\u786e\u8ba4\u5220\u9664 " + cleanupDays + " \u5929\u524d\u7684\u8bb0\u5f55" : "Delete records older than " + cleanupDays + " days")}
+                                    {cleaning ? "..." : (tailText(lang, "Delete records older than " + cleanupDays + " days", "\u786e\u8ba4\u5220\u9664 " + cleanupDays + " \u5929\u524d\u7684\u8bb0\u5f55"))}
                                 </button>
                             </div>
                         )}
@@ -512,17 +509,17 @@ export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMA
                 {message && <div className="im-audit-message" role="status">{message}</div>}
 
                 <div ref={listRef} className="im-audit-list" aria-busy={loading}>
-                    {loading && messages.length === 0 && <div className="im-audit-empty">{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</div>}
-                    {loading && messages.length > 0 && <div className="im-audit-refreshing" role="status">{isZh ? "\u6b63\u5728\u66f4\u65b0..." : "Refreshing..."}</div>}
-                    {!loading && messages.length === 0 && <div className="im-audit-empty">{isZh ? "\u6682\u65e0\u6d88\u606f\u8bb0\u5f55" : "No messages found"}</div>}
-                    {messages.map(msg => <AuditMessageCard key={msg.id} message={msg} isZh={isZh} onRevealError={handleRevealError} />)}
+                    {loading && messages.length === 0 && <div className="im-audit-empty">{tailText(lang, "Loading...", "\u52a0\u8f7d\u4e2d...")}</div>}
+                    {loading && messages.length > 0 && <div className="im-audit-refreshing" role="status">{tailText(lang, "Refreshing...", "\u6b63\u5728\u66f4\u65b0...")}</div>}
+                    {!loading && messages.length === 0 && <div className="im-audit-empty">{tailText(lang, "No messages found", "\u6682\u65e0\u6d88\u606f\u8bb0\u5f55")}</div>}
+                    {messages.map(msg => <AuditMessageCard key={msg.id} message={msg} isZh={lang} onRevealError={handleRevealError} />)}
                 </div>
 
                 {totalPages > 1 && (
                     <div className="im-audit-pagination">
-                        <button type="button" aria-label={isZh ? "\u4e0a\u4e00\u9875" : "Previous page"} disabled={page <= 1 || loading} onClick={() => setPage(p => Math.max(1, p - 1))} className="im-audit-page-button">{isZh ? "\u4e0a\u4e00\u9875" : "Prev"}</button>
+                        <button type="button" aria-label={tailText(lang, "Previous page", "\u4e0a\u4e00\u9875")} disabled={page <= 1 || loading} onClick={() => setPage(p => Math.max(1, p - 1))} className="im-audit-page-button">{tailText(lang, "Prev", "\u4e0a\u4e00\u9875")}</button>
                         <span className="im-audit-page-label">{page} / {totalPages}</span>
-                        <button type="button" aria-label={isZh ? "\u4e0b\u4e00\u9875" : "Next page"} disabled={page >= totalPages || loading} onClick={() => setPage(p => Math.min(totalPages, p + 1))} className="im-audit-page-button">{isZh ? "\u4e0b\u4e00\u9875" : "Next"}</button>
+                        <button type="button" aria-label={tailText(lang, "Next page", "\u4e0b\u4e00\u9875")} disabled={page >= totalPages || loading} onClick={() => setPage(p => Math.min(totalPages, p + 1))} className="im-audit-page-button">{tailText(lang, "Next", "\u4e0b\u4e00\u9875")}</button>
                     </div>
                 )}
             </div>

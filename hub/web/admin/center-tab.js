@@ -62,6 +62,7 @@
   };
 
   function centerTabText(key) {
+    if (global.hubDict) return global.hubDict('CENTER_TAB', CENTER_TAB_TEXT, key);
     var lang = (global.currentLang === 'zh' || global.currentLang === 'en') ? global.currentLang : 'en';
     return (CENTER_TAB_TEXT[lang] && CENTER_TAB_TEXT[lang][key]) || CENTER_TAB_TEXT.en[key] || key;
   }

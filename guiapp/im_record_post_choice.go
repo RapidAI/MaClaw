@@ -258,14 +258,16 @@ func matchRecordPostChoiceFreeText(text string) (recordPostChoiceAction, bool) {
 	return "", false
 }
 
-// resolveRecordPostUILang maps app language tags to the three UI variants we ship:
-// "en", "zh" (简体), "zh-Hant" (繁體).
+// resolveRecordPostUILang maps app language tags to the UI variants we ship:
+// "en", "zh" (简体), "zh-Hant" (繁體), "mn".
 func resolveRecordPostUILang(lang string) string {
 	switch normalizeAppLanguageKind(lang) {
 	case appLanguageEnglish:
 		return "en"
 	case appLanguageZhHant:
 		return "zh-Hant"
+	case appLanguageMongolian:
+		return "mn"
 	default:
 		return "zh"
 	}
@@ -305,6 +307,11 @@ func recordPostT(key, lang string) string {
 		if s, ok := recordPostZhHant[key]; ok {
 			return s
 		}
+	}
+	if ui == "mn" {
+		en := i18n.T(key, "en")
+		hant := recordPostZhHant[key]
+		return pickUI(string(appLanguageMongolian), en, i18n.T(key, "zh"), hant)
 	}
 	if ui == "en" {
 		return i18n.T(key, "en")

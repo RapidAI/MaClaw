@@ -8,9 +8,10 @@
  * Atomic names live in `miniAppNames`. Derived UI sentences compose from them
  * so a product rename only needs one place updated.
  */
-import { localizeText } from './langSelect';
+import { localizeText, normalizeLang } from './langSelect';
+import { appsMnByEnglish } from './mnAppsLabels';
 
-export type MiniAppLabelPack = { en: string; zhHans: string; zhHant: string };
+export type MiniAppLabelPack = { en: string; zhHans: string; zhHant: string; mn?: string };
 
 /** Atomic product names — edit these when branding changes. */
 export const miniAppNames = {
@@ -18,11 +19,13 @@ export const miniAppNames = {
         en: 'MiniAPP',
         zhHans: '小程序',
         zhHant: '小程序',
+        mn: 'MiniAPP',
     },
     product: {
         en: 'MaClaw MiniAPP',
         zhHans: '码卡龙小程序',
         zhHant: '碼卡龍小程序',
+        mn: 'MaClaw MiniAPP',
     },
 } as const satisfies Record<string, MiniAppLabelPack>;
 
@@ -62,6 +65,7 @@ export const miniAppLabels = {
         en: `${short.en} entry`,
         zhHans: `${short.zhHans}入口`,
         zhHant: `${short.zhHant}入口`,
+        mn: `${short.mn} орох цэг`,
     },
     studio,
     studioManual: {
@@ -162,8 +166,9 @@ export const miniAppLabels = {
     },
 } as const;
 
-/** Pick a pack by app language (en / zh-Hans / zh-Hant). */
+/** Pick a pack by app language. Mongolian uses pack.mn, then English. */
 export function pickMiniAppLabel(lang: string | undefined | null, pack: MiniAppLabelPack): string {
+    if (normalizeLang(lang) === 'mn') return pack.mn || appsMnByEnglish[pack.en] || pack.en;
     return localizeText(lang, pack.en, pack.zhHans, pack.zhHant);
 }
 

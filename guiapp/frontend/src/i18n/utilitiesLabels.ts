@@ -5,20 +5,22 @@
  * `short` is the 60px rail label: Chinese matches `title`; English is shortened
  * so it stays on one line like "Workflow" / "MiniAPP".
  */
-import { localizeText } from './langSelect';
+import { localizeText, normalizeLang } from './langSelect';
 
-export type UtilitiesLabelPack = { en: string; zhHans: string; zhHant: string };
+export type UtilitiesLabelPack = { en: string; zhHans: string; zhHant: string; mn?: string };
 
 const title: UtilitiesLabelPack = {
     en: 'Experts & Tools',
     zhHans: '专家&工具',
     zhHant: '專家&工具',
+    mn: 'Мэргэжилтэн ба багаж',
 };
 
 const short: UtilitiesLabelPack = {
     en: 'Experts',
     zhHans: title.zhHans,
     zhHant: title.zhHant,
+    mn: 'Мэргэжилтэн',
 };
 
 export const utilitiesLabels = {
@@ -28,20 +30,24 @@ export const utilitiesLabels = {
         en: `${title.en} entry`,
         zhHans: `${title.zhHans}入口`,
         zhHant: `${title.zhHant}入口`,
+        mn: `${title.mn} орох цэг`,
     },
     back: {
         en: `Back to ${title.en}`,
         zhHans: `返回${title.zhHans}`,
         zhHant: `返回${title.zhHant}`,
+        mn: `${title.mn} руу буцах`,
     },
     backHint: {
         en: `Return to the ${title.en} page`,
         zhHans: `返回${title.zhHans}页面`,
         zhHant: `返回${title.zhHant}頁面`,
+        mn: `${title.mn} хуудас руу буцах`,
     },
 } as const;
 
 export function pickUtilitiesLabel(lang: string | undefined | null, pack: UtilitiesLabelPack): string {
+    if (normalizeLang(lang) === 'mn') return pack.mn || pack.en;
     return localizeText(lang, pack.en, pack.zhHans, pack.zhHant);
 }
 
@@ -70,12 +76,14 @@ const toolsTitle: UtilitiesLabelPack = {
     en: 'Tools',
     zhHans: '工具',
     zhHant: '工具',
+    mn: 'Багаж',
 };
 
 const expertsTitle: UtilitiesLabelPack = {
     en: 'AI Experts',
     zhHans: 'AI 专家',
     zhHant: 'AI 專家',
+    mn: 'AI мэргэжилтэн',
 };
 
 export function toolsNavLabel(lang?: string | null): string {
@@ -98,6 +106,7 @@ const toolsEntry: UtilitiesLabelPack = {
     en: `${toolsTitle.en} entry`,
     zhHans: `${toolsTitle.zhHans}入口`,
     zhHant: `${toolsTitle.zhHant}入口`,
+    mn: `${toolsTitle.mn} орох цэг`,
 };
 
 const toolsBack: UtilitiesLabelPack = {
@@ -116,6 +125,7 @@ const expertsEntry: UtilitiesLabelPack = {
     en: `${expertsTitle.en} entry`,
     zhHans: `${expertsTitle.zhHans}入口`,
     zhHant: `${expertsTitle.zhHant}入口`,
+    mn: `${expertsTitle.mn} орох цэг`,
 };
 
 export function toolsEntryLabel(lang?: string | null): string {

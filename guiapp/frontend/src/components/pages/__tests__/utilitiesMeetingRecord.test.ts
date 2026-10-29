@@ -13,9 +13,16 @@ import {
 
 describe('utilitiesMeetingRecord', () => {
     it('picks locale-appropriate recording commands (router markers)', () => {
-        expect(meetingRecordCommand(undefined)).toBe(MEETING_RECORD_COMMAND_ZH_HANS);
+        expect(meetingRecordCommand(undefined)).toBe(MEETING_RECORD_COMMAND_EN);
+        expect(meetingRecordCommand('mn')).toBe(MEETING_RECORD_COMMAND_EN);
+        expect(meetingRecordCommand('mn-Mong')).toBe(MEETING_RECORD_COMMAND_EN);
+        expect(meetingRecordCommand('ja')).toBe(MEETING_RECORD_COMMAND_EN);
         expect(meetingRecordCommand('zh-Hans')).toBe(MEETING_RECORD_COMMAND_ZH_HANS);
+        expect(meetingRecordCommand('zh-CN')).toBe(MEETING_RECORD_COMMAND_ZH_HANS);
+        expect(meetingRecordCommand('chinese')).toBe(MEETING_RECORD_COMMAND_ZH_HANS);
         expect(meetingRecordCommand('zh-Hant')).toBe(MEETING_RECORD_COMMAND_ZH_HANT);
+        expect(meetingRecordCommand('zh-TW')).toBe(MEETING_RECORD_COMMAND_ZH_HANT);
+        expect(meetingRecordCommand('zh-HK')).toBe(MEETING_RECORD_COMMAND_ZH_HANT);
         expect(meetingRecordCommand('en')).toBe(MEETING_RECORD_COMMAND_EN);
     });
 
@@ -35,7 +42,9 @@ describe('utilitiesMeetingRecord', () => {
         expect(meetingRecordBaseTitle('zh-Hans')).toBe('会议记录');
         expect(meetingRecordTaskTitle('zh-Hans', now)).toBe('会议记录 2026-07-17 15:30:12');
         expect(meetingRecordTaskTitle('zh-Hant', now)).toBe('會議記錄 2026-07-17 15:30:12');
+        expect(meetingRecordTaskTitle('zh-TW', now)).toBe('會議記錄 2026-07-17 15:30:12');
         expect(meetingRecordTaskTitle('en', now)).toBe('Meeting notes 2026-07-17 15:30:12');
+        expect(meetingRecordTaskTitle('mn', now)).toBe('Meeting notes 2026-07-17 15:30:12');
     });
 
     it('picks locale-appropriate card descriptions', () => {

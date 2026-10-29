@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useSafeBackdropDismiss } from '../../../hooks/useSafeBackdropDismiss';
+import { isChineseLang } from '../../../i18n/langSelect';
+import { tailText } from '../../../i18n/mnTail';
 import {
     answeredSinceLast, applyMention, ATTENTION_LABEL, attentionOf, botName, defaultCollabApi, mentionCandidates, mentionQuery,
     type Attention, type BotRef, type CollabApi, type Room, type SaidItem,
@@ -8,11 +10,12 @@ import {
 const ROOM_POLL_MS = 4000;
 
 /** Group rooms: list, create/edit (members, attention), and a room chat with @mentions. */
-export function BotRoomsDialog({ bots, onClose, api = defaultCollabApi, pollMs = ROOM_POLL_MS }: {
+export function BotRoomsDialog({ bots, onClose, api = defaultCollabApi, pollMs = ROOM_POLL_MS, lang = 'zh-Hans' }: {
     bots: BotRef[];
     onClose: () => void;
     api?: CollabApi;
     pollMs?: number;
+    lang?: string;
 }) {
     const titleId = useId();
     const [rooms, setRooms] = useState<Room[]>([]);
@@ -25,7 +28,7 @@ export function BotRoomsDialog({ bots, onClose, api = defaultCollabApi, pollMs =
         try {
             setRooms((await api.rooms()) || []);
         } catch (e) {
-            setNotice(e instanceof Error && e.message ? e.message : '读取群聊失败');
+            setNotice(e instanceof Error && e.message ? e.message : tailText(lang, 'Could not load group chats', '读取群聊失败'));
         }
     };
     useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
@@ -35,28 +38,28 @@ export function BotRoomsDialog({ bots, onClose, api = defaultCollabApi, pollMs =
         <div className="modal-backdrop custom-dialog-backdrop bot-edit-dialog-backdrop" {...backdropProps}>
             <div className="modal-content custom-dialog bot-edit-dialog bot-rooms-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} data-testid="bot-rooms-dialog" {...dialogProps}>
                 <div className="modal-header custom-dialog__header">
-                    <h3 id={titleId} className="custom-dialog__title">{open ? `群聊 · ${open.name}` : '群聊'}</h3>
+                    <h3 id={titleId} className="custom-dialog__title">{open ? tailText(lang, `Group chat · ${open.name}`, `群聊 · ${open.name}`) : tailText(lang, 'Group chats', '群聊')}</h3>
                 </div>
                 <div className="modal-body custom-dialog__body">
                     {editing ? (
-                        <RoomEditor room={editing === 'new' ? null : editing} bots={bots} api={api}
+                        <RoomEditor room={editing === 'new' ? null : editing} bots={bots} api={api} lang={lang}
                             onDone={async saved => { setEditing(null); await reload(); if (saved) setOpenId(saved.id); }} />
                     ) : open ? (
-                        <RoomChat room={open} bots={bots} api={api} pollMs={pollMs} />
+                        <RoomChat room={open} bots={bots} api={api} pollMs={pollMs} lang={lang} />
                     ) : (
                         <>
-                            {rooms.length === 0 ? <p data-testid="bot-rooms-empty">还没有群聊。建一个群，把几个机器人拉进来一起讨论。</p> : null}
+                            {rooms.length === 0 ? <p data-testid="bot-rooms-empty">{tailText(lang, 'No group chats yet. Create one and bring a few bots in to talk together.', '还没有群聊。建一个群，把几个机器人拉进来一起讨论。')}</p> : null}
                             <ul className="bot-rooms__list">
                                 {rooms.map(r => (
                                     <li key={r.id}>
                                         <button type="button" className="bot-rooms__open" data-testid={`bot-room-open-${r.id}`} onClick={() => setOpenId(r.id)}>
                                             <strong>{r.name}</strong>
-                                            <small>{r.members.map(m => botName(bots, m)).join('、')}</small>
+                                            <small>{r.members.map(m => botName(bots, m, lang)).join(isChineseLang(lang) ? '、' : ', ')}</small>
                                         </button>
-                                        <button type="button" className="btn-secondary" data-testid={`bot-room-edit-${r.id}`} onClick={() => setEditing(r)}>设置</button>
+                                        <button type="button" className="btn-secondary" data-testid={`bot-room-edit-${r.id}`} onClick={() => setEditing(r)}>{tailText(lang, 'Settings', '设置')}</button>
                                         <button type="button" className="btn-secondary" data-testid={`bot-room-delete-${r.id}`} onClick={async () => {
-                                            try { await api.deleteRoom(r.id); await reload(); } catch (e) { setNotice(e instanceof Error ? e.message : '删除失败'); }
-                                        }}>删除</button>
+                                            try { await api.deleteRoom(r.id); await reload(); } catch (e) { setNotice(e instanceof Error ? e.message : tailText(lang, 'Delete failed', '删除失败')); }
+                                        }}>{tailText(lang, 'Delete', '删除')}</button>
                                     </li>
                                 ))}
                             </ul>
@@ -65,17 +68,17 @@ export function BotRoomsDialog({ bots, onClose, api = defaultCollabApi, pollMs =
                     {notice ? <p className="custom-dialog__notice" role="alert">{notice}</p> : null}
                 </div>
                 <div className="modal-footer custom-dialog__footer">
-                    {open && !editing ? <button type="button" className="btn-secondary" data-testid="bot-room-back" onClick={() => setOpenId('')}>返回列表</button> : null}
-                    {open && !editing ? <button type="button" className="btn-secondary" onClick={() => setEditing(open)}>群设置</button> : null}
-                    {!open && !editing ? <button type="button" className="btn-primary" data-testid="bot-room-new" onClick={() => setEditing('new')}>新建群聊</button> : null}
-                    <button type="button" className="btn-secondary" onClick={onClose}>关闭</button>
+                    {open && !editing ? <button type="button" className="btn-secondary" data-testid="bot-room-back" onClick={() => setOpenId('')}>{tailText(lang, 'Back to list', '返回列表')}</button> : null}
+                    {open && !editing ? <button type="button" className="btn-secondary" onClick={() => setEditing(open)}>{tailText(lang, 'Group settings', '群设置')}</button> : null}
+                    {!open && !editing ? <button type="button" className="btn-primary" data-testid="bot-room-new" onClick={() => setEditing('new')}>{tailText(lang, 'New group chat', '新建群聊')}</button> : null}
+                    <button type="button" className="btn-secondary" onClick={onClose}>{tailText(lang, 'Close', '关闭')}</button>
                 </div>
             </div>
         </div>
     );
 }
 
-function RoomEditor({ room, bots, api, onDone }: { room: Room | null; bots: BotRef[]; api: CollabApi; onDone: (saved: Room | null) => void }) {
+function RoomEditor({ room, bots, api, onDone, lang }: { room: Room | null; bots: BotRef[]; api: CollabApi; onDone: (saved: Room | null) => void; lang: string }) {
     const [name, setName] = useState(room?.name || '');
     const [members, setMembers] = useState<string[]>(room?.members || bots.map(b => b.id));
     const [attention, setAttention] = useState<Record<string, Attention>>(() => {
@@ -86,49 +89,49 @@ function RoomEditor({ room, bots, api, onDone }: { room: Room | null; bots: BotR
     const [busy, setBusy] = useState(false);
     const [notice, setNotice] = useState('');
     const save = async () => {
-        if (!members.length) { setNotice('至少选一个机器人'); return; }
+        if (!members.length) { setNotice(tailText(lang, 'Select at least one bot', '至少选一个机器人')); return; }
         setBusy(true);
         try {
             const att: Record<string, string> = {};
             for (const m of members) att[m] = attention[m];
-            onDone(await api.saveRoom(room?.id || '', name.trim() || '群聊', members, att));
+            onDone(await api.saveRoom(room?.id || '', name.trim() || tailText(lang, 'Group chat', '群聊'), members, att));
         } catch (e) {
-            setNotice(e instanceof Error && e.message ? e.message : '保存失败');
+            setNotice(e instanceof Error && e.message ? e.message : tailText(lang, 'Could not save', '保存失败'));
         } finally {
             setBusy(false);
         }
     };
     return (
         <div className="bot-rooms__editor" data-testid="bot-room-editor">
-            <label className="custom-dialog__label">群名
-                <input data-testid="bot-room-name" maxLength={60} value={name} placeholder="群聊" onChange={e => setName(e.target.value)} />
+            <label className="custom-dialog__label">{tailText(lang, 'Group name', '群名')}
+                <input data-testid="bot-room-name" maxLength={60} value={name} placeholder={tailText(lang, 'Group chat', '群聊')} onChange={e => setName(e.target.value)} />
             </label>
-            <p className="bot-rooms__hint">成员与“听的程度”：每条都听＝每句话都会回应；被@才听＝只有你 @ 它时才回应；不听＝暂时静音。</p>
+            <p className="bot-rooms__hint">{tailText(lang, 'Members and how closely they listen: everyone hears every line; mention-only responds when you @ them; mute stays quiet.', '成员与“听的程度”：每条都听＝每句话都会回应；被@才听＝只有你 @ 它时才回应；不听＝暂时静音。')}</p>
             <ul className="bot-rooms__members">
                 {bots.map(b => (
                     <li key={b.id}>
                         <label>
                             <input type="checkbox" data-testid={`bot-room-member-${b.id}`} checked={members.includes(b.id)}
                                 onChange={e => setMembers(prev => e.target.checked ? [...prev, b.id] : prev.filter(x => x !== b.id))} />
-                            {b.title}{b.primary ? '（主）' : ''}
+                            {b.title}{b.primary ? tailText(lang, ' (primary)', '（主）') : ''}
                         </label>
                         <select data-testid={`bot-room-attention-${b.id}`} value={attention[b.id]} disabled={!members.includes(b.id)}
                             onChange={e => setAttention(prev => ({ ...prev, [b.id]: e.target.value as Attention }))}>
-                            {(Object.keys(ATTENTION_LABEL) as Attention[]).map(k => <option key={k} value={k}>{ATTENTION_LABEL[k]}</option>)}
+                            {(Object.keys(ATTENTION_LABEL) as Attention[]).map(k => <option key={k} value={k}>{tailText(lang, k === 'all' ? 'Hears every line' : k === 'mentions' ? 'Hears only @mentions' : 'Muted', ATTENTION_LABEL[k])}</option>)}
                         </select>
                     </li>
                 ))}
             </ul>
             {notice ? <p className="custom-dialog__notice" role="alert">{notice}</p> : null}
             <div className="bot-rooms__editor-actions">
-                <button type="button" className="btn-secondary" disabled={busy} onClick={() => onDone(null)}>取消</button>
-                <button type="button" className="btn-primary" data-testid="bot-room-save" disabled={busy} onClick={() => { void save(); }}>保存</button>
+                <button type="button" className="btn-secondary" disabled={busy} onClick={() => onDone(null)}>{tailText(lang, 'Cancel', '取消')}</button>
+                <button type="button" className="btn-primary" data-testid="bot-room-save" disabled={busy} onClick={() => { void save(); }}>{tailText(lang, 'Save', '保存')}</button>
             </div>
         </div>
     );
 }
 
-function RoomChat({ room, bots, api, pollMs }: { room: Room; bots: BotRef[]; api: CollabApi; pollMs: number }) {
+function RoomChat({ room, bots, api, pollMs, lang }: { room: Room; bots: BotRef[]; api: CollabApi; pollMs: number; lang: string }) {
     const [items, setItems] = useState<SaidItem[]>([]);
     const [draft, setDraft] = useState('');
     const [caret, setCaret] = useState(0);
@@ -170,7 +173,7 @@ function RoomChat({ room, bots, api, pollMs }: { room: Room; bots: BotRef[]; api
             setWoken(out.woken || []);
             setItems(prev => [...prev, out.message]);
         } catch (e) {
-            setNotice(e instanceof Error && e.message ? e.message : '发送失败');
+            setNotice(e instanceof Error && e.message ? e.message : tailText(lang, 'Could not send', '发送失败'));
         } finally {
             setSending(false);
         }
@@ -178,17 +181,17 @@ function RoomChat({ room, bots, api, pollMs }: { room: Room; bots: BotRef[]; api
     return (
         <div className="bot-room-chat" data-testid="bot-room-chat">
             <div className="bot-room-chat__log" data-testid="bot-room-log">
-                {items.length === 0 ? <p>还没有消息。用 @名字 点名某个机器人。</p> : null}
+                {items.length === 0 ? <p>{tailText(lang, 'No messages yet. Use @name to call a bot.', '还没有消息。用 @名字 点名某个机器人。')}</p> : null}
                 {items.map(it => (
                     <div key={it.id} className={`bot-room-chat__msg${it.from === 'human' ? ' is-me' : ''}`} data-testid={`bot-room-msg-${it.id}`}>
-                        <strong>{botName(bots, it.from)}</strong>
+                        <strong>{botName(bots, it.from, lang)}</strong>
                         <span>{it.text}</span>
                     </div>
                 ))}
             </div>
             <p className="bot-room-chat__answered" data-testid="bot-room-answered">
-                {answered.length ? `已回答：${answered.map(id => botName(bots, id)).join('、')}`
-                    : woken.length ? `等待回答：${woken.map(id => botName(bots, id)).join('、')}` : ''}
+                {answered.length ? tailText(lang, `Answered: ${answered.map(id => botName(bots, id, lang)).join(isChineseLang(lang) ? '、' : ', ')}`, `已回答：${answered.map(id => botName(bots, id, lang)).join('、')}`)
+                    : woken.length ? tailText(lang, `Waiting for an answer: ${woken.map(id => botName(bots, id, lang)).join(isChineseLang(lang) ? '、' : ', ')}`, `等待回答：${woken.map(id => botName(bots, id, lang)).join('、')}`) : ''}
             </p>
             {candidates.length ? (
                 <ul className="bot-room-chat__mentions" role="listbox" data-testid="bot-room-mentions">
@@ -198,7 +201,7 @@ function RoomChat({ room, bots, api, pollMs }: { room: Room; bots: BotRef[]; api
                 </ul>
             ) : null}
             <div className="bot-room-chat__form">
-                <textarea ref={inputRef} data-testid="bot-room-input" rows={2} value={draft} placeholder="说点什么，@ 可以点名机器人"
+                <textarea ref={inputRef} data-testid="bot-room-input" rows={2} value={draft} placeholder={tailText(lang, 'Say something. @ calls a bot.', '说点什么，@ 可以点名机器人')}
                     onChange={e => { setDraft(e.target.value); setCaret(e.target.selectionStart ?? e.target.value.length); }}
                     onSelect={e => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
                     onKeyDown={e => {
@@ -207,7 +210,7 @@ function RoomChat({ room, bots, api, pollMs }: { room: Room; bots: BotRef[]; api
                             if (candidates.length) pick(candidates[0]); else void send();
                         }
                     }} />
-                <button type="button" className="btn-primary" data-testid="bot-room-send" disabled={sending || !draft.trim()} onClick={() => { void send(); }}>发送</button>
+                <button type="button" className="btn-primary" data-testid="bot-room-send" disabled={sending || !draft.trim()} onClick={() => { void send(); }}>{tailText(lang, 'Send', '发送')}</button>
             </div>
             {notice ? <p className="custom-dialog__notice" role="alert">{notice}</p> : null}
         </div>

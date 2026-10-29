@@ -116,7 +116,7 @@ function ConditionEditor({
       >
         {OPERATORS.map((op) => (
           <option key={op.value} value={op.value}>
-            {lang === "en" ? op.labelEn : op.labelZh}
+            {textForLang(lang, op.labelEn, op.labelZh)}
           </option>
         ))}
       </select>

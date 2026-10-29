@@ -1,4 +1,4 @@
-import { localizeText } from "../../i18n";
+import { localizeText, normalizeLang } from "../../i18n";
 
 /** Structured breakdown of a localized assistant error for alert-style rendering. */
 export interface AIAssistantErrorDescription {
@@ -30,10 +30,15 @@ export function describeAIAssistantError(localized: string, lang?: string | null
     const creditNumbers = raw.match(
         /^(?:LLM call failed|LLM 调用失败|LLM 調用失敗)[:：]\s*(?:insufficient credits for this request:\s*need\s*([\d.,]+)\s*credits?\s*,\s*available\s*([\d.,]+)(?:\s*credits?)?(?:\s*\(\s*([\d.,]+)\s+held\s+by\s+in-flight\s+requests\s*\))?|(?:本次请求额度不足，需要|本次請求額度不足，需要)\s*([\d.,]+)\s*Credits?[，,]\s*(?:当前可用|目前可用)\s*([\d.,]+)\s*Credits?(?:\s*[，,]\s*其中\s*([\d.,]+)\s*Credits?\s*(?:被在途请求冻结|被在途請求凍結))?)[.。]?$/i,
     );
-    if (creditNumbers) {
-        const need = creditNumbers[1] ?? creditNumbers[4];
-        const available = creditNumbers[2] ?? creditNumbers[5];
-        const held = creditNumbers[3] ?? creditNumbers[6] ?? '';
+    // Khalkha amounts end on the number, so "." is the sentence stop and must
+    // not be swallowed by the digit class.
+    const creditNumbersMn = creditNumbers ? null : raw.match(
+        /^LLM дуудлага амжилтгүй[:：]\s*(\d+(?:[.,]\d+)*)\s*кредит хэрэгтэй,\s*боломжтой\s*(\d+(?:[.,]\d+)*)(?:\s*\(\s*(\d+(?:[.,]\d+)*)\s*кредит замд байгаа хүсэлтэд түгжигдсэн\s*\))?\s*[.。]?$/i,
+    );
+    if (creditNumbers || creditNumbersMn) {
+        const need = creditNumbers?.[1] ?? creditNumbers?.[4] ?? creditNumbersMn?.[1];
+        const available = creditNumbers?.[2] ?? creditNumbers?.[5] ?? creditNumbersMn?.[2];
+        const held = creditNumbers?.[3] ?? creditNumbers?.[6] ?? creditNumbersMn?.[3] ?? '';
         const heldEn = held ? ` (${held} held by in-flight requests)` : '';
         const heldZh = held ? `，其中 ${held} 被在途请求冻结` : '';
         const availableNow = Number(String(available).replace(/,/g, ""));
@@ -47,7 +52,13 @@ export function describeAIAssistantError(localized: string, lang?: string | null
         // quote exists yet. When that number matches the frozen balance, say
         // the card is occupied instead of inventing a price.
         const holdIsTheQuotedNeed = waitingOnHold && Number.isFinite(needNow) && Math.abs(needNow - heldNow) < 0.0005;
-        const detail = holdIsTheQuotedNeed
+        // Interpolated English is not a catalog key. Mongolian has to be built
+        // here; localizeText would otherwise return that English sentence.
+        const detail = normalizeLang(lang) === "mn"
+            ? (holdIsTheQuotedNeed
+                ? `${held} кредит замд байгаа хүсэлтэд түгжигдсэн, одоо чөлөөтэй кредит алга.`
+                : `Энэ хүсэлтэд ${need} кредит хэрэгтэй, боломжтой ${available} кредит${held ? ` (${held} кредит замд байгаа хүсэлтэд түгжигдсэн)` : ""}.`)
+            : holdIsTheQuotedNeed
             ? localizeText(
                 lang,
                 `${held} credits are held by in-flight requests; none are free right now.`,
@@ -68,12 +79,12 @@ export function describeAIAssistantError(localized: string, lang?: string | null
     }
 
     const exhausted = raw.match(
-        /^(?:LLM call failed|LLM 调用失败|LLM 調用失敗)[:：]\s*(current period credit limit is exhausted|selected model grant credits are exhausted|insufficient credits|当前周期额度已用尽。?|当前授权额度已用尽。?|目前週期額度已用盡。?|目前授權額度已用盡。?|额度不足。?|額度不足。?)$/i,
+        /^(?:LLM call failed|LLM 调用失败|LLM 調用失敗|LLM дуудлага амжилтгүй)[:：]\s*(current period credit limit is exhausted|selected model grant credits are exhausted|insufficient credits|当前周期额度已用尽。?|当前授权额度已用尽。?|目前週期額度已用盡。?|目前授權額度已用盡。?|额度不足。?|額度不足。?|одоогийн мөчлөгийн кредит дууссан[.。]?|олголтын кредит дууссан[.。]?|кредит хүрэлцэхгүй[.。]?)$/i,
     );
     if (exhausted) {
         const phrase = exhausted[1].replace(/[.。]$/, "");
-        const period = /period|周期|週期/i.test(phrase);
-        const grant = /grant|授权|授權/i.test(phrase);
+        const period = /period|周期|週期|мөчлөг/i.test(phrase);
+        const grant = /grant|授权|授權|олголт/i.test(phrase);
         return {
             title: localizeText(
                 lang,
@@ -92,11 +103,11 @@ export function describeAIAssistantError(localized: string, lang?: string | null
         return { title: maclawSplit[1].trim(), detail: maclawSplit[2].trim() };
     }
 
-    const llmSplit = raw.match(/^(LLM call failed|LLM 调用失败|LLM 調用失敗)[:：]\s*(.+)$/i);
+    const llmSplit = raw.match(/^(LLM call failed|LLM 调用失败|LLM 調用失敗|LLM дуудлага амжилтгүй)[:：]\s*(.+)$/i);
     if (llmSplit) {
         const detail = llmSplit[2].trim();
-        const bareTimeout = /^(timeout|timed out|请求超时|請求逾時)[.。]?$/i.test(detail);
-        const isTimeout = bareTimeout || /timeout|timed out|deadline exceeded|请求超时|請求逾時/i.test(detail);
+        const bareTimeout = /^(timeout|timed out|请求超时|請求逾時|хүсэлтийн хугацаа дууссан)[.。]?$/i.test(detail);
+        const isTimeout = bareTimeout || /timeout|timed out|deadline exceeded|请求超时|請求逾時|хүсэлтийн хугацаа дууссан/i.test(detail);
         return {
             title: isTimeout
                 ? localizeText(lang, "Request timed out", "请求超时", "請求逾時")

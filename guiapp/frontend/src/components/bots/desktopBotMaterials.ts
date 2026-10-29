@@ -1,3 +1,5 @@
+import { localizeText } from '../../i18n';
+
 // Material files a person attaches to a desktop bot message. Each file is
 // uploaded in chunks to the bot's own folder (~/素材/<bot>/) on its remote
 // desktop; the message then carries a [素材] list of those paths so the
@@ -115,7 +117,7 @@ export function materialsBlock(paths: string[]): string {
 export function withMaterials(text: string, paths: string[], lang: string): string {
     const block = materialsBlock(paths);
     if (!block) return text.trim();
-    const typed = text.trim() || (String(lang).toLowerCase().startsWith('en') ? 'Here are the materials for you.' : '这些是给你的素材。');
+    const typed = text.trim() || localizeText(lang, 'Here are the materials for you.', '这些是给你的素材。');
     return `${typed}\n\n${block}`;
 }
 

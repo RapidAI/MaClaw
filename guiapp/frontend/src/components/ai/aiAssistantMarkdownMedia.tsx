@@ -2,6 +2,7 @@ import type React from "react";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { cloudSafePathLabel } from "./codingTaskMode";
+import { tailText } from "../../i18n/mnTail"
 
 /** Last path segment of a Windows or POSIX path. */
 function baseName(filePath: string): string {
@@ -15,8 +16,8 @@ export function renderScreenshotPreview(
     t: Theme,
     lang: string,
 ): React.ReactNode {
-    const isZh = !lang.startsWith("en");
-    const fileName = localFilePath ? baseName(localFilePath) : (isZh ? "截图" : "screenshot");
+    const isZh = lang.startsWith("zh");
+    const fileName = localFilePath ? baseName(localFilePath) : (tailText(lang, "screenshot", "截图"));
     return (
         <div data-testid="screenshot-preview-block" className="aamm-shot-wrap">
             {/* The tool reports a downscaled screenshot; the overlay re-reads the
@@ -27,7 +28,7 @@ export function renderScreenshotPreview(
                 fileName={fileName}
                 lang={lang}
                 theme={t}
-                title={localFilePath ? cloudSafePathLabel(localFilePath, isZh ? "云端文件" : "Cloud file") : undefined}
+                title={localFilePath ? cloudSafePathLabel(localFilePath, tailText(lang, "Cloud file", "云端文件")) : undefined}
                 frameStyle={{
                     width: "180px",
                     maxWidth: "100%",

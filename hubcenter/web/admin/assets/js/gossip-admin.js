@@ -94,15 +94,14 @@
       const input=document.getElementById('importUrlInput'); if(input) input.placeholder=shtr('importPlaceholder');
       const searchInput=document.getElementById('catalogSearchInput'); if(searchInput) searchInput.placeholder=shtr('searchPlaceholder');
       // Catalog sub-tab labels
-      var isZh = currentLang === 'zh';
-      set('catalogSubTabAll', isZh ? '\u5168\u90e8' : 'All');
+      set('catalogSubTabAll', shSay('All'));
       set('catalogSubTabSkill', 'Skill');
       set('catalogSubTabMCP', 'MCP');
-      set('catalogSubTabWorkflow', isZh ? '\u5ba1\u6279\u5de5\u4f5c\u6d41' : 'Workflow');
+      set('catalogSubTabWorkflow', shSay('Workflow'));
       set('catalogSubTabApp', 'MaClaw APP');
     }
         let skillhubPage=1;const skillhubPageSize=20;let _skillhubSkills=[];
-    function fmtDate(d){if(!d)return'-';try{const t=new Date(d);if(isNaN(t))return d;return t.toLocaleDateString(currentLang==='zh'?'zh-CN':'en-US',{year:'numeric',month:'2-digit',day:'2-digit'})+' '+t.toLocaleTimeString(currentLang==='zh'?'zh-CN':'en-US',{hour:'2-digit',minute:'2-digit'})}catch(e){return d}}
+    function fmtDate(d){if(!d)return'-';try{const t=new Date(d);if(isNaN(t))return d;const loc=currentLang==='mn'?'mn-MN':currentLang==='zh'?'zh-CN':'en-US';return t.toLocaleDateString(loc,{year:'numeric',month:'2-digit',day:'2-digit'})+' '+t.toLocaleTimeString(loc,{hour:'2-digit',minute:'2-digit'})}catch(e){return d}}
     function classifySkillCategory(s) {
       if (s.capability_type === 'mcp') return 'mcp';
       if (s.capability_type === 'approval_workflow') return 'workflow';

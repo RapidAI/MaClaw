@@ -5,6 +5,8 @@ import { KnowledgeSettingsPanel } from "../settings/KnowledgeSettingsPanel";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { usePortalThemeAttributes } from "../../hooks/usePortalThemeAttributes";
+import { chromeText } from "../../i18n/chromeText";
+
 
 const dialogFocusableSelector = 'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [href]:not([tabindex="-1"])';
 
@@ -160,7 +162,7 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
 
     if (!open) return null;
 
-    const title = lang === "en" ? "Knowledge Base" : "知识库";
+    const title = (chromeText(lang, "Knowledge Base", "知识库"));
 
     const dialog = (
         <div
@@ -201,8 +203,8 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
                             borderRadius: "6px",
                             lineHeight: 1,
                         }}
-                        title={lang === "en" ? "Close" : "关闭"}
-                        aria-label={lang === "en" ? "Close" : "关闭"}
+                        title={(chromeText(lang, "Close", "关闭"))}
+                        aria-label={(chromeText(lang, "Close", "关闭"))}
                     >
                         ×
                     </button>

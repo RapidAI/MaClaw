@@ -9,6 +9,7 @@ import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 import { VEStatusDot } from "./VEStatusDot";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { tailText } from "../../i18n/mnTail"
 
 // --- Types ---
 
@@ -52,7 +53,7 @@ function readableVirtualEmployeeName(ve: Pick<VirtualEmployeeEntry, "id" | "mach
     const id = String(ve.id || "").trim();
     const machineId = String(ve.machine_id || "").trim();
     if (name && name !== id && name !== machineId && !looksLikeRawParticipantId(name)) return name;
-    return !lang || lang.startsWith("zh") ? "数字员工 " + (index + 1) : "Digital employee " + (index + 1);
+    return tailText(lang ?? "", "Digital employee " + (index + 1), "数字员工 " + (index + 1));
 }
 
 /** Truncate a string to maxLen characters, appending ellipsis if exceeded. */
@@ -77,13 +78,12 @@ export function policyIcon(policy: string): PolicyIconName {
 }
 
 export function policyLabel(policy: string, lang?: string): string {
-    const isZh = !lang || lang.startsWith("zh");
     switch (policy) {
-        case "public": return isZh ? "公开访问" : "Public access";
-        case "whitelist": return isZh ? "白名单" : "Allowlist";
-        case "blacklist": return isZh ? "黑名单" : "Blocklist";
-        case "per_request": return isZh ? "首次访问需同意" : "Approval required";
-        default: return isZh ? "未知策略" : "Unknown policy";
+        case "public": return tailText(lang ?? "", "Public access", "公开访问");
+        case "whitelist": return tailText(lang ?? "", "Allowlist", "白名单");
+        case "blacklist": return tailText(lang ?? "", "Blocklist", "黑名单");
+        case "per_request": return tailText(lang ?? "", "Approval required", "首次访问需同意");
+        default: return tailText(lang ?? "", "Unknown policy", "未知策略");
     }
 }
 
@@ -224,7 +224,6 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     const mountedRef = useRef(true);
     const requestSeqRef = useRef(0);
     const consecutiveRefreshFailuresRef = useRef(0);
-    const isZh = !lang || lang.startsWith("zh");
     // Sidebar dark schemes do not set Theme.isDark — infer from the panel background,
     // honoring an explicit flag when a caller provides one.
     const darkSurface = theme.isDark ?? ((relativeLuminance(theme.bg) ?? 1) < 0.5);
@@ -449,11 +448,11 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         } catch (error) {
             if (!mountedRef.current) return;
             console.error("Failed to rename digital employee:", error);
-            setRenameError(isZh ? "\u6539\u540d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002" : "Rename failed. Please try again.");
+            setRenameError(tailText(lang ?? "", "Rename failed. Please try again.", "\u6539\u540d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002"));
         } finally {
             if (mountedRef.current) setRenameSaving(false);
         }
-    }, [isZh, onRenameEmployee, renameSaving, renameValue, renamingEmployee]);
+    }, [lang, onRenameEmployee, renameSaving, renameValue, renamingEmployee]);
 
     // --- Render ---
 
@@ -471,14 +470,14 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
             ].some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
         })
         : onlineEmployees;
-    const refreshLabel = isZh ? "\u5237\u65b0\u6570\u5b57\u5458\u5de5\u5217\u8868" : "Refresh digital employees";
-    const searchLabel = isZh ? "\u641c\u7d22\u6570\u5b57\u5458\u5de5" : "Search digital employees";
-    const searchPlaceholder = isZh ? "\u641c\u7d22\u540d\u79f0\u6216\u6280\u80fd" : "Search name or skill";
+    const refreshLabel = tailText(lang ?? "", "Refresh digital employees", "\u5237\u65b0\u6570\u5b57\u5458\u5de5\u5217\u8868");
+    const searchLabel = tailText(lang ?? "", "Search digital employees", "\u641c\u7d22\u6570\u5b57\u5458\u5de5");
+    const searchPlaceholder = tailText(lang ?? "", "Search name or skill", "\u641c\u7d22\u540d\u79f0\u6216\u6280\u80fd");
     const emptyListText = employees.length > 0
         ? (normalizedQuery && onlineEmployees.length > 0
-            ? (isZh ? "\u672a\u627e\u5230\u5339\u914d\u7684\u5728\u7ebf\u6570\u5b57\u5458\u5de5" : "No matching online digital employees")
-            : (isZh ? "\u6682\u65e0\u5728\u7ebf\u7684\u6570\u5b57\u5458\u5de5" : "No online digital employees"))
-        : (isZh ? "\u6682\u65e0\u53ef\u7528\u7684\u6570\u5b57\u5458\u5de5" : "No digital employees available");
+            ? (tailText(lang ?? "", "No matching online digital employees", "\u672a\u627e\u5230\u5339\u914d\u7684\u5728\u7ebf\u6570\u5b57\u5458\u5de5"))
+            : (tailText(lang ?? "", "No online digital employees", "\u6682\u65e0\u5728\u7ebf\u7684\u6570\u5b57\u5458\u5de5")))
+        : (tailText(lang ?? "", "No digital employees available", "\u6682\u65e0\u53ef\u7528\u7684\u6570\u5b57\u5458\u5de5"));
 
     const renderShell = (children: ReactNode, options?: { testId?: string; center?: boolean }) => (
         <div className="vet-list-shell" data-testid={options?.testId || "ve-list-container"}>
@@ -621,14 +620,14 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                 <span className="vet-spinning" aria-hidden="true" style={{ display: "inline-flex", color: theme.btnColor }}>
                     <TitleBarToolIcon name="refresh" />
                 </span>
-                <span data-testid="ve-loading">{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</span>
+                <span data-testid="ve-loading">{tailText(lang ?? "", "Loading...", "\u52a0\u8f7d\u4e2d...")}</span>
             </div>
         );
     }
 
     if (error === "hub_unavailable") {
         return renderShell(
-            emptyStatePanel("book", isZh ? "Hub \u4e0d\u53ef\u7528\uff0c\u65e0\u6cd5\u83b7\u53d6\u6570\u5b57\u5458\u5de5\u5217\u8868" : "Hub unavailable", "ve-empty-hub"),
+            emptyStatePanel("book", tailText(lang ?? "", "Hub unavailable", "Hub \u4e0d\u53ef\u7528\uff0c\u65e0\u6cd5\u83b7\u53d6\u6570\u5b57\u5458\u5de5\u5217\u8868"), "ve-empty-hub"),
             { testId: "ve-error-container", center: true }
         );
     }
@@ -682,7 +681,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 size={8}
                                 variant="badge"
                                 dataTestId={`ve-status-${ve.id}`}
-                                title={isVirtualEmployeeOnline(ve) ? (isZh ? "在线" : "Online") : (isZh ? "离线" : "Offline")}
+                                title={isVirtualEmployeeOnline(ve) ? (tailText(lang ?? "", "Online", "在线")) : (tailText(lang ?? "", "Offline", "离线"))}
                             />
                         </span>
                     </span>
@@ -717,7 +716,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                         fontWeight: 600,
                                     }}
                                 >
-                                    {isZh ? "需同意" : "Needs approval"}
+                                    {tailText(lang ?? "", "Needs approval", "需同意")}
                                 </span>
                             )}
                         </div>
@@ -763,7 +762,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         <span className="vet-menu-icon" style={{ width: 26, display: "inline-flex", justifyContent: "center", flexShrink: 0, color: theme.textMuted }}>
                             <VEMenuGlyph name="chat" />
                         </span>
-                        <span>{isZh ? "对话" : "Chat"}</span>
+                        <span>{tailText(lang ?? "", "Chat", "对话")}</span>
                     </div>
                     {/* Favorite toggle - only when callbacks are wired */}
                     {hasFavAction && (
@@ -788,7 +787,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             >
                                 <VEMenuGlyph name="star" filled={isFav} />
                             </span>
-                            <span>{isFav ? (isZh ? "取消常用" : "Remove from favorites") : (isZh ? "设为常用" : "Set as favorite")}</span>
+                            <span>{isFav ? (tailText(lang ?? "", "Remove from favorites", "取消常用")) : (tailText(lang ?? "", "Set as favorite", "设为常用"))}</span>
                         </div>
                     )}
                     {onRenameEmployee && (
@@ -803,7 +802,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             <span className="vet-menu-icon" style={{ width: 26, display: "inline-flex", justifyContent: "center", flexShrink: 0, color: theme.textMuted }}>
                                 <VEMenuGlyph name="pencil" />
                             </span>
-                            <span>{isZh ? "\u6539\u540d" : "Rename"}</span>
+                            <span>{tailText(lang ?? "", "Rename", "\u6539\u540d")}</span>
                         </div>
                     )}
                     {/* 查看信息 */}
@@ -818,7 +817,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         <span className="vet-menu-icon" style={{ width: 26, display: "inline-flex", justifyContent: "center", flexShrink: 0, color: theme.textMuted }}>
                             <VEMenuGlyph name="info" />
                         </span>
-                        <span>{isZh ? "\u67e5\u770b\u4fe1\u606f" : "View Info"}</span>
+                        <span>{tailText(lang ?? "", "View Info", "\u67e5\u770b\u4fe1\u606f")}</span>
                     </div>
                 </div>
                 );
@@ -845,10 +844,10 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         }}
                     >
                         <h2 id="ve-rename-title" style={{ margin: "0 0 14px", fontSize: 16, lineHeight: 1.3, color: theme.text }}>
-                            {isZh ? "\u6539\u540d\u6570\u5b57\u5458\u5de5" : "Rename digital employee"}
+                            {tailText(lang ?? "", "Rename digital employee", "\u6539\u540d\u6570\u5b57\u5458\u5de5")}
                         </h2>
                         <label style={{ display: "grid", gap: 8, fontSize: 13, fontWeight: 600, color: theme.text }}>
-                            {isZh ? "\u663e\u793a\u540d\u79f0" : "Display name"}
+                            {tailText(lang ?? "", "Display name", "\u663e\u793a\u540d\u79f0")}
                             <input
                                 ref={renameInputRef}
                                 value={renameValue}
@@ -871,10 +870,10 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         </label>
                         <div className="vet-dialog-actions">
                             <button type="button" onClick={() => setRenamingEmployee(null)} disabled={renameSaving} style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700, cursor: renameSaving ? "default" : "pointer" }}>
-                                {isZh ? "\u53d6\u6d88" : "Cancel"}
+                                {tailText(lang ?? "", "Cancel", "\u53d6\u6d88")}
                             </button>
                             <button type="submit" disabled={!renameValue.trim() || renameSaving} data-testid="ve-rename-save" style={primaryFilledButtonStyle(theme, { minWidth: 72, minHeight: 40, borderRadius: 8, font: "inherit", fontWeight: 700, opacity: renameValue.trim() && !renameSaving ? 1 : 0.55, cursor: renameValue.trim() && !renameSaving ? "pointer" : "default" })}>
-                                {isZh ? "\u4fdd\u5b58" : "Save"}
+                                {tailText(lang ?? "", "Save", "\u4fdd\u5b58")}
                             </button>
                         </div>
                     </form>
@@ -939,7 +938,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             </h2>
                             {viewInfoVE.ve.resident && (
                                 <span style={{ fontSize: 11, color: theme.btnColor, background: theme.fieldBg, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
-                                    {isZh ? "\u5e38\u9a7b" : "Resident"}
+                                    {tailText(lang ?? "", "Resident", "\u5e38\u9a7b")}
                                 </span>
                             )}
                         </div>
@@ -948,26 +947,26 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         <div className="vet-info-rows">
                             {/* Status */}
                             <div className="vet-info-row">
-                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u72b6\u6001" : "Status"}</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{tailText(lang ?? "", "Status", "\u72b6\u6001")}</span>
                                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? (darkSurface ? "#7aa89a" : "#4f7f6f") : (darkSurface ? "#a8b8c8" : "#9ca3af"), fontWeight: 600 }}>
                                     <VEStatusDot status={isVirtualEmployeeOnline(viewInfoVE.ve) ? "online" : "offline"} size={7} />
-                                    {isVirtualEmployeeOnline(viewInfoVE.ve) ? (isZh ? "\u5728\u7ebf" : "Online") : (isZh ? "\u79bb\u7ebf" : "Offline")}
+                                    {isVirtualEmployeeOnline(viewInfoVE.ve) ? (tailText(lang ?? "", "Online", "\u5728\u7ebf")) : (tailText(lang ?? "", "Offline", "\u79bb\u7ebf"))}
                                 </span>
                             </div>
 
                             {/* Source */}
                             <div className="vet-info-row">
-                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u6765\u6e90" : "Source"}</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{tailText(lang ?? "", "Source", "\u6765\u6e90")}</span>
                                 <span style={{ fontSize: 13, color: theme.text }}>
                                     {viewInfoVE.ve.machine_id
-                                        ? (isZh ? "\u865a\u62df\u5458\u5de5\uff08\u8fdc\u7a0b\uff09" : "Virtual Employee (Remote)")
-                                        : (isZh ? "\u672c\u673a\u5458\u5de5" : "Local Employee")}
+                                        ? (tailText(lang ?? "", "Virtual Employee (Remote)", "\u865a\u62df\u5458\u5de5\uff08\u8fdc\u7a0b\uff09"))
+                                        : (tailText(lang ?? "", "Local Employee", "\u672c\u673a\u5458\u5de5"))}
                                 </span>
                             </div>
 
                             {/* Access policy */}
                             <div className="vet-info-row">
-                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u8bbf\u95ee\u7b56\u7565" : "Access Policy"}</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{tailText(lang ?? "", "Access Policy", "\u8bbf\u95ee\u7b56\u7565")}</span>
                                 <span style={{ fontSize: 13, color: theme.text, display: "inline-flex", alignItems: "center", gap: 6 }}>
                                     <VEPolicyIcon name={policyIcon(viewInfoVE.ve.access_policy)} size={13} isDark={darkSurface} />
                                     {policyLabel(viewInfoVE.ve.access_policy, lang)}
@@ -976,18 +975,18 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
                             {/* Accessible departments */}
                             <div className="vet-info-row">
-                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u53ef\u8bbf\u95ee\u90e8\u95e8" : "Departments"}</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{tailText(lang ?? "", "Departments", "\u53ef\u8bbf\u95ee\u90e8\u95e8")}</span>
                                 <span style={{ fontSize: 13, color: theme.text }}>
                                     {viewInfoVE.ve.whitelist && viewInfoVE.ve.whitelist.length > 0
                                         ? viewInfoVE.ve.whitelist.join('\uff1b')
-                                        : (isZh ? "\u65e0\u9650\u5236" : "Unrestricted")}
+                                        : (tailText(lang ?? "", "Unrestricted", "\u65e0\u9650\u5236"))}
                                 </span>
                             </div>
 
                             {/* Registration time */}
                             {viewInfoVE.ve.registered_at && (
                             <div className="vet-info-row">
-                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u6ce8\u518c\u65f6\u95f4" : "Registered"}</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{tailText(lang ?? "", "Registered", "\u6ce8\u518c\u65f6\u95f4")}</span>
                                 <span style={{ fontSize: 13, color: theme.text }}>
                                     {(() => { try { const d = new Date(viewInfoVE.ve.registered_at!); return isNaN(d.getTime()) ? viewInfoVE.ve.registered_at : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }); } catch { return viewInfoVE.ve.registered_at; } })()}
                                 </span>
@@ -1005,7 +1004,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
                         {/* Skill description */}
                         <div className="vet-info-skill">
-                            <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, marginBottom: 6 }}>{isZh ? "\u6280\u80fd\u4ecb\u7ecd" : "Skill"}</div>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, marginBottom: 6 }}>{tailText(lang ?? "", "Skill", "\u6280\u80fd\u4ecb\u7ecd")}</div>
                             <div style={{
                                 fontSize: 13, lineHeight: 1.6, color: theme.text,
                                 padding: "10px 12px", borderRadius: 8,
@@ -1013,7 +1012,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 border: `1px solid ${theme.divider}`,
                                 whiteSpace: "pre-wrap", wordBreak: "break-word",
                             }}>
-                                {viewInfoVE.ve.skill_description || (isZh ? "\u6682\u65e0\u6280\u80fd\u4ecb\u7ecd" : "No description available")}
+                                {viewInfoVE.ve.skill_description || (tailText(lang ?? "", "No description available", "\u6682\u65e0\u6280\u80fd\u4ecb\u7ecd"))}
                             </div>
                         </div>
 
@@ -1024,7 +1023,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 onClick={() => setViewInfoVE(null)}
                                 style={{ minWidth: 100, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700, cursor: "pointer" }}
                             >
-                                {isZh ? "\u5173\u95ed" : "Close"}
+                                {tailText(lang ?? "", "Close", "\u5173\u95ed")}
                             </button>
                         </div>
                     </div>

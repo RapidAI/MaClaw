@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { GetHubUserRanking } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { localizeText } from '../../i18n';
+
 
 export type HubRankingSnapshot = { tokenRank: number; durationRank: number };
 
@@ -24,7 +26,7 @@ export function systemRankingLabel(lang: string, snapshot: HubRankingSnapshot | 
     const ranks = snapshot ? [snapshot.tokenRank, snapshot.durationRank].filter(rank => rank > 0) : [];
     if (ranks.length === 0) return fallback;
     const place = Math.min(...ranks);
-    return lang === 'en' ? `#${place}` : `第${place}名`;
+    return localizeText(lang, '#{place}', '第{place}名', '第{place}名').replaceAll('{place}', String(place));
 }
 
 export function useSidebarHubRanking(enabled: boolean, activated: boolean): HubRankingSnapshot | null {

@@ -9,7 +9,10 @@
  * happened to the device events that reached the Hub.
  */
 (function(global) {
-  function zh(en, cn) { return String(global.currentLang || 'en') === 'zh' ? cn : en; }
+  function zh(en, cn) {
+    if (global.hubLine) return global.hubLine('LINK_HEALTH', cn, en);
+    return String(global.currentLang || 'en') === 'zh' ? cn : en;
+  }
   function $id(id) { return document.getElementById(id); }
   function esc(v) { return typeof global.escapeHtml === 'function' ? global.escapeHtml(v == null ? '' : String(v)) : String(v == null ? '' : v); }
   function api(path, opts) { return global.api(path, opts); }

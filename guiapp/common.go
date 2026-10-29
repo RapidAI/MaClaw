@@ -60,5 +60,21 @@ func trayTranslations() map[string]map[string]string {
 			"cu_paused":  "狀態：已暫停",
 			"cu_stopped": "狀態：已停止",
 		},
+		"mn": {
+			"title":      b.DisplayName,
+			"show":       "Үндсэн цонхыг харуулах",
+			"hide":       "Үндсэн цонхыг нуух",
+			"quit":       b.DisplayName + " гарах",
+			"cu_menu":    "Computer Use",
+			"cu_status":  "Төлөв: сул",
+			"cu_pause":   "Ширээний үйлдлийг түр зогсоох",
+			"cu_resume":  "Ширээний үйлдлийг үргэлжлүүлэх",
+			"cu_stop":    "Ширээний удирдлагыг зогсоох",
+			"cu_reset":   "Удирдлагын төлөвийг шинэчлэх",
+			"cu_idle":    "Төлөв: сул",
+			"cu_active":  "Төлөв: идэвхтэй",
+			"cu_paused":  "Төлөв: түр зогссон",
+			"cu_stopped": "Төлөв: зогссон",
+		},
 	}
 }

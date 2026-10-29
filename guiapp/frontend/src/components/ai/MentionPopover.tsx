@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { isPlainEnter } from "./assistantInputShortcuts";
+import { tailText } from "../../i18n/mnTail"
 
 export interface MentionParticipant {
     id: string;
@@ -52,7 +53,6 @@ export function MentionPopover({
     theme,
     lang,
 }: MentionPopoverProps) {
-    const isZh = !lang || lang.startsWith("zh");
     const popoverRef = useRef<HTMLDivElement>(null);
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
@@ -112,7 +112,7 @@ export function MentionPopover({
                         textAlign: "center",
                     }}
                 >
-                    {isZh ? "无匹配参与者" : "No matching participants"}
+                    {tailText(lang ?? "", "No matching participants", "无匹配参与者")}
                 </div>
             ) : (
                 filtered.map((p, idx) => (

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenMeter } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
-import { localizeText } from '../../i18n';
+import { isChineseLang, localizeText } from '../../i18n';
 import {
     aggregateIMConnectionKind,
     connectionStatusGlyphKind,
@@ -618,8 +618,7 @@ export const SidebarSystemStatus = ({
         </>
     );
     const backgroundTaskLabel = textForLang(lang, 'Background tasks', '\u540e\u53f0\u4efb\u52a1', '\u5f8c\u53f0\u4efb\u52d9');
-    const isChineseLang = lang === 'zh-Hans' || lang === 'zh-Hant' || lang === 'zh';
-    const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang ? '\uff1a ' : ': '}${backgroundTaskCount}`;
+    const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang(lang) ? '\uff1a ' : ': '}${backgroundTaskCount}`;
     const resolvedWorkbenchTaskCounts: WorkbenchTaskCounts = {
         background: workbenchTaskCounts?.background ?? backgroundTaskCount,
         scheduled: workbenchTaskCounts?.scheduled ?? 0,
@@ -647,7 +646,7 @@ export const SidebarSystemStatus = ({
     const workbenchTaskCountText = `${jobsMainText}${botCountSegment}`;
     const workbenchTaskRowAria = onOpenBackgroundTasks
         ? textForLang(lang, `${backgroundTaskLabel}: ${workbenchTaskCountText}. Open task monitor`, `${backgroundTaskLabel}：${workbenchTaskCountText}，打开任务监控`, `${backgroundTaskLabel}：${workbenchTaskCountText}，開啟任務監控`)
-        : `${backgroundTaskLabel}${isChineseLang ? '\uff1a' : ': '}${workbenchTaskCountText}`;
+        : `${backgroundTaskLabel}${isChineseLang(lang) ? '\uff1a' : ': '}${workbenchTaskCountText}`;
     const renderStatusSignal = (label: string, on: boolean, extraTitle?: string, ariaLabel?: string, kind?: 'llm' | 'hub' | 'im') => (
         <span
             className={`sidebar-system-status__signal${kind ? ` sidebar-system-status__signal--${kind}` : ''}`}

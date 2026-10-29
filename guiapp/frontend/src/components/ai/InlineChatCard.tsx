@@ -1,5 +1,7 @@
 import { useState, useCallback, type CSSProperties } from "react";
 import { IconAlert } from "./WorkbenchIcons";
+import { chromeText } from "../../i18n/chromeText";
+
 
 // --- Generic Inline Chat Card System ---
 // Renders interactive cards within the chat message stream.
@@ -154,15 +156,13 @@ export function InlineChatCard({ card, onResolve, theme, lang = "zh" }: InlineCh
                 <div style={{ ...metadataStyle, background: "rgba(220, 38, 38, 0.08)", border: "1px solid rgba(220, 38, 38, 0.2)", color: theme.dangerColor }}>
                     <div className="icc-warn-title">
                         <IconAlert size={14} color="currentColor" />
-                        {lang === "en" ? "Security Notice" : "安全提示"}
+                        {(chromeText(lang, "Security Notice", "安全提示"))}
                     </div>
                     {(card.metadata.security_warnings as string[]).map((w, i) => (
                         <div key={i} className="icc-warn-item">{w}</div>
                     ))}
                     <div className="icc-warn-hint">
-                        {lang === "en"
-                            ? "Review the recorded steps before saving. Credentials in commands/files will be saved to disk."
-                            : "保存前请检查录制步骤。命令/文件中的凭据将被保存到磁盘。"}
+                        {chromeText(lang, "Review the recorded steps before saving. Credentials in commands/files will be saved to disk.", "保存前请检查录制步骤。命令/文件中的凭据将被保存到磁盘。")}
                     </div>
                 </div>
             )}
@@ -206,8 +206,8 @@ export function InlineChatCard({ card, onResolve, theme, lang = "zh" }: InlineCh
             {/* Resolved state indicator */}
             {isResolved && card.resolvedAction && (
                 <div style={{ fontSize: "12px", color: card.resolvedAction === "cancel" ? theme.mutedColor : theme.accentColor, marginTop: "8px", fontWeight: 500 }}>
-                    {card.resolvedAction === "save" ? (lang === "en" ? "Skill saved successfully." : "Skill 已保存成功。") :
-                     card.resolvedAction === "cancel" ? (lang === "en" ? "Dismissed." : "已关闭。") :
+                    {card.resolvedAction === "save" ? ((chromeText(lang, "Skill saved successfully.", "Skill 已保存成功。"))) :
+                     card.resolvedAction === "cancel" ? ((chromeText(lang, "Dismissed.", "已关闭。"))) :
                      String(card.resolvedAction)}
                 </div>
             )}

@@ -227,14 +227,14 @@ func (h *IMMessageHandler) activeLoopCallbacksForOwner(userID string) *guiLoopCo
 
 // buildLoopCommandResponse formats the final loop state into a user-facing response.
 func buildLoopCommandResponse(state *agent.LoopCommandState) *IMAgentResponse {
-	return buildLoopCommandResponseWithLang(state, "zh-Hans")
+	return buildLoopCommandResponseWithLang(state, "en")
 }
 
 func buildLoopCommandResponseWithLang(state *agent.LoopCommandState, lang string) *IMAgentResponse {
-	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
-		return buildLoopCommandResponseEnglish(state)
+	if normalizeAppLanguageKind(lang).IsChinese() {
+		return buildLoopCommandResponseChinese(state, lang)
 	}
-	return buildLoopCommandResponseChinese(state, lang)
+	return buildLoopCommandResponseEnglish(state, lang)
 }
 
 func buildLoopCommandResponseChinese(state *agent.LoopCommandState, lang string) *IMAgentResponse {
@@ -276,25 +276,25 @@ func buildLoopCommandResponseChinese(state *agent.LoopCommandState, lang string)
 	return &IMAgentResponse{Text: sb.String()}
 }
 
-func buildLoopCommandResponseEnglish(state *agent.LoopCommandState) *IMAgentResponse {
+func buildLoopCommandResponseEnglish(state *agent.LoopCommandState, lang string) *IMAgentResponse {
 	var sb strings.Builder
 
 	switch state.Status {
 	case agent.LoopStatusSucceeded:
-		sb.WriteString(fmt.Sprintf("**Loop succeeded** - verification passed on iteration %d\n\n", len(state.Iterations)))
-		sb.WriteString(fmt.Sprintf("- Goal: %s\n", state.Config.Goal))
-		sb.WriteString(fmt.Sprintf("- Verify command: `%s`\n", state.Config.VerifyCmd))
-		sb.WriteString(fmt.Sprintf("- Total time: %v\n", state.EndedAt.Sub(state.StartedAt).Round(100_000_000)))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "**Loop succeeded** - verification passed on iteration %d\n\n", "**Loop 成功** — 验证命令在第 %d 轮通过\n\n", "**Loop 成功** — 验证命令在第 %d 轮通过\n\n"), len(state.Iterations)))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "- Goal: %s\n", "- 目标: %s\n", "- 目标: %s\n"), state.Config.Goal))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "- Verify command: `%s`\n", "- 验证命令: `%s`\n", "- 验证命令: `%s`\n"), state.Config.VerifyCmd))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "- Total time: %v\n", "- 总耗时: %v\n", "- 总耗时: %v\n"), state.EndedAt.Sub(state.StartedAt).Round(100_000_000)))
 	case agent.LoopStatusFailed:
-		sb.WriteString(fmt.Sprintf("**Loop failed** - verification still failed after %d iteration(s)\n\n", len(state.Iterations)))
-		sb.WriteString(fmt.Sprintf("- Goal: %s\n", state.Config.Goal))
-		sb.WriteString(fmt.Sprintf("- Verify command: `%s`\n", state.Config.VerifyCmd))
-		sb.WriteString(fmt.Sprintf("- Total time: %v\n", state.EndedAt.Sub(state.StartedAt).Round(100_000_000)))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "**Loop failed** - verification still failed after %d iteration(s)\n\n", "**Loop 失败** — %d 轮迭代后验证命令仍未通过\n\n", "**Loop 失败** — %d 轮迭代后验证命令仍未通过\n\n"), len(state.Iterations)))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "- Goal: %s\n", "- 目标: %s\n", "- 目标: %s\n"), state.Config.Goal))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "- Verify command: `%s`\n", "- 验证命令: `%s`\n", "- 验证命令: `%s`\n"), state.Config.VerifyCmd))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "- Total time: %v\n", "- 总耗时: %v\n", "- 总耗时: %v\n"), state.EndedAt.Sub(state.StartedAt).Round(100_000_000)))
 		if len(state.Iterations) > 0 {
 			last := state.Iterations[len(state.Iterations)-1]
 			output := last.VerifyResult.CombinedOutput()
 			if output != "" {
-				sb.WriteString("\n**Last verification output**\n```\n")
+				sb.WriteString(pickUI(lang, "\n**Last verification output**\n```\n", "\n**最后一次验证输出:**\n```\n", "\n**最后一次验证输出:**\n```\n"))
 				if len(output) > 1000 {
 					output = output[len(output)-1000:]
 				}
@@ -303,54 +303,26 @@ func buildLoopCommandResponseEnglish(state *agent.LoopCommandState) *IMAgentResp
 			}
 		}
 	case agent.LoopStatusCancelled:
-		sb.WriteString(fmt.Sprintf("**Loop canceled** - interrupted on iteration %d\n", len(state.Iterations)))
+		sb.WriteString(fmt.Sprintf(pickUI(lang, "**Loop canceled** - interrupted on iteration %d\n", "**Loop 已取消** — 在第 %d 轮被中断\n", "**Loop 已取消** — 在第 %d 轮被中断\n"), len(state.Iterations)))
 	default:
-		sb.WriteString("Loop finished.\n")
+		sb.WriteString(pickUI(lang, "Loop finished.\n", "Loop 执行完毕。\n", "Loop 执行完毕。\n"))
 	}
 
 	return &IMAgentResponse{Text: sb.String()}
 }
 
 func localizedIMLoopUsageText(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Usage: /loop [--max N] [--timeout N] [--dir path] <verify_cmd> <goal>\n\nExamples:\n  /loop go test ./... make all tests pass\n  /loop npm test --max 5 fix failing tests\n  /loop make build fix compile errors"
-	case appLanguageZhHant:
-		return "用法：/loop [--max N] [--timeout N] [--dir path] <驗證命令> <目標>\n\n示例：\n  /loop go test ./... 讓所有測試通過\n  /loop npm test --max 5 修復失敗測試\n  /loop make build 修復編譯錯誤"
-	default:
-		return "用法：/loop [--max N] [--timeout N] [--dir path] <验证命令> <目标>\n\n示例：\n  /loop go test ./... 让所有测试通过\n  /loop npm test --max 5 修复失败测试\n  /loop make build 修复编译错误"
-	}
+	return pickUI(lang, "Usage: /loop [--max N] [--timeout N] [--dir path] <verify_cmd> <goal>\n\nExamples:\n  /loop go test ./... make all tests pass\n  /loop npm test --max 5 fix failing tests\n  /loop make build fix compile errors", "用法：/loop [--max N] [--timeout N] [--dir path] <验证命令> <目标>\n\n示例：\n  /loop go test ./... 让所有测试通过\n  /loop npm test --max 5 修复失败测试\n  /loop make build 修复编译错误", "用法：/loop [--max N] [--timeout N] [--dir path] <驗證命令> <目標>\n\n示例：\n  /loop go test ./... 讓所有測試通過\n  /loop npm test --max 5 修復失敗測試\n  /loop make build 修復編譯錯誤")
 }
 
 func localizedIMLoopPositiveIntegerError(lang, flag, got string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("%s must be a positive integer, got %q", flag, got)
-	case appLanguageZhHant:
-		return fmt.Sprintf("%s 必須是正整數，收到 %q", flag, got)
-	default:
-		return fmt.Sprintf("%s 必须是正整数，收到 %q", flag, got)
-	}
+	return fmt.Sprintf(pickUI(lang, "%s must be a positive integer, got %q", "%s 必须是正整数，收到 %q", "%s 必須是正整數，收到 %q"), flag, got)
 }
 
 func localizedIMLoopMissingVerifyCommandMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Missing verification command. Usage: /loop <verify_cmd> <goal>"
-	case appLanguageZhHant:
-		return "缺少驗證命令。用法：/loop <驗證命令> <目標>"
-	default:
-		return "缺少验证命令。用法：/loop <验证命令> <目标>"
-	}
+	return pickUI(lang, "Missing verification command. Usage: /loop <verify_cmd> <goal>", "缺少验证命令。用法：/loop <验证命令> <目标>", "缺少驗證命令。用法：/loop <驗證命令> <目標>")
 }
 
 func localizedIMLoopDefaultGoal(lang, verifyCmd string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("Make the following command pass (exit 0): %s", verifyCmd)
-	case appLanguageZhHant:
-		return fmt.Sprintf("讓以下命令通過（退出碼 0）：%s", verifyCmd)
-	default:
-		return fmt.Sprintf("让以下命令通过（退出码 0）：%s", verifyCmd)
-	}
+	return fmt.Sprintf(pickUI(lang, "Make the following command pass (exit 0): %s", "让以下命令通过（退出码 0）：%s", "讓以下命令通過（退出碼 0）：%s"), verifyCmd)
 }

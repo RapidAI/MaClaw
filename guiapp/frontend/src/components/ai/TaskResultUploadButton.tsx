@@ -1,5 +1,6 @@
 import React from "react";
 import { ImportMobileDocumentFromPath } from "../../../wailsjs/go/main/App";
+import { chromeText } from "../../i18n/chromeText";
 import { isCloudWorkspaceFilePath, isCloudWorkspacePath } from "./codingTaskMode";
 
 // Cloud workspace artifacts are not guaranteed to exist on the local disk, so
@@ -12,14 +13,13 @@ export function TaskResultUploadButton({ filePath, lang }: { filePath: string; l
     const [status, setStatus] = React.useState<"idle" | "uploading" | "done" | "error">("idle");
     const [errorMsg, setErrorMsg] = React.useState("");
     const [alreadyThere, setAlreadyThere] = React.useState(false);
-    const en = lang === "en";
     const title = status === "done"
         ? (alreadyThere
-            ? (en ? "This file is already in the cloud drive. Not uploaded again." : "云盘中已有相同内容，未再次上传。")
-            : (en ? "Uploaded to the cloud drive. Phone app → Documents can open it." : "已上传到云盘，手机端「文档」可直接打开。"))
+            ? chromeText(lang, "This file is already in the cloud drive. Not uploaded again.", "云盘中已有相同内容，未再次上传。")
+            : chromeText(lang, "Uploaded to the cloud drive. Phone app → Documents can open it.", "已上传到云盘，手机端「文档」可直接打开。"))
         : status === "error"
-            ? ((en ? "Upload failed" : "上传失败") + (errorMsg ? `: ${errorMsg}` : ""))
-            : (en ? "Upload to cloud drive" : "上传到云盘");
+            ? (chromeText(lang, "Upload failed", "上传失败") + (errorMsg ? `: ${errorMsg}` : ""))
+            : chromeText(lang, "Upload to cloud drive", "上传到云盘");
     const onClick = (event: React.MouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
@@ -34,7 +34,7 @@ export function TaskResultUploadButton({ filePath, lang }: { filePath: string; l
                     setStatus("done");
                 } else {
                     setStatus("error");
-                    setErrorMsg(en ? "Hub did not return a file" : "Hub 未返回文件");
+                    setErrorMsg(chromeText(lang, "Hub did not return a file", "Hub 未返回文件"));
                 }
             })
             .catch((err: unknown) => {
@@ -47,7 +47,7 @@ export function TaskResultUploadButton({ filePath, lang }: { filePath: string; l
             type="button"
             className={`mc-task-result-card__upload mc-task-result-card__upload--${status}`}
             title={title}
-            aria-label={en ? "Upload to cloud drive" : "上传到云盘"}
+            aria-label={chromeText(lang, "Upload to cloud drive", "上传到云盘")}
             aria-busy={status === "uploading"}
             aria-live="polite"
             disabled={status === "uploading"}

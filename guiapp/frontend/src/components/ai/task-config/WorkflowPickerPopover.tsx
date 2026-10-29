@@ -4,6 +4,7 @@ import { TaskConfigIcon } from "./taskConfigIcons";
 import { TaskConfigPopoverShell, popoverItemKeyDown, popoverSearchInputStyle } from "./TaskConfigPopoverShell";
 import { popoverHeadStyle, popoverItemStyle, popoverListStyle, popoverSepStyle } from "./taskConfigPopoverStyles";
 import { WORKFLOW_AUTO } from "./taskDraft";
+import { tailText } from "../../../i18n/mnTail"
 
 export interface WorkflowOption {
     id: string;
@@ -46,7 +47,6 @@ export function WorkflowPickerPopover({
     onPickTemplateParams,
     onClose,
 }: WorkflowPickerPopoverProps) {
-    const isZh = !lang?.startsWith("en");
     const [query, setQuery] = useState("");
     const q = query.trim().toLowerCase();
     const filtered = useMemo(
@@ -54,7 +54,7 @@ export function WorkflowPickerPopover({
         [workflows, q],
     );
 
-    const lockHint = isZh ? "已指定专家，工作流由专家决定" : "Expert specified; workflow follows the expert";
+    const lockHint = tailText(lang ?? "", "Expert specified; workflow follows the expert", "已指定专家，工作流由专家决定");
 
     const pick = (workflow: WorkflowOption) => {
         onSelect(workflow.id);
@@ -79,8 +79,8 @@ export function WorkflowPickerPopover({
                 <input
                     value={query}
                     onChange={(e) => setQuery(e.currentTarget.value)}
-                    placeholder={isZh ? "搜索工作流模板" : "Search workflow templates"}
-                    aria-label={isZh ? "搜索工作流模板" : "Search workflow templates"}
+                    placeholder={tailText(lang ?? "", "Search workflow templates", "搜索工作流模板")}
+                    aria-label={tailText(lang ?? "", "Search workflow templates", "搜索工作流模板")}
                     style={popoverSearchInputStyle(t)}
                     autoFocus
                 />
@@ -98,9 +98,9 @@ export function WorkflowPickerPopover({
                 >
                     <span style={noneVisual.icon}><TaskConfigIcon name="ban" size={15} /></span>
                     <span style={noneVisual.meta}>
-                        {isZh ? "无" : "None"}
+                        {tailText(lang ?? "", "None", "无")}
                         <span style={{ ...noneVisual.desc, display: "block" }}>
-                            {isZh ? "默认，不执行工作流（普通会话）" : "Default; no workflow runs (plain chat)"}
+                            {tailText(lang ?? "", "Default; no workflow runs (plain chat)", "默认，不执行工作流（普通会话）")}
                         </span>
                     </span>
                     {selectedWorkflowId === null && <TaskConfigIcon name="check" size={14} />}
@@ -117,9 +117,9 @@ export function WorkflowPickerPopover({
                 >
                     <span style={autoVisual.icon}><TaskConfigIcon name="spark" size={15} /></span>
                     <span style={autoVisual.meta}>
-                        {isZh ? "自动判断" : "Auto"}
+                        {tailText(lang ?? "", "Auto", "自动判断")}
                         <span style={{ ...autoVisual.desc, display: "block" }}>
-                            {isZh ? "发送后由系统识别意图并匹配工作流" : "System detects intent after send"}
+                            {tailText(lang ?? "", "System detects intent after send", "发送后由系统识别意图并匹配工作流")}
                         </span>
                     </span>
                     {selectedWorkflowId === WORKFLOW_AUTO && <TaskConfigIcon name="check" size={14} />}
@@ -129,7 +129,7 @@ export function WorkflowPickerPopover({
                     const v = itemVisual(selectedWorkflowId === workflow.id);
                     const desc = workflow.category
                         + (workflow.requiresWorkingDir
-                            ? (isZh ? " · 需要工作目录" : " · needs working dir")
+                            ? (tailText(lang ?? "", " · needs working dir", " · 需要工作目录"))
                             : "");
                     return (
                         <div
@@ -149,14 +149,14 @@ export function WorkflowPickerPopover({
                                 <span style={{ ...v.desc, display: "block" }}>{desc}</span>
                             </span>
                             <span style={v.badge}>
-                                {workflow.phaseCount}{isZh ? " 个阶段" : " phases"}
+                                {workflow.phaseCount}{tailText(lang ?? "", " phases", " 个阶段")}
                             </span>
                         </div>
                     );
                 })}
                 {filtered.length === 0 && (
                     <div style={{ padding: "10px", fontSize: 12.5, color: t.textMuted }}>
-                        {isZh ? "没有匹配的工作流" : "No matching workflows"}
+                        {tailText(lang ?? "", "No matching workflows", "没有匹配的工作流")}
                     </div>
                 )}
                 {hasMoreWorkflows && (
@@ -173,7 +173,7 @@ export function WorkflowPickerPopover({
                                 onKeyDown={popoverItemKeyDown(onShowAllWorkflows)}
                             >
                                 <span style={marketVisual.icon}><TaskConfigIcon name="grid" size={15} /></span>
-                                <span style={marketVisual.meta}>{isZh ? "全部工作流…" : "All workflows…"}</span>
+                                <span style={marketVisual.meta}>{tailText(lang ?? "", "All workflows…", "全部工作流…")}</span>
                             </div>
                         ) : (
                             <div
@@ -181,7 +181,7 @@ export function WorkflowPickerPopover({
                                 style={{ ...marketVisual.item, opacity: 0.45, cursor: "default" }}
                             >
                                 <span style={marketVisual.icon}><TaskConfigIcon name="grid" size={15} /></span>
-                                <span style={marketVisual.meta}>{isZh ? "全部工作流…" : "All workflows…"}</span>
+                                <span style={marketVisual.meta}>{tailText(lang ?? "", "All workflows…", "全部工作流…")}</span>
                             </div>
                         )}
                     </>

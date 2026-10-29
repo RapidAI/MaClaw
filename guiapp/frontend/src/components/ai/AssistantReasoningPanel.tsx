@@ -2,6 +2,8 @@ import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { markdownPreviewIsDark } from "./markdownPreviewInk";
 import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
+import { chromeText } from "../../i18n/chromeText";
+
 
 /** Field fill sits on the chat bubble. The bubble itself is the page surface,
  *  so this must not reuse `bg` (light) or the title bar (dark) — those match
@@ -133,8 +135,8 @@ export function AssistantReasoningPanel({
             {showToggle ? (
                 <span aria-live="polite" data-testid="assistant-reasoning-toggle-state" className="arp-toggle-state">
                     {isOpen
-                        ? (lang === "en" ? "Collapse" : lang === "zh-Hant" ? "收起" : "收起")
-                        : (lang === "en" ? "Expand" : lang === "zh-Hant" ? "展開" : "展开")}
+                        ? chromeText(lang, "Collapse", "收起", "收起")
+                        : chromeText(lang, "Expand", "展开", "展開")}
                 </span>
             ) : null}
         </>

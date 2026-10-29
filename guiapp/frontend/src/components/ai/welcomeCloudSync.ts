@@ -3,6 +3,23 @@
  * Kept free of React / Wails so unit tests can cover UX branching.
  */
 
+import { intlLocale } from "../../i18n/langSelect";
+import { surfaceText } from "../../i18n/mnSurface";
+
+/** Boolean keeps the original Chinese/English branch. A language tag selects Khalkha for mn. */
+type WelcomeCopyArg = boolean | string;
+
+function welcomeCopy(arg: WelcomeCopyArg, en: string, zhHans: string): string {
+    if (typeof arg === "boolean") return arg ? zhHans : en;
+    return surfaceText(arg, en, zhHans);
+}
+
+function welcomeDateLocale(arg: WelcomeCopyArg): string {
+    if (typeof arg === "boolean") return arg ? "zh-CN" : "en-US";
+    if (String(arg || "").trim().toLowerCase().startsWith("zh")) return "zh-CN";
+    return intlLocale(arg);
+}
+
 /** localStorage: "1" = auto-upload local welcome backup after changes. */
 export const WELCOME_CLOUD_AUTO_SYNC_KEY = "maclaw:welcome-cloud-auto-sync";
 
@@ -201,16 +218,19 @@ export function parseWelcomeCloudStatus(
 
 export function welcomeCloudStatusLabel(
     status: Pick<WelcomeCloudSyncStatus, "loggedIn" | "hasDocument" | "templateCount" | "unsupported">,
-    isZh: boolean,
+    isZhOrLang: WelcomeCopyArg,
 ): string | null {
     if (status.unsupported) {
-        return isZh ? "需升级 Hub" : "Upgrade Hub";
+        return welcomeCopy(isZhOrLang, "Upgrade Hub", "需升级 Hub");
     }
     if (!status.loggedIn) return null;
     if (status.hasDocument) {
-        return isZh ? `云端 ${status.templateCount}` : `Cloud ${status.templateCount}`;
+        if (typeof isZhOrLang === "boolean") {
+            return isZhOrLang ? `云端 ${status.templateCount}` : `Cloud ${status.templateCount}`;
+        }
+        return `${surfaceText(isZhOrLang, "Cloud", "云端")} ${status.templateCount}`;
     }
-    return isZh ? "云端空" : "Cloud empty";
+    return welcomeCopy(isZhOrLang, "Cloud empty", "云端空");
 }
 
 export function welcomeCloudPayloadText(result: Record<string, unknown> | null | undefined): string {
@@ -219,13 +239,13 @@ export function welcomeCloudPayloadText(result: Record<string, unknown> | null |
 }
 
 /** Short, human-readable updated-at for chip tooltips. */
-export function formatWelcomeCloudUpdatedAt(raw: string, isZh: boolean): string {
+export function formatWelcomeCloudUpdatedAt(raw: string, isZhOrLang: WelcomeCopyArg): string {
     const s = (raw || "").trim();
     if (!s) return "";
     const d = new Date(s);
     if (Number.isNaN(d.getTime())) return s;
     try {
-        return d.toLocaleString(isZh ? "zh-CN" : "en-US", {
+        return d.toLocaleString(welcomeDateLocale(isZhOrLang), {
             year: "numeric",
             month: "2-digit",
             day: "2-digit",
@@ -250,34 +270,36 @@ export type WelcomeCloudConflictPhase = "idle" | "pulling" | "pushing";
 
 export function welcomeCloudConflictPhaseLabel(
     phase: WelcomeCloudConflictPhase,
-    isZh: boolean,
+    isZhOrLang: WelcomeCopyArg,
 ): string {
     switch (phase) {
         case "pulling":
-            return isZh ? "① 正在拉取并合并云端…" : "① Pulling & merging cloud…";
+            return welcomeCopy(isZhOrLang, "① Pulling & merging cloud…", "① 正在拉取并合并云端…");
         case "pushing":
-            return isZh ? "② 正在上传合并结果…" : "② Uploading merged result…";
+            return welcomeCopy(isZhOrLang, "② Uploading merged result…", "② 正在上传合并结果…");
         default:
-            return isZh
-                ? "检测到云端冲突：建议先合并云端变更，再上传本地结果。"
-                : "Cloud conflict: merge cloud changes, then upload the combined result.";
+            return welcomeCopy(
+                isZhOrLang,
+                "Cloud conflict: merge cloud changes, then upload the combined result.",
+                "检测到云端冲突：建议先合并云端变更，再上传本地结果。",
+            );
     }
 }
 
 export function welcomeCloudConflictResolveButtonLabel(
     phase: WelcomeCloudConflictPhase,
-    isZh: boolean,
+    isZhOrLang: WelcomeCopyArg,
 ): string {
     if (phase === "pulling" || phase === "pushing") {
-        return isZh ? "处理中…" : "Working…";
+        return welcomeCopy(isZhOrLang, "Working…", "处理中…");
     }
-    return isZh ? "拉取合并后再传" : "Merge then upload";
+    return welcomeCopy(isZhOrLang, "Merge then upload", "拉取合并后再传");
 }
 
 /** User-facing note for a classified cloud error (push/pull). */
 export function welcomeCloudUserNote(
     kind: WelcomeCloudErrorKind,
-    isZh: boolean,
+    isZhOrLang: WelcomeCopyArg,
     rawMessage = "",
     action: "push" | "pull" = "pull",
     /** When true, conflict text is for background auto-sync (no force-overwrite hint). */
@@ -286,27 +308,39 @@ export function welcomeCloudUserNote(
     switch (kind) {
         case "conflict":
             if (quiet) {
-                return isZh
-                    ? "自动同步暂停：云端有更新。可用下方「拉取合并后再传」一键解决。"
-                    : "Auto-sync paused: cloud has newer data. Use “Merge then upload” below.";
+                return welcomeCopy(
+                    isZhOrLang,
+                    "Auto-sync paused: cloud has newer data. Use “Merge then upload” below.",
+                    "自动同步暂停：云端有更新。可用下方「拉取合并后再传」一键解决。",
+                );
             }
-            return isZh
-                ? "云端有更新。可「拉取合并后再传」，或再次点击上传强制覆盖。"
-                : "Cloud has newer data. Use “Merge then upload”, or push again to force overwrite.";
+            return welcomeCopy(
+                isZhOrLang,
+                "Cloud has newer data. Use “Merge then upload”, or push again to force overwrite.",
+                "云端有更新。可「拉取合并后再传」，或再次点击上传强制覆盖。",
+            );
         case "empty":
-            return isZh ? "云端暂无引导页备份" : "No cloud welcome backup yet";
+            return welcomeCopy(isZhOrLang, "No cloud welcome backup yet", "云端暂无引导页备份");
         case "unsupported":
-            return isZh ? "当前 Hub 版本不支持引导页云同步" : "This Hub build lacks welcome cloud sync";
+            return welcomeCopy(isZhOrLang, "This Hub build lacks welcome cloud sync", "当前 Hub 版本不支持引导页云同步");
         case "login":
-            return isZh ? "请先登录 Hub 账号" : "Please sign in to Hub first";
+            return welcomeCopy(isZhOrLang, "Please sign in to Hub first", "请先登录 Hub 账号");
         case "invalid":
-            return isZh ? "云端数据无效" : "Cloud document is invalid";
+            return welcomeCopy(isZhOrLang, "Cloud document is invalid", "云端数据无效");
         default: {
             const msg = (rawMessage || "").slice(0, 80);
             if (action === "push") {
-                return isZh ? `上传失败：${msg || "未知错误"}` : `Upload failed: ${msg || "unknown error"}`;
+                return welcomeCopy(
+                    isZhOrLang,
+                    `Upload failed: ${msg || "unknown error"}`,
+                    `上传失败：${msg || "未知错误"}`,
+                );
             }
-            return isZh ? `拉取失败：${msg || "未知错误"}` : `Pull failed: ${msg || "unknown error"}`;
+            return welcomeCopy(
+                isZhOrLang,
+                `Pull failed: ${msg || "unknown error"}`,
+                `拉取失败：${msg || "未知错误"}`,
+            );
         }
     }
 }

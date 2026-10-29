@@ -210,9 +210,10 @@
   };
 
   function vt(key) {
-    var lang = global.currentLang || 'zh';
-    var dict = VE_I18N[lang] || VE_I18N['zh'];
-    return dict[key] || key;
+    if (global.hubDict) return global.hubDict('VE', VE_I18N, key);
+    var lang = global.currentLang === 'zh' ? 'zh' : 'en';
+    var dict = VE_I18N[lang] || VE_I18N.en;
+    return dict[key] || VE_I18N.en[key] || key;
   }
 
   // --- State ---

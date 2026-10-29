@@ -185,12 +185,5 @@ func (h *IMMessageHandler) tryPrepareMoAAuto(userText string, route modelRouteDe
 
 func localizedIMMoAUnavailable(lang, detail string) string {
 	detail = strings.TrimSpace(detail)
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("Multi-model council is not available: %s", detail)
-	case appLanguageZhHant:
-		return fmt.Sprintf("多模型會診不可用：%s", detail)
-	default:
-		return fmt.Sprintf("多模型会诊不可用：%s", detail)
-	}
+	return fmt.Sprintf(pickUI(lang, "Multi-model council is not available: %s", "多模型会诊不可用：%s", "多模型會診不可用：%s"), detail)
 }

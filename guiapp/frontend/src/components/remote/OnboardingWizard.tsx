@@ -7,7 +7,8 @@ import { corelib } from '../../../wailsjs/go/models';
 import { cancelAllNativeOAuth, cancelNamedProviderOAuth, completeDevinPastedToken, oauthBrowserHelp, oauthSignInLabel, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from '../CustomDialog';
-import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
+import { localizeHubServiceReason, localizeHubServiceRedeemError, mnApproxAfter, mnDurationUnit } from "../../utils/hubServiceI18n";
+import { normalizeLang } from "../../i18n/langSelect";
 import { HubRegisterButtonContent } from "./HubConnectionStatus";
 import { OnboardingOfflineModeOption } from "./OnboardingOfflineModeOption";
 import { OfflineModeNoticeDialog } from "./OfflineModeNoticeDialog";
@@ -334,6 +335,15 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
 
     const formatHubRetryDuration = useCallback((seconds: number): string => {
         const safeSeconds = Math.max(0, Math.ceil(Number(seconds || 0)));
+        if (normalizeLang(lang) === "mn") {
+            if (safeSeconds < 60) return mnDurationUnit(safeSeconds, "second");
+            const minutes = Math.ceil(safeSeconds / 60);
+            if (minutes < 60) return mnDurationUnit(minutes, "minute");
+            const hours = Math.ceil(minutes / 60);
+            if (hours < 24) return mnDurationUnit(hours, "hour");
+            const days = Math.ceil(hours / 24);
+            return mnDurationUnit(days, "day");
+        }
         if (safeSeconds < 60) return t(`${safeSeconds} 秒`, `${safeSeconds}s`);
         const minutes = Math.ceil(safeSeconds / 60);
         if (minutes < 60) return t(`${minutes} 分钟`, `${minutes}m`);
@@ -341,7 +351,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         if (hours < 24) return t(`${hours} 小时`, `${hours}h`);
         const days = Math.ceil(hours / 24);
         return t(`${days} 天`, `${days}d`);
-    }, [t]);
+    }, [lang, t]);
 
     const hubGrantRetrySeconds = useCallback((grant?: HubLLMActiveGrant): number => {
         if (!grant) return 0;
@@ -357,10 +367,14 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         const grants = mergeHubCreditGrants(status?.credit_grants, status?.active_grants)
             .filter(grant => String(grant.source || "").trim().toLowerCase() !== "hubcenter_compute");
         const findGrant = (target: string) => grants.find(grant => String(grant.status || "").toLowerCase() === target);
+        const mn = normalizeLang(lang) === "mn";
         const limited = findGrant("period_limited");
         if (limited) {
             const retrySeconds = hubGrantRetrySeconds(limited);
             const retryText = retrySeconds > 0 ? formatHubRetryDuration(retrySeconds) : "";
+            if (mn && retryText) {
+                return `Үйлчилгээний код хүчин төгөлдөр болсон, гэхдээ MaClaw Official одоогийн мөчлөгт хязгаарлагдсан, ${mnApproxAfter(retryText)} сэргэнэ. LLM тохиргооны алхмыг одоогоор алгасахгүй.`;
+            }
             return retryText
                 ? t(`服务兑换码已生效，但 MaClaw 官方当前周期限额，约 ${retryText} 后恢复。LLM 配置步骤暂不跳过。`, `Service code redeemed, but MaClaw Official is period limited and recovers in about ${retryText}. LLM setup is not skipped yet.`)
                 : t("服务兑换码已生效，但 MaClaw 官方当前周期限额。LLM 配置步骤暂不跳过。", "Service code redeemed, but MaClaw Official is period limited. LLM setup is not skipped yet.");
@@ -369,6 +383,9 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         if (queued) {
             const retrySeconds = hubGrantRetrySeconds(queued);
             const retryText = retrySeconds > 0 ? formatHubRetryDuration(retrySeconds) : "";
+            if (mn && retryText) {
+                return `Үйлчилгээний код хүчин төгөлдөр болсон. MaClaw Official зөвшөөрөл ${mnApproxAfter(retryText)} хүчин төгөлдөр болно. LLM тохиргооны алхмыг одоогоор алгасахгүй.`;
+            }
             return retryText
                 ? t(`服务兑换码已生效，MaClaw 官方授权约 ${retryText} 后生效。LLM 配置步骤暂不跳过。`, `Service code redeemed. MaClaw Official authorization starts in about ${retryText}. LLM setup is not skipped yet.`)
                 : t("服务兑换码已生效，但 MaClaw 官方授权尚未生效。LLM 配置步骤暂不跳过。", "Service code redeemed, but MaClaw Official authorization is not active yet. LLM setup is not skipped yet.");
@@ -380,6 +397,9 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             return t("服务兑换码已生效，但 MaClaw 官方授权已过期。请兑换新的授权或手动配置其它服务商。", "Service code redeemed, but MaClaw Official authorization has expired. Redeem a new grant or configure another provider manually.");
         }
         const reason = (status?.inactive_reasons || []).map(reason => localizeHubServiceReason(reason, lang)).filter(Boolean).join("; ");
+        if (mn && reason) {
+            return `Үйлчилгээний код хүчин төгөлдөр болсон, гэхдээ MaClaw Official одоогоор боломжгүй: ${reason}`;
+        }
         return reason
             ? t(`服务兑换码已生效，但 MaClaw 官方暂不可用：${reason}`, `Service code redeemed, but MaClaw Official is unavailable: ${reason}`)
             : t("服务兑换码已生效，但 MaClaw 官方暂不可用。请在服务状态中查看原因。", "Service code redeemed, but MaClaw Official is unavailable. Check Service Status for details.");

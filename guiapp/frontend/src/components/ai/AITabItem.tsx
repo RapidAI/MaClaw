@@ -7,13 +7,13 @@ import { DEFAULT_EXPERT_ICON } from "./expertTypes";
 import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
 import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
+import { localizeText } from "../../i18n";
 
 // Re-export so existing imports from AITabItem keep working.
 export { localAssistantTabTitle } from "./aiAssistantI18n";
 
-const textForTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
-    lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
-);
+const textForTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string =>
+    localizeText(lang, en, zhHans, zhHant);
 
 function participantTitleName(tab: AITab, participantId: string, index: number, lang?: string): string {
     if (isLocalParticipant(tab, participantId)) return localAINameForLang(lang);
@@ -126,7 +126,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
     const isGroup = tab.type === "group";
     // VE/group tabs reflect known status; undefined stays optimistic for live tabs.
     const isOnline = (isVE || isGroup) && tab.onlineStatus !== "offline";
-    const readOnlyLabel = tab.readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
+    const readOnlyLabel = tab.readOnly ? textForTabLang(lang, "Read-only", "只读", "唯讀") : "";
     const displayTitle = getAITabDisplayTitle(tab, lang);
     const codingEnvLabel = tab.type === "project" && tab.agentMode === "remote_coding_dev"
         ? (tab.remoteSafety === "diagnosis"

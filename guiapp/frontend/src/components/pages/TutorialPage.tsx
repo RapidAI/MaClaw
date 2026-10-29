@@ -1,6 +1,8 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { MarkdownLink } from '../common/MarkdownLink';
+import { localizeText } from '../../i18n';
+
 
 interface TutorialPageProps {
     lang: string;
@@ -29,7 +31,7 @@ export const TutorialPage = ({ lang, refreshStatus, refreshKey, tutorialContent,
                                         gap: '4px',
                                     }}
                                 >
-                                    ← {lang === 'en' ? 'Back to AI Assistant' : lang === 'zh-Hant' ? '返回 AI 助手' : '返回 AI 助手'}
+                                    ← {localizeText(lang, 'Back to AI Assistant', '返回 AI 助手', '返回 AI 助手')}
                                 </button>
                             </div>
                             <div style={{

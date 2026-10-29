@@ -3,6 +3,7 @@ import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { GetWebSearchStrategy, ResetWebSearchStrategy, SaveWebSearchStrategy, TestWebSearchEngine } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { useDialog } from "../CustomDialog";
+import { panelText } from '../../i18n/mnPanel';
 
 type Preset = "mainland" | "international" | "custom";
 type SearchMode = "priority" | "smart" | "aggregate";
@@ -129,7 +130,7 @@ function normalizeStrategy(raw: any): SearchStrategy {
 export function WebSearchConfigPanel({ lang }: Props) {
     const { showConfirm } = useDialog();
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en, [lang]);
+        panelText(lang ?? "", en, zhHans, zhHant), [lang]);
     const [strategy, setStrategy] = useState<SearchStrategy | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -365,7 +366,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
 		        if (!submittedStrategy || mutationInFlight.current || testInFlightEngineIDs.current.size > 0) return;
 	        const invalid = submittedStrategy.engines.find(engine => engine.enabled && engine.needs_api_key && !ALLOW_ENABLED_WITHOUT_KEY.has(engine.id) && !engine.has_api_key && !engine.api_key?.trim());
         if (invalid) {
-            setError(t(`${invalid.name} requires an API key before it can be enabled.`, `${invalid.name} 需要填写 API Key 后才能启用。`));
+            setError(t("{name} requires an API key before it can be enabled.", "{name} 需要填写 API Key 后才能启用。").replaceAll("{name}", invalid.name));
             return;
         }
 		mutationInFlight.current = true;
@@ -454,11 +455,10 @@ export function WebSearchConfigPanel({ lang }: Props) {
                 ...current,
                 [engine.id]: {
                     state: "success",
-					message: t(
-						`${result?.result_count || 0} results · ${result?.duration_ms || 0} ms${retryCount ? " · retried once" : ""}`,
-						`${result?.result_count || 0} 条结果 · ${result?.duration_ms || 0} 毫秒${retryCount ? " · 已重试 1 次" : ""}`,
-						`${result?.result_count || 0} 筆結果 · ${result?.duration_ms || 0} 毫秒${retryCount ? " · 已重試 1 次" : ""}`,
-					),
+					message: (retryCount
+						? t("{count} results · {ms} ms · retried once", "{count} 条结果 · {ms} 毫秒 · 已重试 1 次", "{count} 筆結果 · {ms} 毫秒 · 已重試 1 次")
+						: t("{count} results · {ms} ms", "{count} 条结果 · {ms} 毫秒", "{count} 筆結果 · {ms} 毫秒")
+					).replaceAll("{count}", String(result?.result_count || 0)).replaceAll("{ms}", String(result?.duration_ms || 0)),
 					preview: preview.title || preview.url ? preview : undefined,
                 },
             }));
@@ -509,7 +509,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
                         "無需 API Key 也能搜尋。系統從上到下嘗試引擎，可按你的網路環境調整順序。",
                     )}</p>
                 </div>
-                <span className="web-search-config__count">{t(`${activeCount} active`, `已启用 ${activeCount} 个`)}</span>
+                <span className="web-search-config__count">{t("{count} active", "已启用 {count} 个").replaceAll("{count}", String(activeCount))}</span>
             </header>
 
             <section className="web-search-config__controls" aria-label={t("Search defaults", "搜索默认设置")}>
@@ -558,7 +558,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                 onDrop={event => { event.preventDefault(); dropEngine(engine.id); }}
                                 onDragEnd={() => setDraggedEngineID(null)}
                             >
-                                <div className="web-search-config__rank" aria-label={t(`Priority ${index + 1}`, `优先级 ${index + 1}`)}>
+                                <div className="web-search-config__rank" aria-label={t("Priority {n}", "优先级 {n}").replaceAll("{n}", String(index + 1))}>
                                     <span>{index + 1}</span>
                                     <small>{t("Priority", "顺序")}</small>
                                 </div>
@@ -568,7 +568,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                         className="web-search-config__drag-handle"
                                         draggable
 										disabled={busy}
-                                        aria-label={t(`Drag ${engine.name} to reorder`, `拖拽 ${engine.name} 调整顺序`)}
+                                        aria-label={t("Drag {name} to reorder", "拖拽 {name} 调整顺序").replaceAll("{name}", engine.name)}
                                         title={t("Drag to reorder", "拖拽调整顺序")}
                                         onDragStart={event => { event.dataTransfer.effectAllowed = "move"; setDraggedEngineID(engine.id); }}
                                         onDragEnd={() => setDraggedEngineID(null)}
@@ -579,13 +579,13 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                             <circle cx="5" cy="13" r="1" /><circle cx="11" cy="13" r="1" />
                                         </svg>
                                     </button>
-									<button type="button" aria-label={t(`Move ${engine.name} up`, `上移 ${engine.name}`)} disabled={busy || index === 0} onClick={() => moveEngine(engine.id, -1)}>↑</button>
-									<button type="button" aria-label={t(`Move ${engine.name} down`, `下移 ${engine.name}`)} disabled={busy || index === strategy.engines.length - 1} onClick={() => moveEngine(engine.id, 1)}>↓</button>
+									<button type="button" aria-label={t("Move {name} up", "上移 {name}").replaceAll("{name}", engine.name)} disabled={busy || index === 0} onClick={() => moveEngine(engine.id, -1)}>↑</button>
+									<button type="button" aria-label={t("Move {name} down", "下移 {name}").replaceAll("{name}", engine.name)} disabled={busy || index === strategy.engines.length - 1} onClick={() => moveEngine(engine.id, 1)}>↓</button>
                                 </div>
                                 <label className="web-search-config__switch">
 									<input type="checkbox" checked={engine.enabled} disabled={busy} onChange={event => updateEngine(engine.id, { enabled: event.target.checked })} />
                                     <span aria-hidden="true" />
-                                    <span className="web-search-config__sr-only">{t(`Enable ${engine.name}`, `启用 ${engine.name}`)}</span>
+                                    <span className="web-search-config__sr-only">{t("Enable {name}", "启用 {name}").replaceAll("{name}", engine.name)}</span>
                                 </label>
                                 <div className="web-search-config__engine-copy">
                                     <div className="web-search-config__engine-name">

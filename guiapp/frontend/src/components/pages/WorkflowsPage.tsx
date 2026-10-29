@@ -1,16 +1,13 @@
 import { useState, useMemo, useCallback, useRef } from 'react';
+import { localizeText as textForLang } from '../../i18n';
+import { chromeText } from '../../i18n/chromeText';
 import { getAllWorkflowShortcuts, WorkflowShortcutIcon } from '../remote/WorkflowShortcutsSection';
 import './WorkflowsPage.css';
 
 type LocalizeText = (en: string, zhHans: string, zhHant: string) => string;
 
-const localizeTextForLang = (lang?: string): LocalizeText => {
-    if (!lang || lang.startsWith('zh-Hans') || (lang.startsWith('zh') && !lang.startsWith('zh-Hant')))
-        return (_en, zhHans, _zhHant) => zhHans;
-    if (lang.startsWith('zh-Hant'))
-        return (_en, _zhHans, zhHant) => zhHant;
-    return (en) => en;
-};
+const localizeTextForLang = (lang?: string): LocalizeText =>
+    (en, zhHans, zhHant) => textForLang(lang, en, zhHans, zhHant);
 
 export const WorkflowsPage = ({ lang, onStartWorkflow }: { lang?: string; onStartWorkflow: (workflowType: string, label: string) => Promise<void> | void }) => {
     const localizeText = useMemo(() => localizeTextForLang(lang), [lang]);
@@ -20,10 +17,9 @@ export const WorkflowsPage = ({ lang, onStartWorkflow }: { lang?: string; onStar
     const [startError, setStartError] = useState<string | null>(null);
     const startingTypeRef = useRef<string | null>(null);
 
-    const isZh = !lang || lang.startsWith('zh');
-    const title = isZh ? '工作流' : 'Workflows';
-    const subtitle = isZh ? '选择一个工作流模板，点击后在 AI 助手中继续' : 'Select a workflow template to continue in the AI assistant';
-    const searchPlaceholder = isZh ? '搜索工作流...' : 'Search workflows...';
+    const title = chromeText(lang, 'Workflows', '工作流');
+    const subtitle = chromeText(lang, 'Select a workflow template to continue in the AI assistant', '选择一个工作流模板，点击后在 AI 助手中继续');
+    const searchPlaceholder = chromeText(lang, 'Search workflows...', '搜索工作流...');
 
     const filteredGroups = useMemo(() => {
         const q = query.trim().toLowerCase();
@@ -56,16 +52,18 @@ export const WorkflowsPage = ({ lang, onStartWorkflow }: { lang?: string; onStar
             await onStartWorkflow(workflowType, label);
         } catch (error) {
             console.warn('[WorkflowsPage] failed to open workflow assistant tab:', error);
-            setStartError(isZh
-                ? '暂时无法打开工作流，请重试。'
-                : 'Unable to open this workflow. Please try again.');
+            setStartError(chromeText(
+                lang,
+                'Unable to open this workflow. Please try again.',
+                '暂时无法打开工作流，请重试。',
+            ));
         } finally {
             if (startingTypeRef.current === workflowType) {
                 startingTypeRef.current = null;
                 setStartingType(null);
             }
         }
-    }, [onStartWorkflow, allGroups, isZh]);
+    }, [onStartWorkflow, allGroups, lang]);
 
     return (
         <div className="workflows-page">
@@ -96,7 +94,7 @@ export const WorkflowsPage = ({ lang, onStartWorkflow }: { lang?: string; onStar
                 )}
                 {filteredGroups.length === 0 && (
                     <div className="workflows-page__empty">
-                        {isZh ? '没有匹配的工作流' : 'No matching workflows'}
+                        {chromeText(lang, 'No matching workflows', '没有匹配的工作流')}
                     </div>
                 )}
                 {filteredGroups.map(group => (

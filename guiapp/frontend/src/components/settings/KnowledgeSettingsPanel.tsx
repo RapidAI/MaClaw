@@ -1,4 +1,5 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { localizeText } from '../../i18n';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { KNOWLEDGE_IMPORT_EXPAND_EVENT, consumeKnowledgeImportExpandFlag, useKnowledgeImportOptional } from './KnowledgeImportContext';
@@ -1759,7 +1760,7 @@ function knowledgeSyncLocalOfficialActive(status: any) {
 
 export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const t = (en: string, zhHans: string, zhHant: string = zhHans) => (
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+        localizeText(lang, en, zhHans, zhHant)
     );
     const [activeTab, setActiveTab] = useState<KnowledgeSubTab>('overview');
     const [health, setHealth] = useState<any>(null);
@@ -1932,13 +1933,13 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     }, [showToastMessage]);
 
     const confirmT = (key: string) => {
-        const isZh = lang?.startsWith('zh') ?? false;
-        const map: Record<string, string> = {
-            cancel: isZh ? '取消' : 'Cancel',
-            confirm: isZh ? '确认' : 'Confirm',
-            processing: isZh ? '正在清除缓存，请稍候…' : 'Clearing cache. Please wait…',
+        const map: Record<string, { en: string; zh: string }> = {
+            cancel: { en: 'Cancel', zh: '取消' },
+            confirm: { en: 'Confirm', zh: '确认' },
+            processing: { en: 'Clearing cache. Please wait…', zh: '正在清除缓存，请稍候…' },
         };
-        return map[key] || key;
+        const row = map[key];
+        return row ? localizeText(lang, row.en, row.zh) : key;
     };
 
     /** Map camelCase DeepCrawlConfig to snake_case Go struct for Wails bindings */
@@ -4009,7 +4010,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                     </PanelBlock>
                 </div>
                 <DeepCrawlPanel
-                    lang={lang === 'zh-Hans' || lang === 'zh-Hant' ? undefined : 'en'}
+                    lang={lang}
                     onPreview={handleDeepCrawlPreview}
                     onStartCrawl={handleDeepCrawlStart}
                     busy={deepCrawlBusy}

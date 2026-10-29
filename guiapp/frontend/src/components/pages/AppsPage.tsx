@@ -11,8 +11,10 @@ import {
     setWorkspaceLaunchIssue,
 } from './appsWorkspaceLaunch';
 import { localizeText, normalizeLang } from '../../i18n';
+import { appsLocalized, appsMn } from '../../i18n/mnAppsLabels';
 import { miniAppLabels, pickMiniAppLabel } from '../../i18n/maclawMiniAppLabels';
 import './AppsPage.css';
+import { tailText } from '../../i18n/mnTail'
 
 type AppKind = 'enterprise_approval_app' | 'enterprise_normal_app' | 'tool_app' | 'automation_app';
 type StudioTab = 'create' | 'manage' | 'publish';
@@ -2247,16 +2249,14 @@ const sourceLabels: Record<AppEntry['source'], { zh: string; en: string; hant?: 
 /** Localized app-kind label (zh-Hant uses the hant variant when present). */
 const appKindLabel = (kind: AppKind, lang?: string): string => {
     const entry = appKinds[kind];
-    if (isZhHant(lang) && entry.hant) return entry.hant;
-    return entry[isZh(lang) ? 'zh' : 'en'];
+    return optionText(entry, lang);
 };
 
 /** Localized app-source label with the same fallback as before (raw source). */
 const sourceLabelText = (source: AppEntry['source'], lang?: string): string => {
     const entry = sourceLabels[source];
     if (!entry) return String(source);
-    if (isZhHant(lang) && entry.hant) return entry.hant;
-    return entry[isZh(lang) ? 'zh' : 'en'];
+    return optionText(entry, lang);
 };
 
 // initialApps is intentionally empty \u00b7 apps are discovered at runtime from
@@ -2303,7 +2303,7 @@ const appIconNames = Object.keys(appIconMeta) as AppIconName[];
 
 const appIconLabel = (icon: AppIconName, lang?: string) => {
     const meta = appIconMeta[icon];
-    return `${meta[locale3(lang)] ?? meta[isZh(lang) ? 'zh' : 'en']} (${icon})`;
+    return `${optionText(meta, lang)} (${icon})`;
 };
 
 const appAccentSwatches = [
@@ -2331,7 +2331,7 @@ function normalizeAppKind(raw: unknown): AppKind {
 const isEnterpriseAppKind = (kind: AppKind) => kind === 'enterprise_approval_app' || kind === 'enterprise_normal_app';
 const isEnterpriseApprovalAppKind = (kind: AppKind) => kind === 'enterprise_approval_app';
 
-const appAccentLabel = (swatch: { value: string; zh: string; en: string; hant?: string }, lang?: string) => `${swatch[locale3(lang)] ?? swatch[isZh(lang) ? 'zh' : 'en']} ${swatch.value}`;
+const appAccentLabel = (swatch: { value: string; zh: string; en: string; hant?: string }, lang?: string) => `${optionText(swatch, lang)} ${swatch.value}`;
 
 function makeEnterpriseManifest(kind: 'enterprise_approval_app' | 'enterprise_normal_app', domain: string, preferredAction: string, preferredView: string, preferredReport: string, preferredDashboard: string, appSkillID = '', dependencies: AppSkillDependency[] = [], approvalBinding?: Pick<AppApprovalBinding, 'event' | 'objectRole'>, appSkillSource: AppSkillDependency['source'] = 'local'): AppManifestBinding {
     const approvalWorkflow = kind === 'enterprise_approval_app' ? dependencies.find((dep) => dep.kind === 'workflow_skill' && dep.id) : undefined;
@@ -2688,7 +2688,7 @@ type StudioLayoutDesignerProps = {
 
 function studioLayoutOptionLabel<T extends string>(options: Array<{ value: T; zh: string; en: string; hant?: string }>, value: T, lang?: string) {
     const option = options.find((item) => item.value === value) || options[0];
-    return option[locale3(lang)] ?? option[isZh(lang) ? 'zh' : 'en'];
+    return optionText(option, lang);
 }
 
 function studioLayoutRegionLabel(kind: AppKind, id: string, lang?: string) {
@@ -2706,7 +2706,7 @@ function studioLayoutRegionLabel(kind: AppKind, id: string, lang?: string) {
         settings_panel: { zh: '\u53c2\u6570\u533a', en: 'Parameters', hant: '\u5f15\u6578\u5340' },
         preview_panel: { zh: '\u9884\u89c8\u533a', en: 'Preview', hant: '\u9810\u89bd\u5340' },
     };
-    return labelsById[id]?.[locale3(lang)] || (kind === 'tool_app' ? (localizeText(lang, 'Tool panel', '\u5de5\u5177\u9762\u677f', '\u5de5\u5177\u9762\u677f')) : id);
+    return optionText(labelsById[id], lang) || (kind === 'tool_app' ? (localizeText(lang, 'Tool panel', '\u5de5\u5177\u9762\u677f', '\u5de5\u5177\u9762\u677f')) : id);
 }
 
 function studioLayoutRoleLabel(role: string, lang?: string) {
@@ -2720,7 +2720,7 @@ function studioLayoutRoleLabel(role: string, lang?: string) {
         detail: { zh: '\u660e\u7ec6', en: 'Detail', hant: '\u660e\u7d30' },
         record_list: { zh: '\u5217\u8868', en: 'List', hant: '\u5217\u8868' },
     };
-    return labelsByRole[role]?.[locale3(lang)] || role;
+    return optionText(labelsByRole[role], lang) || role;
 }
 
 const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'studio' }: StudioLayoutDesignerProps) => {
@@ -2771,7 +2771,7 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
         const hiddenRegion = region.visible === false;
         const currentIndex = Math.max(0, placementOptions.findIndex((option) => option.value === region.placement));
         const nextOption = placementOptions[(currentIndex + 1) % placementOptions.length];
-        const currentLabel = placementOptions[currentIndex][locale3(lang)];
+        const currentLabel = optionText(placementOptions[currentIndex], lang);
         const cyclePlacement = () => {
             if (hiddenRegion) {
                 updateRegionVisibility(region.id, true);
@@ -2861,7 +2861,7 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                                 aria-pressed={value.template === option.value}
                                 onClick={() => updateLayout({ template: option.value })}
                             >
-                                {option[locale3(lang)]}
+                                {optionText(option, lang)}
                             </button>
                         ))}
                     </div>
@@ -2936,19 +2936,19 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                         <div className="apps-form-row">
                             <label>{localizeText(lang, 'Density', '\u5bc6\u5ea6', '\u5bc6\u5ea6')}</label>
                             <select data-testid={`${testIdPrefix}-layout-density`} value={value.density} onChange={(event) => updateLayout({ density: event.target.value as StudioLayoutDensity })}>
-                                {studioLayoutDensityOptions.map((option) => <option key={option.value} value={option.value}>{option[locale3(lang)]}</option>)}
+                                {studioLayoutDensityOptions.map((option) => <option key={option.value} value={option.value}>{optionText(option, lang)}</option>)}
                             </select>
                         </div>
                         <div className="apps-form-row">
                             <label>{localizeText(lang, 'Primary region', '\u4e3b\u64cd\u4f5c\u533a', '\u4e3b\u64cd\u4f5c\u5340')}</label>
                             <select data-testid={`${testIdPrefix}-primary-region`} value={value.primaryRegion} onChange={(event) => updateLayout({ primaryRegion: event.target.value as StudioPrimaryRegion })}>
-                                {studioPrimaryRegionOptions.map((option) => <option key={option.value} value={option.value}>{option[locale3(lang)]}</option>)}
+                                {studioPrimaryRegionOptions.map((option) => <option key={option.value} value={option.value}>{optionText(option, lang)}</option>)}
                             </select>
                         </div>
                         <div className="apps-form-row">
                             <label>{localizeText(lang, 'Output region', '\u8f93\u51fa\u533a', '\u8f38\u51fa\u5340')}</label>
                             <select data-testid={`${testIdPrefix}-output-region`} value={value.outputRegion} onChange={(event) => updateLayout({ outputRegion: event.target.value as StudioOutputRegion })}>
-                                {studioOutputRegionOptions.map((option) => <option key={option.value} value={option.value}>{option[locale3(lang)]}</option>)}
+                                {studioOutputRegionOptions.map((option) => <option key={option.value} value={option.value}>{optionText(option, lang)}</option>)}
                             </select>
                         </div>
                     </div>
@@ -2977,7 +2977,7 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                                     value={region.placement}
                                     onChange={(event) => updateRegionPlacement(region.id, event.target.value as RuntimeWorkspaceRegion['placement'])}
                                 >
-                                    {placementOptions.map((option) => <option key={option.value} value={option.value}>{option[locale3(lang)]}</option>)}
+                                    {placementOptions.map((option) => <option key={option.value} value={option.value}>{optionText(option, lang)}</option>)}
                                 </select>
                                 <div className="apps-layout-designer__order" role="group" aria-label={localizeText(lang, 'Region order', '\u533a\u57df\u987a\u5e8f', '\u5340\u57df\u9806\u5e8f')}>
                                     <button type="button" data-testid={`${testIdPrefix}-layout-region-${region.id}-order-up`} disabled={index === 0} onClick={() => reorderRegion(region.id, -1)}>{localizeText(lang, 'Up', '\u4e0a\u79fb', '\u4e0a\u79fb')}</button>
@@ -4914,7 +4914,7 @@ function appContractTypeLabel(type: string, lang?: string) {
         outputs: { zh: '输出', en: 'Outputs', hant: '\u8f38\u51fa' },
     };
     const label = labels[normalized];
-    return label ? (label[locale3(lang)] ?? label[isZh(lang) ? 'zh' : 'en']) : normalized;
+    return label ? optionText(label, lang) : normalized;
 }
 
 function buildSkillFieldPayload(fields: SkillAppField[], values: Record<string, string | boolean>) {
@@ -5546,13 +5546,12 @@ function normalizeApprovalWorkflowDecision(value: string, lifecycle: 'done' | 'e
 }
 
 function approvalWorkflowProgressFromSkillRunStatus(status: SkillRunStatusView | null, lang?: string) {
-    const zh = isZh(lang);
     const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
     const currentNode = firstSkillRunResultString(objects, ['current_node', 'currentNode', 'approval_node', 'approvalNode', 'node']) || (localizeText(lang, 'In progress', '\u8fdb\u884c\u4e2d', '\u9032\u884c\u4e2d'));
     const currentNodeIDs = skillRunWorkflowNodeIDs(objects, currentNode);
     const progressText = firstSkillRunResultString(objects, ['progress', 'progress_summary', 'progressSummary', 'message', 'text', 'result'])
         || String(status?.session_progress?.progress_summary || status?.summary?.current_step_status || status?.summary?.last_completed_step || '').trim()
-        || (currentNode ? (zh ? `\u6d41\u7a0b\u63a8\u8fdb\u5230 ${currentNode}` : `Workflow moved to ${currentNode}`) : '');
+        || (currentNode ? appsLocalized(lang, `Workflow moved to ${currentNode}`, `\u6d41\u7a0b\u63a8\u8fdb\u5230 ${currentNode}`, `Урсгал ${currentNode} руу шилжсэн`) : '');
     const businessStatus = firstSkillRunResultString(objects, ['business_status', 'businessStatus', 'to_status', 'toStatus']) || 'approval_running';
     const resultStatus = firstSkillRunResultString(objects, ['result_status', 'resultStatus']) || 'running';
     if (!currentNode && !progressText && (!currentNodeIDs || currentNodeIDs.length === 0)) return null;
@@ -6538,9 +6537,7 @@ function formatQueuedOneClickMessage(message: string | undefined, lang: string):
         || normalized.includes('certificate is not yet valid')
         || normalized.includes('tls: failed to verify certificate');
     if (tlsCertificateInvalid) {
-        return lang.startsWith('zh')
-            ? '企业 Hub TLS 证书已过期或尚未生效；请更新证书或校正服务器时间后重试。'
-            : 'Enterprise Hub TLS certificate is expired or not yet valid; renew it or correct the Hub server clock, then retry.';
+        return tailText(lang, 'Enterprise Hub TLS certificate is expired or not yet valid; renew it or correct the Hub server clock, then retry.', '企业 Hub TLS 证书已过期或尚未生效；请更新证书或校正服务器时间后重试。');
     }
     return raw;
 }
@@ -8815,16 +8812,15 @@ function categoryOptionLabel(category: string, counts: Map<string, number>) {
 
 function filterSummaryText({ query, category, count, lang, allLabel }: { query: string; category: string; count: number; lang?: string; allLabel: string }) {
     const trimmedQuery = query.trim();
-    const zh = isZh(lang);
     const categoryText = category === 'all' ? allLabel : category;
     if (trimmedQuery && category !== 'all') {
-        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d \u00b7 ${categoryText} \u00b7 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" \u00b7 ${categoryText} \u00b7 ${count} matches`;
+        return appsLocalized(lang, `Search "${trimmedQuery}" · ${categoryText} · ${count} matches`, `\u641c\u7d22\u201c${trimmedQuery}\u201d \u00b7 ${categoryText} \u00b7 ${count} \u4e2a\u5339\u914d`, `Хайлт «${trimmedQuery}» · ${categoryText} · ${count} тохирол`);
     }
     if (trimmedQuery) {
-        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d \u00b7 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" \u00b7 ${count} matches`;
+        return appsLocalized(lang, `Search "${trimmedQuery}" · ${count} matches`, `\u641c\u7d22\u201c${trimmedQuery}\u201d \u00b7 ${count} \u4e2a\u5339\u914d`, `Хайлт «${trimmedQuery}» · ${count} тохирол`);
     }
     if (category !== 'all') {
-        return zh ? `${categoryText} \u00b7 ${count} \u4e2a\u5e94\u7528` : `${categoryText} \u00b7 ${count} apps`;
+        return appsLocalized(lang, `${categoryText} · ${count} apps`, `${categoryText} \u00b7 ${count} \u4e2a\u5e94\u7528`, `${categoryText} · ${count} апп`);
     }
     return '';
 }
@@ -8922,12 +8918,29 @@ const AppIcon = ({ icon, customIconDataUrl }: { icon: AppIconName; customIconDat
         : <Icon name={icon} />;
 };
 
-const isZh = (lang?: string) => !lang || lang.startsWith('zh');
+const isZh = (lang?: string) => !!lang?.startsWith('zh');
 const isZhHant = (lang?: string) => normalizeLang(lang) === 'zh-Hant';
-const locale3 = (lang?: string): 'zh' | 'en' | 'hant' => isZhHant(lang) ? 'hant' : isZh(lang) ? 'zh' : 'en';
+
+function appsText(lang?: string) {
+    if (isZhHant(lang)) return labelsZhHantMerged;
+    if (isZh(lang)) return labels.zh;
+    if (normalizeLang(lang) !== 'mn') return labels.en;
+    const out: typeof labels.en = { ...labels.en };
+    (Object.keys(out) as Array<keyof typeof out>).forEach((key) => {
+        out[key] = appsMn(lang, out[key]);
+    });
+    return out;
+}
+
+function optionText(option: { zh: string; en: string; hant?: string } | undefined, lang?: string): string {
+    if (!option) return '';
+    if (normalizeLang(lang) === 'mn') return appsMn(lang, option.en);
+    if (isZhHant(lang) && option.hant) return option.hant;
+    return isZh(lang) ? option.zh : option.en;
+}
 
 export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPageProps) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     // Hydrate synchronously from the legacy WebView snapshot so the panel
     // renders persisted apps immediately; the SQLite load below reconciles
     // afterwards (and is the authoritative source once it exists).
@@ -9993,7 +10006,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
 	publishReturnAppId?: string;
 	onReturnToPublishReview?: (appId: string) => void;
 }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
 	const returnEvidenceReady = useMemo(() => {
 		void runEvidenceRevision;
 		return !!activeApp && durableRunEvidenceAppIds.has(activeApp.id);
@@ -10099,7 +10112,6 @@ const getRuntimeSafeId = (appId: string) => appId.replace(/[^A-Za-z0-9_-]/g, '-'
 const getRuntimeTabId = (appId: string) => `app-tab-${getRuntimeSafeId(appId)}`;
 const getRuntimePanelId = (appId: string) => `app-panel-${getRuntimeSafeId(appId)}`;
 function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled', businessEntity: string, businessAction: string, businessNote: string, lang?: string): ApprovalInstanceView[] {
-    const zh = isZh(lang);
     const title = businessEntity || app.category || app.name;
     const workflow = appApprovalWorkflowSkillID(app) || app.name;
     const workflowMapping = app.manifest?.workflow;
@@ -10127,7 +10139,7 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
         {
             id: `${app.id}-pending`,
             appID: app.id,
-            title: zh ? `${app.name}\u5f85\u529e` : `${app.name} task`,
+            title: appsLocalized(lang, `${app.name} task`, `${app.name}\u5f85\u529e`, `${app.name} хүлээгдэж буй`),
             lane: 'pending_my_approval',
             status: 'pending',
             currentNode: workflowMapping?.approvalNode || (localizeText(lang, 'My approval', '\u6211\u5ba1\u6279', '\u6211\u5be9\u6279')),
@@ -10142,7 +10154,7 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
         {
             id: `${app.id}-attention`,
             appID: app.id,
-            title: zh ? `${app.name}\u9700\u5173\u6ce8` : `${app.name} attention`,
+            title: appsLocalized(lang, `${app.name} attention`, `${app.name}\u9700\u5173\u6ce8`, `${app.name} анхаарал хэрэгтэй`),
             lane: 'attention',
             status: 'attention',
             currentNode: workflowMapping?.attentionNode || (localizeText(lang, 'Risk review', '\u98ce\u9669\u590d\u6838', '\u98a8\u96aa\u8907\u6838')),
@@ -10188,7 +10200,7 @@ function normalizeApprovalNodeTasks(value: unknown): Record<string, unknown>[] {
 function approvalNodeTaskCountText(instance: Pick<ApprovalInstanceView, 'nodeTasks'> | undefined, lang?: string): string {
     const count = Array.isArray(instance?.nodeTasks) ? instance.nodeTasks.length : 0;
     if (count <= 0) return '-';
-    return isZh(lang) ? `${count} \u4e2a\u4efb\u52a1` : `${count} task${count > 1 ? 's' : ''}`;
+    return appsLocalized(lang, count === 1 ? `${count} task` : `${count} tasks`, `${count} \u4e2a\u4efb\u52a1`, `${count} даалгавар`);
 }
 function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?: string): ApprovalInstanceView | null {
     const id = String(instance.instance_id || instance.instanceID || instance.instanceId || '').trim();
@@ -10428,7 +10440,7 @@ function approvalWorkflowContractInputPayload(app: AppEntry, options: {
     const binding = appApprovalBinding(app);
     const objectRole = String(binding?.objectRole || app.manifest?.datasrv?.objectRole || '').trim();
     const blueprintID = String(app.manifest?.datasrv?.blueprintID || '').trim();
-    const applicantName = isZh(options.lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user';
+    const applicantName = appsLocalized(options.lang, 'Current user', '\u5f53\u524d\u7528\u6237', 'Одоогийн хэрэглэгч');
     const recordRef = {
         app_id: appID,
         app_name: app.name,
@@ -10832,7 +10844,7 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
     );
 };
 const AppPreview = memo(({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, onRunEvidenceRecorded }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void; onActiveRunChange?: () => void; onUpdateAppEvidence?: (appId: string, patch: Partial<AppEntry>) => void; onRunEvidenceRecorded?: (appId: string) => void }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const [fileName, setFileName] = useState('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -11423,7 +11435,7 @@ const AppPreview = memo(({ app, lang, onUse, onOpenApprovalManager, onActiveRunC
         const value = fieldValues[field.name] ?? field.default;
         return value === undefined || value === '' ? '' : `${field.label || field.name}: ${String(value)}`;
     }).filter(Boolean).join(', ');
-    const selectedFileLabel = selectedFiles.length > 1 ? (isZh(lang) ? `${selectedFiles.length} \u4e2a\u6587\u4ef6` : `${selectedFiles.length} files`) : fileName;
+    const selectedFileLabel = selectedFiles.length > 1 ? appsLocalized(lang, `${selectedFiles.length} files`, `${selectedFiles.length} \u4e2a\u6587\u4ef6`, `${selectedFiles.length} файл`) : fileName;
     const toolInputSummary = showFileInput && showParamInput
         ? `${selectedFileLabel || text.noFile}${(fieldSummary || toolParams.trim()) ? ` \u00b7 ${(fieldSummary || toolParams.trim()).slice(0, 42)}` : ''}`
         : showParamInput
@@ -11537,7 +11549,7 @@ const AppPreview = memo(({ app, lang, onUse, onOpenApprovalManager, onActiveRunC
                 setRuntimeDependencyCheckState('error');
                 const depNames = app ? appDependencyEvidence(app).map((d) => d.id).filter(Boolean) : [];
                 const detail = error?.message || '';
-                const depHint = depNames.length > 0 ? (isZh(lang) ? `\uff08\u9700\u8981\uff1a${depNames.join(', ')}\uff09` : ` (requires: ${depNames.join(', ')})`) : '';
+                const depHint = depNames.length > 0 ? appsLocalized(lang, ` (requires: ${depNames.join(', ')})`, `\uff08\u9700\u8981\uff1a${depNames.join(', ')}\uff09`, ` (шаардлагатай: ${depNames.join(', ')})`) : '';
                 setValidationMessage((detail || text.dependencyPlanError) + depHint);
                 setRunState('error');
                 return;
@@ -11968,7 +11980,7 @@ const AppPreview = memo(({ app, lang, onUse, onOpenApprovalManager, onActiveRunC
             activeRunDependencyPlanRef.current = null;
             const depNames = app ? appDependencyEvidence(app).map((d) => d.id).filter(Boolean) : [];
             const detail = error?.message || '';
-            const depHint = depNames.length > 0 ? (isZh(lang) ? `\uff08\u9700\u8981\uff1a${depNames.join(', ')}\uff09` : ` (requires: ${depNames.join(', ')})`) : '';
+            const depHint = depNames.length > 0 ? appsLocalized(lang, ` (requires: ${depNames.join(', ')})`, `\uff08\u9700\u8981\uff1a${depNames.join(', ')}\uff09`, ` (шаардлагатай: ${depNames.join(', ')})`) : '';
             setValidationMessage((detail || text.dependencyPlanError) + depHint);
             setRunState('error');
             setDependencyRepairState('idle');
@@ -12637,7 +12649,7 @@ function dataSrvSummaryItemMatchesApprovalInstance(summary: DataSrvApprovalSumma
 }
 
 const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; lang?: string; initialAppFilter: string }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const [lane, setLane] = useState<ApprovalLaneFilter>('all');
     const [query, setQuery] = useState('');
     const [appFilter, setAppFilter] = useState(initialAppFilter || 'all');
@@ -13095,7 +13107,7 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
 };
 
 const RunHistoryManager = ({ apps, lang }: { apps: AppEntry[]; lang?: string }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const [appFilter, setAppFilter] = useState('all');
     const [items, setItems] = useState<AppRunHistoryEntry[]>(() => loadAllAppRunHistory());
     const appNameById = useMemo(() => {
@@ -13962,19 +13974,18 @@ function firstBlockingBackendDependencyForAppIDs(plan: BackendAppInstallPlan | n
 function backendDependencyUnavailableMessage(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, text: typeof labels.zh, lang?: string) {
     const dep = firstBlockingBackendDependencyForAppIDs(plan, appDependencyVerificationAppIDs(app));
     if (!dep?.id) return text.missingRequiredDependency;
-    const zh = isZh(lang);
     const rawState = String(dep.installed_status || dep.health || dep.action || '').trim();
     const normalizedState = rawState.toLowerCase();
-    if (zh) {
-        const reason = normalizedState === 'needs_review'
-            ? '\u9700\u8981\u5728\u6280\u80fd\u7ba1\u7406\u4e2d\u5ba1\u6838\u901a\u8fc7\u540e\u624d\u80fd\u4f7f\u7528'
-            : dep.installed ? (rawState ? '\u672a\u5b89\u88c5\u6216\u5df2\u505c\u7528' : '\u4e0d\u53ef\u7528') : '\u672a\u5b89\u88c5';
-        return app.name + '\u6682\u4e0d\u53ef\u7528\uff1a' + dep.id + ' ' + reason + '\u3002';
-    }
-    const reason = normalizedState === 'needs_review'
+    const reasonEn = normalizedState === 'needs_review'
         ? 'requires approval in Skill Management before use'
         : dep.installed ? (rawState ? 'is missing or disabled' : 'is unavailable') : 'is not installed';
-    return app.name + ' is unavailable: ' + dep.id + ' ' + reason + '.';
+    const reasonZh = normalizedState === 'needs_review'
+        ? '\u9700\u8981\u5728\u6280\u80fd\u7ba1\u7406\u4e2d\u5ba1\u6838\u901a\u8fc7\u540e\u624d\u80fd\u4f7f\u7528'
+        : dep.installed ? (rawState ? '\u672a\u5b89\u88c5\u6216\u5df2\u505c\u7528' : '\u4e0d\u53ef\u7528') : '\u672a\u5b89\u88c5';
+    const reasonMn = normalizedState === 'needs_review'
+        ? 'ашиглахын өмнө Skill удирдлагаар батлуулна'
+        : dep.installed ? (rawState ? 'суугаагүй эсвэл унтраалттай' : 'боломжгүй') : 'суугаагүй';
+    return appsLocalized(lang, `${app.name} is unavailable: ${dep.id} ${reasonEn}.`, `${app.name}\u6682\u4e0d\u53ef\u7528\uff1a${dep.id} ${reasonZh}\u3002`, `${app.name} одоогоор боломжгүй: ${dep.id} ${reasonMn}.`);
 }
 
 function backendDependencySummary(dep: BackendAppInstallDependency, text: typeof labels.zh) {
@@ -14951,7 +14962,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
 	publishReturnAppId: string;
 	onPublishReturnConsumed: () => void;
 }) => {
-	const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+	const text = appsText(lang);
     const [focusPublishAppId, setFocusPublishAppId] = useState('');
     /** Bumps on every post-edit navigation so re-saving the same app re-triggers highlight. */
     const [focusPublishNonce, setFocusPublishNonce] = useState(0);
@@ -15084,7 +15095,7 @@ const dataSrvDiscoveryStatusLabel = (discovery: DataSrvDiscovery, text: typeof l
             discovery.status === 'error' ? text.datasrvError : '-';
 
 const DataSrvDiscoverySummary = ({ discovery, lang, onOpenMISDataSettings }: { discovery: DataSrvDiscovery; lang?: string; onOpenMISDataSettings?: () => void }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const zh = isZh(lang);
     const statusLabel = dataSrvDiscoveryStatusLabel(discovery, text);
     const metrics = [
@@ -15118,7 +15129,7 @@ const DataSrvDiscoverySummary = ({ discovery, lang, onOpenMISDataSettings }: { d
 };
 
 const DataSrvDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery: DataSrvDiscovery; apps: AppEntry[]; lang?: string; onAddApp: (app: AppEntry) => void }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const installedIds = new Set(apps.map((app) => app.id));
     if (discovery.candidates.length === 0) return null;
     return (
@@ -15777,10 +15788,9 @@ const AppAboutInfoFields = ({ text, value, onChange, testIdPrefix }: { text: App
 };
 
 const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
-    const zh = isZh(lang);
+    const text = appsText(lang);
     const [name, setName] = useState('');
-    const [category, setCategory] = useState(localizeText(lang, 'Document', '\u6587\u6863\u5904\u7406', '\u6587\u4ef6\u8655\u7406'));
+    const [category, setCategory] = useState(appsLocalized(lang, 'Document', '\u6587\u6863\u5904\u7406', 'Баримт боловсруулалт', '\u6587\u4ef6\u8655\u7406'));
     const [kind, setKind] = useState<AppKind>('tool_app');
     const [icon, setIcon] = useState<AppIconName>('shield');
     const [accent, setAccent] = useState(defaultAccentForKind('tool_app'));
@@ -15852,7 +15862,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         return () => {
             cancelled = true;
         };
-    }, [zh]);
+    }, [lang]);
     useEffect(() => {
         const firstSkillID = defaultInstalledSkillID();
         const firstWorkflowSkillID = defaultApprovalWorkflowSkillID();
@@ -15866,7 +15876,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setKind(nextKind);
         setAccent(defaultAccentForKind(nextKind));
         if (!applyPreset) return;
-        setCategory(nextKind === 'tool_app' ? (localizeText(lang, 'Document', '\u6587\u6863\u5904\u7406', '\u6587\u4ef6\u8655\u7406')) : nextKind === 'automation_app' ? (localizeText(lang, 'Automation', '\u81ea\u52a8\u5316', '\u81ea\u52d5\u5316')) : 'OA');
+        setCategory(nextKind === 'tool_app' ? appsLocalized(lang, 'Document', '\u6587\u6863\u5904\u7406', 'Баримт боловсруулалт', '\u6587\u4ef6\u8655\u7406') : nextKind === 'automation_app' ? appsLocalized(lang, 'Automation', '\u81ea\u52a8\u5316', 'Автоматжуулалт', '\u81ea\u52d5\u5316') : 'OA');
         setIcon(nextKind === 'tool_app' ? 'shield' : nextKind === 'automation_app' ? 'sync' : 'sheet');
         setInputMode(nextKind === 'tool_app' ? 'file' : 'mixed');
         setMultipleFiles(false);
@@ -15924,7 +15934,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setSkillFields(nextKind === 'tool_app' && /field|parameter|form/.test(lower)
             ? [{ name: 'requirement', label: localizeText(lang, 'Requirement', '\u5904\u7406\u8981\u6c42', '\u8655\u7406\u8981\u6c42'), type: 'text', required: true }]
             : []);
-        setCategory(nextKind === 'tool_app' ? (localizeText(lang, 'Document', '\u6587\u6863\u5904\u7406', '\u6587\u4ef6\u8655\u7406')) : nextKind === 'automation_app' ? (localizeText(lang, 'Automation', '\u81ea\u52a8\u5316', '\u81ea\u52d5\u5316')) : isFinancePrompt ? (localizeText(lang, 'Finance', '\u8d22\u52a1', '\u8ca1\u52d9')) : isInventoryPrompt ? (localizeText(lang, 'Inventory', '\u8fdb\u9500\u5b58', '\u9032\u92b7\u5b58')) : isCrmPrompt ? 'CRM' : isOaPrompt ? 'OA' : 'OA');
+        setCategory(nextKind === 'tool_app' ? appsLocalized(lang, 'Document', '\u6587\u6863\u5904\u7406', 'Баримт боловсруулалт', '\u6587\u4ef6\u8655\u7406') : nextKind === 'automation_app' ? appsLocalized(lang, 'Automation', '\u81ea\u52a8\u5316', 'Автоматжуулалт', '\u81ea\u52d5\u5316') : isFinancePrompt ? appsLocalized(lang, 'Finance', '\u8d22\u52a1', 'Санхүү', '\u8ca1\u52d9') : isInventoryPrompt ? appsLocalized(lang, 'Inventory', '\u8fdb\u9500\u5b58', 'Бараа материал', '\u9032\u92b7\u5b58') : isCrmPrompt ? 'CRM' : isOaPrompt ? 'OA' : 'OA');
         setIcon(nextKind === 'automation_app' ? 'sync' : nextKind === 'tool_app' ? (/contract/.test(lower) ? 'contract' : /pdf/.test(lower) ? 'pdf' : 'shield') : isFinancePrompt ? 'receipt' : isInventoryPrompt ? 'warehouse' : isCrmPrompt ? 'customer' : 'sheet');
         setAccent(defaultAccentForKind(nextKind));
         const nextLayoutTemplate: StudioLayoutTemplate = nextKind === 'tool_app' ? 'document_workspace' : /nav|menu|\u5bfc\u822a/.test(lower) ? 'left_nav' : 'classic_split';
@@ -16076,10 +16086,20 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         },
     ];
     const categorySuggestions = kind === 'tool_app'
-        ? (zh ? ['\u6587\u6863\u5904\u7406', '\u6570\u636e\u5206\u6790', '\u6cd5\u52a1', '\u8d22\u52a1'] : ['Document', 'Analytics', 'Legal', 'Finance'])
+        ? [
+            appsLocalized(lang, 'Document', '\u6587\u6863\u5904\u7406', 'Баримт боловсруулалт', '\u6587\u4ef6\u8655\u7406'),
+            appsLocalized(lang, 'Analytics', '\u6570\u636e\u5206\u6790', 'Өгөгдлийн шинжилгээ'),
+            appsLocalized(lang, 'Legal', '\u6cd5\u52a1', 'Хууль зүй'),
+            appsLocalized(lang, 'Finance', '\u8d22\u52a1', 'Санхүү', '\u8ca1\u52d9'),
+        ]
         : kind === 'automation_app'
-            ? (zh ? ['\u81ea\u52a8\u5316', '\u6570\u636e\u96c6\u6210', '\u6570\u636e\u91c7\u96c6', '\u8fd0\u7ef4'] : ['Automation', 'Integration', 'Collection', 'Operations'])
-            : ['OA', localizeText(lang, 'Finance', '\u8d22\u52a1', '\u8ca1\u52d9'), 'CRM', localizeText(lang, 'Inventory', '\u8fdb\u9500\u5b58', '\u9032\u92b7\u5b58')];
+            ? [
+                appsLocalized(lang, 'Automation', '\u81ea\u52a8\u5316', 'Автоматжуулалт', '\u81ea\u52d5\u5316'),
+                appsLocalized(lang, 'Integration', '\u6570\u636e\u96c6\u6210', 'Өгөгдөл нэгтгэл'),
+                appsLocalized(lang, 'Collection', '\u6570\u636e\u91c7\u96c6', 'Өгөгдөл цуглуулалт'),
+                appsLocalized(lang, 'Operations', '\u8fd0\u7ef4', 'Ашиглалт'),
+            ]
+            : ['OA', appsLocalized(lang, 'Finance', '\u8d22\u52a1', 'Санхүү', '\u8ca1\u52d9'), 'CRM', appsLocalized(lang, 'Inventory', '\u8fdb\u9500\u5b58', 'Бараа материал', '\u9032\u92b7\u5b58')];
     const createApp = () => {
         const cleanName = name.trim();
         if (!cleanName) return;
@@ -16137,7 +16157,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             }
             setSkillAppSaveState('saved');
             setSkillMarketUploadState('idle');
-            setSkillAppSaveMessage(zh ? `\u5df2\u4fdd\u5b58\u5230 ${skillID}/maclaw.app.json` : `Saved to ${skillID}/maclaw.app.json`);
+            setSkillAppSaveMessage(appsLocalized(lang, `Saved to ${skillID}/maclaw.app.json`, `\u5df2\u4fdd\u5b58\u5230 ${skillID}/maclaw.app.json`, `${skillID}/maclaw.app.json дээр хадгаллаа`));
         } catch (error) {
             setSkillAppSaveState('error');
             setSkillAppSaveMessage(error instanceof Error ? error.message : String(error || 'Save failed'));
@@ -16188,7 +16208,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             setSkillAppSaveState('saved');
             const submissionID = await UploadNLSkillToMarket(savedSkillID);
             setSkillMarketUploadState('uploaded');
-            setSkillAppSaveMessage(zh ? `\u5df2\u63d0\u4ea4\u5230 SkillMarket: ${submissionID}` : `Submitted to SkillMarket: ${submissionID}`);
+            setSkillAppSaveMessage(appsLocalized(lang, `Submitted to SkillMarket: ${submissionID}`, `\u5df2\u63d0\u4ea4\u5230 SkillMarket: ${submissionID}`, `SkillMarket руу илгээлээ: ${submissionID}`));
         } catch (error) {
             setSkillMarketUploadState('error');
             setSkillAppSaveState('error');
@@ -16779,7 +16799,7 @@ function saveResultDependencyWarnings(result: unknown): string[] {
 }
 
 function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const zh = isZh(lang);
     const manifest = app.manifest;
     const expectedLaunch = defaultLaunchModeForKind(app.kind);
@@ -16864,8 +16884,8 @@ function authoritativeReviewCheckLabel(issue: AppReviewIssue, lang?: string): st
     if (/governance\.(?:testprotocol|test_protocol)/.test(path)) return localizeText(lang, 'Test protocol', '测试协议', '測試協議');
     if (/governance\.(?:workspacelayout|workspace_layout)/.test(path)) return localizeText(lang, 'Workspace layout', 'Workspace layout', 'Workspace layout');
     if (/governance\.(?:resultcontract|result_contract)/.test(path)) return localizeText(lang, 'Result contract', '结果契约', '結果契約');
-    if (/governance\.(?:dependencyverification|dependency_verification)|dependencies/.test(path)) return isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh).skillDependencies : labels.en.skillDependencies;
-    if (/binding\.workflow|workflowcontract|workflow_contract/.test(path)) return isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh).workflowContract : labels.en.workflowContract;
+    if (/governance\.(?:dependencyverification|dependency_verification)|dependencies/.test(path)) return isZhHant(lang) ? labelsZhHantMerged.skillDependencies : appsText(lang).skillDependencies;
+    if (/binding\.workflow|workflowcontract|workflow_contract/.test(path)) return isZhHant(lang) ? labelsZhHantMerged.workflowContract : appsText(lang).workflowContract;
     return '';
 }
 
@@ -16914,7 +16934,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     focusNonce?: number;
     onFocusAppConsumed?: () => void;
 }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const zh = isZh(lang);
     const [submissions, setSubmissions] = useState<Record<string, AppPublishSubmission>>(() => readPublishSubmissions());
     const [submittingAppId, setSubmittingAppId] = useState('');
@@ -18324,7 +18344,7 @@ const AppAccentPicker = ({ value, lang, onChange }: { value: string; lang?: stri
 const emptyToolField = (): SkillAppField => ({ name: '', label: '', type: 'text', required: false, default: '', options: [] });
 
 const ToolFieldEditor = ({ fields, lang, onChange }: { fields: SkillAppField[]; lang?: string; onChange: (fields: SkillAppField[]) => void }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const updateField = (index: number, patch: Partial<SkillAppField>) => {
         onChange(fields.map((field, fieldIndex) => fieldIndex === index ? normalizeEditorField({ ...field, ...patch }) : field));
     };
@@ -18450,7 +18470,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
     /** After a successful edit save, jump to 审核/发布 so the user can submit. */
     onAfterEditSave?: (appId: string) => void;
 }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const [manifestAppId, setManifestAppId] = useState('');
     const [editingAppId, setEditingAppId] = useState('');
     const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), aboutInfo: undefined, businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', workflowSkillInstallRef: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app'), resultContract: buildAppResultContract('tool_app', ['docx', 'pdf']), testProtocol: buildAppTestProtocol('tool_app', ['docx', 'pdf']), uiNavigation: defaultEnterpriseNavigation('tool_app'), uiColumns: defaultEnterpriseColumns('tool_app') }), []);
@@ -19167,7 +19187,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
 };
 
 const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleChange, onManageApps }: { apps: AppEntry[]; lang?: string; onInstallApp: (app: AppEntry) => void; prefill?: { key: number; manifestText: string }; onInstallResultVisibleChange?: (visible: boolean) => void; onManageApps?: () => void }) => {
-    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+    const text = appsText(lang);
     const [manifestText, setManifestText] = useState('');
     const [installState, setInstallState] = useState<'idle' | 'installed' | 'error'>('idle');
     const [installMessage, setInstallMessage] = useState('');

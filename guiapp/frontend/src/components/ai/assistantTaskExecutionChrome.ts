@@ -1,3 +1,4 @@
+import { intlLocale } from "../../i18n/langSelect";
 import { isWindowDragExcludedTarget } from "../../utils/windowDrag";
 import { localizeText } from "./aiAssistantI18n";
 import { normalizeProjectSessionPath } from "./assistantSessionPath";
@@ -211,7 +212,7 @@ export function formatTaskCreatedAt(timestamp: number | undefined, lang: string)
     // Restored histories may use Unix seconds while live messages use milliseconds.
     const date = new Date(raw < 1_000_000_000_000 ? raw * 1000 : raw);
     if (Number.isNaN(date.getTime())) return "";
-    return new Intl.DateTimeFormat(lang?.startsWith("zh") ? "zh-CN" : "en-US", {
+    return new Intl.DateTimeFormat(intlLocale(lang), {
         month: "2-digit",
         day: "2-digit",
         hour: "2-digit",

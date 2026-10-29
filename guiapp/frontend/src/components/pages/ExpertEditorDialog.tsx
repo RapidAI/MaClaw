@@ -25,6 +25,7 @@ import {
     type ToolCatalogEntry,
     type ToolRisk,
 } from '../ai/expertToolMeta';
+import { tailText } from '../../i18n/mnTail'
 
 async function getApp(): Promise<any | null> {
     try {
@@ -156,164 +157,128 @@ function dialogFocusableElements(dialog: HTMLElement): HTMLElement[] {
  * - AI suggestions are reference-only unless "Adopt as whitelist" is checked.
  */
 export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSaved }: ExpertEditorDialogProps) => {
-    const isZh = !lang || lang.startsWith('zh');
+    const isZh = !!lang?.startsWith('zh');
     const t = useMemo(() => ({
-        titleNew: lang === 'zh-Hant' ? '新建專家' : isZh ? '新建专家' : 'New expert',
-        titleEdit: lang === 'zh-Hant' ? '編輯專家' : isZh ? '编辑专家' : 'Edit expert',
-        titleOptimizationReview: lang === 'zh-Hant' ? '檢視優化專家' : isZh ? '审核优化专家' : 'Review optimized expert',
-        ideaLabel: lang === 'zh-Hant' ? '一句話描述你想要的專家' : isZh ? '一句话描述你想要的专家' : 'Describe the expert you want in one sentence',
+        titleNew: lang === 'zh-Hant' ? '新建專家' : tailText(lang ?? "", 'New expert', '新建专家'),
+        titleEdit: lang === 'zh-Hant' ? '編輯專家' : tailText(lang ?? "", 'Edit expert', '编辑专家'),
+        titleOptimizationReview: lang === 'zh-Hant' ? '檢視優化專家' : tailText(lang ?? "", 'Review optimized expert', '审核优化专家'),
+        ideaLabel: lang === 'zh-Hant' ? '一句話描述你想要的專家' : tailText(lang ?? "", 'Describe the expert you want in one sentence', '一句话描述你想要的专家'),
         ideaPlaceholder: lang === 'zh-Hant'
             ? '例如：幫我把中文論文翻譯成地道英文'
-            : isZh
-                ? '例如：帮我把中文论文翻译成地道英文'
-                : 'e.g. Translate my Chinese papers into idiomatic English',
-        generate: lang === 'zh-Hant' ? 'AI 生成' : isZh ? 'AI 生成' : 'Generate with AI',
-        generating: lang === 'zh-Hant' ? '生成中…' : isZh ? '生成中…' : 'Generating…',
-        generateShortcut: lang === 'zh-Hant' ? 'Ctrl / ⌘ + Enter 生成' : isZh ? 'Ctrl / ⌘ + Enter 生成' : 'Ctrl / ⌘ + Enter to generate',
-        generateFailed: lang === 'zh-Hant' ? '生成失败，请重试' : isZh ? '生成失败，请重试' : 'Generation failed — please retry',
-        nameLabel: lang === 'zh-Hant' ? '名稱' : isZh ? '名称' : 'Name',
-        iconLabel: lang === 'zh-Hant' ? '圖標（emoji）' : isZh ? '图标（emoji）' : 'Icon (emoji)',
-        descLabel: lang === 'zh-Hant' ? '描述' : isZh ? '描述' : 'Description',
-        promptLabel: lang === 'zh-Hant' ? '系統提示詞' : isZh ? '系统提示词' : 'System prompt',
-        toolsLabel: lang === 'zh-Hant' ? '可用工具' : isZh ? '可用工具' : 'Allowed tools',
-        toolsHint: lang === 'zh-Hant' ? '全部不勾選 = 不限制可用工具' : isZh ? '全部不勾选 = 不限制可用工具' : 'Leave all unchecked for no tool restriction',
-        skillsLabel: lang === 'zh-Hant' ? '可用技能' : isZh ? '可用技能' : 'Allowed skills',
-        skillsHint: lang === 'zh-Hant' ? '全部不勾選 = 不限制可用技能' : isZh ? '全部不勾选 = 不限制可用技能' : 'Leave all unchecked for no skill restriction',
-        save: lang === 'zh-Hant' ? '保存' : isZh ? '保存' : 'Save',
-        saving: lang === 'zh-Hant' ? '保存中…' : isZh ? '保存中…' : 'Saving…',
-        cancel: lang === 'zh-Hant' ? '取消' : isZh ? '取消' : 'Cancel',
-        discard: lang === 'zh-Hant' ? '放棄修改並關閉' : isZh ? '放弃修改并关闭' : 'Discard changes',
-        nameRequired: lang === 'zh-Hant' ? '請填寫名稱' : isZh ? '请填写名称' : 'Name is required',
+            : tailText(lang ?? "", 'e.g. Translate my Chinese papers into idiomatic English', '例如：帮我把中文论文翻译成地道英文'),
+        generate: lang === 'zh-Hant' ? 'AI 生成' : tailText(lang ?? "", 'Generate with AI', 'AI 生成'),
+        generating: lang === 'zh-Hant' ? '生成中…' : tailText(lang ?? "", 'Generating…', '生成中…'),
+        generateShortcut: lang === 'zh-Hant' ? 'Ctrl / ⌘ + Enter 生成' : tailText(lang ?? "", 'Ctrl / ⌘ + Enter to generate', 'Ctrl / ⌘ + Enter 生成'),
+        generateFailed: lang === 'zh-Hant' ? '生成失败，请重试' : tailText(lang ?? "", 'Generation failed — please retry', '生成失败，请重试'),
+        nameLabel: lang === 'zh-Hant' ? '名稱' : tailText(lang ?? "", 'Name', '名称'),
+        iconLabel: lang === 'zh-Hant' ? '圖標（emoji）' : tailText(lang ?? "", 'Icon (emoji)', '图标（emoji）'),
+        descLabel: lang === 'zh-Hant' ? '描述' : tailText(lang ?? "", 'Description', '描述'),
+        promptLabel: lang === 'zh-Hant' ? '系統提示詞' : tailText(lang ?? "", 'System prompt', '系统提示词'),
+        toolsLabel: lang === 'zh-Hant' ? '可用工具' : tailText(lang ?? "", 'Allowed tools', '可用工具'),
+        toolsHint: lang === 'zh-Hant' ? '全部不勾選 = 不限制可用工具' : tailText(lang ?? "", 'Leave all unchecked for no tool restriction', '全部不勾选 = 不限制可用工具'),
+        skillsLabel: lang === 'zh-Hant' ? '可用技能' : tailText(lang ?? "", 'Allowed skills', '可用技能'),
+        skillsHint: lang === 'zh-Hant' ? '全部不勾選 = 不限制可用技能' : tailText(lang ?? "", 'Leave all unchecked for no skill restriction', '全部不勾选 = 不限制可用技能'),
+        save: lang === 'zh-Hant' ? '保存' : tailText(lang ?? "", 'Save', '保存'),
+        saving: lang === 'zh-Hant' ? '保存中…' : tailText(lang ?? "", 'Saving…', '保存中…'),
+        cancel: lang === 'zh-Hant' ? '取消' : tailText(lang ?? "", 'Cancel', '取消'),
+        discard: lang === 'zh-Hant' ? '放棄修改並關閉' : tailText(lang ?? "", 'Discard changes', '放弃修改并关闭'),
+        nameRequired: lang === 'zh-Hant' ? '請填寫名稱' : tailText(lang ?? "", 'Name is required', '请填写名称'),
         nameMustDifferFromSource: (sourceName: string) => lang === 'zh-Hant'
             ? `優化後的專家不能與來源專家「${sourceName}」同名，請換一個名稱`
-            : isZh
-                ? `优化后的专家不能与来源专家「${sourceName}」同名，请换一个名称`
-                : `The optimized expert cannot keep the source name "${sourceName}" — pick a different name`,
-        aboutLabel: lang === 'zh-Hant' ? '關於' : isZh ? '关于' : 'About',
-        aboutPlaceholder: lang === 'zh-Hant' ? '作者、版權、備註等' : isZh ? '作者、版权、备注等' : 'Author, copyright, notes, etc.',
-        deferredTag: lang === 'zh-Hant' ? '（按需發現）' : isZh ? '（按需发现）' : ' (on-demand)',
+            : tailText(lang ?? "", `The optimized expert cannot keep the source name "${sourceName}" — pick a different name`, `优化后的专家不能与来源专家「${sourceName}」同名，请换一个名称`),
+        aboutLabel: lang === 'zh-Hant' ? '關於' : tailText(lang ?? "", 'About', '关于'),
+        aboutPlaceholder: lang === 'zh-Hant' ? '作者、版權、備註等' : tailText(lang ?? "", 'Author, copyright, notes, etc.', '作者、版权、备注等'),
+        deferredTag: lang === 'zh-Hant' ? '（按需發現）' : tailText(lang ?? "", ' (on-demand)', '（按需发现）'),
         ignoredSuggestions: (n: number) => lang === 'zh-Hant'
             ? `${n} 項 AI 建議未匹配到可用工具/技能，已忽略`
-            : isZh
-                ? `${n} 项 AI 建议未匹配到可用工具/技能，已忽略`
-                : `${n} AI suggestion(s) did not match available tools/skills and were ignored`,
+            : tailText(lang ?? "", `${n} AI suggestion(s) did not match available tools/skills and were ignored`, `${n} 项 AI 建议未匹配到可用工具/技能，已忽略`),
         defaultAccess: lang === 'zh-Hant'
             ? '默認不限制工具與技能（與內置專家一致，保證可用）'
-            : isZh
-                ? '默认不限制工具与技能（与内置专家一致，保证可用）'
-                : 'By default tools and skills are unrestricted (same as builtin experts)',
-        advancedTitle: lang === 'zh-Hant' ? '高級設置：工具 / 技能白名單' : isZh ? '高级设置：工具 / 技能白名单' : 'Advanced: tool / skill allow-list',
+            : tailText(lang ?? "", 'By default tools and skills are unrestricted (same as builtin experts)', '默认不限制工具与技能（与内置专家一致，保证可用）'),
+        advancedTitle: lang === 'zh-Hant' ? '高級設置：工具 / 技能白名單' : tailText(lang ?? "", 'Advanced: tool / skill allow-list', '高级设置：工具 / 技能白名单'),
         advancedHint: lang === 'zh-Hant'
             ? '一般無需修改。勾選後將變成白名單限制，漏選會導致專家無法完成任務。'
-            : isZh
-                ? '一般无需修改。勾选后将变成白名单限制，漏选会导致专家无法完成任务。'
-                : 'Usually leave this alone. Checking items turns on a whitelist — missing entries can break the expert.',
-        expandAdvanced: lang === 'zh-Hant' ? '展開' : isZh ? '展开' : 'Expand',
-        collapseAdvanced: lang === 'zh-Hant' ? '收起' : isZh ? '收起' : 'Collapse',
-        suggestedTitle: lang === 'zh-Hant' ? 'AI 建議能力（僅供參考）' : isZh ? 'AI 建议能力（仅供参考）' : 'AI suggested capabilities (reference only)',
+            : tailText(lang ?? "", 'Usually leave this alone. Checking items turns on a whitelist — missing entries can break the expert.', '一般无需修改。勾选后将变成白名单限制，漏选会导致专家无法完成任务。'),
+        expandAdvanced: lang === 'zh-Hant' ? '展開' : tailText(lang ?? "", 'Expand', '展开'),
+        collapseAdvanced: lang === 'zh-Hant' ? '收起' : tailText(lang ?? "", 'Collapse', '收起'),
+        suggestedTitle: lang === 'zh-Hant' ? 'AI 建議能力（僅供參考）' : tailText(lang ?? "", 'AI suggested capabilities (reference only)', 'AI 建议能力（仅供参考）'),
         suggestedEmpty: lang === 'zh-Hant'
             ? 'AI 未給出具體工具/技能建議，保存後將不限制能力'
-            : isZh
-                ? 'AI 未给出具体工具/技能建议，保存后将不限制能力'
-                : 'No tool/skill suggestions — saving will leave capabilities unrestricted',
-        adoptLabel: lang === 'zh-Hant' ? '採用為白名單限制' : isZh ? '采用为白名单限制' : 'Adopt as whitelist',
+            : tailText(lang ?? "", 'No tool/skill suggestions — saving will leave capabilities unrestricted', 'AI 未给出具体工具/技能建议，保存后将不限制能力'),
+        adoptLabel: lang === 'zh-Hant' ? '採用為白名單限制' : tailText(lang ?? "", 'Adopt as whitelist', '采用为白名单限制'),
         adoptHint: lang === 'zh-Hant'
             ? '默認關閉。開啟後僅允許下方建議的工具/技能，可能因漏選導致專家半殘。'
-            : isZh
-                ? '默认关闭。开启后仅允许下方建议的工具/技能，可能因漏选导致专家半残。'
-                : 'Off by default. When on, only the suggested tools/skills are allowed — incomplete lists can break the expert.',
-        toolsChipPrefix: lang === 'zh-Hant' ? '工具' : isZh ? '工具' : 'Tools',
-        skillsChipPrefix: lang === 'zh-Hant' ? '技能' : isZh ? '技能' : 'Skills',
+            : tailText(lang ?? "", 'Off by default. When on, only the suggested tools/skills are allowed — incomplete lists can break the expert.', '默认关闭。开启后仅允许下方建议的工具/技能，可能因漏选导致专家半残。'),
+        toolsChipPrefix: lang === 'zh-Hant' ? '工具' : tailText(lang ?? "", 'Tools', '工具'),
+        skillsChipPrefix: lang === 'zh-Hant' ? '技能' : tailText(lang ?? "", 'Skills', '技能'),
         restrictedSummary: (toolCount: number, skillCount: number, dangerCount: number) => {
             const base = lang === 'zh-Hant'
                 ? `已限制：${toolCount} 個工具、${skillCount} 個技能`
-                : isZh
-                    ? `已限制：${toolCount} 个工具、${skillCount} 个技能`
-                    : `Restricted: ${toolCount} tool(s), ${skillCount} skill(s)`;
+                : tailText(lang ?? "", `Restricted: ${toolCount} tool(s), ${skillCount} skill(s)`, `已限制：${toolCount} 个工具、${skillCount} 个技能`);
             if (dangerCount <= 0) return base;
             const danger = lang === 'zh-Hant'
                 ? `，其中 ${dangerCount} 項高風險`
-                : isZh
-                    ? `，其中 ${dangerCount} 项高风险`
-                    : `, including ${dangerCount} high-risk`;
+                : tailText(lang ?? "", `, including ${dangerCount} high-risk`, `，其中 ${dangerCount} 项高风险`);
             return base + danger;
         },
-        startersLabel: lang === 'zh-Hant' ? '快速模板' : isZh ? '快速模板' : 'Quick start',
+        startersLabel: lang === 'zh-Hant' ? '快速模板' : tailText(lang ?? "", 'Quick start', '快速模板'),
         startersHint: lang === 'zh-Hant'
             ? '選一個起點（可再改名稱與提示詞），比自己勾工具更安全'
-            : isZh
-                ? '选一个起点（可再改名称与提示词），比自己勾工具更安全'
-                : 'Pick a starting point (you can edit name/prompt). Safer than picking tools by hand.',
-        tierLabel: lang === 'zh-Hant' ? '能力檔位' : isZh ? '能力档位' : 'Capability profile',
+            : tailText(lang ?? "", 'Pick a starting point (you can edit name/prompt). Safer than picking tools by hand.', '选一个起点（可再改名称与提示词），比自己勾工具更安全'),
+        tierLabel: lang === 'zh-Hant' ? '能力檔位' : tailText(lang ?? "", 'Capability profile', '能力档位'),
         tierHint: lang === 'zh-Hant'
             ? '按場景限制能力；「全功能」與內置專家一致。自訂可展開高級白名單。'
-            : isZh
-                ? '按场景限制能力；「全功能」与内置专家一致。自定义可展开高级白名单。'
-                : 'Limit capabilities by scenario. Full access matches builtin experts. Custom opens the advanced whitelist.',
+            : tailText(lang ?? "", 'Limit capabilities by scenario. Full access matches builtin experts. Custom opens the advanced whitelist.', '按场景限制能力；「全功能」与内置专家一致。自定义可展开高级白名单。'),
         tierNames: {
-            full: lang === 'zh-Hant' ? '全功能' : isZh ? '全功能' : 'Full access',
-            advisor: lang === 'zh-Hant' ? '對話顧問' : isZh ? '对话顾问' : 'Advisor',
-            docs: lang === 'zh-Hant' ? '文檔助手' : isZh ? '文档助手' : 'Documents',
-            office: lang === 'zh-Hant' ? '辦公專家' : isZh ? '办公专家' : 'Office',
-            custom: lang === 'zh-Hant' ? '自訂' : isZh ? '自定义' : 'Custom',
+            full: lang === 'zh-Hant' ? '全功能' : tailText(lang ?? "", 'Full access', '全功能'),
+            advisor: lang === 'zh-Hant' ? '對話顧問' : tailText(lang ?? "", 'Advisor', '对话顾问'),
+            docs: lang === 'zh-Hant' ? '文檔助手' : tailText(lang ?? "", 'Documents', '文档助手'),
+            office: lang === 'zh-Hant' ? '辦公專家' : tailText(lang ?? "", 'Office', '办公专家'),
+            custom: lang === 'zh-Hant' ? '自訂' : tailText(lang ?? "", 'Custom', '自定义'),
         } as Record<CapabilityTierId, string>,
         tierDescs: {
-            full: lang === 'zh-Hant' ? '不限制工具與技能' : isZh ? '不限制工具与技能' : 'No tool/skill limits',
-            advisor: lang === 'zh-Hant' ? '偏對話與記憶，收斂高風險工具' : isZh ? '偏对话与记忆，收敛高风险工具' : 'Chat & memory; high-risk tools limited',
-            docs: lang === 'zh-Hant' ? '讀寫與檢索文檔、網頁' : isZh ? '读写与检索文档、网页' : 'Read/write docs and web research',
-            office: lang === 'zh-Hant' ? '文檔 + 辦公技能（PPT/表格等）' : isZh ? '文档 + 办公技能（PPT/表格等）' : 'Docs + office skills (PPT/sheets…)',
-            custom: lang === 'zh-Hant' ? '手動白名單（高級）' : isZh ? '手动白名单（高级）' : 'Manual whitelist (advanced)',
+            full: lang === 'zh-Hant' ? '不限制工具與技能' : tailText(lang ?? "", 'No tool/skill limits', '不限制工具与技能'),
+            advisor: lang === 'zh-Hant' ? '偏對話與記憶，收斂高風險工具' : tailText(lang ?? "", 'Chat & memory; high-risk tools limited', '偏对话与记忆，收敛高风险工具'),
+            docs: lang === 'zh-Hant' ? '讀寫與檢索文檔、網頁' : tailText(lang ?? "", 'Read/write docs and web research', '读写与检索文档、网页'),
+            office: lang === 'zh-Hant' ? '文檔 + 辦公技能（PPT/表格等）' : tailText(lang ?? "", 'Docs + office skills (PPT/sheets…)', '文档 + 办公技能（PPT/表格等）'),
+            custom: lang === 'zh-Hant' ? '手動白名單（高級）' : tailText(lang ?? "", 'Manual whitelist (advanced)', '手动白名单（高级）'),
         } as Record<CapabilityTierId, string>,
         riskDangerNote: lang === 'zh-Hant'
             ? '標有「高風險」的工具可操作系統或發送輸入，請僅在必要時勾選。'
-            : isZh
-                ? '标有「高风险」的工具可操作系统或发送输入，请仅在必要时勾选。'
-                : 'Tools marked High risk can control the system or send input — enable only when needed.',
-        groupSelectAll: lang === 'zh-Hant' ? '全選本組' : isZh ? '全选本组' : 'Select group',
-        groupClear: lang === 'zh-Hant' ? '清空本組' : isZh ? '清空本组' : 'Clear group',
-        accessCardTitle: lang === 'zh-Hant' ? '當前能力邊界' : isZh ? '当前能力边界' : 'Current capability boundary',
-        accessCardTier: lang === 'zh-Hant' ? '檔位' : isZh ? '档位' : 'Profile',
-        accessCardDanger: lang === 'zh-Hant' ? '高風險項' : isZh ? '高风险项' : 'High-risk items',
-        accessCardNoDanger: lang === 'zh-Hant' ? '未包含高風險工具/技能' : isZh ? '未包含高风险工具/技能' : 'No high-risk tools/skills selected',
-        accessCardOpenAdvanced: lang === 'zh-Hant' ? '查看白名單' : isZh ? '查看白名单' : 'Review whitelist',
-        unsavedChanges: lang === 'zh-Hant' ? '尚有未儲存的修改，確定要關閉嗎？' : isZh ? '有未保存的修改，确定关闭吗？' : 'You have unsaved changes. Close anyway?',
-        optimizationChanges: lang === 'zh-Hant' ? '本次優化變更' : isZh ? '本次优化变更' : 'Optimization changes',
+            : tailText(lang ?? "", 'Tools marked High risk can control the system or send input — enable only when needed.', '标有「高风险」的工具可操作系统或发送输入，请仅在必要时勾选。'),
+        groupSelectAll: lang === 'zh-Hant' ? '全選本組' : tailText(lang ?? "", 'Select group', '全选本组'),
+        groupClear: lang === 'zh-Hant' ? '清空本組' : tailText(lang ?? "", 'Clear group', '清空本组'),
+        accessCardTitle: lang === 'zh-Hant' ? '當前能力邊界' : tailText(lang ?? "", 'Current capability boundary', '当前能力边界'),
+        accessCardTier: lang === 'zh-Hant' ? '檔位' : tailText(lang ?? "", 'Profile', '档位'),
+        accessCardDanger: lang === 'zh-Hant' ? '高風險項' : tailText(lang ?? "", 'High-risk items', '高风险项'),
+        accessCardNoDanger: lang === 'zh-Hant' ? '未包含高風險工具/技能' : tailText(lang ?? "", 'No high-risk tools/skills selected', '未包含高风险工具/技能'),
+        accessCardOpenAdvanced: lang === 'zh-Hant' ? '查看白名單' : tailText(lang ?? "", 'Review whitelist', '查看白名单'),
+        unsavedChanges: lang === 'zh-Hant' ? '尚有未儲存的修改，確定要關閉嗎？' : tailText(lang ?? "", 'You have unsaved changes. Close anyway?', '有未保存的修改，确定关闭吗？'),
+        optimizationChanges: lang === 'zh-Hant' ? '本次優化變更' : tailText(lang ?? "", 'Optimization changes', '本次优化变更'),
         optimizationChangesHint: lang === 'zh-Hant'
             ? '綠色為新增，紅色為相對原專家移除；下方內容仍可直接編輯。'
-            : isZh
-                ? '绿色为新增，红色为相对原专家移除；下方内容仍可直接编辑。'
-                : 'Green is added and red is removed compared with the source expert. You can still edit the fields below.',
-        promptChanges: lang === 'zh-Hant' ? '提示詞差異' : isZh ? '提示词差异' : 'Prompt changes',
+            : tailText(lang ?? "", 'Green is added and red is removed compared with the source expert. You can still edit the fields below.', '绿色为新增，红色为相对原专家移除；下方内容仍可直接编辑。'),
+        promptChanges: lang === 'zh-Hant' ? '提示詞差異' : tailText(lang ?? "", 'Prompt changes', '提示词差异'),
         promptChangeSummary: (added: number, removed: number) => lang === 'zh-Hant'
             ? `新增 ${added} 行 · 移除 ${removed} 行`
-            : isZh
-                ? `新增 ${added} 行 · 移除 ${removed} 行`
-                : `${added} added · ${removed} removed`,
-        noPromptChanges: lang === 'zh-Hant' ? '提示詞沒有變更' : isZh ? '提示词没有变更' : 'No prompt changes',
-        capabilityChanges: lang === 'zh-Hant' ? '工具與技能差異' : isZh ? '工具与技能差异' : 'Tool and skill changes',
-        added: lang === 'zh-Hant' ? '新增' : isZh ? '新增' : 'Added',
-        removed: lang === 'zh-Hant' ? '移除' : isZh ? '移除' : 'Removed',
+            : tailText(lang ?? "", `${added} added · ${removed} removed`, `新增 ${added} 行 · 移除 ${removed} 行`),
+        noPromptChanges: lang === 'zh-Hant' ? '提示詞沒有變更' : tailText(lang ?? "", 'No prompt changes', '提示词没有变更'),
+        capabilityChanges: lang === 'zh-Hant' ? '工具與技能差異' : tailText(lang ?? "", 'Tool and skill changes', '工具与技能差异'),
+        added: lang === 'zh-Hant' ? '新增' : tailText(lang ?? "", 'Added', '新增'),
+        removed: lang === 'zh-Hant' ? '移除' : tailText(lang ?? "", 'Removed', '移除'),
         toolAccessRestricted: (count: number) => lang === 'zh-Hant'
             ? `工具存取改為白名單（${count} 項）`
-            : isZh
-                ? `工具访问改为白名单（${count} 项）`
-                : `Tools changed to a ${count}-item allow-list`,
+            : tailText(lang ?? "", `Tools changed to a ${count}-item allow-list`, `工具访问改为白名单（${count} 项）`),
         toolAccessUnrestricted: lang === 'zh-Hant'
             ? '工具存取改為不限制'
-            : isZh
-                ? '工具访问改为不限制'
-                : 'Tools changed to unrestricted access',
+            : tailText(lang ?? "", 'Tools changed to unrestricted access', '工具访问改为不限制'),
         skillAccessRestricted: (count: number) => lang === 'zh-Hant'
             ? `技能存取改為白名單（${count} 項）`
-            : isZh
-                ? `技能访问改为白名单（${count} 项）`
-                : `Skills changed to a ${count}-item allow-list`,
+            : tailText(lang ?? "", `Skills changed to a ${count}-item allow-list`, `技能访问改为白名单（${count} 项）`),
         skillAccessUnrestricted: lang === 'zh-Hant'
             ? '技能存取改為不限制'
-            : isZh
-                ? '技能访问改为不限制'
-                : 'Skills changed to unrestricted access',
-        noCapabilityChanges: lang === 'zh-Hant' ? '工具與技能沒有變更' : isZh ? '工具与技能没有变更' : 'No tool or skill changes',
+            : tailText(lang ?? "", 'Skills changed to unrestricted access', '技能访问改为不限制'),
+        noCapabilityChanges: lang === 'zh-Hant' ? '工具與技能沒有變更' : tailText(lang ?? "", 'No tool or skill changes', '工具与技能没有变更'),
     }), [isZh, lang]);
 
     /** Update mode for an optimize draft: reuse the existing optimized expert's id. */
@@ -671,10 +636,10 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         if (!tpl) return;
         cancelPendingGeneration();
         setActiveStarter(id);
-        setName(isZh ? tpl.nameZh : tpl.nameEn);
+        setName(tailText(lang ?? "", tpl.nameEn, tpl.nameZh));
         setIcon(tpl.icon);
-        setDescription(isZh ? tpl.descZh : tpl.descEn);
-        setIdea(isZh ? tpl.ideaZh : tpl.ideaEn);
+        setDescription(tailText(lang ?? "", tpl.descEn, tpl.descZh));
+        setIdea(tailText(lang ?? "", tpl.ideaEn, tpl.ideaZh));
         // Prompt left empty so AI generate (or user) can fill a full system prompt.
         void applyTier(tpl.tier, { openAdvanced: tpl.tier === 'custom' });
     };
@@ -825,7 +790,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
             items.push({
                 kind: 'tool',
                 name,
-                label: toolDisplayLabel(name, isZh, entry?.description, entry),
+                label: toolDisplayLabel(name, (lang || (isZh ? "zh-Hans" : "en")), entry?.description, entry),
             });
         }
         for (const name of skills) {
@@ -833,11 +798,11 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
             items.push({
                 kind: 'skill',
                 name,
-                label: skillDisplayLabel(name, isZh),
+                label: skillDisplayLabel(name, (lang || (isZh ? "zh-Hans" : "en"))),
             });
         }
         return items;
-    }, [tools, skills, toolEntryByName, isZh]);
+    }, [tools, skills, toolEntryByName, lang]);
 
     const setGroupTools = (names: string[], selected: boolean) => {
         setTools((prev) => {
@@ -890,7 +855,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                         <p className="expert-editor__hint">{t.startersHint}</p>
                         <div className="expert-editor__starter-row" role="list">
                             {EXPERT_STARTER_TEMPLATES.map((tpl) => {
-                                const label = isZh ? tpl.nameZh : tpl.nameEn;
+                                const label = tailText(lang ?? "", tpl.nameEn, tpl.nameZh);
                                 const selected = activeStarter === tpl.id;
                                 return (
                                     <button
@@ -900,7 +865,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                         data-testid={`expert-starter-${tpl.id}`}
                                         className={`expert-editor__starter${selected ? ' expert-editor__starter--active' : ''}`}
                                         onClick={() => handleStarterPick(tpl.id)}
-                                        title={isZh ? tpl.descZh : tpl.descEn}
+                                        title={tailText(lang ?? "", tpl.descEn, tpl.descZh)}
                                     >
                                         <span className="expert-editor__starter-icon" aria-hidden="true">{tpl.icon}</span>
                                         <span className="expert-editor__starter-name">{label}</span>
@@ -1053,10 +1018,10 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                     <div className="expert-editor__diff-chips">
                                         {toolAccessModeChanged ? <span className="expert-editor__diff-chip expert-editor__diff-chip--access">{tools.length > 0 ? t.toolAccessRestricted(tools.length) : t.toolAccessUnrestricted}</span> : null}
                                         {skillAccessModeChanged ? <span className="expert-editor__diff-chip expert-editor__diff-chip--access">{skills.length > 0 ? t.skillAccessRestricted(skills.length) : t.skillAccessUnrestricted}</span> : null}
-                                        {toolChanges.added.map((name) => <span key={`tool-add-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--added">{t.added} · {t.toolsChipPrefix}: {toolDisplayLabel(name, isZh, toolDescByName.get(name), toolEntryByName.get(name))}</span>)}
-                                        {toolChanges.removed.map((name) => <span key={`tool-remove-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--removed">{t.removed} · {t.toolsChipPrefix}: {toolDisplayLabel(name, isZh, toolDescByName.get(name), toolEntryByName.get(name))}</span>)}
-                                        {skillChanges.added.map((name) => <span key={`skill-add-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--added">{t.added} · {t.skillsChipPrefix}: {skillDisplayLabel(name, isZh)}</span>)}
-                                        {skillChanges.removed.map((name) => <span key={`skill-remove-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--removed">{t.removed} · {t.skillsChipPrefix}: {skillDisplayLabel(name, isZh)}</span>)}
+                                        {toolChanges.added.map((name) => <span key={`tool-add-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--added">{t.added} · {t.toolsChipPrefix}: {toolDisplayLabel(name, (lang || (isZh ? "zh-Hans" : "en")), toolDescByName.get(name), toolEntryByName.get(name))}</span>)}
+                                        {toolChanges.removed.map((name) => <span key={`tool-remove-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--removed">{t.removed} · {t.toolsChipPrefix}: {toolDisplayLabel(name, (lang || (isZh ? "zh-Hans" : "en")), toolDescByName.get(name), toolEntryByName.get(name))}</span>)}
+                                        {skillChanges.added.map((name) => <span key={`skill-add-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--added">{t.added} · {t.skillsChipPrefix}: {skillDisplayLabel(name, (lang || (isZh ? "zh-Hans" : "en")))}</span>)}
+                                        {skillChanges.removed.map((name) => <span key={`skill-remove-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--removed">{t.removed} · {t.skillsChipPrefix}: {skillDisplayLabel(name, (lang || (isZh ? "zh-Hans" : "en")))}</span>)}
                                     </div>
                                 ) : <p className="expert-editor__hint">{t.noCapabilityChanges}</p>}
                             </div>
@@ -1170,7 +1135,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                             className="expert-editor__chip expert-editor__chip--suggest"
                                             title={toolName}
                                         >
-                                            {t.toolsChipPrefix}: {toolDisplayLabel(toolName, isZh, toolDescByName.get(toolName), toolEntryByName.get(toolName))}
+                                            {t.toolsChipPrefix}: {toolDisplayLabel(toolName, (lang || (isZh ? "zh-Hans" : "en")), toolDescByName.get(toolName), toolEntryByName.get(toolName))}
                                         </span>
                                     ))}
                                     {suggestedSkills.map((skillName) => (
@@ -1179,7 +1144,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                             className="expert-editor__chip expert-editor__chip--suggest"
                                             title={skillName}
                                         >
-                                            {t.skillsChipPrefix}: {skillDisplayLabel(skillName, isZh)}
+                                            {t.skillsChipPrefix}: {skillDisplayLabel(skillName, (lang || (isZh ? "zh-Hans" : "en")))}
                                         </span>
                                     ))}
                                 </div>
@@ -1233,7 +1198,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                             >
                                                 <div className="expert-editor__group-head">
                                                     <span className="expert-editor__group-title">
-                                                        {toolCategoryLabel(group.category, isZh)}
+                                                        {toolCategoryLabel(group.category, (lang || (isZh ? "zh-Hans" : "en")))}
                                                         <span className="expert-editor__group-count">
                                                             {selectedCount}/{names.length}
                                                         </span>
@@ -1258,7 +1223,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                                 <div className="expert-editor__checks expert-editor__checks--grouped">
                                                     {group.items.map((tool) => {
                                                         const risk = toolRisk(tool.name, tool);
-                                                        const label = toolDisplayLabel(tool.name, isZh, tool.description, tool);
+                                                        const label = toolDisplayLabel(tool.name, (lang || (isZh ? "zh-Hans" : "en")), tool.description, tool);
                                                         const wasSelected = sourceTools.includes(tool.name);
                                                         const isAdded = isOptimizationReview && tools.includes(tool.name) && !wasSelected;
                                                         const isRemoved = isOptimizationReview && wasSelected && !tools.includes(tool.name);
@@ -1282,7 +1247,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                                                 <span className="expert-editor__check-body">
                                                                     <span className="expert-editor__check-label">{label}</span>
                                                                     <span className="expert-editor__check-id">{tool.name}</span>
-                                                                    <span className={riskClass(risk)}>{riskLabel(risk, isZh)}</span>
+                                                                    <span className={riskClass(risk)}>{riskLabel(risk, (lang || (isZh ? "zh-Hans" : "en")))}</span>
                                                                     {isAdded ? <span className="expert-editor__change-tag expert-editor__change-tag--added">{t.added}</span> : null}
                                                                     {isRemoved ? <span className="expert-editor__change-tag expert-editor__change-tag--removed">{t.removed}</span> : null}
                                                                     {tool.deferred ? (
@@ -1314,7 +1279,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                             >
                                                 <div className="expert-editor__group-head">
                                                     <span className="expert-editor__group-title">
-                                                        {skillCategoryLabel(group.category, isZh)}
+                                                        {skillCategoryLabel(group.category, (lang || (isZh ? "zh-Hans" : "en")))}
                                                         <span className="expert-editor__group-count">
                                                             {selectedCount}/{names.length}
                                                         </span>
@@ -1339,7 +1304,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                                 <div className="expert-editor__checks expert-editor__checks--grouped">
                                                     {group.items.map((skill) => {
                                                         const risk = skillRisk(skill);
-                                                        const label = skillDisplayLabel(skill, isZh);
+                                                        const label = skillDisplayLabel(skill, (lang || (isZh ? "zh-Hans" : "en")));
                                                         const wasSelected = sourceSkills.includes(skill);
                                                         const isAdded = isOptimizationReview && skills.includes(skill) && !wasSelected;
                                                         const isRemoved = isOptimizationReview && wasSelected && !skills.includes(skill);
@@ -1365,7 +1330,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                                                     {label !== skill ? (
                                                                         <span className="expert-editor__check-id">{skill}</span>
                                                                     ) : null}
-                                                                    <span className={riskClass(risk)}>{riskLabel(risk, isZh)}</span>
+                                                                    <span className={riskClass(risk)}>{riskLabel(risk, (lang || (isZh ? "zh-Hans" : "en")))}</span>
                                                                     {isAdded ? <span className="expert-editor__change-tag expert-editor__change-tag--added">{t.added}</span> : null}
                                                                     {isRemoved ? <span className="expert-editor__change-tag expert-editor__change-tag--removed">{t.removed}</span> : null}
                                                                 </span>

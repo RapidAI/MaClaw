@@ -36,6 +36,7 @@ import {
     type CodingAgentTurnSnapshot,
 } from '../ai/CodingAgentProgressStatus';
 import { CodingAgentCompactStatus } from './CodingAgentCompactStatus';
+import { tailText } from '../../i18n/mnTail'
 
 type CodingAgentSidebarStatusProps = {
     progress: CodingAgentProgress;
@@ -127,7 +128,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
     // Without a turn snapshot, the compact header owns the file preview.
     // With a snapshot, body owns files so the header stays a single dense line.
     const headerProgress = { ...normalized, files: snapshot ? undefined : normalized.files };
-    const filesLabel = lang.startsWith('zh') ? '\u6587\u4ef6' : 'Files';
+    const filesLabel = tailText(lang, 'Files', '\u6587\u4ef6');
     const diffLabel = 'Diff';
     const allFiles = snapshot?.files !== undefined ? snapshot.files : normalized.files;
     const bodyFiles = snapshot ? allFiles : undefined;
@@ -180,7 +181,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
         pushChip(chips, {
             key: 'guard',
             testId: 'sidebar-coding-agent-guardrail',
-            label: lang.startsWith('zh') ? '\u8fb9\u754c' : 'Guard',
+            label: tailText(lang, 'Guard', '\u8fb9\u754c'),
             value: [guardrailText, formatCountBadge(snapshot.guardrailCount)].filter(Boolean).join(' '),
             title: snapshot.guardrailSummary || guardrailText,
             tone: guardrailTone,
@@ -192,7 +193,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
         pushChip(chips, {
             key: 'commands',
             testId: 'sidebar-coding-agent-commands',
-            label: lang.startsWith('zh') ? '\u547d\u4ee4' : 'Cmds',
+            label: tailText(lang, 'Cmds', '\u547d\u4ee4'),
             value: [commandText, formatCountBadge(snapshot.commandCount)].filter(Boolean).join(' '),
             title: snapshot.commandSummary || commandText,
             tone: commandTone,
@@ -204,7 +205,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
         pushChip(chips, {
             key: 'activity',
             testId: 'sidebar-coding-agent-file-activity',
-            label: lang.startsWith('zh') ? '\u52a8\u4f5c' : 'Activity',
+            label: tailText(lang, 'Activity', '\u52a8\u4f5c'),
             value: [
                 fileActivityText,
                 snapshot.fileActivityDetail
@@ -226,7 +227,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
         pushChip(chips, {
             key: 'quality',
             testId: 'sidebar-coding-agent-quality',
-            label: lang.startsWith('zh') ? '\u8d28\u91cf' : 'Quality',
+            label: tailText(lang, 'Quality', '\u8d28\u91cf'),
             value: [qualityText, formatCountBadge(snapshot.qualityCount)].filter(Boolean).join(' '),
             title: snapshot.qualitySummary || qualityText,
             tone: qualityTone,
@@ -238,7 +239,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
         pushChip(chips, {
             key: 'explore',
             testId: 'sidebar-coding-agent-exploration',
-            label: lang.startsWith('zh') ? '\u63a2\u7d22' : 'Explore',
+            label: tailText(lang, 'Explore', '\u63a2\u7d22'),
             value: [explorationText, formatCountBadge(snapshot.explorationCount)].filter(Boolean).join(' '),
             title: snapshot.explorationSummary || explorationText,
             tone: explorationTone,
@@ -250,7 +251,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
         pushChip(chips, {
             key: 'verify',
             testId: 'sidebar-coding-agent-verification',
-            label: lang.startsWith('zh') ? '\u9a8c\u8bc1' : 'Verify',
+            label: tailText(lang, 'Verify', '\u9a8c\u8bc1'),
             value: [verificationText, formatCountBadge(snapshot.verificationCount)].filter(Boolean).join(' '),
             title: snapshot.verificationSummary || verificationText,
             tone: verificationTone,
@@ -262,7 +263,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
         pushChip(chips, {
             key: 'diff-check',
             testId: 'sidebar-coding-agent-diff-check',
-            label: lang.startsWith('zh') ? 'Diff' : 'Diff check',
+            label: tailText(lang, 'Diff check', 'Diff'),
             value: diffCheckText,
             title: snapshot.diffCheckSummary || diffCheckText,
             tone: diffCheckTone,

@@ -1,5 +1,5 @@
 import { isExplicitTaskCopy } from '../components/ai/codingTaskMode';
-import { localizeText } from '../i18n/langSelect';
+import { isChineseLang, localizeText } from '../i18n/langSelect';
 import { getWailsAppModule } from './wailsAppModule';
 
 /**
@@ -444,7 +444,7 @@ function latexCompanionClause(lang: string, file: string, sources: string[] | un
         : pool.filter((item) => !latexPaperSupport(item));
     const others = [...support, ...chapters].slice(0, 6);
     if (others.length === 0) return '';
-    const listed = others.join(lang === 'en' ? ', ' : '、');
+    const listed = others.join((isChineseLang(lang) ? '、' : ', '));
     return latexTemplateText(
         lang,
         ` Related files: ${listed}.`,

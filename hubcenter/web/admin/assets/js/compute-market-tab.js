@@ -844,13 +844,15 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
 
   function applyComputeMarketPlaceholders() {
-    var zh = (document.documentElement.lang || '').toLowerCase().startsWith('zh');
+    var htmlLang = (document.documentElement.lang || '').toLowerCase();
+    var mn = htmlLang === 'mn' || window.currentLang === 'mn';
+    var zh = !mn && htmlLang.startsWith('zh');
     var values = {
-      cmPaymentInstruction: zh ? '\u626b\u7801\u652f\u4ed8\u540e\u8bf7\u7b49\u5f85\u7ba1\u7406\u5458\u786e\u8ba4\uff0c\u901a\u5e38 1-24 \u5c0f\u65f6\u5185\u5904\u7406\u3002' : 'After scanning to pay, wait for admin confirmation. Processing usually takes 1-24 hours.',
-      cmPaymentAlipayPayee: zh ? '\u6536\u6b3e\u4eba\u59d3\u540d' : 'Payee name',
-      cmPaymentWechatPayee: zh ? '\u6536\u6b3e\u4eba\u59d3\u540d' : 'Payee name',
-      cmPaymentBankName: zh ? '\u4e2d\u56fd\u94f6\u884c' : 'Bank of China',
-      cmPaymentBankHolder: zh ? '\u5f20\u4e09' : 'Account holder'
+      cmPaymentInstruction: mn ? 'Төлбөр төлсний дараа админы баталгааг хүлээнэ үү. Ихэвчлэн 1–24 цагийн дотор шийдэгдэнэ.' : zh ? '\u626b\u7801\u652f\u4ed8\u540e\u8bf7\u7b49\u5f85\u7ba1\u7406\u5458\u786e\u8ba4\uff0c\u901a\u5e38 1-24 \u5c0f\u65f6\u5185\u5904\u7406\u3002' : 'After scanning to pay, wait for admin confirmation. Processing usually takes 1-24 hours.',
+      cmPaymentAlipayPayee: mn ? 'Хүлээн авагчийн нэр' : zh ? '\u6536\u6b3e\u4eba\u59d3\u540d' : 'Payee name',
+      cmPaymentWechatPayee: mn ? 'Хүлээн авагчийн нэр' : zh ? '\u6536\u6b3e\u4eba\u59d3\u540d' : 'Payee name',
+      cmPaymentBankName: mn ? 'Банкны нэр' : zh ? '\u4e2d\u56fd\u94f6\u884c' : 'Bank of China',
+      cmPaymentBankHolder: mn ? 'Данс эзэмшигч' : zh ? '\u5f20\u4e09' : 'Account holder'
     };
     Object.keys(values).forEach(function(id) {
       var el = document.getElementById(id);
@@ -887,7 +889,9 @@ if (typeof I18N_EN !== 'undefined') {
 
   function tr(key) {
     if (window.I18N) {
-      var lang = (document.documentElement.lang || '').startsWith('zh') ? 'zh' : 'en';
+      var htmlLang = (document.documentElement.lang || '').toLowerCase();
+      var lang = (htmlLang === 'mn' || window.currentLang === 'mn') ? 'mn' : htmlLang.startsWith('zh') ? 'zh' : 'en';
+      if (lang === 'mn') { var mnVal = (window.I18N.mn || {})[key]; return mnVal || (window.I18N.en || {})[key] || key; }
       return (window.I18N[lang] || {})[key] || (window.I18N.en || {})[key] || key;
     }
     return key;

@@ -98,7 +98,7 @@ func desktopChatSessionKey(msg IMUserMessage) string {
 
 func desktopChatChinese(lang, text string) bool {
 	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
+	case appLanguageEnglish, appLanguageMongolian:
 		return false
 	case appLanguageZhHans, appLanguageZhHant:
 		return true
@@ -112,31 +112,28 @@ func desktopChatChinese(lang, text string) bool {
 }
 
 func desktopChatStoppedText(chinese bool) string {
+	return desktopChatCopy("", chinese, "Stopped.", "停了。")
+}
+
+// desktopChatCopy keeps the Chinese sentence when the turn is Chinese, and
+// otherwise selects English or Mongolian. An empty lang stays English.
+func desktopChatCopy(lang string, chinese bool, en, hans string) string {
 	if chinese {
-		return "停了。"
+		return hans
 	}
-	return "Stopped."
+	return pickUI(lang, en, hans, hans)
 }
 
 func desktopChatNothingRunningText(chinese bool) string {
-	if chinese {
-		return "没在做事。"
-	}
-	return "Nothing is running."
+	return desktopChatCopy("", chinese, "Nothing is running.", "没在做事。")
 }
 
 func desktopChatStillStoppingText(chinese bool) string {
-	if chinese {
-		return "还在停。"
-	}
-	return "Still stopping."
+	return desktopChatCopy("", chinese, "Still stopping.", "还在停。")
 }
 
 func desktopChatFollowUpText(chinese bool) string {
-	if chinese {
-		return "好。"
-	}
-	return "OK."
+	return desktopChatCopy("", chinese, "OK.", "好。")
 }
 
 // looksLikeDesktopChatStop is the instant path only. A short line made of
@@ -565,7 +562,7 @@ func (h *IMMessageHandler) tryChatTaskFollowUp(msg IMUserMessage) (*IMAgentRespo
 		return nil, false
 	}
 	return &IMAgentResponse{
-		Text:           h.chatBotReply("supplement", msg.Text, msg.Lang, "follow-up", task.Title, desktopChatFollowUpText(desktopChatChinese(msg.Lang, msg.Text))),
+		Text:           h.chatBotReply("supplement", msg.Text, msg.Lang, "follow-up", task.Title, desktopChatCopy(msg.Lang, desktopChatChinese(msg.Lang, msg.Text), "OK.", "好。")),
 		SessionKey:     sessionKey,
 		ResponseSource: "chat_task_follow_up",
 	}, true

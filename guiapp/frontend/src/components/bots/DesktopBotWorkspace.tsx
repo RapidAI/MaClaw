@@ -179,6 +179,9 @@ import { BotRoomsDialog } from './collab/BotRoomsDialog';
 import { saidForChat } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
 import { DemoSkillPanel } from './DemoSkillPanel';
+import { isChineseLang, isTraditionalLang, localizeText, normalizeLang } from '../../i18n';
+import { botsMn } from '../../i18n/mnBots';
+
 
 
 // 150 ms per check: two minutes covers a slow admit before the watch gives up.
@@ -554,31 +557,26 @@ const WEEKDAY_ZH = ['周日', '周一', '周二', '周三', '周四', '周五', 
 const WEEKDAY_ZH_HANT = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 const WEEKDAY_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+function scheduleCount(lang: string, en: string, zhHans: string, zhHant: string, n: number): string {
+    return localizeText(lang, en, zhHans, zhHant).replaceAll('{n}', String(n));
+}
+
 function scheduleWhen(task: DesktopBotScheduleInfo, lang: string): string {
-    const traditional = lang === 'zh-Hant';
     if (task.interval_minutes > 0) {
         const n = task.interval_minutes;
-        if (lang === 'en') {
-            if (n === 1) return 'Every minute';
-            if (n === 60) return 'Every hour';
-            if (n === 1440) return 'Every day';
-            if (n % 1440 === 0) return `Every ${n / 1440} days`;
-            if (n % 60 === 0) return `Every ${n / 60} hours`;
-            return `Every ${n} minutes`;
-        }
-        if (n === 1) return traditional ? '每分鐘' : '每分钟';
-        if (n === 60) return traditional ? '每小時' : '每小时';
-        if (n === 1440) return '每天';
-        if (n % 1440 === 0) return `每 ${n / 1440} 天`;
-        if (n % 60 === 0) return traditional ? `每 ${n / 60} 小時` : `每 ${n / 60} 小时`;
-        return traditional ? `每 ${n} 分鐘` : `每 ${n} 分钟`;
+        if (n === 1) return localizeText(lang, 'Every minute', '每分钟', '每分鐘');
+        if (n === 60) return localizeText(lang, 'Every hour', '每小时', '每小時');
+        if (n === 1440) return localizeText(lang, 'Every day', '每天', '每天');
+        if (n % 1440 === 0) return scheduleCount(lang, 'Every {n} days', '每 {n} 天', '每 {n} 天', n / 1440);
+        if (n % 60 === 0) return scheduleCount(lang, 'Every {n} hours', '每 {n} 小时', '每 {n} 小時', n / 60);
+        return scheduleCount(lang, 'Every {n} minutes', '每 {n} 分钟', '每 {n} 分鐘', n);
     }
     const clock = `${String(task.hour).padStart(2, '0')}:${String(task.minute).padStart(2, '0')}`;
     const day = task.day_of_week;
     if (day < 0 || day > 6) {
-        return lang === 'en' ? `Every day ${clock}` : `每天 ${clock}`;
+        return `${localizeText(lang, 'Every day', '每天', '每天')} ${clock}`;
     }
-    const name = lang === 'en' ? WEEKDAY_EN[day] : (traditional ? WEEKDAY_ZH_HANT[day] : WEEKDAY_ZH[day]);
+    const name = localizeText(lang, WEEKDAY_EN[day], WEEKDAY_ZH[day], WEEKDAY_ZH_HANT[day]);
     return `${name} ${clock}`;
 }
 
@@ -623,10 +621,7 @@ export function isBareContinue(text: string): boolean {
 }
 
 function desktopBotContinuingSentence(lang: string): string {
-    const value = String(lang || '');
-    if (value.toLowerCase().startsWith('en')) return 'Already on it.';
-    if (value.includes('Hant')) return '正在接著做。';
-    return '正在接着做。';
+    return localizeText(lang, 'Already on it.', '正在接着做。', '正在接著做。');
 }
 
 export function taskExcerpt(task: string, limit = 80): string {
@@ -641,7 +636,7 @@ function scheduleNext(iso: string, lang: string): string {
     if (Number.isNaN(date.getTime())) return '';
     const pad = (n: number) => String(n).padStart(2, '0');
     const stamp = `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    return lang === 'en' ? `Next ${stamp}` : `下次 ${stamp}`;
+    return `${localizeText(lang, 'Next', '下次', '下次')} ${stamp}`;
 }
 
 function planSaveName(content: string): string {
@@ -730,9 +725,29 @@ function usableDesktopLLMProviders(entries: DesktopProviderWire[]): BotLLMProvid
         .filter(item => item.name !== '' && item.key !== '');
 }
 
+function localizeBotCopy(lang: string, value: unknown): unknown {
+    if (typeof value === 'string') {
+        if (normalizeLang(lang) === 'mn') {
+            const mapped = botsMn(lang, value);
+            if (mapped !== value) return mapped;
+        }
+        return localizeText(lang, value, value);
+    }
+    if (typeof value === 'function') {
+        return (...args: unknown[]) => localizeBotCopy(lang, (value as (...inner: unknown[]) => unknown)(...args));
+    }
+    if (Array.isArray(value)) return value.map(item => localizeBotCopy(lang, item));
+    if (value && typeof value === 'object') {
+        const out: Record<string, unknown> = {};
+        for (const key of Object.keys(value as Record<string, unknown>)) out[key] = localizeBotCopy(lang, (value as Record<string, unknown>)[key]);
+        return out;
+    }
+    return value;
+}
+
 function copy(lang: string) {
-    if (lang === 'en') {
-        return {
+    if (!isChineseLang(lang)) {
+        const english = {
             listTitle: 'Bots',
             shared: 'A bot is a digital assistant stationed on the remote computer around the clock.',
             empty: 'No bots yet.',
@@ -936,8 +951,9 @@ function copy(lang: string) {
             llmNoProviders: 'No provider on this computer has a key yet. Add one under Settings → Providers first.',
             llmCustomMark: (detail: string) => detail ? `Using your own model: ${detail}` : 'Using your own model',
         };
+        return (normalizeLang(lang) === 'mn' ? localizeBotCopy(lang, english) : english) as typeof english;
     }
-    if (lang === 'zh-Hant') {
+    if (isTraditionalLang(lang)) {
         return {
             listTitle: 'Bot',
             shared: 'Bot為24小時駐守遠端電腦上的數位助理。',
@@ -1361,49 +1377,19 @@ function friendlyFailure(raw: string, lang: string): string {
     const detail = String(raw || '').trim();
     if (!detail) return '';
     if (/没有在时限内|timed? ?out|超时|逾時|deadline exceeded/i.test(detail)) {
-        if (lang === 'en') {
-            return 'This task took too long and timed out on my side. The desktop is untouched — please send it again in a bit.';
-        }
-        if (lang === 'zh-Hant') {
-            return '這個任務等了太久，我這邊逾時了。稍後再發一次試試。';
-        }
-        return '这个任务等了太久，我这边超时了。稍后再发一次试试。';
+        return localizeText(lang, 'This task took too long and timed out on my side. The desktop is untouched — please send it again in a bit.', '这个任务等了太久，我这边超时了。稍后再发一次试试。', '這個任務等了太久，我這邊逾時了。稍後再發一次試試。');
     }
     if (/bot system-free credits limit is exhausted|selected model grant credits are exhausted|requires a grant-backed service group|LLM_SERVICE_CREDITS_EXHAUSTED|LLM_SERVICE_CREDITS_REQUIRED/i.test(detail)) {
-        if (lang === 'en') {
-            return 'Your credits are used up. Top up, or switch this bot to your own model.';
-        }
-        if (lang === 'zh-Hant') {
-            return '你的 Credits 已經用完。請充值，或把這個 Bot 改成自己的模型。';
-        }
-        return '你的 Credits 已经用完。请充值，或把这个 Bot 改成自己的模型。';
+        return localizeText(lang, 'Your credits are used up. Top up, or switch this bot to your own model.', '你的 Credits 已经用完。请充值，或把这个 Bot 改成自己的模型。', '你的 Credits 已經用完。請充值，或把這個 Bot 改成自己的模型。');
     }
     if (/LLM_SERVICE_GRANT_EXPIRED|grant has expired/i.test(detail)) {
-        if (lang === 'en') {
-            return 'Your credits have expired. Top up, or switch this bot to your own model.';
-        }
-        if (lang === 'zh-Hant') {
-            return '你的 Credits 已過期。請充值，或把這個 Bot 改成自己的模型。';
-        }
-        return '你的 Credits 已过期。请充值，或把这个 Bot 改成自己的模型。';
+        return localizeText(lang, 'Your credits have expired. Top up, or switch this bot to your own model.', '你的 Credits 已过期。请充值，或把这个 Bot 改成自己的模型。', '你的 Credits 已過期。請充值，或把這個 Bot 改成自己的模型。');
     }
     if (/interrupted: service restarted|service restarted while the run|run interrupted/i.test(detail)) {
-        if (lang === 'en') {
-            return 'My server restarted while I was on this, so it stopped partway. Ask me again if you still need it.';
-        }
-        if (lang === 'zh-Hant') {
-            return '剛才伺服器重啟，這個任務做到一半停了。還需要的話跟我說一聲，我再做一次。';
-        }
-        return '刚才服务器重启，这个任务做到一半停了。还需要的话跟我说一声，我再做一次。';
+        return localizeText(lang, 'My server restarted while I was on this, so it stopped partway. Ask me again if you still need it.', '刚才服务器重启，这个任务做到一半停了。还需要的话跟我说一声，我再做一次。', '剛才伺服器重啟，這個任務做到一半停了。還需要的話跟我說一聲，我再做一次。');
     }
     if (/unavailable|不可达/i.test(detail)) {
-        if (lang === 'en') {
-            return 'This one did not go through — I cannot reach my server right now. Please try sending it again in a moment.';
-        }
-        if (lang === 'zh-Hant') {
-            return '這條沒送到——我這邊暫時連不上我的伺服器。麻煩稍後再發一次。';
-        }
-        return '这条没送到——我这边暂时连不上我的服务器。麻烦稍后再发一次。';
+        return localizeText(lang, 'This one did not go through — I cannot reach my server right now. Please try sending it again in a moment.', '这条没送到——我这边暂时连不上我的服务器。麻烦稍后再发一次。', '這條沒送到——我這邊暫時連不上我的伺服器。麻煩稍後再發一次。');
     }
     return detail;
 }
@@ -1425,36 +1411,18 @@ function queuedAckReply(content: string, lang: string, wait: 'task' | 'keyboard'
     const flat = content.replace(/\s+/g, ' ').trim();
     const task = flat.length > 16 ? `${flat.slice(0, 15)}…` : flat;
     if (wait === 'ahead') {
-        if (lang === 'en') {
-            return task
-                ? `Got it — "${task}" is queued behind the earlier message.`
-                : "Got it — it's queued behind the earlier message.";
-        }
-        if (lang === 'zh-Hant') {
-            return task ? `收到，「${task}」記下了。先排在前面那條後面。` : '收到，記下了。先排在前面那條後面。';
-        }
-        return task ? `收到，「${task}」记下了。先排在前面那条后面。` : '收到，记下了。先排在前面那条后面。';
+        return task
+            ? localizeText(lang, `Got it — "${task}" is queued behind the earlier message.`, `收到，「${task}」记下了。先排在前面那条后面。`, `收到，「${task}」記下了。先排在前面那條後面。`)
+            : localizeText(lang, "Got it — it's queued behind the earlier message.", '收到，记下了。先排在前面那条后面。', '收到，記下了。先排在前面那條後面。');
     }
     if (wait === 'keyboard') {
-        if (lang === 'en') {
-            return task
-                ? `Got it — "${task}" is queued. I'll pick it up when you hand the keyboard back.`
-                : "Got it — it's queued. I'll pick it up when you hand the keyboard back.";
-        }
-        if (lang === 'zh-Hant') {
-            return task ? `收到，「${task}」記下了。等你把鍵盤交還後我再處理這個。` : '收到，記下了。等你把鍵盤交還後我再處理這個。';
-        }
-        return task ? `收到，「${task}」记下了。等你把键盘交还后我再处理这个。` : '收到，记下了。等你把键盘交还后我再处理这个。';
-    }
-    if (lang === 'en') {
         return task
-            ? `Got it — "${task}" is queued. I'll pick it up the moment the current task is done.`
-            : "Got it — it's queued, and I'll pick it up the moment the current task is done.";
+            ? localizeText(lang, `Got it — "${task}" is queued. I'll pick it up when you hand the keyboard back.`, `收到，「${task}」记下了。等你把键盘交还后我再处理这个。`, `收到，「${task}」記下了。等你把鍵盤交還後我再處理這個。`)
+            : localizeText(lang, "Got it — it's queued. I'll pick it up when you hand the keyboard back.", '收到，记下了。等你把键盘交还后我再处理这个。', '收到，記下了。等你把鍵盤交還後我再處理這個。');
     }
-    if (lang === 'zh-Hant') {
-        return task ? `收到，「${task}」記下了。等手頭這件做完我就來處理這個。` : '收到，記下了。等手頭這件做完我就來處理這個。';
-    }
-    return task ? `收到，「${task}」记下了。等手头这件做完我就来处理这个。` : '收到，记下了。等手头这件做完我就来处理这个。';
+    return task
+        ? localizeText(lang, `Got it — "${task}" is queued. I'll pick it up the moment the current task is done.`, `收到，「${task}」记下了。等手头这件做完我就来处理这个。`, `收到，「${task}」記下了。等手頭這件做完我就來處理這個。`)
+        : localizeText(lang, "Got it — it's queued, and I'll pick it up the moment the current task is done.", '收到，记下了。等手头这件做完我就来处理这个。', '收到，記下了。等手頭這件做完我就來處理這個。');
 }
 
 function messageID() {
@@ -4890,7 +4858,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     if (matches.length > 0) {
                         const targetID = matches.length === 1 ? String(matches[0].candidate.run_id || '') : '';
                         const receipt = await AppendDesktopBotSupplement(botId, targetID, String(matches[0].verdict?.instruction || content.trim())) as { accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null;
-                        const note = String(receipt?.message || (String(lang).toLowerCase().startsWith('en') ? 'On it' : '在办'));
+                        const note = String(receipt?.message || localizeText(lang, 'On it', '在办'));
                         const supplementFiles = splitAckMaterials(content).paths;
                         if (receipt?.stage === 'queued') {
                             // Only the receipt's ids go on the bubble. The
@@ -5521,9 +5489,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const ownerId = userId;
         const hide = () => commit(botId, messagesForBot(ownerId, botId).map(item => item.id === messageId ? { ...item, optionsUsed: true } : item));
         hide();
-        const en = String(langRef.current).toLowerCase().startsWith('en');
+        const langNow = langRef.current;
         // A typed "Other" line goes in as written, like any typed supplement.
-        const order = typed ? option : en ? `Change of plan: do "${option}" instead.` : `改成：${option}`;
+        const order = typed ? option : localizeText(langNow, 'Change of plan: do "{name}" instead.', '改成：{name}').replace('{name}', option);
         commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'user', content: shown }]);
         try {
             const activeRuns = (await GetActiveDesktopRuns(botId) as Array<{ run_id?: string; waiting_for_user?: boolean }>) || [];
@@ -5531,11 +5499,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (live.length === 0) return;
             const runId = live.length === 1 ? String(live[0].run_id || '') : '';
             const receipt = await AppendDesktopBotSupplement(botId, runId, order) as { stage?: string; message?: string; supplement_id?: string } | null;
-            const note = String(receipt?.message || (en ? 'On it' : '在办'));
+            const note = String(receipt?.message || localizeText(langNow, 'On it', '在办'));
             const supplementId = String(receipt?.supplement_id || '').trim();
             commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: note, ack: true, supplementId: supplementId || undefined, supplementRunId: runId || undefined }]);
         } catch {
-            commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: en ? "Couldn't pass that on. Type it and I'll adjust." : '没能转给正在做的任务，你直接打一句，我按你说的改。', ack: true }]);
+            commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: localizeText(langNow, "Couldn't pass that on. Type it and I'll adjust.", '没能转给正在做的任务，你直接打一句，我按你说的改。'), ack: true }]);
         }
     };
 
@@ -6483,7 +6451,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <button type="button" className="btn-secondary desktop-bot-chat__rooms-btn" data-testid="bot-rooms-open" onClick={() => setRoomsOpen(true)}>群聊</button>
                             ) : null}
                         </header>
-                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} /> : null}
+                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} /> : null}
                         <div
                             ref={logRef}
                             className="desktop-bot-chat__log"
@@ -6620,7 +6588,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </p>
                             ) : null}
                             {collab.features.say ? (
-                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary)} bots={bots} lookOf={lookOf} />
+                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary)} bots={bots} lookOf={lookOf} lang={lang} />
                             ) : null}
                             </div>
                         </div>
@@ -7014,7 +6982,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     onSubmit={(title, description, look) => { void submitCreate(title, description, look); }}
                 />
             ) : null}
-            {roomsOpen && collab.features.rooms ? <BotRoomsDialog bots={bots} onClose={() => setRoomsOpen(false)} /> : null}
+            {roomsOpen && collab.features.rooms ? <BotRoomsDialog bots={bots} lang={lang} onClose={() => setRoomsOpen(false)} /> : null}
             {styleBot ? <BotStyleDialog key={styleBot.id} botId={styleBot.id} botTitle={styleBot.title} lang={lang} onClose={() => setStyleBot(null)} /> : null}
             {editBot ? (
                 <BotEditDialog

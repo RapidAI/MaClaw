@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 import type { GetDesktopBotStyle, RollbackDesktopBotStyle, SaveDesktopBotStyle } from '../../../wailsjs/go/main/App';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+import { tailText } from '../../i18n/mnTail';
 
 type StyleView = Awaited<ReturnType<typeof GetDesktopBotStyle>>;
 
@@ -23,22 +24,22 @@ const MEMORY_MAX = 2000;
 const PART_MAX = 1500;
 
 function labelsFor(lang: string) {
-    const zh = /^zh/i.test(lang);
+    const t = (en: string, zh: string) => tailText(lang, en, zh);
     return {
-        title: zh ? '性格与说话风格' : 'Character and voice',
-        soul: zh ? '性格（SOUL）' : 'Character (SOUL)',
-        soulHint: zh ? '留空用默认性格。下一次任务起生效。' : 'Empty uses the default. Applies from the next task.',
-        memory: zh ? '记住的事（MEMORY）' : 'What it remembers (MEMORY)',
-        parts: zh ? '高级：分段规则' : 'Advanced: style parts',
-        partsHint: zh ? '留空用默认；填 - 关闭这一段。' : 'Empty keeps the default; - turns the part off.',
-        baseChanged: zh ? '默认规则已更新，你的改写是基于旧版本写的。' : 'The defaults changed since you wrote these overrides.',
-        disabled: zh ? '服务端已关闭风格层，保存的内容暂不生效。' : 'The style layer is off on the server; saved text is not used yet.',
-        history: zh ? '历史版本' : 'History',
-        restore: zh ? '恢复' : 'Restore',
-        save: zh ? '保存' : 'Save',
-        cancel: zh ? '取消' : 'Cancel',
-        loading: zh ? '读取中…' : 'Loading…',
-        failed: zh ? '读取失败' : 'Could not load',
+        title: t('Character and voice', '性格与说话风格'),
+        soul: t('Character (SOUL)', '性格（SOUL）'),
+        soulHint: t('Empty uses the default. Applies from the next task.', '留空用默认性格。下一次任务起生效。'),
+        memory: t('What it remembers (MEMORY)', '记住的事（MEMORY）'),
+        parts: t('Advanced: style parts', '高级：分段规则'),
+        partsHint: t('Empty keeps the default; - turns the part off.', '留空用默认；填 - 关闭这一段。'),
+        baseChanged: t('The defaults changed since you wrote these overrides.', '默认规则已更新，你的改写是基于旧版本写的。'),
+        disabled: t('The style layer is off on the server; saved text is not used yet.', '服务端已关闭风格层，保存的内容暂不生效。'),
+        history: t('History', '历史版本'),
+        restore: t('Restore', '恢复'),
+        save: t('Save', '保存'),
+        cancel: t('Cancel', '取消'),
+        loading: t('Loading…', '读取中…'),
+        failed: t('Could not load', '读取失败'),
     };
 }
 

@@ -539,6 +539,9 @@ func TestRenderKnowledgeSharePublicHTMLBilingualContract(t *testing.T) {
 		`class="lang-toggle"`,
 		`data-set-lang="zh"`,
 		`data-set-lang="en"`,
+		`data-set-lang="mn"`,
+		`Мэдлэгийн хуваалцал`,
+		`data-lang="mn">Хуулсан`,
 		`Agent 导入 JSON`,
 		`Agent import JSON`,
 		`property="og:title" content="API &lt;Guide&gt;"`,
@@ -560,6 +563,7 @@ func TestRenderKnowledgeSharePublicHTMLBilingualContract(t *testing.T) {
 		`data-manage-shares`,
 		`node.setAttribute('href', '/hub/knowledge/shares/mine' + tokenSuffix);`,
 		`localStorage.getItem('maclawKnowledgeShareLang')`,
+		`raw.indexOf('zh-') === 0`,
 		`document.execCommand('copy')`,
 	}
 	for _, want := range required {
@@ -569,6 +573,9 @@ func TestRenderKnowledgeSharePublicHTMLBilingualContract(t *testing.T) {
 	}
 	if strings.Contains(html, "<script>alert(1)</script>") || !strings.Contains(html, "API &lt;Guide&gt;") {
 		t.Fatalf("public share html did not escape user content:\n%s", html)
+	}
+	if strings.Contains(html, "lang === 'en' ? 'en' : 'zh'") || strings.Contains(html, "apply('zh')") {
+		t.Fatalf("public share html still treats every non-English tag as Chinese")
 	}
 }
 

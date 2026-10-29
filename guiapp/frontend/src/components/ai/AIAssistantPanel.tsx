@@ -150,6 +150,8 @@ import { commandGrantAppliesToVisibleTab, visibleCodingProject } from "./taskCom
 import { RemoteReconnectForm, RemoteReconnectSuccessToast } from "./RemoteReconnectForm";
 import { ScopeApprovalDialog, type ScopeApprovalDecision } from "./ScopeApprovalDialog";
 import { SaveTaskDialog } from "./SaveTaskDialog";
+import { normalizeLang } from "../../i18n";
+
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 const EMPTY_PROGRESS_MESSAGES: ChatMessage[] = [];
 
@@ -585,7 +587,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setSkillRecordingCard({
                 id: `skill-rec-preparing-${Date.now()}`,
                 type: "skill_recording_preparing",
-                title: lang === "en" ? "Recording stopped" : "录制已停止",
+                title: (localizeText(lang, "Recording stopped", "录制已停止")),
                 description: lang === "en"
                     ? "Generating skill name and summary…"
                     : "正在生成 Skill 名称与逻辑总结…",
@@ -608,10 +610,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setSkillRecordingCard({
                         id: `skill-rec-stop-failed-${Date.now()}`,
                         type: "skill_recording_empty",
-                        title: lang === "en" ? "Couldn't stop recording" : "停止录制失败",
+                        title: (localizeText(lang, "Couldn't stop recording", "停止录制失败")),
                         description: stopError,
                         fields: [],
-                        actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        actions: [{ key: "cancel", label: (localizeText(lang, "OK", "知道了")), style: "default" }],
                         metadata: {},
                     });
                     return;
@@ -632,12 +634,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             ? "Save as a self-learned Skill?"
                             : "是否保存为自学习 Skill？",
                         fields: [
-                            { key: "name", label: lang === "en" ? "Skill Name" : "Skill 名称", type: "text", defaultValue: data.suggested_name || "", placeholder: "my-skill" },
-                            { key: "description", label: lang === "en" ? "Description" : "描述", type: "text", defaultValue: data.suggested_description || "" },
+                            { key: "name", label: (localizeText(lang, "Skill Name", "Skill 名称")), type: "text", defaultValue: data.suggested_name || "", placeholder: "my-skill" },
+                            { key: "description", label: (localizeText(lang, "Description", "描述")), type: "text", defaultValue: data.suggested_description || "" },
                         ],
                         actions: [
-                            { key: "save", label: lang === "en" ? "Save as Skill" : "保存为 Skill", style: "primary" },
-                            { key: "cancel", label: lang === "en" ? "Discard" : "放弃", style: "default" },
+                            { key: "save", label: (localizeText(lang, "Save as Skill", "保存为 Skill")), style: "primary" },
+                            { key: "cancel", label: (localizeText(lang, "Discard", "放弃")), style: "default" },
                         ],
                         metadata: { summary: data.summary || [], security_warnings: data.security_warnings || [] },
                     });
@@ -655,7 +657,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             : "只有以下操作会被记录为 Skill 步骤：\n• 命令执行（bash）\n• 文件写入（write_file）\n• 文件编辑（edit_file）\n\n搜索、读取、截图等查询操作不会被录制。\n请让 AI 执行一些命令或写入文件后再试。",
                         fields: [],
                         actions: [
-                            { key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" },
+                            { key: "cancel", label: (localizeText(lang, "OK", "知道了")), style: "default" },
                         ],
                         metadata: {},
                     });
@@ -664,10 +666,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setSkillRecordingCard({
                         id: `skill-rec-idle-${Date.now()}`,
                         type: "skill_recording_empty",
-                        title: lang === "en" ? "Recording already stopped" : "录制已经结束",
-                        description: lang === "en" ? "Nothing is waiting to be saved." : "没有等待保存的录制内容。",
+                        title: (localizeText(lang, "Recording already stopped", "录制已经结束")),
+                        description: (localizeText(lang, "Nothing is waiting to be saved.", "没有等待保存的录制内容。")),
                         fields: [],
-                        actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        actions: [{ key: "cancel", label: (localizeText(lang, "OK", "知道了")), style: "default" }],
                         metadata: {},
                     });
                 }
@@ -700,12 +702,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setSkillRecordingCard({
                         id: `skill-rec-start-${Date.now()}`,
                         type: "skill_recording_started",
-                        title: lang === "en" ? "Skill recording started" : "Skill 录制已开始",
+                        title: (localizeText(lang, "Skill recording started", "Skill 录制已开始")),
                         description: lang === "en"
                             ? "All commands, file writes, and edits will be recorded. Click Pause to the left of Tasks to stop.\n\nWork as usual — recording continues in the background."
                             : "所有命令执行、文件写入、文件编辑将被记录。点击「任务」左侧的「暂停」即可停止。\n\n正常使用即可，录制在后台静默进行。",
                         fields: [],
-                        actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        actions: [{ key: "cancel", label: (localizeText(lang, "OK", "知道了")), style: "default" }],
                         metadata: {},
                     });
                     return;
@@ -714,14 +716,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setSkillRecordingCard({
                     id: `skill-rec-start-failed-${Date.now()}`,
                     type: "skill_recording_empty",
-                    title: lang === "en" ? "Couldn't start recording" : "录制未能开始",
+                    title: (localizeText(lang, "Couldn't start recording", "录制未能开始")),
                     description: unsaved
-                        ? (lang === "en" ? "A previous recording is still waiting to be saved. Discard it before starting another." : "上一段录制还没保存或放弃，需要先放弃才能重新开始。")
-                        : (result || (lang === "en" ? "Try again in a moment." : "请稍后再试。")),
+                        ? ((localizeText(lang, "A previous recording is still waiting to be saved. Discard it before starting another.", "上一段录制还没保存或放弃，需要先放弃才能重新开始。")))
+                        : (result || ((localizeText(lang, "Try again in a moment.", "请稍后再试。")))),
                     fields: [],
                     actions: unsaved
-                        ? [{ key: "discard", label: lang === "en" ? "Discard unsaved recording" : "放弃未保存的录制", style: "primary" }]
-                        : [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        ? [{ key: "discard", label: (localizeText(lang, "Discard unsaved recording", "放弃未保存的录制")), style: "primary" }]
+                        : [{ key: "cancel", label: (localizeText(lang, "OK", "知道了")), style: "default" }],
                     metadata: {},
                 });
             }).catch(() => {
@@ -729,10 +731,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setSkillRecordingCard({
                     id: `skill-rec-start-failed-${Date.now()}`,
                     type: "skill_recording_empty",
-                    title: lang === "en" ? "Couldn't start recording" : "录制未能开始",
-                    description: lang === "en" ? "Try again in a moment." : "请稍后再试。",
+                    title: (localizeText(lang, "Couldn't start recording", "录制未能开始")),
+                    description: (localizeText(lang, "Try again in a moment.", "请稍后再试。")),
                     fields: [],
-                    actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                    actions: [{ key: "cancel", label: (localizeText(lang, "OK", "知道了")), style: "default" }],
                     metadata: {},
                 });
             }).finally(() => {
@@ -797,7 +799,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             : "以下内容可能需要手动调整（含特定机器的信息）：\n")
                             + warnings.map((w: string) => `• ${w}`).join("\n"),
                         fields: [],
-                        actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        actions: [{ key: "cancel", label: (localizeText(lang, "OK", "知道了")), style: "default" }],
                         metadata: {},
                     });
                 }
@@ -4486,15 +4488,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         resetWorkflowState();
         if (agentView) dismissAgentView(agentView.id, undefined, { force: true });
     };
-    const idlePlaceholderText = getComposeActionPlaceholder(composeAction, !lang?.startsWith("en"))
+    const idlePlaceholderText = getComposeActionPlaceholder(composeAction, lang)
         || (isRemoteMaintenanceEnvironment
             ? localizeText(lang, "Describe the maintenance task on the remote host...", "描述远程主机上的维护任务…", "描述遠端主機上的維護任務…")
             : isRemoteCodingDevEnvironment
             ? localizeText(lang, "Describe coding work on the remote host...", "描述远程主机上的开发任务…", "描述遠端主機上的開發任務…")
             : isCodingDevEnvironment
             ? localizeText(lang, "Describe coding work in this programming environment...", "在编程环境中描述你的开发任务…", "在程式開發環境中描述你的開發任務…")
-            : (lang === "en" ? "Enter a task or command..." : "\u8f93\u5165\u4efb\u52a1\u6216\u6307\u4ee4\u2026"));
-    const savedFileLabel = lang === "en" ? "Saved file" : "\u6587\u4ef6\u5df2\u4fdd\u5b58";
+            : ((localizeText(lang, "Enter a task or command...", "\u8f93\u5165\u4efb\u52a1\u6216\u6307\u4ee4\u2026"))));
+    const savedFileLabel = (localizeText(lang, "Saved file", "\u6587\u4ef6\u5df2\u4fdd\u5b58"));
     const hasActiveDetachedProjectRound = useMemo(() => (
         isProjectTabActive && Array.from(detachedProjectRoundsRef.current.values()).some(detached => detached.tabId === activeTab.id)
     ), [activeTab.id, detachedProjectRoundVersion, isProjectTabActive]);
@@ -4958,7 +4960,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ? stripUserTurnPromptArtifacts(firstUser.content)
             : "";
         const runes = [...text];
-        return runes.length > 30 ? runes.slice(0, 30).join("") + "..." : text || (lang === "en" ? "Saved task" : "\u5df2\u4fdd\u5b58\u4efb\u52a1");
+        return runes.length > 30 ? runes.slice(0, 30).join("") + "..." : text || ((localizeText(lang, "Saved task", "\u5df2\u4fdd\u5b58\u4efb\u52a1")));
     }, [lang, messages]);
 
     const openSaveTaskDialog = useCallback(async () => {
@@ -5043,12 +5045,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 : localizeText(lang, "Creating remote coding environment... type ahead, Enter will wait", "正在创建远程编程环境… 可预输入，Enter 会等待", "正在建立遠端程式開發環境… 可預輸入，Enter 會等待"))
             : isCodingDevEnvironment
             ? localizeText(lang, "Creating coding environment... type ahead, Enter will wait", "正在创建编程环境… 可预输入，Enter 会等待", "正在建立程式開發環境… 可預輸入，Enter 會等待")
-            : (lang === "en" ? "Creating project session... type ahead, Enter will wait" : "正在创建项目会话… 可预输入，Enter 会等待"))
-        : (lang === "en" ? "Restoring task context... type ahead, Enter will wait" : "正在恢复任务上下文… 可预输入，Enter 会等待");
+            : ((localizeText(lang, "Creating project session... type ahead, Enter will wait", "正在创建项目会话… 可预输入，Enter 会等待"))))
+        : ((localizeText(lang, "Restoring task context... type ahead, Enter will wait", "正在恢复任务上下文… 可预输入，Enter 会等待")));
     const placeholderText = !ready
         ? initLabel
         : isACPMirrorTabActive
-            ? (lang === "en" ? "This ACP session is controlled by its external client" : "此 ACP 会话由外部客户端控制")
+            ? ((localizeText(lang, "This ACP session is controlled by its external client", "此 ACP 会话由外部客户端控制")))
         : recordingActive
             ? (lang === "en"
                 ? "Recording in progress — use Pause / Stop on the card above"
@@ -5058,13 +5060,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             : remoteCodingNeedsReconnect
             ? localizeText(lang, "Reconnect SSH above... type ahead, Enter will wait", "请先在上方重新连接 SSH… 可预输入，Enter 会等待", "請先在上方重新連線 SSH… 可預輸入，Enter 會等待")
             : workflowFormGeneratingDocument
-            ? (lang === "en" ? "Generating the workflow document..." : "正在生成工作流文档…")
+            ? ((localizeText(lang, "Generating the workflow document...", "正在生成工作流文档…")))
             : workflowAwaitingForm
             ? (workflowFormActive
-                ? (lang === "en" ? "Fill in the workflow form on the right to continue" : "请在右侧工作流表单填写并提交")
-                : (lang === "en" ? "Opening the workflow form on the right..." : "正在打开右侧工作流表单…"))
+                ? ((localizeText(lang, "Fill in the workflow form on the right to continue", "请在右侧工作流表单填写并提交")))
+                : ((localizeText(lang, "Opening the workflow form on the right...", "正在打开右侧工作流表单…"))))
             : workflowAwaitingReview
-            ? (lang === "en" ? "Review the document on the right, then confirm or provide feedback" : "请先查看右侧文档，再确认推进或输入补充意见")
+            ? ((localizeText(lang, "Review the document on the right, then confirm or provide feedback", "请先查看右侧文档，再确认推进或输入补充意见")))
             : isPureCodingEnvironment
             ? (codingAgentComposerStatusText(codingAgentProgress, lang) || idlePlaceholderText)
             : idlePlaceholderText;
@@ -6323,13 +6325,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (branchPoint) {
                 const branchIdx = Number(branchPoint.index ?? idx);
                 const branchCount = Number(branchPoint.branches || 0);
-                const branchTitle = lang === 'en'
-                    ? branchCount > 1
-                        ? `Branch from here (#${branchIdx}, ${branchCount} paths)`
-                        : `Branch from here (#${branchIdx})`
-                    : branchCount > 1
-                        ? `从此处分支 (#${branchIdx}，${branchCount} 条路径)`
-                        : `从此处分支 (#${branchIdx})`;
+                const branchTitle = branchCount > 1
+                    ? localizeText(lang, `Branch from here (#${branchIdx}, ${branchCount} paths)`, `从此处分支 (#${branchIdx}，${branchCount} 条路径)`)
+                    : localizeText(lang, `Branch from here (#${branchIdx})`, `从此处分支 (#${branchIdx})`);
                 const wrappedNode = (
                     <div key={`branch-wrap-${msg.id}`} className="branch-hover-container aap-branch-wrap">
                         {node}
@@ -7037,10 +7035,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', background: t.bg, color: t.textMuted }}>
                         <div className="aap-wf-icon"><IconRocket size={28} color="currentColor" /></div>
                         <div className="aap-wf-title">
-                            {lang?.startsWith('en') ? `Starting workflow: ${workflowStartingLabel}` : `正在启动工作流：${workflowStartingLabel}`}
+                            {`${localizeText(lang, 'Starting workflow:', '正在启动工作流：')}${normalizeLang(lang) === 'zh-Hans' || normalizeLang(lang) === 'zh-Hant' ? '' : ' '}${workflowStartingLabel}`}
                         </div>
                         <div className="aap-wf-sub">
-                            {lang?.startsWith('en') ? 'Please wait...' : '请稍候...'}
+                            {localizeText(lang, 'Please wait...', '请稍候...')}
                         </div>
                     </div>
                 )}

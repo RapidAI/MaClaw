@@ -293,7 +293,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	bodyJSON, originalStream := t.canonicalChatBody(req, payload)
-	prepared, err := signing.PrepareInferRequest(endpoint, bodyJSON, agentChatModel(bodyJSON), "system")
+	model := agentChatModel(bodyJSON)
+	prepared, err := signing.PrepareInferRequest(endpoint, bodyJSON, model, "system")
 	if err != nil {
 		return nil, fmt.Errorf("Qoder 签名请求构建失败: %w", err)
 	}
@@ -320,7 +321,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil || resp == nil {
 		return resp, err
 	}
-	return unwrapChatResponse(req.Context(), resp, originalStream, agentChatModel(bodyJSON)), nil
+	return unwrapChatResponse(req.Context(), resp, originalStream, model), nil
 }
 
 // ProfileByChatHost picks the edition whose ChatOrigin hosts the request.
@@ -333,15 +334,19 @@ func ProfileByChatHost(rawURL string) (Profile, bool) {
 	return Profile{}, false
 }
 
-// agentChatModel extracts the model key from the prepared body JSON.
+// agentChatModel extracts the catalog key the signer must send. It is the
+// same key applyAgentChatContract wrote into the body; a display name such
+// as qwen3.8-max is not a model the node will start.
 func agentChatModel(bodyJSON string) string {
 	var probe struct {
 		Model string `json:"model"`
 	}
-	if json.Unmarshal([]byte(bodyJSON), &probe) == nil && strings.TrimSpace(probe.Model) != "" {
-		return canonicalQoderModelKey(probe.Model)
+	if json.Unmarshal([]byte(bodyJSON), &probe) == nil {
+		if model := canonicalQoderModelKey(probe.Model); model != "" {
+			return model
+		}
 	}
-	return DefaultModel
+	return canonicalQoderModelKey(DefaultModel)
 }
 
 // canonicalQoderModelKey maps legacy display-style names onto the real
@@ -380,16 +385,25 @@ func applyAgentChatContract(obj map[string]any) {
 		return
 	}
 	obj["stream"] = true
-	if _, ok := obj["request_id"]; !ok {
-		obj["request_id"] = newUUID()
+	// text_content is dropped upstream and then fails the role check.
+	// contents hits a fastjson type error. max_completion_tokens is the
+	// OpenAI name; the signed body carries the cap as max_tokens.
+	delete(obj, "text_content")
+	delete(obj, "contents")
+	// A non-positive cap asks the node for an empty completion. Fold the
+	// OpenAI name into max_tokens and drop a zero so the gateway default applies.
+	if cap, ok := positiveTokenCap(obj["max_tokens"]); ok {
+		obj["max_tokens"] = cap
+	} else if cap, ok := positiveTokenCap(obj["max_completion_tokens"]); ok {
+		obj["max_tokens"] = cap
+	} else {
+		delete(obj, "max_tokens")
 	}
-	if _, ok := obj["request_set_id"]; !ok {
-		obj["request_set_id"] = newUUID()
-	}
-	if _, ok := obj["session_id"]; !ok {
-		obj["session_id"] = newUUID()
-	}
-	if _, ok := obj["chat_record_id"]; !ok {
+	delete(obj, "max_completion_tokens")
+	fillAgentChatID(obj, "request_id")
+	fillAgentChatID(obj, "request_set_id")
+	fillAgentChatID(obj, "session_id")
+	if record, _ := obj["chat_record_id"].(string); strings.TrimSpace(record) == "" {
 		obj["chat_record_id"] = obj["request_set_id"]
 	}
 	obj["agent_id"] = "agent_common"
@@ -410,12 +424,46 @@ func applyAgentChatContract(obj map[string]any) {
 		"begin_at": time.Now().UnixMilli(),
 	}
 	model, _ := obj["model"].(string)
-	if strings.TrimSpace(model) == "" {
-		model = DefaultModel
-		obj["model"] = model
+	model = canonicalQoderModelKey(model)
+	if model == "" {
+		model = canonicalQoderModelKey(DefaultModel)
 	}
+	obj["model"] = model
+	// The signer argument and model_config.key are the same catalog key.
+	// A display name here (qwen3.8-max) is a model the node will not start.
 	obj["model_config"] = map[string]any{"key": model, "source": "system"}
 	obj["data_policy_agreed"] = true
+}
+
+// positiveTokenCap accepts a JSON number that can be a generation cap.
+func positiveTokenCap(value any) (int, bool) {
+	var n int
+	switch v := value.(type) {
+	case int:
+		n = v
+	case int32:
+		n = int(v)
+	case int64:
+		n = int(v)
+	case float32:
+		n = int(v)
+	case float64:
+		n = int(v)
+	default:
+		return 0, false
+	}
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// fillAgentChatID keeps a caller-supplied id and replaces a missing or blank one.
+func fillAgentChatID(obj map[string]any, key string) {
+	if id, _ := obj[key].(string); strings.TrimSpace(id) != "" {
+		return
+	}
+	obj[key] = newUUID()
 }
 
 // prepareAgentChatBody merges the OpenAI chat payload into the /algo wire
@@ -426,9 +474,6 @@ func prepareAgentChatBody(payload []byte) (string, bool) {
 		obj = map[string]any{}
 	}
 	originalStream, _ := obj["stream"].(bool)
-	if model := canonicalQoderModelKey(agentChatModel(string(payload))); strings.TrimSpace(model) != "" {
-		obj["model"] = model
-	}
 	applyAgentChatContract(obj)
 	out, err := marshalAgentChatJSON(obj)
 	if err != nil {
@@ -621,7 +666,7 @@ func (e *envelopeWriter) line(line string) bool {
 			return true
 		}
 		if message, bad := upstreamTailError(payload); bad {
-			return e.writeErrorFrame(message)
+			return e.writeErrorFrame("", message)
 		}
 		if envelope.Body == "" {
 			return true
@@ -629,7 +674,7 @@ func (e *envelopeWriter) line(line string) bool {
 		return e.publishChunkBytes([]byte(envelope.Body))
 	}
 	if e.tailCode != 0 {
-		return e.writeErrorFrame(fmt.Sprintf("Qoder 上游错误 (HTTP %d): %s", e.tailCode, e.tailText))
+		return e.writeErrorFrame("", fmt.Sprintf("Qoder 上游错误 (HTTP %d): %s", e.tailCode, e.tailText))
 	}
 	if !e.hasBody || len(e.scratch) == 0 {
 		return true
@@ -652,14 +697,17 @@ func (e *envelopeWriter) publishChunkBytes(body []byte) bool {
 	}
 	var head struct {
 		ID      json.RawMessage `json:"id"`
-		Code    string          `json:"code"`
+		Code    json.RawMessage `json:"code"`
 		Message string          `json:"message"`
 	}
 	if err := json.Unmarshal(body, &head); err != nil {
 		return true
 	}
-	if head.Code != "" {
-		return e.writeErrorFrame(fmt.Sprintf("Qoder 上游错误 (%s): %s", head.Code, head.Message))
+	if code := jsonCodeString(head.Code); code != "" {
+		// Keep the machine code on the error object. Flattening it into the
+		// sentence is what made a billing denial (code 110) look like ordinary
+		// prose by the time UserFacingError classified the failure.
+		return e.writeErrorFrame(code, fmt.Sprintf("Qoder 上游错误 (%s): %s", code, head.Message))
 	}
 	rawID := bytes.TrimSpace(head.ID)
 	if len(rawID) == 0 || rawID[0] == '"' {
@@ -1583,8 +1631,39 @@ func isJSONSpace(b byte) bool {
 	return b == ' ' || b == '\n' || b == '\r' || b == '\t'
 }
 
-func (e *envelopeWriter) writeErrorFrame(message string) bool {
-	payload, err := json.Marshal(map[string]any{"error": map[string]any{"message": message, "type": "upstream_error"}})
+// jsonCodeString reads a JSON string or number. A number must not fail the
+// surrounding object: Qoder sends billing code 110 as either shape, and a
+// string field rejects the number and drops the whole denial.
+func jsonCodeString(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return ""
+		}
+		return strings.TrimSpace(s)
+	}
+	if raw[0] == '-' || (raw[0] >= '0' && raw[0] <= '9') {
+		var n json.Number
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if dec.Decode(&n) != nil {
+			return ""
+		}
+		return n.String()
+	}
+	return ""
+}
+
+func (e *envelopeWriter) writeErrorFrame(code, message string) bool {
+	errObj := map[string]any{"message": message, "type": "upstream_error"}
+	if code = strings.TrimSpace(code); code != "" {
+		errObj["code"] = code
+	}
+	payload, err := json.Marshal(map[string]any{"error": errObj})
 	if err != nil {
 		return true
 	}
@@ -1696,8 +1775,8 @@ func (a *aggregateSink) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	var chunk struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+		Code    json.RawMessage `json:"code"`
+		Message string          `json:"message"`
 		Error   struct {
 			Message string `json:"message"`
 		} `json:"error"`
@@ -1716,8 +1795,8 @@ func (a *aggregateSink) Write(p []byte) (int, error) {
 	if json.Unmarshal([]byte(text), &chunk) != nil {
 		return len(p), nil
 	}
-	if chunk.Code != "" {
-		a.errMessage = fmt.Sprintf("Qoder 上游错误 (%s): %s", chunk.Code, chunk.Message)
+	if code := jsonCodeString(chunk.Code); code != "" {
+		a.errMessage = fmt.Sprintf("Qoder 上游错误 (%s): %s", code, chunk.Message)
 		return len(p), nil
 	}
 	if chunk.Error.Message != "" && len(chunk.Choices) == 0 {

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { intlLocale, localizeText, normalizeLang } from "../../i18n";
 import { GetHubLLMServiceStatus, LoadConfig, RedeemHubLLMService, RedeemHubLLMResetVoucher, RefreshHubLLMServiceStatus } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL, EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { useDialog } from "../CustomDialog";
 import { buildHubCardStoreURL, buildHubCreditsURL, grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from "../../utils/hubCredits";
-import { localizeHubServiceReason, localizeHubServiceRedeemError, localizeHubServiceStatusError } from "../../utils/hubServiceI18n";
+import { localizeHubServiceReason, localizeHubServiceRedeemError, localizeHubServiceStatusError, mnApproxAfter, mnDurationUnit } from "../../utils/hubServiceI18n";
 import { capabilityModelMenuLabel } from "../../utils/capabilityModelLabel";
 
 interface HubLLMAuthorizedModel {
@@ -167,6 +168,7 @@ function nonNegativeNumeric(value: unknown): number {
 function formatUnlimitedCredits(lang?: string): string {
     if (lang === "zh-Hans") return "不限";
     if (lang === "zh-Hant") return "不限";
+    if (normalizeLang(lang) === "mn") return "Хязгааргүй";
     return "Unlimited";
 }
 
@@ -389,7 +391,7 @@ function formatTime(value?: string, lang?: string): string {
     if (!value) return "-";
     const dt = new Date(value);
     if (Number.isNaN(dt.getTime())) return value;
-    const locale = lang === "zh-Hant" ? "zh-Hant" : lang === "zh-Hans" ? "zh-Hans" : "en-US";
+    const locale = intlLocale(lang);
     return new Intl.DateTimeFormat(locale, {
         year: "numeric",
         month: "2-digit",
@@ -405,18 +407,32 @@ function formatRetryDuration(seconds: number, lang?: string): string {
     // reset label.
     const safeSeconds = Number.isFinite(parsedSeconds) ? Math.max(0, Math.ceil(parsedSeconds)) : 0;
     const zh = lang === "zh-Hans" || lang === "zh-Hant";
-    if (safeSeconds < 60) return zh ? `${safeSeconds} 秒` : `${safeSeconds}s`;
+    const mn = normalizeLang(lang) === "mn";
+    if (safeSeconds < 60) {
+        if (mn) return mnDurationUnit(safeSeconds, "second");
+        return zh ? `${safeSeconds} 秒` : `${safeSeconds}s`;
+    }
     // Round up to the next minute so the displayed duration never promises
     // recovery earlier than the actual reset time. Keep the remainder instead
     // of rounding the whole duration to hours/days; users need minute-level
     // precision for the reset countdown shown in the service redemption UI.
     const totalMinutes = Math.ceil(safeSeconds / 60);
-    if (totalMinutes < 60) return zh ? `${totalMinutes} 分钟` : `${totalMinutes}m`;
+    if (totalMinutes < 60) {
+        if (mn) return mnDurationUnit(totalMinutes, "minute");
+        return zh ? `${totalMinutes} 分钟` : `${totalMinutes}m`;
+    }
 
     const days = Math.floor(totalMinutes / (24 * 60));
     const minutesAfterDays = totalMinutes % (24 * 60);
     const hours = Math.floor(minutesAfterDays / 60);
     const minutes = minutesAfterDays % 60;
+    if (mn) {
+        const parts: string[] = [];
+        if (days > 0) parts.push(mnDurationUnit(days, "day"));
+        if (hours > 0) parts.push(mnDurationUnit(hours, "hour"));
+        if (minutes > 0) parts.push(mnDurationUnit(minutes, "minute"));
+        return parts.join(" ");
+    }
     if (zh) {
         const parts: string[] = [];
         if (days > 0) parts.push(`${days} 天`);
@@ -454,7 +470,7 @@ function ResetVoucherIcon() {
     );
 }
 
-function PeriodLimitCard({ entry, t }: { entry: PeriodEntry; t: Translate }) {
+function PeriodLimitCard({ entry, t, lang }: { entry: PeriodEntry; t: Translate; lang?: string }) {
     const remaining = Math.max(0, entry.limit - entry.used);
     const pct = entry.limit > 0 ? Math.max(0, Math.min(100, Math.round((entry.used / entry.limit) * 100))) : 0;
     const barKind = pct >= 100 ? "exhausted" : pct >= 80 ? "warning" : "normal";
@@ -480,9 +496,11 @@ function PeriodLimitCard({ entry, t }: { entry: PeriodEntry; t: Translate }) {
                 <span className="hub-service-redeem__period-pct">{t(`Used ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`)} · {pct}%</span>
                 {entry.resetIn && (
                     <span className="hub-service-redeem__period-reset">
-                        {entry.rolling
+                        {normalizeLang(lang) === "mn"
+                            ? (entry.rolling ? `${mnApproxAfter(entry.resetIn)} сэргэнэ` : `${mnApproxAfter(entry.resetIn)} шинэчлэгдэнэ`)
+                            : (entry.rolling
                             ? t(`Recovers in ${entry.resetIn}`, `${entry.resetIn}后恢复`, `${entry.resetIn}後恢復`)
-                            : t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`)}
+                            : t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`))}
                     </span>
                 )}
             </div>
@@ -521,13 +539,20 @@ function grantStatusLabel(
     let label = labels[status] || (grant.active === false ? t("Queued", "排队中") : t("Active", "生效中"));
     const retrySeconds = grantRetrySeconds(grant);
     if (retrySeconds > 0 && (status === "period_limited" || status === "queued")) {
-        const suffix = status === "queued"
-            ? t("starts in about", "约", "約")
-            : t("recovers in about", "约", "約");
-        const zh = lang === "zh-Hans" || lang === "zh-Hant";
-        label += zh
-            ? ` · ${suffix} ${formatRetryDuration(retrySeconds, lang)} 后${status === "queued" ? "生效" : "恢复"}`
-            : ` · ${suffix} ${formatRetryDuration(retrySeconds, lang)}`;
+        const duration = formatRetryDuration(retrySeconds, lang);
+        if (normalizeLang(lang) === "mn") {
+            label += status === "queued"
+                ? ` · ${mnApproxAfter(duration)} эхэлнэ`
+                : ` · ${mnApproxAfter(duration)} сэргэнэ`;
+        } else {
+            const suffix = status === "queued"
+                ? t("starts in about", "约", "約")
+                : t("recovers in about", "约", "約");
+            const zh = lang === "zh-Hans" || lang === "zh-Hant";
+            label += zh
+                ? ` · ${suffix} ${duration} 后${status === "queued" ? "生效" : "恢复"}`
+                : ` · ${suffix} ${duration}`;
+        }
     }
     return label;
 }
@@ -552,9 +577,11 @@ function serviceStatusSummary(
             kind: "limited" as const,
             label: t("Period limited", "周期限额"),
             detail: retryText
-                ? (zh
+                ? (normalizeLang(lang) === "mn"
+                    ? `Одоогийн мөчлөгийн хэмжээ дууссан, ${mnApproxAfter(retryText)} сэргэнэ. Албан ёсны өөр боломжит сувгаар автоматаар шилжинэ; таны хувийн үйлчилгээ рүү чимээгүй шилжихгүй.`
+                    : (zh
                     ? `当前周期额度已用尽，约 ${retryText} 后恢复。若官方还有其它可用通道会自动切换；不会静默切到你的私有服务商。`
-                    : `The current period quota is exhausted and recovers in about ${retryText}. Routing switches automatically only to another available official route; it will not silently switch to your private provider.`)
+                    : `The current period quota is exhausted and recovers in about ${retryText}. Routing switches automatically only to another available official route; it will not silently switch to your private provider.`))
                 : t(
                     "The current period quota is exhausted. Routing switches automatically only to another available official route; it will not silently switch to your private provider.",
                     "当前周期额度已用尽。若官方还有其它可用通道会自动切换；不会静默切到你的私有服务商。",
@@ -571,7 +598,9 @@ function serviceStatusSummary(
             kind: "queued" as const,
             label: t("Not active yet", "授权尚未生效"),
             detail: retryText
-                ? (zh ? `授权约 ${retryText} 后生效。` : `Authorization starts in about ${retryText}.`)
+                ? (normalizeLang(lang) === "mn"
+                    ? `Зөвшөөрөл ${mnApproxAfter(retryText)} хүчин төгөлдөр болно.`
+                    : (zh ? `授权约 ${retryText} 后生效。` : `Authorization starts in about ${retryText}.`))
                 : t("Authorization is not active yet.", "授权尚未生效。", "授權尚未生效。"),
         };
     }
@@ -632,7 +661,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     onStatusChangeRef.current = onStatusChange;
 
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) => (
-        lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
+        localizeText(lang, en, zhHans, zhHant)
     ), [lang]);
 
     useEffect(() => {
@@ -1106,7 +1135,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                         </span>
                                     </div>
                                     <div className="hub-service-redeem__period-grid">
-                                        {group.periodInfo.map((entry) => <PeriodLimitCard key={entry.key} entry={entry} t={t} />)}
+                                        {group.periodInfo.map((entry) => <PeriodLimitCard key={entry.key} entry={entry} t={t} lang={lang} />)}
                                     </div>
                                 </section>
                             ))}
@@ -1151,7 +1180,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             {t("Account credit period limits", "账户点数周期限额", "帳戶點數週期限額")}
                         </div>
                         <div className="hub-service-redeem__period-grid">
-                            {meteredPeriodInfo.map((entry) => <PeriodLimitCard key={entry.key} entry={entry} t={t} />)}
+                            {meteredPeriodInfo.map((entry) => <PeriodLimitCard key={entry.key} entry={entry} t={t} lang={lang} />)}
                         </div>
                     </div>
                 )}

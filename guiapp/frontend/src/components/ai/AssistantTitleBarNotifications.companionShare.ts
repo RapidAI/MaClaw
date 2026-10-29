@@ -1,4 +1,5 @@
 import type { AdminNotification } from "./useNotifications";
+import { tailText } from "../../i18n/mnTail"
 
 /**
  * A shared document is delivered as a Hub notification so a recipient who was
@@ -24,20 +25,20 @@ export function companionHostTransferErrorText(error: unknown, lang: string): st
     const text = raw.trim();
     const isZh = lang.startsWith("zh");
     if (text.includes("没有等待你处理") || text.includes("SHARE_FORBIDDEN")) {
-        return isZh ? "这次主持人转移已失效。" : "This host transfer is no longer pending.";
+        return tailText(lang, "This host transfer is no longer pending.", "这次主持人转移已失效。");
     }
     // The nomination outlived the nominee's access: they left the group while
     // the request was waiting, so there is nothing to accept.
     if (text.includes("分享范围")) {
-        return isZh ? "你已不在这份文档的分享范围里。" : "You no longer have access to this document.";
+        return tailText(lang, "You no longer have access to this document.", "你已不在这份文档的分享范围里。");
     }
     if (text.includes("已过期") || text.includes("expired")) {
-        return isZh ? "这份分享已过期。" : "This share has expired.";
+        return tailText(lang, "This share has expired.", "这份分享已过期。");
     }
     if (text.includes("分享链接不存在") || text.includes("not found")) {
-        return isZh ? "分享已被撤回。" : "The share was withdrawn.";
+        return tailText(lang, "The share was withdrawn.", "分享已被撤回。");
     }
-    return text || (isZh ? "处理失败，请稍后重试。" : "Couldn't handle this request. Try again later.");
+    return text || (tailText(lang, "Couldn't handle this request. Try again later.", "处理失败，请稍后重试。"));
 }
 
 export function companionShareToken(notice: AdminNotification): string {
@@ -50,15 +51,13 @@ export function companionShareOpenErrorText(error: unknown, lang: string): strin
     const text = raw.trim();
     const isZh = lang.startsWith("zh");
     if (text.includes("需要分享密码") || text.includes("password")) {
-        return isZh
-            ? "这份分享需要密码，请在文档管理的「导入分享」里输入密码打开。"
-            : "This share needs a password. Open it from 文档管理 → 导入分享.";
+        return tailText(lang, "This share needs a password. Open it from 文档管理 → 导入分享.", "这份分享需要密码，请在文档管理的「导入分享」里输入密码打开。");
     }
     if (text.includes("已过期") || text.includes("expired")) {
-        return isZh ? "这份分享已过期。" : "This share has expired.";
+        return tailText(lang, "This share has expired.", "这份分享已过期。");
     }
     if (text.includes("分享链接不存在") || text.includes("not found")) {
-        return isZh ? "分享已被撤回。" : "The share was withdrawn.";
+        return tailText(lang, "The share was withdrawn.", "分享已被撤回。");
     }
-    return text || (isZh ? "打不开这份分享，请稍后重试。" : "Couldn't open this share. Try again later.");
+    return text || (tailText(lang, "Couldn't open this share. Try again later.", "打不开这份分享，请稍后重试。"));
 }

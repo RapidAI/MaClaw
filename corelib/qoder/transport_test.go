@@ -881,6 +881,39 @@ func TestOmitTopLevelIDDropsForeignID(t *testing.T) {
 	}
 }
 
+func TestEnvelopeBillingCodeStaysOnTheErrorFrame(t *testing.T) {
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	payload, err := json.Marshal(map[string]any{
+		"body": `{"code":"110","message":"Billing daily count exceeded"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.line("data:" + string(payload)) {
+		t.Fatal("billing denial continued the stream")
+	}
+	frame := buf.String()
+	if !strings.Contains(frame, `"code":"110"`) || !strings.Contains(frame, "Billing daily count exceeded") || !strings.Contains(frame, "上游错误 (110)") {
+		t.Fatalf("error frame dropped the billing code:\n%s", frame)
+	}
+
+	buf.Reset()
+	writer = &envelopeWriter{w: &buf}
+	numeric, err := json.Marshal(map[string]any{
+		"body": `{"code":110,"message":"Billing daily count exceeded"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.line("data:" + string(numeric)) {
+		t.Fatal("numeric billing code continued the stream")
+	}
+	if !strings.Contains(buf.String(), `"code":"110"`) {
+		t.Fatalf("numeric code was dropped:\n%s", buf.String())
+	}
+}
+
 func TestEnvelopeFailureTailIsAnError(t *testing.T) {
 	var buf bytes.Buffer
 	writer := &envelopeWriter{w: &buf}

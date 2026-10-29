@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { localizeText } from '../../i18n';
 import { corelib, main } from '../../../wailsjs/go/models';
 
 type Props = {
@@ -17,7 +18,7 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
 
     const t = useCallback(
         (en: string, zhHans: string, zhHant: string = zhHans) =>
-            lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en,
+            localizeText(lang, en, zhHans, zhHant),
         [lang]
     );
 

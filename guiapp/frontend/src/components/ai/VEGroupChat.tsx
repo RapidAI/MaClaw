@@ -23,6 +23,7 @@ import { veStatusEventInfo } from "./veStatusEvent";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { classifyDisplayAttachmentType } from "./attachmentClassification";
+import { tailText } from "../../i18n/mnTail"
 
 // --- Types ---
 
@@ -143,7 +144,7 @@ export function virtualEmployeeDisplayName(
     const machineId = String(ve.machine_id || "").trim();
     if (rawName && rawName !== rawId && rawName !== machineId && !looksLikeRawParticipantId(rawName)) return rawName;
     const ordinal = typeof index === "number" ? " " + (index + 1) : "";
-    return !lang || lang.startsWith("zh") ? "数字员工" + ordinal : "Digital employee" + ordinal;
+    return tailText(lang || "zh-Hans", "Digital employee" + ordinal, "数字员工" + ordinal);
 }
 
 
@@ -192,8 +193,8 @@ function readableGroupSpeakerName(
     const participant = String(participantName || "").trim();
     if (name && name !== id && !looksLikeRawParticipantId(name)) return name;
     if (participant && participant !== id && !looksLikeRawParticipantId(participant)) return participant;
-    if (isUser) return !lang || lang.startsWith("zh") ? "?" : "Me";
-    return !lang || lang.startsWith("zh") ? "数字员工" : "Digital employee";
+    if (isUser) return tailText(lang || "zh-Hans", "Me", "我");
+    return tailText(lang || "zh-Hans", "Digital employee", "数字员工");
 }
 
 // --- Hook: useGroupConfig ---
@@ -255,8 +256,6 @@ export function ParticipantSelector({
     const limitErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const popoverRef = useRef<HTMLDivElement>(null);
 
-    const isZh = !lang || lang.startsWith("zh");
-
     useEffect(() => {
         mountedRef.current = true;
         return () => {
@@ -290,20 +289,18 @@ export function ParticipantSelector({
             setAvailable(filtered);
         } catch {
             if (!mountedRef.current) return;
-            setError(isZh ? "\u83b7\u53d6\u5217\u8868\u5931\u8d25" : "Failed to load");
+            setError(tailText(lang || "zh-Hans", "Failed to load", "\u83b7\u53d6\u5217\u8868\u5931\u8d25"));
             setAvailable([]);
         } finally {
             if (mountedRef.current) setLoading(false);
         }
-    }, [currentParticipants, listVirtualEmployees, isZh]);
+    }, [currentParticipants, listVirtualEmployees, lang]);
 
     const handleToggle = useCallback(() => {
         if (addingIdRef.current) return;
         if (limitReached) {
             setError(
-                isZh
-                    ? `\u7fa4\u804a\u4eba\u6570\u5df2\u6ee1\uff08\u6700\u591a ${maxGroupParticipants} \u4eba\uff09`
-                    : `Group is full (max ${maxGroupParticipants})`
+                tailText(lang || "zh-Hans", `Group is full (max ${maxGroupParticipants})`, `\u7fa4\u804a\u4eba\u6570\u5df2\u6ee1\uff08\u6700\u591a ${maxGroupParticipants} \u4eba\uff09`)
             );
             if (limitErrorTimerRef.current) clearTimeout(limitErrorTimerRef.current);
             limitErrorTimerRef.current = setTimeout(() => {
@@ -316,7 +313,7 @@ export function ParticipantSelector({
             fetchAvailable();
         }
         setOpen(!open);
-    }, [open, limitReached, maxGroupParticipants, isZh, fetchAvailable]);
+    }, [open, limitReached, maxGroupParticipants, lang, fetchAvailable]);
 
     useEffect(() => () => {
         if (limitErrorTimerRef.current) clearTimeout(limitErrorTimerRef.current);
@@ -356,7 +353,7 @@ export function ParticipantSelector({
                     alignItems: "center",
                     justifyContent: "center",
                 }}
-                title={isZh ? "\u6dfb\u52a0\u53c2\u4e0e\u8005" : "Add participant"}
+                title={tailText(lang || "zh-Hans", "Add participant", "\u6dfb\u52a0\u53c2\u4e0e\u8005")}
             >
                 +
             </button>
@@ -403,7 +400,7 @@ export function ParticipantSelector({
                 >
                     {loading && (
                         <div style={{ padding: "8px 12px", color: theme.textMuted, fontSize: 12 }}>
-                            {isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}
+                            {tailText(lang || "zh-Hans", "Loading...", "\u52a0\u8f7d\u4e2d...")}
                         </div>
                     )}
                     {!loading && available.length === 0 && (
@@ -411,7 +408,7 @@ export function ParticipantSelector({
                             data-testid="group-picker-empty"
                             style={{ padding: "8px 12px", color: theme.textMuted, fontSize: 12 }}
                         >
-                            {isZh ? "\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u6570\u5b57\u5458\u5de5" : "No available digital employees"}
+                            {tailText(lang || "zh-Hans", "No available digital employees", "\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u6570\u5b57\u5458\u5de5")}
                         </div>
                     )}
                     {!loading &&
@@ -463,7 +460,7 @@ export function ParticipantSelector({
                                         className="vegc-presence-dot"
                                     />
                                 )}
-                                <span>{addingId === ve.id ? (isZh ? "???..." : "Adding...") : virtualEmployeeDisplayName(ve, index, lang)}</span>
+                                <span>{addingId === ve.id ? (tailText(lang || "zh-Hans", "Adding...", "添加中...")) : virtualEmployeeDisplayName(ve, index, lang)}</span>
                             </div>
                             );
                         })}
@@ -574,7 +571,6 @@ export interface ParticipantOfflineNoticeProps {
 }
 
 export function ParticipantOfflineNotice({ participantName, theme, lang }: ParticipantOfflineNoticeProps) {
-    const isZh = !lang || lang.startsWith("zh");
     return (
         <div
             data-testid={`group-offline-notice-${participantName}`}
@@ -586,7 +582,7 @@ export function ParticipantOfflineNotice({ participantName, theme, lang }: Parti
                 fontStyle: "italic",
             }}
         >
-            {isZh ? `${participantName} \u5df2\u79bb\u7ebf` : `${participantName} went offline`}
+            {tailText(lang || "zh-Hans", `${participantName} went offline`, `${participantName} \u5df2\u79bb\u7ebf`)}
         </div>
     );
 }
@@ -611,7 +607,6 @@ export function VEGroupChatView({
 }: VEGroupChatProps) {
     const { maxGroupParticipants } = useGroupConfig(initialMax);
     const [offlineNotices, setOfflineNotices] = useState<string[]>([]);
-    const isZh = !lang || lang.startsWith("zh");
 
     // Update tab title when participants change
     useEffect(() => {
@@ -694,7 +689,7 @@ export function VEGroupChatView({
                     }}
                 >
                     <div style={{ fontSize: 12, color: theme.textMuted }}>
-                        {isZh ? `${participantCount} \u4f4d\u53c2\u4e0e\u8005` : `${participantCount} participants`}
+                        {tailText(lang || "zh-Hans", `${participantCount} participants`, `${participantCount} \u4f4d\u53c2\u4e0e\u8005`)}
                     </div>
                     {allowParticipantAdd && (
                         <ParticipantSelector

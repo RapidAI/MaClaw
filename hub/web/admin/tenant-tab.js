@@ -100,10 +100,16 @@
     deleteFailed: { zh: '\u5220\u9664\u79df\u6237\u5931\u8d25: {error}', en: 'Delete tenant failed: {error}' }
   };
 
-  function lang() { return global.currentLang === 'zh' ? 'zh' : 'en'; }
+  function lang() { return global.hubAdminLang ? global.hubAdminLang() : (global.currentLang === 'zh' ? 'zh' : 'en'); }
+  function tl(zh, en, vars) {
+    var text = global.hubLine ? global.hubLine('TENANT_INLINE', zh, en) : (lang() === 'zh' ? zh : en);
+    Object.keys(vars || {}).forEach(function(name) { text = String(text).split('{' + name + '}').join(vars[name] == null ? '' : String(vars[name])); });
+    return text;
+  }
   function tt(key, vars) {
+    if (global.hubEntry) return global.hubEntry('TENANT', TENANT_I18N, key, vars);
     var entry = TENANT_I18N[key];
-    var text = entry ? entry[lang()] : key;
+    var text = entry ? (entry.zh && global.currentLang === 'zh' ? entry.zh : entry.en) : key;
     Object.keys(vars || {}).forEach(function(name) { text = text.replace('{' + name + '}', vars[name]); });
     return text;
   }
@@ -305,12 +311,14 @@
       var deQuota = Number(de.quota) || 0;
       var deUsed = Number(de.used) || 0;
       var deExpiry = de.expires_at ? fmtTime(de.expires_at) : '';
-      var deLabel = lang() === 'zh' ? '\u6570\u5b57\u5458\u5de5' : 'Digital Employees';
+      var deLabel = tl('\u6570\u5b57\u5458\u5de5', 'Digital Employees');
       var deStatus = deActive
-        ? (lang() === 'zh' ? '\u5df2\u6388\u6743 ' + deQuota + ' \u4e2a\u5e2d\u4f4d' + (deUsed > 0 ? '\uff08\u5df2\u7528 ' + deUsed + '\uff09' : '') : deQuota + ' seats' + (deUsed > 0 ? ' (' + deUsed + ' used)' : ''))
-        : (lang() === 'zh' ? '\u672a\u6388\u6743' : 'Not authorized');
+        ? (deUsed > 0
+          ? tl('\u5df2\u6388\u6743 {quota} \u4e2a\u5e2d\u4f4d\uff08\u5df2\u7528 {used}\uff09', '{quota} seats ({used} used)', { quota: deQuota, used: deUsed })
+          : tl('\u5df2\u6388\u6743 {quota} \u4e2a\u5e2d\u4f4d', '{quota} seats', { quota: deQuota }))
+        : tl('\u672a\u6388\u6743', 'Not authorized');
       var deTitle = deActive
-        ? (deExpiry ? (lang() === 'zh' ? '\u5230\u671f: ' + deExpiry : 'Expires: ' + deExpiry) : '')
+        ? (deExpiry ? tl('\u5230\u671f: {when}', 'Expires: {when}', { when: deExpiry }) : '')
         : (de.reason || '');
       parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-label" style="font-weight:700;color:#475569;white-space:nowrap">' + esc(deLabel) + '</span><span class="badge ' + deBadge + '" title="' + esc(deTitle) + '">' + esc(deStatus) + '</span></div>');
     }
@@ -322,18 +330,18 @@
       var cRemaining = formatComputeCredits(compute.remaining_credits);
       var cTotal = formatComputeCredits(compute.total_credits);
       var cExpiry = compute.expires_at ? fmtTime(compute.expires_at) : '-';
-      var cLabel = lang() === 'zh' ? '\u7b97\u529b\u6a21\u5757' : 'Compute Module';
+      var cLabel = tl('\u7b97\u529b\u6a21\u5757', 'Compute Module');
       var cStatus = cActive
-        ? (lang() === 'zh' ? '\u5269\u4f59 ' + cRemaining + '/' + cTotal + ' \u7b97\u529b' : cRemaining + '/' + cTotal + ' credits')
-        : (lang() === 'zh' ? '\u672a\u6388\u6743' : 'Not authorized');
+        ? tl('\u5269\u4f59 {remaining}/{total} \u7b97\u529b', '{remaining}/{total} credits', { remaining: cRemaining, total: cTotal })
+        : tl('\u672a\u6388\u6743', 'Not authorized');
       var cTitle = cActive
-        ? (lang() === 'zh' ? '\u5230\u671f: ' + cExpiry + (compute.allow_external ? ' | \u5141\u8bb8\u5916\u90e8\u63d0\u4f9b\u5546' : '') : 'Expires: ' + cExpiry + (compute.allow_external ? ' | External providers allowed' : ''))
+        ? tl('\u5230\u671f: {when}', 'Expires: {when}', { when: cExpiry }) + (compute.allow_external ? tl(' | \u5141\u8bb8\u5916\u90e8\u63d0\u4f9b\u5546', ' | External providers allowed') : '')
         : '';
       parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-label" style="font-weight:700;color:#475569;white-space:nowrap">' + esc(cLabel) + '</span><span class="badge ' + cBadge + '" title="' + esc(cTitle) + '">' + esc(cStatus) + '</span></div>');
     }
     // If neither authorization is present and data was loaded, show a hint
     if (!de && !compute && tenantAuthorizationLoaded) {
-      var noAuthLabel = lang() === 'zh' ? '\u672a\u914d\u7f6e\u6388\u6743' : 'No authorization';
+      var noAuthLabel = tl('\u672a\u914d\u7f6e\u6388\u6743', 'No authorization');
       parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-label" style="font-weight:700;color:#475569">' + esc(noAuthLabel) + '</span></div>');
     }
     return parts.join('');
@@ -661,7 +669,7 @@
 
   async function updateTenantStatus(tenantID, status, label, confirmKey) {
     if (!tenantID) return;
-    if (!(await showTenantConfirmDialog(tt(confirmKey || 'deactivateConfirm', { tenant: label || tenantID }), { title: lang() === 'zh' ? '\u66f4\u6539\u72b6\u6001' : 'Change Status', danger: status !== 'active' }))) return;
+    if (!(await showTenantConfirmDialog(tt(confirmKey || 'deactivateConfirm', { tenant: label || tenantID }), { title: tl('\u66f4\u6539\u72b6\u6001', 'Change Status'), danger: status !== 'active' }))) return;
     try {
       await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID) + '/status', { method: 'PATCH', body: JSON.stringify({ status: status }) });
       await loadTenants();
@@ -681,14 +689,14 @@
       overlay.id = overlayId;
       overlay.className = 'session-modal-overlay show';
       overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
-      var titleText = lang() === 'zh' ? '\u5220\u9664\u79df\u6237' : 'Delete Tenant';
+      var titleText = tl('\u5220\u9664\u79df\u6237', 'Delete Tenant');
       var msgHtml = lang() === 'zh'
         ? '\u2757 \u6b64\u64cd\u4f5c\u5c06\u6c38\u4e45\u5220\u9664\u79df\u6237 <strong>' + esc(displayName) + '</strong> \u53ca\u5176\u6240\u6709\u6570\u636e\uff08\u7528\u6237\u3001\u8bbe\u5907\u3001\u914d\u7f6e\u3001\u8bb0\u5f55\u7b49\uff09\uff0c\u4e0d\u53ef\u6062\u590d\uff01'
-        : '\u2757 This will <strong>PERMANENTLY</strong> delete tenant "' + esc(displayName) + '" and ALL its data (users, devices, settings, records, etc.). This cannot be undone!';
-      var passwordLabel = lang() === 'zh' ? '\u8bf7\u8f93\u5165\u60a8\u7684\u7ba1\u7406\u5458\u767b\u5f55\u5bc6\u7801\u4ee5\u786e\u8ba4\uff1a' : 'Enter your admin login password to confirm:';
-      var cancelText = lang() === 'zh' ? '\u53d6\u6d88' : 'Cancel';
-      var confirmText = lang() === 'zh' ? '\u786e\u8ba4\u5220\u9664' : 'Confirm Delete';
-      var emptyHint = lang() === 'zh' ? '\u8bf7\u8f93\u5165\u5bc6\u7801' : 'Password is required';
+        : tl('\u2757 \u6b64\u64cd\u4f5c\u5c06\u6c38\u4e45\u5220\u9664\u79df\u6237 <strong>{name}</strong> \u53ca\u5176\u6240\u6709\u6570\u636e\uff08\u7528\u6237\u3001\u8bbe\u5907\u3001\u914d\u7f6e\u3001\u8bb0\u5f55\u7b49\uff09\uff0c\u4e0d\u53ef\u6062\u590d\uff01', '\u2757 This will <strong>PERMANENTLY</strong> delete tenant "{name}" and ALL its data (users, devices, settings, records, etc.). This cannot be undone!', { name: esc(displayName) });
+      var passwordLabel = tl('\u8bf7\u8f93\u5165\u60a8\u7684\u7ba1\u7406\u5458\u767b\u5f55\u5bc6\u7801\u4ee5\u786e\u8ba4\uff1a', 'Enter your admin login password to confirm:');
+      var cancelText = tl('\u53d6\u6d88', 'Cancel');
+      var confirmText = tl('\u786e\u8ba4\u5220\u9664', 'Confirm Delete');
+      var emptyHint = tl('\u8bf7\u8f93\u5165\u5bc6\u7801', 'Password is required');
       overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="deleteTenantDialogTitle" style="width:min(420px,100%);max-height:none;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">'
         + '<div class="item-title" id="deleteTenantDialogTitle" style="margin-bottom:8px;color:var(--danger,#e53935)">' + esc(titleText) + '</div>'
         + '<div class="item-meta" style="margin-bottom:12px">' + msgHtml + '</div>'
@@ -740,9 +748,9 @@
       overlay.id = overlayId;
       overlay.className = 'session-modal-overlay show';
       overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
-      var titleText = options.title || (lang() === 'zh' ? '\u786e\u8ba4\u64cd\u4f5c' : 'Confirm');
-      var confirmText = options.confirmText || (lang() === 'zh' ? '\u786e\u8ba4' : 'Confirm');
-      var cancelText = lang() === 'zh' ? '\u53d6\u6d88' : 'Cancel';
+      var titleText = options.title || tl('\u786e\u8ba4\u64cd\u4f5c', 'Confirm');
+      var confirmText = options.confirmText || tl('\u786e\u8ba4', 'Confirm');
+      var cancelText = tl('\u53d6\u6d88', 'Cancel');
       overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="tenantConfirmDialogTitle" style="width:min(420px,100%);max-height:none;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">'
         + '<div class="item-title" id="tenantConfirmDialogTitle" style="margin-bottom:8px' + (danger ? ';color:var(--danger,#e53935)' : '') + '">' + esc(titleText) + '</div>'
         + '<div class="item-meta" style="margin-bottom:16px;white-space:pre-wrap">' + esc(message) + '</div>'
@@ -776,8 +784,8 @@
       overlay.id = overlayId;
       overlay.className = 'session-modal-overlay show';
       overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
-      var cancelText = lang() === 'zh' ? '\u53d6\u6d88' : 'Cancel';
-      var confirmText = lang() === 'zh' ? '\u786e\u5b9a' : 'OK';
+      var cancelText = tl('\u53d6\u6d88', 'Cancel');
+      var confirmText = tl('\u786e\u5b9a', 'OK');
       var optionsHtml = options.map(function(item, index) {
         return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer"><input type="radio" name="tenantSelectOption" value="' + index + '"' + (index === 0 ? ' checked' : '') + '><span>' + esc(item.label) + '</span></label>';
       }).join('');
@@ -823,7 +831,7 @@
     } catch (err) {
       var errMsg = err.message || String(err);
       if (errMsg.indexOf('PASSWORD_INCORRECT') >= 0 || errMsg.indexOf('password') >= 0) {
-        setTenantOutput(lang() === 'zh' ? '\u5220\u9664\u5931\u8d25\uff1a\u5bc6\u7801\u9519\u8bef\uff0c\u8bf7\u91cd\u8bd5\u3002' : 'Delete failed: incorrect password, please try again.', 'error');
+        setTenantOutput(tl('\u5220\u9664\u5931\u8d25\uff1a\u5bc6\u7801\u9519\u8bef\uff0c\u8bf7\u91cd\u8bd5\u3002', 'Delete failed: incorrect password, please try again.'), 'error');
       } else {
         setTenantOutput(tt('deleteFailed', { error: errMsg }), 'error');
       }
@@ -836,7 +844,7 @@
     if (!targetID) return;
     var target = (tenantCache || []).filter(function(item) { return item && item.id === targetID; })[0] || { id: targetID };
     var confirmKey = isDefaultTenantID(tenantID) ? 'mergeConfirmDefault' : 'mergeConfirm';
-    if (!dryRun && !(await showTenantConfirmDialog(tt(confirmKey, { source: label || tenantID, target: tenantLabel(target) || targetID }), { title: lang() === 'zh' ? '\u5408\u5e76\u79df\u6237' : 'Merge Tenant', danger: true }))) return;
+    if (!dryRun && !(await showTenantConfirmDialog(tt(confirmKey, { source: label || tenantID, target: tenantLabel(target) || targetID }), { title: tl('\u5408\u5e76\u79df\u6237', 'Merge Tenant'), danger: true }))) return;
     tenantMergeBusy[tenantID] = true;
     try {
       var data = await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID) + '/merge', { method: 'POST', body: JSON.stringify({ target_tenant_id: targetID, dry_run: !!dryRun, delete_source: true }) });

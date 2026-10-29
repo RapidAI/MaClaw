@@ -12,6 +12,9 @@ import {
     visibleFormFields as computeVisibleFormFields,
     visibleInteractiveFormFields,
 } from "./agentViewFieldVisibility";
+import { localizeText } from "../../i18n";
+import { tailText } from "../../i18n/mnTail";
+
 
 interface AgentTaskPanelProps {
     view: AgentView;
@@ -1460,7 +1463,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                 aria-valuemin={20}
                 aria-valuemax={80}
                 aria-valuenow={Math.round(splitRatio * 100)}
-                aria-label={lang === "en" ? "Resize preview panel" : "调整预览面板宽度"}
+                aria-label={localizeText(lang, "Resize preview panel", "调整预览面板宽度", "調整預覽面板寬度")}
                 tabIndex={0}
                 onPointerDown={(event) => {
                     event.preventDefault();
@@ -1594,16 +1597,15 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                                     if (dismissing) return;
                                     setDismissing(true);
                                     try {
-                                        const isZh = lang?.startsWith("zh");
-                                        const title = isZh ? "确定要放弃当前工作流吗？" : "Cancel Workflow?";
-                                        const msg = isZh ? "放弃后当前进度将被清除，只能重新发起工作流。" : "All progress will be lost and you'll need to start a new workflow.";
+                                        const title = tailText(lang, "Cancel Workflow?", "确定要放弃当前工作流吗？");
+                                        const msg = tailText(lang, "All progress will be lost and you'll need to start a new workflow.", "放弃后当前进度将被清除，只能重新发起工作流。");
                                         const confirmed = await showConfirm(msg, title);
                                         if (!confirmed) return;
                                         onDismiss(view.id, { ...dismissPayload(), __cancel_workflow: true });
                                     } finally {
                                         setDismissing(false);
                                     }
-                                }} style={{ ...buttonStyle, color: theme.errorText, borderColor: theme.errorText, opacity: submitting || dismissing ? 0.5 : 0.75, cursor: submitting || dismissing ? "not-allowed" : "pointer", fontSize: 11, whiteSpace: "nowrap" }}>{lang?.startsWith("zh") ? "放弃工作流" : "Cancel Workflow"}</button>
+                                }} style={{ ...buttonStyle, color: theme.errorText, borderColor: theme.errorText, opacity: submitting || dismissing ? 0.5 : 0.75, cursor: submitting || dismissing ? "not-allowed" : "pointer", fontSize: 11, whiteSpace: "nowrap" }}>{tailText(lang, "Cancel Workflow", "放弃工作流")}</button>
                             )}
                         </div>
                     </form>

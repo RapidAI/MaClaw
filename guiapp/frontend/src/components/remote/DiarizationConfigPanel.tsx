@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { localizeText } from '../../i18n';
 import { CheckDiarizationModel, DownloadDiarizationModel, GetDiarizationEnabled, SetDiarizationEnabled } from '../../../wailsjs/go/main/App';
 import { EventsOff, EventsOn } from '../../../wailsjs/runtime';
 import { ModelStatusBox } from './ModelStatusBox';
@@ -9,7 +10,7 @@ type Props = { lang: string };
 // used to label each meeting segment before it is sent to SenseVoice ASR.
 export function DiarizationConfigPanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        localizeText(lang, en, zhHans, zhHant), [lang]);
     const [enabled, setEnabled] = useState(true);
     const [exists, setExists] = useState(false);
     const [size, setSize] = useState(0);

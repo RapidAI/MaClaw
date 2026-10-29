@@ -24,6 +24,7 @@ export function formatBrandLine(parts: BrandLineParts): string {
 }
 
 export function brandLineGeneration(input: Pick<BrandLineInput, 'lang' | 'localizedDefault'> = {}): string {
+    if (normalizeLang(input.lang) === 'mn') return '';
     if (normalizeLang(input.lang) === 'zh-Hant') return BRAND_LINE_GENERATION_HANT;
     const fallback = String(input.localizedDefault || '');
     if (fallback.includes(BRAND_LINE_GENERATION_HANT) || fallback.includes(BRAND_LINE_DEFAULT_CN_HANT)) {
@@ -33,7 +34,9 @@ export function brandLineGeneration(input: Pick<BrandLineInput, 'lang' | 'locali
 }
 
 export function brandLineDefaultCN(lang?: string): string {
-    return normalizeLang(lang) === 'zh-Hant' ? BRAND_LINE_DEFAULT_CN_HANT : BRAND_LINE_DEFAULT_CN_HANS;
+    const normalized = normalizeLang(lang);
+    if (normalized === 'mn') return 'MaClaw';
+    return normalized === 'zh-Hant' ? BRAND_LINE_DEFAULT_CN_HANT : BRAND_LINE_DEFAULT_CN_HANS;
 }
 
 function splitBrandLine(full: string): BrandLineParts | null {

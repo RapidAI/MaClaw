@@ -21,6 +21,86 @@ func TestChatProbeBudgetExceedsOAuthClient(t *testing.T) {
 	}
 }
 
+func TestChatBodyCarriesAgentRouterContract(t *testing.T) {
+	raw, err := chatBodyJSON(ChatRequest{
+		Model:    "dfmodel",
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["agent_id"] != "agent_common" || body["task_id"] != "common" || body["session_type"] != "qodercli" || body["chat_task"] != "FREE_INPUT" {
+		t.Fatalf("router fields = agent_id:%v task_id:%v session_type:%v chat_task:%v", body["agent_id"], body["task_id"], body["session_type"], body["chat_task"])
+	}
+	if body["chat_record_id"] == "" || body["chat_record_id"] != body["request_set_id"] {
+		t.Fatalf("chat_record_id = %v, request_set_id = %v", body["chat_record_id"], body["request_set_id"])
+	}
+	if body["data_policy_agreed"] != true || body["source"] != float64(1) || body["stream"] != true {
+		t.Fatalf("wire flags = policy:%v source:%v stream:%v", body["data_policy_agreed"], body["source"], body["stream"])
+	}
+	config, _ := body["model_config"].(map[string]any)
+	if config["key"] != "dfmodel" || config["source"] != "system" {
+		t.Fatalf("model_config = %#v", config)
+	}
+	business, _ := body["business"].(map[string]any)
+	if business["type"] != "agent" || business["scene"] != "cli" || business["stage"] != "start" || business["product"] != "cli" {
+		t.Fatalf("business = %#v", business)
+	}
+	adapted, stream := prepareAgentChatBody([]byte(`{"model":"qwen3.8-max","stream":false,"session_id":"sess-1","task_id":"","messages":[{"role":"user","content":"hello"}]}`))
+	if stream {
+		t.Fatal("caller stream flag was rewritten")
+	}
+	if !strings.Contains(adapted, `"task_id":"common"`) || strings.Contains(adapted, `"task_id":""`) {
+		t.Fatalf("transport body dropped the router task: %s", adapted)
+	}
+	if !strings.Contains(adapted, `"model":"qmodel_38max"`) || !strings.Contains(adapted, `"session_id":"sess-1"`) || strings.Contains(adapted, "qwen3.8-max") {
+		t.Fatalf("transport body = %s", adapted)
+	}
+}
+
+func TestAgentChatModelMatchesSignedCatalogKey(t *testing.T) {
+	if got := agentChatModel(`{"model":"qwen3.8-max"}`); got != "qmodel_38max" {
+		t.Fatalf("signer model = %s", got)
+	}
+	if got := agentChatModel(`not-json`); got != "qmodel_38max" {
+		t.Fatalf("signer fallback = %s", got)
+	}
+	adapted, _ := prepareAgentChatBody([]byte(`{"model":"dfmodel","max_completion_tokens":128,"text_content":"dropped","contents":[],"messages":[{"role":"user","content":"hi"}]}`))
+	if strings.Contains(adapted, "max_completion_tokens") || strings.Contains(adapted, "text_content") || strings.Contains(adapted, `"contents"`) {
+		t.Fatalf("openai-only fields survived: %s", adapted)
+	}
+	if !strings.Contains(adapted, `"max_tokens":128`) {
+		t.Fatalf("output cap was not folded: %s", adapted)
+	}
+	kept, _ := prepareAgentChatBody([]byte(`{"model":"dfmodel","max_tokens":32,"max_completion_tokens":8,"messages":[{"role":"user","content":"hi"}]}`))
+	if !strings.Contains(kept, `"max_tokens":32`) || strings.Contains(kept, "max_completion_tokens") {
+		t.Fatalf("explicit cap was replaced: %s", kept)
+	}
+	cleared, _ := prepareAgentChatBody([]byte(`{"model":"dfmodel","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}`))
+	if strings.Contains(cleared, "max_tokens") {
+		t.Fatalf("zero cap survived: %s", cleared)
+	}
+	if agentChatModel(adapted) != "dfmodel" {
+		t.Fatalf("signer model = %s", agentChatModel(adapted))
+	}
+}
+
+func TestChatBodyFallsBackToCatalogModelKey(t *testing.T) {
+	raw, err := chatBodyJSON(ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"model":"qmodel_38max"`) || strings.Contains(raw, "qwen3.8-max") {
+		t.Fatalf("empty model leaked a display name: %s", raw)
+	}
+}
+
 func TestChatBodyUsesCatalogModelKey(t *testing.T) {
 	raw, err := chatBodyJSON(ChatRequest{
 		Model:    "qwen3.8-max",

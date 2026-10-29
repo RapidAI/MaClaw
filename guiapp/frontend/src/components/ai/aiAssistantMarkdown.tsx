@@ -61,6 +61,8 @@ import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { isSafeKBImageDataURL, KB_IMAGE_MARKER_RE } from "./kbImageValidation";
 
 import { assistantLiveActivityLabel, codingThoughtTextIsBlank } from "./assistantLiveActivity";
+import { isTraditionalLang } from "../../i18n";
+
 
 export type { Theme } from "./aiAssistantPanelTheme";
 export type { RecordingCompleteResult } from "./RecordingSessionCard";
@@ -1579,10 +1581,10 @@ export function renderMessage(
             const userTurnText = userTurn.text;
             const userAttachments = partitionUserAttachments(userTurn.attachments);
             return (
-                <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? (lang === "en" ? "Your injected guidance" : "我已注入的引导") : (lang === "en" ? "Your message" : "我的消息")} className="aamd-msg-user">
+                <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? ((localizeText(lang, "Your injected guidance", "我已注入的引导"))) : ((localizeText(lang, "Your message", "我的消息")))} className="aamd-msg-user">
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>
-                        <span className="mc-message-avatar mc-message-avatar--user" aria-hidden="true">{lang === "en" ? "U" : "我"}</span>
-                        <span>{lang === "en" ? "You" : "我"}</span>
+                        <span className="mc-message-avatar mc-message-avatar--user" aria-hidden="true">{(localizeText(lang, "U", "我"))}</span>
+                        <span>{(localizeText(lang, "You", "我"))}</span>
                         {isGuideInjection && (
                             <span
                                 data-testid="guide-injection-badge"
@@ -1596,7 +1598,7 @@ export function renderMessage(
                                     lineHeight: 1.4,
                                 }}
                             >
-                                {lang === "en" ? "Injected" : "已注入"}
+                                {(localizeText(lang, "Injected", "已注入"))}
                             </span>
                         )}
                     </span>
@@ -1620,14 +1622,14 @@ export function renderMessage(
                     >
                         {userTurnText && <div>{userTurnText}</div>}
                         {userAttachments.inline.length > 0 && (
-                            <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6, marginTop: userTurnText ? 7 : 0 }}>
+                            <div aria-label={(localizeText(lang, "Attached files", "已附加文件"))} style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6, marginTop: userTurnText ? 7 : 0 }}>
                                 {userAttachments.inline.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
                             </div>
                         )}
                     </ChatBubbleFrame>
                     )}
                     {userAttachments.documents.length > 0 && (
-                        <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} data-testid={`assistant-chat-document-previews-${msg.id}`} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, width: ATTACHMENT_DOC_SHOT_WIDTH, maxWidth: "100%", minWidth: 0, overflow: "hidden", marginTop: 8 }}>
+                        <div aria-label={(localizeText(lang, "Attached files", "已附加文件"))} data-testid={`assistant-chat-document-previews-${msg.id}`} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, width: ATTACHMENT_DOC_SHOT_WIDTH, maxWidth: "100%", minWidth: 0, overflow: "hidden", marginTop: 8 }}>
                             {userAttachments.documents.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
                         </div>
                     )}
@@ -1724,7 +1726,7 @@ export function renderMessage(
                                     opacity: 0.8,
                                 }}
                             >
-                                {lang === "en" ? "Working..." : "\u5904\u7406\u4e2d\u2026"}
+                                {(localizeText(lang, "Working...", "\u5904\u7406\u4e2d\u2026"))}
                             </span>
                         )}
                         {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, t, lang)}
@@ -1738,7 +1740,7 @@ export function renderMessage(
                             const live = liveForReasoning;
                             const reasoningLabel = live
                                 ? (liveReasoningLabel || assistantLiveActivityLabel("thinking", lang))
-                                : (lang === "en" ? "Thinking process..." : "思考过程...");
+                                : ((localizeText(lang, "Thinking process...", "思考过程...")));
                             // Open while reasoning tokens are still arriving. Fold when that
                             // stream ends, or when a coding answer has already started.
                             // A live tool label with no stream stays folded.
@@ -1915,7 +1917,7 @@ export function renderMessage(
                 return (
                     <div key={msg.id} role="status" data-testid={`assistant-goal-checklist-${msg.id}`} className="aamd-msg-row">
                         <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.55", whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
-                            <div style={{ marginBottom: 4, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{lang === "en" ? "Goal" : lang === "zh-Hant" ? "目標" : "目标"}</div>
+                            <div style={{ marginBottom: 4, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{isTraditionalLang(lang) ? "目標" : (localizeText(lang, "Goal", "目标"))}</div>
                             {prepareChatBodyForDisplay(msg.content)}
                         </div>
                     </div>
@@ -1925,7 +1927,7 @@ export function renderMessage(
                 return (
                     <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} className="aamd-msg-row">
                         <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: `color-mix(in srgb, ${t.sendBtnBg} 8%, ${t.fieldBg})`, border: `1px solid color-mix(in srgb, ${t.sendBtnBorder} 44%, ${t.fieldBorder})`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
-                            <div style={{ marginBottom: 3, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{lang === "en" ? "CURRENT TASK" : lang === "zh-Hant" ? "目前任務資訊" : "当前任务信息"}</div>
+                            <div style={{ marginBottom: 3, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{isTraditionalLang(lang) ? "目前任務資訊" : (localizeText(lang, "CURRENT TASK", "当前任务信息"))}</div>
                             {renderContentWithCodeBlocks(msg.content, t, undefined, lang)}
                         </div>
                     </div>

@@ -94,6 +94,7 @@
   };
 
   function t(key) {
+    if (window.hubDict) return window.hubDict('MACLAW_COMPUTE', I18N, key);
     var lang = (window.currentLang || document.documentElement.lang || 'en').toLowerCase();
     var dict = lang.startsWith('zh') ? I18N.zh : I18N.en;
     return dict[key] || I18N.en[key] || key;

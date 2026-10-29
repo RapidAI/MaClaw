@@ -1,21 +1,17 @@
+import { localizeText, normalizeLang } from '../../i18n';
+
 export type InstallSkillText = (en: string, zhHans: string, zhHant: string) => string;
 
-export const currentInstallSkillLang = (lang?: string) => (lang || document.documentElement.lang || 'zh-Hans').trim().toLowerCase();
+const documentLang = () => (typeof document !== 'undefined' ? document.documentElement.lang : '');
 
-export const isEnglishInstallSkillLang = (lang?: string) => {
-    const normalized = currentInstallSkillLang(lang);
-    return normalized === 'en' || normalized.startsWith('en-');
-};
+export const currentInstallSkillLang = (lang?: string) => normalizeLang(lang || documentLang() || 'en');
 
-export const isTraditionalInstallSkillLang = (lang?: string) => {
-    const normalized = currentInstallSkillLang(lang);
-    return normalized.startsWith('zh-hant') || normalized.startsWith('zh-tw') || normalized.startsWith('zh-hk');
-};
+export const isEnglishInstallSkillLang = (lang?: string) => currentInstallSkillLang(lang) === 'en';
 
-export const installSkillText = (lang: string | undefined, en: string, zhHans: string, zhHant: string): string => {
-    if (isEnglishInstallSkillLang(lang)) return en;
-    return isTraditionalInstallSkillLang(lang) ? zhHant : zhHans;
-};
+export const isTraditionalInstallSkillLang = (lang?: string) => currentInstallSkillLang(lang) === 'zh-Hant';
+
+export const installSkillText = (lang: string | undefined, en: string, zhHans: string, zhHant: string): string =>
+    localizeText(lang || documentLang() || 'en', en, zhHans, zhHant);
 
 export const installSkillTextForCurrentLang = (en: string, zhHans: string, zhHant: string): string =>
     installSkillText(undefined, en, zhHans, zhHant);

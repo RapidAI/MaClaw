@@ -4,6 +4,7 @@ import { primaryFilledButtonStyle } from "../aiAssistantPanelTheme";
 import { TestRemoteSSHConnection } from "../../../../wailsjs/go/main/App";
 import { TaskConfigPopoverShell } from "./TaskConfigPopoverShell";
 import type { RemoteTarget } from "./taskDraft";
+import { tailText } from "../../../i18n/mnTail"
 
 /** 端口校验：空 = 默认 22；非法返回 null（调用方提示错误，不静默改值）。 */
 function validatePort(raw: string): number | null {
@@ -35,7 +36,6 @@ export function RemoteServerForm({
     onConfirm,
     footerLeading,
 }: RemoteServerFormProps) {
-    const isZh = !lang?.startsWith("en");
     const [host, setHost] = useState(initial?.host || "");
     const [port, setPort] = useState(String(initial?.port || 22));
     const [user, setUser] = useState(initial?.user || "");
@@ -67,7 +67,7 @@ export function RemoteServerForm({
         fontFamily: "system-ui, -apple-system, sans-serif",
     };
 
-    const portError = isZh ? "端口需为 1–65535 的整数。" : "Port must be an integer between 1 and 65535.";
+    const portError = tailText(lang ?? "", "Port must be an integer between 1 and 65535.", "端口需为 1–65535 的整数。");
 
     const testConnection = async () => {
         if (testing) return;
@@ -75,7 +75,7 @@ export function RemoteServerForm({
         const u = user.trim();
         const w = workDir.trim();
         if (!h || !u || !w) {
-            setError(isZh ? "测试连接需填写主机、用户名和工作目录。" : "Host, username and work directory are required to test.");
+            setError(tailText(lang ?? "", "Host, username and work directory are required to test.", "测试连接需填写主机、用户名和工作目录。"));
             return;
         }
         const p = validatePort(port);
@@ -88,9 +88,9 @@ export function RemoteServerForm({
         setInfo("");
         try {
             const msg = await TestRemoteSSHConnection(h, u, password, w, p);
-            setInfo(msg || (isZh ? "SSH 连接成功" : "SSH connection OK"));
+            setInfo(msg || (tailText(lang ?? "", "SSH connection OK", "SSH 连接成功")));
         } catch (err) {
-            setError(err instanceof Error ? err.message : String(err) || (isZh ? "SSH 连接失败" : "SSH connection failed"));
+            setError(err instanceof Error ? err.message : String(err) || (tailText(lang ?? "", "SSH connection failed", "SSH 连接失败")));
         } finally {
             setTesting(false);
         }
@@ -101,7 +101,7 @@ export function RemoteServerForm({
         const u = user.trim();
         const w = workDir.trim();
         if (!h || !u || !w) {
-            setError(isZh ? "请填写主机、用户名和远程工作目录。" : "Please fill host, username and remote work directory.");
+            setError(tailText(lang ?? "", "Please fill host, username and remote work directory.", "请填写主机、用户名和远程工作目录。"));
             return;
         }
         const p = validatePort(port);
@@ -137,28 +137,28 @@ export function RemoteServerForm({
         <>
             <div style={{ padding: "12px 14px 4px", flexShrink: 0 }}>
                 <div style={{ fontSize: 13.5, fontWeight: 600, color: t.titleText || t.text, fontFamily: "system-ui, -apple-system, sans-serif" }}>
-                    {isZh ? "远程服务器（SSH）" : "Remote server (SSH)"}
+                    {tailText(lang ?? "", "Remote server (SSH)", "远程服务器（SSH）")}
                 </div>
                 <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2, fontFamily: "system-ui, -apple-system, sans-serif" }}>
-                    {isZh ? "通过「工作空间 › 远程服务器」进入，在此指定 SSH 服务器信息" : "Entered from Workspace › Remote server"}
+                    {tailText(lang ?? "", "Entered from Workspace › Remote server", "通过「工作空间 › 远程服务器」进入，在此指定 SSH 服务器信息")}
                 </div>
             </div>
             <form
                 onSubmit={(e) => { e.preventDefault(); confirm(); }}
                 style={{ padding: "4px 10px 8px", flexShrink: 0 }}
             >
-                {row(isZh ? "主机" : "Host", (
+                {row(tailText(lang ?? "", "Host", "主机"), (
                     <input
                         data-testid="remote-host"
                         value={host}
                         onChange={(e) => setHost(e.currentTarget.value)}
                         onKeyDown={(e) => onFieldKeyDown(e, false)}
-                        placeholder={isZh ? "例如 192.168.1.10" : "e.g. 192.168.1.10"}
+                        placeholder={tailText(lang ?? "", "e.g. 192.168.1.10", "例如 192.168.1.10")}
                         autoComplete="off"
                         style={fieldStyle({ flex: 1 })}
                     />
                 ), "host")}
-                {row(isZh ? "端口" : "Port", (
+                {row(tailText(lang ?? "", "Port", "端口"), (
                     <input
                         data-testid="remote-port"
                         value={port}
@@ -169,7 +169,7 @@ export function RemoteServerForm({
                         style={fieldStyle({ width: 90 })}
                     />
                 ), "port")}
-                {row(isZh ? "用户名" : "User", (
+                {row(tailText(lang ?? "", "User", "用户名"), (
                     <input
                         data-testid="remote-user"
                         value={user}
@@ -180,7 +180,7 @@ export function RemoteServerForm({
                         style={fieldStyle({ flex: 1 })}
                     />
                 ), "user")}
-                {row(isZh ? "密码" : "Password", (
+                {row(tailText(lang ?? "", "Password", "密码"), (
                     <input
                         data-testid="remote-password"
                         type="password"
@@ -192,7 +192,7 @@ export function RemoteServerForm({
                         style={fieldStyle({ flex: 1 })}
                     />
                 ), "password")}
-                {row(isZh ? "工作目录" : "Work dir", (
+                {row(tailText(lang ?? "", "Work dir", "工作目录"), (
                     <input
                         data-testid="remote-workdir"
                         value={workDir}
@@ -245,7 +245,7 @@ export function RemoteServerForm({
                         fontFamily: "system-ui, -apple-system, sans-serif",
                     }}
                 >
-                    {testing ? (isZh ? "测试中…" : "Testing…") : (isZh ? "测试连接" : "Test connection")}
+                    {testing ? (tailText(lang ?? "", "Testing…", "测试中…")) : (tailText(lang ?? "", "Test connection", "测试连接"))}
                 </button>
                 <button
                     type="button"
@@ -259,7 +259,7 @@ export function RemoteServerForm({
                         borderRadius: 8,
                     }}
                 >
-                    {isZh ? "确定" : "OK"}
+                    {tailText(lang ?? "", "OK", "确定")}
                 </button>
             </div>
         </>

@@ -82,6 +82,8 @@
       knowledgeDeleteFailed: '\u5220\u9664\u77e5\u8bc6\u5206\u4eab\u5931\u8d25\uff1a{error}',
       knowledgeNoDescription: '\u672a\u586b\u5199\u63cf\u8ff0\u3002'
     });
+    var knowledgeMn = (global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.KNOWLEDGE) || {};
+    I18N.mn = Object.assign({}, I18N.mn || {}, knowledgeMn);
   }
 
   const state = {

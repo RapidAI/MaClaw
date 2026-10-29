@@ -1,3 +1,4 @@
+import { tailText } from "../../i18n/mnTail"
 /**
  * Pure display helpers for Hub escalation markers on the Apps approval console.
  * Kept free of React so Vitest can cover Chinese/English labels and attempt formatting.
@@ -30,7 +31,7 @@ export function approvalEscalationRetryText(
     });
     const more = peers.length > 4 ? ` +${peers.length - 4}` : '';
     // 升级重投
-    const head = isZhLang(lang) ? '\u5347\u7ea7\u91cd\u6295' : 'Escalation retry';
+    const head = tailText(lang ?? "", 'Escalation retry', '\u5347\u7ea7\u91cd\u6295');
     return parts.length ? `${head}: ${parts.join(', ')}${more}` : head;
 }
 
@@ -41,7 +42,7 @@ export function approvalEscalationExhaustedText(
     const peers = instance?.escalationExhaustedApprovers || [];
     if (!peers.length) return '';
     // 离线耗尽
-    const head = isZhLang(lang) ? '\u79bb\u7ebf\u8017\u5c3d' : 'Escalation exhausted';
+    const head = tailText(lang ?? "", 'Escalation exhausted', '\u79bb\u7ebf\u8017\u5c3d');
     const body = peers.slice(0, 4).join(', ') + (peers.length > 4 ? ` +${peers.length - 4}` : '');
     return `${head}: ${body}`;
 }

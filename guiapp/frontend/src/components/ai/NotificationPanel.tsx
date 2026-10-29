@@ -3,6 +3,8 @@ import { IconBell } from "./WorkbenchIcons";
 import { companionHostTransferToken } from "./AssistantTitleBarNotifications.companionShare";
 import { NotificationDetail } from "./NotificationDetail";
 import type { AdminNotification as SharedNotification } from "./useNotifications";
+import { localizeText } from "../../i18n";
+import { tailText } from "../../i18n/mnTail"
 
 export type NotificationCategory =
     | "system_announcement"
@@ -51,13 +53,6 @@ interface NotificationItemProps {
     lang?: string;
     onSelect: (notification: AdminNotification) => void;
 }
-
-const localizeText = (
-    lang: string | undefined,
-    en: string,
-    zhHans: string,
-    zhHant: string = zhHans,
-) => (lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") ? zhHans : en);
 
 const CATEGORY_META: Record<NotificationCategory, CategoryMeta> = {
     system_announcement: { labelEn: "System", labelZh: "系统公告" },
@@ -142,10 +137,10 @@ function formatRelativeTime(isoString: string, lang?: string): string {
     const diffDay = Math.floor(diffMs / 86400000);
     const isZh = lang?.startsWith("zh");
 
-    if (diffMin < 1) return isZh ? "刚刚" : "just now";
-    if (diffMin < 60) return isZh ? `${diffMin}分钟前` : `${diffMin}m ago`;
-    if (diffHour < 24) return isZh ? `${diffHour}小时前` : `${diffHour}h ago`;
-    if (diffDay < 7) return isZh ? `${diffDay}天前` : `${diffDay}d ago`;
+    if (diffMin < 1) return tailText(lang ?? "", "just now", "刚刚");
+    if (diffMin < 60) return tailText(lang ?? "", `${diffMin}m ago`, `${diffMin}分钟前`);
+    if (diffHour < 24) return tailText(lang ?? "", `${diffHour}h ago`, `${diffHour}小时前`);
+    if (diffDay < 7) return tailText(lang ?? "", `${diffDay}d ago`, `${diffDay}天前`);
 
     const d = new Date(isoString);
     return `${d.getMonth() + 1}/${d.getDate()}`;
@@ -157,7 +152,7 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
     onSelect,
 }) => {
     const meta = CATEGORY_META[notification.category] ?? CATEGORY_META.custom;
-    const categoryLabel = lang?.startsWith("zh") ? meta.labelZh : meta.labelEn;
+    const categoryLabel = tailText(lang ?? "", meta.labelEn, meta.labelZh);
     const priorityText =
         notification.priority === "urgent"
             ? localizeText(lang, "Urgent", "紧急", "緊急")
@@ -436,9 +431,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     const label =
                         cat === null
                             ? localizeText(lang, "All", "全部", "全部")
-                            : lang?.startsWith("zh")
-                              ? CATEGORY_META[cat].labelZh
-                              : CATEGORY_META[cat].labelEn;
+                            : tailText(lang ?? "", CATEGORY_META[cat].labelEn, CATEGORY_META[cat].labelZh);
                     return (
                         <button
                             key={cat ?? "all"}

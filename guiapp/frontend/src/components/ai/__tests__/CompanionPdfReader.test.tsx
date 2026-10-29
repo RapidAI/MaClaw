@@ -1124,6 +1124,23 @@ describe("companion pdf reader", () => {
         await waitFor(() => expect(screen.getByTestId("pdf-translate-error").textContent).toContain("本次请求额度不足"));
     });
 
+    it("shows Khalkha on the selection menu, swatches, and translation errors", async () => {
+        pdfWithPages(1);
+        translate.mockRejectedValue(new Error("翻译失败，请稍后重试"));
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="mn" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        selectHello(page);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+        expect(screen.getByTestId("pdf-highlight-menu").getAttribute("aria-label")).toBe("Сонгосон текстийн үйлдэл");
+        expect(screen.getByTestId("pdf-translate").textContent).toContain("Орчуулах");
+        expect(screen.getByTestId("pdf-translate").textContent).toContain("Хятад");
+        expect(screen.getByTestId("pdf-highlight-yellow").getAttribute("aria-label")).toBe("Шар тодотгол");
+        fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
+        expect((await screen.findByTestId("pdf-translate-error")).textContent).toContain("Орчуулга амжилтгүй. Дараа дахин оролдоно уу.");
+        fireEvent.click(screen.getByTestId("pdf-draw-toggle"));
+        expect(screen.getByTestId("pdf-draw-color-yellow").getAttribute("aria-label")).toBe("Шар үзэг");
+    });
+
     it("keeps the newest translations when the store is full", () => {
         const items = Array.from({ length: 201 }, (_, index) => ({
             id: `t${index}`,

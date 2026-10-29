@@ -332,7 +332,7 @@ async function saveSmUploadAuthConfig() {
   if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = smtr('saving'); }
   try {
     const data = await api('/api/v1/admin/config/upload-auth', {method:'PUT', body: JSON.stringify({mode: mode})});
-    const desc = currentLang === 'zh' ? smUploadAuthModeText(mode) : (data.description || smUploadAuthModeText(mode));
+    const desc = currentLang === 'zh' ? smUploadAuthModeText(mode) : currentLang === 'mn' ? smUploadAuthModeText(mode) : (data.description || smUploadAuthModeText(mode));
     if (statusEl) { statusEl.className = 'sm-status show'; statusEl.textContent = smtr('uploadAuthStatusSaved', {description: desc}); }
     showToast(smtr('uploadAuthSaved', {mode: smUploadAuthModeText(mode)}), 'success');
   } catch(err) {

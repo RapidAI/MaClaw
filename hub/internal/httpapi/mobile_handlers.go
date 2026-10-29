@@ -2422,16 +2422,17 @@ func mobileDocumentUploadPayload(record mobileDocumentUploadRecord) map[string]a
 	return payload
 }
 
-// mobileDocumentUploadPayloadTracked is like mobileDocumentUploadPayload but reports
-// whether upload/draft meta was repaired (caller should persist when true).
+// mobileDocumentUploadPayloadTracked is like mobileDocumentUploadPayload but
+// reports which records were repaired (caller should persist the returned
+// changes so repairs are not lost on restart).
 // Caller should hold mobileDocuments.Lock.
-func mobileDocumentUploadPayloadTracked(record mobileDocumentUploadRecord) (map[string]any, bool) {
-	repaired := false
+func mobileDocumentUploadPayloadTracked(record mobileDocumentUploadRecord) (map[string]any, mobileDocumentChanges) {
+	var changes mobileDocumentChanges
 	// Repair ghost upload SourcePath before advertising source_download_url.
 	if mobileUploadRepairSourceMeta(&record) {
-		repaired = true
 		if record.TaskID != "" {
 			mobileDocuments.uploads[record.TaskID] = record
+			changes.uploads = append(changes.uploads, record)
 		}
 	}
 	payload := map[string]any{
@@ -2454,7 +2455,7 @@ func mobileDocumentUploadPayloadTracked(record mobileDocumentUploadRecord) (map[
 			// Single repair pass — avoid re-statting the same draft for source availability.
 			if mobileDraftRepairSourceMeta(&draft) {
 				mobileDocuments.drafts[record.DraftID] = draft
-				repaired = true
+				changes.drafts = append(changes.drafts, draft)
 			}
 			draftHasOriginal = mobileDraftHasOriginal(draft)
 			payload["draft"] = mobileDocumentDraftPayload(draft)
@@ -2465,7 +2466,7 @@ func mobileDocumentUploadPayloadTracked(record mobileDocumentUploadRecord) (map[
 	if record.TaskID != "" && (mobileUploadHasSource(record) || draftHasOriginal) {
 		payload["source_download_url"] = "/api/mobile/documents/upload/" + record.TaskID + "/source"
 	}
-	return payload, repaired
+	return payload, changes
 }
 
 // mobileUploadSourceAvailable reports whether a worker can download original bytes
@@ -6445,29 +6446,41 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.uploads[taskID]
 		stateChanged := false
+		changes := mobileDocumentChanges{}
 		if ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			// Mobile polls status even when no worker is claiming. Reclaim this
 			// task if the worker claim timed out so the UI leaves in_progress.
 			if next, reclaimed := mobileReclaimStaleDocumentUploadIfNeeded(record, now); reclaimed {
 				record = next
 				mobileDocuments.uploads[taskID] = record
+				changes.uploads = append(changes.uploads, record)
 				stateChanged = true
 			}
 			var pipelineChanged bool
 			record, pipelineChanged = mobileApplyUploadPipelineResult(record, now)
 			if pipelineChanged {
 				mobileDocuments.uploads[taskID] = record
+				changes.uploads = append(changes.uploads, record)
 				stateChanged = true
+				// The pipeline promotes OCR markdown / shared originals into the
+				// draft — persist that draft too or a restart loses the promotion.
+				if draftID := strings.TrimSpace(record.DraftID); draftID != "" {
+					if draft, found := mobileDocuments.drafts[draftID]; found {
+						changes.drafts = append(changes.drafts, draft)
+					}
+				}
 			}
 		}
-		payload, repaired := mobileDocumentUploadPayloadTracked(record)
+		payload, repairChanges := mobileDocumentUploadPayloadTracked(record)
+		changes.uploads = append(changes.uploads, repairChanges.uploads...)
+		changes.drafts = append(changes.drafts, repairChanges.drafts...)
 		mobileDocuments.Unlock()
 		if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
 			return
 		}
-		if stateChanged || repaired {
-			mobilePersistUpload(record)
+		if len(changes.uploads)+len(changes.drafts) > 0 {
+			mobilePersistDocumentChanges(changes)
 		}
 		if stateChanged {
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))

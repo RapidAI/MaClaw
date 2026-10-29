@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { GetCreditsAssetAccount, GetCreditsAssetTransactions, RedeemCreditsCard } from '../../../wailsjs/go/main/App';
-import { localizeText } from '../../i18n';
+import { intlLocale, localizeText } from '../../i18n';
 
 type CreditTransaction = {
     id: string;
@@ -21,7 +21,7 @@ const formatDate = (value: string | undefined, lang: string) => {
     if (!value) return '–';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat(lang === 'zh-Hant' ? 'zh-Hant' : lang === 'zh-Hans' ? 'zh-Hans' : 'en-US', {
+    return new Intl.DateTimeFormat(intlLocale(lang), {
         year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
     }).format(date);
 };

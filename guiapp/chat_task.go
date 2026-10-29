@@ -1166,7 +1166,7 @@ func (h *IMMessageHandler) tryChatTaskStatusReply(msg IMUserMessage) (*IMAgentRe
 		return nil, false
 	}
 	return &IMAgentResponse{
-		Text:           formatChatTaskStatus(tasks, desktopChatChinese(msg.Lang, msg.Text)),
+		Text:           formatChatTaskStatus(tasks, msg.Lang, desktopChatChinese(msg.Lang, msg.Text)),
 		SessionKey:     sessionKey,
 		ResponseSource: "chat_task_status",
 	}, true
@@ -1966,14 +1966,14 @@ func formatChatTaskResultNote(title, result string) string {
 	return title
 }
 
-func formatChatTaskStatus(tasks []AIAssistantChatTask, chinese bool) string {
+func formatChatTaskStatus(tasks []AIAssistantChatTask, lang string, chinese bool) string {
 	var b strings.Builder
 	for _, task := range tasks {
 		title := strings.TrimSpace(task.Title)
 		if title == "" {
 			title = "这件事"
 			if !chinese {
-				title = "that work"
+				title = desktopChatCopy(lang, false, "that work", "这件事")
 			}
 		}
 		switch chatTaskStatus(task.Status) {
@@ -1981,13 +1981,13 @@ func formatChatTaskStatus(tasks []AIAssistantChatTask, chinese bool) string {
 			if chinese {
 				fmt.Fprintf(&b, "%s在等你：%s\n", title, truncateChatTaskText(task.Question, 160))
 			} else {
-				fmt.Fprintf(&b, "%s is waiting for you: %s\n", title, truncateChatTaskText(task.Question, 160))
+				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s is waiting for you: %s\n", "%s在等你：%s\n"), title, truncateChatTaskText(task.Question, 160))
 			}
 		case chatTaskDone:
 			if chinese {
 				fmt.Fprintf(&b, "%s已经做好。", title)
 			} else {
-				fmt.Fprintf(&b, "%s is done.", title)
+				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s is done.", "%s已经做好。"), title)
 			}
 			if task.ResultText != "" {
 				fmt.Fprintf(&b, " %s", truncateChatTaskText(task.ResultText, 160))
@@ -2001,7 +2001,7 @@ func formatChatTaskStatus(tasks []AIAssistantChatTask, chinese bool) string {
 			if chinese {
 				fmt.Fprintf(&b, "%s没做成。", title)
 			} else {
-				fmt.Fprintf(&b, "%s failed.", title)
+				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s failed.", "%s没做成。"), title)
 			}
 			if detail != "" {
 				fmt.Fprintf(&b, " %s", truncateChatTaskText(detail, 160))
@@ -2011,19 +2011,19 @@ func formatChatTaskStatus(tasks []AIAssistantChatTask, chinese bool) string {
 			if chinese {
 				fmt.Fprintf(&b, "%s已停下。\n", title)
 			} else {
-				fmt.Fprintf(&b, "%s was stopped.\n", title)
+				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s was stopped.\n", "%s已停下。\n"), title)
 			}
 		case chatTaskInterrupted:
 			if chinese {
 				fmt.Fprintf(&b, "%s上次中断了，没有自动重开。\n", title)
 			} else {
-				fmt.Fprintf(&b, "%s was still running when the app stopped. It was not resumed.\n", title)
+				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s was still running when the app stopped. It was not resumed.\n", "%s上次中断了，没有自动重开。\n"), title)
 			}
 		default:
 			if chinese {
 				fmt.Fprintf(&b, "%s还在做。", title)
 			} else {
-				fmt.Fprintf(&b, "%s is still running.", title)
+				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s is still running.", "%s还在做。"), title)
 			}
 			if task.Progress != "" {
 				fmt.Fprintf(&b, " %s", truncateChatTaskText(task.Progress, 160))

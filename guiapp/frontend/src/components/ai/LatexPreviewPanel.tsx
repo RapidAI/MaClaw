@@ -4,6 +4,7 @@ import { EventsOn } from '../../../wailsjs/runtime';
 import type { CodePreviewTheme } from './FileTabBar';
 import { PdfPreviewPanel } from './PdfPreviewPanel';
 import { isTaskResultPdfPreviewURL } from './taskResultPreview';
+import { tailText } from '../../i18n/mnTail';
 
 type CompileResult = {
     ok?: boolean;
@@ -39,18 +40,18 @@ export interface LatexPreviewPanelProps {
     readError?: string;
 }
 
-function phaseText(phase: string, message: string, zh: boolean): string {
+function phaseText(phase: string, message: string, lang: string): string {
     switch (phase) {
         case 'installing':
-            return zh ? `正在安装宏包 ${message}…` : `Installing package ${message}…`;
+            return tailText(lang, `Installing package ${message}…`, `正在安装宏包 ${message}…`);
         case 'repairing':
-            return zh ? `正在根据编译错误修复 ${message}…` : `Fixing ${message} from the compile log…`;
+            return tailText(lang, `Fixing ${message} from the compile log…`, `正在根据编译错误修复 ${message}…`);
         case 'bibtex':
-            return zh ? '正在处理参考文献…' : 'Updating the bibliography…';
+            return tailText(lang, 'Updating the bibliography…', '正在处理参考文献…');
         case 'error':
             return message;
         default:
-            return zh ? `正在编译 ${message || 'LaTeX'}…` : `Compiling ${message || 'LaTeX'}…`;
+            return tailText(lang, `Compiling ${message || 'LaTeX'}…`, `正在编译 ${message || 'LaTeX'}…`);
     }
 }
 
@@ -198,7 +199,6 @@ export function LatexPreviewPanel({
 }
 
 function LatexCompileView({ absPath, theme, lang }: { absPath: string; theme: CodePreviewTheme; lang: string }) {
-    const zh = lang.startsWith('zh');
     const [phase, setPhase] = useState('compiling');
     const [message, setMessage] = useState('');
     const [error, setError] = useState('');
@@ -225,7 +225,7 @@ function LatexCompileView({ absPath, theme, lang }: { absPath: string; theme: Co
         const stop = listenLatexProgress(onProgress);
         void CompileLatexPreview(absPath).then((result: CompileResult) => {
             if (cancelled) return;
-            applyCompileResult(result, zh, {
+            applyCompileResult(result, lang, {
                 setPdfPath, setPreviewUrl, setRepaired, setPhase, setError, setLog,
             });
         }).catch((err: unknown) => {
@@ -237,12 +237,12 @@ function LatexCompileView({ absPath, theme, lang }: { absPath: string; theme: Co
             cancelled = true;
             stop();
         };
-    }, [absPath, attempt, zh]);
+    }, [absPath, attempt, lang]);
 
     return (
         <LatexCompileBody
             theme={theme}
-            zh={zh}
+            lang={lang}
             phase={phase}
             message={message}
             error={error}
@@ -276,7 +276,6 @@ function LatexWorkbenchEditor({
     updatedAt: number;
     readError?: string;
 }) {
-    const zh = lang.startsWith('zh');
     const draftKey = latexDraftKey(projectPath, relativePath);
     const remembered = latexSaved.get(draftKey);
     const cachedDraft = draftText(draftKey, updatedAt);
@@ -444,7 +443,7 @@ function LatexWorkbenchEditor({
             const result = await CompileLatexWorkbenchFile(projectPath, relativePath) as CompileResult;
             if (result?.repaired) await adoptRepairedSource();
             if (!aliveRef.current || run !== runRef.current) return;
-            applyCompileResult(result, zh, {
+            applyCompileResult(result, lang, {
                 setPdfPath, setPreviewUrl, setRepaired, setPhase, setError, setLog,
             });
         } catch (err: unknown) {
@@ -492,7 +491,7 @@ function LatexWorkbenchEditor({
                     }}
                     style={buttonStyle(theme, locked || busy || !dirty)}
                 >
-                    {zh ? '保存' : 'Save'}
+                    {tailText(lang, 'Save', '保存')}
                 </button>
                 <button
                     type="button"
@@ -501,12 +500,12 @@ function LatexWorkbenchEditor({
                     onClick={() => { void compile(); }}
                     style={buttonStyle(theme, locked || busy)}
                 >
-                    {zh ? '编译预览' : 'Compile preview'}
+                    {tailText(lang, 'Compile preview', '编译预览')}
                 </button>
             </div>
             {truncated && !readError && (
                 <div style={{ padding: '8px 12px', fontSize: 12, color: theme.textMuted }}>
-                    {zh ? '文件过大，这里只显示了开头一部分，不能保存或编译。' : 'This file is too large to edit or compile here.'}
+                    {tailText(lang, 'This file is too large to edit or compile here.', '文件过大，这里只显示了开头一部分，不能保存或编译。')}
                 </div>
             )}
             {readError && (
@@ -516,7 +515,7 @@ function LatexWorkbenchEditor({
             )}
             {editLocked && (
                 <div style={{ padding: '8px 12px', fontSize: 12, color: theme.textMuted }}>
-                    {zh ? '自动修复已写入文件，但内容太长，编辑器没有重新加载。请重新打开该文件后再编辑。' : 'The repaired file was saved, but it is too large to reload here. Reopen it before editing.'}
+                    {tailText(lang, 'The repaired file was saved, but it is too large to reload here. Reopen it before editing.', '自动修复已写入文件，但内容太长，编辑器没有重新加载。请重新打开该文件后再编辑。')}
                 </div>
             )}
             <textarea
@@ -548,7 +547,7 @@ function LatexWorkbenchEditor({
             />
             <LatexCompileBody
                 theme={theme}
-                zh={zh}
+                lang={lang}
                 phase={phase}
                 message={message}
                 error={error}
@@ -562,7 +561,7 @@ function LatexWorkbenchEditor({
     );
 }
 
-function applyCompileResult(result: CompileResult, zh: boolean, slots: {
+function applyCompileResult(result: CompileResult, lang: string, slots: {
     setPdfPath: (value: string) => void;
     setPreviewUrl: (value: string) => void;
     setRepaired: (value: boolean) => void;
@@ -580,14 +579,14 @@ function applyCompileResult(result: CompileResult, zh: boolean, slots: {
         return;
     }
     slots.setPhase('error');
-    slots.setError(String(result?.error || result?.message || (zh ? '编译失败' : 'Compile failed')));
+    slots.setError(String(result?.error || result?.message || tailText(lang, 'Compile failed', '编译失败')));
     slots.setLog(String(result?.log || ''));
     slots.setRepaired(!!result?.repaired);
 }
 
 function LatexCompileBody({
     theme,
-    zh,
+    lang,
     phase,
     message,
     error,
@@ -599,7 +598,7 @@ function LatexCompileBody({
     embedded = false,
 }: {
     theme: CodePreviewTheme;
-    zh: boolean;
+    lang: string;
     phase: string;
     message: string;
     error: string;
@@ -619,17 +618,17 @@ function LatexCompileBody({
             <div style={fill} data-testid="latex-preview-ready">
                 {repaired && (
                     <div style={{ padding: '8px 14px', fontSize: 12, color: theme.textMuted }}>
-                        {zh ? '已根据编译错误自动修改源文件并重新编译。原文件保存在同目录 .maclaw-bak。' : 'The source was fixed from the compile log and rebuilt. The previous file is kept as .maclaw-bak.'}
+                        {tailText(lang, 'The source was fixed from the compile log and rebuilt. The previous file is kept as .maclaw-bak.', '已根据编译错误自动修改源文件并重新编译。原文件保存在同目录 .maclaw-bak。')}
                     </div>
                 )}
-                <PdfPreviewPanel absPath={pdfPath} previewUrl={previewUrl} theme={theme} lang={zh ? 'zh' : 'en'} />
+                <PdfPreviewPanel absPath={pdfPath} previewUrl={previewUrl} theme={theme} lang={lang} />
             </div>
         );
     }
     if (!phase) return null;
     return (
         <div data-testid="latex-preview-status" role="status" style={{ ...fill, padding: embedded ? '8px 12px' : 20, boxSizing: 'border-box', color: phase === 'error' ? theme.diffDeleteText : theme.textMuted, fontSize: 13, lineHeight: 1.6 }}>
-            <div>{phase === 'error' ? error : phaseText(phase, message, zh)}</div>
+            <div>{phase === 'error' ? error : phaseText(phase, message, lang)}</div>
             {log && (
                 <pre style={{ marginTop: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, color: theme.text }}>
                     {log}
@@ -637,7 +636,7 @@ function LatexCompileBody({
             )}
             {phase === 'error' && onRetry && (
                 <button type="button" onClick={onRetry} style={{ marginTop: 12 }}>
-                    {zh ? '重试编译' : 'Compile again'}
+                    {tailText(lang, 'Compile again', '重试编译')}
                 </button>
             )}
         </div>

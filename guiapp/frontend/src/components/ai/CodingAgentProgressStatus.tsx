@@ -4,6 +4,7 @@ import type { ChatMessage } from "./useAIAssistant";
 import { CodingAgentProcessChevron, CodingAgentProcessCopyIcon, CodingAgentProcessIcon, type CodingAgentProcessKind } from "./CodingAgentProcessIcon";
 
 import { sanitizeVisibleChatText } from "./visibleChatText";
+import { tailText } from "../../i18n/mnTail"
 
 interface CodingAgentProgressTheme {
     text: string;
@@ -520,7 +521,7 @@ export function renderCodingAgentWorkingTrail(t: CodingAgentProgressTheme, lang:
             data-testid="coding-agent-working-trail"
             role="status"
             aria-live="off"
-            aria-label={lang.startsWith("zh") ? "工作中" : "Working"}
+            aria-label={tailText(lang, "Working", "工作中")}
             style={{
                 display: "grid",
                 gridTemplateColumns: "12px auto",
@@ -663,7 +664,7 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
 
 export function codingAgentStatusLabel(phase: string, lang: string): string {
     const labels = CODING_AGENT_PHASE_LABELS[normalizeCodingAgentPhase(phase)];
-    return lang.startsWith("zh") ? labels.zh : labels.en;
+    return tailText(lang, labels.en, labels.zh);
 }
 
 export function codingAgentStatusTone(phase: string): CodingAgentStatusTone {
@@ -723,7 +724,7 @@ export function codingAgentToolProgressLabel(outcome: string | undefined, lang: 
         summary,
     });
     if (codingAgentToolFailureLooksExpectedOrRecoverable(progress)) {
-        return lang.startsWith("zh") ? "\u68c0\u67e5" : "Check";
+        return tailText(lang, "Check", "\u68c0\u67e5");
     }
     return codingAgentToolOutcomeLabel(outcome, lang);
 }
@@ -731,7 +732,7 @@ export function codingAgentToolProgressLabel(outcome: string | undefined, lang: 
 export function codingAgentProgressStatusText(progress: CodingAgentProgress, lang: string): string {
     const normalized = normalizeCodingAgentProgress(progress);
     const event = (normalized.event || "").trim().toLowerCase();
-    const label = (en: string, zh: string) => lang.startsWith("zh") ? zh : en;
+    const label = (en: string, zh: string) => tailText(lang, en, zh);
     if (!normalized.outcome) return codingAgentStatusLabel(normalized.phase, lang);
     switch (event) {
         case "guardrail_summary":
@@ -2359,7 +2360,7 @@ function CodingAgentActivityFeedShell({
     const headerStatus = isMulti
         ? (
             criticalCount > 0 && isCodingAgentActivePhase(header.phase)
-                ? (lang.startsWith("zh") ? `${criticalCount} \u9879\u5931\u8d25` : `${criticalCount} failed`)
+                ? (tailText(lang, `${criticalCount} failed`, `${criticalCount} \u9879\u5931\u8d25`))
                 : phaseLabel
         )
         : statusText;
@@ -2370,7 +2371,7 @@ function CodingAgentActivityFeedShell({
             headerTask,
             headerStatus,
             headerTitle,
-            `${visibleLineRows.length} ${lang.startsWith("zh") ? "\u6b65" : "steps"}`,
+            `${visibleLineRows.length} ${tailText(lang, "steps", "\u6b65")}`,
         )
         : codingAgentDisplayText(header, lang);
     const borderColor = t.isDark ? "rgba(148,163,184,0.18)" : "color-mix(in srgb, var(--theme-primary, #2f78d0) 14%, transparent)";
@@ -2452,7 +2453,7 @@ function CodingAgentActivityFeedShell({
                 )}
                 {(!headerTitle || hasToolTrail) && <span className="caps-head-spacer" />}
                 <span style={{ color: tone.accent, fontWeight: 600, flexShrink: 0, fontSize: 10 }}>
-                    {hasToolTrail ? (showFailureChip ? (lang.startsWith("zh") ? `${criticalCount} \u9879\u5931\u8d25` : `${criticalCount} failed`) : "") : headerStatus}
+                    {hasToolTrail ? (showFailureChip ? (tailText(lang, `${criticalCount} failed`, `${criticalCount} \u9879\u5931\u8d25`)) : "") : headerStatus}
                 </span>
             </div>
             )}
@@ -2477,7 +2478,7 @@ function CodingAgentActivityFeedShell({
                             cursor: "pointer",
                         }}
                     >
-                        {lang.startsWith("zh") ? `展开更早 ${hiddenCount} 步` : `Show earlier ${hiddenCount} steps`}
+                        {tailText(lang, `Show earlier ${hiddenCount} steps`, `展开更早 ${hiddenCount} 步`)}
                     </button>
                 )}
                 {visibleLineRows.map(({ msg, progress }) =>
@@ -2646,7 +2647,7 @@ export function openCodingAgentToolProgress(messages: Array<{ content?: string }
 
 /** Short brand label shared by chat feed, sidebar, and status bar. */
 export function codingAgentBrandLabel(lang: string): string {
-    return lang.startsWith("zh") ? "\u7f16\u7a0b" : "Coding";
+    return tailText(lang, "Coding", "\u7f16\u7a0b");
 }
 
 /** Professional thin-space separator for compact status copy. */
@@ -2686,9 +2687,9 @@ export function codingAgentInputStatusText(progress: CodingAgentProgress | null 
         const name = codingAgentToolNameText(progress);
         const detail = codingAgentToolDetailText(progress, lang, 48);
         const line = [name, detail].filter(Boolean).join(" ");
-        return line || (lang.startsWith("zh") ? "\u5904\u7406\u4e2d\u2026" : "Working...");
+        return line || (tailText(lang, "Working...", "\u5904\u7406\u4e2d\u2026"));
     }
-    return lang.startsWith("zh") ? "\u5904\u7406\u4e2d\u2026" : "Working...";
+    return tailText(lang, "Working...", "\u5904\u7406\u4e2d\u2026");
 }
 
 /** Programming composer: only a real tool line, never generic 处理中 / Working. */
@@ -2736,7 +2737,7 @@ export function codingAgentCommandPreviewText(progress: CodingAgentProgress, lan
     if (outcome !== "failed" && outcome !== "blocked") return undefined;
     const command = (normalized.command || "").trim();
     if (!command) return undefined;
-    const label = lang.startsWith("zh") ? "\u547d\u4ee4" : "cmd";
+    const label = tailText(lang, "cmd", "\u547d\u4ee4");
     return `${label}: ${truncateCodingAgentInlineText(command, maxRunes)}`;
 }
 
@@ -2808,25 +2809,25 @@ export function codingAgentFilePreviewText(progress: CodingAgentProgress, lang: 
     const shown = files.slice(0, Math.max(1, maxFiles));
     const remaining = files.length - shown.length;
     const suffix = remaining > 0
-        ? lang.startsWith("zh") ? ` \u7b49 ${remaining} \u4e2a` : ` +${remaining} more`
+        ? tailText(lang, ` +${remaining} more`, ` \u7b49 ${remaining} \u4e2a`)
         : "";
     return `${shown.join(", ")}${suffix}`;
 }
 
 export function codingAgentTurnSnapshotText(snapshot: CodingAgentTurnSnapshot, lang: string): string {
     const latest = normalizeCodingAgentProgress(snapshot.latest);
-    const toolLabel = lang.startsWith("zh") ? "\u5de5\u5177" : "Tool";
-    const outcomeLabel = lang.startsWith("zh") ? "\u7ed3\u679c" : "Result";
-    const durationLabel = lang.startsWith("zh") ? "\u8017\u65f6" : "Duration";
-    const filesLabel = lang.startsWith("zh") ? "\u6587\u4ef6" : "Files";
-    const traceLabel = lang.startsWith("zh") ? "\u8f68\u8ff9" : "Trace";
-    const guardLabel = lang.startsWith("zh") ? "\u8fb9\u754c" : "Guard";
-    const commandLabel = lang.startsWith("zh") ? "\u547d\u4ee4" : "Commands";
-    const fileActivityLabel = lang.startsWith("zh") ? "\u52a8\u4f5c" : "Activity";
-    const qualityLabel = lang.startsWith("zh") ? "\u8d28\u91cf" : "Quality";
-    const exploreLabel = lang.startsWith("zh") ? "\u63a2\u7d22" : "Explore";
-    const verifyLabel = lang.startsWith("zh") ? "\u9a8c\u8bc1" : "Verify";
-    const diffCheckLabel = lang.startsWith("zh") ? "Diff" : "Diff check";
+    const toolLabel = tailText(lang, "Tool", "\u5de5\u5177");
+    const outcomeLabel = tailText(lang, "Result", "\u7ed3\u679c");
+    const durationLabel = tailText(lang, "Duration", "\u8017\u65f6");
+    const filesLabel = tailText(lang, "Files", "\u6587\u4ef6");
+    const traceLabel = tailText(lang, "Trace", "\u8f68\u8ff9");
+    const guardLabel = tailText(lang, "Guard", "\u8fb9\u754c");
+    const commandLabel = tailText(lang, "Commands", "\u547d\u4ee4");
+    const fileActivityLabel = tailText(lang, "Activity", "\u52a8\u4f5c");
+    const qualityLabel = tailText(lang, "Quality", "\u8d28\u91cf");
+    const exploreLabel = tailText(lang, "Explore", "\u63a2\u7d22");
+    const verifyLabel = tailText(lang, "Verify", "\u9a8c\u8bc1");
+    const diffCheckLabel = tailText(lang, "Diff check", "Diff");
     const diffLabel = "Diff";
     const files = snapshot.files?.length ? codingAgentFilePreviewText({ ...latest, files: snapshot.files }, lang) : undefined;
     const trace = codingAgentToolTraceText(snapshot, lang);
@@ -3043,7 +3044,7 @@ function codingAgentToolDiagnosticStatusText(progress: CodingAgentProgress, lang
     const command = (progress.command || "").toLowerCase();
     const summary = (progress.summary || "").toLowerCase();
     const detail = (progress.detail || "").trim().toLowerCase();
-    const label = (en: string, zh: string) => lang.startsWith("zh") ? zh : en;
+    const label = (en: string, zh: string) => tailText(lang, en, zh);
     if (codingAgentCommandLooksLikeExploratoryTest(progress.command, progress.summary)) {
         return label("Exploratory test did not pass", "探索性测试未通过");
     }
@@ -3292,9 +3293,9 @@ export function codingAgentCommandProgressLabel(status: string | undefined, lang
     });
     if (codingAgentCommandFailureLooksExploratory(progress)) {
         if (includeNoun) {
-            return lang.startsWith("zh") ? "\u547d\u4ee4\u68c0\u67e5" : "Commands Check";
+            return tailText(lang, "Commands Check", "\u547d\u4ee4\u68c0\u67e5");
         }
-        return lang.startsWith("zh") ? "\u68c0\u67e5" : "Check";
+        return tailText(lang, "Check", "\u68c0\u67e5");
     }
     return codingAgentCommandStatusLabel(status, lang);
 }

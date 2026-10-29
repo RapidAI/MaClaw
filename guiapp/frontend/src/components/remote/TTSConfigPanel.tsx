@@ -3,12 +3,14 @@ import { GetTTSEnabled, SetTTSEnabled, GetTTSVoiceID, SetTTSVoiceID, CheckTTSMod
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { ModelStatusBox } from "./ModelStatusBox";
 import { ttsVoiceOptions } from '../../constants/ttsVoices';
+import { localizeText } from '../../i18n';
+
 
 type Props = { lang: string };
 
 export function TTSConfigPanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        localizeText(lang, en, zhHans, zhHant), [lang]);
     const [enabled, setEnabled] = useState(false);
     const [voiceID, setVoiceID] = useState('zf_xiaoyi');
     const [modelExists, setModelExists] = useState(false);
@@ -185,7 +187,7 @@ export function TTSConfigPanel({ lang }: Props) {
                 >
                     {ttsVoiceOptions.map(option => (
                         <option key={option.id} value={option.id}>
-                            {lang === 'en' ? option.label : `${option.label} - ${option.zh}`}
+                            {t(option.label, `${option.label} - ${option.zh}`)}
                         </option>
                     ))}
                 </select>

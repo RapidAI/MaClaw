@@ -4,6 +4,8 @@ import {
     type TaskDraft,
     type WorkspaceKind,
 } from "./taskDraft";
+import { tailText } from "../../../i18n/mnTail"
+import { normalizeLang } from "../../../i18n/langSelect"
 
 export interface RunWindowDraftPayload {
     taskType: string;
@@ -72,9 +74,9 @@ export function shortRunWindowStamp(value: string): string {
     return `${matched[2]}-${matched[3]} ${matched[4]}:${matched[5]}`;
 }
 
-export function runWindowChipLabel(window: RunWindow | undefined, isZh: boolean): string {
-    if (!window || window.mode !== "scheduled") return isZh ? "立即" : "Now";
-    if (!window.startAt) return isZh ? "定时" : "Scheduled";
+export function runWindowChipLabel(window: RunWindow | undefined, isZh: boolean | string): string {
+    if (!window || window.mode !== "scheduled") return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Now", "立即");
+    if (!window.startAt) return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Scheduled", "定时");
     const start = shortRunWindowStamp(window.startAt);
     if (!window.endAt) return start;
     const sameDay = window.startAt.slice(0, 10) === window.endAt.slice(0, 10);
@@ -84,19 +86,19 @@ export function runWindowChipLabel(window: RunWindow | undefined, isZh: boolean)
 
 export type RunWindowCheck = { ok: true } | { ok: false; error: string };
 
-export function validateRunWindow(window: RunWindow | undefined, now = new Date(), isZh = true): RunWindowCheck {
+export function validateRunWindow(window: RunWindow | undefined, now = new Date(), isZh: boolean | string = true): RunWindowCheck {
     if (!window || window.mode !== "scheduled") return { ok: true };
-    if (!window.startAt) return { ok: false, error: isZh ? "请设置开始时间" : "Set a start time" };
+    if (!window.startAt) return { ok: false, error: tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Set a start time", "请设置开始时间") };
     const start = new Date(window.startAt);
-    if (Number.isNaN(start.getTime())) return { ok: false, error: isZh ? "开始时间无效" : "Start time is invalid" };
+    if (Number.isNaN(start.getTime())) return { ok: false, error: tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Start time is invalid", "开始时间无效") };
     if (start.getTime() < now.getTime() - 60_000) {
-        return { ok: false, error: isZh ? "开始时间需要晚于当前时间" : "Start time must be in the future" };
+        return { ok: false, error: tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Start time must be in the future", "开始时间需要晚于当前时间") };
     }
     if (window.endAt) {
         const end = new Date(window.endAt);
-        if (Number.isNaN(end.getTime())) return { ok: false, error: isZh ? "结束时间无效" : "End time is invalid" };
+        if (Number.isNaN(end.getTime())) return { ok: false, error: tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "End time is invalid", "结束时间无效") };
         if (end.getTime() <= start.getTime()) {
-            return { ok: false, error: isZh ? "结束时间需要晚于开始时间" : "End time must be after the start time" };
+            return { ok: false, error: tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "End time must be after the start time", "结束时间需要晚于开始时间") };
         }
     }
     return { ok: true };
@@ -174,44 +176,56 @@ export function isRunWindowDue(task: RunWindowTaskRecord, now = new Date()): boo
     return true;
 }
 
-export function runWindowStatusLabel(status: string, isZh: boolean): string {
+export function runWindowStatusLabel(status: string, isZh: boolean | string): string {
     switch (status) {
         case "pending":
-            return isZh ? "等待开始" : "Waiting";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Waiting", "等待开始");
         case "running":
-            return isZh ? "执行中" : "Running";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Running", "执行中");
         case "completed":
-            return isZh ? "已完成" : "Done";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Done", "已完成");
         case "missed":
-            return isZh ? "时段已过" : "Missed";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Missed", "时段已过");
         case "failed":
-            return isZh ? "启动失败" : "Failed";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Failed", "启动失败");
         case "stopped":
-            return isZh ? "已暂停" : "Paused";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Paused", "已暂停");
         default:
-            return status || (isZh ? "未知" : "Unknown");
+            return status || (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Unknown", "未知"));
     }
 }
 
-function quoteDialogName(name: string, isZh: boolean): string {
-    const taskName = name.replace(/[\r\n]+/g, " ").trim() || (isZh ? "未命名任务" : "Untitled task");
+function runWindowLang(isZh: boolean | string): string {
+    return typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en");
+}
+
+function runWindowChinese(isZh: boolean | string): boolean {
+    if (typeof isZh !== "string") return !!isZh;
+    const normalized = normalizeLang(isZh);
+    return normalized === "zh-Hans" || normalized === "zh-Hant";
+}
+
+function quoteDialogName(name: string, isZh: boolean | string): string {
+    const taskName = name.replace(/[\r\n]+/g, " ").trim() || (tailText(runWindowLang(isZh), "Untitled task", "未命名任务"));
     // The dialog chips one matched pair. A name that already contains the
     // delimiter would close that pair early and cut the start time off.
-    if (isZh) return /[「」]/.test(taskName) ? taskName : `「${taskName}」`;
+    if (runWindowChinese(isZh)) return /[「」]/.test(taskName) ? taskName : `「${taskName}」`;
     return /["“”]/.test(taskName) ? taskName : `"${taskName}"`;
 }
 
-export function runWindowCreatedNotice(name: string, startAt: string, endAt: string | undefined, isZh: boolean): { title: string; message: string } {
+export function runWindowCreatedNotice(name: string, startAt: string, endAt: string | undefined, isZh: boolean | string): { title: string; message: string } {
     const start = formatRunWindowInstant(startAt);
     const quoted = quoteDialogName(name, isZh);
-    if (isZh) {
+    if (runWindowChinese(isZh)) {
         const lines = [`定时任务${quoted}已经创建，将于 ${start} 启动。`];
         if (endAt) lines.push(`${formatRunWindowInstant(endAt)} 如果任务未完成，将暂停。`);
         return { title: "定时任务已创建", message: lines.join("\n") };
     }
-    const lines = [`Scheduled task ${quoted} has been created and will start at ${start}.`];
-    if (endAt) lines.push(`If it is still unfinished at ${formatRunWindowInstant(endAt)}, it will pause.`);
-    return { title: "Scheduled task created", message: lines.join("\n") };
+    const lang = runWindowLang(isZh);
+    const endLabel = endAt ? formatRunWindowInstant(endAt) : "";
+    const lines = [tailText(lang, `Scheduled task ${quoted} has been created and will start at ${start}.`, `定时任务${quoted}已经创建，将于 ${start} 启动。`)];
+    if (endAt) lines.push(tailText(lang, `If it is still unfinished at ${endLabel}, it will pause.`, `${endLabel} 如果任务未完成，将暂停。`));
+    return { title: tailText(lang, "Scheduled task created", "定时任务已创建"), message: lines.join("\n") };
 }
 
 export function formatRunWindowInstant(value: string | undefined): string {

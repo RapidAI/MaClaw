@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { companionCommandBubble, companionFill, companionNoteAlias, companionPaperAlias, cs, setCompanionUiLang } from "../../i18n/mnCompanion";
 import {
     ChooseFileCompanionFiles,
     CancelFileCompanionTurn,
@@ -39,6 +40,7 @@ import {
     FileCompanionUploadCloud,
     ShowItemInFolder,
     GetBrandInfo,
+    GetCurrentLanguage,
     GetFileCompanionBoot,
     ListFileCompanionLibrary,
     SetFileCompanionOpenSet,
@@ -473,11 +475,11 @@ function fileErrorText(error: string): string {
     switch (error) {
         case "file is not readable":
         case "path is not readable":
-            return "没有读取权限";
+            return cs("没有读取权限");
         case "file not found":
-            return "找不到文件";
+            return cs("找不到文件");
         case "directories are not opened as tabs":
-            return "不支持打开文件夹";
+            return cs("不支持打开文件夹");
         default:
             return error;
     }
@@ -486,14 +488,14 @@ function fileErrorText(error: string): string {
 function turnErrorText(error: string): string {
     switch (error) {
         case "truncated extract cannot be written":
-            return "摘录被截断，已拒绝写回";
+            return cs("摘录被截断，已拒绝写回");
         case "file changed on disk":
-            return "文件在磁盘上已被修改";
+            return cs("文件在磁盘上已被修改");
         case "file is read only":
         case "file is not writable":
-            return "没有写入权限";
+            return cs("没有写入权限");
         case "path is outside the open file":
-            return "这个文件没有打开";
+            return cs("这个文件没有打开");
         default:
             return error;
     }
@@ -501,9 +503,9 @@ function turnErrorText(error: string): string {
 
 function exportSaveError(raw: string): string {
     const lower = raw.toLowerCase();
-    if (lower.includes("not enough space") || lower.includes("no space left") || lower.includes("disk full")) return "磁盘已满";
-    if (lower.includes("access is denied") || lower.includes("permission denied")) return "没有写入权限";
-    return "无法保存到该位置";
+    if (lower.includes("not enough space") || lower.includes("no space left") || lower.includes("disk full")) return cs("磁盘已满");
+    if (lower.includes("access is denied") || lower.includes("permission denied")) return cs("没有写入权限");
+    return cs("无法保存到该位置");
 }
 
 // Wails rejects a Go error as a plain string: window.wails.Callback passes
@@ -517,18 +519,18 @@ function bindingErrorText(err: unknown): string {
 
 function exportErrorText(err: unknown): string {
     const raw = bindingErrorText(err);
-    if (raw.includes("MaClaw Hub login is required")) return "需要先在主窗口登录，才能上传到云盘";
-    if (raw.includes("upload mobile document failed") || raw.includes("Hub upload") || raw.includes("decode upload response")) return "上传到云盘失败，请稍后重试";
-    if (raw === "web session is not open") return "这个页面没有打开";
-    if (raw === "path is outside the open file") return "这个文件没有打开";
-    if (raw === "file is empty") return "文件是空的";
+    if (raw.includes("MaClaw Hub login is required")) return cs("需要先在主窗口登录，才能上传到云盘");
+    if (raw.includes("upload mobile document failed") || raw.includes("Hub upload") || raw.includes("decode upload response")) return cs("上传到云盘失败，请稍后重试");
+    if (raw === "web session is not open") return cs("这个页面没有打开");
+    if (raw === "path is outside the open file") return cs("这个文件没有打开");
+    if (raw === "file is empty") return cs("文件是空的");
     // Only the upload of a folder uses this sentence. A save error such as
     // "The directory name is invalid", or a path that contains "director",
     // is a failed PDF write.
-    if (raw === "path is a directory") return "不支持上传文件夹";
+    if (raw === "path is a directory") return cs("不支持上传文件夹");
     if (raw.includes("创建目录失败") || raw.includes("写入 PDF 失败")) return exportSaveError(raw);
-    if (raw === "file too large to compress safely") return "文件太大，无法上传到云盘";
-    return raw || "操作失败";
+    if (raw === "file too large to compress safely") return cs("文件太大，无法上传到云盘");
+    return raw || cs("操作失败");
 }
 
 function knowledgeResultText(result: { imported_files?: number; failed_files?: number; skipped_files?: number; last_item_reason?: string } | null | undefined): { ok: boolean; text: string } {
@@ -537,10 +539,10 @@ function knowledgeResultText(result: { imported_files?: number; failed_files?: n
     const skipped = Number(result?.skipped_files ?? 0);
     if (failed > 0 && imported === 0) {
         const reason = String(result?.last_item_reason ?? "").trim();
-        return { ok: false, text: reason ? `导入知识库失败：${reason}` : "导入知识库失败" };
+        return { ok: false, text: reason ? `导入知识库失败：${reason}` : cs("导入知识库失败") };
     }
-    if (imported === 0 && skipped > 0) return { ok: true, text: "文件已在桌面知识库中" };
-    return { ok: true, text: "已进入桌面知识库" };
+    if (imported === 0 && skipped > 0) return { ok: true, text: cs("文件已在桌面知识库中") };
+    return { ok: true, text: cs("已进入桌面知识库") };
 }
 
 function docFieldJSON(doc: CompanionDoc, lower: string, upper: string): string {
@@ -1326,7 +1328,7 @@ function companionExportNotice(missingFigures: number, missingDiagrams: number):
     const missing: string[] = [];
     if (missingFigures > 0) missing.push(`${missingFigures} 张配图`);
     if (missingDiagrams > 0) missing.push(`${missingDiagrams} 张流程图`);
-    if (missing.length === 0) return "已导出 PDF";
+    if (missing.length === 0) return cs("已导出 PDF");
     return `已导出 PDF，但 ${missing.join("、")}未能读取，未包含在内`;
 }
 
@@ -1338,7 +1340,7 @@ function companionCloudExportNotice(uploaded: { duplicate?: boolean; duplicate_o
     const held = uploaded?.duplicate_of_title || uploaded?.title || "";
     const base = uploaded?.duplicate
         ? `云盘中已有相同内容${held ? `（${held}）` : ""}，未再次上传`
-        : "已上传到云盘，手机端「文档」可打开";
+        : cs("已上传到云盘，手机端「文档」可打开");
     const missing: string[] = [];
     if (missingFigures > 0) missing.push(`${missingFigures} 张配图`);
     if (missingDiagrams > 0) missing.push(`${missingDiagrams} 张流程图`);
@@ -1394,7 +1396,7 @@ function CompanionMessageActions({ path, markdown, messageId, figures, webSessio
             const dest = webSession
                 ? await FileCompanionExportWebTeX(webSession, markdown)
                 : await FileCompanionExportTeX(path, markdown);
-            if (dest) showToast("已导出 LaTeX", "success", 6000);
+            if (dest) showToast(cs("已导出 LaTeX"), "success", 6000);
             settleTex(dest ? "ok" : "idle");
         } catch (err) {
             showToast(exportErrorText(err), "error", 6000);
@@ -1405,27 +1407,27 @@ function CompanionMessageActions({ path, markdown, messageId, figures, webSessio
         <div className="file-companion-bubble-actions" data-testid={`file-companion-actions-${messageId}`}>
             <CompanionBubbleAction
                 name="markdown"
-                label="复制为 Markdown"
-                doneLabel="已复制"
-                failedLabel="复制失败"
+                label={cs("复制为 Markdown")}
+                doneLabel={cs("已复制")}
+                failedLabel={cs("复制失败")}
                 state={copyState}
                 testId={`file-companion-copy-${messageId}`}
                 onClick={() => { void runCopy(); }}
             />
             <CompanionBubbleAction
                 name="pdf"
-                label="导出为 PDF"
-                doneLabel="已导出"
-                failedLabel="导出失败"
+                label={cs("导出为 PDF")}
+                doneLabel={cs("已导出")}
+                failedLabel={cs("导出失败")}
                 state={exportState}
                 testId={`file-companion-export-pdf-${messageId}`}
                 onClick={() => { void runExport(); }}
             />
             <CompanionBubbleAction
                 name="latex"
-                label="导出为 LaTeX"
-                doneLabel="已导出"
-                failedLabel="导出失败"
+                label={cs("导出为 LaTeX")}
+                doneLabel={cs("已导出")}
+                failedLabel={cs("导出失败")}
                 state={texState}
                 testId="file-companion-export-tex"
                 onClick={() => { void runTeX(); }}
@@ -1559,11 +1561,11 @@ function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, o
                             data-seconds={String(stamp.seconds)}
                             onClick={() => {
                                 if (web) {
-                                    onBlocked("网页笔记不能跳回播放位置");
+                                    onBlocked(cs("网页笔记不能跳回播放位置"));
                                     return;
                                 }
                                 if (!previewOpen) {
-                                    onBlocked("预览还没打开，无法跳转");
+                                    onBlocked(cs("预览还没打开，无法跳转"));
                                     return;
                                 }
                                 window.dispatchEvent(new CustomEvent("file-companion:seek", { detail: { path, seconds: stamp.seconds } }));
@@ -1592,10 +1594,10 @@ export function companionMessageReview(messageText: string, notes: CompanionShar
         used.add(note.id);
         const answered = notes.some((other) => other.host && other.replyTo === note.id);
         const decision = note.decision || "";
-        if (decision === "ignored") return { noteId: note.id, tone: "ignored", label: "主持人已忽略这条批注" };
-        if (decision === "approved" && !answered) return { noteId: note.id, tone: "approved", label: "已通过，等待主持人 Agent 回复" };
+        if (decision === "ignored") return { noteId: note.id, tone: "ignored", label: cs("主持人已忽略这条批注") };
+        if (decision === "approved" && !answered) return { noteId: note.id, tone: "approved", label: cs("已通过，等待主持人 Agent 回复") };
         if (answered) return null;
-        return { noteId: note.id, tone: "pending", label: "等待主持人审核" };
+        return { noteId: note.id, tone: "pending", label: cs("等待主持人审核") };
     }
     return null;
 }
@@ -1811,8 +1813,8 @@ function companionArxivSearchStatus(error: string, query: string, submitted: str
     if (error) return error;
     // A fresh search is still asking the model what to look for. A page turn
     // already has that plan, so it only says it is fetching the next slice.
-    if (busy && !paging) return "正在理解研究目标并检索…";
-    if (busy) return "正在检索…";
+    if (busy && !paging) return cs("正在理解研究目标并检索…");
+    if (busy) return cs("正在检索…");
     // The count describes the list on screen. It stays true only while the
     // box still holds the goal that produced that list; a keystroke must
     // not leave "约 N 篇" attached to a different sentence.
@@ -1820,9 +1822,9 @@ function companionArxivSearchStatus(error: string, query: string, submitted: str
     // A fallback searched only the words arXiv can match, which are usually
     // the English terms inside a Chinese goal — not the goal itself. Saying
     // "已按原文检索" would describe a query that was never sent.
-    const head = fallback ? "未能扩展关键词，已用原文中的英文词检索。" : "";
+    const head = fallback ? cs("未能扩展关键词，已用原文中的英文词检索。") : "";
     if (current && count === 0 && page <= 1) {
-        return fallback ? `${head}检索完成，没有结果` : "检索完成，没有结果";
+        return fallback ? `${head}检索完成，没有结果` : cs("检索完成，没有结果");
     }
     // A later page can come back empty when the previous total was only a
     // lower bound. Saying "第 1 页" here would hide that the reader is stuck
@@ -1840,8 +1842,8 @@ function companionArxivSearchStatus(error: string, query: string, submitted: str
     // A later page with no rows is still a result. Changing the box must say
     // the goal moved, not the idle hint that belongs to an empty first page.
     // Once the result itself has been cleared, there is nothing to revise.
-    if (searched && (page > 1 || count > 0)) return "目标已修改，请重新检索";
-    return "描述研究目标、关键字，或 arXiv 编号";
+    if (searched && (page > 1 || count > 0)) return cs("目标已修改，请重新检索");
+    return cs("描述研究目标、关键字，或 arXiv 编号");
 }
 
 function companionArxivHits(raw: unknown): CompanionArxivHit[] {
@@ -1938,6 +1940,22 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // the title has to come from the backend instead of a literal. MaClaw is
     // the default so a failed call leaves the label exactly as it was.
     const [brandName, setBrandName] = useState("MaClaw");
+    // The test binding omits GetCurrentLanguage, and those tests still expect the old Chinese card labels.
+    // Production always has the binding. Until it answers, and if it fails, the language is English.
+    const [uiLang, setUiLang] = useState(() => (typeof GetCurrentLanguage === "function" ? "en" : "zh-Hans"));
+    setCompanionUiLang(uiLang);
+    useEffect(() => {
+        if (typeof GetCurrentLanguage !== "function") return undefined;
+        let live = true;
+        void GetCurrentLanguage().then((value) => {
+            if (!live) return;
+            const next = String(value || "").trim();
+            setUiLang(next || "en");
+        }).catch(() => {
+            if (live) setUiLang("en");
+        });
+        return () => { live = false; };
+    }, []);
     const [openMenu, setOpenMenu] = useState(false);
     // 独立界面 state: the window switches between the reading view, the
     // 文档管理 screen, and the 阅读群组 screen. 分享 opens over either.
@@ -2408,7 +2426,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 // are up to date. Warn once per document; 同步 can retry.
                 if (sharePushWarnedRef.current.has(path)) return;
                 sharePushWarnedRef.current.add(path);
-                showToast("自动同步到分享失败，可在文档管理里用「同步」重试", "error", 6000);
+                showToast(cs("自动同步到分享失败，可在文档管理里用「同步」重试"), "error", 6000);
             })
             .finally(() => {
                 sharePushInFlightRef.current.delete(path);
@@ -2661,12 +2679,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             try {
                 doc = await FileCompanionOpen(trimmed) as CompanionDoc;
             } catch (err) {
-                doc = { path: trimmed, error: bindingErrorText(err) || "打不开这个文件" };
+                doc = { path: trimmed, error: bindingErrorText(err) || cs("打不开这个文件") };
             }
             if (openEpoch.current.get(trimmed) !== serial) return;
             const error = field(doc, "error", "Error", "");
             if (fromDrop && isDirectoryError(error)) {
-                setDropMessage("不支持打开文件夹");
+                setDropMessage(cs("不支持打开文件夹"));
                 return;
             }
             const next = tabFromDoc(doc, trimmed);
@@ -3296,7 +3314,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             try {
                 result = await FileCompanionSaveText(latest.path, sent, useHash) as SaveResult;
             } catch (err) {
-                const message = err instanceof Error ? err.message : "保存失败";
+                const message = err instanceof Error ? err.message : cs("保存失败");
                 setTabs((current) => current.map((item) => item.path === latest.path ? { ...item, saveError: message } : item));
                 outcome = "error";
                 return;
@@ -3310,7 +3328,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setTabs((current) => current.map((item) => {
                 if (item.path !== latest.path) return item;
                 if (conflict) return { ...item, conflict: true, diskHash, confirmOverwrite: false, saveError: "" };
-                if (!saved) return { ...item, saveError: String(result.error ?? result.Error ?? "保存失败") };
+                if (!saved) return { ...item, saveError: String(result.error ?? result.Error ?? cs("保存失败")) };
                 if (userEditedSince) {
                     return { ...item, dirty: true, conflict: false, confirmOverwrite: false, loadedHash: diskHash || item.loadedHash, saveError: "" };
                 }
@@ -3361,7 +3379,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     role: "assistant" as const,
                     text: companionAnnotationMarkdown(note.text),
                     discussion: {
-                        askedBy: (target?.author || "读者").trim(),
+                        askedBy: (target?.author || cs("读者")).trim(),
                         question: question.length > 120 ? `${question.slice(0, 120)}…` : question,
                     },
                 };
@@ -3815,7 +3833,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const convertCard = activeTab ? convertResults[activeTab.path] : undefined;
     const convertTitle = convertBusy && activeTab && convertProgress[activeTab.path]
         ? `已处理 ${convertProgress[activeTab.path].done}/${convertProgress[activeTab.path].total} 页`
-        : "保留扫描版式，生成可以选中和搜索的 PDF";
+        : cs("保留扫描版式，生成可以选中和搜索的 PDF");
     const noteBusy = Boolean(activeTab && noteBusyPaths.has(activeTab.path));
     const chatExportBusy = Boolean(activeTab && chatExportBusyPaths.has(activeTab.path));
     const projectExportBusy = Boolean(activeTab && projectExportBusyPath === activeTab.path);
@@ -3896,7 +3914,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 showToast(
                     uploaded?.duplicate
                         ? `云盘中已有相同内容${held ? `（${held}）` : ""}，未再次上传`
-                        : "已上传到云盘，手机端「文档」可打开",
+                        : cs("已上传到云盘，手机端「文档」可打开"),
                     "success",
                     6000,
                 );
@@ -3942,14 +3960,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         // Same rule as the button. A paper card or a reply still arriving
         // must not flash 正在导出 before the toast.
         if (!companionChatHasExportableTurn(tab.messages, Boolean(tab.status) || sendingPaths.has(tab.path))) {
-            showToast("没有可导出的内容", "error", 6000);
+            showToast(cs("没有可导出的内容"), "error", 6000);
             return;
         }
         if (!beginChatExport(tab.path)) return;
         try {
             const prepared = await buildChatTurns();
             if (prepared.turns.length === 0) {
-                showToast("没有可导出的内容", "error", 6000);
+                showToast(cs("没有可导出的内容"), "error", 6000);
                 return;
             }
             await work(tab, prepared);
@@ -3987,7 +4005,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const dest = tab.kind === "web"
             ? await FileCompanionExportWebChatTeX(tab.sessionId, prepared.turns)
             : await FileCompanionExportChatTeX(tab.path, prepared.turns);
-        if (dest) showToast("已导出 LaTeX", "success", 6000);
+        if (dest) showToast(cs("已导出 LaTeX"), "success", 6000);
     });
 
     // The zip holds the open file, the highlights stored for that path, and the
@@ -4007,7 +4025,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 drawings: loadPdfDrawings(path),
             }));
             if (dest) {
-                showToast("已导出项目", "success", 6000);
+                showToast(cs("已导出项目"), "success", 6000);
                 void ShowItemInFolder(dest).catch(() => undefined);
             }
         } catch (err) {
@@ -4044,7 +4062,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             // read, so it goes out like a turn does.
             if (tab.kind !== "web") pushShareTranscriptRef.current(tab.path);
         } catch (err) {
-            showToast(turnErrorText(err instanceof Error ? err.message : "没能清空聊天"), "error", 6000);
+            showToast(turnErrorText(err instanceof Error ? err.message : cs("没能清空聊天")), "error", 6000);
         }
         return true;
     };
@@ -4065,7 +4083,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
             return true;
         }).catch((err) => {
-            showToast(turnErrorText(err instanceof Error ? err.message : "批注没有同步出去"), "error", 6000);
+            showToast(turnErrorText(err instanceof Error ? err.message : cs("批注没有同步出去")), "error", 6000);
             return false;
         });
     };
@@ -4088,9 +4106,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             shareByPathRef.current.set(key, stored);
             const token = shareBindToken(stored);
             setTabs((tabsNow) => tabsNow.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
-            showToast(decision === "approve" ? "已通过，主持人 Agent 会处理这条批注" : "已忽略这条批注，参与者会看到忽略标记", "success", 5000);
+            showToast(decision === "approve" ? cs("已通过，主持人 Agent 会处理这条批注") : cs("已忽略这条批注，参与者会看到忽略标记"), "success", 5000);
         } catch (err) {
-            showToast(turnErrorText(err instanceof Error ? err.message : "审核没有保存"), "error", 6000);
+            showToast(turnErrorText(err instanceof Error ? err.message : cs("审核没有保存")), "error", 6000);
         } finally {
             reviewingNoteRef.current = "";
             setReviewingNoteID("");
@@ -4122,8 +4140,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const selection = activeTab.selection;
         const selectionStart = activeTab.selectionStart;
         const mediaKind = filePreviewKindFromName(activeTab.name);
-        const notePhrase = !isWebTab && (mediaKind === "video" || mediaKind === "audio") && companionVideoNotePhrase(text);
-        const webNotePhrase = isWebTab && (text === "记笔记" || companionVideoNotePhrase(text));
+        const notePhrase = !isWebTab && (mediaKind === "video" || mediaKind === "audio") && (companionVideoNotePhrase(text) || companionNoteAlias(text));
+        const webNotePhrase = isWebTab && (text === "记笔记" || companionVideoNotePhrase(text) || companionNoteAlias(text));
+        const paperAlias = companionPaperAlias(text);
         // One player. A second web note would record over the one already running.
         if (webNotePhrase && otherWebNoteRunning(tabPath)) return false;
         // A new question always re-arms the follow, even if the reader had
@@ -4182,7 +4201,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             // pass it, which is the fact the toast should use.
                             const saved = shareByPathRef.current.get(key)?.notes ?? [];
                             const waitsForReview = saved.some((note) => !note.host && (note.decision ?? "") !== "");
-                            showToast(waitsForReview || notesReview ? "已发给主持人审核，通过后由主持人 Agent 回复" : "已发给主持人 Agent，回复会作为批注同步给参与者", "success", 6000);
+                            showToast(waitsForReview || notesReview ? cs("已发给主持人审核，通过后由主持人 Agent 回复") : cs("已发给主持人 Agent，回复会作为批注同步给参与者"), "success", 6000);
                         });
                     }
                 }
@@ -4228,7 +4247,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         text,
                         selection,
                         request_id: requestID,
-                        ...(notePhrase ? { purpose: "video-note" } : {}),
+                        ...(paperAlias ? { purpose: "paper" } : notePhrase ? { purpose: "video-note" } : {}),
                         ...(selection && selectionStart >= 0 ? { selection_start: selectionStart } : {}),
                     });
                     // The host's question is part of the transcript participants
@@ -4237,7 +4256,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }
             } catch (err) {
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
-                const note = turnErrorText(err instanceof Error ? err.message : "发送失败");
+                const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
                 const assistantID = `${requestID}:assistant`;
                 setTabs((current) => current.map((tab) => {
                     if (tab.path !== tabPath) return tab;
@@ -4283,7 +4302,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             } catch (err) {
                 paperRequestIds.current.delete(requestID);
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
-                const note = turnErrorText(err instanceof Error ? err.message : "发送失败");
+                const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
                 const assistantID = `${requestID}:assistant`;
                 setTabs((current) => current.map((tab) => {
                     if (tab.path !== tabPath) return tab;
@@ -4325,7 +4344,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         if (body.saveFailed) {
             // The selectable PDF exists. The path the reader picked was not written.
             scanEpoch.current += 1;
-            tell(body.message || "无法保存到该位置", "error");
+            tell(body.message || cs("无法保存到该位置"), "error");
             if (body.pdf) {
                 setConvertResults((current) => ({
                     ...current,
@@ -4341,12 +4360,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             // remembered card is for a PDF this file no longer owns.
             scanEpoch.current += 1;
             applyScanProbeRef.current(body.path, { scan: false }, scanEpoch.current);
-            tell(body.message || (body.ok ? "这份 PDF 已有文字层，可以直接选择和搜索。" : "没有生成可选中的 PDF"), body.ok ? "success" : "error");
+            tell(body.message || (body.ok ? cs("这份 PDF 已有文字层，可以直接选择和搜索。") : cs("没有生成可选中的 PDF")), body.ok ? "success" : "error");
             endConvert(body.path);
             return;
         }
         if (!body.ok || !body.pdf) {
-            tell(body.message || "没有生成可选中的 PDF", "error");
+            tell(body.message || cs("没有生成可选中的 PDF"), "error");
             endConvert(body.path);
             // The click may already have dropped a PDF that belonged to other
             // bytes. Ask the probe, which is what the card follows.
@@ -4363,8 +4382,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             [body.path]: { pdf: body.pdf, message: body.message },
         }));
         const toastText = !body.complete || body.pending
-            ? (body.message || "请再点「转换」继续。")
-            : "已按原版式生成新的 PDF，原文件没有改动。";
+            ? (body.message || cs("请再点「转换」继续。"))
+            : cs("已按原版式生成新的 PDF，原文件没有改动。");
         tell(toastText, "success");
         // The toast names the source file. Explorer selects the PDF this
         // result names: the path the reader picked when that copy was written.
@@ -4386,7 +4405,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             if (started) return;
             const busy = result?.busy === true || result?.Busy === true;
             if (busy) {
-                showToast(withConvertFile(path, String(result?.message ?? result?.Message ?? "").trim() || "正在转换，请稍候。"), "info", 4000);
+                showToast(withConvertFile(path, String(result?.message ?? result?.Message ?? "").trim() || cs("正在转换，请稍候。")), "info", 4000);
                 return;
             }
             const scan = (result?.scan ?? result?.Scan) !== false;
@@ -4459,7 +4478,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         } catch (err) {
             videoNoteRequestIds.current.delete(requestID);
             if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
-            const note = turnErrorText(err instanceof Error ? err.message : "发送失败");
+            const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
             const assistantID = `${requestID}:assistant`;
             setTabs((current) => current.map((tab) => {
                 if (tab.path !== tabPath) return tab;
@@ -4508,7 +4527,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 await SendFileCompanionMessage({ path: tabPath, text, request_id: requestID });
             } catch (err) {
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
-                const note = turnErrorText(err instanceof Error ? err.message : "发送失败");
+                const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
                 const assistantID = `${requestID}:assistant`;
                 setTabs((current) => current.map((item) => {
                     if (item.path !== tabPath) return item;
@@ -4670,7 +4689,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             const drawings = String(raw?.drawings || raw?.Drawings || "");
             const has = (name: string) => Object.prototype.hasOwnProperty.call(raw, name) || Object.prototype.hasOwnProperty.call(raw, name[0].toUpperCase() + name.slice(1));
             if (!path) {
-                const failure = "导入失败：没有拿到文件";
+                const failure = cs("导入失败：没有拿到文件");
                 if (sharePasswordRef.current) setSharePasswordError(failure);
                 else setArxivMessage(failure);
                 return;
@@ -4696,16 +4715,16 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 // The share is already in the library. A later open failure
                 // must not be read as 需要分享密码 or as a failed import.
                 clearSharePassword();
-                setArxivMessage("文件已导入，但没有打开");
-                showToast("已导入文档库", "success", 6000);
+                setArxivMessage(cs("文件已导入，但没有打开"));
+                showToast(cs("已导入文档库"), "success", 6000);
                 return;
             }
-            showToast("已导入文档库", "success", 6000);
+            showToast(cs("已导入文档库"), "success", 6000);
             setArxivInput("");
             clearSharePassword();
             closeOpenMenu(focusInsideOpenMenu());
         } catch (err) {
-            const sentence = bindingErrorText(err) || "导入失败";
+            const sentence = bindingErrorText(err) || cs("导入失败");
             if (sentence.includes("需要分享密码")) {
                 setSharePasswordLink(link);
                 setSharePasswordError(password ? sentence : "");
@@ -4728,7 +4747,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const secret = sharePasswordValue.trim();
         if (!link || arxivBusyRef.current) return;
         if (!secret) {
-            setSharePasswordError("请输入分享密码");
+            setSharePasswordError(cs("请输入分享密码"));
             sharePasswordInputRef.current?.focus();
             return;
         }
@@ -4743,7 +4762,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         // Enter reaches here even when 确定 is disabled, so an empty box must
         // say so instead of doing nothing at all.
         if (!value) {
-            setArxivMessage("请填写论文、页面或分享链接");
+            setArxivMessage(cs("请填写论文、页面或分享链接"));
             return;
         }
         if (looksLikeCompanionShare(value)) {
@@ -4758,7 +4777,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             if (arxiv) {
                 const path = await FileCompanionOpenArxiv(value);
                 if (!path) {
-                    setArxivMessage("下载失败：没有拿到文件路径");
+                    setArxivMessage(cs("下载失败：没有拿到文件路径"));
                     return;
                 }
                 await openPath(path, false, false, 0, true);
@@ -4768,7 +4787,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 const sessionId = String(opened?.sessionId || "").trim();
                 const failure = String(opened?.error || opened?.Error || "").trim();
                 if (failure || !frame || !sessionId) {
-                    setArxivMessage(failure || "打不开这个页面");
+                    setArxivMessage(failure || cs("打不开这个页面"));
                     return;
                 }
                 const host = (() => {
@@ -4776,7 +4795,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 })();
                 const next: CompanionTab = {
                     path: frame,
-                    name: host || "网页",
+                    name: host || cs("网页"),
                     editable: false,
                     readOnly: true,
                     canExport: false,
@@ -4811,7 +4830,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setArxivInput("");
             closeOpenMenu(focusInsideOpenMenu());
         } catch (err) {
-            setArxivMessage(bindingErrorText(err) || (arxiv ? "下载失败" : "打开失败"));
+            setArxivMessage(bindingErrorText(err) || (arxiv ? cs("下载失败") : cs("打开失败")));
         } finally {
             arxivBusyRef.current = false;
             setArxivBusy(false);
@@ -4864,7 +4883,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const requested = turning ? page : 1;
         const q = (turning ? arxivSearchFor : arxivSearchQuery).trim();
         if (!q) {
-            setArxivSearchError("请描述研究目标或输入关键字");
+            setArxivSearchError(cs("请描述研究目标或输入关键字"));
             setArxivSearched(false);
             setArxivSearchHits([]);
             setArxivSearchGroups([]);
@@ -4908,7 +4927,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setArxivSearchFallback(result.fallback);
         } catch (err) {
             if (gen !== arxivSearchGenRef.current) return;
-            setArxivSearchError(bindingErrorText(err) || "搜索失败");
+            setArxivSearchError(bindingErrorText(err) || cs("搜索失败"));
             if (!turning) {
                 setArxivSearched(false);
                 setArxivSearchHits([]);
@@ -4934,7 +4953,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         try {
             const path = await FileCompanionOpenArxiv(paper);
             if (!path) {
-                setArxivSearchError("下载失败：没有拿到文件路径");
+                setArxivSearchError(cs("下载失败：没有拿到文件路径"));
                 return;
             }
             await openPath(path, false, false, 0, true);
@@ -4942,7 +4961,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             dismissArxivSearch();
             closeOpenMenu(restore);
         } catch (err) {
-            setArxivSearchError(bindingErrorText(err) || "下载失败");
+            setArxivSearchError(bindingErrorText(err) || cs("下载失败"));
         } finally {
             arxivBusyRef.current = false;
             setArxivBusy(false);
@@ -5092,15 +5111,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         type="button"
                         className="file-companion-tab-nudge"
                         data-testid="file-companion-tabs-left"
-                        aria-label="向左移动文件标签"
-                        title="向左移动文件标签"
+                        aria-label={cs("向左移动文件标签")}
+                        title={cs("向左移动文件标签")}
                         disabled={!tabEnds.canLeft}
                         onClick={() => nudgeTabs(-1)}
                     >
                         {"<<"}
                     </button>
                 ) : null}
-                <div className="file-companion-titlebar-tabs" data-testid="file-companion-titlebar-tabs" role="tablist" aria-label="打开的文档" ref={tabsScrollRef}>
+                <div className="file-companion-titlebar-tabs" data-testid="file-companion-titlebar-tabs" role="tablist" aria-label={cs("打开的文档")} ref={tabsScrollRef}>
                 {tabs.map((tab) => {
                     const host = shareHosts.get(companionSharePathKey(tab.path)) ?? null;
                     return (
@@ -5121,10 +5140,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 className="file-companion-tab-host"
                                 data-testid={`file-companion-tab-host-${tab.name}`}
                                 data-state="mine"
-                                title="你是主持人"
-                                aria-label="你是主持人"
+                                title={cs("你是主持人")}
+                                aria-label={cs("你是主持人")}
                             >
-                                主持
+                                {cs("主持")}
                             </span>
                         ) : null}
                         {tab.shareToken ? (
@@ -5135,13 +5154,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     ? "mine"
                                     : hostSharesByPathRef.current.has(companionSharePathKey(tab.path)) ? "host" : "received"}
                                 title={mineSharesByPathRef.current.has(companionSharePathKey(tab.path))
-                                    ? "已分享 — 链接可以修改分享范围、有效期、主持人"
+                                    ? cs("已分享 — 链接可以修改分享范围、有效期、主持人")
                                     : hostSharesByPathRef.current.has(companionSharePathKey(tab.path))
-                                        ? "你是这份文档的主持人"
-                                        : "收到的分享"}
+                                        ? cs("你是这份文档的主持人")
+                                        : cs("收到的分享")}
                                 aria-label={mineSharesByPathRef.current.has(companionSharePathKey(tab.path))
-                                    ? "已分享"
-                                    : hostSharesByPathRef.current.has(companionSharePathKey(tab.path)) ? "主持人" : "收到的分享"}
+                                    ? cs("已分享")
+                                    : hostSharesByPathRef.current.has(companionSharePathKey(tab.path)) ? cs("主持人") : cs("收到的分享")}
                             >
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
                                     <path d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
@@ -5184,8 +5203,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         type="button"
                         className="file-companion-tab-nudge"
                         data-testid="file-companion-tabs-right"
-                        aria-label="向右移动文件标签"
-                        title="向右移动文件标签"
+                        aria-label={cs("向右移动文件标签")}
+                        title={cs("向右移动文件标签")}
                         disabled={!tabEnds.canRight}
                         onClick={() => nudgeTabs(1)}
                     >
@@ -5209,7 +5228,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             setOpenMenu((current) => !current);
                         }}
                     >
-                        打开
+                        {cs("打开")}
                         <span className="file-companion-open-caret" aria-hidden="true">
                             <svg viewBox="0 0 10 6" focusable="false">
                                 <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -5230,7 +5249,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 closeOpenMenu(false);
                             }}
                         />
-                        <div className={playerHost === "native" && playerTab ? "file-companion-open-menu file-companion-open-menu--beside-player" : "file-companion-open-menu"} id="file-companion-open-menu" data-testid="file-companion-open-menu" role="group" aria-label="打开方式">
+                        <div className={playerHost === "native" && playerTab ? "file-companion-open-menu file-companion-open-menu--beside-player" : "file-companion-open-menu"} id="file-companion-open-menu" data-testid="file-companion-open-menu" role="group" aria-label={cs("打开方式")}>
                             <button
                                 type="button"
                                 className="file-companion-open-hero"
@@ -5246,8 +5265,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     <CompanionActionIcon name="file" size={18} />
                                 </span>
                                 <span className="file-companion-open-hero-text">
-                                    <span className="file-companion-open-hero-title">打开文档或导入项目</span>
-                                    <span className="file-companion-open-hero-sub">支持一次选择多个文件</span>
+                                    <span className="file-companion-open-hero-title">{cs("打开文档或导入项目")}</span>
+                                    <span className="file-companion-open-hero-sub">{cs("支持一次选择多个文件")}</span>
                                 </span>
                             </button>
                             <div className="file-companion-open-sep" />
@@ -5279,7 +5298,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     aria-busy={arxivBusy}
                                     onClick={() => { void openReference(); }}
                                 >
-                                    {arxivBusy ? (looksLikeCompanionShare(arxivInput) ? "正在导入…" : looksLikeArxivReference(arxivInput) ? "下载中…" : "打开中…") : "确定"}
+                                    {arxivBusy ? (looksLikeCompanionShare(arxivInput) ? cs("正在导入…") : looksLikeArxivReference(arxivInput) ? cs("下载中…") : cs("打开中…")) : cs("确定")}
                                 </button>
                                 <button
                                     type="button"
@@ -5292,7 +5311,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     aria-controls="file-companion-arxiv-search-title"
                                     onClick={openArxivSearch}
                                 >
-                                    搜索
+                                    {cs("搜索")}
                                 </button>
                             </div>
                             <p
@@ -5312,9 +5331,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         type="button"
                         className="file-companion-tool file-companion-tool--icon"
                         data-testid="file-companion-library"
-                        aria-label="文档管理"
+                        aria-label={cs("文档管理")}
                         aria-pressed={view === "library"}
-                        title="文档管理 — 本机文档与云端项目"
+                        title={cs("文档管理 — 本机文档与云端项目")}
                         onClick={() => {
                             if (arxivBusyRef.current) return;
                             setChatExportDestPath("");
@@ -5323,15 +5342,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         }}
                     >
                         <CompanionActionIcon name="library" />
-                        <span className="file-companion-sr">文档管理</span>
+                        <span className="file-companion-sr">{cs("文档管理")}</span>
                     </button>
                     <button
                         type="button"
                         className="file-companion-tool file-companion-tool--icon"
                         data-testid="file-companion-groups-open"
-                        aria-label="阅读群组"
+                        aria-label={cs("阅读群组")}
                         aria-pressed={view === "groups"}
-                        title="阅读群组 — 创建群组、邀请成员、分享给群组"
+                        title={cs("阅读群组 — 创建群组、邀请成员、分享给群组")}
                         onClick={() => {
                             if (arxivBusyRef.current) return;
                             setChatExportDestPath("");
@@ -5340,7 +5359,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         }}
                     >
                         <CompanionActionIcon name="groups" />
-                        <span className="file-companion-sr">阅读群组</span>
+                        <span className="file-companion-sr">{cs("阅读群组")}</span>
                     </button>
                 </div>
                 <div className="file-companion-titlebar-gap" data-testid="file-companion-titlebar-gap" />
@@ -5351,9 +5370,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 className="file-companion-host-badge"
                                 data-testid="file-companion-host-badge"
                                 data-state={readHost.mine ? "mine" : "guest"}
-                                title={readHost.mine ? "你是这份文档的主持人" : "这份文档由对方分享，对方是主持人"}
+                                title={readHost.mine ? cs("你是这份文档的主持人") : cs("这份文档由对方分享，对方是主持人")}
                             >
-                                {readHost.mine ? "你是主持人" : `主持人：${readHost.owner || "其他人"}`}
+                                {readHost.mine ? cs("你是主持人") : `主持人：${readHost.owner || cs("其他人")}`}
                             </span>
                         ) : null}
                         {hostSeat && !sharedRow ? (
@@ -5362,12 +5381,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 className="file-companion-tool file-companion-tool--icon"
                                 data-testid="file-companion-host-sync"
                                 disabled={Boolean(activeTab.error) || isWebTab || !activeTab.path}
-                                aria-label="同步"
-                                title="同步 — 把最新标注和聊天推到这份分享"
+                                aria-label={cs("同步")}
+                                title={cs("同步 — 把最新标注和聊天推到这份分享")}
                                 onClick={() => { runSharePush(activeTab.path); }}
                             >
                                 <CompanionActionIcon name="cloud" />
-                                <span className="file-companion-sr">同步</span>
+                                <span className="file-companion-sr">{cs("同步")}</span>
                             </button>
                         ) : (
                         <button
@@ -5376,15 +5395,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             data-testid="file-companion-share-open"
                             data-shared={sharedRow ? "true" : undefined}
                             disabled={Boolean(activeTab.error) || isWebTab || !activeTab.path}
-                            aria-label={sharedRow ? "修改分享" : "分享"}
-                            title={sharedRow ? "修改分享 — 调整分享范围、有效期，链接不变" : "分享 — 上传文档、高亮和聊天，生成云端链接"}
+                            aria-label={sharedRow ? cs("修改分享") : cs("分享")}
+                            title={sharedRow ? cs("修改分享 — 调整分享范围、有效期，链接不变") : cs("分享 — 上传文档、高亮和聊天，生成云端链接")}
                             onClick={() => {
                                 setShareDialogRow(sharedRow);
                                 setShareDialogPath(activeTab.path);
                             }}
                         >
                             <CompanionActionIcon name="share" />
-                            <span className="file-companion-sr">{sharedRow ? "修改分享" : "分享"}</span>
+                            <span className="file-companion-sr">{sharedRow ? cs("修改分享") : cs("分享")}</span>
                         </button>
                         )}
                         {showConvert ? (
@@ -5394,12 +5413,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             data-testid="file-companion-convert"
                             disabled={Boolean(activeTab.error) || sendBusy || paperBusy || convertBusy}
                             aria-busy={convertBusy}
-                            aria-label={convertBusy ? "正在转换" : "转换"}
-                            title={convertBusy ? convertTitle : "转换 — 保留扫描版式，生成可选中、可搜索的 PDF"}
+                            aria-label={convertBusy ? cs("正在转换") : cs("转换")}
+                            title={convertBusy ? convertTitle : cs("转换 — 保留扫描版式，生成可选中、可搜索的 PDF")}
                             onClick={() => { void convertScan(); }}
                         >
                             <CompanionActionIcon name="convert" />
-                            <span className="file-companion-sr">{convertBusy ? "正在转换…" : "转换"}</span>
+                            <span className="file-companion-sr">{convertBusy ? cs("正在转换…") : cs("转换")}</span>
                         </button>
                         ) : null}
                         {isWebTab || kind === "video" || kind === "audio" ? null : (
@@ -5409,12 +5428,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             data-testid="file-companion-paper"
                             disabled={Boolean(activeTab.error) || sendBusy || convertBusy}
                             aria-busy={paperBusy}
-                            aria-label="论文解读"
-                            title={paperBusy ? "正在解读…" : "论文解读 — 生成本文的结构化解读报告"}
+                            aria-label={cs("论文解读")}
+                            title={paperBusy ? cs("正在解读…") : cs("论文解读 — 生成本文的结构化解读报告")}
                             onClick={() => { void sendPaper(); }}
                         >
                             <CompanionActionIcon name="paper" />
-                            <span className="file-companion-sr">{paperBusy ? "正在解读…" : "论文解读"}</span>
+                            <span className="file-companion-sr">{paperBusy ? cs("正在解读…") : cs("论文解读")}</span>
                         </button>
                         )}
                         {isWebTab || kind === "video" || kind === "audio" ? (
@@ -5423,12 +5442,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             className="file-companion-tool file-companion-tool--icon"
                             data-testid="file-companion-video-note"
                             disabled={noteBusy ? false : Boolean(activeTab.error) || sendBusy}
-                            aria-label={noteBusy ? (isWebTab ? "停止" : "取消") : (isWebTab ? "记笔记" : "生成笔记")}
-                            title={noteBusy ? (isWebTab ? "停止 — 结束网页笔记" : "取消 — 结束笔记生成") : (isWebTab ? "记笔记 — 把网页内容整理成笔记" : "生成笔记 — 把视频、音频内容整理成笔记")}
+                            aria-label={noteBusy ? (isWebTab ? cs("停止") : cs("取消")) : (isWebTab ? cs("记笔记") : cs("生成笔记"))}
+                            title={noteBusy ? (isWebTab ? cs("停止 — 结束网页笔记") : cs("取消 — 结束笔记生成")) : (isWebTab ? cs("记笔记 — 把网页内容整理成笔记") : cs("生成笔记 — 把视频、音频内容整理成笔记"))}
                             onClick={() => { void sendNote(); }}
                         >
                             <CompanionActionIcon name={noteBusy ? "stop" : "note"} />
-                            <span className="file-companion-sr">{noteBusy ? (isWebTab ? "停止" : "取消") : (isWebTab ? "记笔记" : "生成笔记")}</span>
+                            <span className="file-companion-sr">{noteBusy ? (isWebTab ? cs("停止") : cs("取消")) : (isWebTab ? cs("记笔记") : cs("生成笔记"))}</span>
                         </button>
                         ) : null}
                         <div className="file-companion-export-anchor" data-testid="file-companion-export-anchor" ref={chatExportWrapRef}>
@@ -5442,8 +5461,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             aria-expanded={chatExportDestOpen}
                             aria-haspopup="menu"
                             aria-controls="file-companion-export-chat-dest"
-                            aria-label="导出 PDF"
-                            title={canExportChat || chatExportBusy ? "导出 PDF — 按聊天区原来的格式，把全部对话导出" : hasChatHistory ? "没有可导出的正文" : "对话为空，没有可导出的内容"}
+                            aria-label={cs("导出 PDF")}
+                            title={canExportChat || chatExportBusy ? cs("导出 PDF — 按聊天区原来的格式，把全部对话导出") : hasChatHistory ? cs("没有可导出的正文") : cs("对话为空，没有可导出的内容")}
                             onClick={() => {
                                 if (!canExportChat || !activeTab) return;
                                 setChatTexOpen(false);
@@ -5455,7 +5474,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             }}
                         >
                             <CompanionActionIcon name="pdf" />
-                            <span className="file-companion-sr">{chatExportBusy ? "正在导出…" : "导出 PDF"}</span><span className="file-companion-export-caret" data-testid="file-companion-export-chat-menu" role="button" aria-label="导出格式" title="导出格式" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatExportDestPath(""); setChatTexOpen((current) => !current); }}><svg viewBox="0 0 10 6" aria-hidden="true" focusable="false"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg></span>{chatTexOpen ? <span data-testid="file-companion-export-chat-tex" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen(false); void exportChatTeX(); }}>LaTeX</span> : null}
+                            <span className="file-companion-sr">{chatExportBusy ? cs("正在导出…") : cs("导出 PDF")}</span><span className="file-companion-export-caret" data-testid="file-companion-export-chat-menu" role="button" aria-label={cs("导出格式")} title={cs("导出格式")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatExportDestPath(""); setChatTexOpen((current) => !current); }}><svg viewBox="0 0 10 6" aria-hidden="true" focusable="false"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg></span>{chatTexOpen ? <span data-testid="file-companion-export-chat-tex" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen(false); void exportChatTeX(); }}>LaTeX</span> : null}
                         </button>
                         {chatExportDestOpen ? (
                             <div
@@ -5463,7 +5482,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 id="file-companion-export-chat-dest"
                                 data-testid="file-companion-export-chat-dest"
                                 role="menu"
-                                aria-label="导出 PDF"
+                                aria-label={cs("导出 PDF")}
                             >
                                 <button
                                     type="button"
@@ -5475,7 +5494,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                         void exportChat();
                                     }}
                                 >
-                                    导出文件
+                                    {cs("导出文件")}
                                 </button>
                                 <button
                                     type="button"
@@ -5487,7 +5506,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                         void exportChatCloud();
                                     }}
                                 >
-                                    导出到云盘
+                                    {cs("导出到云盘")}
                                 </button>
                             </div>
                         ) : null}
@@ -5499,12 +5518,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             data-testid="file-companion-export-project"
                             disabled={!activeTab.canExport || projectExportBusy}
                             aria-busy={projectExportBusy}
-                            aria-label="导出项目"
-                            title={projectExportBusy ? "正在导出…" : "导出项目 — 文档、高亮和聊天记录打包成项目"}
+                            aria-label={cs("导出项目")}
+                            title={projectExportBusy ? cs("正在导出…") : cs("导出项目 — 文档、高亮和聊天记录打包成项目")}
                             onClick={() => { void exportProject(); }}
                         >
                             <CompanionActionIcon name="project" />
-                            <span className="file-companion-sr">{projectExportBusy ? "正在导出…" : "导出项目"}</span>
+                            <span className="file-companion-sr">{projectExportBusy ? cs("正在导出…") : cs("导出项目")}</span>
                         </button>
                         )}
                         <button
@@ -5513,12 +5532,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             data-testid="file-companion-import"
                             disabled={!activeTab.canExport || importBusy}
                             aria-busy={importBusy}
-                            aria-label="导入知识库"
-                            title={importBusy ? "正在导入…" : "导入知识库 — 存入知识库，以后可以检索"}
+                            aria-label={cs("导入知识库")}
+                            title={importBusy ? cs("正在导入…") : cs("导入知识库 — 存入知识库，以后可以检索")}
                             onClick={() => { void runExport("import"); }}
                         >
                             <CompanionActionIcon name="knowledge" />
-                            <span className="file-companion-sr">{importBusy ? "正在导入…" : "导入知识库"}</span>
+                            <span className="file-companion-sr">{importBusy ? cs("正在导入…") : cs("导入知识库")}</span>
                         </button>
                         <button
                             type="button"
@@ -5526,18 +5545,18 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             data-testid="file-companion-upload"
                             disabled={cloudDisabled || uploadBusy || uploaded}
                             aria-busy={uploadBusy}
-                            aria-label={uploaded ? "已上传到云盘" : "上传到云盘"}
-                            title={activeTab.size > CLOUD_DISABLE_BYTES ? "文件太大，无法上传到云盘" : uploaded ? "已上传到云盘 — 手机端「文档」可打开" : uploadBusy ? "正在上传…" : "上传到云盘 — 手机端「文档」可打开"}
+                            aria-label={uploaded ? cs("已上传到云盘") : cs("上传到云盘")}
+                            title={activeTab.size > CLOUD_DISABLE_BYTES ? cs("文件太大，无法上传到云盘") : uploaded ? cs("已上传到云盘 — 手机端「文档」可打开") : uploadBusy ? cs("正在上传…") : cs("上传到云盘 — 手机端「文档」可打开")}
                             onClick={() => { void runExport("upload"); }}
                         >
                             <CompanionActionIcon name={uploaded ? "check" : "cloud"} />
-                            <span className="file-companion-sr">{uploadBusy ? "正在上传…" : "上传到云盘"}</span>
+                            <span className="file-companion-sr">{uploadBusy ? cs("正在上传…") : cs("上传到云盘")}</span>
                         </button>
                     </div>
                 ) : null}
-                <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--fullscreen" data-testid="file-companion-fullscreen" aria-pressed={readingFull} aria-label={readingFull ? "恢复原始大小" : "全屏"} title={readingFull ? "恢复进入全屏前的窗口大小" : "全屏阅读"} onClick={() => { void toggleReadingFrame(); }}><CompanionActionIcon name={readingFull ? "restore" : "fullscreen"} /><span className="file-companion-sr">{readingFull ? "恢复原始大小" : "全屏"}</span></button>
+                <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--fullscreen" data-testid="file-companion-fullscreen" aria-pressed={readingFull} aria-label={readingFull ? cs("恢复原始大小") : cs("全屏")} title={readingFull ? cs("恢复进入全屏前的窗口大小") : cs("全屏阅读")} onClick={() => { void toggleReadingFrame(); }}><CompanionActionIcon name={readingFull ? "restore" : "fullscreen"} /><span className="file-companion-sr">{readingFull ? cs("恢复原始大小") : cs("全屏")}</span></button>
                 {/* runtime WindowHide. App.WindowHide also shows the tray pet. */}
-                <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--close" data-testid="file-companion-close" aria-label="隐藏" title="隐藏窗口，已打开的文件会保留" onClick={() => { windowHiddenRef.current = true; windowRevealRef.current = false; WindowHide(); }}><CompanionActionIcon name="hide" /><span className="file-companion-sr">隐藏</span></button>
+                <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--close" data-testid="file-companion-close" aria-label={cs("隐藏")} title={cs("隐藏窗口，已打开的文件会保留")} onClick={() => { windowHiddenRef.current = true; windowRevealRef.current = false; WindowHide(); }}><CompanionActionIcon name="hide" /><span className="file-companion-sr">{cs("隐藏")}</span></button>
             </div>
             {dropMessage ? <div data-testid="file-companion-drop-error" style={{ padding: "8px 12px", color: "var(--theme-danger, #9a3412)" }}>{dropMessage}</div> : null}
             {/* The reading view stays mounted under the management screens. A
@@ -5546,7 +5565,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 that is still recording. The screens paint over it instead. */}
             {!activeTab ? (
                 <div data-testid="file-companion-empty" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    把文件拖到这里，或点击「打开」
+                    {cs("把文件拖到这里，或点击「打开」")}
                 </div>
             ) : (
                 <div className="file-companion-split" data-testid="file-companion-split" ref={splitRef}>
@@ -5559,7 +5578,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 data-testid="file-companion-html-toggle"
                                 onClick={() => updateActive({ htmlPreview: !activeTab.htmlPreview })}
                             >
-                                {activeTab.htmlPreview ? "源码" : "预览"}
+                                {activeTab.htmlPreview ? cs("源码") : cs("预览")}
                             </button>
                         ) : null}
                         {!holdPlayer && showSource && kind === "markdown" ? (
@@ -5592,12 +5611,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 style={{ flex: 1, minHeight: 180, border: "1px solid var(--theme-border, #e2e8f0)", borderRadius: 8, padding: 12, background: "var(--theme-surface, #ffffff)", color: "var(--theme-text-primary, #1e293b)" }}
                             />
                         ) : null}
-                        {!holdPlayer && activeTab.readOnlyReason === "permission" ? <p data-testid="file-companion-readonly-note">没有写入权限</p> : null}
-                        {!holdPlayer && activeTab.readOnlyReason === "too-large" ? <p data-testid="file-companion-readonly-note">文件过大，为避免截断写回，已禁止保存</p> : null}
-                        {!holdPlayer && emptyFile ? <div data-testid="file-companion-empty-file">文件是空的</div> : null}
+                        {!holdPlayer && activeTab.readOnlyReason === "permission" ? <p data-testid="file-companion-readonly-note">{cs("没有写入权限")}</p> : null}
+                        {!holdPlayer && activeTab.readOnlyReason === "too-large" ? <p data-testid="file-companion-readonly-note">{cs("文件过大，为避免截断写回，已禁止保存")}</p> : null}
+                        {!holdPlayer && emptyFile ? <div data-testid="file-companion-empty-file">{cs("文件是空的")}</div> : null}
                         {!holdPlayer && unsupported ? (
                             <div data-testid="file-companion-unsupported">
-                                <p>此文件类型暂不支持预览</p>
+                                <p>{cs("此文件类型暂不支持预览")}</p>
                                 <p>{activeTab.name}</p>
                                 <p>{activeTab.size} 字节</p>
                             </div>
@@ -5644,15 +5663,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         {!holdPlayer && activeTab.saveError ? <p data-testid="file-companion-save-error">{turnErrorText(activeTab.saveError)}</p> : null}
                         {!holdPlayer && activeTab.conflict ? (
                             <div data-testid="file-companion-conflict">
-                                文件在磁盘上已被修改
-                                <button type="button" className="file-companion-tool" onClick={() => { void openPath(activeTab.path, false); }}>重新加载</button>
+                                {cs("文件在磁盘上已被修改")}
+                                <button type="button" className="file-companion-tool" onClick={() => { void openPath(activeTab.path, false); }}>{cs("重新加载")}</button>
                                 <button type="button" className="file-companion-tool" onClick={() => {
                                     if (!activeTab.confirmOverwrite) {
                                         updateActive({ confirmOverwrite: true });
                                         return;
                                     }
                                     void saveTab(activeTab, activeTab.diskHash);
-                                }}>{activeTab.confirmOverwrite ? "再次确认覆盖" : "覆盖保存"}</button>
+                                }}>{activeTab.confirmOverwrite ? cs("再次确认覆盖") : cs("覆盖保存")}</button>
                             </div>
                         ) : null}
                     </section>
@@ -5664,9 +5683,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         aria-valuemin={COMPANION_CHAT_MIN}
                         aria-valuemax={clampCompanionChatWidth(Number.MAX_SAFE_INTEGER, splitRef.current?.clientWidth ?? 0)}
                         aria-valuenow={chatWidth}
-                        aria-label="拖动调整左右宽度"
+                        aria-label={cs("拖动调整左右宽度")}
                         tabIndex={0}
-                        title="拖动调整左右宽度"
+                        title={cs("拖动调整左右宽度")}
                         onPointerDown={onSplitPointerDown}
                         onPointerMove={onSplitPointerMove}
                         onPointerUp={onSplitPointerEnd}
@@ -5683,11 +5702,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         }}
                     />
                     <section className="file-companion-chat" data-testid="file-companion-chat" style={{ width: chatWidth }}>
-                        {activeTab.status ? <CompanionStatus text={activeTab.status} kind={tabNoteKind(activeTab)} noteStartedAt={activeTab.noteStartedAt} phaseStartedAt={activeTab.phaseStartedAt} /> : null}
+                        {activeTab.status ? <CompanionStatus text={activeTab.status} kind={tabNoteKind(activeTab)} noteStartedAt={activeTab.noteStartedAt} phaseStartedAt={activeTab.phaseStartedAt} lang={uiLang} /> : null}
                         {convertCard ? (
                             <div data-testid="file-companion-convert-result">
-                                <p style={{ margin: "12px 16px 0", fontSize: 13 }}>{convertCard.message || "已按原版式生成新的 PDF，原文件没有改动。"}</p>
-                                <PaperResultCard filePath={convertCard.pdf} messageId="convert" />
+                                <p style={{ margin: "12px 16px 0", fontSize: 13 }}>{convertCard.message || cs("已按原版式生成新的 PDF，原文件没有改动。")}</p>
+                                <PaperResultCard filePath={convertCard.pdf} messageId="convert" lang={uiLang} />
                             </div>
                         ) : null}
                         <div
@@ -5700,7 +5719,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             onContextMenu={onChatContextMenu}
                             style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
                         >
-                            {activeTab.messages.length === 0 && discussionReplies.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "var(--theme-text-muted, #94a3b8)", fontSize: 13 }}>针对当前文件提问</p> : null}
+                            {activeTab.messages.length === 0 && discussionReplies.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "var(--theme-text-muted, #94a3b8)", fontSize: 13 }}>{cs("针对当前文件提问")}</p> : null}
                             {activeTab.messages.map((message, index) => {
                                 const mine = message.role === "user";
                                 const turnLive = Boolean(activeTab.status) || sendingPaths.has(activeTab.path);
@@ -5711,7 +5730,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     : resolveVisibleAssistantReply(message.text, cleanedReasoning, { live: streaming });
                                 const displayReasoning = stripAssistantToolCallMarkers(visibleReply.reasoning).trim();
                                                 const paperPending = !mine && !message.resultPath && paperRequestIds.current.has(paperRequestOf(message.id));
-                                                const answerText = message.resultPath ? "已生成论文解读" : paperPending ? "正在生成论文解读…" : companionMessageExportText(message, streaming);
+                                                const answerText = companionCommandBubble(uiLang, message.resultPath ? cs("已生成论文解读") : paperPending ? cs("正在生成论文解读…") : companionMessageExportText(message, streaming));
                                                 // Both controls work on finished Markdown. Mid-stream text would copy a
                                                 // half answer, and the paper reply exports through its own result card.
                                                 const shareable = !mine && !streaming && !message.resultPath && !paperPending && answerText.trim().length > 0;
@@ -5742,8 +5761,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                     <div data-chat-mark-skip>
                                                     <AssistantReasoningPanel
                                                         defaultOpen={streaming}
-                                                    label={streaming ? "正在思考" : "思考过程"}
-                                                    lang="zh-Hans"
+                                                    label={streaming ? cs("正在思考") : cs("思考过程")}
+                                                    lang={uiLang}
                                                     theme={appearance.assistantTheme}
                                                     contentKey={displayReasoning}
                                                     live={streaming}
@@ -5772,11 +5791,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                     onBlocked={(sentence) => showToast(sentence, "error", 6000)}
                                                 />
                                                 )}
-                                                {message.resultPath ? <PaperResultCard filePath={message.resultPath} messageId={message.id} /> : null}
-                                                {message.noteCardPath ? <NoteResultCard filePath={message.noteCardPath} messageId={message.id} /> : null}
-                                                {message.files && message.files.length > 0 ? <CompanionFileCard files={message.files} messageId={message.id} /> : null}
+                                                {message.resultPath ? <PaperResultCard filePath={message.resultPath} messageId={message.id} lang={uiLang} /> : null}
+                                                {message.noteCardPath ? <NoteResultCard filePath={message.noteCardPath} messageId={message.id} lang={uiLang} /> : null}
+                                                {message.files && message.files.length > 0 ? <CompanionFileCard files={message.files} messageId={message.id} lang={uiLang} /> : null}
                                                 {!mine && message.figures && message.figures.length > 0 ? (
-                                                    <CompanionFigureStrip figures={message.figures} messageId={message.id} />
+                                                    <CompanionFigureStrip figures={message.figures} messageId={message.id} lang={uiLang} />
                                                 ) : null}
                                                 {messageReview ? (
                                                     <p data-testid={`file-companion-message-review-${messageReview.noteId}`} data-tone={messageReview.tone} style={{ margin: "6px 0 0", fontSize: 12, lineHeight: 1.4, opacity: 0.92 }}>{messageReview.label}</p>
@@ -5809,11 +5828,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     >
                                         <CompanionMessageActions path={activeTab.path} markdown={message.text} messageId={message.id} />
                                         <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)" }}>
-                                            主持人回复
+                                            {cs("主持人回复")}
                                         </p>
                                         {message.discussion?.question ? (
                                             <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)", borderLeft: "2px solid var(--theme-border, #cbd5e1)", paddingLeft: 8 }}>
-                                                回复 {message.discussion.askedBy || "读者"}：{message.discussion.question}
+                                                回复 {message.discussion.askedBy || cs("读者")}：{message.discussion.question}
                                             </p>
                                         ) : null}
                                         <MessageContentRenderer
@@ -5861,21 +5880,21 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     return (
                                         <div key={note.id} className="file-companion-annotation-row" data-testid={`file-companion-annotation-${note.id}`}>
                                             <p className="file-companion-annotations-author">
-                                                {note.host ? `主持人${note.author ? ` · ${note.author}` : ""}` : note.author || "读者"}
+                                                {note.host ? `主持人${note.author ? ` · ${note.author}` : ""}` : note.author || cs("读者")}
                                             </p>
                                             <CompanionAnnotationBody noteId={note.id} text={note.text} theme={appearance.assistantTheme} />
                                             {!note.host && decision === "ignored" ? (
-                                                <span className="file-companion-annotation-status" data-tone="ignored" data-testid={`file-companion-annotation-ignored-${note.id}`}>主持人已忽略这条批注</span>
+                                                <span className="file-companion-annotation-status" data-tone="ignored" data-testid={`file-companion-annotation-ignored-${note.id}`}>{cs("主持人已忽略这条批注")}</span>
                                             ) : null}
                                             {!note.host && decision === "approved" && !answered ? (
-                                                <span className="file-companion-annotation-status" data-tone="approved" data-testid={`file-companion-annotation-approved-${note.id}`}>已通过，等待主持人 Agent 回复</span>
+                                                <span className="file-companion-annotation-status" data-tone="approved" data-testid={`file-companion-annotation-approved-${note.id}`}>{cs("已通过，等待主持人 Agent 回复")}</span>
                                             ) : null}
                                             {!note.host && waitingForReview && !hostReviewer && reviewOn ? (
-                                                <span className="file-companion-annotation-status" data-tone="pending" data-testid={`file-companion-annotation-pending-${note.id}`}>等待主持人审核</span>
+                                                <span className="file-companion-annotation-status" data-tone="pending" data-testid={`file-companion-annotation-pending-${note.id}`}>{cs("等待主持人审核")}</span>
                                             ) : null}
                                             {canReview ? (
                                                 <span className="file-companion-annotation-actions">
-                                                    <span className="file-companion-annotation-status" data-tone="pending">待审核</span>
+                                                    <span className="file-companion-annotation-status" data-tone="pending">{cs("待审核")}</span>
                                                     <button
                                                         type="button"
                                                         className="file-companion-annotation-action"
@@ -5883,7 +5902,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                         data-testid={`file-companion-annotation-approve-${note.id}`}
                                                         disabled={Boolean(reviewingNoteID)}
                                                         onClick={() => { void reviewShareNote(note.id, "approve"); }}
-                                                    >通过</button>
+                                                    >{cs("通过")}</button>
                                                     <button
                                                         type="button"
                                                         className="file-companion-annotation-action"
@@ -5891,7 +5910,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                         data-testid={`file-companion-annotation-ignore-${note.id}`}
                                                         disabled={Boolean(reviewingNoteID)}
                                                         onClick={() => { void reviewShareNote(note.id, "ignore"); }}
-                                                    >忽略</button>
+                                                    >{cs("忽略")}</button>
                                                 </span>
                                             ) : null}
                                             {canReopen ? (
@@ -5903,7 +5922,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                         data-testid={`file-companion-annotation-reopen-${note.id}`}
                                                         disabled={Boolean(reviewingNoteID)}
                                                         onClick={() => { void reviewShareNote(note.id, "approve"); }}
-                                                    >改为通过</button>
+                                                    >{cs("改为通过")}</button>
                                                 </span>
                                             ) : null}
                                             {canWithdraw ? (
@@ -5915,13 +5934,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                         data-testid={`file-companion-annotation-withdraw-${note.id}`}
                                                         disabled={Boolean(reviewingNoteID)}
                                                         onClick={() => { void reviewShareNote(note.id, "ignore"); }}
-                                                    >改为忽略</button>
+                                                    >{cs("改为忽略")}</button>
                                                 </span>
                                             ) : null}
                                         </div>
                                     );
                                 }) : (
-                                    <p className="file-companion-annotations-empty">你的讨论会成为批注，同步给能看到这份分享的人。</p>
+                                    <p className="file-companion-annotations-empty">{cs("你的讨论会成为批注，同步给能看到这份分享的人。")}</p>
                                 )}
                             </div>
                         ) : null}
@@ -5929,6 +5948,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             path={activeTab.path}
                             value={activeTab.draft}
                             busy={sendBusy}
+                            lang={uiLang}
                             onChange={(draft) => updateActive({ draft })}
                             onSubmit={() => send()}
                         />
@@ -5937,6 +5957,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             )}
             {view === "library" ? (
                 <CompanionLibraryView
+                    lang={uiLang}
                     activePath={active}
                     showToast={showToast}
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
@@ -5973,12 +5994,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             ) : null}
             {view === "groups" ? (
                 <CompanionGroupsDialog
+                    lang={uiLang}
                     showToast={showToast}
                     onClose={() => setView("read")}
                 />
             ) : null}
             {shareDialogOpen ? (
                 <CompanionShareDialog
+                    lang={uiLang}
                     path={shareDialogPath}
                     name={shareDialogName}
                     share={shareDialogRow
@@ -5992,6 +6015,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             ) : null}
             {importDialogOpen ? (
                 <CompanionImportDialog
+                    lang={uiLang}
                     initialLink={importDialogLink}
                     showToast={showToast}
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
@@ -6021,9 +6045,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 <SharePasswordGlyph name="lock" />
                             </span>
                             <div className="file-companion-dialog-heading">
-                                <h2 id="file-companion-share-password-title">输入分享密码</h2>
+                                <h2 id="file-companion-share-password-title">{cs("输入分享密码")}</h2>
                             </div>
-                            <p id="file-companion-share-password-hint" className="file-companion-dialog-sub">该文档为私密分享，需要密码才能导入。</p>
+                            <p id="file-companion-share-password-hint" className="file-companion-dialog-sub">{cs("该文档为私密分享，需要密码才能导入。")}</p>
                         </header>
                         <div className="file-companion-dialog-body">
                             <section className="file-companion-dialog-section">
@@ -6033,12 +6057,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                         className="file-companion-dialog-input"
                                         data-testid="file-companion-share-password-input"
                                         type={sharePasswordVisible ? "text" : "password"}
-                                        aria-label="分享密码"
+                                        aria-label={cs("分享密码")}
                                         aria-invalid={sharePasswordError ? true : undefined}
                                         aria-describedby={sharePasswordError ? "file-companion-share-password-error" : undefined}
                                         autoComplete="new-password"
                                         spellCheck={false}
-                                        placeholder="分享密码"
+                                        placeholder={cs("分享密码")}
                                         value={sharePasswordValue}
                                         readOnly={arxivBusy}
                                         onChange={(event) => {
@@ -6049,7 +6073,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     <button
                                         type="button"
                                         className="file-companion-share-password-reveal"
-                                        aria-label={sharePasswordVisible ? "隐藏密码" : "显示密码"}
+                                        aria-label={sharePasswordVisible ? cs("隐藏密码") : cs("显示密码")}
                                         aria-pressed={sharePasswordVisible}
                                         disabled={arxivBusy}
                                         onMouseDown={(event) => {
@@ -6073,8 +6097,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         </div>
                         <footer className="file-companion-dialog-foot">
                             <div className="file-companion-dialog-actions">
-                                <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-password-cancel" disabled={arxivBusy} onClick={closeSharePassword}>取消</button>
-                                <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-share-password-confirm" disabled={arxivBusy} aria-busy={arxivBusy}>{arxivBusy ? "正在导入…" : "导入"}</button>
+                                <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-password-cancel" disabled={arxivBusy} onClick={closeSharePassword}>{cs("取消")}</button>
+                                <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-share-password-confirm" disabled={arxivBusy} aria-busy={arxivBusy}>{arxivBusy ? cs("正在导入…") : cs("导入")}</button>
                             </div>
                         </footer>
                     </form>
@@ -6105,14 +6129,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     >
                         <header className="file-companion-dialog-head">
                             <div className="file-companion-dialog-heading">
-                                <h2 id="file-companion-arxiv-search-title">arXiv 文献检索</h2>
-                                <p className="file-companion-dialog-sub">描述研究目标，检索公开预印本</p>
+                                <h2 id="file-companion-arxiv-search-title">{cs("arXiv 文献检索")}</h2>
+                                <p className="file-companion-dialog-sub">{cs("描述研究目标，检索公开预印本")}</p>
                             </div>
                             <button
                                 type="button"
                                 className="file-companion-dialog-x"
                                 data-testid="file-companion-arxiv-search-close"
-                                aria-label="关闭"
+                                aria-label={cs("关闭")}
                                 disabled={arxivBusy}
                                 onClick={closeArxivSearch}
                             >
@@ -6128,8 +6152,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     ref={arxivSearchInputRef}
                                     className="file-companion-dialog-input file-companion-arxiv-search-input"
                                     data-testid="file-companion-arxiv-search-input"
-                                    aria-label="研究目标、关键字或论文编号"
-                                    placeholder="研究目标、关键字，或论文编号"
+                                    aria-label={cs("研究目标、关键字或论文编号")}
+                                    placeholder={cs("研究目标、关键字，或论文编号")}
                                     rows={3}
                                     value={arxivSearchQuery}
                                     readOnly={arxivSearchBusy || arxivBusy}
@@ -6152,7 +6176,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     disabled={arxivSearchBusy || arxivBusy}
                                     aria-busy={arxivSearchBusy}
                                 >
-                                    {arxivSearchBusy ? "检索中…" : "检索"}
+                                    {arxivSearchBusy ? cs("检索中…") : cs("检索")}
                                 </button>
                             </div>
                             <p
@@ -6197,7 +6221,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         ) : null}
                         {(arxivSearchPaging || !arxivSearchBusy) && arxivSearchHits.length > 0 ? (
                             <div className="file-companion-dialog-body" ref={arxivSearchListRef}>
-                                <ul className="file-companion-arxiv-hits" aria-label="搜索结果">
+                                <ul className="file-companion-arxiv-hits" aria-label={cs("搜索结果")}>
                                     {arxivSearchHits.map((hit, index) => {
                                         const opening = arxivOpeningId === hit.id;
                                         return (
@@ -6229,7 +6253,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                         {hit.abstract ? <span className="file-companion-arxiv-hit-abstract">{hit.abstract}</span> : null}
                                                     </span>
                                                     <span className="file-companion-arxiv-hit-action">
-                                                        {opening ? <span className="file-companion-arxiv-hit-status">正在下载…</span> : <span className="file-companion-arxiv-hit-open">打开</span>}
+                                                        {opening ? <span className="file-companion-arxiv-hit-status">正在下载…</span> : <span className="file-companion-arxiv-hit-open">{cs("打开")}</span>}
                                                     </span>
                                                 </button>
                                             </li>
@@ -6253,12 +6277,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     {arxivSearchPage <= 1 ? (
                                         <>
                                             <p className="file-companion-arxiv-empty-title">没有与「{arxivSearchFor}」匹配的论文</p>
-                                            <p className="file-companion-arxiv-empty-hint">换一种说法描述研究目标，或在上方输入 arXiv 编号（如 2510.16079）后检索。</p>
+                                            <p className="file-companion-arxiv-empty-hint">{cs("换一种说法描述研究目标，或在上方输入 arXiv 编号（如 2510.16079）后检索。")}</p>
                                         </>
                                     ) : (
                                         <>
-                                            <p className="file-companion-arxiv-empty-title">这一页没有论文</p>
-                                            <p className="file-companion-arxiv-empty-hint">回到上一页继续查看。</p>
+                                            <p className="file-companion-arxiv-empty-title">{cs("这一页没有论文")}</p>
+                                            <p className="file-companion-arxiv-empty-hint">{cs("回到上一页继续查看。")}</p>
                                         </>
                                     )}
                                 </div>
@@ -6273,7 +6297,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     disabled={arxivPrevDisabled}
                                     onClick={() => { void runArxivSearch(arxivSearchPage - 1); }}
                                 >
-                                    上一页
+                                    {cs("上一页")}
                                 </button>
                                 <button
                                     type="button"
@@ -6282,7 +6306,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     disabled={arxivNextDisabled}
                                     onClick={() => { void runArxivSearch(arxivSearchPage + 1); }}
                                 >
-                                    下一页
+                                    {cs("下一页")}
                                 </button>
                             </div>
                         ) : null}

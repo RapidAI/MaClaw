@@ -463,8 +463,9 @@ if (typeof I18N_ZH !== 'undefined') {
       weekdayMonFull: '\u5468\u4e00', weekdayTueFull: '\u5468\u4e8c', weekdayWedFull: '\u5468\u4e09', weekdayThuFull: '\u5468\u56db', weekdayFriFull: '\u5468\u4e94', weekdaySatFull: '\u5468\u516d', weekdaySunFull: '\u5468\u65e5'
     }
   };
-  function t(k) { var l = (window.currentLang || 'en').startsWith('zh') ? 'zh' : 'en'; return (I18N[l]||I18N.en)[k] || I18N.en[k] || k; }
-  function isZh() { return (window.currentLang || 'en').startsWith('zh'); }
+  function t(k) { var lang = window.currentLang === 'mn' ? 'mn' : ((window.currentLang || 'en') === 'zh' || String(window.currentLang || '').indexOf('zh') === 0) ? 'zh' : 'en'; if (lang === 'mn') { var mn = I18N.mn && I18N.mn[k]; return mn || (I18N.en && I18N.en[k]) || k; } return (I18N[lang]||I18N.en)[k] || I18N.en[k] || k; }
+  function isZh() { return window.currentLang === 'zh' || String(window.currentLang || '').indexOf('zh') === 0; }
+  function llmSay(en, zh, mn) { if (isZh()) return zh; if (window.currentLang === 'mn') return mn || en; return en; }
   function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
   function jsArg(s) { return esc(JSON.stringify(String(s || ''))); }
 
@@ -3870,7 +3871,7 @@ if (typeof I18N_ZH !== 'undefined') {
     return null;
   }
   window.testLLMServiceGroup = async function(groupId) {
-    if (_testingGroupId) { toast(isZh() ? '\u6d4b\u8bd5\u8fdb\u884c\u4e2d\uff0c\u8bf7\u7a0d\u5019...' : 'Test in progress, please wait...', 'info'); return; }
+    if (_testingGroupId) { toast(llmSay('Test in progress, please wait...', '\u6d4b\u8bd5\u8fdb\u884c\u4e2d\uff0c\u8bf7\u7a0d\u5019...', 'Шалгалт үргэлжилж байна, түр хүлээнэ үү...'), 'info'); return; }
     var group = serviceGroups.find(function(g) { return g.id === groupId; });
     if (!group) { toast(t('sgFailed'), 'error'); return; }
     // Routes store a provider array id. auto / official-* are billing bands,
@@ -4022,7 +4023,7 @@ if (typeof I18N_ZH !== 'undefined') {
   };
   function sgIsOfficialGroup(id){ return String(id||'').trim().toLowerCase()==='maclaw-official'; }
   function agentNameByID(id){var a=agents.find(function(x){return x.id===id;});return a&&(a.name||a.id);}
-  function sgPolicyLabel(policy){return policy==='grant_required'?(isZh()?'\u9700\u5151\u6362\u5361':'Card Required'):(isZh()?'\u514d\u8d39\u901a\u884c':'Free Access');}
+  function sgPolicyLabel(policy){return policy==='grant_required'?llmSay('Card Required','\u9700\u5151\u6362\u5361','Солилцооны карт шаардлагатай'):llmSay('Free Access','\u514d\u8d39\u901a\u884c','Үнэгүй нэвтрэлт');}
   function sgProviderIDsFromModel(m) {
     var ids=[], configs=m&&m.provider_configs||[], i, id;
     for(i=0;i<configs.length;i++){

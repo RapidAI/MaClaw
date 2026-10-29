@@ -12,6 +12,7 @@
 import { describeTaskTitle } from "../describeTaskTitle";
 import { isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../../utils/latexTemplates";
 import { isDraftDefault, WORKFLOW_AUTO, type RemoteTarget, type TaskDraft } from "./taskDraft";
+import { tailText } from "../../../i18n/mnTail"
 
 /** 与 wailsjs main.TaskCreateOptions 字段对齐（普通对象，直接可序列化）。 */
 export interface UnifiedTaskCreateOptions {
@@ -192,15 +193,17 @@ export async function runTaskConfigSend(args: {
     draft: TaskDraft;
     bindings: TaskConfigSendBindings;
     isZh?: boolean;
+    lang?: string;
     force?: boolean;
     /** First message on the new task. Defaults to `text`. Attachments stay out of the task title. */
     initialMessage?: string;
 }): Promise<TaskConfigSendResult> {
     const { text, draft, bindings } = args;
     const isZh = args.isZh !== false;
+    const lang = args.lang || (isZh ? "zh-Hans" : "en");
     const trimmed = (text || "").trim();
     const initialMessage = (args.initialMessage || "").trim() || trimmed;
-    if (!trimmed) return { ok: false, error: isZh ? "请先输入任务内容" : "Enter a task first" };
+    if (!trimmed) return { ok: false, error: tailText(lang, "Enter a task first", "请先输入任务内容") };
     if (!shouldCreateUnifiedTask(draft) && args.force !== true) return { ok: true };
     const opts = draftToTaskCreateOptions(trimmed, draft);
     let projectPath = "";
@@ -212,10 +215,10 @@ export async function runTaskConfigSend(args: {
         warning = (created.warning || "").trim();
         ownConversation = created.ownConversation === true;
     } catch (err) {
-        return { ok: false, error: errorMessage(err) || (isZh ? "创建任务失败" : "Failed to create task") };
+        return { ok: false, error: errorMessage(err) || (tailText(lang, "Failed to create task", "创建任务失败")) };
     }
     if (!projectPath) {
-        return { ok: false, error: isZh ? "创建任务失败：未返回任务路径" : "Failed to create task: no task path returned" };
+        return { ok: false, error: tailText(lang, "Failed to create task: no task path returned", "创建任务失败：未返回任务路径") };
     }
     if (opts.mode === "coding_dev" && bindings.ensureCodingArmed) {
         try {
@@ -239,11 +242,11 @@ export async function runTaskConfigSend(args: {
                 });
             } catch (err) {
                 await abandonFreshLatexPaper(bindings, projectPath);
-                return { ok: false, error: errorMessage(err) || (isZh ? "无法创建 LaTeX 文档" : "The LaTeX document could not be created") };
+                return { ok: false, error: errorMessage(err) || (tailText(lang, "The LaTeX document could not be created", "无法创建 LaTeX 文档")) };
             }
             if (!prepared?.relativePath) {
                 await abandonFreshLatexPaper(bindings, projectPath);
-                return { ok: false, error: isZh ? "无法创建 LaTeX 文档" : "The LaTeX document could not be created" };
+                return { ok: false, error: tailText(lang, "The LaTeX document could not be created", "无法创建 LaTeX 文档") };
             }
             expertMessage = prepared.initialMessage || initialMessage;
             latexDocument = { relativePath: prepared.relativePath };

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { localizeText } from '../../i18n';
 import { useDialog } from '../CustomDialog';
 import { IconMail } from '../ai/WorkbenchIcons';
 import { MailboxManageDialog } from './MailboxManageDialog';
@@ -114,9 +115,7 @@ const MAIL_PROVIDER_PRESETS: ProviderPreset[] = [
 ];
 
 function textFor(lang: string, en: string, hans: string, hant: string) {
-    if (lang === 'en') return en;
-    if (lang === 'zh-Hant') return hant;
-    return hans;
+    return localizeText(lang, en, hans, hant);
 }
 
 function draftFromEndpoint(ep: EndpointSummary | undefined, inbound: boolean): EndpointDraft {

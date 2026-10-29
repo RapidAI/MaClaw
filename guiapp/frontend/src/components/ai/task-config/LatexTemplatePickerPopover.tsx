@@ -10,6 +10,7 @@ import {
     latexTemplateText,
     type LatexTemplate,
 } from "../../../utils/latexTemplates";
+import { tailText } from "../../../i18n/mnTail"
 
 export interface LatexTemplatePickerPopoverProps {
     anchor: HTMLElement | null;
@@ -31,7 +32,6 @@ export function LatexTemplatePickerPopover({
     onSelect,
     onClose,
 }: LatexTemplatePickerPopoverProps) {
-    const isZh = !lang?.startsWith("en");
     const [query, setQuery] = useState("");
     const q = query.trim().toLowerCase();
     const selectedId = String(selectedTemplateId || "").trim() || LATEX_BLANK_TEMPLATE_ID;
@@ -61,8 +61,8 @@ export function LatexTemplatePickerPopover({
                 <input
                     value={query}
                     onChange={(e) => setQuery(e.currentTarget.value)}
-                    placeholder={isZh ? "搜索 LaTeX 模板" : "Search LaTeX templates"}
-                    aria-label={isZh ? "搜索 LaTeX 模板" : "Search LaTeX templates"}
+                    placeholder={tailText(lang ?? "", "Search LaTeX templates", "搜索 LaTeX 模板")}
+                    aria-label={tailText(lang ?? "", "Search LaTeX templates", "搜索 LaTeX 模板")}
                     style={popoverSearchInputStyle(t)}
                     autoFocus
                 />

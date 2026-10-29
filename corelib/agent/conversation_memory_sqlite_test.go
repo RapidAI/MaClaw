@@ -93,6 +93,67 @@ func TestConversationSQLiteMigrationPreservesEveryBranchAndActivePath(t *testing
 	}
 }
 
+func TestConversationSQLiteInterruptedMigrationRetriesImport(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "ai_assistant_conversation.json")
+	writeConversationSnapshotForTest(t, mainPath, memorySnapshot{SchemaVersion: memorySnapshotSchemaVersion, Sessions: map[string]persistedSession{
+		"desktop-user": {LastAccess: time.Now().UTC(), Entries: []ConversationEntry{{Role: "user", Content: "survived the crash", ID: "root", Timestamp: 1}}},
+	}})
+	// Simulate a kill between database creation and the import commit: the file
+	// exists (schema applied, no sessions) but the legacy JSON is not imported
+	// and not renamed. The next open must retry the import instead of treating
+	// the database as already migrated.
+	dbPath := conversationSQLitePath(mainPath)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(conversationSQLiteSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mainPath + ".migrated.bak"); !os.IsNotExist(err) {
+		t.Fatalf("legacy source renamed before any import: %v", err)
+	}
+
+	cm := NewPersistentConversationMemory(mainPath)
+	defer cm.Stop()
+	if cm.sqlite == nil || cm.legacyJSON {
+		t.Fatal("interrupted migration did not retry the SQLite import")
+	}
+	got := cm.Load("desktop-user")
+	if len(got) != 1 || got[0].Content != "survived the crash" {
+		t.Fatalf("entries after interrupted migration = %#v", got)
+	}
+	if _, err := os.Stat(mainPath + ".migrated.bak"); err != nil {
+		t.Fatalf("import retry did not back up the legacy source: %v", err)
+	}
+
+	// A second open must not re-import or touch the backup.
+	cm.Stop()
+	reopened := NewPersistentConversationMemory(mainPath)
+	defer reopened.Stop()
+	if reopened.legacyJSON || reopened.sqlite == nil {
+		t.Fatal("reopen after completed migration lost the SQLite backend")
+	}
+	if got := reopened.Load("desktop-user"); len(got) != 1 || got[0].Content != "survived the crash" {
+		t.Fatalf("entries after reopen = %#v", got)
+	}
+	backup, err := os.ReadFile(mainPath + ".migrated.bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot memorySnapshot
+	if err := json.Unmarshal(backup, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := snapshot.Sessions["desktop-user"]; !ok {
+		t.Fatal("reopen rewrote the migrated backup")
+	}
+}
+
 func TestConversationSQLiteActiveBranchDoesNotLoadWholeSession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conversation.json")
 	cm := NewPersistentConversationMemory(path)

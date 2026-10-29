@@ -1,5 +1,6 @@
 import type React from "react";
 import type { AIAssistantInitStatus } from "./useAIAssistant";
+import { chromeText } from "../../i18n/chromeText";
 
 /** Warm-up stages shown while the panel is not ready, in the order the
  * backend reports them (connecting → loading → warming → ready). The splash
@@ -16,9 +17,7 @@ function warmupStageIndex(status: AIAssistantInitStatus | undefined): number {
 }
 
 function warmupStepLabel(step: (typeof WARMUP_STEPS)[number], lang: string): string {
-    if (lang === "en") return step.labelEn;
-    if (lang === "zh-Hant") return step.labelZhHant;
-    return step.labelZhHans;
+    return chromeText(lang, step.labelEn, step.labelZhHans, step.labelZhHant);
 }
 
 interface AssistantWarmupSplashProps {

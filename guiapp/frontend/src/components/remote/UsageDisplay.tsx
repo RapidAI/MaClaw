@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { localizeText } from "../../i18n";
 import { GetOpenAIUsage } from "../../../wailsjs/go/main/App";
 import { formatProviderTestError } from "./LLMConfigPanelShared";
 
@@ -14,7 +15,7 @@ type Props = {
 
 export function UsageDisplay({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        localizeText(lang, en, zhHans, zhHant), [lang]);
 
     const [usage, setUsage] = useState<UsageData | null>(null);
     const [loading, setLoading] = useState(false);

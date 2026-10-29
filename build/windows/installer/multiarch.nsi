@@ -111,6 +111,7 @@ ManifestDPIAware true
 !insertmacro MUI_LANGUAGE "German"
 !insertmacro MUI_LANGUAGE "Spanish"
 !insertmacro MUI_LANGUAGE "Russian"
+!insertmacro MUI_LANGUAGE "Mongolian"
 
 # Localized strings for finish page
 LangString LaunchAfterInstall ${LANG_ENGLISH} "Launch ${INFO_PRODUCTNAME}"
@@ -122,6 +123,7 @@ LangString LaunchAfterInstall ${LANG_FRENCH} "Lancer ${INFO_PRODUCTNAME}"
 LangString LaunchAfterInstall ${LANG_GERMAN} "${INFO_PRODUCTNAME} starten"
 LangString LaunchAfterInstall ${LANG_SPANISH} "Iniciar ${INFO_PRODUCTNAME}"
 LangString LaunchAfterInstall ${LANG_RUSSIAN} "Запустить ${INFO_PRODUCTNAME}"
+LangString LaunchAfterInstall ${LANG_MONGOLIAN} "${INFO_PRODUCTNAME} эхлүүлэх"
 
 # Localized strings for already-installed dialog
 LangString AlreadyInstalled ${LANG_ENGLISH} "${INFO_PRODUCTNAME} is already installed. Do you want to uninstall it first?"
@@ -133,6 +135,7 @@ LangString AlreadyInstalled ${LANG_FRENCH} "${INFO_PRODUCTNAME} est déjà insta
 LangString AlreadyInstalled ${LANG_GERMAN} "${INFO_PRODUCTNAME} ist bereits installiert. Möchten Sie es zuerst deinstallieren?"
 LangString AlreadyInstalled ${LANG_SPANISH} "${INFO_PRODUCTNAME} ya está instalado. ¿Desea desinstalarlo primero?"
 LangString AlreadyInstalled ${LANG_RUSSIAN} "${INFO_PRODUCTNAME} уже установлен. Удалить сначала?"
+LangString AlreadyInstalled ${LANG_MONGOLIAN} "${INFO_PRODUCTNAME} аль хэдийн суулгасан байна. Эхлээд устгах уу?"
 
 # Localized strings for running app dialog
 LangString AppIsRunning ${LANG_ENGLISH} "${INFO_PRODUCTNAME} is still running. Stop it and continue installing?"
@@ -144,6 +147,7 @@ LangString AppIsRunning ${LANG_FRENCH} "${INFO_PRODUCTNAME} est encore en cours 
 LangString AppIsRunning ${LANG_GERMAN} "${INFO_PRODUCTNAME} wird noch ausgeführt. Beenden und Installation fortsetzen?"
 LangString AppIsRunning ${LANG_SPANISH} "${INFO_PRODUCTNAME} aún se está ejecutando. ¿Detenerlo y continuar la instalación?"
 LangString AppIsRunning ${LANG_RUSSIAN} "${INFO_PRODUCTNAME} всё ещё запущен. Остановить и продолжить установку?"
+LangString AppIsRunning ${LANG_MONGOLIAN} "${INFO_PRODUCTNAME} ажиллаж байна. Зогсоогоод суулгалтыг үргэлжлүүлэх үү?"
 
 LangString AppStillRunning ${LANG_ENGLISH} "${INFO_PRODUCTNAME} could not be stopped. Please close it and run the installer again."
 LangString AppStillRunning ${LANG_SIMPCHINESE} "无法停止 ${INFO_PRODUCTNAME}。请手动关闭后重新运行安装程序。"
@@ -154,6 +158,7 @@ LangString AppStillRunning ${LANG_FRENCH} "Impossible d'arrêter ${INFO_PRODUCTN
 LangString AppStillRunning ${LANG_GERMAN} "${INFO_PRODUCTNAME} konnte nicht beendet werden. Bitte manuell schließen und Installer erneut ausführen."
 LangString AppStillRunning ${LANG_SPANISH} "No se pudo detener ${INFO_PRODUCTNAME}. Ciérrelo manualmente y vuelva a ejecutar el instalador."
 LangString AppStillRunning ${LANG_RUSSIAN} "Не удалось остановить ${INFO_PRODUCTNAME}. Закройте его вручную и запустите установщик снова."
+LangString AppStillRunning ${LANG_MONGOLIAN} "${INFO_PRODUCTNAME}-г зогсоож чадсангүй. Гараар хаагаад суулгагчийг дахин ажиллуулна уу."
 
 # Localized strings for uninstall user data dialog
 LangString DeleteUserData ${LANG_ENGLISH} "Do you want to delete user data (.cceasy and part of .maclaw)?$\n$\nThis will remove AI tools and cache.$\nNote: .maclaw/data, .maclaw/models, config.json and memories.json will be preserved."
@@ -165,6 +170,7 @@ LangString DeleteUserData ${LANG_FRENCH} "Voulez-vous supprimer les données uti
 LangString DeleteUserData ${LANG_GERMAN} "Möchten Sie die Benutzerdaten (.cceasy und einen Teil von .maclaw) löschen?$\n$\nDies entfernt KI-Tools und Cache.$\nHinweis: .maclaw/data, .maclaw/models, config.json und memories.json werden beibehalten."
 LangString DeleteUserData ${LANG_SPANISH} "¿Desea eliminar los datos de usuario (.cceasy y parte de .maclaw)?$\n$\nEsto eliminará herramientas IA y caché.$\nNota: .maclaw/data, .maclaw/models, config.json y memories.json se conservarán."
 LangString DeleteUserData ${LANG_RUSSIAN} "Удалить пользовательские данные (.cceasy и часть .maclaw)?$\n$\nБудут удалены ИИ-инструменты и кэш.$\nПримечание: .maclaw/data, .maclaw/models, config.json и memories.json будут сохранены."
+LangString DeleteUserData ${LANG_MONGOLIAN} "Хэрэглэгчийн өгөгдлийг (.cceasy болон .maclaw-ийн зарим хэсгийг) устгах уу?$\n$\nЭнэ нь AI багаж болон кэшийг устгана.$\nАнхаар: .maclaw/data, .maclaw/models, config.json болон memories.json хадгалагдана."
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\dist\${INFO_PROJECTNAME}-Setup.exe"
@@ -305,6 +311,7 @@ Function .onInit
     System::Call 'kernel32::GetUserDefaultUILanguage() i .r0'
     # Chinese Simplified: 0x0804, Traditional: 0x0404, Japanese: 0x0411, Korean: 0x0412
     # French: 0x040C, German: 0x0407, Spanish: 0x0C0A, Russian: 0x0419
+    # Cyrillic Mongolian (Mongolia): 0x0450 = 1104. Traditional Mongolian 0x0850 = 2128 stays English.
     StrCmp $0 "2052" lang_zh_cn
     StrCmp $0 "1028" lang_zh_tw
     StrCmp $0 "1041" lang_ja
@@ -313,6 +320,7 @@ Function .onInit
     StrCmp $0 "1031" lang_de
     StrCmp $0 "3082" lang_es
     StrCmp $0 "1049" lang_ru
+    StrCmp $0 "1104" lang_mn
     Goto lang_en
 
     lang_zh_cn:
@@ -338,6 +346,9 @@ Function .onInit
         Goto lang_done
     lang_ru:
         StrCpy $LANGUAGE ${LANG_RUSSIAN}
+        Goto lang_done
+    lang_mn:
+        StrCpy $LANGUAGE ${LANG_MONGOLIAN}
         Goto lang_done
     lang_en:
         StrCpy $LANGUAGE ${LANG_ENGLISH}

@@ -23,6 +23,7 @@
         <div class="lang-switch" role="group" aria-label="Language">
           <button id="langZh" type="button" data-lang="zh" aria-pressed="true">中</button>
           <button id="langEn" type="button" data-lang="en" aria-pressed="false">EN</button>
+          <button id="langMn" type="button" data-lang="mn" aria-pressed="false">Монгол</button>
         </div>
         <span id="tenantChip" class="tenant-chip" hidden></span>
         <button id="accountBtn" class="account-chip" type="button" hidden></button>
@@ -92,12 +93,12 @@
         loading: '加载中...', storeEnabled: '商店已启用', storeDisabled: '商店未启用', loadFailed: '商品加载失败', priceConfigured: '所有价格由后台「在线商店」配置。',
         paymentTitle: '支付后续', paymentDesc: '支付通知验签成功后，系统自动生成服务兑换码。', recoveryTitleShort: '邮箱找回', recoveryDescShort: '忘记兑换码时可用购买邮箱重新发送。',
         catalogEyebrow: 'Catalog', catalogTitle: '可购买卡种', catalogDesc: '服务卡覆盖固定周期，点卡用于补充 credits。',
-        serviceCard: '服务兑换卡', creditsCard: '纯点卡', periodLimitLabel: '周期限制', noPeriodLimit: '无周期限制', usageScenarioLabel: '适用场景', buy: '购买', registeredEmail: '注册账户', secondaryEmail: '第二邮箱（可选）', validForDays: '天有效', validForDay: '天有效', accountNotSet: '未设置账户', accountHint: '购买账户', changeEmail: '更换账户', emailDialogTitle: '确认购买账户', emailDialogDesc: '可填写注册邮箱或 phone:手机号。邮箱账户会收到兑换码邮件；手机账户支付后自动充值，兑换码会保留在页面。', continueBuy: '继续购买', cancel: '取消', returnOrderTitle: '支付返回', returnOrderLoading: '正在确认支付结果...',
+        serviceCard: '服务兑换卡', creditsCard: '纯点卡', periodLimitLabel: '周期限制', noPeriodLimit: '无周期限制', period5h: '5小时', periodDay: '日', periodWeek: '周', periodMonth: '月', usageScenarioLabel: '适用场景', buy: '购买', registeredEmail: '注册账户', secondaryEmail: '第二邮箱（可选）', validForDays: '天有效', validForDay: '天有效', accountNotSet: '未设置账户', accountHint: '购买账户', changeEmail: '更换账户', emailDialogTitle: '确认购买账户', emailDialogDesc: '可填写注册邮箱或 phone:手机号。邮箱账户会收到兑换码邮件；手机账户支付后自动充值，兑换码会保留在页面。', continueBuy: '继续购买', cancel: '取消', returnOrderTitle: '支付返回', returnOrderLoading: '正在确认支付结果...',
         recoveryEyebrow: 'Recovery', recoveryTitle: '找回服务兑换码', recoveryDesc: '输入购买时使用的注册邮箱或第二邮箱，系统会把已支付订单的兑换码发送到该邮箱。', recoverEmailLabel: '购买邮箱', recoverEmailPlaceholder: 'name@example.com', captchaLabel: '图形验证码', captchaPlaceholder: '输入结果', captchaRefresh: '换一题', captchaInvalid: '请填写正确的计算结果', recoverButton: '发送找回邮件',
         enterEmail: '请填写注册账户（邮箱或 phone:手机号）', enterRecoverEmail: '请填写有效的购买邮箱', invalidSecondEmail: '请填写有效的第二邮箱，或留空', createOrder: '正在创建订单...', orderCreated: '订单已创建，支付完成后此处会显示兑换码', openPayment: '打开支付页面', paymentLinkHint: '支付链接', createFailed: '创建订单失败', waitingNotify: '等待支付通知中... 订单号 ', manualWaiting: '已提醒店主，请等待核对到账。订单号 ', manualRejected: '订单已驳回', payCode: '付款备注', payAmount: '付款金额', payChannel: '付款方式', payee: '收款人', payQR: '付款码', productLabel: '商品', payDone: '我已扫码支付完成', payDoneSending: '正在通知店主...', payDoneSent: '已通知店主', payDoneWarning: '重要：扫码付款后必须点击“支付完成”按钮，否则店主不会收到确认邮件，订单可能无法及时处理。', payDoneFirst: '请扫码付款后点击“支付完成”，店主才会收到确认邮件。',
         serviceCode: '服务兑换码', paidSent: '支付成功，兑换码已发送到邮箱', paidGenerated: '支付成功，兑换码已生成', autoRedeemed: '支付成功，已自动充值到注册账户', autoRedeemFailed: '支付成功，但自动充值未完成，请使用兑换码手动兑换。', issueFailed: '支付已确认，但服务码生成失败，请联系管理员处理。', notifyTimeout: '还没有收到支付通知，可稍后刷新或使用邮箱找回',
         resultSuccessTitle: '支付成功', resultPendingTitle: '正在确认支付结果...', resultSuccessLead: '订单已完成，服务兑换码已生成。', resultAutoRedeemedLead: '已自动充值到注册账户，兑换码作为备用凭证保留。', resultPendingLead: '正在读取订单状态，确认后会在这里显示兑换码。', resultBackupCode: '备用服务兑换码', copyCode: '复制兑换码', copied: '已复制', viewCredits: '查看 Credits', continueShopping: '继续购买', orderNumber: '订单号', paidAccount: '充值账号', productLabelShort: '商品', paymentAmount: '支付金额', mailState: '邮件状态', autoRedeemState: '自动充值', done: '已完成', notDone: '未完成', continueShoppingTitle: '继续购买其他卡种',
-        recoverSending: '正在发送找回邮件...', recoverSent: '已发送找回邮件，请查收邮箱', recoverNone: '没有找到已支付的兑换码', recoverFailed: '发送失败', emptyProducts: '暂无可售商品',
+        recoverSending: '正在发送找回邮件...', recoverSent: '已发送找回邮件，请查收邮箱', recoverNone: '没有找到已支付的兑换码', recoverFailed: '发送失败', recoverEmailLimited: '该邮箱今日找回次数已达上限。', recoverIpLimited: '该 IP 今日找回次数已达上限。', emptyProducts: '暂无可售商品',
         productNames: { service_day: '日卡', service_week: '周卡', service_month: '月卡', service_quarter: '季卡', service_year: '年卡', credits_10000: '纯点卡 1 万点', credits_50000: '纯点卡 5 万点', service_test_10: '测试商品 1 credit' },
         productScenarios: { service_day: '适用于体验用户。', service_week: '适用于体验用户。', service_month: '适用于轻度使用用户。', service_quarter: '适用于轻度使用用户。', service_year: '适用于中度使用用户。', credits_10000: '适用于重度使用用户；用完即续，可持续使用。', credits_50000: '适用于重度使用用户；用完即续，可持续使用。' },
         productDescriptions: { service_test_10: '仅用于充值流程测试。' }
@@ -108,12 +109,12 @@
         loading: 'Loading...', storeEnabled: 'Store enabled', storeDisabled: 'Store disabled', loadFailed: 'Products failed to load', priceConfigured: 'All prices are configured in Admin > Online Store.',
         paymentTitle: 'After payment', paymentDesc: 'After a verified payment notification, the system creates a service exchange code automatically.', recoveryTitleShort: 'Email recovery', recoveryDescShort: 'Use the purchase email to resend forgotten service codes.',
         catalogEyebrow: 'Catalog', catalogTitle: 'Available cards', catalogDesc: 'Service cards cover fixed periods. Credits cards add credits.',
-        serviceCard: 'Service card', creditsCard: 'Credits card', periodLimitLabel: 'Period limits', noPeriodLimit: 'No period limits', usageScenarioLabel: 'Best for', registeredEmail: 'Registered account', secondaryEmail: 'Second email (optional)', buy: 'Buy', validForDays: 'days valid', validForDay: 'day valid', accountNotSet: 'Account not set', accountHint: 'Purchase account', changeEmail: 'Change account', emailDialogTitle: 'Confirm purchase account', emailDialogDesc: 'Use a registered email or phone:number. Email accounts receive the code by email; phone accounts are credited automatically after payment, with the code kept on this page.', continueBuy: 'Continue', cancel: 'Cancel', returnOrderTitle: 'Payment return', returnOrderLoading: 'Confirming payment result...',
+        serviceCard: 'Service card', creditsCard: 'Credits card', periodLimitLabel: 'Period limits', noPeriodLimit: 'No period limits', period5h: '5h', periodDay: 'day', periodWeek: 'week', periodMonth: 'month', usageScenarioLabel: 'Best for', registeredEmail: 'Registered account', secondaryEmail: 'Second email (optional)', buy: 'Buy', validForDays: 'days valid', validForDay: 'day valid', accountNotSet: 'Account not set', accountHint: 'Purchase account', changeEmail: 'Change account', emailDialogTitle: 'Confirm purchase account', emailDialogDesc: 'Use a registered email or phone:number. Email accounts receive the code by email; phone accounts are credited automatically after payment, with the code kept on this page.', continueBuy: 'Continue', cancel: 'Cancel', returnOrderTitle: 'Payment return', returnOrderLoading: 'Confirming payment result...',
         recoveryEyebrow: 'Recovery', recoveryTitle: 'Recover service code', recoveryDesc: 'Enter the registered email or second email used for purchase. Paid order codes will be resent to that inbox.', recoverEmailLabel: 'Purchase email', recoverEmailPlaceholder: 'name@example.com', captchaLabel: 'Captcha', captchaPlaceholder: 'Answer', captchaRefresh: 'New', captchaInvalid: 'Enter the correct result', recoverButton: 'Send recovery email',
         enterEmail: 'Enter a registered account (email or phone:number)', enterRecoverEmail: 'Enter a valid purchase email', invalidSecondEmail: 'Enter a valid second email, or leave it empty.', createOrder: 'Creating order...', orderCreated: 'Order created. The service code will appear here after payment.', openPayment: 'Open payment page', paymentLinkHint: 'Payment link', createFailed: 'Order creation failed', waitingNotify: 'Waiting for payment notification... Order ', manualWaiting: 'Store owner has been notified. Waiting for payment confirmation. Order ', manualRejected: 'Order rejected', payCode: 'Payment remark', payAmount: 'Amount', payChannel: 'Payment method', payee: 'Payee', payQR: 'Payment QR', productLabel: 'Product', payDone: 'I have paid', payDoneSending: 'Notifying store owner...', payDoneSent: 'Store owner notified', payDoneWarning: 'Important: after scanning and paying, click "I have paid". Otherwise the store owner will not receive the confirmation email and the order may not be handled in time.', payDoneFirst: 'Scan and pay, then click "I have paid" so the store owner receives the confirmation email.',
         serviceCode: 'Service code', paidSent: 'Payment successful. Code sent by email.', paidGenerated: 'Payment successful. Code generated.', autoRedeemed: 'Payment successful. Credits were added to the registered account.', autoRedeemFailed: 'Payment successful, but auto credit did not complete. Redeem the code manually.', issueFailed: 'Payment confirmed, but service code issuance failed. Please contact an administrator.', notifyTimeout: 'Payment notification not received yet. Refresh later or recover by email.',
         resultSuccessTitle: 'Payment successful', resultPendingTitle: 'Confirming payment result...', resultSuccessLead: 'The order is complete and the service code has been issued.', resultAutoRedeemedLead: 'Credits were added to the registered account. The service code remains as a backup receipt.', resultPendingLead: 'Reading order status. The service code will appear here after confirmation.', resultBackupCode: 'Backup service code', copyCode: 'Copy code', copied: 'Copied', viewCredits: 'View Credits', continueShopping: 'Continue shopping', orderNumber: 'Order', paidAccount: 'Account', productLabelShort: 'Product', paymentAmount: 'Amount', mailState: 'Email', autoRedeemState: 'Auto credit', done: 'Done', notDone: 'Not done', continueShoppingTitle: 'Continue shopping',
-        recoverSending: 'Sending recovery email...', recoverSent: 'Recovery email sent. Please check your inbox.', recoverNone: 'No paid service codes found.', recoverFailed: 'Send failed', emptyProducts: 'No products available',
+        recoverSending: 'Sending recovery email...', recoverSent: 'Recovery email sent. Please check your inbox.', recoverNone: 'No paid service codes found.', recoverFailed: 'Send failed', recoverEmailLimited: 'This email has reached today\'s recovery limit.', recoverIpLimited: 'Too many recovery requests from this IP today.', emptyProducts: 'No products available',
         productNames: { service_day: 'Day card', service_week: 'Week card', service_month: 'Month card', service_quarter: 'Quarter card', service_year: 'Year card', credits_10000: 'Credits card 10,000', credits_50000: 'Credits card 50,000', service_test_10: 'Test product 1 credit' },
         productScenarios: { service_day: 'Best for trial users.', service_week: 'Best for trial users.', service_month: 'Best for light users.', service_quarter: 'Best for light users.', service_year: 'Best for moderate users.', credits_10000: 'Best for heavy users. Renew after use for continuous access.', credits_50000: 'Best for heavy users. Renew after use for continuous access.' },
         productDescriptions: { service_test_10: 'For recharge flow testing only.' }
@@ -121,10 +122,33 @@
     };
     I18N.zh.alipayVerifyPending = '支付宝返回已收到，正在等待异步支付通知确认...';
     I18N.en.alipayVerifyPending = 'Alipay return received. Waiting for async payment confirmation...';
+    I18N.mn = {
+      title: 'MaClaw дэлгүүр', brandName: 'MaClaw дэлгүүр', brandSubtitle: 'Үйлчилгээний карт худалдан авах', tenantLabel: 'Түрээслэгч', tenantNotSet: 'Тохируулаагүй', creditsCenter: 'Credits төв', reload: 'Шинэчлэх',
+      eyebrowStore: 'Service Card Store', heroTitle: 'Үйлчилгээний карт худалдан авах', heroLead: 'Өдөр, долоо хоног, сар, улирал, жилийн үйлчилгээний карт, эсвэл 10к / 50к Credits карт сонгоно. Бүртгэлтэй дансаа оруулаад төлбөрийн захиалга үүсгэнэ. Төлсний дараа код энд гарна; имэйл данс имэйл авна, утасны данс автоматаар цэнэглэгдэж болно.',
+      loading: 'Ачаалж байна...', storeEnabled: 'Дэлгүүр идэвхтэй', storeDisabled: 'Дэлгүүр идэвхгүй', loadFailed: 'Бараа ачаалах амжилтгүй', priceConfigured: 'Бүх үнийг Admin > Online Store-д тохируулна.',
+      paymentTitle: 'Төлбөрийн дараа', paymentDesc: 'Баталгаажсан төлбөрийн мэдэгдлийн дараа систем үйлчилгээний кодыг автоматаар үүсгэнэ.', recoveryTitleShort: 'Имэйлээр сэргээх', recoveryDescShort: 'Мартсан кодыг худалдан авалтын имэйлээр дахин илгээнэ.',
+      catalogEyebrow: 'Catalog', catalogTitle: 'Боломжтой картууд', catalogDesc: 'Үйлчилгээний карт тогтмол хугацааг хамарна. Credits карт Credits нэмнэ.',
+      serviceCard: 'Үйлчилгээний карт', creditsCard: 'Credits карт', periodLimitLabel: 'Циклийн хязгаар', noPeriodLimit: 'Циклийн хязгааргүй', period5h: '5 цаг', periodDay: 'өдөр', periodWeek: 'долоо хоног', periodMonth: 'сар', usageScenarioLabel: 'Тохиромжтой', registeredEmail: 'Бүртгэлтэй данс', secondaryEmail: 'Хоёр дахь имэйл (заавал биш)', buy: 'Авах', validForDays: 'хоног хүчинтэй', validForDay: 'хоног хүчинтэй', accountNotSet: 'Данс тохируулаагүй', accountHint: 'Худалдан авалтын данс', changeEmail: 'Данс солих', emailDialogTitle: 'Худалдан авалтын данс баталгаажуулах', emailDialogDesc: 'Бүртгэлтэй имэйл эсвэл phone:дугаар ашиглана. Имэйл данс кодыг имэйлээр авна; утасны данс төлсний дараа автоматаар цэнэглэгдэж, код энэ хуудсанд үлдэнэ.', continueBuy: 'Үргэлжлүүлэх', cancel: 'Болих', returnOrderTitle: 'Төлбөр буцах', returnOrderLoading: 'Төлбөрийн үр дүнг баталгаажуулж байна...',
+      recoveryEyebrow: 'Recovery', recoveryTitle: 'Үйлчилгээний код сэргээх', recoveryDesc: 'Худалдан авалтад ашигласан бүртгэлтэй имэйл эсвэл хоёр дахь имэйлийг оруулна. Төлсөн захиалгын кодыг тэр хайрцаг руу дахин илгээнэ.', recoverEmailLabel: 'Худалдан авалтын имэйл', recoverEmailPlaceholder: 'name@example.com', captchaLabel: 'Captcha', captchaPlaceholder: 'Хариу', captchaRefresh: 'Шинэ', captchaInvalid: 'Зөв үр дүнг оруулна уу', recoverButton: 'Сэргээх имэйл илгээх',
+      enterEmail: 'Бүртгэлтэй данс оруулна уу (имэйл эсвэл phone:дугаар)', enterRecoverEmail: 'Зөв худалдан авалтын имэйл оруулна уу', invalidSecondEmail: 'Зөв хоёр дахь имэйл оруулах, эсвэл хоосон үлдээх.', createOrder: 'Захиалга үүсгэж байна...', orderCreated: 'Захиалга үүслээ. Төлсний дараа код энд гарна.', openPayment: 'Төлбөрийн хуудас нээх', paymentLinkHint: 'Төлбөрийн холбоос', createFailed: 'Захиалга үүсгэх амжилтгүй', waitingNotify: 'Төлбөрийн мэдэгдэл хүлээж байна... Захиалга ', manualWaiting: 'Дэлгүүрийн эздэд мэдэгдсэн. Төлбөр баталгаажуулахыг хүлээж байна. Захиалга ', manualRejected: 'Захиалгыг татгалзлаа', payCode: 'Төлбөрийн тэмдэглэл', payAmount: 'Дүн', payChannel: 'Төлбөрийн арга', payee: 'Хүлээн авагч', payQR: 'Төлбөрийн QR', productLabel: 'Бараа', payDone: 'Би төлсөн', payDoneSending: 'Дэлгүүрийн эздэд мэдэгдэж байна...', payDoneSent: 'Дэлгүүрийн эздэд мэдэгдсэн', payDoneWarning: 'Чухал: уншуулж төлсний дараа "Би төлсөн" дарна уу. Үгүй бол дэлгүүрийн эзэн баталгаажуулах имэйл авахгүй, захиалга цагтаа боловсруулагдахгүй байж болно.', payDoneFirst: 'Уншуулж төлеэд "Би төлсөн" дарна уу, тэгвэл дэлгүүрийн эзэн баталгаажуулах имэйл авна.',
+      serviceCode: 'Үйлчилгээний код', paidSent: 'Төлбөр амжилттай. Кодыг имэйлээр илгээлээ.', paidGenerated: 'Төлбөр амжилттай. Код үүслээ.', autoRedeemed: 'Төлбөр амжилттай. Credits бүртгэлтэй дансанд нэмэгдлээ.', autoRedeemFailed: 'Төлбөр амжилттай, гэхдээ автомат цэнэглэлт дуусаагүй. Кодыг гараар идэвхжүүлнэ үү.', issueFailed: 'Төлбөр баталгаажсан, гэхдээ үйлчилгээний код олгох амжилтгүй. Администратортой холбогдоно уу.', notifyTimeout: 'Төлбөрийн мэдэгдэл хараахан ирээгүй. Дараа шинэчлэх эсвэл имэйлээр сэргээнэ үү.',
+      resultSuccessTitle: 'Төлбөр амжилттай', resultPendingTitle: 'Төлбөрийн үр дүнг баталгаажуулж байна...', resultSuccessLead: 'Захиалга дууссан, үйлчилгээний код олгогдсон.', resultAutoRedeemedLead: 'Credits бүртгэлтэй дансанд нэмэгдсэн. Үйлчилгээний код нөөц баримт болж үлдэнэ.', resultPendingLead: 'Захиалгын төлөвийг уншиж байна. Баталгаажсаны дараа код энд гарна.', resultBackupCode: 'Нөөц үйлчилгээний код', copyCode: 'Код хуулах', copied: 'Хуулсан', viewCredits: 'Credits харах', continueShopping: 'Үргэлжлүүлэн авах', orderNumber: 'Захиалга', paidAccount: 'Данс', productLabelShort: 'Бараа', paymentAmount: 'Дүн', mailState: 'Имэйл', autoRedeemState: 'Автомат цэнэглэлт', done: 'Дууссан', notDone: 'Дуусаагүй', continueShoppingTitle: 'Үргэлжлүүлэн авах',
+      recoverSending: 'Сэргээх имэйл илгээж байна...', recoverSent: 'Сэргээх имэйл илгээлээ. Хүлээн авах хайрцгаа шалгана уу.', recoverNone: 'Төлсөн үйлчилгээний код олдсонгүй.', recoverFailed: 'Илгээх амжилтгүй', recoverEmailLimited: 'Энэ имэйлийн өнөөдрийн сэргээлтийн хязгаарт хүрсэн.', recoverIpLimited: 'Энэ IP-ийн өнөөдрийн сэргээлтийн хүсэлт хэтэрсэн.', emptyProducts: 'Бараа алга',
+      productNames: { service_day: 'Өдрийн карт', service_week: 'Долоо хоногийн карт', service_month: 'Сарын карт', service_quarter: 'Улирлын карт', service_year: 'Жилийн карт', credits_10000: 'Credits карт 10,000', credits_50000: 'Credits карт 50,000', service_test_10: 'Туршилтын бараа 1 credit' },
+      productScenarios: { service_day: 'Туршилтын хэрэглэгчдэд тохиромжтой.', service_week: 'Туршилтын хэрэглэгчдэд тохиромжтой.', service_month: 'Хөнгөн хэрэглэгчдэд тохиромжтой.', service_quarter: 'Хөнгөн хэрэглэгчдэд тохиромжтой.', service_year: 'Дунд хэрэглэгчдэд тохиромжтой.', credits_10000: 'Хүнд хэрэглэгчдэд тохиромжтой. Дууссаны дараа дахин авч тасралтгүй ашиглана.', credits_50000: 'Хүнд хэрэглэгчдэд тохиромжтой. Дууссаны дараа дахин авч тасралтгүй ашиглана.' },
+      productDescriptions: { service_test_10: 'Зөвхөн цэнэглэлтийн урсгал туршихад.' },
+      alipayVerifyPending: 'Alipay буцаалт хүлээн авлаа. Асинхрон төлбөрийн баталгаажуулалтыг хүлээж байна...'
+    };
     const state = document.getElementById('storeState');
     const productsRoot = document.getElementById('products');
     const urlParams = new URLSearchParams(location.search);
-    let lang = normalizeLang(urlParams.get('lang') || localStorage.getItem('card_store_lang') || navigator.language || 'zh');
+    let lang = (function () {
+      var urlLang = urlParams.get('lang');
+      if (urlLang === 'en' || urlLang === 'zh' || urlLang === 'mn') return urlLang;
+      var saved = localStorage.getItem('card_store_lang');
+      if (saved === 'en' || saved === 'zh' || saved === 'mn') return saved;
+      return normalizeLang((navigator.languages && navigator.languages[0]) || navigator.language || 'en');
+    })();
     let lastProductsData = null;
     let checkoutResultBody = null;
     let checkoutResultPaid = false;
@@ -138,8 +162,15 @@
     let recoverCaptchaCode = '';
     if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail);
     const productTone = { service_day: ['#12355b', '#256d85', '#5aa6a6'], service_week: ['#114e4b', '#247c91', '#93b27a'], service_month: ['#1f3b57', '#357aa3', '#7e9fb5'], service_quarter: ['#213047', '#8d5f4a', '#bd6f72'], service_year: ['#102a43', '#1f5f99', '#26a69a'], credits_10000: ['#1d4f66', '#2f8f9d', '#8cc7b5'], credits_50000: ['#243b6b', '#526fa7', '#b7a66a'], service_test_10: ['#334155', '#64748b', '#a3a3a3'] };
-    function normalizeLang(value) { return String(value || '').toLowerCase().indexOf('en') === 0 ? 'en' : 'zh'; }
-    function t(key) { return I18N[lang][key] || I18N.zh[key] || key; }
+    function normalizeLang(value) {
+      var s = String(value || '').trim().toLowerCase().replace(/_/g, '-');
+      if (!s) return 'en';
+      if (s === 'zh' || s.indexOf('zh-') === 0) return 'zh';
+      if (s === 'mn-mong' || s.indexOf('mn-mong-') === 0) return 'en';
+      if (s === 'mn' || s === 'mn-mn' || s === 'mn-cyrl' || s === 'mn-cyrl-mn' || s.indexOf('mn-cyrl-') === 0 || s.indexOf('mn-mn-') === 0) return 'mn';
+      return 'en';
+    }
+    function t(key) { var table = I18N[lang] || I18N.en; return (table && table[key]) || (I18N.en && I18N.en[key]) || key; }
     function normalizeEmail(value) { return String(value || '').trim().toLowerCase(); }
     function normalizeBuyerIdentity(value) {
       const normalized = normalizeEmail(value);
@@ -153,9 +184,9 @@
       return isValidEmail(normalized) || (normalized.indexOf('phone:') === 0 && normalized.slice(6).length >= 6);
     }
     function money(v) { return '¥' + Number(v || 0).toFixed(2); }
-    function label(product) { return (I18N[lang].productNames || {})[product.id] || product.label || product.id; }
-    function productDescription(product) { return (I18N[lang].productDescriptions || {})[product.id] || product.description || ''; }
-    function productScenario(product) { return (I18N[lang].productScenarios || {})[product.id] || ''; }
+    function label(product) { var pack = (I18N[lang] || I18N.en); return ((pack && pack.productNames) || I18N.en.productNames || {})[product.id] || product.label || product.id; }
+    function productDescription(product) { var pack = (I18N[lang] || I18N.en); return ((pack && pack.productDescriptions) || I18N.en.productDescriptions || {})[product.id] || product.description || ''; }
+    function productScenario(product) { var pack = (I18N[lang] || I18N.en); return ((pack && pack.productScenarios) || I18N.en.productScenarios || {})[product.id] || ''; }
     function isTestProduct(product) { return String(product && product.id || '') === 'service_test_10'; }
     function isCredits(product) { return product.kind === 'credits' || String(product.id || '').indexOf('credits_') === 0 || isTestProduct(product); }
     function cardArtTitle(product) { return ({ service_day: 'DAY PASS', service_week: 'WEEK PASS', service_month: 'MONTH', service_quarter: 'QUARTER', service_year: 'YEAR PASS', service_test_10: 'TEST CARD' })[product.id] || (isCredits(product) ? 'CREDITS' : 'SERVICE'); }
@@ -174,7 +205,7 @@
       if (isTestProduct(product)) return Number(product.credits || 0).toLocaleString() + ' credit';
       const days = Number(product.duration_days || 0);
       if (!days) return Number(product.credits || 0).toLocaleString() + ' credits';
-      return Number(product.credits || 0).toLocaleString() + ' credits · ' + (lang === 'en' ? days + ' ' + (days === 1 ? t('validForDay') : t('validForDays')) : days + ' ' + t('validForDays'));
+      return Number(product.credits || 0).toLocaleString() + ' credits · ' + (lang !== 'zh' ? days + ' ' + (days === 1 ? t('validForDay') : t('validForDays')) : days + ' ' + t('validForDays'));
     }
     function fallbackPeriodLimits(product) {
       if (isCredits(product)) return {};
@@ -200,15 +231,15 @@
       const rawLimits = product.period_limits || {};
       const limits = hasPeriodLimits(rawLimits) ? rawLimits : fallbackPeriodLimits(product);
       const specs = [
-        { keys: ['five_hour', 'fiveHour', 'fivehour'], zh: '5小时', en: '5h' },
-        { keys: ['daily'], zh: '日', en: 'day' },
-        { keys: ['weekly'], zh: '周', en: 'week' },
-        { keys: ['monthly'], zh: '月', en: 'month' }
+        { keys: ['five_hour', 'fiveHour', 'fivehour'], key: 'period5h' },
+        { keys: ['daily'], key: 'periodDay' },
+        { keys: ['weekly'], key: 'periodWeek' },
+        { keys: ['monthly'], key: 'periodMonth' }
       ];
       const parts = specs.map(spec => {
         const value = periodLimitValue(limits, spec.keys);
         if (value <= 0) return null;
-        return { label: lang === 'en' ? spec.en : spec.zh, value: Number(value).toLocaleString() + ' credits' };
+        return { label: t(spec.key), value: Number(value).toLocaleString() + ' credits' };
       }).filter(Boolean);
       return parts;
     }
@@ -290,7 +321,7 @@
       requestAnimationFrame(alignProductRows);
     }
     function applyI18n() {
-      document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : lang === 'mn' ? 'mn' : 'en';
       document.title = t('title');
       document.querySelectorAll('[data-i18n]').forEach(node => { node.textContent = t(node.dataset.i18n); });
       document.querySelectorAll('[data-i18n-placeholder]').forEach(node => { node.setAttribute('placeholder', t(node.dataset.i18nPlaceholder)); });
@@ -713,9 +744,7 @@
         if (!res.ok) {
           let message = body.message || t('recoverFailed');
           if (body.code === 'CARD_STORE_RECOVER_RATE_LIMITED') {
-            message = body.scope === 'email'
-              ? (lang === 'en' ? 'This email has reached today\'s recovery limit.' : '该邮箱今日找回次数已达上限。')
-              : (lang === 'en' ? 'Too many recovery requests from this IP today.' : '该 IP 今日找回次数已达上限。');
+            message = body.scope === 'email' ? t('recoverEmailLimited') : t('recoverIpLimited');
           }
           throw new Error(message);
         }
@@ -729,7 +758,7 @@
     document.getElementById('recoverCaptchaInput').addEventListener('input', event => { event.target.value = String(event.target.value || '').replace(/\D/g, ''); });
     document.querySelectorAll('[data-lang]').forEach(button => {
       button.addEventListener('click', () => {
-        lang = normalizeLang(button.dataset.lang);
+        lang = button.dataset.lang === 'zh' ? 'zh' : button.dataset.lang === 'mn' ? 'mn' : 'en';
         applyI18n();
       });
     });

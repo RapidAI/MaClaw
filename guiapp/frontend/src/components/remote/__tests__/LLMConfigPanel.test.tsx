@@ -1072,6 +1072,16 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(status.detail).toBe('授权额度已用尽。');
     });
 
+    it('localizes a queued Hub grant recovery in Mongolian', () => {
+        const t = (en: string) => en;
+        const status = hubOfficialStatus({
+            active: false,
+            credit_grants: [{ status: 'queued', retry_after_seconds: 120, source: 'card' }],
+        }, 'mn', t);
+        expect(status.kind).toBe('queued');
+        expect(status.detail).toBe('Зөвшөөрөл ойролцоогоор 2 минутын дараа хүчин төгөлдөр болно.');
+    });
+
     it('does not save when detection fails', async () => {
         TestAndSaveMaclawLLMProvidersMock.mockRejectedValue(new Error('boom'));
 

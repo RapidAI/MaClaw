@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { localizeText } from '../../i18n';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -73,9 +74,7 @@ type StartPage = {
 };
 
 function textFor(lang: string, en: string, hans: string, hant: string) {
-    if (lang === 'en') return en;
-    if (lang === 'zh-Hant') return hant;
-    return hans;
+    return localizeText(lang, en, hans, hant);
 }
 
 function errText(err: unknown) {

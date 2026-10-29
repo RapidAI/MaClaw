@@ -1,4 +1,5 @@
 import clawMateSrc from '../assets/images/maclaw-clawmate.svg';
+import { normalizeLang } from '../i18n/langSelect';
 
 /** Built-in official ids remain known for typing; runtime packs may add more. */
 export type PetSkinId = string;
@@ -84,11 +85,12 @@ export function packInfoToSkinOption(pack: Record<string, unknown>, lang: string
     const labelMap = pickI18nMap(pack.label);
     const descMap = pickI18nMap(pack.description_i18n ?? pack.description);
     const plainDesc = typeof pack.description === 'string' ? pack.description : '';
+    const mn = normalizeLang(lang) === 'mn';
     const label =
-        (lang.startsWith('zh') ? labelMap['zh-Hans'] || labelMap['zh-Hant'] : labelMap.en) ||
+        (mn ? (labelMap.mn || labelMap.en) : (lang.startsWith('zh') ? labelMap['zh-Hans'] || labelMap['zh-Hant'] : labelMap.en)) ||
         String(pack.name || id);
     const desc =
-        (lang.startsWith('zh') ? descMap['zh-Hans'] || descMap['zh-Hant'] : descMap.en) ||
+        (mn ? (descMap.mn || descMap.en) : (lang.startsWith('zh') ? descMap['zh-Hans'] || descMap['zh-Hant'] : descMap.en)) ||
         plainDesc ||
         String(pack.name || id);
     const variants = Array.isArray(pack.variants) ? (pack.variants as string[]) : ['default'];

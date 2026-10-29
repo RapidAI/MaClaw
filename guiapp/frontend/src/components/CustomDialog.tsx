@@ -2,10 +2,7 @@ import React, { createContext, Fragment, useContext, useState, useCallback, useE
 import { EventsOn } from '../../wailsjs/runtime';
 import { ResolveFrontendConfirm } from '../../wailsjs/go/main/App';
 import { EVENT_SHOW_CONFIRM } from '../constants/events';
-
-const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+import { localizeText } from '../i18n';
 
 // Above application overlays; task creation and guided flows reserve higher layers.
 const DIALOG_Z_INDEX = 120000;

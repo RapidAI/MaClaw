@@ -4,6 +4,8 @@ import type { AgentView, AppViewAction, AppViewNavItem } from "./agentViewTypes"
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AgentTaskPanel } from "./AgentTaskPanel";
 import { agentViewStrings } from "./agentViewI18n";
+import { chromeText } from "../../i18n/chromeText";
+
 
 type AppView = Extract<AgentView, { type: "app_view" }>;
 
@@ -143,7 +145,7 @@ export function AppViewShell({
                 aria-valuemin={20}
                 aria-valuemax={80}
                 aria-valuenow={Math.round(splitRatio * 100)}
-                aria-label={lang === "en" ? "Resize preview panel" : "调整预览面板宽度"}
+                aria-label={(chromeText(lang, "Resize preview panel", "调整预览面板宽度"))}
                 tabIndex={0}
                 onPointerDown={(event) => {
                     event.preventDefault();

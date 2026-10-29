@@ -654,7 +654,7 @@ const LLM_SERVICE_I18N = {
     routeAutoHint: '\u8fd9\u4e2a\u865a\u62df\u6a21\u578b\u540d\u5c31\u662f\u8c03\u7528\u65f6 model \u8981\u4f20\u7684\u540d\u5b57\u3002\u4fdd\u7559 auto \u5373\u53ef\u8ba9 Hub \u5728\u8fd9\u4e2a\u865a\u62df\u6a21\u578b\u4e0b\u6309\u80fd\u529b\u6807\u7b7e\u81ea\u52a8\u6311\u9009\u7ec4\u5185\u670d\u52a1\u3002'
   }
 };
-const lsx = (key, vars = {}) => ((LLM_SERVICE_I18N[currentLang] || LLM_SERVICE_I18N.en)[key] || LLM_SERVICE_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const lsx = (key, vars = {}) => (window.hubDict ? window.hubDict('LLM_SERVICE', LLM_SERVICE_I18N, key, vars) : ((LLM_SERVICE_I18N[currentLang] || LLM_SERVICE_I18N.en)[key] || LLM_SERVICE_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 let llmServiceAdminCache = null;
 let llmServiceModelRuntimeCache = null;
 let llmServiceSelectedGroupID = '';
@@ -3113,6 +3113,7 @@ var LLS_DIALOG_I18N = {
   classHeadLink: { zh: '\u672c\u7ec4\u5206\u7c7b\u5934', en: 'Group classification-head eval' }
 };
 function llsX(key, vars) {
+  if (window.hubEntry) return window.hubEntry('LLS_DIALOG', LLS_DIALOG_I18N, key, vars);
   var entry = LLS_DIALOG_I18N[key];
   var value = entry ? (currentLang === 'zh' ? entry.zh : entry.en) : key;
   if (!vars) return value;
@@ -3912,7 +3913,7 @@ function llsHeadStatusLabel(status){
   };
   var entry=map[String(status||'unused')];
   if(!entry)return String(status||'unused');
-  return currentLang==='zh'?entry.zh:entry.en;
+  return window.hubLine ? window.hubLine('LLM_HEAD_STATUS', entry.zh, entry.en) : (currentLang==='zh'?entry.zh:entry.en);
 }
 function llsHeadStatusTone(status){
   status=String(status||'unused');

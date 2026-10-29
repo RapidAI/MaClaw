@@ -4,7 +4,8 @@ import { TaskResultUploadButton, taskResultUploadSupported } from "./TaskResultU
 import { TaskResultExportButton } from "./TaskResultExportButton";
 import { dispatchContinueEditTaskResult, dispatchPreviewTaskResult, localizeTaskResultExportError, taskResultPreviewKindFromPath } from "./taskResultPreview";
 import { cloudSafePathLabel } from "./codingTaskMode";
-import { localizeText } from "./aiAssistantI18n";
+import { chromeText } from "../../i18n/chromeText";
+
 
 const LATEX_SOURCE_EXT = new Set(["tex", "ltx", "latex", "bib", "cls", "sty", "bst"]);
 
@@ -36,7 +37,7 @@ function artifactIdentity(path: string): string {
 }
 
 function artifactLabel(path: string, lang: string): { title: string; name: string } {
-    const title = cloudSafePathLabel(path, lang === "en" ? "File" : "文件");
+    const title = cloudSafePathLabel(path, (chromeText(lang, "File", "文件")));
     const name = title.split(/[/\\]/).filter(Boolean).pop() || title;
     return { title, name };
 }
@@ -76,7 +77,7 @@ export function TaskResultArtifacts({
     const primaryName = primary ? artifactLabel(primary, lang).name : "";
     return (
         <div className="mc-task-artifacts" data-testid={`task-result-card-${messageId}`}>
-            <div className="mc-task-artifacts__label">{localizeText(lang, "Artifacts", "产出物", "產出物")}</div>
+            <div className="mc-task-artifacts__label">{chromeText(lang, "Artifacts", "产出物", "產出物")}</div>
             <div className="mc-task-artifacts__row">
                 {visible.map((filePath, index) => {
                     const file = artifactLabel(filePath, lang);
@@ -105,18 +106,18 @@ export function TaskResultArtifacts({
                     onClick={() => setShowAll((open) => !open)}
                 >
                     {showAll
-                        ? localizeText(lang, "Show fewer artifacts", "收起产出物", "收起產出物")
-                        : localizeText(lang, `View all artifacts (${listed.length})`, `查看所有产物 (${listed.length})`, `查看所有產物 (${listed.length})`)}
+                        ? chromeText(lang, "Show fewer artifacts", "收起产出物", "收起產出物")
+                        : chromeText(lang, `View all artifacts (${listed.length})`, `查看所有产物 (${listed.length})`, `查看所有產物 (${listed.length})`)}
                     <span aria-hidden="true">{showAll ? " ⌃" : " ›"}</span>
                 </button>
             )}
             <div className="mc-task-result-card__actions">
                 {primary ? (
                     <>
-                        <button type="button" data-testid="task-result-preview-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(primary, messageId); }}>{localizeText(lang, "Preview", "预览", "預覽")}</button>
-                        <button type="button" data-testid="task-result-view-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => onOpen(event, primary)}>{localizeText(lang, "View document", "查看文档", "查看文件")}</button>
+                        <button type="button" data-testid="task-result-preview-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(primary, messageId); }}>{chromeText(lang, "Preview", "预览", "預覽")}</button>
+                        <button type="button" data-testid="task-result-view-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => onOpen(event, primary)}>{chromeText(lang, "View document", "查看文档", "查看文件")}</button>
                         <TaskResultExportButton filePath={primary} lang={lang} />
-                        <button type="button" data-testid="task-result-continue-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => { event.stopPropagation(); dispatchContinueEditTaskResult(primary, messageId); }}>{localizeText(lang, "Continue editing", "继续修改", "繼續修改")}</button>
+                        <button type="button" data-testid="task-result-continue-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => { event.stopPropagation(); dispatchContinueEditTaskResult(primary, messageId); }}>{chromeText(lang, "Continue editing", "继续修改", "繼續修改")}</button>
                     </>
                 ) : null}
                 {offerBundle ? <LatexSourceBundleButton anchorPath={bundleAnchor} lang={lang} /> : null}
@@ -129,15 +130,15 @@ function LatexSourceBundleButton({ anchorPath, lang }: { anchorPath: string; lan
     const [status, setStatus] = useState<"idle" | "busy" | "done" | "error">("idle");
     const [detail, setDetail] = useState("");
     const label = status === "busy"
-        ? localizeText(lang, "Exporting...", "导出中...", "匯出中...")
+        ? chromeText(lang, "Exporting...", "导出中...", "匯出中...")
         : status === "done"
-            ? localizeText(lang, "Source package exported", "源码包已导出", "原始碼包已匯出")
-            : localizeText(lang, "Export source package", "导出源码包", "匯出原始碼包");
+            ? chromeText(lang, "Source package exported", "源码包已导出", "原始碼包已匯出")
+            : chromeText(lang, "Export source package", "导出源码包", "匯出原始碼包");
     const title = status === "error"
         ? detail
         : status === "done" && detail
             ? detail
-            : localizeText(lang, "Zip the main file, figures and other files needed to compile", "把主文件、图片和编译需要的其它文件打成 zip", "把主檔、圖片和編譯需要的其它檔案打成 zip");
+            : chromeText(lang, "Zip the main file, figures and other files needed to compile", "把主文件、图片和编译需要的其它文件打成 zip", "把主檔、圖片和編譯需要的其它檔案打成 zip");
     const onClick = (event: React.MouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
@@ -150,7 +151,7 @@ function LatexSourceBundleButton({ anchorPath, lang }: { anchorPath: string; lan
                 setStatus("idle");
                 return;
             }
-            setDetail(localizeText(lang, `Saved to ${saved}`, `已保存到 ${saved}`, `已儲存到 ${saved}`));
+            setDetail(chromeText(lang, `Saved to ${saved}`, `已保存到 ${saved}`, `已儲存到 ${saved}`));
             setStatus("done");
         }).catch((error: unknown) => {
             const raw = error instanceof Error ? error.message : String(error || "");

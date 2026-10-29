@@ -5,6 +5,7 @@ import {
     isKnownInstallCommand,
     normalizeInstallCommand,
 } from "./installCommandAllowlist";
+import { tailText } from "../../i18n/mnTail"
 
 /** Compose-mode actions: free-form input is prefixed with the selected command on send. */
 export type ComposeAction = "goal" | "btw" | "moa" | "computer";
@@ -392,16 +393,16 @@ const COMPOSE_PLACEHOLDER: Record<ComposeAction, { zh: string; en: string }> = {
     },
 };
 
-export function getComposeActionPlaceholder(action: ComposeAction | null | undefined, isZh: boolean): string | null {
+export function getComposeActionPlaceholder(action: ComposeAction | null | undefined, isZh: boolean | string): string | null {
     if (!action) return null;
     const entry = COMPOSE_PLACEHOLDER[action];
-    return entry ? (isZh ? entry.zh : entry.en) : null;
+    return entry ? (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), entry.en, entry.zh)) : null;
 }
 
-export function getComposeActionLabel(action: ComposeAction, isZh: boolean): string {
+export function getComposeActionLabel(action: ComposeAction, isZh: boolean | string): string {
     const item = COMPOSE_ITEM_BY_ACTION.get(action);
     if (!item) return action;
-    return isZh ? item.labelZh : item.labelEn;
+    return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), item.labelEn, item.labelZh);
 }
 
 export function getComposeActionIcon(action: ComposeAction): AssistantInputIconName {

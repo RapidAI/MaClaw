@@ -28,7 +28,11 @@
     /* Professional density polish */
     h1,.card-name,.summary strong,button{font-weight:650;letter-spacing:0}.card,.summary,.toolbar{box-shadow:0 6px 18px rgba(35,41,55,.03);border-color:#e7ebf1}.toolbar input,.toolbar select,.toolbar button{border-color:#e5e9f0}.grid{gap:14px}.card-desc{line-height:1.6}h1::before,.card-name::before{background:#fafbfc;border-color:#e8ebf1}h1::after,.card-name::after{opacity:.92}.card-tags{font-weight:500}
     /* Softer text hierarchy */
-    :root{--text:#59636f;--muted:#667386}body{color:#59636f}h1,.card-name,.summary strong{color:#5b6470}.summary,.card-desc,.card-tags,.state,.pager,select,input{color:#667386}h1::after,.card-name::after{background:#667386}</style>
+    :root{--text:#59636f;--muted:#667386}body{color:#59636f}h1,.card-name,.summary strong{color:#5b6470}.summary,.card-desc,.card-tags,.state,.pager,select,input{color:#667386}h1::after,.card-name::after{background:#667386}
+    .lang-switch{display:inline-flex;gap:4px;margin-top:12px}
+    .lang-switch button{height:32px;padding:0 10px;border:1px solid #dfe4ec;border-radius:8px;background:#fff;color:#344054;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+    .lang-switch button.active{background:#303744;border-color:#303744;color:#fff}
+  </style>
   <link rel="stylesheet" href="/pro-ui.css?v=modern-polish-20261028-5">
 </head>
 <body>
@@ -36,6 +40,11 @@
     <div class="hero">
       <h1 id="pageTitle">SkillHub</h1>
       <p id="pageDesc"></p>
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" id="lang-en" onclick="setLanguage('en')">EN</button>
+        <button type="button" id="lang-zh" onclick="setLanguage('zh')">中文</button>
+        <button type="button" id="lang-mn" onclick="setLanguage('mn')">Монгол</button>
+      </div>
     </div>
 
     <div class="toolbar" role="search" aria-label="Skill search">
@@ -57,43 +66,52 @@
     </div>
   </div>
 
+  <script src="/i18n/lang.js"></script>
   <script>
     var currentPage = 1;
     var pageSize = 40;
     var currentItems = [];
     var currentTotal = 0;
-    var LANG = (navigator.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en';
-    document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
+    var LANG = (function() {
+      var saved = '';
+      try { saved = localStorage.getItem('skillhub_lang') || ''; } catch (e) {}
+      var langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ''];
+      return window.HubCenterI18n.detectHubLang(langs, saved);
+    })();
+    document.getElementById('html-root').lang = LANG === 'mn' ? window.HubCenterI18n.htmlLang('mn') : window.HubCenterI18n.htmlLang(LANG);
 
     var I18N = {
-      title: { zh: '\u6280\u80fd\u76ee\u5f55', en: 'SkillHub' },
-      desc: { zh: '\u641c\u7d22\u3001\u53d1\u73b0\u5e76\u6d4f\u89c8\u53ef\u516c\u5f00\u8bbf\u95ee\u7684\u6280\u80fd\u3002', en: 'Search, discover, and browse publicly available skills.' },
-      searchPlaceholder: { zh: '\u641c\u7d22\u6280\u80fd\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e', en: 'Search skill name, description, tags' },
-      search: { zh: '搜索', en: 'Search' },
-      loading: { zh: '加载中...', en: 'Loading...' },
-      emptyInitial: { zh: '\u8f93\u5165\u5173\u952e\u8bcd\u5f00\u59cb\u641c\u7d22\uff0c\u6216\u76f4\u63a5\u70b9\u51fb\u641c\u7d22\u6d4f\u89c8\u5168\u90e8\u6280\u80fd\u3002', en: 'Enter keywords to search, or click search to browse all skills.' },
-      emptyResult: { zh: '\u6ca1\u6709\u627e\u5230\u5339\u914d\u7684\u6280\u80fd\u3002', en: 'No matching skills found.' },
-      loadFailed: { zh: '加载失败: {error}', en: 'Load failed: {error}' },
-      page: { zh: '第 {current} / {total} 页，共 {count} 条', en: 'Page {current} / {total}, {count} items' },
-      prev: { zh: '上一页', en: 'Previous' },
-      next: { zh: '下一页', en: 'Next' },
-      total: { zh: '结果总数', en: 'Total Results' },
-      downloadsSummary: { zh: '总下载量', en: 'Total Downloads' },
-      downloads: { zh: '下载', en: 'Downloads' },
-      rating: { zh: '评分', en: 'Rating' },
-      ratings: { zh: '条评分', en: 'ratings' },
-      noDescription: { zh: '暂无描述', en: 'No description' },
-      updated: { zh: '更新于', en: 'Updated' },
-      official: { zh: '官方', en: 'Official' },
-      trusted: { zh: '可信', en: 'Trusted' },
-      community: { zh: '社区', en: 'Community' },
-      unknown: { zh: '未知', en: 'Unknown' }
+      title: { zh: '\u6280\u80fd\u76ee\u5f55', en: 'SkillHub', mn: "Ур чадварын каталог"},
+      desc: { zh: '\u641c\u7d22\u3001\u53d1\u73b0\u5e76\u6d4f\u89c8\u53ef\u516c\u5f00\u8bbf\u95ee\u7684\u6280\u80fd\u3002', en: 'Search, discover, and browse publicly available skills.', mn: "Нийтийн ур чадварыг хайж, олж, үзээрэй."},
+      searchPlaceholder: { zh: '\u641c\u7d22\u6280\u80fd\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e', en: 'Search skill name, description, tags', mn: "Ур чадварын нэр, тайлбар эсвэл шошгоор хайх"},
+      search: { zh: '搜索', en: 'Search', mn: "Хайх"},
+      loading: { zh: '加载中...', en: 'Loading...', mn: "Ачаалж байна..."},
+      emptyInitial: { zh: '\u8f93\u5165\u5173\u952e\u8bcd\u5f00\u59cb\u641c\u7d22\uff0c\u6216\u76f4\u63a5\u70b9\u51fb\u641c\u7d22\u6d4f\u89c8\u5168\u90e8\u6280\u80fd\u3002', en: 'Enter keywords to search, or click search to browse all skills.', mn: "Хайх үг оруулна уу, эсвэл хайлтаар бүх ур чадварыг үзнэ үү."},
+      emptyResult: { zh: '\u6ca1\u6709\u627e\u5230\u5339\u914d\u7684\u6280\u80fd\u3002', en: 'No matching skills found.', mn: "Тохирох ур чадвар олдсонгүй."},
+      loadFailed: { zh: '加载失败: {error}', en: 'Load failed: {error}', mn: "Ачаалж чадсангүй: {error}"},
+      page: { zh: '第 {current} / {total} 页，共 {count} 条', en: 'Page {current} / {total}, {count} items', mn: "{current} / {total}-р хуудас, нийт {count}"},
+      prev: { zh: '上一页', en: 'Previous', mn: "Өмнөх"},
+      next: { zh: '下一页', en: 'Next', mn: "Дараах"},
+      total: { zh: '结果总数', en: 'Total Results', mn: "Нийт үр дүн"},
+      downloadsSummary: { zh: '总下载量', en: 'Total Downloads', mn: "Нийт таталт"},
+      downloads: { zh: '下载', en: 'Downloads', mn: "Таталт"},
+      rating: { zh: '评分', en: 'Rating', mn: "Үнэлгээ"},
+      ratings: { zh: '条评分', en: 'ratings', mn: "үнэлгээ"},
+      noDescription: { zh: '暂无描述', en: 'No description', mn: "Тайлбар байхгүй"},
+      updated: { zh: '更新于', en: 'Updated', mn: "Шинэчилсэн"},
+      official: { zh: '官方', en: 'Official', mn: "Албан"},
+      trusted: { zh: '可信', en: 'Trusted', mn: "Итгэлтэй"},
+      community: { zh: '社区', en: 'Community', mn: "Нийгэмлэг"},
+      unknown: { zh: '未知', en: 'Unknown', mn: "Тодорхойгүй"}
     };
 
-    Object.assign(I18N, { historyVersions:{zh:'历史版本 ({count})',en:'Version history ({count})'}, historyTitle:{zh:'历史版本',en:'Version history'}, historyDesc:{zh:'选择一个版本查看完整详情。',en:'Select a version to view its complete details.'}, close:{zh:'关闭',en:'Close'}, version:{zh:'版本',en:'Version'}, status:{zh:'状态',en:'Status'}, visible:{zh:'已显示',en:'Visible'}, hidden:{zh:'已隐藏',en:'Hidden'}, detailLoading:{zh:'正在加载详情…',en:'Loading details…'} });
+    Object.assign(I18N, { historyVersions:{zh:'历史版本 ({count})',en:'Version history ({count})', mn: "Хувилбарын түүх ({count})"}, historyTitle:{zh:'历史版本',en:'Version history', mn: "Хувилбарын түүх"}, historyDesc:{zh:'选择一个版本查看完整详情。',en:'Select a version to view its complete details.', mn: "Бүрэн дэлгэрэнгүйг үзэхийн тулд хувилбар сонгоно уу."}, close:{zh:'关闭',en:'Close', mn: "Хаах"}, version:{zh:'版本',en:'Version', mn: "Хувилбар"}, status:{zh:'状态',en:'Status', mn: "Төлөв"}, visible:{zh:'已显示',en:'Visible', mn: "Харуулсан"}, hidden:{zh:'已隐藏',en:'Hidden', mn: "Нуусан"}, detailLoading:{zh:'正在加载详情…',en:'Loading details…', mn: "Дэлгэрэнгүйг ачаалж байна…"} });
+
+    I18N.currentVersion = { zh: '当前版本', en: 'Current', mn: 'Одоогийн хувилбар' };
 
     function t(key, vars) {
-      var text = (I18N[key] && I18N[key][LANG]) || key;
+      var row = I18N[key];
+      var text = (row && window.HubCenterI18n.pick(row, LANG)) || key;
       return String(text).replace(/\{(\w+)\}/g, function(_, name) {
         return vars && vars[name] != null ? vars[name] : '';
       });
@@ -110,7 +128,8 @@
       try {
         var dt = new Date(value);
         if (isNaN(dt)) return String(value);
-        return dt.toLocaleDateString(LANG === 'zh' ? 'zh-CN' : 'en-US', { year:'numeric', month:'2-digit', day:'2-digit' });
+        var loc = LANG === 'zh' ? 'zh-CN' : (LANG === 'mn' ? 'mn-MN' : 'en-US');
+        return dt.toLocaleDateString(loc, { year:'numeric', month:'2-digit', day:'2-digit' });
       } catch (_) {
         return String(value);
       }
@@ -118,7 +137,10 @@
 
     function formatCompactNumber(value) {
       var n = Number(value || 0);
-      if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + (LANG === 'zh' ? '万' : 'w');
+      if (n >= 10000) {
+        var unit = LANG === 'zh' ? '万' : (LANG === 'mn' ? ' мянга' : 'w');
+        return (n / 10000).toFixed(1).replace(/\.0$/, '') + unit;
+      }
       if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
       return String(n);
     }
@@ -144,7 +166,23 @@
       document.getElementById('nextBtn').textContent = t('next');
       document.getElementById('summaryTotalLabel').textContent = t('total');
       document.getElementById('summaryDownloadsLabel').textContent = t('downloadsSummary');
+      ['en', 'zh', 'mn'].forEach(function(code) {
+        var btn = document.getElementById('lang-' + code);
+        if (!btn) return;
+        var on = LANG === code;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
       if (!currentItems.length && !currentTotal) document.getElementById('content').textContent = t('emptyInitial');
+    }
+
+    function setLanguage(lang) {
+      LANG = window.HubCenterI18n.normalizeHubLang(lang);
+      try { localStorage.setItem('skillhub_lang', LANG); } catch (e) {}
+      document.getElementById('html-root').lang = LANG === 'mn' ? window.HubCenterI18n.htmlLang('mn') : window.HubCenterI18n.htmlLang(LANG);
+      applyI18n();
+      if (currentItems.length) renderList(currentItems, currentTotal);
+      renderPager(currentPage, currentTotal);
     }
 
     function renderSummary(items, total) {
@@ -206,7 +244,7 @@
       var close = document.createElement('button'); close.type = 'button'; close.className = 'version-close'; close.setAttribute('aria-label', t('close')); close.textContent = '×';
       var head = document.createElement('div'); head.className = 'version-dialog-head'; head.append(title, close);
       var desc = document.createElement('p'); desc.textContent = t('historyDesc'); var list = document.createElement('div'); list.className = 'version-list'; var detail = document.createElement('div'); detail.className = 'version-detail'; detail.hidden = true;
-      (skill.version_history || []).forEach(function(version, index) { var row = document.createElement('button'); row.type = 'button'; row.className = 'version-row'; var label = version.semver || version.version || '-'; row.innerHTML = '<strong>v' + escapeHtml(label) + (index === 0 ? ' · ' + escapeHtml(LANG === 'zh' ? '当前版本' : 'Current') : '') + '</strong><span>' + escapeHtml(formatDate(version.updated_at || version.created_at)) + '</span>'; row.addEventListener('click', function() { loadVersionDetail(version, detail); }); list.appendChild(row); });
+      (skill.version_history || []).forEach(function(version, index) { var row = document.createElement('button'); row.type = 'button'; row.className = 'version-row'; var label = version.semver || version.version || '-'; row.innerHTML = '<strong>v' + escapeHtml(label) + (index === 0 ? ' · ' + escapeHtml(t('currentVersion')) : '') + '</strong><span>' + escapeHtml(formatDate(version.updated_at || version.created_at)) + '</span>'; row.addEventListener('click', function() { loadVersionDetail(version, detail); }); list.appendChild(row); });
       dialog.append(head, desc, list, detail); overlay.appendChild(dialog); document.body.appendChild(overlay);
       function dismiss() { document.removeEventListener('keydown', onKey); overlay.remove(); if (priorFocus && priorFocus.focus) priorFocus.focus(); } function onKey(event) { if (event.key === 'Escape') { event.preventDefault(); dismiss(); } }
       close.addEventListener('click', dismiss); overlay.addEventListener('click', function(event) { if (event.target === overlay) dismiss(); }); document.addEventListener('keydown', onKey); close.focus();

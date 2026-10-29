@@ -6,6 +6,7 @@ import { TaskConfigPopoverShell, popoverItemKeyDown, popoverSearchInputStyle } f
 import { popoverHeadStyle, popoverItemStyle, popoverListStyle, popoverSepStyle } from "./taskConfigPopoverStyles";
 import { RemoteServerForm } from "./RemoteServerPopover";
 import type { RemoteTarget, TaskType, WorkspaceTarget } from "./taskDraft";
+import { tailText } from "../../../i18n/mnTail"
 
 /** Enter while an IME candidate is open must not create or rename. */
 function imeComposing(event: ReactKeyboardEvent): boolean {
@@ -89,7 +90,6 @@ export function WorkspacePickerPopover({
     expertWorkspaceLocked = false,
     onClose,
 }: WorkspacePickerPopoverProps) {
-    const isZh = !lang?.startsWith("en");
     const [pane, setPane] = useState<Pane>('main');
     const [browsing, setBrowsing] = useState(false);
     const [manualPath, setManualPath] = useState("");
@@ -112,14 +112,14 @@ export function WorkspacePickerPopover({
     editorRef.current.renaming = renaming !== null;
 
     const cloudDisabled = taskType === 'coding';
-    const cloudHint = isZh ? "编程任务不支持云端工作区" : "Coding tasks cannot use cloud workspaces";
+    const cloudHint = tailText(lang ?? "", "Coding tasks cannot use cloud workspaces", "编程任务不支持云端工作区");
     // 指定专家：云端与远程整行置灰（专家任务不携带工作空间）。
-    const expertWorkspaceHint = isZh ? "专家任务不携带工作空间" : "Expert tasks do not carry a workspace";
+    const expertWorkspaceHint = tailText(lang ?? "", "Expert tasks do not carry a workspace", "专家任务不携带工作空间");
     const cloudRowDisabled = cloudDisabled || expertWorkspaceLocked;
     const cloudRowHint = expertWorkspaceLocked ? expertWorkspaceHint : cloudHint;
 
     const localBadge = workspace.kind === 'local'
-        ? (workspace.localPath || (isZh ? "默认" : "Default"))
+        ? (workspace.localPath || (tailText(lang ?? "", "Default", "默认")))
         : "";
     const cloudBadge = workspace.kind === 'cloud' ? (workspace.cloudName || "") : "";
     const remoteBadge = workspace.kind === 'remote' ? (workspace.remote?.host || "") : "";
@@ -167,7 +167,7 @@ export function WorkspacePickerPopover({
         cursor: cloudBusy ? "default" : "pointer",
         fontFamily: "system-ui, -apple-system, sans-serif",
     };
-    const namePlaceholder = isZh ? "工作区名称" : "Workspace name";
+    const namePlaceholder = tailText(lang ?? "", "Workspace name", "工作区名称");
     const cloudMetaStyle: CSSProperties = { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 };
     const cloudNameStyle: CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
     /** Input and 改名 share one row so the button is not centered against the hint below. */
@@ -228,7 +228,7 @@ export function WorkspacePickerPopover({
         } catch (err) {
             // Keep the editor so the typed name can be retried. The page-level
             // error sits under the popover, so repeat it inside the pane.
-            setCloudError(extractErrorMessage(err) || (isZh ? "新建云端工作区失败" : "Failed to create cloud workspace"));
+            setCloudError(extractErrorMessage(err) || (tailText(lang ?? "", "Failed to create cloud workspace", "新建云端工作区失败")));
             const taken = name.trim();
             if (cloudWorkspaceNameTaken(err) && defaultCloudWorkspaceName.test(taken)) {
                 rejectedDefaultNamesRef.current = [...rejectedDefaultNamesRef.current, taken];
@@ -273,7 +273,7 @@ export function WorkspacePickerPopover({
             await onRenameCloud(renaming.id, name);
             setRenaming(null);
         } catch (err) {
-            setCloudError(extractErrorMessage(err) || (isZh ? "云端工作区改名失败" : "Failed to rename cloud workspace"));
+            setCloudError(extractErrorMessage(err) || (tailText(lang ?? "", "Failed to rename cloud workspace", "云端工作区改名失败")));
         } finally {
             cloudBusyRef.current = false;
             setCloudBusy(false);
@@ -332,7 +332,7 @@ export function WorkspacePickerPopover({
     const backRow = (to: Pane, testId: string) => (
         <>
             <div style={popoverSepStyle(t)} />
-            {renderRow("back", "back", isZh ? "返回" : "Back", "", {
+            {renderRow("back", "back", tailText(lang ?? "", "Back", "返回"), "", {
                 onPick: () => setPane(to),
                 testId,
             })}
@@ -370,15 +370,15 @@ export function WorkspacePickerPopover({
             >
                 {pane === 'main' && (
                     <>
-                        {head(isZh ? "搜索工作空间" : "Search workspace", "workspace-search")}
+                        {head(tailText(lang ?? "", "Search workspace", "搜索工作空间"), "workspace-search")}
                         <div style={popoverListStyle()}>
-                            {renderRow("local", "folder", isZh ? "本地目录" : "Local folder", isZh ? "默认目录 / 最近目录 / 浏览" : "Default / recent / browse", {
+                            {renderRow("local", "folder", tailText(lang ?? "", "Local folder", "本地目录"), tailText(lang ?? "", "Default / recent / browse", "默认目录 / 最近目录 / 浏览"), {
                                 selected: workspace.kind === 'local',
                                 badge: localBadge,
                                 onPick: () => setPane('local'),
                                 testId: "workspace-row-local",
                             })}
-                            {renderRow("cloud", "cloud", isZh ? "云端工作区" : "Cloud workspace", isZh ? "选择或新建云端工作区" : "Pick or create a cloud workspace", {
+                            {renderRow("cloud", "cloud", tailText(lang ?? "", "Cloud workspace", "云端工作区"), tailText(lang ?? "", "Pick or create a cloud workspace", "选择或新建云端工作区"), {
                                 selected: workspace.kind === 'cloud',
                                 disabled: cloudRowDisabled,
                                 disabledHint: cloudRowHint,
@@ -386,7 +386,7 @@ export function WorkspacePickerPopover({
                                 onPick: () => setPane('cloud'),
                                 testId: "workspace-row-cloud",
                             })}
-                            {renderRow("remote", "server", isZh ? "远程服务器" : "Remote server", isZh ? "SSH 连接，指定主机与工作目录" : "SSH connection with host and work directory", {
+                            {renderRow("remote", "server", tailText(lang ?? "", "Remote server", "远程服务器"), tailText(lang ?? "", "SSH connection with host and work directory", "SSH 连接，指定主机与工作目录"), {
                                 selected: workspace.kind === 'remote',
                                 badge: remoteBadge,
                                 disabled: expertWorkspaceLocked,
@@ -401,8 +401,8 @@ export function WorkspacePickerPopover({
                     <>
                         <div style={popoverHeadStyle()}>
                             <input
-                                placeholder={isZh ? "搜索或输入路径" : "Search or type a path"}
-                                aria-label={isZh ? "搜索或输入路径" : "Search or type a path"}
+                                placeholder={tailText(lang ?? "", "Search or type a path", "搜索或输入路径")}
+                                aria-label={tailText(lang ?? "", "Search or type a path", "搜索或输入路径")}
                                 data-testid="workspace-local-search"
                                 style={popoverSearchInputStyle(t)}
                                 value={manualPath}
@@ -419,29 +419,29 @@ export function WorkspacePickerPopover({
                             />
                         </div>
                         <div style={popoverListStyle()}>
-                            {manualPath.trim() && renderRow("manual", "folder", manualPath.trim(), isZh ? "按 Enter 或点击使用此路径" : "Press Enter or click to use this path", {
+                            {manualPath.trim() && renderRow("manual", "folder", manualPath.trim(), tailText(lang ?? "", "Press Enter or click to use this path", "按 Enter 或点击使用此路径"), {
                                 onPick: () => onSelectLocal(manualPath.trim()),
                                 testId: "workspace-local-manual",
                             })}
-                            {renderRow("default", "home", isZh ? "默认工作目录" : "Default working directory", isZh ? "使用当前会话默认目录" : "Use the session default directory", {
+                            {renderRow("default", "home", tailText(lang ?? "", "Default working directory", "默认工作目录"), tailText(lang ?? "", "Use the session default directory", "使用当前会话默认目录"), {
                                 selected: localSelected,
                                 onPick: () => onSelectLocal(""),
                                 testId: "workspace-local-default",
                             })}
                             {recentLocalPaths.length > 0 && <div style={sep} />}
-                            {recentLocalPaths.map((path) => renderRow(`recent-${path}`, "folder", path, isZh ? "最近使用" : "Recent", {
+                            {recentLocalPaths.map((path) => renderRow(`recent-${path}`, "folder", path, tailText(lang ?? "", "Recent", "最近使用"), {
                                 selected: workspace.kind === 'local' && workspace.localPath === path,
                                 onPick: () => onSelectLocal(path),
                                 testId: `workspace-local-recent-${path}`,
                             }))}
                             <div style={sep} />
                             {onBrowseLocal ? (
-                                renderRow("browse", "folder", isZh ? "浏览本地目录…" : "Browse local folder…", "", {
+                                renderRow("browse", "folder", tailText(lang ?? "", "Browse local folder…", "浏览本地目录…"), "", {
                                     onPick: () => void browse(),
                                     testId: "workspace-local-browse",
                                 })
                             ) : (
-                                renderRow("browse-disabled", "folder", isZh ? "浏览本地目录…" : "Browse local folder…", isZh ? "浏览不可用" : "Browse unavailable", {
+                                renderRow("browse-disabled", "folder", tailText(lang ?? "", "Browse local folder…", "浏览本地目录…"), tailText(lang ?? "", "Browse unavailable", "浏览不可用"), {
                                     disabled: true,
                                     testId: "workspace-local-browse-disabled",
                                 })
@@ -452,7 +452,7 @@ export function WorkspacePickerPopover({
                 )}
                 {pane === 'cloud' && (
                     <>
-                        {head(isZh ? "搜索云端工作区" : "Search cloud workspaces", "workspace-cloud-search")}
+                        {head(tailText(lang ?? "", "Search cloud workspaces", "搜索云端工作区"), "workspace-cloud-search")}
                         <div style={popoverListStyle()}>
                             {cloudWorkspaces.map((cw) => {
                                 const selected = workspace.kind === 'cloud' && workspace.cloudWorkspaceId === cw.id;
@@ -503,7 +503,7 @@ export function WorkspacePickerPopover({
                                                     <button
                                                         type="button"
                                                         data-testid={`workspace-cloud-rename-${cw.id}`}
-                                                        aria-label={isZh ? `改名 ${cw.name}` : `Rename ${cw.name}`}
+                                                        aria-label={tailText(lang ?? "", `Rename ${cw.name}`, `改名 ${cw.name}`)}
                                                         disabled={cloudBusy}
                                                         onClick={(event) => {
                                                             event.stopPropagation();
@@ -513,7 +513,7 @@ export function WorkspacePickerPopover({
                                                         onKeyDown={(event) => event.stopPropagation()}
                                                         style={renameBesideInputStyle}
                                                     >
-                                                        {isZh ? "改名" : "Rename"}
+                                                        {tailText(lang ?? "", "Rename", "改名")}
                                                     </button>
                                                 )}
                                             </span>
@@ -527,7 +527,7 @@ export function WorkspacePickerPopover({
                             })}
                             {cloudWorkspaces.length === 0 && creatingName === null && (
                                 <div style={{ padding: "10px", fontSize: 12.5, color: t.textMuted }}>
-                                    {isZh ? "暂无云端工作区" : "No cloud workspaces"}
+                                    {tailText(lang ?? "", "No cloud workspaces", "暂无云端工作区")}
                                 </div>
                             )}
                             <div style={sep} />
@@ -561,7 +561,7 @@ export function WorkspacePickerPopover({
                                             <button
                                                 type="button"
                                                 data-testid="workspace-cloud-create-rename"
-                                                aria-label={isZh ? "改名" : "Rename"}
+                                                aria-label={tailText(lang ?? "", "Rename", "改名")}
                                                 disabled={cloudBusy}
                                                 onClick={() => {
                                                     if ((creatingName ?? "").trim()) void submitCreate();
@@ -569,11 +569,11 @@ export function WorkspacePickerPopover({
                                                 }}
                                                 style={renameBesideInputStyle}
                                             >
-                                                {isZh ? "改名" : "Rename"}
+                                                {tailText(lang ?? "", "Rename", "改名")}
                                             </button>
                                         </span>
                                         <span style={{ ...draftVisual.desc, display: "block", marginTop: 0 }}>
-                                            {isZh ? "输入名称，Enter 或点改名创建" : "Type a name, then press Enter or Rename"}
+                                            {tailText(lang ?? "", "Type a name, then press Enter or Rename", "输入名称，Enter 或点改名创建")}
                                         </span>
                                         {cloudError && (
                                             <span data-testid="workspace-cloud-error" role="alert" style={{ fontSize: 12, lineHeight: 1.4, color: t.errorText }}>{cloudError}</span>
@@ -581,12 +581,12 @@ export function WorkspacePickerPopover({
                                     </span>
                                 </div>
                             ) : onCreateCloud ? (
-                                renderRow("create", "plus", isZh ? "新建云端工作区…" : "New cloud workspace…", "", {
+                                renderRow("create", "plus", tailText(lang ?? "", "New cloud workspace…", "新建云端工作区…"), "", {
                                     onPick: beginCreate,
                                     testId: "workspace-cloud-create",
                                 })
                             ) : (
-                                renderRow("create-disabled", "plus", isZh ? "新建云端工作区…" : "New cloud workspace…", isZh ? "请在任务管理中创建" : "Create from Task Management", {
+                                renderRow("create-disabled", "plus", tailText(lang ?? "", "New cloud workspace…", "新建云端工作区…"), tailText(lang ?? "", "Create from Task Management", "请在任务管理中创建"), {
                                     disabled: true,
                                 })
                             )}
@@ -618,7 +618,7 @@ export function WorkspacePickerPopover({
                                     marginRight: "auto",
                                 }}
                             >
-                                ‹ {isZh ? "返回" : "Back"}
+                                ‹ {tailText(lang ?? "", "Back", "返回")}
                             </button>
                         )}
                     />

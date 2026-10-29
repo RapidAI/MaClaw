@@ -430,7 +430,8 @@
       if (target) window.requestAnimationFrame(() => target.scrollIntoView({ block: 'start' }));
     }
     function setLang(lang, options = {}) {
-      const normalized = lang === 'en' ? 'en' : 'zh';
+      const raw = String(lang || '').trim().toLowerCase().replace(/_/g, '-');
+      const normalized = raw === 'zh' || raw.indexOf('zh-') === 0 ? 'zh' : 'en';
       document.documentElement.lang = normalized === 'zh' ? 'zh-CN' : 'en';
       document.title = titles[normalized];
       if (skipLink) {
@@ -447,7 +448,7 @@
     }
     buttons.forEach((button) => button.addEventListener('click', () => setLang(button.dataset.setLang, { syncHash: true })));
     const initialLang = new URLSearchParams(location.search).get('lang') || storedLang() || navigator.language;
-    setLang(preferredLangFromHash() || (String(initialLang).toLowerCase().startsWith('en') ? 'en' : 'zh'));
+    setLang(preferredLangFromHash() || initialLang);
     scrollCurrentHashIntoView();
     window.addEventListener('hashchange', () => {
       const hashLang = preferredLangFromHash();

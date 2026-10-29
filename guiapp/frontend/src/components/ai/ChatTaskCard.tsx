@@ -2,28 +2,27 @@ import { useState } from "react";
 import type { ChatTaskView } from "./chatTaskModel";
 import { chatTaskTerminal } from "./chatTaskModel";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { tailText } from "../../i18n/mnTail";
 
 function emitChatTaskAction(action: "resume" | "cancel" | "steer" | "answer", taskId: string, text = "") {
     window.dispatchEvent(new CustomEvent("ai-chat-task-action", { detail: { action, taskId, text } }));
 }
 
 function statusLabel(status: string, lang: string): string {
-    const zh = lang.startsWith("zh");
     switch (status) {
-        case "queued": return zh ? "排队" : "Queued";
-        case "running": return zh ? "进行中" : "Running";
-        case "needs_input": return zh ? "等待你的回答" : "Needs your answer";
-        case "done": return zh ? "完成" : "Done";
-        case "failed": return zh ? "失败" : "Failed";
-        case "canceled": return zh ? "已取消" : "Canceled";
-        case "interrupted": return zh ? "上次中断" : "Was running";
+        case "queued": return tailText(lang, "Queued", "排队");
+        case "running": return tailText(lang, "Running", "进行中");
+        case "needs_input": return tailText(lang, "Needs your answer", "等待你的回答");
+        case "done": return tailText(lang, "Done", "完成");
+        case "failed": return tailText(lang, "Failed", "失败");
+        case "canceled": return tailText(lang, "Canceled", "已取消");
+        case "interrupted": return tailText(lang, "Was running", "上次中断");
         default: return status;
     }
 }
 
 export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme: Theme; lang: string }) {
     const [draft, setDraft] = useState("");
-    const zh = lang.startsWith("zh");
     const interrupted = task.status === "interrupted";
     const open = !chatTaskTerminal(task.status) || interrupted;
     const waiting = task.status === "needs_input";
@@ -42,12 +41,12 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
             }}
         >
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                <strong style={{ fontSize: 13 }}>{task.title || (zh ? "这项工作" : "This work")}</strong>
+                <strong style={{ fontSize: 13 }}>{task.title || tailText(lang, "This work", "这项工作")}</strong>
                 <span style={{ fontSize: 11, color: theme.textMuted }}>{statusLabel(task.status, lang)}</span>
             </div>
             {task.status === "interrupted" && (
                 <div style={{ marginTop: 6, fontSize: 12, color: theme.textMuted }}>
-                    {task.progress || (zh ? "上次退出时这个任务还在跑，没有自动重开。" : "This was still running when the app stopped. It was not resumed.")}
+                    {task.progress || tailText(lang, "This was still running when the app stopped. It was not resumed.", "上次退出时这个任务还在跑，没有自动重开。")}
                 </div>
             )}
             {(waiting || interrupted) && task.question && <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.45 }}>{task.question}</div>}
@@ -61,7 +60,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
             {open && (
                 <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                     <input
-                        aria-label={waiting ? (zh ? "回答" : "Answer") : (zh ? "补充" : "Add a note")}
+                        aria-label={waiting ? tailText(lang, "Answer", "回答") : tailText(lang, "Add a note", "补充")}
                         value={draft}
                         onChange={event => setDraft(event.target.value)}
                         onKeyDown={event => {
@@ -72,7 +71,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
                             emitChatTaskAction(waiting ? "answer" : interrupted ? "resume" : "steer", task.id, text);
                             setDraft("");
                         }}
-                        placeholder={waiting ? (zh ? "回答后继续" : "Answer to continue") : (zh ? "补充后接着做" : "Add to this work")}
+                        placeholder={waiting ? tailText(lang, "Answer to continue", "回答后继续") : tailText(lang, "Add to this work", "补充后接着做")}
                         style={{ flex: 1, minWidth: 0, borderRadius: 8, border: `1px solid ${theme.inputBarBorder}`, background: theme.bg, color: theme.text, padding: "6px 8px", fontSize: 12 }}
                     />
                     {interrupted && (
@@ -84,7 +83,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
                             }}
                             style={{ borderRadius: 8, border: `1px solid ${theme.inputBarBorder}`, background: theme.bg, color: theme.text, padding: "6px 8px", fontSize: 12, cursor: "pointer" }}
                         >
-                            {zh ? "继续任务" : "Resume task"}
+                            {tailText(lang, "Resume task", "继续任务")}
                         </button>
                     )}
                     <button
@@ -92,7 +91,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
                         onClick={() => emitChatTaskAction("cancel", task.id)}
                         style={{ borderRadius: 8, border: `1px solid ${theme.inputBarBorder}`, background: "transparent", color: theme.text, padding: "6px 8px", fontSize: 12, cursor: "pointer" }}
                     >
-                        {zh ? "取消" : "Cancel"}
+                        {tailText(lang, "Cancel", "取消")}
                     </button>
                 </div>
             )}

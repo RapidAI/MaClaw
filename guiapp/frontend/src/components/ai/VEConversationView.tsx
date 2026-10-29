@@ -27,6 +27,8 @@ import { firstVEStreamText, visibleHistoryMessageContent, visibleVEStreamContent
 import { applyUserScrollFollow, isAwayFromBottom, tryPinAssistantOutput } from "./assistantOutputScrollLogic";
 import { localizeAIAssistantError } from "./aiAssistantI18n";
 import { createStreamCoalescer, type StreamCoalescer } from "./streamCoalescer";
+import { tailText } from "../../i18n/mnTail"
+import { normalizeLang } from "../../i18n/langSelect"
 
 export { firstVEStreamText, sanitizeVisibleVEText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
 
@@ -46,22 +48,22 @@ export function veActivityToolName(name: unknown): string {
     return trimmed;
 }
 
-export function veLiveActivityLabel(phase: string, name: string, isZh: boolean): string {
+export function veLiveActivityLabel(phase: string, name: string, isZh: boolean | string): string {
     switch (phase) {
         case "routing":
-            return isZh ? "正在接通" : "Connecting";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Connecting", "正在接通");
         case "accepted":
-            return isZh ? "正在准备回复" : "Preparing a reply";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Preparing a reply", "正在准备回复");
         case "tool_done":
-            return isZh ? "正在整理回复" : "Composing the reply";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Composing the reply", "正在整理回复");
         case "tool_start": {
             const known = VE_TOOL_ACTIVITY_LABELS[name];
-            if (known) return isZh ? known[0] : known[1];
+            if (known) return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), known[1], known[0]);
             const readable = name.replace(/[_:.-]+/g, " ").trim();
-            return isZh ? (readable ? `正在处理 ${readable}` : "正在处理") : (readable ? `Working on ${readable}` : "Working");
+            return readable ? tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `Working on ${readable}`, `正在处理 ${readable}`) : tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Working", "正在处理");
         }
         default:
-            return isZh ? "思考中" : "Thinking";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Thinking", "思考中");
     }
 }
 
@@ -420,11 +422,11 @@ function readableSpeakerName(
     return participantName || fallback;
 }
 
-function readableConversationPartnerName(name: string, id: string, isZh: boolean): string {
+function readableConversationPartnerName(name: string, id: string, isZh: boolean | string): string {
     const candidate = String(name || "").trim();
     const normalizedId = String(id || "").trim();
     if (candidate && candidate !== normalizedId && !looksLikeRawParticipantId(candidate)) return candidate;
-    return isZh ? "\u6570\u5b57\u5458\u5de5" : "Digital employee";
+    return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Digital employee", "\u6570\u5b57\u5458\u5de5");
 }
 
 function participantColorById(participants: MentionParticipant[] | undefined, id: string | undefined, fallback: string): string {
@@ -433,15 +435,26 @@ function participantColorById(participants: MentionParticipant[] | undefined, id
     return index >= 0 ? getParticipantColor(index) : fallback;
 }
 
+function veLang(isZh: boolean | string): string {
+    return typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en");
+}
+
+function veChinese(isZh: boolean | string): boolean {
+    if (typeof isZh !== "string") return !!isZh;
+    const normalized = normalizeLang(isZh);
+    return normalized === "zh-Hans" || normalized === "zh-Hant";
+}
+
 function buildLocalEmployeeIntro(
     veName: string,
     veId: string,
     veSkillDescription: string | undefined,
-    isZh: boolean,
+    isZh: boolean | string,
 ): string {
-    const displayName = readableConversationPartnerName(veName, veId, isZh);
+    const lang = veLang(isZh);
+    const displayName = readableConversationPartnerName(veName, veId, lang);
     const skillDescription = String(veSkillDescription || "").trim();
-    if (isZh) {
+    if (veChinese(isZh)) {
         const lines = [`你好，我是${displayName}。`];
         if (skillDescription) {
             lines.push(`我擅长：${skillDescription}。`);
@@ -449,11 +462,11 @@ function buildLocalEmployeeIntro(
         lines.push("你可以直接告诉我任务目标、背景材料或期望输出，我会尽快开始处理。");
         return lines.join("\n");
     }
-    const lines = [`Hi, I am ${displayName}.`];
+    const lines = [tailText(lang, `Hi, I am ${displayName}.`, `你好，我是${displayName}。`)];
     if (skillDescription) {
-        lines.push(`I am good at: ${skillDescription}.`);
+        lines.push(tailText(lang, `I am good at: ${skillDescription}.`, `我擅长：${skillDescription}。`));
     }
-    lines.push("You can tell me the goal, context, or expected output and I will get started.");
+    lines.push(tailText(lang, "You can tell me the goal, context, or expected output and I will get started.", "你可以直接告诉我任务目标、背景材料或期望输出，我会尽快开始处理。"));
     return lines.join("\n");
 }
 
@@ -461,7 +474,7 @@ function buildLocalEmployeeIntroMessage(
     veId: string,
     veName: string,
     veSkillDescription: string | undefined,
-    isZh: boolean,
+    isZh: boolean | string,
 ): VEMessage {
     return {
         id: `local-intro:${normalizeMentionParticipantId(veId) || "ve"}`,
@@ -684,9 +697,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
     sendingRef.current = sending;
 
-    const isZh = !lang || lang.startsWith("zh");
-    const localSpeakerName = isZh ? "\u6211" : "Me";
-    const assistantDisplayName = useMemo(() => readableConversationPartnerName(veName, veId, isZh), [isZh, veId, veName]);
+    const isZh = !!lang?.startsWith("zh");
+    const localSpeakerName = tailText(lang ?? "", "Me", "\u6211");
+    const assistantDisplayName = useMemo(() => readableConversationPartnerName(veName, veId, lang ?? ""), [lang, veId, veName]);
     const safeAssistantAvatar = useMemo(() => safeAvatarDataURL(avatarDataURL), [avatarDataURL]);
     const [loadedAssistantAvatar, setLoadedAssistantAvatar] = useState("");
     const assistantAvatar = safeAssistantAvatar || loadedAssistantAvatar;
@@ -1095,12 +1108,12 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         // If history was successfully loaded (even if messages were set by the history
         // effect's setState), don't show the intro.
         if (historyLoadSucceededSessionId === sessionId) return;
-        const introMessage = buildLocalEmployeeIntroMessage(veId, veName, veSkillDescription, isZh);
+        const introMessage = buildLocalEmployeeIntroMessage(veId, veName, veSkillDescription, lang ?? "");
         setState((prev) => {
             if (String(prev.sessionId || "").trim() !== sessionId || prev.messages.length > 0) return prev;
             return { ...prev, messages: [introMessage] };
         });
-    }, [existingSessionId, historyLoadSettledSessionId, historyLoadSucceededSessionId, initialMessages, isZh, participants?.length, state.messages.length, state.sessionId, veId, veName, veSkillDescription]);
+    }, [existingSessionId, historyLoadSettledSessionId, historyLoadSucceededSessionId, initialMessages, lang, participants?.length, state.messages.length, state.sessionId, veId, veName, veSkillDescription]);
 
 
     // Keep reconnectAttemptRef in sync with state resets (e.g. successful session init)
@@ -1282,7 +1295,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     showLocalIntroAfterClearRef.current = false;
                     if ((participants?.length || 0) === 0 && sessionId) {
                         skipHistoryLoadSessionIdsRef.current.add(sessionId);
-                        localIntroAfterClear = buildLocalEmployeeIntroMessage(veId, veName, veSkillDescription, isZh);
+                        localIntroAfterClear = buildLocalEmployeeIntroMessage(veId, veName, veSkillDescription, lang ?? "");
                     }
                 }
                 if (mountedRef.current) {
@@ -1324,7 +1337,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         } finally {
             if (sessionInitInFlightRef.current === run) sessionInitInFlightRef.current = null;
         }
-    }, [clearAuthPendingTimer, initiateConversation, initiateGroupConversation, isZh, participants, registerLocalExecutorInGroup, scheduleAuthPendingTimeout, veId, veName, veSkillDescription]);
+    }, [clearAuthPendingTimer, initiateConversation, initiateGroupConversation, lang, participants, registerLocalExecutorInGroup, scheduleAuthPendingTimeout, veId, veName, veSkillDescription]);
 
     useEffect(() => {
         const nextSessionId = existingSessionId || null;
@@ -1497,9 +1510,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 connectionState: "disconnected",
                 error: {
                     type: "hub_disconnected",
-                    message: isZh
-                        ? "\u91cd\u8fde\u5931\u8d25\uff0c\u5df2\u8fbe\u6700\u5927\u91cd\u8bd5\u6b21\u6570"
-                        : "Reconnection failed after max retries",
+                    message: tailText(lang ?? "", "Reconnection failed after max retries", "\u91cd\u8fde\u5931\u8d25\uff0c\u5df2\u8fbe\u6700\u5927\u91cd\u8bd5\u6b21\u6570"),
                 },
             }));
             return;
@@ -1523,7 +1534,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             }
         }, delay);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [initSession, isZh]);
+    }, [initSession, lang]);
 
     // --- Streaming Event Listeners ---
 
@@ -1996,10 +2007,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     }}
                 >
                     <span>!</span>
-                    <span>{state.error ? formatError(state.error, isZh) : (isZh ? "\u8fde\u63a5\u5df2\u65ad\u5f00\uff0c\u6b63\u5728\u91cd\u8fde" : "Connection lost, reconnecting")}</span>
+                    <span>{state.error ? formatError(state.error, lang ?? "") : (tailText(lang ?? "", "Connection lost, reconnecting", "\u8fde\u63a5\u5df2\u65ad\u5f00\uff0c\u6b63\u5728\u91cd\u8fde"))}</span>
                     {state.connectionState === "reconnecting" && (
                         <span className="vecv-reconnect-status">
-                            {isZh ? `\u91cd\u8fde\u4e2d (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...` : `Reconnecting (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...`}
+                            {tailText(lang ?? "", `Reconnecting (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...`, `\u91cd\u8fde\u4e2d (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...`)}
                         </span>
                     )}
                 </div>
@@ -2021,6 +2032,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         sessionId={state.sessionId || ""}
                         theme={theme}
                         isZh={isZh}
+                        lang={lang}
                         assistantName={readableSpeakerName(msg.fromName, msg.fromId, participants, assistantDisplayName)}
                         userName={readableSpeakerName(msg.fromName, msg.fromId, participants, localSpeakerName)}
                         assistantAvatarDataURL={
@@ -2043,7 +2055,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                             showTail={false}
                             style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: theme.textMuted || theme.text }}
                         >
-                            <span data-testid="ve-activity-status">{state.activityPhase ? veLiveActivityLabel(state.activityPhase, state.activityName, isZh) : (isZh ? "思考中" : "Thinking")}</span>
+                            <span data-testid="ve-activity-status">{state.activityPhase ? veLiveActivityLabel(state.activityPhase, state.activityName, lang ?? "") : (tailText(lang ?? "", "Thinking", "思考中"))}</span>
                             <span className="ve-cursor-blink">...</span>
                         </ChatBubbleFrame>
                     </div>
@@ -2100,7 +2112,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                             {state.streamContent && <MessageContentRenderer content={state.streamContent} theme={theme} isStreaming messageId="ve-live-stream" />}
                             {state.activityPhase === "tool_start" && (
                                 <div data-testid="ve-activity-status" style={{ marginTop: state.streamContent ? 6 : 0, fontSize: 12, color: theme.textMuted || theme.text }}>
-                                    {veLiveActivityLabel(state.activityPhase, state.activityName, isZh)}
+                                    {veLiveActivityLabel(state.activityPhase, state.activityName, lang ?? "")}
                                 </div>
                             )}
                             {state.streamAttachments.length > 0 && (
@@ -2173,13 +2185,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 pendingAttachments={pendingAttachments}
                 pendingAttachmentsTestId="ve-attachment-preview-bar"
                 placeholderText={readOnly
-                    ? (isZh ? "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00" : "Read-only session")
+                    ? (tailText(lang ?? "", "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00"))
                     : !veOnline
-                    ? (isZh ? `${assistantDisplayName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd` : `${assistantDisplayName} is offline`)
+                    ? (tailText(lang ?? "", `${assistantDisplayName} is offline`, `${assistantDisplayName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd`))
                     : (awaitingReplyVisible || state.streaming)
-                    ? (isZh ? "可以继续输入，本轮结束后自动发送" : "Keep typing. It sends when this reply finishes.")
-                    : (isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}...` : `Message ${assistantDisplayName}...`)}
-                textareaAriaLabel={isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}` : `Message ${assistantDisplayName}`}
+                    ? (tailText(lang ?? "", "Keep typing. It sends when this reply finishes.", "可以继续输入，本轮结束后自动发送"))
+                    : (tailText(lang ?? "", `Message ${assistantDisplayName}...`, `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}...`))}
+                textareaAriaLabel={tailText(lang ?? "", `Message ${assistantDisplayName}`, `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}`)}
                 ready={inputReady}
                 queuePanelTestId="ve-queued-message-panel"
                 recallHistory={recallHistory}
@@ -2305,6 +2317,7 @@ interface MessageBubbleProps {
     sessionId: string;
     theme: Theme;
     isZh: boolean;
+    lang?: string;
     assistantName: string;
     userName: string;
     assistantAvatarDataURL?: string;
@@ -2363,7 +2376,7 @@ function isRecoverableVESendError(err: unknown, type: VEConversationError["type"
     return !lower.includes("unauthorized") && !lower.includes("forbidden") && !lower.includes("access denied");
 }
 
-const MessageBubble = memo(function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName, assistantAvatarDataURL }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, sessionId, theme, isZh, lang, assistantName, userName, assistantAvatarDataURL }: MessageBubbleProps) {
     const isUser = message.role === "user";
     const speakerName = isUser ? userName : assistantName;
     const hasAttachments = !!message.attachments?.length;
@@ -2423,7 +2436,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionId, theme, i
                             border: `1px solid ${theme.btnBorder}33`,
                         }}
                     >
-                        {isZh ? "本地欢迎" : "Local intro"}
+                        {tailText((lang || (isZh ? "zh-Hans" : "en")), "Local intro", "本地欢迎")}
                     </span>
                 )}
                 <span>{speakerName}</span>
@@ -2447,7 +2460,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionId, theme, i
                             <AssistantReplyCopyButton
                                 text={message.content}
                                 theme={theme}
-                                lang={isZh ? "zh" : "en"}
+                                lang={lang || (isZh ? "zh" : "en")}
                                 messageId={message.id}
                             />
                         ) : undefined
@@ -2473,7 +2486,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionId, theme, i
                             data-testid={`ve-msg-failed-${message.id}`}
                             style={{ color: theme.errorText || "#c43d34", fontSize: 11, marginLeft: hasContent ? 6 : 0 }}
                         >
-                            {isZh ? "\u53d1\u9001\u5931\u8d25" : "Failed"}
+                            {tailText((lang || (isZh ? "zh-Hans" : "en")), "Failed", "\u53d1\u9001\u5931\u8d25")}
                         </span>
                     )}
                 </ChatBubbleFrame>
@@ -2675,48 +2688,59 @@ function authResultCandidateIds(value: unknown): string[] {
     return participantIdentityKeys(value);
 }
 
-function formatError(error: VEConversationError, isZh: boolean): string {
+function formatError(error: VEConversationError, isZh: boolean | string): string {
     switch (error.type) {
         case "hub_disconnected":
-            return isZh ? "Hub \u8fde\u63a5\u4e2d\u65ad" : "Hub disconnected";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Hub disconnected", "Hub \u8fde\u63a5\u4e2d\u65ad");
         case "ve_offline":
-            return isZh ? "\u8be5\u6570\u5b57\u5458\u5de5\u5f53\u524d\u4e0d\u5728\u7ebf" : "Digital employee is offline";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Digital employee is offline", "\u8be5\u6570\u5b57\u5458\u5de5\u5f53\u524d\u4e0d\u5728\u7ebf");
         case "auth_pending":
-            return isZh ? "\u6b63\u5728\u8bf7\u6c42\u8bbf\u95ee\uff0c\u7b49\u5f85\u5bf9\u65b9\u786e\u8ba4" : "Waiting for access confirmation";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Waiting for access confirmation", "\u6b63\u5728\u8bf7\u6c42\u8bbf\u95ee\uff0c\u7b49\u5f85\u5bf9\u65b9\u786e\u8ba4");
         case "auth_timeout":
-            return isZh ? "\u5bf9\u65b9\u672a\u53ca\u65f6\u540c\u610f\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5" : "Approval timed out. Try again later.";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Approval timed out. Try again later.", "\u5bf9\u65b9\u672a\u53ca\u65f6\u540c\u610f\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5");
         case "access_denied":
             return error.message === "blocked"
-                ? (isZh ? "\u5f53\u524d\u65e0\u6cd5\u8bbf\u95ee\u8be5\u6570\u5b57\u5458\u5de5" : "This digital employee is unavailable")
-                : (isZh ? "\u8bbf\u95ee\u672a\u901a\u8fc7\uff0c\u5bf9\u65b9\u6682\u672a\u5141\u8bb8\u672c\u6b21\u8bbf\u95ee" : "Access was not approved");
+                ? (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "This digital employee is unavailable", "\u5f53\u524d\u65e0\u6cd5\u8bbf\u95ee\u8be5\u6570\u5b57\u5458\u5de5"))
+                : (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Access was not approved", "\u8bbf\u95ee\u672a\u901a\u8fc7\uff0c\u5bf9\u65b9\u6682\u672a\u5141\u8bb8\u672c\u6b21\u8bbf\u95ee"));
         case "send_failed":
-            return error.message ? (isZh ? `\u6d88\u606f\u53d1\u9001\u5931\u8d25\uff1a${localizeBackendErrorDetail(error.message, isZh)}` : `Message send failed: ${error.message}`) : (isZh ? "\u6d88\u606f\u53d1\u9001\u5931\u8d25" : "Message send failed");
+            if (!error.message) return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Message send failed", "\u6d88\u606f\u53d1\u9001\u5931\u8d25");
+            {
+                const detail = localizeBackendErrorDetail(error.message, isZh);
+                return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `Message send failed: ${detail}`, `\u6d88\u606f\u53d1\u9001\u5931\u8d25\uff1a${detail}`);
+            }
         case "session_timeout":
-            return isZh ? "\u4f1a\u8bdd\u521b\u5efa\u8d85\u65f6\uff0815\u79d2\uff09" : "Session creation timed out (15s)";
+            return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Session creation timed out (15s)", "\u4f1a\u8bdd\u521b\u5efa\u8d85\u65f6\uff0815\u79d2\uff09");
         case "response_timeout":
             if (error.message === "response_silence") {
-                return isZh
-                    ? `\u6570\u5b57\u5458\u5de5\u6682\u65e0\u54cd\u5e94\uff08${SILENCE_TIMEOUT_SEC}\u79d2\u65e0\u6d3b\u52a8\uff09`
-                    : `Digital employee stopped responding (${SILENCE_TIMEOUT_SEC}s without activity)`;
+                return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `Digital employee stopped responding (${SILENCE_TIMEOUT_SEC}s without activity)`, `\u6570\u5b57\u5458\u5de5\u6682\u65e0\u54cd\u5e94\uff08${SILENCE_TIMEOUT_SEC}\u79d2\u65e0\u6d3b\u52a8\uff09`);
             }
             {
                 const match = String(error.message || "").match(/^response_total:(\d+)$/);
                 const seconds = match ? Number(match[1]) : DEFAULT_AGENT_TIMEOUT_SEC;
-                return isZh
-                    ? `\u6570\u5b57\u5458\u5de5\u54cd\u5e94\u8d85\u65f6\uff08${seconds}\u79d2\uff09`
-                    : `Digital employee response timed out (${seconds}s)`;
+                return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), `Digital employee response timed out (${seconds}s)`, `\u6570\u5b57\u5458\u5de5\u54cd\u5e94\u8d85\u65f6\uff08${seconds}\u79d2\uff09`);
             }
         default:
             return (error as VEConversationError).message;
     }
 }
 
-function localizeBackendErrorDetail(message: string, isZh: boolean): string {
+function localizeBackendErrorDetail(message: string, isZh: boolean | string): string {
     const text = String(message || "").trim();
     if (text === "") return text;
-    const localizedLLMError = localizeAIAssistantError(text, isZh ? "zh-Hans" : "en");
+    const lang = veLang(isZh);
+    const localizedLLMError = localizeAIAssistantError(text, lang);
     if (localizedLLMError !== text) return localizedLLMError;
-    if (!isZh) return text;
+    if (!veChinese(isZh)) {
+        if (normalizeLang(lang) !== "mn") return text;
+        const lower = text.toLowerCase();
+        if (lower === "send failed") return tailText(lang, "send failed", "发送失败");
+        if (lower === "network error") return tailText(lang, "network error", "网络错误");
+        if (lower === "failed to fetch") return tailText(lang, "failed to fetch", "网络请求失败");
+        if (lower.includes("context deadline exceeded") || lower.includes("timeout") || lower.includes("timed out")) return tailText(lang, "Request timed out", "请求超时");
+        if (lower.includes("machine is offline")) return tailText(lang, "The target machine is offline", "目标机器离线");
+        if (lower.includes("digital employee is offline")) return tailText(lang, "Digital employee is offline", "数字员工已离线");
+        return text;
+    }
     const lower = text.toLowerCase();
     if (lower === "send failed") return "\u53d1\u9001\u5931\u8d25";
     if (lower === "network error") return "\u7f51\u7edc\u9519\u8bef";

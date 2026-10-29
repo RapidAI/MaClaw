@@ -9,6 +9,7 @@ import { useDialog } from '../CustomDialog';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { usePortalThemeAttributes } from '../../hooks/usePortalThemeAttributes';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+import { tailText } from '../../i18n/mnTail'
 
 /** Lazy so settings/IM does not eagerly pull the full watch editor + survey CSS. */
 const UtilitiesWatchPanel = lazy(() =>
@@ -18,13 +19,13 @@ const UtilitiesWatchPanel = lazy(() =>
             default: function WatchPanelLoadFailed({
                 isZh,
             }: {
-                isZh: boolean;
+                isZh: boolean | string;
                 onBack: () => void;
                 compactHeader?: boolean;
 }) {
                 return (
                     <p className="im-groups-modal__status" role="alert">
-                        {isZh ? '加载盯人面板失败，请重试' : 'Failed to load people-watch panel'}
+                        {tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'Failed to load people-watch panel', '加载盯人面板失败，请重试')}
                     </p>
                 );
             },
@@ -191,7 +192,6 @@ export const LansengerSettings = ({
     const watchCloseBtnRef = useRef<HTMLButtonElement | null>(null);
     const followBtnRef = useRef<HTMLButtonElement | null>(null);
     const hadWatchOpenRef = useRef(false);
-    const isZh = !lang || lang.startsWith('zh');
     const lansengerConnected = lansengerStatus === 'connected';
     const useBotProfiles = botProfilesAvailable === true;
     const selectedBotIsSaved = !!botDraft && !botDraftIsNew && bots.some((bot) => bot.id === botDraft.id);
@@ -1261,7 +1261,7 @@ export const LansengerSettings = ({
                                     </p>
                                 }
                             >
-                                <UtilitiesWatchPanel isZh={isZh} onBack={closeWatch} botProfileId={watchBotProfileID} compactHeader />
+                                <UtilitiesWatchPanel isZh={lang} onBack={closeWatch} botProfileId={watchBotProfileID} compactHeader />
                             </Suspense>
                         </div>
                     </div>

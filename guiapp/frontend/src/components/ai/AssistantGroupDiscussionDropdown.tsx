@@ -4,6 +4,8 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./aiAssistantPanelTypes";
 import type { GroupDiscussionInvite } from "./AssistantGroupDiscussionMenu";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
+import { chromeText } from "../../i18n/chromeText";
+
 
 type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "no-drag" };
 const wailsDragStyle = (style: WailsDragStyle): CSSProperties => style;
@@ -40,25 +42,25 @@ export function AssistantGroupDiscussionDropdown(props: Props) {
         <div style={wailsDragStyle({ position: "absolute", right: 0, top: "30px", width: "min(280px, calc(100vw - 96px))", maxWidth: "calc(100vw - 96px)", padding: "12px", borderRadius: "12px", border: `1px solid ${t.titleBarBorder}`, background: themeMode === "dark" ? t.inputBarBg : t.bg, boxShadow: themeMode === "dark" ? "0 22px 60px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(148, 163, 184, 0.16)" : "0 18px 45px rgba(15, 23, 42, 0.18)", color: t.text, zIndex: 30020, "--wails-draggable": "no-drag" })}>
             <Header {...props} />
             <Stats {...props} />
-            {(props.groupActiveTalks > 0 || props.groupReadyTalks > 0 || props.groupWaitingTalks > 0 || props.groupStaleTalks > 0) && <div style={{ fontSize: "10px", color: t.textMuted, marginBottom: "8px", padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(148, 163, 184, 0.12)" : "rgba(15, 23, 42, 0.04)" }}>{lang === "en" ? `Active ${props.groupActiveTalks} \u00b7 Ready ${props.groupReadyTalks} \u00b7 Waiting ${props.groupWaitingTalks} \u00b7 Stale ${props.groupStaleTalks}` : `\u8fdb\u884c\u4e2d ${props.groupActiveTalks} \u00b7 \u53ef\u6536\u5c3e ${props.groupReadyTalks} \u00b7 \u7b49\u5f85 ${props.groupWaitingTalks} \u00b7 \u8d85\u65f6 ${props.groupStaleTalks}`}</div>}
+            {(props.groupActiveTalks > 0 || props.groupReadyTalks > 0 || props.groupWaitingTalks > 0 || props.groupStaleTalks > 0) && <div style={{ fontSize: "10px", color: t.textMuted, marginBottom: "8px", padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(148, 163, 184, 0.12)" : "rgba(15, 23, 42, 0.04)" }}>{chromeText(lang, 'Active {active} · Ready {ready} · Waiting {waiting} · Stale {stale}', '进行中 {active} · 可收尾 {ready} · 等待 {waiting} · 超时 {stale}').replace('{active}', String(props.groupActiveTalks)).replace('{ready}', String(props.groupReadyTalks)).replace('{waiting}', String(props.groupWaitingTalks)).replace('{stale}', String(props.groupStaleTalks))}</div>}
             {groupDiscussionStatus?.error && <div style={{ fontSize: "11px", color: dangerTextColor, marginBottom: "8px" }}>{String(groupDiscussionStatus.error)}</div>}
             {props.safeHandoff && hasMeaningfulActivity(props) && <SafeHandoff {...props} />}
             {groupPendingInvites.slice(0, 2).map((invite) => <InviteRow key={invite.invite_id || invite.id} invite={invite} {...props} dangerTextColor={dangerTextColor} dangerBorderColor={dangerBorderColor} />)}
             <div style={{ display: "grid", gridTemplateColumns: actionGridColumns, gap: "6px", marginTop: "10px" }}>
-                <button type="button" style={actionButtonStyle(t, themeMode, !props.groupDiscussionBusy)} disabled={!!props.groupDiscussionBusy} {...bindGroupDiscussionPress(() => props.runGroupDiscussionAction("refresh", groupDiscussion.onRefreshStatus))}>{props.groupDiscussionBusy === "refresh" ? (lang === "en" ? "Refreshing..." : "\u5237\u65b0\u4e2d...") : (lang === "en" ? "Refresh" : "\u5237\u65b0")}</button>
-                <button type="button" style={actionButtonStyle(t, themeMode, !props.groupDiscussionBusy && props.groupDiscussionEnabled)} disabled={!!props.groupDiscussionBusy || !props.groupDiscussionEnabled} {...bindGroupDiscussionPress(() => props.runGroupDiscussionAction("publish", groupDiscussion.onPublishProfile))}>{props.groupDiscussionBusy === "publish" ? (lang === "en" ? "Publishing..." : "\u53d1\u5e03\u4e2d...") : (lang === "en" ? "Publish" : "\u53d1\u5e03\u8eab\u4efd")}</button>
-                {groupDiscussion.onOpenExperienceTrace && <button type="button" style={actionButtonStyle(t, themeMode, true)} {...bindGroupDiscussionPress(() => { groupDiscussion.onOpenExperienceTrace?.(props.primaryTraceFocus); props.setGroupDiscussionOpen(false); })}>{lang === "en" ? "Experience" : "\u7ecf\u9a8c"}</button>}
+                <button type="button" style={actionButtonStyle(t, themeMode, !props.groupDiscussionBusy)} disabled={!!props.groupDiscussionBusy} {...bindGroupDiscussionPress(() => props.runGroupDiscussionAction("refresh", groupDiscussion.onRefreshStatus))}>{props.groupDiscussionBusy === "refresh" ? ((chromeText(lang, "Refreshing...", "\u5237\u65b0\u4e2d..."))) : ((chromeText(lang, "Refresh", "\u5237\u65b0")))}</button>
+                <button type="button" style={actionButtonStyle(t, themeMode, !props.groupDiscussionBusy && props.groupDiscussionEnabled)} disabled={!!props.groupDiscussionBusy || !props.groupDiscussionEnabled} {...bindGroupDiscussionPress(() => props.runGroupDiscussionAction("publish", groupDiscussion.onPublishProfile))}>{props.groupDiscussionBusy === "publish" ? ((chromeText(lang, "Publishing...", "\u53d1\u5e03\u4e2d..."))) : ((chromeText(lang, "Publish", "\u53d1\u5e03\u8eab\u4efd")))}</button>
+                {groupDiscussion.onOpenExperienceTrace && <button type="button" style={actionButtonStyle(t, themeMode, true)} {...bindGroupDiscussionPress(() => { groupDiscussion.onOpenExperienceTrace?.(props.primaryTraceFocus); props.setGroupDiscussionOpen(false); })}>{(chromeText(lang, "Experience", "\u7ecf\u9a8c"))}</button>}
             </div>
         </div>
     );
 }
 
 function Header({ bindGroupDiscussionPress, groupDiscussionScopeText, lang, setGroupDiscussionOpen, theme: t, themeMode }: Props) {
-    return <div className="aggd-head"><div className="aggd-head-text"><strong className="aggd-head-title">{lang === "en" ? "Group Discussion" : "\u7fa4\u7ec4\u8ba8\u8bba"}</strong><span style={{ fontSize: "10px", color: t.textMuted }}>{groupDiscussionScopeText}</span></div><button type="button" {...bindGroupDiscussionPress(() => setGroupDiscussionOpen(false))} aria-label={lang === "en" ? "Close group discussion panel" : "\u5173\u95ed\u7fa4\u7ec4\u8ba8\u8bba\u9762\u677f"} title={lang === "en" ? "Close" : "\u5173\u95ed"} style={wailsDragStyle({ width: "22px", height: "22px", minWidth: "22px", borderRadius: "999px", border: `1px solid ${themeMode === "dark" ? "rgba(148, 163, 184, 0.28)" : "rgba(148, 163, 184, 0.24)"}`, background: themeMode === "dark" ? "rgba(15, 23, 42, 0.88)" : "rgba(255, 255, 255, 0.9)", color: t.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, fontSize: "11px", lineHeight: 1, flexShrink: 0, "--wails-draggable": "no-drag" })}>X</button></div>;
+    return <div className="aggd-head"><div className="aggd-head-text"><strong className="aggd-head-title">{(chromeText(lang, "Group Discussion", "\u7fa4\u7ec4\u8ba8\u8bba"))}</strong><span style={{ fontSize: "10px", color: t.textMuted }}>{groupDiscussionScopeText}</span></div><button type="button" {...bindGroupDiscussionPress(() => setGroupDiscussionOpen(false))} aria-label={(chromeText(lang, "Close group discussion panel", "\u5173\u95ed\u7fa4\u7ec4\u8ba8\u8bba\u9762\u677f"))} title={(chromeText(lang, "Close", "\u5173\u95ed"))} style={wailsDragStyle({ width: "22px", height: "22px", minWidth: "22px", borderRadius: "999px", border: `1px solid ${themeMode === "dark" ? "rgba(148, 163, 184, 0.28)" : "rgba(148, 163, 184, 0.24)"}`, background: themeMode === "dark" ? "rgba(15, 23, 42, 0.88)" : "rgba(255, 255, 255, 0.9)", color: t.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, fontSize: "11px", lineHeight: 1, flexShrink: 0, "--wails-draggable": "no-drag" })}>X</button></div>;
 }
 
 function Stats({ groupDiscussionStatus, groupPendingInvites, lang, theme: t, themeMode }: Props) {
-    const items = [[lang === "en" ? "Experts" : "\u4e13\u5bb6", groupDiscussionStatus?.experts?.length ?? 0], [lang === "en" ? "Talks" : "\u8ba8\u8bba", groupDiscussionStatus?.discussions?.length ?? 0], [lang === "en" ? "Invites" : "\u9080\u8bf7", groupPendingInvites.length]];
+    const items = [[(chromeText(lang, "Experts", "\u4e13\u5bb6")), groupDiscussionStatus?.experts?.length ?? 0], [(chromeText(lang, "Talks", "\u8ba8\u8bba")), groupDiscussionStatus?.discussions?.length ?? 0], [(chromeText(lang, "Invites", "\u9080\u8bf7")), groupPendingInvites.length]];
     return <div className="aggd-stats">{items.map(([label, value]) => <div key={String(label)} style={{ padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(148, 163, 184, 0.14)" : "rgba(148, 163, 184, 0.10)", textAlign: "center", minWidth: 0 }}><div className="aggd-stat-value">{value}</div><div style={{ fontSize: "10px", color: t.textMuted }}>{label}</div></div>)}</div>;
 }
 
@@ -69,18 +71,22 @@ function hasMeaningfulActivity(props: Props): boolean {
 
 function SafeHandoff({ bindGroupDiscussionPress, copiedHandoff, copySafeHandoff, groupActiveTalks, groupPendingInvites, groupReadyTalks, groupWaitingTalks, lang, safeHandoff, theme: t, themeMode }: Props) {
     const [expanded, setExpanded] = useState(false);
-    const summary = lang === "en"
-        ? [groupActiveTalks > 0 && `${groupActiveTalks} active`, groupReadyTalks > 0 && `${groupReadyTalks} ready`, groupWaitingTalks > 0 && `${groupWaitingTalks} waiting`, groupPendingInvites.length > 0 && `${groupPendingInvites.length} invite(s)`].filter(Boolean).join(" · ") || "Context available"
-        : [groupActiveTalks > 0 && `${groupActiveTalks} 进行中`, groupReadyTalks > 0 && `${groupReadyTalks} 可收尾`, groupWaitingTalks > 0 && `${groupWaitingTalks} 等待中`, groupPendingInvites.length > 0 && `${groupPendingInvites.length} 待处理邀请`].filter(Boolean).join(" · ") || "上下文可用";
+    const summaryPart = (count: number, en: string, zh: string) => count > 0 ? chromeText(lang, en, zh).replace('{n}', String(count)) : '';
+    const summary = [
+        summaryPart(groupActiveTalks, '{n} active', '{n} 进行中'),
+        summaryPart(groupReadyTalks, '{n} ready', '{n} 可收尾'),
+        summaryPart(groupWaitingTalks, '{n} waiting', '{n} 等待中'),
+        summaryPart(groupPendingInvites.length, '{n} invite(s)', '{n} 待处理邀请'),
+    ].filter(Boolean).join(' · ') || chromeText(lang, 'Context available', '上下文可用');
     return <div style={{ marginBottom: "8px", padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(79, 127, 111, 0.12)" : "rgba(79, 127, 111, 0.08)", border: `1px solid ${themeMode === "dark" ? "rgba(79, 127, 111, 0.24)" : "rgba(79, 127, 111, 0.20)"}` }}>
         <div className="aggd-handoff-row">
             <div className="aggd-handoff-title">
-                <strong style={{ fontSize: "10px", color: t.btnColor, flexShrink: 0 }}>{lang === "en" ? "Safe Handoff" : "\u5b89\u5168\u4ea4\u63a5"}</strong>
+                <strong style={{ fontSize: "10px", color: t.btnColor, flexShrink: 0 }}>{(chromeText(lang, "Safe Handoff", "\u5b89\u5168\u4ea4\u63a5"))}</strong>
                 <span style={{ fontSize: "9px", color: t.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
             </div>
             <div className="aggd-handoff-actions">
                 <button type="button" style={{ ...miniActionButtonStyle, padding: "3px 6px", fontSize: "9px", background: t.fieldBg, color: t.textMuted, borderColor: t.titleBarBorder }} {...bindGroupDiscussionPress(() => setExpanded(!expanded))}>{expanded ? "HIDE" : "SHOW"}</button>
-                <button type="button" style={{ ...miniActionButtonStyle, padding: "3px 6px", fontSize: "9px", background: t.fieldBg, color: t.text, borderColor: t.titleBarBorder }} {...bindGroupDiscussionPress(copySafeHandoff)}>{copiedHandoff ? (lang === "en" ? "Copied" : "\u5df2\u590d\u5236") : (lang === "en" ? "Copy" : "\u590d\u5236")}</button>
+                <button type="button" style={{ ...miniActionButtonStyle, padding: "3px 6px", fontSize: "9px", background: t.fieldBg, color: t.text, borderColor: t.titleBarBorder }} {...bindGroupDiscussionPress(copySafeHandoff)}>{copiedHandoff ? ((chromeText(lang, "Copied", "\u5df2\u590d\u5236"))) : ((chromeText(lang, "Copy", "\u590d\u5236")))}</button>
             </div>
         </div>
         {expanded && <pre style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "120px", overflow: "auto", fontSize: "9px", lineHeight: 1.45, color: t.textMuted }}>{safeHandoff}</pre>}
@@ -88,7 +94,7 @@ function SafeHandoff({ bindGroupDiscussionPress, copiedHandoff, copySafeHandoff,
 }
 
 function inviteTextForLang(lang: string, en: string, zh: string): string {
-    return lang === "en" ? en : zh;
+    return chromeText(lang, en, zh);
 }
 
 function readableInviteName(name?: string, id?: string, lang = "zh"): string {
@@ -108,7 +114,7 @@ function InviteRow(props: Props & { invite: GroupDiscussionInvite; dangerTextCol
     const inviteID = invite.invite_id || invite.id || "";
     const title = fallbackInviteTitle(invite.topic, lang);
     const sender = readableInviteName(invite.from_name, invite.from_id, lang);
-    return <div style={{ padding: "8px 0", borderTop: `1px solid ${t.divider}` }}><div data-testid="group-discussion-invite-title" className="aggd-invite-title">{title}</div><div data-testid="group-discussion-invite-sender" style={{ fontSize: "10px", color: t.textMuted, marginBottom: "6px" }}>{sender}</div><div className="aggd-invite-actions"><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: t.btnColor, borderColor: t.btnBorder }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("accept", () => groupDiscussion.onAcceptInvite?.(inviteID)))}>{lang === "en" ? "Accept" : "\u63a5\u53d7"}</button><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: props.dangerTextColor, borderColor: props.dangerBorderColor }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("reject", () => groupDiscussion.onRejectInvite?.(inviteID)))}>{lang === "en" ? "Reject" : "\u62d2\u7edd"}</button></div></div>;
+    return <div style={{ padding: "8px 0", borderTop: `1px solid ${t.divider}` }}><div data-testid="group-discussion-invite-title" className="aggd-invite-title">{title}</div><div data-testid="group-discussion-invite-sender" style={{ fontSize: "10px", color: t.textMuted, marginBottom: "6px" }}>{sender}</div><div className="aggd-invite-actions"><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: t.btnColor, borderColor: t.btnBorder }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("accept", () => groupDiscussion.onAcceptInvite?.(inviteID)))}>{(chromeText(lang, "Accept", "\u63a5\u53d7"))}</button><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: props.dangerTextColor, borderColor: props.dangerBorderColor }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("reject", () => groupDiscussion.onRejectInvite?.(inviteID)))}>{(chromeText(lang, "Reject", "\u62d2\u7edd"))}</button></div></div>;
 }
 
 function actionButtonStyle(t: Theme, themeMode: "light" | "dark", enabled: boolean): CSSProperties {

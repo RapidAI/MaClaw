@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { t, localizeText, normalizeLang } from './index';
+import { isChineseLang, isTraditionalLang, localizeText, normalizeLang, t } from './index';
 
 describe('i18n/index', () => {
     describe('normalizeLang', () => {
@@ -14,24 +14,63 @@ describe('i18n/index', () => {
             expect(normalizeLang('zh-TW')).toBe('zh-Hant');
             expect(normalizeLang('zh-HK')).toBe('zh-Hant');
             expect(normalizeLang('zh-MO')).toBe('zh-Hant');
+            expect(normalizeLang('mn')).toBe('mn');
+            expect(normalizeLang('mn-MN')).toBe('mn');
+            expect(normalizeLang('mn-Cyrl-MN')).toBe('mn');
         });
 
-        it('handles empty/null/undefined', () => {
-            expect(normalizeLang('')).toBe('zh-Hans');
-            expect(normalizeLang(null)).toBe('zh-Hans');
-            expect(normalizeLang(undefined)).toBe('zh-Hans');
+        it('handles empty/null/undefined as English', () => {
+            expect(normalizeLang('')).toBe('en');
+            expect(normalizeLang(null)).toBe('en');
+            expect(normalizeLang(undefined)).toBe('en');
         });
 
-        it('defaults unknown to zh-Hans', () => {
-            expect(normalizeLang('ja')).toBe('zh-Hans');
-            expect(normalizeLang('fr')).toBe('zh-Hans');
-            expect(normalizeLang('garbage')).toBe('zh-Hans');
+        it('uses English for anything except Simplified, Traditional, and Cyrillic Mongolian', () => {
+            expect(normalizeLang('ja')).toBe('en');
+            expect(normalizeLang('fr')).toBe('en');
+            expect(normalizeLang('garbage')).toBe('en');
+            expect(normalizeLang('mn-Mong')).toBe('en');
+            expect(normalizeLang('mn-Mong-CN')).toBe('en');
         });
 
         it('is case-insensitive', () => {
             expect(normalizeLang('EN')).toBe('en');
             expect(normalizeLang('ZH-HANS')).toBe('zh-Hans');
             expect(normalizeLang('ZH-TW')).toBe('zh-Hant');
+        });
+    });
+
+    describe('isChineseLang', () => {
+        it('is true only for simplified and traditional tags', () => {
+            expect(isChineseLang('zh-Hans')).toBe(true);
+            expect(isChineseLang('zh-CN')).toBe(true);
+            expect(isChineseLang('zh-SG')).toBe(true);
+            expect(isChineseLang('chinese')).toBe(true);
+            expect(isChineseLang('ZH-CN')).toBe(true);
+            expect(isChineseLang('zh_CN')).toBe(true);
+            expect(isChineseLang('zh-Hant')).toBe(true);
+            expect(isChineseLang('zh-TW')).toBe(true);
+            expect(isChineseLang('zh-HK')).toBe(true);
+            expect(isChineseLang('mn')).toBe(false);
+            expect(isChineseLang('mn-Mong')).toBe(false);
+            expect(isChineseLang('ja')).toBe(false);
+            expect(isChineseLang('')).toBe(false);
+            expect(isChineseLang(undefined)).toBe(false);
+            expect(isChineseLang('zh-yue')).toBe(false);
+        });
+    });
+
+    describe('isTraditionalLang', () => {
+        it('is true only for traditional tags', () => {
+            expect(isTraditionalLang('zh-Hant')).toBe(true);
+            expect(isTraditionalLang('zh-TW')).toBe(true);
+            expect(isTraditionalLang('zh-HK')).toBe(true);
+            expect(isTraditionalLang('zh-MO')).toBe(true);
+            expect(isTraditionalLang('zh-Hans')).toBe(false);
+            expect(isTraditionalLang('zh-CN')).toBe(false);
+            expect(isTraditionalLang('zh-SG')).toBe(false);
+            expect(isTraditionalLang('mn')).toBe(false);
+            expect(isTraditionalLang(undefined)).toBe(false);
         });
     });
 
@@ -46,9 +85,14 @@ describe('i18n/index', () => {
             expect(localizeText('zh-TW', 'Hello', '你好')).toBe('你好');
         });
 
-        it('handles undefined lang gracefully', () => {
-            expect(localizeText(undefined, 'Hello', '你好')).toBe('你好');
-            expect(localizeText(null, 'Hello', '你好')).toBe('你好');
+        it('handles undefined lang as English', () => {
+            expect(localizeText(undefined, 'Hello', '你好')).toBe('Hello');
+            expect(localizeText(null, 'Hello', '你好')).toBe('Hello');
+        });
+
+        it('uses Mongolian inline copy and otherwise English', () => {
+            expect(localizeText('mn', 'Close', '关闭', '關閉')).toBe('Хаах');
+            expect(localizeText('mn', 'Not in the overlay', '关闭')).toBe('Not in the overlay');
         });
     });
 
@@ -76,9 +120,19 @@ describe('i18n/index', () => {
             spy.mockRestore();
         });
 
+        it('uses English when the language is not Chinese or Mongolian', () => {
+            expect(t('close', undefined)).toBe('Close');
+            expect(t('close', 'ja')).toBe('Close');
+            expect(t('close', 'mn')).toBe('Хаах');
+        });
+
+        it('falls back to English when a Mongolian key is missing', () => {
+            expect(t('title', 'mn')).not.toBe('码卡龙 8');
+        });
+
         it('handles undefined lang', () => {
-            expect(t('close', undefined)).toBe('关闭');
-            expect(t('close', null)).toBe('关闭');
+            expect(t('close', undefined)).toBe('Close');
+            expect(t('close', null)).toBe('Close');
         });
     });
 });

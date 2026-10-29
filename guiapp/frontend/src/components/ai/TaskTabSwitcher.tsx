@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { localizeText } from "../../i18n";
 import type { AITab } from "./AITabTypes";
 import { getAITabDisplayTitle } from "./AITabItem";
 import { listedTaskTitle } from "./describeTaskTitle";
@@ -18,8 +19,7 @@ type TaskTabSwitcherProps = {
     onOpenTask?: (projectPath: string, task?: TaskManagementItem) => void;
 };
 
-const label = (lang: string, en: string, zh: string, hant = zh) =>
-    lang.startsWith("en") ? en : lang.startsWith("zh-Hant") ? hant : zh;
+const label = (lang: string, en: string, zh: string, hant = zh) => localizeText(lang, en, zh, hant);
 
 /** Compact per-type glyph; color inherits from the surrounding row. */
 function TabTypeIcon({ tab }: { tab: AITab }) {
@@ -209,7 +209,7 @@ export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose, 
                                     type="button"
                                     className="mc-task-tab-switcher__close"
                                     data-testid={`task-tab-switcher-close-${row.closeTabId}`}
-                                    aria-label={label(lang, `Close ${row.title}`, `关闭 ${row.title}`, `關閉 ${row.title}`)}
+                                    aria-label={`${label(lang, "Close", "关闭", "關閉")} ${row.title}`}
                                     title={label(lang, "Close task", "关闭任务", "關閉任務")}
                                     onClick={event => { event.stopPropagation(); onClose(row.closeTabId as string); }}
                                 >×</button>

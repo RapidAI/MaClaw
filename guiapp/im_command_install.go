@@ -255,36 +255,15 @@ func mergeInstallCLIText(errMsg, out string) string {
 }
 
 func localizedInstallCommandResultPrefix(lang, cmd string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("✓ /%s\n\n", cmd)
-	case appLanguageZhHant:
-		return fmt.Sprintf("✓ /%s 執行結果\n\n", cmd)
-	default:
-		return fmt.Sprintf("✓ /%s 执行结果\n\n", cmd)
-	}
+	return fmt.Sprintf(pickUI(lang, "✓ /%s\n\n", "✓ /%s 执行结果\n\n", "✓ /%s 執行結果\n\n"), cmd)
 }
 
 func localizedInstallCommandOK(lang, cmd, action string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("/%s %s completed.", cmd, action)
-	case appLanguageZhHant:
-		return fmt.Sprintf("/%s %s 已完成。", cmd, action)
-	default:
-		return fmt.Sprintf("/%s %s 已完成。", cmd, action)
-	}
+	return fmt.Sprintf(pickUI(lang, "/%s %s completed.", "/%s %s 已完成。", "/%s %s 已完成。"), cmd, action)
 }
 
 func localizedInstallCommandUsage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Install command usage: /skill|/mcp|/plugin <action> ..."
-	case appLanguageZhHant:
-		return "安裝命令用法：/skill|/mcp|/plugin <action> ..."
-	default:
-		return "安装命令用法：/skill|/mcp|/plugin <action> ..."
-	}
+	return pickUI(lang, "Install command usage: /skill|/mcp|/plugin <action> ...", "安装命令用法：/skill|/mcp|/plugin <action> ...", "安裝命令用法：/skill|/mcp|/plugin <action> ...")
 }
 
 type installHelpLines struct {
@@ -306,34 +285,13 @@ type installHelpLocale struct {
 }
 
 func installHelpLocaleFor(lang string) installHelpLocale {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return installHelpLocale{
-			exLabel: "Examples:",
-			query:   "query",
-			name:    "name",
-			skillT:  "Skill commands:",
-			mcpT:    "MCP commands:",
-			pluginT: "Plugin marketplace (Codex-style):",
-		}
-	case appLanguageZhHant:
-		return installHelpLocale{
-			exLabel: "示例：",
-			query:   "關鍵詞",
-			name:    "名稱",
-			skillT:  "Skill 命令：",
-			mcpT:    "MCP 命令：",
-			pluginT: "Plugin 市場（Codex 風格）：",
-		}
-	default: // zh-Hans
-		return installHelpLocale{
-			exLabel: "示例：",
-			query:   "关键词",
-			name:    "名称",
-			skillT:  "Skill 命令：",
-			mcpT:    "MCP 命令：",
-			pluginT: "Plugin 市场（Codex 风格）：",
-		}
+	return installHelpLocale{
+		exLabel: pickUI(lang, "Examples:", "示例：", "示例："),
+		query:   pickUI(lang, "query", "关键词", "關鍵詞"),
+		name:    pickUI(lang, "name", "名称", "名稱"),
+		skillT:  pickUI(lang, "Skill commands:", "Skill 命令：", "Skill 命令："),
+		mcpT:    pickUI(lang, "MCP commands:", "MCP 命令：", "MCP 命令："),
+		pluginT: pickUI(lang, "Plugin marketplace (Codex-style):", "Plugin 市场（Codex 风格）：", "Plugin 市場（Codex 風格）："),
 	}
 }
 
@@ -421,24 +379,10 @@ func installSlashHelpBlock(lang string) string {
 	// Always end with a trailing newline so concatenation with the next /help
 	// line does not glue "marketplace/summary" into one token.
 	// Shared command skeletons + localized gloss/example markers only.
-	var skillGloss, mcpGloss, pluginGloss, eg string
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		skillGloss = "search/install skills"
-		mcpGloss = "search/install MCP servers"
-		pluginGloss = "Codex-style plugins"
-		eg = "e.g. " // trailing space before command
-	case appLanguageZhHant:
-		skillGloss = "搜索/安裝 Skill"
-		mcpGloss = "搜索/安裝 MCP"
-		pluginGloss = "Codex 風格插件"
-		eg = "例："
-	default:
-		skillGloss = "搜索/安装 Skill"
-		mcpGloss = "搜索/安装 MCP"
-		pluginGloss = "Codex 风格插件"
-		eg = "例："
-	}
+	skillGloss := pickUI(lang, "search/install skills", "搜索/安装 Skill", "搜索/安裝 Skill")
+	mcpGloss := pickUI(lang, "search/install MCP servers", "搜索/安装 MCP", "搜索/安裝 MCP")
+	pluginGloss := pickUI(lang, "Codex-style plugins", "Codex 风格插件", "Codex 風格插件")
+	eg := pickUI(lang, "e.g. ", "例：", "例：") // trailing space before command in English
 	return "/skill search|install|list|remove - " + skillGloss + "\n" +
 		"/mcp search|install|list|remove - " + mcpGloss + "\n" +
 		"/plugin marketplace add|list ; /plugin add|remove name@market - " + pluginGloss + "\n" +

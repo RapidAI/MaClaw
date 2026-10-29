@@ -329,10 +329,10 @@ func isLansengerKnowledgeTool(name string) bool {
 }
 
 func localizedLansengerGroupCommandRestrictedMessage(lang string) string {
-	if normalizeAppLanguageKind(lang).IsChinese() {
-		return "群聊权限不允许执行快捷命令；请在私聊中操作。"
-	}
-	return "Group permissions do not allow shortcut commands. Please use a private chat."
+	return pickUI(lang,
+		"Group permissions do not allow shortcut commands. Please use a private chat.",
+		"群聊权限不允许执行快捷命令；请在私聊中操作。",
+		"群聊权限不允许执行快捷命令；请在私聊中操作。")
 }
 
 func filterToolsForLansengerGroupPermissions(tools []map[string]interface{}, policy lansengerGroupPermissionPolicy) []map[string]interface{} {

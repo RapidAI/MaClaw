@@ -649,6 +649,7 @@
       <div class="lang-toggle" aria-label="Language">
         <button id="langEn" type="button">English</button>
         <button id="langZh" type="button">中文</button>
+        <button id="langMn" type="button">Монгол</button>
       </div>
     </header>
 
@@ -902,10 +903,104 @@
         pageItems: (total, pageSize) => `共 ${total} 条，每页 ${pageSize} 条`,
         pendingChangesTitle: '请先保存或放弃当前修改',
         pendingChangesBody: '当前卡片还有未保存内容。请先保存，再切换到其他页。',
+      },
+      mn: {
+        eyebrow: 'Мэдлэг хуваалцах ажлын талбар',
+        title: 'Мэдлэгийн хуваалцал',
+        subtitle: 'MaClaw GUI-аас нээж, Hub данс руу экспортлосон мэдлэгийн хуваалцлыг хянаж удирдана.',
+        sessionTitle: 'Үзэгчийн сесс',
+        sessionHint: 'Энэ хуудас MaClaw GUI-аас дамжуулсан түр үзэгчийн сесс ашиглана. Идэвхтэй сессийг Hub автоматаар сунгана.',
+        sessionWaiting: 'MaClaw GUI-аас сесс хүлээж байна',
+        sessionWaitingHint: 'Энэ хуудсыг GUI-ийн “Manage Shares” үйлдлээс нээнэ үү. GUI хугацаатай token автоматаар хавсаргана.',
+        sessionReady: 'Үзэгчийн сесс идэвхтэй',
+        sessionReadyHint: 'GUI хүчинтэй token өглөө. Энд нэр нууц үг бичихгүйгээр хуваалцлаа шинэчилж удирдаж болно.',
+        sessionError: 'Үзэгчийн сессийг шинэчлэх хэрэгтэй',
+        sessionErrorHint: 'Хадгалсан үзэгчийн сесс дууссан эсвэл хүчингүй. MaClaw GUI руу буцаж “Manage Shares”-г дахин нээнэ үү.',
+        reloadShares: 'Хуваалцлыг шинэчлэх',
+        clearSession: 'Сесс цэвэрлэх',
+        summarySession: 'Сессийн эх үүсвэр',
+        summarySourceWaiting: 'GUI хүлээж байна',
+        summarySourceStored: 'Хадгалсан орон нутгийн сесс',
+        summarySourceUrl: 'GUI холбоосоос нээсэн',
+        summaryRenewal: 'Сунгалтын стратеги',
+        summaryRenewalValue: 'Гулсуулж сунгах',
+        summaryBehavior: 'Дуусахад',
+        summaryExpiredValue: 'GUI-аас дахин нээх',
+        myShares: 'Миний хуваалцал',
+        mySharesHint: 'Мөр бүр нэг экспортолсон мэдлэгийн хуваалцлыг илэрхийлнэ. Тайлбар, харагдах байдал, хуваалцах орох цэгийг энд шинэчилнэ.',
+        loadingTitle: 'Хуваалцлын жагсаалтыг шинэчилж байна',
+        loadingBody: 'Hub сессийг шалгаж, хамгийн сүүлийн бүртгэлийг ачаалж байна.',
+        loadedTitle: 'Синк хийсэн',
+        loadedBody: (count) => `${count} хуваалцлын бүртгэл`,
+        sessionSavedTitle: 'Үзэгчийн сесс холбогдлоо',
+        sessionSavedBody: 'Энэ хөтөч GUI холбоосоос түр сессийг хадгаллаа. Token-ийг гараар хуулах шаардлагагүй.',
+        sessionClearedTitle: 'Үзэгчийн сесс цэвэрлэгдлээ',
+        sessionClearedBody: 'Энэ хөтөч хуваалцлын хуудасны орон нутгийн сесс хадгалахаа больсон. Шаардлагатай үед MaClaw GUI-аас дахин нээнэ үү.',
+        authFailedTitle: 'Үзэгчийн сесс дууссан',
+        authFailedBody: 'MaClaw GUI руу буцаж “Manage Shares”-г дахин нээнэ үү. GUI шинэ түр token автоматаар хавсаргана.',
+        requestFailedTitle: 'Хуваалцлыг шинэчилж чадсангүй',
+        noSessionTitle: 'Энэ хуудсыг MaClaw GUI-аас нээнэ үү',
+        noSessionBody: 'Энэ удирдлагын хуудас token наахыг хүсэхээ больсон. GUI түр үзэгчийн сессээр нээнэ.',
+        noSharesTitle: 'Хуваалцлын бүртгэл олдсонгүй',
+        noSharesBody: 'Энэ Hub дансанд экспортолсон мэдлэгийн хуваалцал алга. MaClaw GUI-д шинэ хуваалцал үүсгээд энэ хуудсыг шинэчилнэ үү.',
+        noDescription: 'Тайлбар алга',
+        id: 'ID',
+        visibility: 'Харагдах байдал',
+        expires: 'Дуусах',
+        never: 'хэзээ ч үгүй',
+        views: 'Үзсэн',
+        imports: 'Импорт',
+        description: 'Тайлбар',
+        saveDescription: 'Өөрчлөлт хадгалах',
+        visibilityPrivate: 'Зөвхөн би',
+        visibilityUsers: 'Сонгосон хэрэглэгчид',
+        visibilityTenant: 'Түрээслэгчид нээлттэй',
+        visibilityHub: 'Hub-д нээлттэй',
+        visibilityPublic: 'Интернэтэд нээлттэй',
+        visibleUsers: 'Харагдах хэрэглэгчид',
+        visibleUsersPlaceholder: 'Зөвхөн “Сонгосон хэрэглэгчид”-д. Имэйл эсвэл хэрэглэгчийн ID-г таслалаар тусгаарлана.',
+        copyLink: 'Холбоос хуулах',
+        openReader: 'Харах',
+        downloadPackage: 'JSON татах',
+        agentImport: 'Agent JSON',
+        cancelSharing: 'Хувийн болгох',
+        deleteRecord: 'Устгах',
+        descriptionRequired: 'Хадгалахаасаа өмнө тайлбар оруулна уу.',
+        usersRequired: 'Харагдах байдал “Сонгосон хэрэглэгчид” үед хамгийн багадаа нэг хэрэглэгч нэмнэ үү.',
+        updatedTitle: 'Хуваалцлыг шинэчиллээ',
+        updatedBody: 'Хуваалцлын метадатаг амжилттай хадгаллаа.',
+        copiedTitle: 'Хуваалцах холбоос хуулагдлаа',
+        copiedBody: 'Холбоос одоо санах ойд байна.',
+        cancelConfirm: 'Энэ хуваалцлыг “Зөвхөн би” болгох уу?',
+        cancelledTitle: 'Хуваалцал одоо хувийн',
+        cancelledBody: 'Бүртгэл жагсаалтад үлдэнэ, гэхдээ гадаад хандалтыг хаслаа.',
+        deleteConfirm: 'Энэ мэдлэгийн хуваалцлын бүртгэлийг устгах уу?',
+        deletedTitle: 'Хуваалцлын бүртгэлийг устгалаа',
+        deletedBody: 'Бүртгэлийг таны удирдлагын жагсаалтаас хаслаа.',
+        sessionBadgeStored: 'Энэ хөтөчид хадгалсан',
+        sessionBadgeUrl: 'GUI холбоосоос ирсэн',
+        sessionBadgeMissing: 'Сесс алга',
+        pagePrev: 'Өмнөх хуудас',
+        pageNext: 'Дараах хуудас',
+        pageStatus: (page, totalPages) => `${page} / ${totalPages} хуудас`,
+        pageItems: (total, pageSize) => `Нийт ${total} хуваалцал, хуудсанд ${pageSize}`,
+        pendingChangesTitle: 'Эхлээд засвараа хадгалах эсвэл болих',
+        pendingChangesBody: 'Энэ хуудас хадгалаагүй өөрчлөлтийг үлдээнэ. Өөр хуудас руу шилжихээсээ өмнө хадгална уу.',
       }
     };
 
-    let lang = localStorage.getItem('hubKnowledgeSharesLang') || ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+    function normalizeHubLang(input) {
+      var s = String(input || '').trim().toLowerCase().replace(/_/g, '-');
+      if (!s) return 'en';
+      if (s === 'zh' || s.indexOf('zh-') === 0) return 'zh';
+      if (s === 'mn-mong' || s.indexOf('mn-mong-') === 0) return 'en';
+      if (s === 'mn' || s === 'mn-mn' || s === 'mn-cyrl' || s === 'mn-cyrl-mn' || s.indexOf('mn-cyrl-') === 0 || s.indexOf('mn-mn-') === 0) return 'mn';
+      return 'en';
+    }
+    const savedShareLang = localStorage.getItem('hubKnowledgeSharesLang');
+    let lang = (savedShareLang === 'en' || savedShareLang === 'zh' || savedShareLang === 'mn')
+      ? savedShareLang
+      : normalizeHubLang((navigator.languages && navigator.languages[0]) || navigator.language || 'en');
     let sessionSource = 'waiting';
     let currentToken = '';
     let lastShares = [];
@@ -1004,19 +1099,20 @@
     }
 
     function applyI18n() {
-      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : lang === 'mn' ? 'mn' : 'en';
       document.querySelectorAll('[data-i18n]').forEach((node) => {
         node.textContent = t(node.dataset.i18n);
       });
       $('langEn').classList.toggle('is-active', lang === 'en');
       $('langZh').classList.toggle('is-active', lang === 'zh');
+      if ($('langMn')) $('langMn').classList.toggle('is-active', lang === 'mn');
       $('summarySource').textContent = sessionSourceLabel();
       updateSessionState(lastMode);
       render(lastShares, lastMode);
     }
 
     function setLanguage(next) {
-      lang = next === 'zh' ? 'zh' : 'en';
+      lang = next === 'zh' ? 'zh' : next === 'mn' ? 'mn' : 'en';
       localStorage.setItem('hubKnowledgeSharesLang', lang);
       applyI18n();
     }
@@ -1401,6 +1497,7 @@
     });
     $('langEn').addEventListener('click', () => setLanguage('en'));
     $('langZh').addEventListener('click', () => setLanguage('zh'));
+    if ($('langMn')) $('langMn').addEventListener('click', () => setLanguage('mn'));
 
     resolveSession();
     applyI18n();

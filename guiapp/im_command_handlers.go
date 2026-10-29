@@ -175,25 +175,11 @@ func (h *IMMessageHandler) btwMainAgentStatusResponse(ownerID, lang string) *IMA
 }
 
 func localizedIMBtwMainAgentStatusOwnerMissing(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Cannot read main-agent status because the current session identity is missing."
-	case appLanguageZhHant:
-		return "無法讀取主 Agent 狀態，因為目前會話身分缺失。"
-	default:
-		return "无法读取主 Agent 状态，因为当前会话身份缺失。"
-	}
+	return pickUI(lang, "Cannot read main-agent status because the current session identity is missing.", "无法读取主 Agent 状态，因为当前会话身份缺失。", "無法讀取主 Agent 狀態，因為目前會話身分缺失。")
 }
 
 func localizedIMBtwResultPrefix(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "**/btw result**\n\n"
-	case appLanguageZhHant:
-		return "**/btw 查詢結果**\n\n"
-	default:
-		return "**/btw 查询结果**\n\n"
-	}
+	return pickUI(lang, "**/btw result**\n\n", "**/btw 查询结果**\n\n", "**/btw 查詢結果**\n\n")
 }
 
 // resetIMSessionForUser cancels the current loop before clearing all state that
@@ -251,10 +237,10 @@ func (h *IMMessageHandler) cancelCurrentTaskForUser(userID, responseLang string)
 		}
 		reg.waitSessionIdle(userID, 2*time.Second)
 		if reg.activeCount(userID) > 0 {
-			return &IMAgentResponse{Text: h.chatBotReply("stopping", "", responseLang, "stop-command", "", desktopChatStillStoppingText(desktopChatChinese(responseLang, "")))}
+			return &IMAgentResponse{Text: h.chatBotReply("stopping", "", responseLang, "stop-command", "", desktopChatCopy(responseLang, desktopChatChinese(responseLang, ""), "Still stopping.", "还在停。"))}
 		}
 		if strings.TrimSpace(resp.Text) == localizedIMCancelMessage(responseLang, "none", "") {
-			return &IMAgentResponse{Text: h.chatBotReply("stopped", "", responseLang, "stop-command", "", desktopChatStoppedText(desktopChatChinese(responseLang, "")))}
+			return &IMAgentResponse{Text: h.chatBotReply("stopped", "", responseLang, "stop-command", "", desktopChatCopy(responseLang, desktopChatChinese(responseLang, ""), "Stopped.", "停了。"))}
 		}
 		return resp
 	}
@@ -355,123 +341,83 @@ func (h *IMMessageHandler) handleExitCommand(userID, lang string) *IMAgentRespon
 }
 
 func localizedIMConversationResetMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Conversation reset."
-	case appLanguageZhHant:
-		return "對話已重置。"
-	default:
-		return "对话已重置。"
-	}
+	return pickUI(lang, "Conversation reset.", "对话已重置。", "對話已重置。")
 }
 
 func localizedIMConversationResetFollowupMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Conversation reset. Future messages will continue normally."
-	case appLanguageZhHant:
-		return "對話已重置。後續消息將正常繼續。"
-	default:
-		return "对话已重置。后续消息将正常继续。"
-	}
+	return pickUI(lang, "Conversation reset. Future messages will continue normally.", "对话已重置。后续消息将正常继续。", "對話已重置。後續消息將正常繼續。")
 }
 
 func localizedIMExitedCodingModeMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Exited coding mode."
-	case appLanguageZhHant:
-		return "已退出編程模式。"
-	default:
-		return "已退出编程模式。"
-	}
+	return pickUI(lang, "Exited coding mode.", "已退出编程模式。", "已退出編程模式。")
 }
 
 func localizedIMExitStoppedMessage(lang string, count int, sessions string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("Exited coding mode. Stopped %d session(s): %s", count, sessions)
-	case appLanguageZhHant:
-		return fmt.Sprintf("已退出編程模式。已停止 %d 個會話：%s", count, sessions)
-	default:
-		return fmt.Sprintf("已退出编程模式。已停止 %d 个会话：%s", count, sessions)
-	}
+	return fmt.Sprintf(pickUI(lang, "Exited coding mode. Stopped %d session(s): %s", "已退出编程模式。已停止 %d 个会话：%s", "已退出編程模式。已停止 %d 個會話：%s"), count, sessions)
 }
 
 func localizedIMExitFailureMessage(lang string, count int) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("%d session(s) failed to stop and may need manual handling.", count)
-	case appLanguageZhHant:
-		return fmt.Sprintf("%d 個會話停止失敗，可能需要手動處理。", count)
-	default:
-		return fmt.Sprintf("%d 个会话停止失败，可能需要手动处理。", count)
-	}
+	return fmt.Sprintf(pickUI(lang, "%d session(s) failed to stop and may need manual handling.", "%d 个会话停止失败，可能需要手动处理。", "%d 個會話停止失敗，可能需要手動處理。"), count)
 }
 
 func localizedIMSlashHelpText(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Available commands:\n" +
-			"/new /reset /clear - reset conversation\n" +
-			"/btw <query> - side query\n" +
-			"/moa [@preset] <prompt> - multi-model council (one-shot MoA)\n" +
-			"/loop <verify_cmd> <goal> - goal-driven verification loop\n" +
-			"    e.g. /loop \"go test ./...\" make all tests pass\n" +
-			"    options: --max N (iterations), --timeout N (seconds), --dir path\n" +
-			"/goal <objective> - persistent long-running autonomous goal\n" +
-			"    e.g. /goal implement user login with JWT auth\n" +
-			"    sub-commands: status, pause, resume, cancel\n" +
-			"/workflow [type] - list or force-start a workflow\n" +
-			installSlashHelpBlock(lang) +
-			"/summary - (Lansenger group) summarize new group chat since last summary\n" +
-			"/compress - compress conversation history\n" +
-			"/memory - show memory status\n" +
-			"/cancel /stop - cancel current task\n" +
-			"/exit /quit - stop sessions\n" +
-			"/sessions /status - show current sessions\n" +
-			"/help - show this help"
-	case appLanguageZhHant:
-		return "可用命令：\n" +
-			"/new /reset /clear - 重置對話\n" +
-			"/btw <query> - 臨時旁路查詢\n" +
-			"/moa [@方案] <提示> - 多模型會診（單次 MoA）\n" +
-			"/loop <verify_cmd> <goal> - 目標驅動的驗證循環\n" +
-			"    例：/loop \"go test ./...\" 讓所有測試通過\n" +
-			"    選項：--max N（迭代次數），--timeout N（秒），--dir 路徑\n" +
-			"/goal <目標> - 持久化長時間自主目標\n" +
-			"    例：/goal 實現用戶登錄功能，包含JWT認證\n" +
-			"    子命令：status, pause, resume, cancel\n" +
-			"/workflow [類型] - 列出或強制啟動工作流\n" +
-			installSlashHelpBlock(lang) +
-			"/summary - （藍信群）摘要自上次以來的新群聊討論\n" +
-			"/compress - 壓縮對話歷史\n" +
-			"/memory - 查看記憶狀態\n" +
-			"/cancel /stop - 取消當前任務\n" +
-			"/exit /quit - 停止會話\n" +
-			"/sessions /status - 查看當前會話\n" +
-			"/help - 顯示此幫助"
-	default:
-		return "可用命令：\n" +
-			"/new /reset /clear - 重置对话\n" +
-			"/btw <query> - 临时旁路查询\n" +
-			"/moa [@方案] <提示> - 多模型会诊（单次 MoA）\n" +
-			"/loop <verify_cmd> <goal> - 目标驱动的验证循环\n" +
-			"    例：/loop \"go test ./...\" 让所有测试通过\n" +
-			"    选项：--max N（迭代次数），--timeout N（秒），--dir 路径\n" +
-			"/goal <目标> - 持久化长时间自主目标\n" +
-			"    例：/goal 实现用户登录功能，包含JWT认证\n" +
-			"    子命令：status, pause, resume, cancel\n" +
-			"/workflow [类型] - 列出或强制启动工作流\n" +
-			installSlashHelpBlock(lang) +
-			"/summary - （蓝信群）摘要自上次以来的新群聊讨论\n" +
-			"/compress - 压缩对话历史\n" +
-			"/memory - 查看记忆状态\n" +
-			"/cancel /stop - 取消当前任务\n" +
-			"/exit /quit - 停止会话\n" +
-			"/sessions /status - 查看当前会话\n" +
-			"/help - 显示此帮助"
-	}
+	head := pickUI(lang,
+		"Available commands:\n"+
+			"/new /reset /clear - reset conversation\n"+
+			"/btw <query> - side query\n"+
+			"/moa [@preset] <prompt> - multi-model council (one-shot MoA)\n"+
+			"/loop <verify_cmd> <goal> - goal-driven verification loop\n"+
+			"    e.g. /loop \"go test ./...\" make all tests pass\n"+
+			"    options: --max N (iterations), --timeout N (seconds), --dir path\n"+
+			"/goal <objective> - persistent long-running autonomous goal\n"+
+			"    e.g. /goal implement user login with JWT auth\n"+
+			"    sub-commands: status, pause, resume, cancel\n"+
+			"/workflow [type] - list or force-start a workflow\n",
+		"可用命令：\n"+
+			"/new /reset /clear - 重置对话\n"+
+			"/btw <query> - 临时旁路查询\n"+
+			"/moa [@方案] <提示> - 多模型会诊（单次 MoA）\n"+
+			"/loop <verify_cmd> <goal> - 目标驱动的验证循环\n"+
+			"    例：/loop \"go test ./...\" 让所有测试通过\n"+
+			"    选项：--max N（迭代次数），--timeout N（秒），--dir 路径\n"+
+			"/goal <目标> - 持久化长时间自主目标\n"+
+			"    例：/goal 实现用户登录功能，包含JWT认证\n"+
+			"    子命令：status, pause, resume, cancel\n"+
+			"/workflow [类型] - 列出或强制启动工作流\n",
+		"可用命令：\n"+
+			"/new /reset /clear - 重置對話\n"+
+			"/btw <query> - 臨時旁路查詢\n"+
+			"/moa [@方案] <提示> - 多模型會診（單次 MoA）\n"+
+			"/loop <verify_cmd> <goal> - 目標驅動的驗證循環\n"+
+			"    例：/loop \"go test ./...\" 讓所有測試通過\n"+
+			"    選項：--max N（迭代次數），--timeout N（秒），--dir 路徑\n"+
+			"/goal <目標> - 持久化長時間自主目標\n"+
+			"    例：/goal 實現用戶登錄功能，包含JWT認證\n"+
+			"    子命令：status, pause, resume, cancel\n"+
+			"/workflow [類型] - 列出或強制啟動工作流\n")
+	tail := pickUI(lang,
+		"/summary - (Lansenger group) summarize new group chat since last summary\n"+
+			"/compress - compress conversation history\n"+
+			"/memory - show memory status\n"+
+			"/cancel /stop - cancel current task\n"+
+			"/exit /quit - stop sessions\n"+
+			"/sessions /status - show current sessions\n"+
+			"/help - show this help",
+		"/summary - （蓝信群）摘要自上次以来的新群聊讨论\n"+
+			"/compress - 压缩对话历史\n"+
+			"/memory - 查看记忆状态\n"+
+			"/cancel /stop - 取消当前任务\n"+
+			"/exit /quit - 停止会话\n"+
+			"/sessions /status - 查看当前会话\n"+
+			"/help - 显示此帮助",
+		"/summary - （藍信群）摘要自上次以來的新群聊討論\n"+
+			"/compress - 壓縮對話歷史\n"+
+			"/memory - 查看記憶狀態\n"+
+			"/cancel /stop - 取消當前任務\n"+
+			"/exit /quit - 停止會話\n"+
+			"/sessions /status - 查看當前會話\n"+
+			"/help - 顯示此幫助")
+	return head + installSlashHelpBlock(lang) + tail
 }
 
 // moaPromptFromText strips the /moa prefix for one-shot prompts (shared parser).
@@ -517,95 +463,61 @@ func localizedIMMoAArmedHint(lang, prompt string) string {
 	if r := []rune(display); len(r) > 120 {
 		display = string(r[:120]) + "…"
 	}
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "MoA is ready. Please send your question without the `/moa` prefix (or use + → multi-model council):\n" + display
-	case appLanguageZhHant:
-		return "多模型會診已就緒。請直接發送問題（不要帶 `/moa` 前綴），或使用輸入框 +「多模型會診」：\n" + display
-	default:
-		return "多模型会诊已就绪。请直接发送问题（不要带 `/moa` 前缀），或使用输入框 +「多模型会诊」：\n" + display
-	}
+	return pickUI(lang,
+		"MoA is ready. Please send your question without the `/moa` prefix (or use + → multi-model council):\n",
+		"多模型会诊已就绪。请直接发送问题（不要带 `/moa` 前缀），或使用输入框 +「多模型会诊」：\n",
+		"多模型會診已就緒。請直接發送問題（不要帶 `/moa` 前綴），或使用輸入框 +「多模型會診」：\n") + display
 }
 
 func localizedIMMoAUsageText(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Usage:\n" +
-			"  /moa <prompt>              one-shot multi-model (default preset)\n" +
-			"  /moa @preset <prompt>      one-shot with a named preset\n" +
-			"  /moa stats                 runtime counters\n\n" +
-			"Examples:\n" +
-			"  /moa review this migration plan for risks\n" +
-			"  /moa @review compare approach A vs B for auth\n\n" +
-			"Tip: + menu → multi-model, or sidebar sticky for this session."
-	case appLanguageZhHant:
-		return "用法：\n" +
-			"  /moa <提示>                單次多模型會診（預設方案）\n" +
-			"  /moa @方案名 <提示>        指定方案的單次會診\n" +
-			"  /moa stats                 運行計數\n\n" +
-			"示例：\n" +
-			"  /moa 評估這份遷移方案的風險\n" +
-			"  /moa @review 對比認證方案 A 與 B\n\n" +
-			"提示：輸入框 + →「多模型會診」，或側欄開啟本會話常開。"
-	default:
-		return "用法：\n" +
-			"  /moa <提示>                单次多模型会诊（默认方案）\n" +
-			"  /moa @方案名 <提示>        指定方案的单次会诊\n" +
-			"  /moa stats                 运行计数\n\n" +
-			"示例：\n" +
-			"  /moa 评估这份迁移方案的风险\n" +
-			"  /moa @review 对比认证方案 A 与 B\n\n" +
-			"提示：输入框 + →「多模型会诊」，或侧栏开启本会话常开。"
-	}
+	return pickUI(lang,
+		"Usage:\n"+
+			"  /moa <prompt>              one-shot multi-model (default preset)\n"+
+			"  /moa @preset <prompt>      one-shot with a named preset\n"+
+			"  /moa stats                 runtime counters\n\n"+
+			"Examples:\n"+
+			"  /moa review this migration plan for risks\n"+
+			"  /moa @review compare approach A vs B for auth\n\n"+
+			"Tip: + menu → multi-model, or sidebar sticky for this session.",
+		"用法：\n"+
+			"  /moa <提示>                单次多模型会诊（默认方案）\n"+
+			"  /moa @方案名 <提示>        指定方案的单次会诊\n"+
+			"  /moa stats                 运行计数\n\n"+
+			"示例：\n"+
+			"  /moa 评估这份迁移方案的风险\n"+
+			"  /moa @review 对比认证方案 A 与 B\n\n"+
+			"提示：输入框 + →「多模型会诊」，或侧栏开启本会话常开。",
+		"用法：\n"+
+			"  /moa <提示>                單次多模型會診（預設方案）\n"+
+			"  /moa @方案名 <提示>        指定方案的單次會診\n"+
+			"  /moa stats                 運行計數\n\n"+
+			"示例：\n"+
+			"  /moa 評估這份遷移方案的風險\n"+
+			"  /moa @review 對比認證方案 A 與 B\n\n"+
+			"提示：輸入框 + →「多模型會診」，或側欄開啟本會話常開。")
 }
 
 func localizedIMMoAAtPresetUsage(lang, hint string) string {
 	hint = strings.TrimSpace(hint)
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		msg := "Usage: /moa @preset <prompt>\nExample: /moa @review compare two auth designs"
-		if hint != "" {
-			msg = hint + "\n\n" + msg
-		}
-		return msg
-	case appLanguageZhHant:
-		msg := "用法：/moa @方案名 <提示>\n示例：/moa @review 對比兩種認證設計"
-		if hint != "" {
-			msg = hint + "\n\n" + msg
-		}
-		return msg
-	default:
-		msg := "用法：/moa @方案名 <提示>\n示例：/moa @review 对比两种认证设计"
-		if hint != "" {
-			msg = hint + "\n\n" + msg
-		}
-		return msg
+	msg := pickUI(lang, "Usage: /moa @preset <prompt>\nExample: /moa @review compare two auth designs", "用法：/moa @方案名 <提示>\n示例：/moa @review 对比两种认证设计", "用法：/moa @方案名 <提示>\n示例：/moa @review 對比兩種認證設計")
+	if hint != "" {
+		msg = hint + "\n\n" + msg
 	}
+	return msg
 }
 
 func localizedIMMoAStatsEmpty(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "No multi-model fan-outs recorded yet today."
-	case appLanguageZhHant:
-		return "今日尚無多模型會診計數。"
-	default:
-		return "今日尚无多模型会诊计数。"
-	}
+	return pickUI(lang, "No multi-model fan-outs recorded yet today.", "今日尚无多模型会诊计数。", "今日尚無多模型會診計數。")
 }
 
 func localizedIMMoAStickyHint(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Session sticky multi-model: use the sidebar provider menu or LLM settings toggle.\n" +
-			"One-shot: /moa <prompt> or /moa @preset <prompt>."
-	case appLanguageZhHant:
-		return "本會話常開多模型：請用側欄服務商選單或 LLM 設定中的開關。\n" +
-			"單次會診：/moa <提示> 或 /moa @方案名 <提示>。"
-	default:
-		return "本会话常开多模型：请用侧栏服务商菜单或 LLM 设置中的开关。\n" +
-			"单次会诊：/moa <提示> 或 /moa @方案名 <提示>。"
-	}
+	return pickUI(lang,
+		"Session sticky multi-model: use the sidebar provider menu or LLM settings toggle.\n"+
+			"One-shot: /moa <prompt> or /moa @preset <prompt>.",
+		"本会话常开多模型：请用侧栏服务商菜单或 LLM 设置中的开关。\n"+
+			"单次会诊：/moa <提示> 或 /moa @方案名 <提示>。",
+		"本會話常開多模型：請用側欄服務商選單或 LLM 設定中的開關。\n"+
+			"單次會診：/moa <提示> 或 /moa @方案名 <提示>。")
 }
 
 func localizedIMMoANotReadyText(lang, prompt string) string {
@@ -614,117 +526,51 @@ func localizedIMMoANotReadyText(lang, prompt string) string {
 	if r := []rune(display); len(r) > 200 {
 		display = string(r[:200]) + "…"
 	}
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "MoA multi-model council entry is ready (composer / `/moa`), " +
-			"but the MoA engine is not enabled yet (coming with the MoA PR plan).\n\n" +
-			"Your prompt was:\n" + display + "\n\n" +
-			"Resend without `/moa` to use the normal single-model agent for now."
-	case appLanguageZhHant:
-		return "多模型會診入口已就緒（輸入框 + 選單 / `/moa`），" +
-			"但 MoA 引擎尚未接入（見設計文檔 PR 計劃）。\n\n" +
-			"你提交的問題：\n" + display + "\n\n" +
-			"目前可去掉 `/moa` 前綴，用普通單模型助手繼續。"
-	default:
-		return "多模型会诊入口已就绪（输入框 + 菜单 / `/moa`），" +
-			"但 MoA 引擎尚未接入（见设计文档 PR 计划）。\n\n" +
-			"你提交的问题：\n" + display + "\n\n" +
-			"目前可去掉 `/moa` 前缀，用普通单模型助手继续。"
-	}
+	return pickUI(lang,
+		"MoA multi-model council entry is ready (composer / `/moa`), "+
+			"but the MoA engine is not enabled yet (coming with the MoA PR plan).\n\n"+
+			"Your prompt was:\n",
+		"多模型会诊入口已就绪（输入框 + 菜单 / `/moa`），"+
+			"但 MoA 引擎尚未接入（见设计文档 PR 计划）。\n\n"+
+			"你提交的问题：\n",
+		"多模型會診入口已就緒（輸入框 + 選單 / `/moa`），"+
+			"但 MoA 引擎尚未接入（見設計文檔 PR 計劃）。\n\n"+
+			"你提交的問題：\n") + display + pickUI(lang,
+		"\n\nResend without `/moa` to use the normal single-model agent for now.",
+		"\n\n目前可去掉 `/moa` 前缀，用普通单模型助手继续。",
+		"\n\n目前可去掉 `/moa` 前綴，用普通單模型助手繼續。")
 }
 
 func localizedIMBtwUsageText(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Usage: /btw <query>\n\nExamples:\n  /btw status\n  /btw latest Go changes\n  /btw React 19 main changes\n  /btw what framework does this project use"
-	case appLanguageZhHant:
-		return "用法：/btw <查詢>\n\n示例：\n  /btw status（查看主 Agent 狀態）\n  /btw 最新 Go 變化\n  /btw React 19 主要變化\n  /btw 這個專案使用什麼框架"
-	default:
-		return "用法：/btw <查询>\n\n示例：\n  /btw status（查看主 Agent 状态）\n  /btw 最新 Go 变化\n  /btw React 19 主要变化\n  /btw 这个项目使用什么框架"
-	}
+	return pickUI(lang, "Usage: /btw <query>\n\nExamples:\n  /btw status\n  /btw latest Go changes\n  /btw React 19 main changes\n  /btw what framework does this project use", "用法：/btw <查询>\n\n示例：\n  /btw status（查看主 Agent 状态）\n  /btw 最新 Go 变化\n  /btw React 19 主要变化\n  /btw 这个项目使用什么框架", "用法：/btw <查詢>\n\n示例：\n  /btw status（查看主 Agent 狀態）\n  /btw 最新 Go 變化\n  /btw React 19 主要變化\n  /btw 這個專案使用什麼框架")
 }
 
 func localizedIMLLMNotConfiguredMessage(lang, command string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("LLM is not configured, so %s cannot run.", command)
-	case appLanguageZhHant:
-		return fmt.Sprintf("尚未配置 LLM，無法執行 %s。", command)
-	default:
-		return fmt.Sprintf("尚未配置 LLM，无法执行 %s。", command)
-	}
+	return fmt.Sprintf(pickUI(lang, "LLM is not configured, so %s cannot run.", "尚未配置 LLM，无法执行 %s。", "尚未配置 LLM，無法執行 %s。"), command)
 }
 
 func localizedIMCriticalSkillConfirmMessage(lang string, confirmed bool) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		if confirmed {
-			return "Critical-risk Skill installation confirmed."
-		}
-		return "Critical-risk Skill installation rejected."
-	case appLanguageZhHant:
-		if confirmed {
-			return "已確認安裝高風險 Skill。"
-		}
-		return "已拒絕安裝高風險 Skill。"
-	default:
-		if confirmed {
-			return "已确认安装高风险 Skill。"
-		}
-		return "已拒绝安装高风险 Skill。"
+	if confirmed {
+		return pickUI(lang, "Critical-risk Skill installation confirmed.", "已确认安装高风险 Skill。", "已確認安裝高風險 Skill。")
 	}
+	return pickUI(lang, "Critical-risk Skill installation rejected.", "已拒绝安装高风险 Skill。", "已拒絕安裝高風險 Skill。")
 }
 
 func localizedIMCancelMessage(lang, kind, preview string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		switch kind {
-		case "confirmation":
-			return "Pending confirmation canceled."
-		case "btw":
-			return "/btw side query canceled."
-		case "loop":
-			return "/loop command canceled."
-		case "none":
-			return "There is no active task to cancel."
-		default:
-			if preview != "" {
-				return fmt.Sprintf("Task canceled: %s", preview)
-			}
-			return "Task canceled."
-		}
-	case appLanguageZhHant:
-		switch kind {
-		case "confirmation":
-			return "已取消待確認操作。"
-		case "btw":
-			return "已取消 /btw 旁路查詢。"
-		case "loop":
-			return "已取消 /loop 命令。"
-		case "none":
-			return "目前沒有可取消的任務。"
-		default:
-			if preview != "" {
-				return fmt.Sprintf("任務已取消：%s", preview)
-			}
-			return "任務已取消。"
-		}
+	switch kind {
+	case "confirmation":
+		return pickUI(lang, "Pending confirmation canceled.", "已取消待确认操作。", "已取消待確認操作。")
+	case "btw":
+		return pickUI(lang, "/btw side query canceled.", "已取消 /btw 旁路查询。", "已取消 /btw 旁路查詢。")
+	case "loop":
+		return pickUI(lang, "/loop command canceled.", "已取消 /loop 命令。", "已取消 /loop 命令。")
+	case "none":
+		return pickUI(lang, "There is no active task to cancel.", "当前没有可取消的任务。", "目前沒有可取消的任務。")
 	default:
-		switch kind {
-		case "confirmation":
-			return "已取消待确认操作。"
-		case "btw":
-			return "已取消 /btw 旁路查询。"
-		case "loop":
-			return "已取消 /loop 命令。"
-		case "none":
-			return "当前没有可取消的任务。"
-		default:
-			if preview != "" {
-				return fmt.Sprintf("任务已取消：%s", preview)
-			}
-			return "任务已取消。"
+		if preview != "" {
+			return fmt.Sprintf(pickUI(lang, "Task canceled: %s", "任务已取消：%s", "任務已取消：%s"), preview)
 		}
+		return pickUI(lang, "Task canceled.", "任务已取消。", "任務已取消。")
 	}
 }
 
@@ -866,67 +712,25 @@ func (h *IMMessageHandler) handleSessionsCommandWithLang(lang string) *IMAgentRe
 }
 
 func localizedIMBtwFailedMessage(lang, errText string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("/btw query failed: %s", errText)
-	case appLanguageZhHant:
-		return fmt.Sprintf("/btw 查詢失敗：%s", errText)
-	default:
-		return fmt.Sprintf("/btw 查询失败：%s", errText)
-	}
+	return fmt.Sprintf(pickUI(lang, "/btw query failed: %s", "/btw 查询失败：%s", "/btw 查詢失敗：%s"), errText)
 }
 
 func localizedIMSessionsManagerMissingMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Session manager is not initialized."
-	case appLanguageZhHant:
-		return "會話管理器尚未初始化。"
-	default:
-		return "会话管理器尚未初始化。"
-	}
+	return pickUI(lang, "Session manager is not initialized.", "会话管理器尚未初始化。", "會話管理器尚未初始化。")
 }
 
 func localizedIMNoSessionsMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "There are no active sessions.\n\nTip: send /exit to leave coding mode and return to normal chat."
-	case appLanguageZhHant:
-		return "目前沒有活動會話。\n\n提示：發送 /exit 可退出編程模式並返回普通對話。"
-	default:
-		return "当前没有活动会话。\n\n提示：发送 /exit 可退出编程模式并返回普通对话。"
-	}
+	return pickUI(lang, "There are no active sessions.\n\nTip: send /exit to leave coding mode and return to normal chat.", "当前没有活动会话。\n\n提示：发送 /exit 可退出编程模式并返回普通对话。", "目前沒有活動會話。\n\n提示：發送 /exit 可退出編程模式並返回普通對話。")
 }
 
 func localizedIMCurrentSessionsHeader(lang string, count int) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("Current sessions: %d\n", count)
-	case appLanguageZhHant:
-		return fmt.Sprintf("當前會話：%d\n", count)
-	default:
-		return fmt.Sprintf("当前会话：%d\n", count)
-	}
+	return fmt.Sprintf(pickUI(lang, "Current sessions: %d\n", "当前会话：%d\n", "當前會話：%d\n"), count)
 }
 
 func localizedIMWaitingForInputSuffix(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return " waiting for input"
-	case appLanguageZhHant:
-		return "，正在等待輸入"
-	default:
-		return "，正在等待输入"
-	}
+	return pickUI(lang, " waiting for input", "，正在等待输入", "，正在等待輸入")
 }
 
 func localizedIMExitSessionsHint(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Send /exit to stop all sessions and leave coding mode."
-	case appLanguageZhHant:
-		return "發送 /exit 可停止全部會話並退出編程模式。"
-	default:
-		return "发送 /exit 可停止全部会话并退出编程模式。"
-	}
+	return pickUI(lang, "Send /exit to stop all sessions and leave coding mode.", "发送 /exit 可停止全部会话并退出编程模式。", "發送 /exit 可停止全部會話並退出編程模式。")
 }

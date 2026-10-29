@@ -8,21 +8,40 @@ import (
 type appLanguageKind string
 
 const (
-	appLanguageEnglish appLanguageKind = "en"
-	appLanguageZhHans  appLanguageKind = "zh-Hans"
-	appLanguageZhHant  appLanguageKind = "zh-Hant"
+	appLanguageEnglish   appLanguageKind = "en"
+	appLanguageZhHans    appLanguageKind = "zh-Hans"
+	appLanguageZhHant    appLanguageKind = "zh-Hant"
+	appLanguageMongolian appLanguageKind = "mn"
 )
 
 func normalizeAppLanguageKind(value string) appLanguageKind {
 	lang := strings.ToLower(strings.TrimSpace(value))
+	lang = strings.ReplaceAll(lang, "_", "-")
 	switch {
-	case strings.HasPrefix(lang, "zh-hant"), strings.HasPrefix(lang, "zh-tw"), strings.HasPrefix(lang, "zh-hk"):
+	case lang == "zh-hant" || lang == "zh-tw" || lang == "zh-hk" || lang == "zh-mo" ||
+		strings.HasPrefix(lang, "zh-hant-") || strings.HasPrefix(lang, "zh-tw-") ||
+		strings.HasPrefix(lang, "zh-hk-") || strings.HasPrefix(lang, "zh-mo-"):
 		return appLanguageZhHant
-	case strings.HasPrefix(lang, "zh-hans"), strings.HasPrefix(lang, "zh-cn"), strings.HasPrefix(lang, "zh"):
+	case lang == "zh" || lang == "zh-cn" || lang == "zh-hans" || lang == "zh-sg" ||
+		lang == "chinese" || lang == "cn" ||
+		strings.HasPrefix(lang, "zh-hans-") || strings.HasPrefix(lang, "zh-cn-") || strings.HasPrefix(lang, "zh-sg-"):
 		return appLanguageZhHans
+	case isCyrillicMongolianTag(lang):
+		return appLanguageMongolian
 	default:
 		return appLanguageEnglish
 	}
+}
+
+func isCyrillicMongolianTag(lang string) bool {
+	switch lang {
+	case "mn", "mn-mn", "mn-cyrl", "mn-cyrl-mn":
+		return true
+	}
+	if strings.HasPrefix(lang, "mn-mong") {
+		return false
+	}
+	return strings.HasPrefix(lang, "mn-cyrl-") || strings.HasPrefix(lang, "mn-mn-")
 }
 
 func (lang appLanguageKind) IsEnglish() bool {
@@ -31,6 +50,10 @@ func (lang appLanguageKind) IsEnglish() bool {
 
 func (lang appLanguageKind) IsChinese() bool {
 	return lang == appLanguageZhHans || lang == appLanguageZhHant
+}
+
+func (lang appLanguageKind) IsMongolian() bool {
+	return lang == appLanguageMongolian
 }
 
 func (lang appLanguageKind) TranslationTag() string {
@@ -44,10 +67,18 @@ func languageFromLANGID(id uint16) string {
 		return string(appLanguageEnglish)
 	}
 	primary := id & 0x3ff
+	sub := (id >> 10) & 0x3f
+	// LANG_MONGOLIAN = 0x50. Sublang 0x01 is Cyrillic (Mongolia), 0x0450.
+	// Sublang 0x02 is traditional Mongolian (PRC), 0x0850, which stays English.
+	if primary == 0x50 {
+		if sub == 0x01 {
+			return string(appLanguageMongolian)
+		}
+		return string(appLanguageEnglish)
+	}
 	if primary != 0x04 {
 		return string(appLanguageEnglish)
 	}
-	sub := (id >> 10) & 0x3f
 	switch sub {
 	case 0x01, 0x03, 0x05: // Traditional, Hong Kong, Macau
 		return string(appLanguageZhHant)
@@ -80,4 +111,25 @@ func (a *App) applyInitialLanguage() {
 	}
 	a.SetLanguage(lang)
 	log.Printf("[i18n] initial language=%s", lang)
+}
+
+// pickUI selects interface copy. Mongolian uses the English sentence as a key
+// into mnByEnglish and never falls through to Chinese.
+func pickUI(lang, en, hans, hant string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageZhHant:
+		if hant != "" {
+			return hant
+		}
+		return hans
+	case appLanguageZhHans:
+		return hans
+	case appLanguageMongolian:
+		if s := mnByEnglish[en]; s != "" {
+			return s
+		}
+		return en
+	default:
+		return en
+	}
 }

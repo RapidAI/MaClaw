@@ -21,19 +21,19 @@ func TestT_EnLookup(t *testing.T) {
 	}
 }
 
-func TestT_EmptyLangFallbackToZh(t *testing.T) {
+func TestT_EmptyLangFallbackToEn(t *testing.T) {
 	got := T(MsgTaskComplex, "")
-	want := T(MsgTaskComplex, "zh")
+	want := T(MsgTaskComplex, "en")
 	if got != want {
-		t.Errorf("T with empty lang = %q, want zh fallback %q", got, want)
+		t.Errorf("T with empty lang = %q, want en fallback %q", got, want)
 	}
 }
 
-func TestT_UnknownLangFallbackToZh(t *testing.T) {
+func TestT_UnknownLangFallbackToEn(t *testing.T) {
 	got := T(MsgTaskComplex, "fr")
-	want := T(MsgTaskComplex, "zh")
+	want := T(MsgTaskComplex, "en")
 	if got != want {
-		t.Errorf("T with unknown lang 'fr' = %q, want zh fallback %q", got, want)
+		t.Errorf("T with unknown lang 'fr' = %q, want en fallback %q", got, want)
 	}
 }
 
@@ -102,14 +102,35 @@ func TestNormalizeLang_Variants(t *testing.T) {
 		{"zh-TW", "zh"},
 		{"en-US", "en"},
 		{"en-GB", "en"},
-		{"", "zh"},
-		{"ja", "zh"}, // unknown → fallback
+		{"", "en"},
+		{"ja", "en"},
+		{"mn-MN", "mn"},
+		{"mn-Mong", "en"},
 	}
 	for _, tc := range cases {
 		got := NormalizeLang(tc.input)
 		if got != tc.want {
 			t.Errorf("NormalizeLang(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestMongolianProgressIsCyrillicAndTUIStaysEnglish(t *testing.T) {
+	got := T(MsgAckProcessing, "mn")
+	if got == "Processing, please wait..." || strings.Contains(got, "处理") {
+		t.Fatalf("mn progress fell through to English or Chinese: %q", got)
+	}
+	if !strings.Contains(got, "Боловсруулж") {
+		t.Fatalf("mn progress = %q", got)
+	}
+	if T(MsgToolActionOpen, "mn-MN") != "Нээх" {
+		t.Fatalf("tool action mn = %q", T(MsgToolActionOpen, "mn-MN"))
+	}
+	if T(MsgTUIReady, "mn") != "Ready" {
+		t.Fatalf("TUI mn should stay English, got %q", T(MsgTUIReady, "mn"))
+	}
+	if Tf(MsgMilestoneDoneSteps, "mn", 3) != "3 алхам дууссан" {
+		t.Fatalf("formatted mn = %q", Tf(MsgMilestoneDoneSteps, "mn", 3))
 	}
 }
 

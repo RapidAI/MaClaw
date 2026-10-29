@@ -1,3 +1,5 @@
+import { normalizeLang } from "../../i18n/langSelect";
+
 /**
  * AI Expert definitions shared by the utilities page (expert cards / editor)
  * and the AI assistant panel (expert conversation tabs).
@@ -114,15 +116,21 @@ export function builtinExpertIcon(id: string): string {
 export function expertWelcomeMessageText(expert: Pick<ExpertDefinition, "name" | "description">, lang?: string): string {
     const name = String(expert?.name || "").trim();
     const description = String(expert?.description || "").trim();
-    if (lang === "zh-Hant") {
+    const code = normalizeLang(lang);
+    if (code === "zh-Hant") {
         return description
             ? `你好，我是${name}。${description} 有什麼可以幫你？`
             : `你好，我是${name}。有什麼可以幫你？`;
     }
-    if (lang?.startsWith("en")) {
+    if (code === "en") {
         return description
             ? `Hi, I'm ${name}. ${description} How can I help you?`
             : `Hi, I'm ${name}. How can I help you?`;
+    }
+    if (code === "mn") {
+        return description
+            ? `Сайн байна уу, би ${name}. ${description} Юугаар туслах вэ?`
+            : `Сайн байна уу, би ${name}. Юугаар туслах вэ?`;
     }
     return description
         ? `你好，我是${name}。${description} 有什么可以帮你？`

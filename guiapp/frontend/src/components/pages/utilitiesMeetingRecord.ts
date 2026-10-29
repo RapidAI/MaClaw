@@ -1,7 +1,10 @@
 /**
  * Utilities → 会议记录 helpers.
  * Commands must match tool-router start-recording markers (corelib/tool/router.go).
+ * The command stays the exact marker. Do not pass it through inline translation.
  */
+
+import { localizeText, normalizeLang } from '../../i18n';
 
 export const MEETING_RECORD_COMMAND_ZH_HANS = '录制会议';
 export const MEETING_RECORD_COMMAND_ZH_HANT = '錄製會議';
@@ -9,16 +12,15 @@ export const MEETING_RECORD_COMMAND_EN = 'record the meeting';
 
 /** Auto-sent agent message that triggers desktop meeting recording. */
 export function meetingRecordCommand(lang?: string): string {
-    if (lang === 'zh-Hant') return MEETING_RECORD_COMMAND_ZH_HANT;
-    if (!lang || lang.startsWith('zh')) return MEETING_RECORD_COMMAND_ZH_HANS;
+    const kind = normalizeLang(lang);
+    if (kind === 'zh-Hant') return MEETING_RECORD_COMMAND_ZH_HANT;
+    if (kind === 'zh-Hans') return MEETING_RECORD_COMMAND_ZH_HANS;
     return MEETING_RECORD_COMMAND_EN;
 }
 
 /** Base label without timestamp (for UI copy). */
 export function meetingRecordBaseTitle(lang?: string): string {
-    if (lang === 'zh-Hant') return '會議記錄';
-    if (!lang || lang.startsWith('zh')) return '会议记录';
-    return 'Meeting notes';
+    return localizeText(lang, 'Meeting notes', '会议记录', '會議記錄');
 }
 
 /** Compact local stamp so repeated sessions stay distinguishable in the task list. */
@@ -46,13 +48,19 @@ export function meetingRecordTaskTitle(lang?: string, now: Date = new Date()): s
 
 /** Card body description on the utilities home grid. */
 export function meetingRecordCardDesc(lang?: string): string {
-    if (lang === 'zh-Hant') return '打開新的 Agent 會話並開始錄製會議';
-    if (!lang || lang.startsWith('zh')) return '打开新的 Agent 会话并开始录制会议';
-    return 'Open a new agent session and start meeting recording';
+    return localizeText(
+        lang,
+        'Open a new agent session and start meeting recording',
+        '打开新的 Agent 会话并开始录制会议',
+        '打開新的 Agent 會話並開始錄製會議',
+    );
 }
 
 export function meetingRecordFailMessage(lang?: string): string {
-    if (lang === 'zh-Hant') return '無法開始會議錄製，請稍後重試。';
-    if (!lang || lang.startsWith('zh')) return '无法开始会议录制，请稍后重试。';
-    return 'Could not start meeting recording. Please try again.';
+    return localizeText(
+        lang,
+        'Could not start meeting recording. Please try again.',
+        '无法开始会议录制，请稍后重试。',
+        '無法開始會議錄製，請稍後重試。',
+    );
 }

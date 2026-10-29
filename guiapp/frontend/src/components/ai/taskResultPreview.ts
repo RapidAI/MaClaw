@@ -1,5 +1,7 @@
 import type { CodeFile } from "./useCodePreviewState";
 import { filePreviewKindFromName } from "../preview/filePreviewKind";
+import { chromeText } from "../../i18n/chromeText";
+import { tailText } from "../../i18n/mnTail";
 
 /** Custom event the task-result card fires so the assistant panel can open preview. */
 export const PREVIEW_TASK_RESULT_EVENT = "maclaw:preview-task-result";
@@ -85,9 +87,12 @@ export function continueEditTaskResultPathFromEvent(event: Event): string {
 
 export function continueEditTaskResultDraft(path: string, lang: string): string {
     const name = fileNameFromPath(path);
-    if (lang === "en") return `Please continue editing the document "${name}" (${path}):\n`;
-    if (lang === "zh-Hant") return `請繼續修改文件「${name}」（${path}）：\n`;
-    return `请继续修改文档「${name}」（${path}）：\n`;
+    return chromeText(
+        lang,
+        'Please continue editing the document "{name}" ({path}):\n',
+        '请继续修改文档「{name}」（{path}）：\n',
+        '請繼續修改文件「{name}」（{path}）：\n',
+    ).replace('{path}', path).replace('{name}', name);
 }
 
 function pathMentionKey(path: string): string {
@@ -114,7 +119,6 @@ export function applyContinueEditTaskResultDraft(path: string, lang: string, exi
 }
 
 export function localizeTaskResultExportError(message: string, lang: string): string {
-    const zh = lang.startsWith("zh");
     const raw = String(message || "").replace(/^Error:\s*/i, "").trim();
     const keys = [
         "文件路径无效",
@@ -136,18 +140,18 @@ export function localizeTaskResultExportError(message: string, lang: string): st
     switch (matched) {
         case "文件路径无效":
         case "文件路径为空":
-            return zh ? "文件路径无效" : "The file path is invalid";
+            return tailText(lang, "The file path is invalid", "文件路径无效");
         case "文件不存在":
-            return zh ? "文件不存在" : "The file does not exist";
+            return tailText(lang, "The file does not exist", "文件不存在");
         case "不是文件":
-            return zh ? "不是文件" : "That path is not a file";
+            return tailText(lang, "That path is not a file", "不是文件");
         case "文件过大，无法导出":
-            return zh ? "文件过大，无法导出" : "The file is too large to export";
+            return tailText(lang, "The file is too large to export", "文件过大，无法导出");
         case "无法读取文件":
         case "无法保存文件":
-            return zh ? "无法导出该文件" : "This file cannot be exported";
+            return tailText(lang, "This file cannot be exported", "无法导出该文件");
         case "folder has no latex source":
-            return zh ? "这个目录里没有可投稿的 LaTeX 源文件" : "This folder has no LaTeX source to export";
+            return tailText(lang, "This folder has no LaTeX source to export", "这个目录里没有可投稿的 LaTeX 源文件");
         default:
             return raw || message;
     }
@@ -214,24 +218,23 @@ export function objectURLFromPdfDataURL(dataUrl: string): string {
 }
 
 export function localizeTaskResultPreviewError(message: string, lang: string): string {
-    const zh = lang.startsWith("zh");
     switch (String(message || "").trim()) {
         case "文件路径无效":
         case "文件路径为空":
-            return zh ? "文件路径无效" : "The file path is invalid";
+            return tailText(lang, "The file path is invalid", "文件路径无效");
         case "文件不存在":
-            return zh ? "文件不存在" : "The file does not exist";
+            return tailText(lang, "The file does not exist", "文件不存在");
         case "不是文件":
-            return zh ? "不是文件" : "That path is not a file";
+            return tailText(lang, "That path is not a file", "不是文件");
         case "文件过大，无法预览":
-            return zh ? "文件过大，无法预览" : "The file is too large to preview";
+            return tailText(lang, "The file is too large to preview", "文件过大，无法预览");
         case "不是有效的 PDF 文件":
-            return zh ? "不是有效的 PDF 文件" : "This is not a valid PDF file";
+            return tailText(lang, "This is not a valid PDF file", "不是有效的 PDF 文件");
         case "无法打开文件":
         case "无法读取文件":
         case "无法预览该文档":
         case "无法预览该文件":
-            return zh ? "无法预览该文件" : "This file cannot be previewed";
+            return tailText(lang, "This file cannot be previewed", "无法预览该文件");
         default:
             return message;
     }

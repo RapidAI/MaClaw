@@ -22,6 +22,7 @@ import {
     saveWelcomePreviewOpen,
     type WelcomeStoredCodingEnv,
 } from "./welcomeTaskMemory";
+import { tailText } from "../../i18n/mnTail"
 
 /** Above app chrome (~50k–99k); below create-task dialog (100000). */
 const WELCOME_PARAM_DIALOG_Z_INDEX = 90000;
@@ -193,7 +194,6 @@ export function WelcomePromptParamDialog({
     initialCodingEnv,
     canSend = true,
 }: WelcomePromptParamDialogProps) {
-    const isZh = !lang?.startsWith("en");
     const isCoding = submitMode === "coding_dev" || submitMode === "remote_coding_dev";
     const isRemote = submitMode === "remote_coding_dev";
     const isRemoteDiagnosis = isRemote && remoteSafety === "diagnosis";
@@ -401,7 +401,7 @@ export function WelcomePromptParamDialog({
         if (!onSaveTemplate || submitting) return;
         const filled = fillWelcomeTemplate(template, fields, values).trim();
         if (!filled) {
-            setSaveNote(isZh ? "内容为空，无法保存" : "Nothing to save");
+            setSaveNote(tailText(lang ?? "", "Nothing to save", "内容为空，无法保存"));
             return;
         }
         const codingEnv = collectStoredCodingEnv();
@@ -410,20 +410,10 @@ export function WelcomePromptParamDialog({
         const hasPassword = !!codingEnv?.remote?.password;
         setSaveNote(
             ok
-                ? (isZh
-                    ? (hasPassword
-                        ? "已保存到「我的模板」（含运行环境与密码，仅本机）"
-                        : hasEnv
-                            ? "已保存到「我的模板」（含运行环境，仅本机）"
-                            : "已保存到「我的模板」")
-                    : (hasPassword
-                        ? "Saved to My templates (env + password, this device only)"
-                        : hasEnv
-                            ? "Saved to My templates (env, this device only)"
-                            : "Saved to My templates"))
-                : (isZh ? "保存失败" : "Save failed"),
+                ? (hasPassword ? tailText(lang ?? "", "Saved to My templates (env + password, this device only)", "已保存到「我的模板」（含运行环境与密码，仅本机）") : hasEnv ? tailText(lang ?? "", "Saved to My templates (env, this device only)", "已保存到「我的模板」（含运行环境，仅本机）") : tailText(lang ?? "", "Saved to My templates", "已保存到「我的模板」"))
+                : (tailText(lang ?? "", "Save failed", "保存失败")),
         );
-    }, [onSaveTemplate, submitting, template, fields, values, title, isZh, collectStoredCodingEnv]);
+    }, [onSaveTemplate, submitting, template, fields, values, title, lang, collectStoredCodingEnv]);
 
     const commit = useCallback((action: WelcomePromptParamAction) => {
         if (submitLockRef.current) return;
@@ -442,9 +432,7 @@ export function WelcomePromptParamDialog({
                 const port = normalizeWelcomeSshPort(remotePort);
                 if (!host || !user || !password || !workDir) {
                     setEnvError(
-                        isZh
-                            ? "请填写主机、用户名、密码和远程工作目录。"
-                            : "Please fill host, username, password, and remote work directory.",
+                        tailText(lang ?? "", "Please fill host, username, password, and remote work directory.", "请填写主机、用户名、密码和远程工作目录。"),
                     );
                     return;
                 }
@@ -473,7 +461,7 @@ export function WelcomePromptParamDialog({
 
         const resolvedFilled = (filled || "").trim();
         if (!resolvedFilled) {
-            setEnvError(isZh ? "任务内容为空。" : "Task content is empty.");
+            setEnvError(tailText(lang ?? "", "Task content is empty.", "任务内容为空。"));
             return;
         }
 
@@ -491,7 +479,7 @@ export function WelcomePromptParamDialog({
         isCoding,
         isRemote,
         isRemoteDiagnosis,
-        isZh,
+        lang,
         remoteHost,
         remoteUser,
         remoteWorkDir,
@@ -539,28 +527,22 @@ export function WelcomePromptParamDialog({
     const insertLabel = isCoding
         ? (isRemote
             ? (isRemoteDiagnosis
-                ? (isZh ? "连接并开始只读诊断" : "Connect and diagnose")
-                : (isZh ? "创建并开始远程任务" : "Create remote task"))
-            : (isZh ? "创建并开始本地任务" : "Create local task"))
-        : (isZh ? "填入输入框" : "Insert into input");
+                ? (tailText(lang ?? "", "Connect and diagnose", "连接并开始只读诊断"))
+                : (tailText(lang ?? "", "Create remote task", "创建并开始远程任务")))
+            : (tailText(lang ?? "", "Create local task", "创建并开始本地任务")))
+        : (tailText(lang ?? "", "Insert into input", "填入输入框"));
 
-    const sendLabel = isZh ? "直接发送" : "Send now";
+    const sendLabel = tailText(lang ?? "", "Send now", "直接发送");
 
     const helper = isCoding
         ? (isRemoteDiagnosis
-            ? (isZh
-                ? "将通过 SSH 收集日志与状态作为证据。首轮只读：不会改文件、重启服务或创建目录；修复需在后续明确提出。"
-                : "SSH will collect logs and status as evidence. The first turn is read-only: no file changes, service restarts, or directory creation. Request a fix explicitly later.")
-            : (isZh
-                ? "填写任务参数与运行环境后可直接创建，无需二次弹窗。参数会记住。"
-                : "Fill task params and the runtime environment, then create in one step. Values are remembered."))
-        : (isZh
-            ? "填写关键信息后确认。可留空的项，助手会在对话中追问。已自动记住上次填写。"
-            : "Fill in the key details, then confirm. Blanks are fine — the assistant can follow up. Last values are remembered.");
+            ? (tailText(lang ?? "", "SSH will collect logs and status as evidence. The first turn is read-only: no file changes, service restarts, or directory creation. Request a fix explicitly later.", "将通过 SSH 收集日志与状态作为证据。首轮只读：不会改文件、重启服务或创建目录；修复需在后续明确提出。"))
+            : (tailText(lang ?? "", "Fill task params and the runtime environment, then create in one step. Values are remembered.", "填写任务参数与运行环境后可直接创建，无需二次弹窗。参数会记住。")))
+        : (tailText(lang ?? "", "Fill in the key details, then confirm. Blanks are fine — the assistant can follow up. Last values are remembered.", "填写关键信息后确认。可留空的项，助手会在对话中追问。已自动记住上次填写。"));
 
     const shortcutHint = !isCoding && canSend
-        ? (isZh ? "Ctrl/⌘+Enter 直接发送" : "Ctrl/⌘+Enter to send")
-        : (isZh ? "Ctrl/⌘+Enter 确认" : "Ctrl/⌘+Enter to confirm");
+        ? (tailText(lang ?? "", "Ctrl/⌘+Enter to send", "Ctrl/⌘+Enter 直接发送"))
+        : (tailText(lang ?? "", "Ctrl/⌘+Enter to confirm", "Ctrl/⌘+Enter 确认"));
 
     const fieldInputStyle = (multiline: boolean): CSSProperties => ({
         width: "100%",
@@ -697,7 +679,7 @@ export function WelcomePromptParamDialog({
                     </div>
                     <button
                         type="button"
-                        aria-label={isZh ? "关闭" : "Close"}
+                        aria-label={tailText(lang ?? "", "Close", "关闭")}
                         onClick={onClose}
                         style={{
                             flexShrink: 0,
@@ -723,7 +705,7 @@ export function WelcomePromptParamDialog({
                     <div className="wppd-body">
                         {fields.length === 0 ? (
                             <p style={{ margin: 0, fontSize: 13, color: t.textMuted }}>
-                                {isZh ? "该任务无需额外参数，可直接确认。" : "No extra parameters — confirm to continue."}
+                                {tailText(lang ?? "", "No extra parameters — confirm to continue.", "该任务无需额外参数，可直接确认。")}
                             </p>
                         ) : fields.map((field, index) => {
                             const controlId = `welcome-param-${field.id}`;
@@ -771,7 +753,7 @@ export function WelcomePromptParamDialog({
                                             color: t.textMuted,
                                             fontSize: 11,
                                         }}>
-                                            {isZh ? "可选" : "optional"}
+                                            {tailText(lang ?? "", "optional", "可选")}
                                         </span>
                                     </span>
                                     {field.multiline ? (
@@ -791,7 +773,7 @@ export function WelcomePromptParamDialog({
                                     {field.chips.length > 0 && (
                                         <div
                                             role="group"
-                                            aria-label={isZh ? `${field.label} 快捷选项` : `${field.label} suggestions`}
+                                            aria-label={tailText(lang ?? "", `${field.label} suggestions`, `${field.label} 快捷选项`)}
                                             className="wppd-chips"
                                         >
                                             {field.chips.map((chip) => {
@@ -850,14 +832,14 @@ export function WelcomePromptParamDialog({
                                 }}>
                                     {isRemote
                                         ? (isRemoteDiagnosis
-                                            ? (isZh ? "故障诊断服务器（SSH，只读首轮）" : "Incident server (SSH, read-only first turn)")
-                                            : (isZh ? "远程环境（SSH）" : "Remote environment (SSH)"))
-                                        : (isZh ? "本地工作目录" : "Local working directory")}
+                                            ? (tailText(lang ?? "", "Incident server (SSH, read-only first turn)", "故障诊断服务器（SSH，只读首轮）"))
+                                            : (tailText(lang ?? "", "Remote environment (SSH)", "远程环境（SSH）")))
+                                        : (tailText(lang ?? "", "Local working directory", "本地工作目录"))}
                                 </div>
                                 {isRemote ? (
                                     <>
                                         <label className="wppd-subfield">
-                                            <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "主机" : "Host"}</span>
+                                            <span style={{ fontSize: 11, color: t.textMuted }}>{tailText(lang ?? "", "Host", "主机")}</span>
                                             <input
                                                 data-testid="welcome-remote-host"
                                                 ref={
@@ -875,7 +857,7 @@ export function WelcomePromptParamDialog({
                                         </label>
                                         <div className="wppd-port-grid">
                                             <label className="wppd-subfield">
-                                                <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "端口" : "Port"}</span>
+                                                <span style={{ fontSize: 11, color: t.textMuted }}>{tailText(lang ?? "", "Port", "端口")}</span>
                                                 <input
                                                     data-testid="welcome-remote-port"
                                                     value={remotePort}
@@ -886,7 +868,7 @@ export function WelcomePromptParamDialog({
                                                 />
                                             </label>
                                             <label className="wppd-subfield">
-                                                <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "用户名" : "Username"}</span>
+                                                <span style={{ fontSize: 11, color: t.textMuted }}>{tailText(lang ?? "", "Username", "用户名")}</span>
                                                 <input
                                                     data-testid="welcome-remote-user"
                                                     value={remoteUser}
@@ -898,7 +880,7 @@ export function WelcomePromptParamDialog({
                                             </label>
                                         </div>
                                         <label className="wppd-subfield">
-                                            <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "密码" : "Password"}</span>
+                                            <span style={{ fontSize: 11, color: t.textMuted }}>{tailText(lang ?? "", "Password", "密码")}</span>
                                             <input
                                                 data-testid="welcome-remote-password"
                                                 ref={
@@ -917,7 +899,7 @@ export function WelcomePromptParamDialog({
                                             />
                                         </label>
                                         <label className="wppd-subfield">
-                                            <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "远程工作目录" : "Remote work directory"}</span>
+                                            <span style={{ fontSize: 11, color: t.textMuted }}>{tailText(lang ?? "", "Remote work directory", "远程工作目录")}</span>
                                             <input
                                                 data-testid="welcome-remote-workdir"
                                                 value={remoteWorkDir}
@@ -934,7 +916,7 @@ export function WelcomePromptParamDialog({
                                             data-testid="welcome-local-workdir"
                                             value={workingDir}
                                             onChange={(e) => setWorkingDir(e.target.value)}
-                                            placeholder={isZh ? "可选：项目目录" : "Optional project folder"}
+                                            placeholder={tailText(lang ?? "", "Optional project folder", "可选：项目目录")}
                                             autoComplete="off"
                                             style={{ ...fieldInputStyle(false), flex: 1 }}
                                         />
@@ -956,8 +938,8 @@ export function WelcomePromptParamDialog({
                                             }}
                                         >
                                             {selectingDir
-                                                ? (isZh ? "选择中…" : "Choosing…")
-                                                : (isZh ? "浏览" : "Browse")}
+                                                ? (tailText(lang ?? "", "Choosing…", "选择中…"))
+                                                : (tailText(lang ?? "", "Browse", "浏览"))}
                                         </button>
                                     </div>
                                 )}
@@ -1004,10 +986,10 @@ export function WelcomePromptParamDialog({
                                 }}
                             >
                                 <span>
-                                    {isZh ? "将发送的内容" : "Message preview"}
+                                    {tailText(lang ?? "", "Message preview", "将发送的内容")}
                                     <span style={{ marginLeft: 6, fontWeight: 400, color: t.textMuted }}>
                                         {previewText.length}
-                                        {isZh ? " 字" : " chars"}
+                                        {tailText(lang ?? "", " chars", " 字")}
                                     </span>
                                 </span>
                                 <span style={{ color: t.textMuted, fontSize: 11 }} aria-hidden>
@@ -1030,7 +1012,7 @@ export function WelcomePromptParamDialog({
                                         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
                                     }}
                                 >
-                                    {previewText || (isZh ? "（空）" : "(empty)")}
+                                    {previewText || (tailText(lang ?? "", "(empty)", "（空）"))}
                                 </pre>
                             )}
                         </div>
@@ -1047,7 +1029,7 @@ export function WelcomePromptParamDialog({
                         <div className="wppd-foot-row">
                             <span style={{ fontSize: 11, color: t.textMuted }}>
                                 {fields.length > 0
-                                    ? (isZh ? `已填 ${filledCount}/${fields.length}` : `${filledCount}/${fields.length} filled`)
+                                    ? (tailText(lang ?? "", `${filledCount}/${fields.length} filled`, `已填 ${filledCount}/${fields.length}`))
                                     : ""}
                                 {fields.length > 0 ? " · " : ""}
                                 {shortcutHint}
@@ -1070,11 +1052,11 @@ export function WelcomePromptParamDialog({
                                     disabled={submitting}
                                     style={secondaryBtnStyle}
                                 >
-                                    {isZh ? "保存为常用" : "Save template"}
+                                    {tailText(lang ?? "", "Save template", "保存为常用")}
                                 </button>
                             )}
                             <button type="button" onClick={onClose} disabled={submitting} style={secondaryBtnStyle}>
-                                {isZh ? "取消" : "Cancel"}
+                                {tailText(lang ?? "", "Cancel", "取消")}
                             </button>
                             {!isCoding && (
                                 <button
@@ -1109,7 +1091,7 @@ export function WelcomePromptParamDialog({
                                     type="submit"
                                     data-testid="welcome-prompt-param-submit"
                                     disabled={!canSend || submitting}
-                                    title={!canSend ? (isZh ? "当前不可发送" : "Send unavailable") : undefined}
+                                    title={!canSend ? (tailText(lang ?? "", "Send unavailable", "当前不可发送")) : undefined}
                                     style={{
                                         ...primaryBtnStyle,
                                         opacity: canSend && !submitting ? 1 : 0.5,

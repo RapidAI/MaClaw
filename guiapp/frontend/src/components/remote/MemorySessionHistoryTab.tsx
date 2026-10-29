@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { DeleteSession, GetSessionCount, GetSessionFullText, ListSessionHistory, SearchSessionHistory } from "../../../wailsjs/go/main/App";
+import { intlLocale } from "../../i18n";
 import { colors, radius } from "./styles";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
@@ -247,7 +248,7 @@ function ModalOverlay({ onClose, children }: { onClose: () => void; children: Re
 
 function fmtDate(s: string, lang: string): string {
     if (!s) return "-";
-    const locale = lang === "zh-Hans" ? "zh-CN" : lang === "zh-Hant" ? "zh-TW" : "en-US";
+    const locale = intlLocale(lang);
     try { return new Date(s).toLocaleString(locale); } catch { return s; }
 }
 

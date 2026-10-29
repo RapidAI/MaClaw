@@ -61,36 +61,15 @@ func (h *IMMessageHandler) handleCompressCommandWithLang(userID, lang string) *I
 }
 
 func localizedIMCompressNoHistoryMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "There is no conversation history to compress."
-	case appLanguageZhHant:
-		return "目前沒有可壓縮的對話歷史。"
-	default:
-		return "当前没有可压缩的对话历史。"
-	}
+	return pickUI(lang, "There is no conversation history to compress.", "当前没有可压缩的对话历史。", "目前沒有可壓縮的對話歷史。")
 }
 
 func localizedIMCompressFailedMessage(lang string, err error) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("Compression failed: %v", err)
-	case appLanguageZhHant:
-		return fmt.Sprintf("壓縮失敗：%v", err)
-	default:
-		return fmt.Sprintf("压缩失败：%v", err)
-	}
+	return fmt.Sprintf(pickUI(lang, "Compression failed: %v", "压缩失败：%v", "壓縮失敗：%v"), err)
 }
 
 func localizedIMCompressSuccessMessage(lang, marker string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return fmt.Sprintf("Conversation history compressed. %s", marker)
-	case appLanguageZhHant:
-		return fmt.Sprintf("對話歷史已壓縮。%s", marker)
-	default:
-		return fmt.Sprintf("对话历史已压缩。%s", marker)
-	}
+	return fmt.Sprintf(pickUI(lang, "Conversation history compressed. %s", "对话历史已压缩。%s", "對話歷史已壓縮。%s"), marker)
 }
 
 // makeSummarizeCallback creates an LLM summarization callback for the compressor.

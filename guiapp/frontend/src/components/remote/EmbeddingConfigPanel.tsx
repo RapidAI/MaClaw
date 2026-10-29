@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { localizeText } from '../../i18n';
 import {
     GetVectorSearchEnabled, SetVectorSearchEnabled, CheckEmbeddingModel, DownloadEmbeddingModel, DeleteEmbeddingModel,
     GetScreenParsingEnabled, SetScreenParsingEnabled, CheckYOLOModel, DownloadYOLOModel,
@@ -23,7 +24,7 @@ type Props = { lang: string };
 export function EmbeddingConfigPanel({ lang }: Props) {
     const { showConfirm } = useDialog();
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        localizeText(lang, en, zhHans, zhHant), [lang]);
 
     // --- Embedding model state ---
     const [embEnabled, setEmbEnabled] = useState(false);

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ImportMobileDocumentFromPath, ShowItemInFolder } from "../../../wailsjs/go/main/App";
+import { tailText } from "../../i18n/mnTail"
 
 function CloudUploadIcon() {
     return (
@@ -77,7 +78,7 @@ export interface PreviewFileActionsProps {
  * path), and reveal the file in its OS folder.
  */
 export function PreviewFileActions({ absPath, lang, color, buttonStyle }: PreviewFileActionsProps) {
-    const isZh = !lang.startsWith("en");
+    const isZh = lang.startsWith("zh");
     const [uploading, setUploading] = useState(false);
     const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
     const noticeTimer = useRef<number | undefined>(undefined);
@@ -100,14 +101,14 @@ export function PreviewFileActions({ absPath, lang, color, buttonStyle }: Previe
         try {
             const draft = await ImportMobileDocumentFromPath(absPath);
             if (draft?.duplicate) {
-                const held = draft.duplicate_of_title || draft.title || (isZh ? "已有文件" : "an existing file");
-                flash(true, isZh ? `云盘中已有相同内容（${held}），未再次上传` : `Already in the cloud drive (${held}). Not uploaded again.`);
+                const held = draft.duplicate_of_title || draft.title || (tailText(lang, "an existing file", "已有文件"));
+                flash(true, tailText(lang, `Already in the cloud drive (${held}). Not uploaded again.`, `云盘中已有相同内容（${held}），未再次上传`));
             } else {
-                flash(true, isZh ? "已上传到云盘" : "Uploaded to cloud drive");
+                flash(true, tailText(lang, "Uploaded to cloud drive", "已上传到云盘"));
             }
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err || "");
-            flash(false, message || (isZh ? "上传失败" : "Upload failed"));
+            flash(false, message || (tailText(lang, "Upload failed", "上传失败")));
         } finally {
             setUploading(false);
         }
@@ -116,8 +117,8 @@ export function PreviewFileActions({ absPath, lang, color, buttonStyle }: Previe
     const handleShare = async () => {
         const copied = await copyTextToClipboard(absPath);
         flash(copied, copied
-            ? (isZh ? "已复制文件路径，可粘贴分享" : "File path copied — paste to share")
-            : (isZh ? "复制失败" : "Copy failed"));
+            ? (tailText(lang, "File path copied — paste to share", "已复制文件路径，可粘贴分享"))
+            : (tailText(lang, "Copy failed", "复制失败")));
     };
 
     const handleReveal = () => {
@@ -140,9 +141,9 @@ export function PreviewFileActions({ absPath, lang, color, buttonStyle }: Previe
         ...buttonStyle,
     };
 
-    const uploadLabel = isZh ? "上传到云盘" : "Upload to cloud drive";
-    const shareLabel = isZh ? "分享（复制文件路径）" : "Share (copy file path)";
-    const revealLabel = isZh ? "打开文件夹" : "Show in folder";
+    const uploadLabel = tailText(lang, "Upload to cloud drive", "上传到云盘");
+    const shareLabel = tailText(lang, "Share (copy file path)", "分享（复制文件路径）");
+    const revealLabel = tailText(lang, "Show in folder", "打开文件夹");
 
     return (
         <span data-testid="preview-file-actions" className="pfa-root">

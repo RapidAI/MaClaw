@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { normalizeLang } from "../../i18n";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GroupParticipantPanel, type Participant } from "./GroupParticipantPanel";
@@ -81,8 +82,13 @@ const mentionLabelFromName = (value: string): string =>
     String(value || "").trim().replace(/\s+\([^()]+\)$/, "").trim();
 
 
-const friendlyParticipantName = (index: number, lang?: string): string =>
-    lang?.startsWith("en") ? "Participant " + (index + 1) : "参与者 " + (index + 1);
+const friendlyParticipantName = (index: number, lang?: string): string => {
+    const kind = normalizeLang(lang);
+    if (kind === "mn") return "Оролцогч " + (index + 1);
+    if (kind === "zh-Hant") return "參與者 " + (index + 1);
+    if (kind === "zh-Hans") return "参与者 " + (index + 1);
+    return "Participant " + (index + 1);
+};
 
 const readableParticipantName = (name: string | undefined, id: string, index: number, lang?: string): string => {
     const candidate = String(name || "").trim();

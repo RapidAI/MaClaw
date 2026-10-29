@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { GetHubConnectionState, ReconnectHub } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { localizeText } from '../../i18n';
 
 export interface HubLinkState {
     state: string;
@@ -11,16 +12,19 @@ export interface HubLinkState {
 
 export function hubBadgeLabel(st: HubLinkState | null, lang: string): string {
     if (!st || st.state === 'connected') return '';
-    const en = String(lang || '').toLowerCase().startsWith('en');
-    const hant = String(lang || '').includes('Hant');
     if (st.state === 'connecting') {
         const secs = Math.ceil((st.next_retry_ms || 0) / 1000);
-        if (en) return secs > 0 ? `Reconnecting to Hub (retry in ${secs}s)` : 'Reconnecting to Hub…';
-        if (hant) return secs > 0 ? `正在重連 Hub（${secs} 秒後重試）` : '正在重連 Hub…';
-        return secs > 0 ? `正在重连 Hub（${secs} 秒后重试）` : '正在重连 Hub…';
+        if (secs > 0) {
+            return localizeText(
+                lang,
+                'Reconnecting to Hub (retry in {n}s)',
+                '正在重连 Hub（{n} 秒后重试）',
+                '正在重連 Hub（{n} 秒後重試）',
+            ).replace('{n}', String(secs));
+        }
+        return localizeText(lang, 'Reconnecting to Hub…', '正在重连 Hub…', '正在重連 Hub…');
     }
-    if (en) return 'Hub not connected';
-    return hant ? 'Hub 未連接' : 'Hub 未连接';
+    return localizeText(lang, 'Hub not connected', 'Hub 未连接', 'Hub 未連接');
 }
 
 // Shows the Hub link only when it is not up, and asks for a reconnect when

@@ -26,6 +26,7 @@ import {
     previewSourceName,
     type FilePreviewKind,
 } from './filePreviewKind';
+import { tailText } from '../../i18n/mnTail'
 
 export type FilePreviewSource = {
     fileName?: string;
@@ -225,7 +226,7 @@ function ImagePreviewPanel({
         setError('');
         const path = String(absPath || '').trim();
         if (!path) {
-            fail(isZh ? '没有可预览的图片' : 'No image to preview');
+            fail(tailText(lang, 'No image to preview', '没有可预览的图片'));
             return () => {
                 cancelled = true;
             };
@@ -237,7 +238,7 @@ function ImagePreviewPanel({
                 if (show(previewSrcFromPayload(result, isInlineImageSrc))) return;
                 const fallback = String(await AIAssistantAttachmentFullDataURL(path) || '');
                 if (fallback && isInlineImageSrc(fallback) && show(fallback)) return;
-                fail(isZh ? '无法预览该图片' : 'This image cannot be previewed');
+                fail(tailText(lang, 'This image cannot be previewed', '无法预览该图片'));
             } catch (err) {
                 fail(err instanceof Error ? err.message : String(err || ''));
             }
@@ -251,7 +252,7 @@ function ImagePreviewPanel({
     if (loading) {
         return (
             <PreviewStatus testId="image-preview-loading" theme={theme}>
-                {isZh ? '正在加载图片预览…' : 'Loading image preview…'}
+                {tailText(lang, 'Loading image preview…', '正在加载图片预览…')}
             </PreviewStatus>
         );
     }
@@ -322,7 +323,7 @@ function MediaPreviewPanel({
         setError('');
         const path = String(absPath || '').trim();
         if (!path) {
-            fail(isZh ? '没有可预览的媒体文件' : 'No media file to preview');
+            fail(tailText(lang, 'No media file to preview', '没有可预览的媒体文件'));
             return () => {
                 cancelled = true;
             };
@@ -337,7 +338,7 @@ function MediaPreviewPanel({
                     setLoading(false);
                     return;
                 }
-                fail(isZh ? '无法预览该媒体文件' : 'This media file cannot be previewed');
+                fail(tailText(lang, 'This media file cannot be previewed', '无法预览该媒体文件'));
             } catch (err) {
                 fail(err instanceof Error ? err.message : String(err || ''));
             }
@@ -351,7 +352,7 @@ function MediaPreviewPanel({
     if (loading) {
         return (
             <PreviewStatus testId="media-preview-loading" theme={theme}>
-                {isZh ? '正在加载媒体预览…' : 'Loading media preview…'}
+                {tailText(lang, 'Loading media preview…', '正在加载媒体预览…')}
             </PreviewStatus>
         );
     }
@@ -407,14 +408,14 @@ function HtmlPreviewPanel({
     if (loading) {
         return (
             <PreviewStatus testId="html-preview-loading" theme={theme}>
-                {isZh ? '正在加载 HTML 预览…' : 'Loading HTML preview…'}
+                {tailText(lang, 'Loading HTML preview…', '正在加载 HTML 预览…')}
             </PreviewStatus>
         );
     }
     if (!markup.trim()) {
         return (
             <PreviewStatus testId="html-preview-empty" theme={theme}>
-                {isZh ? '该 HTML 文件没有可预览的内容' : 'This HTML file has no content to preview'}
+                {tailText(lang, 'This HTML file has no content to preview', '该 HTML 文件没有可预览的内容')}
             </PreviewStatus>
         );
     }
@@ -422,7 +423,7 @@ function HtmlPreviewPanel({
         <div data-testid="html-preview-frame" style={fillStyle(theme)}>
             <iframe
                 data-testid="html-preview-panel"
-                title={isZh ? 'HTML 预览' : 'HTML preview'}
+                title={tailText(lang, 'HTML preview', 'HTML 预览')}
                 sandbox=""
                 srcDoc={markup}
                 style={{ flex: 1, minHeight: 0, width: '100%', height: '100%', border: 'none', background: theme.bg }}
@@ -458,14 +459,14 @@ function OfficePreviewPanel({
     if (loading) {
         return (
             <PreviewStatus testId="office-preview-loading" theme={theme}>
-                {isZh ? '正在加载文档预览…' : 'Loading document preview…'}
+                {tailText(lang, 'Loading document preview…', '正在加载文档预览…')}
             </PreviewStatus>
         );
     }
     if (!text.trim()) {
         return (
             <PreviewStatus testId="office-preview-empty" theme={theme}>
-                {isZh ? '该文档没有可预览的内容' : 'This document has no content to preview'}
+                {tailText(lang, 'This document has no content to preview', '该文档没有可预览的内容')}
             </PreviewStatus>
         );
     }

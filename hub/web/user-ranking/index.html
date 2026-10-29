@@ -173,6 +173,9 @@
     [data-lang] { display: none; }
     body.lang-en [data-lang="en"] { display: inline; }
     body.lang-zh [data-lang="zh"] { display: inline; }
+    body.lang-mn [data-lang="en"] { display: inline; }
+    body.lang-mn [data-lang="mn"] { display: inline; }
+    body.lang-mn [data-lang="en"]:has(~ [data-lang="mn"]) { display: none; }
   </style>
 </head>
 <body class="lang-zh">
@@ -182,49 +185,50 @@
         <div class="brand-mark">M</div>
         <div class="brand-text">
           <strong>MaClaw Hub</strong>
-          <small><span data-lang="en">Leaderboard</span><span data-lang="zh">用户排行榜</span></small>
+          <small><span data-lang="en">Leaderboard</span><span data-lang="zh">用户排行榜</span><span data-lang="mn">Тэргүүлэгчид</span></small>
         </div>
       </div>
       <div class="controls">
         <div class="tab-group" id="periodTabs">
-          <button data-period="daily"><span data-lang="en">Day</span><span data-lang="zh">日榜</span></button>
-          <button data-period="weekly"><span data-lang="en">Week</span><span data-lang="zh">周榜</span></button>
-          <button data-period="monthly" class="active"><span data-lang="en">Month</span><span data-lang="zh">月榜</span></button>
+          <button data-period="daily"><span data-lang="en">Day</span><span data-lang="zh">日榜</span><span data-lang="mn">Өдөр</span></button>
+          <button data-period="weekly"><span data-lang="en">Week</span><span data-lang="zh">周榜</span><span data-lang="mn">Долоо хоног</span></button>
+          <button data-period="monthly" class="active"><span data-lang="en">Month</span><span data-lang="zh">月榜</span><span data-lang="mn">Сар</span></button>
         </div>
         <div class="tab-group" id="dimensionTabs">
-          <button data-dim="tokens" class="active"><span data-lang="en">Token Usage</span><span data-lang="zh">Token 用量</span></button>
-          <button data-dim="duration"><span data-lang="en">Usage Time</span><span data-lang="zh">使用时长</span></button>
+          <button data-dim="tokens" class="active"><span data-lang="en">Token Usage</span><span data-lang="zh">Token 用量</span><span data-lang="mn">Token хэрэглээ</span></button>
+          <button data-dim="duration"><span data-lang="en">Usage Time</span><span data-lang="zh">使用时长</span><span data-lang="mn">Хэрэглэсэн хугацаа</span></button>
         </div>
         <div class="lang-sw">
           <button data-set-lang="en">EN</button>
           <button data-set-lang="zh" class="active">中文</button>
+          <button data-set-lang="mn">Монгол</button>
         </div>
       </div>
     </header>
 
     <div class="hero-stats" id="statsBar">
       <div class="hero-stat">
-        <span class="hero-stat-label"><span data-lang="en">Period</span><span data-lang="zh">统计周期</span></span>
+        <span class="hero-stat-label"><span data-lang="en">Period</span><span data-lang="zh">统计周期</span><span data-lang="mn">Хугацаа</span></span>
         <span class="hero-stat-value" id="statPeriod">-</span>
       </div>
       <div class="hero-stat">
-        <span class="hero-stat-label"><span data-lang="en">Participants</span><span data-lang="zh">参与用户</span></span>
+        <span class="hero-stat-label"><span data-lang="en">Participants</span><span data-lang="zh">参与用户</span><span data-lang="mn">Оролцогчид</span></span>
         <span class="hero-stat-value" id="statTotal">-</span>
       </div>
       <div class="hero-stat">
-        <span class="hero-stat-label"><span data-lang="en">Page</span><span data-lang="zh">当前页</span></span>
+        <span class="hero-stat-label"><span data-lang="en">Page</span><span data-lang="zh">当前页</span><span data-lang="mn">Хуудас</span></span>
         <span class="hero-stat-value" id="statPage">-</span>
       </div>
     </div>
 
     <section id="podiumSection" class="podium" style="display:none"></section>
     <section id="gridSection" class="ranking-grid"></section>
-    <div id="loadingIndicator" class="loading"><span data-lang="en">Loading leaderboard...</span><span data-lang="zh">加载排行榜中...</span></div>
-    <div id="emptyIndicator" class="empty" style="display:none"><span data-lang="en">No ranking data available</span><span data-lang="zh">暂无排名数据</span></div>
+    <div id="loadingIndicator" class="loading"><span data-lang="en">Loading leaderboard...</span><span data-lang="zh">加载排行榜中...</span><span data-lang="mn">Тэргүүлэгчдийг ачаалж байна...</span></div>
+    <div id="emptyIndicator" class="empty" style="display:none"><span data-lang="en">No ranking data available</span><span data-lang="zh">暂无排名数据</span><span data-lang="mn">Эрэмбийн өгөгдөл алга</span></div>
     <nav class="pagination" id="pagination" style="display:none">
-      <button id="prevBtn" disabled>&laquo; <span data-lang="en">Prev</span><span data-lang="zh">上一页</span></button>
+      <button id="prevBtn" disabled>&laquo; <span data-lang="en">Prev</span><span data-lang="zh">上一页</span><span data-lang="mn">Өмнөх</span></button>
       <span class="pg-info" id="pageInfo"></span>
-      <button id="nextBtn"><span data-lang="en">Next</span><span data-lang="zh">下一页</span> &raquo;</button>
+      <button id="nextBtn"><span data-lang="en">Next</span><span data-lang="zh">下一页</span><span data-lang="mn">Дараах</span> &raquo;</button>
     </nav>
   </div>
 
@@ -252,16 +256,31 @@
     var currentPeriod = 'monthly';
     var currentPage = 1;
     var totalPages = 1;
-    var lang = localStorage.getItem('maclaw-ranking-lang') || (/^zh/i.test(navigator.language || '') ? 'zh' : 'en');
+    function normalizeHubLang(input) {
+      var s = String(input || '').trim().toLowerCase().replace(/_/g, '-');
+      if (!s) return 'en';
+      if (s === 'zh' || s.indexOf('zh-') === 0) return 'zh';
+      if (s === 'mn-mong' || s.indexOf('mn-mong-') === 0) return 'en';
+      if (s === 'mn' || s === 'mn-mn' || s === 'mn-cyrl' || s === 'mn-cyrl-mn' || s.indexOf('mn-cyrl-') === 0 || s.indexOf('mn-mn-') === 0) return 'mn';
+      return 'en';
+    }
+    var savedLang = localStorage.getItem('maclaw-ranking-lang');
+    var lang = (savedLang === 'en' || savedLang === 'zh' || savedLang === 'mn')
+      ? savedLang
+      : normalizeHubLang((navigator.languages && navigator.languages[0]) || navigator.language || 'en');
 
+    var lastPayload = null;
+    var loading = false;
     function isZh() { return lang === 'zh'; }
+    function isMn() { return lang === 'mn'; }
     function setLang(l) {
-      lang = l;
-      document.body.className = 'lang-' + l;
-      document.documentElement.lang = l === 'zh' ? 'zh-CN' : 'en';
-      document.title = l === 'zh' ? 'MaClaw 用户排行榜' : 'MaClaw Leaderboard';
-      localStorage.setItem('maclaw-ranking-lang', l);
-      document.querySelectorAll('.lang-sw button').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-set-lang') === l); });
+      lang = l === 'zh' ? 'zh' : l === 'mn' ? 'mn' : 'en';
+      document.body.className = 'lang-' + lang;
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : lang === 'mn' ? 'mn' : 'en';
+      document.title = lang === 'zh' ? 'MaClaw 用户排行榜' : lang === 'mn' ? 'MaClaw тэргүүлэгчид' : 'MaClaw Leaderboard';
+      localStorage.setItem('maclaw-ranking-lang', lang);
+      document.querySelectorAll('.lang-sw button').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-set-lang') === lang); });
+      if (!loading && lastPayload && lastPayload.rows && lastPayload.rows.length) paint(lastPayload);
     }
     function setDimension(dim) {
       currentDimension = dim; currentPage = 1;
@@ -280,16 +299,18 @@
       if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
       return String(n);
     }
+    function durationUnit(zh, mn, en) { return isZh() ? zh : isMn() ? mn : en; }
     function formatDuration(s) {
-      if (s >= 86400) { var d = Math.floor(s/86400), h = Math.floor((s%86400)/3600); return d + (isZh()?'天':'d') + (h > 0 ? ' '+h+(isZh()?'时':'h') : ''); }
-      if (s >= 3600) return (s/3600).toFixed(1) + (isZh()?' 小时':'h');
-      if (s >= 60) return Math.floor(s/60) + (isZh()?' 分钟':' Min');
-      return s + (isZh()?' 秒':'s');
+      if (s >= 86400) { var d = Math.floor(s/86400), h = Math.floor((s%86400)/3600); return d + durationUnit('天', ' өдөр', 'd') + (h > 0 ? ' ' + h + durationUnit('时', ' цаг', 'h') : ''); }
+      if (s >= 3600) return (s/3600).toFixed(1) + durationUnit(' 小时', ' цаг', 'h');
+      if (s >= 60) return Math.floor(s/60) + durationUnit(' 分钟', ' мин', ' Min');
+      return s + durationUnit(' 秒', ' сек', 's');
     }
+    function usageLabel() { return isZh() ? '使用时长' : isMn() ? 'Хэрэглэсэн хугацаа' : 'Usage'; }
     function primaryMetric(row) { return currentDimension === 'duration' ? formatDuration(row.duration_seconds) : formatTokens(row.total_tokens); }
-    function primaryLabel() { return currentDimension === 'duration' ? (isZh()?'使用时长':'Usage') : 'Tokens'; }
+    function primaryLabel() { return currentDimension === 'duration' ? usageLabel() : 'Tokens'; }
     function secondaryMetric(row) { return currentDimension === 'duration' ? formatTokens(row.total_tokens) : formatDuration(row.duration_seconds); }
-    function secondaryLabel() { return currentDimension === 'duration' ? 'Tokens' : (isZh()?'使用时长':'Usage'); }
+    function secondaryLabel() { return currentDimension === 'duration' ? 'Tokens' : usageLabel(); }
     function rankFor(row) { return currentDimension === 'duration' ? row.duration_rank : row.token_rank; }
     function esc(str) { var e = document.createElement('span'); e.textContent = str || ''; return e.innerHTML; }
 
@@ -337,6 +358,12 @@
       document.getElementById('nextBtn').disabled = currentPage >= totalPages;
       document.getElementById('pageInfo').textContent = currentPage + ' / ' + totalPages;
     }
+    function paint(data) {
+      renderStats(data);
+      renderPodium(data.rows);
+      renderGrid(data.rows);
+      renderPagination();
+    }
     function renderStats(data) {
       document.getElementById('statPeriod').textContent = data.month || '-';
       document.getElementById('statTotal').textContent = String(data.total || 0);
@@ -346,6 +373,7 @@
     var loadSeq = 0; // request sequencing to prevent stale responses
     function loadData() {
       var seq = ++loadSeq;
+      loading = true;
       document.getElementById('loadingIndicator').style.display = 'block';
       document.getElementById('emptyIndicator').style.display = 'none';
       document.getElementById('podiumSection').style.display = 'none';
@@ -362,15 +390,15 @@
         return r.json();
       }).then(function(data) {
         if (seq !== loadSeq) return; // stale response, discard
+        loading = false;
         document.getElementById('loadingIndicator').style.display = 'none';
-        if (!data || !data.rows || data.rows.length === 0) { document.getElementById('emptyIndicator').style.display = 'block'; return; }
+        if (!data || !data.rows || data.rows.length === 0) { lastPayload = null; document.getElementById('emptyIndicator').style.display = 'block'; return; }
+        lastPayload = data;
         totalPages = Math.ceil((data.total || 0) / (data.page_size || 100));
-        renderStats(data);
-        renderPodium(data.rows);
-        renderGrid(data.rows);
-        renderPagination();
+        paint(data);
       }).catch(function() {
         if (seq !== loadSeq) return;
+        loading = false;
         document.getElementById('loadingIndicator').style.display = 'none';
         document.getElementById('emptyIndicator').style.display = 'block';
       });

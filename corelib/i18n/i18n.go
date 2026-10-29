@@ -4,7 +4,7 @@
 // Usage:
 //
 //	i18n.T(i18n.MsgAckProcessing, "en")       // English
-//	i18n.T(i18n.MsgAckProcessing, "")         // fallback → zh
+//	i18n.T(i18n.MsgAckProcessing, "")         // fallback → en
 //	i18n.Tf(i18n.MsgAgentRoundOf, "en", 2, 5) // formatted
 package i18n
 
@@ -501,8 +501,9 @@ const (
 	MsgMilestoneVerbEllipsis      = "msg.milestone_verb_ellipsis"      // %s verb → "verb..."
 )
 
-// defaultLang is the fallback language when lang is empty or unknown.
-const defaultLang = "zh"
+// defaultLang is the fallback when a non-Chinese, non-Mongolian tag is empty
+// or unrecognised. Simplified and Traditional Chinese still use the zh table.
+const defaultLang = "en"
 
 // ---------------------------------------------------------------------------
 // Translation tables
@@ -1414,28 +1415,33 @@ var translations = map[string]map[string]string{
 // ---------------------------------------------------------------------------
 
 // NormalizeLang maps common language codes to the keys used in the
-// translations table. An empty or unrecognised code falls back to "zh".
+// translations table. Simplified and Traditional Chinese use "zh".
+// Cyrillic Mongolian uses "mn". Empty and every other tag use "en".
 func NormalizeLang(lang string) string {
 	lang = strings.TrimSpace(lang)
-	// Case-insensitive + common GUI tags (zh-Hans / en-US).
-	lower := strings.ToLower(lang)
+	lower := strings.ToLower(strings.ReplaceAll(lang, "_", "-"))
 	switch {
-	case lower == "" || lower == "zh" || strings.HasPrefix(lower, "zh-") || lower == "chinese" || lower == "cn":
+	case lower == "zh-hant" || lower == "zh-tw" || lower == "zh-hk" || lower == "zh-mo" ||
+		strings.HasPrefix(lower, "zh-hant-") || strings.HasPrefix(lower, "zh-tw-") ||
+		strings.HasPrefix(lower, "zh-hk-") || strings.HasPrefix(lower, "zh-mo-") ||
+		lower == "zh" || strings.HasPrefix(lower, "zh-") || lower == "chinese" || lower == "cn":
 		return "zh"
+	case lower == "mn" || lower == "mn-mn" || lower == "mn-cyrl" || lower == "mn-cyrl-mn" ||
+		strings.HasPrefix(lower, "mn-cyrl-") || strings.HasPrefix(lower, "mn-mn-"):
+		if strings.HasPrefix(lower, "mn-mong") {
+			return defaultLang
+		}
+		return "mn"
 	case lower == "en" || strings.HasPrefix(lower, "en-") || lower == "english":
 		return "en"
 	default:
-		// Preserve exact known table keys if any future variants are added.
-		if _, ok := translations[lang]; ok {
-			return lang
-		}
 		return defaultLang
 	}
 }
 
 // T returns the translated string for the given key and language.
-// If lang is empty or unknown it falls back to "zh".
-// If the key is not found the key itself is returned.
+// Empty or unrecognised languages use English. Mongolian misses fall back
+// to English, never Chinese. A missing key returns the key itself.
 func T(key, lang string) string {
 	lang = NormalizeLang(lang)
 	if table, ok := translations[lang]; ok {
@@ -1443,10 +1449,8 @@ func T(key, lang string) string {
 			return s
 		}
 	}
-	// Fallback to default language if the requested lang table exists but
-	// the key is missing.
-	if lang != defaultLang {
-		if table, ok := translations[defaultLang]; ok {
+	if lang == "mn" {
+		if table, ok := translations["en"]; ok {
 			if s, ok := table[key]; ok {
 				return s
 			}

@@ -142,6 +142,8 @@
       notifPreview: '\u9884\u89c8',
       notifFormContentChars: '{count}/2000'
     });
+    var notificationMn = (global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.NOTIFICATION) || {};
+    I18N.mn = Object.assign({}, I18N.mn || {}, notificationMn);
   }
 
   // --- State ---

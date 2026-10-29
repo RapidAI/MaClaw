@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { localizeText } from '../../i18n';
 import { darkCodePreviewTheme, lightCodePreviewTheme } from '../ai/CodePreviewPanel';
 import type { CodePreviewTheme } from '../ai/FileTabBar';
 import { usePreviewSlideLifecycle } from '../ai/previewSlide';
@@ -43,15 +44,11 @@ function previewTheme(): CodePreviewTheme {
 }
 
 function closeLabel(lang: string): string {
-    if (lang === 'en') return 'Close preview';
-    if (lang === 'zh-Hant') return '關閉預覽';
-    return '关闭预览';
+    return localizeText(lang, 'Close preview', '关闭预览', '關閉預覽');
 }
 
 function paneLabel(lang: string): string {
-    if (lang === 'en') return 'File preview';
-    if (lang === 'zh-Hant') return '檔案預覽';
-    return '文件预览';
+    return localizeText(lang, 'File preview', '文件预览', '檔案預覽');
 }
 
 export function BotFilePreview({ lang, botId }: { lang: string; botId: string }) {

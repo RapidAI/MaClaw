@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { DeleteCodingWorkbenchEntry, DownloadCodingWorkbenchEntry, ExportLatexSubmissionZip, GetCodingWorkbenchDirectory, GetCodingWorkbenchEntryProperties, GetCodingWorkbenchFilePreview, IsCodingWorkbenchVSCodeAvailable, OpenCodingWorkbenchFileInVSCode, OpenCodingWorkbenchFileLocally } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime";
 import { useDialog } from "../CustomDialog";
-import { localizeText, normalizeLang } from "../../i18n/langSelect";
+import { intlLocale, localizeText } from "../../i18n/langSelect";
 import type { CodePreviewTheme } from "./FileTabBar";
 import type { CodeFile } from "./useCodePreviewState";
 import { isDocxFileName } from "./DocxPreviewPanel";
@@ -205,7 +205,7 @@ export function workspaceErrorMessage(error: unknown, cloudMode: boolean, lang: 
 }
 function basename(value: string) { const clean = value.replace(/[\\/]+$/, ""); return clean.slice(Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\")) + 1) || clean; }
 function fileSize(bytes: number) { if (!Number.isFinite(bytes) || bytes < 0) return "-"; if (bytes < 1024) return `${bytes} B`; const units = ["KB", "MB", "GB", "TB"]; let value = bytes / 1024; let index = 0; while (value >= 1024 && index < 3) { value /= 1024; index++; } return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`; }
-function modifiedAt(seconds: number, lang: string) { const normalized = normalizeLang(lang); const locale = normalized === "zh-Hant" ? "zh-TW" : normalized === "zh-Hans" ? "zh-CN" : "en-US"; return Number.isFinite(seconds) && seconds > 0 ? new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(seconds * 1000)) : "-"; }
+function modifiedAt(seconds: number, lang: string) { return Number.isFinite(seconds) && seconds > 0 ? new Intl.DateTimeFormat(intlLocale(lang), { dateStyle: "medium", timeStyle: "medium" }).format(new Date(seconds * 1000)) : "-"; }
 function clampMenuPosition(x: number, y: number) { return { x: Math.max(8, Math.min(x, window.innerWidth - 204)), y: Math.max(8, Math.min(y, window.innerHeight - 220)) }; }
 function parentEntryPath(path: string) { const clean = path.replace(/[\\/]+$/, ""); const index = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\")); return index <= 0 ? "" : clean.slice(0, index); }
 function entryPathContainedBy(path: string, ancestor: string) { if (!ancestor) return path === ancestor; return path === ancestor || path.startsWith(`${ancestor}/`) || path.startsWith(`${ancestor}\\`); }

@@ -180,6 +180,7 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
                         <option value="en">English</option>
                         <option value="zh-Hans">{'\u7b80\u4f53\u4e2d\u6587'}</option>
                         <option value="zh-Hant">{'\u7e41\u9ad4\u4e2d\u6587'}</option>
+                        <option value="mn">{'\u041c\u043e\u043d\u0433\u043e\u043b'}</option>
                     </select>
                 </label>
                 <label className="general-settings-option general-settings-option--inline general-settings-option--plain">

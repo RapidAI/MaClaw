@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, type CodeFile } from "./useCodePreviewState";
 import { formatCodeLanguageLabel } from "./codePreviewFindHelpers";
 import { extractFileName, getOpTypeIndicator, type CodePreviewTheme } from "./FileTabBar";
+import { tailText } from "../../i18n/mnTail"
 
 /** Rows listed before the "show more" expansion. */
 const FILE_LIST_PAGE_SIZE = 5;
@@ -107,8 +108,8 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
         if (!pinned) close();
     };
 
-    const listLabel = isZh ? "文件列表" : "File list";
-    const pinLabel = isZh ? (pinned ? "取消固定面板" : "固定面板") : (pinned ? "Unpin panel" : "Pin panel");
+    const listLabel = tailText(lang, "File list", "文件列表");
+    const pinLabel = pinned ? tailText(lang, "Unpin panel", "取消固定面板") : tailText(lang, "Pin panel", "固定面板");
 
     return (
         <span className="cpfl-anchor" data-preview-no-maximize="true">
@@ -172,7 +173,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                         }}
                     >
                         <div className="cpfl-head">
-                            <span style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>{isZh ? "概览" : "Overview"}</span>
+                            <span style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>{tailText(lang, "Overview", "概览")}</span>
                             <button
                                 type="button"
                                 data-testid="code-preview-file-list-pin"
@@ -211,7 +212,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                                 color: theme.textMuted,
                             }}
                         >
-                            <span>{isZh ? `产物 (${paths.length})` : `Artifacts (${paths.length})`}</span>
+                            <span>{tailText(lang, `Artifacts (${paths.length})`, `产物 (${paths.length})`)}</span>
                             {(totals.added > 0 || totals.removed > 0) && (
                                 <span style={{ marginLeft: "auto", fontWeight: 700 }}>
                                     <span style={{ color: theme.diffAddText }}>+{totals.added}</span>
@@ -290,7 +291,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                                         textAlign: "left",
                                     }}
                                 >
-                                    {isZh ? `展开更多（${hiddenCount}）` : `Show more (${hiddenCount})`}
+                                    {tailText(lang, `Show more (${hiddenCount})`, `展开更多（${hiddenCount}）`)}
                                 </button>
                             )}
                         </div>

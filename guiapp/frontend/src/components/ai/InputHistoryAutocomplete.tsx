@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { tailText } from "../../i18n/mnTail"
 
 interface InputHistoryAutocompleteProps {
     open: boolean;
@@ -70,7 +71,6 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
 
     if (!open || matches.length === 0) return null;
 
-    const isZh = !lang?.startsWith("en");
     const dark = t.bg.startsWith("#0") || t.bg.startsWith("#1") || t.bg.startsWith("#2");
     const safeIndex = Math.max(0, Math.min(selectedIndex, matches.length - 1));
     const activeBg = dark ? "rgba(148, 163, 184, 0.16)" : `color-mix(in srgb, ${t.btnColor} 10%, transparent)`;
@@ -97,7 +97,7 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
             ref={listRef}
             role="listbox"
             id={listboxId}
-            aria-label={isZh ? "历史输入补全" : "History autocomplete"}
+            aria-label={tailText(lang ?? "", "History autocomplete", "历史输入补全")}
             data-testid={testId}
             style={{
                 position: "absolute",
@@ -122,8 +122,8 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
                 const optionId = `${listboxId}-option-${index}`;
                 const imageCount = imageCounts?.[index] || 0;
                 const imageLabel = imageCount === 1
-                    ? (isZh ? "含图片" : "image")
-                    : (isZh ? `${imageCount} 张图片` : `${imageCount} images`);
+                    ? (tailText(lang ?? "", "image", "含图片"))
+                    : (tailText(lang ?? "", `${imageCount} images`, `${imageCount} 张图片`));
                 return (
                     <button
                         key={`${index}-${item.slice(0, 48)}`}
@@ -165,7 +165,7 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
                     userSelect: "none",
                 }}
             >
-                {isZh ? "↑↓ 选择 · Enter / Tab 补全 · Esc 关闭" : "↑↓ select · Enter / Tab complete · Esc dismiss"}
+                {tailText(lang ?? "", "↑↓ select · Enter / Tab complete · Esc dismiss", "↑↓ 选择 · Enter / Tab 补全 · Esc 关闭")}
             </div>
         </div>
     );

@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { AdminNotification } from "./useNotifications";
 import { companionHostTransferToken, companionShareToken } from "./AssistantTitleBarNotifications.companionShare";
+import { localizeText } from "../../i18n";
+import { tailText } from "../../i18n/mnTail"
 
 // ---------------------------------------------------------------------------
 // Props
@@ -28,17 +30,6 @@ export interface NotificationDetailProps {
   hostTransferBusy?: boolean;
   hostTransferError?: string;
 }
-
-// ---------------------------------------------------------------------------
-// Localization helper
-// ---------------------------------------------------------------------------
-
-const localizeText = (
-  lang: string | undefined,
-  en: string,
-  zhHans: string,
-  zhHant: string = zhHans,
-) => (lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") ? zhHans : en);
 
 // ---------------------------------------------------------------------------
 // Category display. Colors live in CSS (notification-cat--*) so the pill
@@ -128,7 +119,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
         <div className="ndet-meta">
           {/* Category pill */}
           <span className={`ndet-cat notification-cat--${notification.category}`}>
-            {isZh ? catLabel.zh : catLabel.en}
+            {tailText(lang ?? "", catLabel.en, catLabel.zh)}
           </span>
 
           {/* Priority badge */}

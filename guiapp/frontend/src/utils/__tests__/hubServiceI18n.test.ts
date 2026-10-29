@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { localizeByLang, localizeHubServiceReason, localizeHubServiceRedeemError, localizeHubServiceStatusError } from '../hubServiceI18n';
+import { localizeText } from '../../i18n/langSelect';
+import { localizeByLang, localizeHubServiceReason, localizeHubServiceRedeemError, localizeHubServiceStatusError, mnApproxAfter, mnDurationUnit } from '../hubServiceI18n';
 
 describe('hubServiceI18n', () => {
     it('selects localized text by UI language', () => {
@@ -8,6 +9,8 @@ describe('hubServiceI18n', () => {
         expect(localizeByLang('en', 'English', '简体', '繁體')).toBe('English');
         expect(localizeByLang('zh-Hans', 'English', '简体', '繁體')).toBe('简体');
         expect(localizeByLang('zh-Hant', 'English', '简体', '繁體')).toBe('繁體');
+        expect(localizeByLang('mn', 'Service status unavailable.', '服务状态暂不可用。', '服務狀態暫不可用。')).toBe('Үйлчилгээний төлөв боломжгүй.');
+        expect(localizeByLang('mn-Mong', 'Service status unavailable.', '服务状态暂不可用。', '服務狀態暫不可用。')).toBe('Service status unavailable.');
     });
 
     it('localizes known Hub service reasons and strips Error prefix', () => {
@@ -42,5 +45,17 @@ describe('hubServiceI18n', () => {
         expect(localizeHubServiceStatusError('account status query failed: 401 Unauthorized: viewer token expired', 'zh-Hans')).toBe('Hub 授权已过期，请重新连接 Hub 后重试。');
         expect(localizeHubServiceStatusError('account status query failed: 400 Bad Request: invalid tenant', 'zh-Hant')).toBe('Hub 租戶資訊無效，請重新完成 Hub 啟用。');
         expect(localizeHubServiceStatusError('status query failed: 502 Bad Gateway', 'zh-Hans')).toBe('服务状态查询失败：502 Bad Gateway');
+    });
+
+    it('builds a Khalkha retry phrase and keeps Chinese and English status labels', () => {
+        expect(mnDurationUnit(2, 'minute')).toBe('2 минут');
+        expect(mnApproxAfter('1 цаг')).toBe('ойролцоогоор 1 цагийн дараа');
+        expect(mnApproxAfter('2 цаг 1 минут')).toBe('ойролцоогоор 2 цаг 1 минутын дараа');
+        expect(mnApproxAfter('3 өдөр')).toBe('ойролцоогоор 3 өдрийн дараа');
+        expect(mnApproxAfter('45 секунд')).toBe('ойролцоогоор 45 секундын дараа');
+        expect(localizeText('mn', 'Period limited', '周期限额')).toBe('Мөчлөгийн хязгаар');
+        expect(localizeText('zh-Hans', 'Period limited', '周期限额')).toBe('周期限额');
+        expect(localizeText('en', 'Period limited', '周期限额')).toBe('Period limited');
+        expect(localizeText('zh-Hant', 'Not active yet', '未生效', '尚未生效')).toBe('尚未生效');
     });
 });

@@ -25,6 +25,11 @@ func TestParseChatSSEFailureFrames(t *testing.T) {
 			wantErr: "模型回复为空",
 		},
 		{
+			name:    "numeric billing code",
+			stream:  "data:{\"body\":\"{\\\"code\\\":110,\\\"message\\\":\\\"Billing daily count exceeded\\\"}\"}\n\n",
+			wantErr: "Qoder 聊天被上游拒绝 (110): Billing daily count exceeded",
+		},
+		{
 			name:    "plain json failure tail errors",
 			stream:  "data:{\"hdrs\":1}\n\ndata:{\"success\":false,\"msgCode\":500,\"message\":\"Internal Server Error\"}\n\n",
 			wantErr: "Qoder 上游错误 (HTTP 500): Internal Server Error",

@@ -128,7 +128,8 @@
 
   function cwsx(key, vars) {
     vars = vars || {};
-    var lang = global.currentLang || 'en';
+    if (global.hubDict) return global.hubDict('CWS', CWS_I18N, key, vars);
+    var lang = global.currentLang === 'zh' ? 'zh' : 'en';
     var table = CWS_I18N[lang] || CWS_I18N.en;
     var text = table[key] || CWS_I18N.en[key] || key;
     return String(text).replace(/\{(\w+)\}/g, function(_, name) {

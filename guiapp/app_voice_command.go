@@ -452,20 +452,14 @@ func (a *App) transcribeIMVoiceAttachment(wavData []byte, onProgress func(string
 
 // imVoiceASRProgressText localizes short IM ASR progress strings.
 func imVoiceASRProgressText(lang, kind string) string {
-	var table map[string]string
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		table = imVoiceASRProgressEN
-	case appLanguageZhHant:
-		table = imVoiceASRProgressZhHant
-	default:
-		table = imVoiceASRProgressZhHans
-	}
-	if s, ok := table[kind]; ok {
+	en := imVoiceASRProgressEN[kind]
+	hans := imVoiceASRProgressZhHans[kind]
+	hant := imVoiceASRProgressZhHant[kind]
+	if s := pickUI(lang, en, hans, hant); s != "" {
 		return s
 	}
-	if s, ok := imVoiceASRProgressEN[kind]; ok {
-		return s
+	if en != "" {
+		return en
 	}
 	return kind
 }

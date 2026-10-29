@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { tailText } from "../../i18n/mnTail"
 
 /**
  * NotificationBell — 铃铛图标组件
@@ -156,13 +157,13 @@ export function NotificationBell({
             aria-haspopup="dialog"
             aria-label={
                 unreadCount > 0
-                    ? (lang?.startsWith("zh") ? `${unreadCount} 条未读通知` : `${unreadCount} unread notifications`)
-                    : (lang?.startsWith("zh") ? "通知" : "Notifications")
+                    ? (tailText(lang ?? "", `${unreadCount} unread notifications`, `${unreadCount} 条未读通知`))
+                    : (tailText(lang ?? "", "Notifications", "通知"))
             }
             title={
                 unreadCount > 0
-                    ? (lang?.startsWith("zh") ? `${unreadCount} 条未读通知` : `${unreadCount} unread notifications`)
-                    : (lang?.startsWith("zh") ? "通知" : "Notifications")
+                    ? (tailText(lang ?? "", `${unreadCount} unread notifications`, `${unreadCount} 条未读通知`))
+                    : (tailText(lang ?? "", "Notifications", "通知"))
             }
         >
             <BellIcon animate={shouldAnimate} theme={theme} />

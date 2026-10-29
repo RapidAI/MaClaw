@@ -37,6 +37,7 @@ import { WorkflowPickerPopover } from "./WorkflowPickerPopover";
 import type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 import { WorkspacePickerPopover } from "./WorkspacePickerPopover";
 import { WorkspaceTypeBadge } from "./WorkspaceTypeBadge";
+import { tailText } from "../../../i18n/mnTail"
 
 export type { ExpertOption } from "./ExpertPickerPopover";
 export type { WorkflowOption } from "./WorkflowPickerPopover";
@@ -131,7 +132,7 @@ export function TaskConfigBar({
     variant = "chip",
 }: TaskConfigBarProps) {
     const bare = variant === "bare";
-    const isZh = !lang?.startsWith("en");
+    const isZh = !!lang?.startsWith("zh");
     const [userExpanded, setUserExpanded] = useState(!!defaultExpanded);
     // defaultExpanded is a live signal (wizard tab marker): expand when it
     // turns true even if the bar was already mounted collapsed. Never collapses.
@@ -306,7 +307,7 @@ export function TaskConfigBar({
             color: t.btnColor,
         };
 
-    const workspaceLabel = workspaceSummaryLabel(draft, isZh);
+    const workspaceLabel = workspaceSummaryLabel(draft, (lang || (isZh ? "zh-Hans" : "en")));
 
     return (
         <div
@@ -319,51 +320,51 @@ export function TaskConfigBar({
                     type="button"
                     data-testid="task-config-collapsed"
                     disabled={disabled}
-                    title={isZh ? "默认 — 会话 · 通用专家 · 无工作流 · 本地" : "Default — Chat · General expert · No workflow · Local"}
+                    title={tailText(lang ?? "", "Default — Chat · General expert · No workflow · Local", "默认 — 会话 · 通用专家 · 无工作流 · 本地")}
                     onClick={() => setUserExpanded(true)}
                     style={collapsedStyle}
                 >
                     <TaskConfigIcon name="gear" size={13} />
-                    {isZh ? "默认" : "Default"}
+                    {tailText(lang ?? "", "Default", "默认")}
                     <TaskConfigIcon name="chevronDown" size={10} style={{ color: t.textMuted }} />
                 </button>
             ) : (
                 <>
-                    {renderChip('type', "task-config-chip-type", isZh ? "类型" : "Type", draft.taskType === 'chat' ? (isZh ? "会话" : "Chat") : (isZh ? "编程" : "Coding"), {
+                    {renderChip('type', "task-config-chip-type", tailText(lang ?? "", "Type", "类型"), draft.taskType === 'chat' ? (tailText(lang ?? "", "Chat", "会话")) : (tailText(lang ?? "", "Coding", "编程")), {
                         active: draft.taskType === 'coding',
-                        title: isZh ? "会话 / 编程" : "Chat / Coding",
+                        title: tailText(lang ?? "", "Chat / Coding", "会话 / 编程"),
                     })}
-                    {renderChip('expert', "task-config-chip-expert", isZh ? "专家" : "Expert", (
+                    {renderChip('expert', "task-config-chip-expert", tailText(lang ?? "", "Expert", "专家"), (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                             {expertSpecified && (
                                 <span aria-hidden="true" style={{ fontSize: 13, lineHeight: 1 }}>
                                     {experts.find(e => e.id === draft.expertId)?.icon?.trim() || DEFAULT_EXPERT_ICON}
                                 </span>
                             )}
-                            {draft.expertName || (isZh ? "通用专家" : "General")}
+                            {draft.expertName || (tailText(lang ?? "", "General", "通用专家"))}
                         </span>
                     ), {
                         active: expertSpecified,
                         locked: expertLocked,
-                        title: expertLocked ? (isZh ? "已选择工作流，专家保持通用" : "Workflow chosen") : undefined,
+                        title: expertLocked ? (tailText(lang ?? "", "Workflow chosen", "已选择工作流，专家保持通用")) : undefined,
                     })}
-                    {showLatexTemplate ? renderChip('latex', "task-config-chip-latex-template", isZh ? "模板" : "Template", latexTemplateLabel, {
+                    {showLatexTemplate ? renderChip('latex', "task-config-chip-latex-template", tailText(lang ?? "", "Template", "模板"), latexTemplateLabel, {
                         active: latexTemplateId !== LATEX_BLANK_TEMPLATE_ID,
-                        title: isZh ? "默认空白模板，可改选已安装的 LaTeX 模板" : "Blank template by default. Pick an installed LaTeX template.",
-                    }) : renderChip('workflow', "task-config-chip-workflow", isZh ? "工作流" : "Workflow", workflowLocked ? (isZh ? "由专家决定" : "By expert") : (draft.workflowTemplateId === null ? (isZh ? "无" : "None") : draft.workflowTemplateId === WORKFLOW_AUTO ? (isZh ? "自动判断" : "Auto") : (workflows.find((w) => w.id === draft.workflowTemplateId)?.title || draft.workflowTemplateId)), {
+                        title: tailText(lang ?? "", "Blank template by default. Pick an installed LaTeX template.", "默认空白模板，可改选已安装的 LaTeX 模板"),
+                    }) : renderChip('workflow', "task-config-chip-workflow", tailText(lang ?? "", "Workflow", "工作流"), workflowLocked ? (tailText(lang ?? "", "By expert", "由专家决定")) : (draft.workflowTemplateId === null ? (tailText(lang ?? "", "None", "无")) : draft.workflowTemplateId === WORKFLOW_AUTO ? (tailText(lang ?? "", "Auto", "自动判断")) : (workflows.find((w) => w.id === draft.workflowTemplateId)?.title || draft.workflowTemplateId)), {
                         active: isWorkflowChosen(draft),
                         locked: workflowLocked,
-                        title: workflowLocked ? (isZh ? "已指定专家，工作流由专家决定" : "Expert specified") : undefined,
+                        title: workflowLocked ? (tailText(lang ?? "", "Expert specified", "已指定专家，工作流由专家决定")) : undefined,
                     })}
-                    {renderChip('workspace', "task-config-chip-workspace", isZh ? "工作空间" : "Workspace", (
+                    {renderChip('workspace', "task-config-chip-workspace", tailText(lang ?? "", "Workspace", "工作空间"), (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: "100%" }}>
                             <WorkspaceTypeBadge
                                 kind={draft.workspace.kind}
                                 label={draft.workspace.kind === 'local'
-                                    ? (isZh ? "本地" : "Local")
+                                    ? (tailText(lang ?? "", "Local", "本地"))
                                     : draft.workspace.kind === 'cloud'
-                                        ? (isZh ? "云端" : "Cloud")
-                                        : (isZh ? "远程" : "Remote")}
+                                        ? (tailText(lang ?? "", "Cloud", "云端"))
+                                        : (tailText(lang ?? "", "Remote", "远程"))}
                             />
                             {draft.workspace.kind === 'local' && !draft.workspace.localPath && !localPathMissing && (
                                 <TaskConfigIcon name="home" size={leadIconSize} style={leadIconStyle} />
@@ -374,14 +375,14 @@ export function TaskConfigBar({
                         active: draft.workspace.kind !== 'local' || localPathMissing,
                         warning: localPathMissing,
                         title: localPathMissing
-                            ? (isZh ? "编程任务需要选择本地目录" : "Coding tasks need a local directory")
+                            ? (tailText(lang ?? "", "Coding tasks need a local directory", "编程任务需要选择本地目录"))
                             : expertSpecified
-                                ? (isZh ? "可选择本地工作目录" : "Choose a local working directory")
+                                ? (tailText(lang ?? "", "Choose a local working directory", "可选择本地工作目录"))
                                 : undefined,
                     })}
-                    {renderChip('window', "task-config-chip-window", isZh ? "运行时段" : "Window", runWindowChipLabel(draft.runWindow, isZh), {
+                    {renderChip('window', "task-config-chip-window", tailText(lang ?? "", "Window", "运行时段"), runWindowChipLabel(draft.runWindow, (lang || (isZh ? "zh-Hans" : "en"))), {
                         active: scheduledWindow,
-                        title: isZh ? "立即执行，或设定开始和结束时间" : "Run now, or set a start and optional end",
+                        title: tailText(lang ?? "", "Run now, or set a start and optional end", "立即执行，或设定开始和结束时间"),
                     })}
                 </>
             )}
@@ -558,7 +559,6 @@ function RunWindowPopover({
     onChange: (next: RunWindow) => void;
     onClose: () => void;
 }) {
-    const isZh = !lang?.startsWith("en");
     const scheduled = runWindow?.mode === "scheduled";
     const startValue = runWindow?.startAt || "";
     const endValue = runWindow?.endAt || "";
@@ -593,9 +593,9 @@ function RunWindowPopover({
                         background: scheduled ? "transparent" : `color-mix(in srgb, ${t.btnColor} 9%, ${t.bg})`,
                     }}
                 >
-                    {isZh ? "立即" : "Now"}
+                    {tailText(lang ?? "", "Now", "立即")}
                     <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: t.textMuted, marginTop: 2 }}>
-                        {isZh ? "创建后马上执行" : "Start as soon as the task is created"}
+                        {tailText(lang ?? "", "Start as soon as the task is created", "创建后马上执行")}
                     </span>
                 </div>
                 <div
@@ -615,26 +615,26 @@ function RunWindowPopover({
                         background: scheduled ? `color-mix(in srgb, ${t.btnColor} 9%, ${t.bg})` : "transparent",
                     }}
                 >
-                    {isZh ? "定时" : "Scheduled"}
+                    {tailText(lang ?? "", "Scheduled", "定时")}
                     <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: t.textMuted, marginTop: 2 }}>
-                        {isZh ? "到开始时间再执行。结束时间可不填，不填则任务完成即结束" : "Wait until the start time. Leave the end empty to run until the work finishes"}
+                        {tailText(lang ?? "", "Wait until the start time. Leave the end empty to run until the work finishes", "到开始时间再执行。结束时间可不填，不填则任务完成即结束")}
                     </span>
                 </div>
                 {scheduled && (
                     <div style={{ display: "grid", gap: 10, padding: "8px 10px 0" }}>
                         <RunWindowDatetimeField
-                            label={isZh ? "开始" : "Start"}
+                            label={tailText(lang ?? "", "Start", "开始")}
                             testId="run-window-start"
-                            pickerLabel={isZh ? "选择开始时间" : "Choose start time"}
+                            pickerLabel={tailText(lang ?? "", "Choose start time", "选择开始时间")}
                             value={startValue}
                             min={toDatetimeLocalValue(new Date())}
                             theme={t}
                             onValue={(startAt) => onChange({ mode: "scheduled", startAt, endAt: endValue })}
                         />
                         <RunWindowDatetimeField
-                            label={isZh ? "结束（可选）" : "End (optional)"}
+                            label={tailText(lang ?? "", "End (optional)", "结束（可选）")}
                             testId="run-window-end"
-                            pickerLabel={isZh ? "选择结束时间" : "Choose end time"}
+                            pickerLabel={tailText(lang ?? "", "Choose end time", "选择结束时间")}
                             value={endValue}
                             min={startValue || undefined}
                             theme={t}
@@ -663,10 +663,9 @@ function TypePickerPopover({
     onSelect: (taskType: TaskType) => void;
     onClose: () => void;
 }) {
-    const isZh = !lang?.startsWith("en");
     const options: { value: TaskType; icon: "chat" | "code"; title: string; desc: string }[] = [
-        { value: 'chat', icon: "chat", title: isZh ? "会话" : "Chat", desc: isZh ? "直接对话完成任务；工作空间可选本地 / 云端 / 远程" : "Conversational task; workspace can be local / cloud / remote" },
-        { value: 'coding', icon: "code", title: isZh ? "编程" : "Coding", desc: isZh ? "在代码仓库中开发；工作空间可选本地 / 远程" : "Develop in a repo; workspace can be local / remote" },
+        { value: 'chat', icon: "chat", title: tailText(lang ?? "", "Chat", "会话"), desc: tailText(lang ?? "", "Conversational task; workspace can be local / cloud / remote", "直接对话完成任务；工作空间可选本地 / 云端 / 远程") },
+        { value: 'coding', icon: "code", title: tailText(lang ?? "", "Coding", "编程"), desc: tailText(lang ?? "", "Develop in a repo; workspace can be local / remote", "在代码仓库中开发；工作空间可选本地 / 远程") },
     ];
     return (
         <TaskConfigPopoverShell anchor={anchor} theme={t} onClose={onClose} width={400} data-testid="task-config-popover-type">

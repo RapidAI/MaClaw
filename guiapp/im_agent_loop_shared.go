@@ -1920,10 +1920,10 @@ func (c *sharedAgentLoopCallbacks) AllowMoAFanOut(nRefs int) (ok bool, reason st
 		return true, ""
 	}
 	lang := c.handler.imCommandResponseLang("")
-	if normalizeAppLanguageKind(lang).IsChinese() {
-		return false, fmt.Sprintf("今日预算不足，已跳过其他模型会诊（约需 $%.4f；%s）", need, ct.DailySummary())
-	}
-	return false, fmt.Sprintf("moa advisors skipped (daily budget low; need ~$%.4f, %s)", need, ct.DailySummary())
+	return false, fmt.Sprintf(pickUI(lang,
+		"moa advisors skipped (daily budget low; need ~$%.4f, %s)",
+		"今日预算不足，已跳过其他模型会诊（约需 $%.4f；%s）",
+		"今日预算不足，已跳过其他模型会诊（约需 $%.4f；%s）"), need, ct.DailySummary())
 }
 
 // PrepareMoA implements agent.MoAHost for one-shot / sticky / allow_auto council turns.
@@ -1962,20 +1962,13 @@ func (c *sharedAgentLoopCallbacks) PrepareMoA(iteration int, toolsSeen bool, fan
 		c.UpgradeLightPromptToFull("moa council")
 	}
 	n := len(c.moaPreset.References)
-	progress = fmt.Sprintf("consulting %d models…", n)
 	lang := ""
 	if c.handler != nil {
 		lang = c.handler.imCommandResponseLang("")
 	}
-	if normalizeAppLanguageKind(lang).IsChinese() {
-		progress = fmt.Sprintf("正在征询 %d 个其他模型…", n)
-	}
+	progress = fmt.Sprintf(pickUI(lang, "consulting %d models…", "正在征询 %d 个其他模型…", "正在征询 %d 个其他模型…"), n)
 	if c.moaAuto && iteration == 0 && fanoutsRan == 0 {
-		if normalizeAppLanguageKind(lang).IsChinese() {
-			progress = "难题自动多模型会诊：" + progress
-		} else {
-			progress = "auto multi-model: " + progress
-		}
+		progress = pickUI(lang, "auto multi-model: ", "难题自动多模型会诊：", "难题自动多模型会诊：") + progress
 	}
 	_ = toolsSeen
 	return true, *c.moaPreset, progress

@@ -69,6 +69,7 @@
   };
 
   function ott(key, params) {
+    if (global.hubDict) return global.hubDict('OTI', OTI18N, key, params);
     var lang = global.currentLang === 'zh' ? 'zh' : 'en';
     var text = (OTI18N[lang] && OTI18N[lang][key]) || (OTI18N.en && OTI18N.en[key]) || key;
     if (params) {
@@ -343,7 +344,11 @@
   }
 
   function systemFreeI18n(key) {
-    var zh = global.currentLang === 'zh';
+    var lang = global.hubAdminLang ? global.hubAdminLang() : (global.currentLang === 'zh' ? 'zh' : 'en');
+    if (lang === 'mn' && global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.SYSTEM_FREE && global.HUB_ADMIN_DICT_MN.SYSTEM_FREE[key]) {
+      return global.HUB_ADMIN_DICT_MN.SYSTEM_FREE[key];
+    }
+    var zh = lang === 'zh';
     var map = zh ? {
       title: 'system-free \u7cfb\u7edf\u514d\u8d39 LLM',
       desc: 'Hub / MaClawSrv \u670d\u52a1\u7aef Agent \u9ed8\u8ba4\u4f7f\u7528\u6b64\u7ec4\uff08\u514d\u5145\u503c\uff0c\u4e0d\u53ef\u5220\uff09',

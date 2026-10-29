@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import { colors } from "./styles";
-import { localizeHubServiceReason } from "../../utils/hubServiceI18n";
+import { localizeHubServiceReason, mnApproxAfter, mnDurationUnit } from "../../utils/hubServiceI18n";
+import { normalizeLang } from "../../i18n/langSelect";
 import { mergeHubCreditGrants } from "../../utils/hubCredits";
 import { FetchProviderModels } from "../../../wailsjs/go/main/App";
 import { effectiveAgentType } from "./userAgent";
@@ -280,6 +281,15 @@ function hubRetrySeconds(grant?: HubLLMActiveGrant): number {
 
 function formatHubRetryDuration(seconds: number, lang?: string): string {
     const safeSeconds = Math.max(0, Math.ceil(Number(seconds || 0)));
+    if (normalizeLang(lang) === "mn") {
+        if (safeSeconds < 60) return mnDurationUnit(safeSeconds, "second");
+        const minutes = Math.ceil(safeSeconds / 60);
+        if (minutes < 60) return mnDurationUnit(minutes, "minute");
+        const hours = Math.ceil(minutes / 60);
+        if (hours < 24) return mnDurationUnit(hours, "hour");
+        const days = Math.ceil(hours / 24);
+        return mnDurationUnit(days, "day");
+    }
     const zh = lang === "zh-Hans" || lang === "zh-Hant";
     if (safeSeconds < 60) return zh ? safeSeconds + " \u79d2" : safeSeconds + "s";
     const minutes = Math.ceil(safeSeconds / 60);
@@ -307,14 +317,14 @@ export function hubOfficialStatus(status: HubLLMServiceStatus | null, lang: stri
             kind: "limited" as const,
             label: t("Period limited", "\u5468\u671f\u9650\u989d"),
             detail: retryText
-                ? (zh ? "\u5f53\u524d\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d\uff0c\u7ea6 " + retryText + " \u540e\u6062\u590d\u3002\u82e5\u5b98\u65b9\u8fd8\u6709\u5176\u5b83\u53ef\u7528\u901a\u9053\u4f1a\u81ea\u52a8\u5207\u6362\uff1b\u4e0d\u4f1a\u9759\u9ed8\u5207\u5230\u4f60\u7684\u79c1\u6709\u670d\u52a1\u5546\u3002" : "Current period quota is exhausted; recovers in about " + retryText + ". Routing switches automatically only to another available official route; it will not silently switch to your private provider.")
+                ? (normalizeLang(lang) === "mn" ? ("Одоогийн мөчлөгийн хэмжээ дууссан, " + mnApproxAfter(retryText) + " сэргэнэ. Албан ёсны өөр боломжит сувгаар автоматаар шилжинэ; таны хувийн үйлчилгээ рүү чимээгүй шилжихгүй.") : zh ? "\u5f53\u524d\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d\uff0c\u7ea6 " + retryText + " \u540e\u6062\u590d\u3002\u82e5\u5b98\u65b9\u8fd8\u6709\u5176\u5b83\u53ef\u7528\u901a\u9053\u4f1a\u81ea\u52a8\u5207\u6362\uff1b\u4e0d\u4f1a\u9759\u9ed8\u5207\u5230\u4f60\u7684\u79c1\u6709\u670d\u52a1\u5546\u3002" : "Current period quota is exhausted; recovers in about " + retryText + ". Routing switches automatically only to another available official route; it will not silently switch to your private provider.")
                 : t("Current period quota is exhausted. Routing switches automatically only to another available official route; it will not silently switch to your private provider.", "\u5f53\u524d\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d\u3002\u82e5\u5b98\u65b9\u8fd8\u6709\u5176\u5b83\u53ef\u7528\u901a\u9053\u4f1a\u81ea\u52a8\u5207\u6362\uff1b\u4e0d\u4f1a\u9759\u9ed8\u5207\u5230\u4f60\u7684\u79c1\u6709\u670d\u52a1\u5546\u3002", "\u76ee\u524d\u9031\u671f\u984d\u5ea6\u5df2\u7528\u76e1\u3002\u82e5\u5b98\u65b9\u9084\u6709\u5176\u4ed6\u53ef\u7528\u901a\u9053\u6703\u81ea\u52d5\u5207\u63db\uff1b\u4e0d\u6703\u975c\u9ed8\u5207\u5230\u4f60\u7684\u79c1\u6709\u670d\u52d9\u5546\u3002"),
         };
     }
     if (queued) {
         const retry = hubRetrySeconds(queued);
         const retryText = retry > 0 ? formatHubRetryDuration(retry, lang) : "";
-        return { kind: "queued" as const, label: t("Not active yet", "\u672a\u751f\u6548"), detail: retryText ? (zh ? "\u6388\u6743\u7ea6 " + retryText + " \u540e\u751f\u6548\u3002" : "Authorization starts in about " + retryText + ".") : t("Authorization is not active yet.", "\u6388\u6743\u5c1a\u672a\u751f\u6548\u3002", "\u6388\u6b0a\u5c1a\u672a\u751f\u6548\u3002") };
+        return { kind: "queued" as const, label: t("Not active yet", "\u672a\u751f\u6548"), detail: retryText ? (normalizeLang(lang) === "mn" ? ("Зөвшөөрөл " + mnApproxAfter(retryText) + " хүчин төгөлдөр болно.") : zh ? "\u6388\u6743\u7ea6 " + retryText + " \u540e\u751f\u6548\u3002" : "Authorization starts in about " + retryText + ".") : t("Authorization is not active yet.", "\u6388\u6743\u5c1a\u672a\u751f\u6548\u3002", "\u6388\u6b0a\u5c1a\u672a\u751f\u6548\u3002") };
     }
     if (exhausted) {
         return { kind: "exhausted" as const, label: t("Credits exhausted", "\u989d\u5ea6\u5df2\u7528\u5c3d"), detail: t("Official credits are exhausted. You can redeem more credits or switch to another provider.", "\u5b98\u65b9\u989d\u5ea6\u5df2\u7528\u5c3d\u3002\u53ef\u4ee5\u5151\u6362\u66f4\u591a\u989d\u5ea6\uff0c\u6216\u5207\u6362\u5230\u5176\u5b83\u670d\u52a1\u5546\u3002", "\u5b98\u65b9\u984d\u5ea6\u5df2\u7528\u76e1\u3002\u53ef\u4ee5\u514c\u63db\u66f4\u591a\u984d\u5ea6\uff0c\u6216\u5207\u63db\u5230\u5176\u4ed6\u670d\u52d9\u5546\u3002") };

@@ -58,6 +58,7 @@ import {
     type CodePreviewViewPrefs,
     type FindMatchOptions,
 } from './codePreviewFindHelpers';
+import { tailText } from '../../i18n/mnTail'
 
 // Re-export public helpers / types so existing imports from CodePreviewPanel keep working.
 export type { CodePreviewTheme } from './FileTabBar';
@@ -486,9 +487,9 @@ function CodePreviewFindBar({
     const isZh = lang.startsWith('zh');
     const isZhHant = lang === 'zh-Hant';
     const counter = regexError
-        ? (isZh ? '正则无效' : 'Invalid regex')
+        ? (tailText(lang, 'Invalid regex', '正则无效'))
         : matchCount === 0
-            ? (isZh ? '无结果' : 'No results')
+            ? (tailText(lang, 'No results', '无结果'))
             : `${Math.min(activeIndex + 1, matchCount)} / ${matchCount}`;
 
     const optBtn = (active: boolean): React.CSSProperties => ({
@@ -525,7 +526,7 @@ function CodePreviewFindBar({
                     type="text"
                     value={query}
                     onChange={(e) => onQueryChange(e.target.value)}
-                    placeholder={isZhHant ? '在檔案中尋找…' : isZh ? '在文件中查找…' : 'Find in file…'}
+                    placeholder={isZhHant ? '在檔案中尋找…' : tailText(lang, 'Find in file…', '在文件中查找…')}
                     style={{
                         flex: 1,
                         minWidth: 0,
@@ -556,7 +557,7 @@ function CodePreviewFindBar({
                     data-testid="code-preview-find-case"
                     data-active={caseSensitive ? 'true' : 'false'}
                     onClick={onToggleCase}
-                    title={isZh ? '区分大小写' : 'Match Case'}
+                    title={tailText(lang, 'Match Case', '区分大小写')}
                     style={optBtn(caseSensitive)}
                 >
                     Aa
@@ -566,7 +567,7 @@ function CodePreviewFindBar({
                     data-testid="code-preview-find-word"
                     data-active={wholeWord ? 'true' : 'false'}
                     onClick={onToggleWord}
-                    title={isZh ? '全词匹配' : 'Match Whole Word'}
+                    title={tailText(lang, 'Match Whole Word', '全词匹配')}
                     style={optBtn(wholeWord)}
                 >
                     W
@@ -576,7 +577,7 @@ function CodePreviewFindBar({
                     data-testid="code-preview-find-regex"
                     data-active={useRegex ? 'true' : 'false'}
                     onClick={onToggleRegex}
-                    title={isZh ? '使用正则表达式' : 'Use Regular Expression'}
+                    title={tailText(lang, 'Use Regular Expression', '使用正则表达式')}
                     style={optBtn(useRegex)}
                 >
                     {'.*'}
@@ -585,7 +586,7 @@ function CodePreviewFindBar({
                     type="button"
                     data-testid="code-preview-find-prev"
                     onClick={onPrev}
-                    title={isZh ? '上一个 (Shift+Enter)' : 'Previous (Shift+Enter)'}
+                    title={tailText(lang, 'Previous (Shift+Enter)', '上一个 (Shift+Enter)')}
                     style={{
                         border: `1px solid ${theme.border}`,
                         background: theme.bg,
@@ -602,7 +603,7 @@ function CodePreviewFindBar({
                     type="button"
                     data-testid="code-preview-find-next"
                     onClick={onNext}
-                    title={isZh ? '下一个 (Enter)' : 'Next (Enter)'}
+                    title={tailText(lang, 'Next (Enter)', '下一个 (Enter)')}
                     style={{
                         border: `1px solid ${theme.border}`,
                         background: theme.bg,
@@ -698,7 +699,7 @@ function CodePreviewViewToolbar({
                 data-testid="code-preview-wrap-toggle"
                 data-active={wordWrap ? 'true' : 'false'}
                 onClick={onToggleWrap}
-                title={isZhHant ? '自動換行 (Alt+Z)' : isZh ? '自动换行 (Alt+Z)' : 'Toggle Word Wrap (Alt+Z)'}
+                title={isZhHant ? '自動換行 (Alt+Z)' : tailText(lang, 'Toggle Word Wrap (Alt+Z)', '自动换行 (Alt+Z)')}
                 style={{
                     ...btnStyle,
                     background: wordWrap ? theme.tabActiveBg : theme.bg,
@@ -706,14 +707,14 @@ function CodePreviewViewToolbar({
                     fontWeight: wordWrap ? 600 : 400,
                 }}
             >
-                {isZh ? '换行' : 'Wrap'}
+                {tailText(lang, 'Wrap', '换行')}
             </button>
             <button
                 type="button"
                 data-testid="code-preview-zoom-out"
                 onClick={onZoomOut}
                 disabled={fontSize <= CODE_PREVIEW_FONT_MIN}
-                title={isZh ? '缩小 (Ctrl+-)' : 'Zoom Out (Ctrl+-)'}
+                title={tailText(lang, 'Zoom Out (Ctrl+-)', '缩小 (Ctrl+-)')}
                 style={{
                     ...btnStyle,
                     opacity: fontSize <= CODE_PREVIEW_FONT_MIN ? 0.45 : 1,
@@ -726,7 +727,7 @@ function CodePreviewViewToolbar({
                 type="button"
                 data-testid="code-preview-zoom-reset"
                 onClick={onZoomReset}
-                title={isZh ? '重置字号 (Ctrl+0)' : 'Reset Zoom (Ctrl+0)'}
+                title={tailText(lang, 'Reset Zoom (Ctrl+0)', '重置字号 (Ctrl+0)')}
                 style={{ ...btnStyle, minWidth: 36 }}
             >
                 {fontSize}
@@ -736,7 +737,7 @@ function CodePreviewViewToolbar({
                 data-testid="code-preview-zoom-in"
                 onClick={onZoomIn}
                 disabled={fontSize >= CODE_PREVIEW_FONT_MAX}
-                title={isZh ? '放大 (Ctrl+=)' : 'Zoom In (Ctrl+=)'}
+                title={tailText(lang, 'Zoom In (Ctrl+=)', '放大 (Ctrl+=)')}
                 style={{
                     ...btnStyle,
                     opacity: fontSize >= CODE_PREVIEW_FONT_MAX ? 0.45 : 1,
@@ -750,7 +751,7 @@ function CodePreviewViewToolbar({
                 data-testid="code-preview-minimap-toggle"
                 data-active={minimap ? 'true' : 'false'}
                 onClick={onToggleMinimap}
-                title={isZhHant ? '文件縮略圖 / 按頁定位' : isZh ? '文件缩略图 / 按页定位' : 'Document minimap / jump by page'}
+                title={isZhHant ? '文件縮略圖 / 按頁定位' : tailText(lang, 'Document minimap / jump by page', '文件缩略图 / 按页定位')}
                 style={{
                     ...btnStyle,
                     background: minimap ? theme.tabActiveBg : theme.bg,
@@ -758,7 +759,7 @@ function CodePreviewViewToolbar({
                     fontWeight: minimap ? 600 : 400,
                 }}
             >
-                {isZh ? '缩略' : 'Map'}
+                {tailText(lang, 'Map', '缩略')}
             </button>
         </div>
     );
@@ -801,7 +802,7 @@ function CodePreviewGoToLineBar({
             }}
         >
             <span style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
-                {isZhHant ? '前往行' : isZh ? '转到行' : 'Go to Line'}
+                {isZhHant ? '前往行' : tailText(lang, 'Go to Line', '转到行')}
             </span>
             <input
                 ref={inputRef as React.RefObject<HTMLInputElement>}
@@ -816,7 +817,7 @@ function CodePreviewGoToLineBar({
                         onSubmit();
                     }
                 }}
-                placeholder={isZh ? `1–${maxLines}` : `1–${maxLines}`}
+                placeholder={tailText(lang, `1–${maxLines}`, `1–${maxLines}`)}
                 style={{
                     width: 96,
                     border: `1px solid ${theme.border}`,
@@ -830,7 +831,7 @@ function CodePreviewGoToLineBar({
                 }}
             />
             <span style={{ fontSize: 11, color: theme.textMuted, flex: 1 }}>
-                {isZhHant ? `共 ${maxLines} 行` : isZh ? `共 ${maxLines} 行` : `${maxLines} lines`}
+                {isZhHant ? `共 ${maxLines} 行` : tailText(lang, `${maxLines} lines`, `共 ${maxLines} 行`)}
             </span>
             <button
                 type="button"
@@ -846,7 +847,7 @@ function CodePreviewGoToLineBar({
                     fontSize: 12,
                 }}
             >
-                {isZh ? '跳转' : 'Go'}
+                {tailText(lang, 'Go', '跳转')}
             </button>
             <button
                 type="button"
@@ -1599,8 +1600,8 @@ export function CodePreviewPanel({
             data-mode={showWebPreview ? 'browser' : 'source'}
             onClick={() => setWebPreviewOn((on) => !on)}
             title={showWebPreview
-                ? (lang.startsWith('zh') ? '查看源码' : 'Show source')
-                : (lang.startsWith('zh') ? '网页预览' : 'Web preview')}
+                ? (tailText(lang, 'Show source', '查看源码'))
+                : (tailText(lang, 'Web preview', '网页预览'))}
             style={{
                 flexShrink: 0,
                 border: `1px solid ${theme.border}`,
@@ -1617,8 +1618,8 @@ export function CodePreviewPanel({
             }}
         >
             {showWebPreview
-                ? (lang.startsWith('zh') ? '源码' : 'Source')
-                : (lang.startsWith('zh') ? '预览' : 'Preview')}
+                ? (tailText(lang, 'Source', '源码'))
+                : (tailText(lang, 'Preview', '预览'))}
         </button>
     ) : null;
 
@@ -1643,7 +1644,7 @@ export function CodePreviewPanel({
                     <div
                         data-testid="code-preview-header"
                         onDoubleClick={handleHeaderDoubleClick}
-                        title={onToggleMaximize ? (lang.startsWith('zh') ? '双击最大化/还原' : 'Double-click to maximize/restore') : undefined}
+                        title={onToggleMaximize ? (tailText(lang, 'Double-click to maximize/restore', '双击最大化/还原')) : undefined}
                         style={{
                             display: 'flex',
                             alignItems: 'center',
@@ -1658,7 +1659,7 @@ export function CodePreviewPanel({
                         <span className="cpp-header-title-row">
                             {cloudMode ? <CloudGlyph color={theme.tabActiveText} /> : null}
                             <span style={{ color: theme.tabActiveText, fontSize: 12, fontWeight: 600, letterSpacing: '0.01em', flexShrink: 0 }}>
-                                {cloudMode ? (lang.startsWith('zh') ? '云端工作区' : 'Cloud workspace') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
+                                {cloudMode ? (tailText(lang, 'Cloud workspace', '云端工作区')) : (tailText(lang, 'Working directory', '工作目录'))}
                             </span>
                             {cloudMode && resolvedCloudName ? (
                                 <>
@@ -1692,10 +1693,10 @@ export function CodePreviewPanel({
                                 transition: 'opacity 120ms ease',
                                 '--wails-draggable': 'no-drag',
                             } as any}
-                            title={cloudMode ? (lang.startsWith('zh') ? '刷新云端文件' : 'Refresh cloud files') : (lang.startsWith('zh') ? '刷新工作目录' : 'Refresh working directory')}
-                            aria-label={cloudMode ? (lang.startsWith('zh') ? '刷新云端文件' : 'Refresh cloud files') : (lang.startsWith('zh') ? '刷新工作目录' : 'Refresh working directory')}
+                            title={cloudMode ? (tailText(lang, 'Refresh cloud files', '刷新云端文件')) : (tailText(lang, 'Refresh working directory', '刷新工作目录'))}
+                            aria-label={cloudMode ? (tailText(lang, 'Refresh cloud files', '刷新云端文件')) : (tailText(lang, 'Refresh working directory', '刷新工作目录'))}
                         >
-                            {workspaceRefreshing ? (lang.startsWith('zh') ? '刷新中…' : 'Refreshing…') : (lang.startsWith('zh') ? '刷新' : 'Refresh')}
+                            {workspaceRefreshing ? (tailText(lang, 'Refreshing…', '刷新中…')) : (tailText(lang, 'Refresh', '刷新'))}
                         </button>
                         {!hideHeaderClose ? (
                         <button
@@ -1746,7 +1747,7 @@ export function CodePreviewPanel({
             <div
                 data-testid="code-preview-header"
                 onDoubleClick={handleHeaderDoubleClick}
-                title={onToggleMaximize ? (lang.startsWith('zh') ? '双击空白处最大化/还原' : 'Double-click empty area to maximize/restore') : undefined}
+                title={onToggleMaximize ? (tailText(lang, 'Double-click empty area to maximize/restore', '双击空白处最大化/还原')) : undefined}
                 style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -1772,7 +1773,7 @@ export function CodePreviewPanel({
                     data-preview-no-maximize="true"
                     data-testid="code-preview-tab-strip"
                     role="tablist"
-                    aria-label={lang.startsWith('zh') ? '代码预览标签' : 'Code preview tabs'}
+                    aria-label={tailText(lang, 'Code preview tabs', '代码预览标签')}
                     style={{
                         display: 'flex',
                         alignItems: 'stretch',
@@ -1821,7 +1822,7 @@ export function CodePreviewPanel({
                         }}
                     >
                         {cloudMode ? <CloudGlyph color={workspaceActive ? theme.tabActiveText : theme.textMuted} /> : null}
-                        {cloudMode ? (lang.startsWith('zh') ? '云端文件' : 'Cloud files') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
+                        {cloudMode ? (tailText(lang, 'Cloud files', '云端文件')) : (tailText(lang, 'Working directory', '工作目录'))}
                         {cloudMode ? <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} compact /> : null}
                     </button>
                     <div className="cpp-tabbar-slot">
@@ -1853,8 +1854,8 @@ export function CodePreviewPanel({
                     data-testid="code-preview-expand-toggle"
                     data-active={previewExpanded ? 'true' : 'false'}
                     onClick={onTogglePreviewExpand}
-                    title={lang.startsWith('zh') ? (previewExpanded ? '还原预览宽度' : '放大预览至全宽') : (previewExpanded ? 'Restore preview width' : 'Expand preview to full width')}
-                    aria-label={lang.startsWith('zh') ? (previewExpanded ? '还原预览宽度' : '放大预览至全宽') : (previewExpanded ? 'Restore preview width' : 'Expand preview to full width')}
+                    title={previewExpanded ? tailText(lang, 'Restore preview width', '还原预览宽度') : tailText(lang, 'Expand preview to full width', '放大预览至全宽')}
+                    aria-label={previewExpanded ? tailText(lang, 'Restore preview width', '还原预览宽度') : tailText(lang, 'Expand preview to full width', '放大预览至全宽')}
                     style={{
                         border: `1px solid ${theme.border}`,
                         background: previewExpanded ? theme.tabActiveBg : theme.bg,
@@ -1967,7 +1968,7 @@ export function CodePreviewPanel({
                             data-testid="code-preview-readonly-badge"
                             className="cpp-badge-faint"
                         >
-                            {lang.startsWith('zh') ? '只读' : 'read-only'}
+                            {tailText(lang, 'read-only', '只读')}
                         </span>
                     )}
                     {activeFile.opType && activeFile.opType !== 'read' ? (
@@ -1985,12 +1986,12 @@ export function CodePreviewPanel({
                     ) : null}
                     {totalLines > 0 && (
                         <span data-testid="code-preview-line-count" className="cpp-badge-dim">
-                            {totalLines} {lang.startsWith('zh') ? '行' : 'lines'}
+                            {totalLines} {tailText(lang, 'lines', '行')}
                         </span>
                     )}
                     {isCodeFileDirty(activeFile) && !codeFileLineDeltaHasChange(computeCodeFileLineDelta(activeFile)) ? (
                         <span data-testid="code-preview-dirty-badge" className="cpp-badge-faint">
-                            {lang.startsWith('zh') ? '已修改' : 'changed'}
+                            {tailText(lang, 'changed', '已修改')}
                         </span>
                     ) : null}
                     <PreviewFileActions
@@ -2073,9 +2074,7 @@ export function CodePreviewPanel({
                 <div role="status" aria-live="polite" style={{ padding: '6px 12px', borderBottom: `1px solid ${theme.border}`, background: theme.lineNumBg, color: theme.textMuted, fontSize: 12, flexShrink: 0 }}>
                     {lang === 'zh-Hant'
                         ? '遠端原始碼預覽已截斷；目前僅顯示檔案開頭部分。'
-                        : lang.startsWith('zh')
-                            ? '远程源码预览已截断；当前仅显示文件开头部分。'
-                            : 'Remote preview is truncated; only the beginning of this file is shown.'}
+                        : tailText(lang, 'Remote preview is truncated; only the beginning of this file is shown.', '远程源码预览已截断；当前仅显示文件开头部分。')}
                 </div>
             )}
             {/* Large files: no line diff, but the user still needs the totals. */}
@@ -2087,9 +2086,7 @@ export function CodePreviewPanel({
                 >
                     {lang === 'zh-Hant'
                         ? '檔案過大，已跳過逐行對比；變更統計：'
-                        : lang.startsWith('zh')
-                            ? '文件较大，已跳过逐行对比；变更统计：'
-                            : 'File is too large for a line diff; change totals:'}
+                        : tailText(lang, 'File is too large for a line diff; change totals:', '文件较大，已跳过逐行对比；变更统计：')}
                     <span style={{ color: theme.diffAddText, fontWeight: 700 }}>+{diffTooLargeDelta.added}</span>
                     {' '}
                     <span style={{ color: theme.diffDeleteText, fontWeight: 700 }}>-{diffTooLargeDelta.removed}</span>

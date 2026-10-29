@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { PhaseInfo, QualityGateResult } from "./useWorkflowState";
 import { normalizeWorkflowPhaseID, FALLBACK_NON_DOCUMENT_PHASE_IDS } from "./workflowPhase";
-import { localizeText, normalizeLang } from "../../i18n";
+import { isChineseLang, localizeText, normalizeLang } from "../../i18n";
 import { WORKFLOW_PHASE_META } from "./workflowPhaseMeta.generated";
 import { withMarkdownProseTheme } from "./markdownPreviewInk";
 import { canonicalMermaidDiagramKeyword, paintMermaidKatexInk } from "./AssistantMermaidDiagram";
@@ -915,7 +915,7 @@ function WorkflowProgressBoard({
                         : (isCurrent ? theme.accentColor : undefined);
                     const phaseLabel = workflowPhaseLabel(lang, pid, phaseLabelMap);
                     const statusLabel = workflowPhaseStatusLabel(lang, cardState.status);
-                    const ariaSeparator = lang === "en" ? ", " : "，";
+                    const ariaSeparator = (isChineseLang(lang) ? "，" : ", ");
                     return (
                         <button
                             key={pid}

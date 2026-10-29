@@ -6,15 +6,40 @@
     saved = localStorage.getItem("maclawConnectorLang");
   } catch (_) {}
 
-  var hashMatch = window.location.hash.match(/^#(zh|en)-/);
+  var hashLangRe = /^#(zh|en|mn)-/;
+  var hashMatch = window.location.hash.match(hashLangRe);
   var hashLang = hashMatch ? hashMatch[1] : "";
-  var lang = hashLang || saved || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+  var savedLang = saved === "zh" || saved === "en" || saved === "mn" ? saved : "";
+  var lang = hashLang || savedLang || (navigator.language || "");
   var topButton = document.querySelector(".back-to-top");
 
   function setLang(next) {
-    lang = next === "en" ? "en" : "zh";
-    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
-    document.title = lang === "zh" ? "MaClaw 第三方硬件接入协议" : "MaClaw Third-Party Hardware Protocol";
+    var raw = String(next || "").trim().toLowerCase().replace(/_/g, "-");
+    if (raw === "zh" || raw.indexOf("zh-") === 0) lang = "zh";
+    else if (raw === "mn-mong" || raw.indexOf("mn-mong-") === 0) lang = "en";
+    else if (
+      raw === "mn" ||
+      raw === "mn-mn" ||
+      raw === "mn-cyrl" ||
+      raw === "mn-cyrl-mn" ||
+      raw.indexOf("mn-cyrl-") === 0 ||
+      raw.indexOf("mn-mn-") === 0
+    ) lang = "mn";
+    else lang = "en";
+    var title = "MaClaw Third-Party Hardware Protocol";
+    var subtitleText = "Third-party hardware protocol";
+    var htmlLang = "en";
+    if (lang === "zh") {
+      title = "MaClaw 第三方硬件接入协议";
+      subtitleText = "第三方硬件接入协议";
+      htmlLang = "zh-CN";
+    } else if (lang === "mn") {
+      title = "MaClaw гуравдагч талын техник хангамжийн протокол";
+      subtitleText = "Гуравдагч талын техник хангамжийн протокол";
+      htmlLang = "mn";
+    }
+    document.documentElement.lang = htmlLang;
+    document.title = title;
     try {
       localStorage.setItem("maclawConnectorLang", lang);
     } catch (_) {}
@@ -27,13 +52,11 @@
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
     var subtitle = document.querySelector("[data-i18n=headerSubtitle]");
-    if (subtitle) {
-      subtitle.textContent = lang === "zh" ? "第三方硬件接入协议" : "Third-party hardware protocol";
-    }
+    if (subtitle) subtitle.textContent = subtitleText;
   }
 
   function setLangFromHash() {
-    var match = window.location.hash.match(/^#(zh|en)-/);
+    var match = window.location.hash.match(hashLangRe);
     if (match && match[1] !== lang) setLang(match[1]);
   }
 

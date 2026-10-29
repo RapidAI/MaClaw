@@ -12,6 +12,8 @@ import {
 } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+import { normalizeLang } from '../../i18n/langSelect';
+import { surfaceText } from '../../i18n/mnSurface';
 
 const dialogFocusableSelector = 'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [href]:not([tabindex="-1"])';
 
@@ -144,7 +146,12 @@ type Props = {
     lang: string;
 };
 
-export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, supportedExts, t, lang }: Props) {
+export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, supportedExts, t: translate, lang }: Props) {
+    const t: TFunc = (en, zhHans, zhHant) => (
+        normalizeLang(lang) === 'mn'
+            ? surfaceText(lang || 'mn', en, zhHans, zhHant)
+            : translate(en, zhHans, zhHant)
+    );
     // Single source of truth: backend-provided list, fallback only if not yet loaded.
     const allExts = supportedExts && supportedExts.length > 0 ? supportedExts : fallbackExts;
     const [step, setStep] = useState<ImportDialogStep>('choose');

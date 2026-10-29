@@ -20,6 +20,8 @@ import type { LLMProfileStatusSummary } from './SidebarSystemStatus';
 import type { WorkbenchTaskCounts } from './backgroundTaskCount';
 import { useBotAccessEnabled, useInProgressBotTaskCount } from './useInProgressBotTaskCount';
 import { desktopBotAccountId } from '../bots/desktopBots';
+import { localizeText } from '../../i18n';
+
 
 export { isDigitalEmployeeAuthorizationUsable } from '../ai/digitalEmployeeFeature';
 
@@ -311,9 +313,9 @@ export const SidebarAiPane = ({
 
     // Favorite employees - use authoritative IDs from parent (includes optimistic updates)
     const tabLabels: Record<MiddleTab, string> = {
-        tasks: lang === 'en' ? 'Tasks' : lang === 'zh-Hant' ? '任務' : '任务',
-        employees: lang === 'en' ? 'AI Experts' : lang === 'zh-Hant' ? 'AI 專家' : 'AI 专家',
-        history: lang === 'en' ? 'History' : lang === 'zh-Hant' ? '歷史會話' : '历史会话',
+        tasks: localizeText(lang, 'Tasks', '任务', '任務'),
+        employees: localizeText(lang, 'AI Experts', 'AI 专家', 'AI 專家'),
+        history: localizeText(lang, 'History', '历史会话', '歷史會話'),
     };
     return (
         <>
@@ -335,7 +337,7 @@ export const SidebarAiPane = ({
                 aria-valuemin={180}
                 aria-valuemax={460}
                 aria-valuenow={Math.round(taskManagementPaneWidth)}
-                aria-label={lang === 'en' ? 'Resize task panel' : lang === 'zh-Hant' ? '調整任務面板寬度' : '调整任务面板宽度'}
+                aria-label={localizeText(lang, 'Resize task panel', '调整任务面板宽度', '調整任務面板寬度')}
                 tabIndex={0}
                 onPointerDown={(event) => {
                     handleTaskManagementResizeStart(event);
@@ -360,7 +362,7 @@ export const SidebarAiPane = ({
                         handleTaskManagementResizeStart(event.key === 'Home' ? 180 : 460);
                     }
                 }}
-                title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'}
+                title={localizeText(lang, 'Drag to resize middle panel', '拖动调整中间面板宽度', '拖動調整中間面板寬度')}
                 style={{ width: '12px', marginLeft: '-3px', marginRight: '-3px', position: 'relative', zIndex: 40, flexShrink: 0, cursor: 'col-resize', background: 'transparent', touchAction: 'none', userSelect: 'none', pointerEvents: 'auto', ['WebkitAppRegion' as any]: 'no-drag', ['--wails-draggable' as any]: 'no-drag', ['--mc-task-pane-divider-color' as any]: isTaskManagementResizing ? 'var(--theme-primary)' : undefined }}
             />
         </>

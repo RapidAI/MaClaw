@@ -70,14 +70,14 @@ func (s *SQLiteStore) LoadConfig() (corelib.AppConfig, error) {
 		return decodeConfigEntries(entries)
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		if cfg, jsonErr := s.loadLegacyJSON(); jsonErr == nil && fileExists(s.jsonPath) {
+		if cfg, jsonErr := s.loadLegacyJSON(); jsonErr == nil && s.legacySourceExists() {
 			s.legacyFallback.Store(true)
 			log.Printf("[config] SQLite load failed; using legacy JSON only: %v", err)
 			return cfg, nil
 		}
 		return corelib.AppConfig{}, err
 	}
-	if !fileExists(s.jsonPath) {
+	if !s.legacySourceExists() {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return corelib.AppConfig{}, err
 		}
@@ -96,6 +96,15 @@ func (s *SQLiteStore) LoadConfig() (corelib.AppConfig, error) {
 	if err != nil {
 		s.legacyFallback.Store(true)
 		log.Printf("[config] SQLite migration verification failed; using legacy JSON only: %v", err)
+		return legacy, nil
+	}
+	if len(entries) == 0 {
+		// Another process may have claimed the JSON (renamed it away) without
+		// having committed its import yet. Decoding an empty entry set would
+		// surface defaults over the real legacy config, so keep the legacy
+		// snapshot; a later load retries the import once rows land.
+		s.legacyFallback.Store(true)
+		log.Printf("[config] SQLite migration produced no rows yet; using legacy JSON only")
 		return legacy, nil
 	}
 	return decodeConfigEntries(entries)
@@ -127,17 +136,49 @@ func (s *SQLiteStore) SaveConfig(cfg corelib.AppConfig) error {
 func (s *SQLiteStore) migrateLegacyJSON() error {
 	data, err := os.ReadFile(s.jsonPath)
 	if err != nil {
-		return err
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		// The JSON was already moved aside (crash after backup, or a racing
+		// process claimed it). Recover the import source from the backup.
+		data, err = os.ReadFile(s.backupPath())
+		if err != nil {
+			return err
+		}
 	}
 	entries, err := decodeLegacyEntries(data)
 	if err != nil {
 		return err
 	}
-	if err := configdb.SaveEntries(s.dbPath, entries); err != nil {
+	if err := configdb.InsertEntriesAbsent(s.dbPath, entries); err != nil {
 		return err
 	}
-	s.backupLegacyJSON()
+	// A concurrent full save must not be clobbered, and an empty result here
+	// means the rows have not landed yet (claim race); both are surfaced as an
+	// error so the caller falls back to the legacy snapshot instead of
+	// decoding defaults over real configuration.
+	landed, err := configdb.LoadEntries(s.dbPath)
+	if err != nil {
+		return err
+	}
+	if len(landed) == 0 && len(entries) > 0 {
+		return errors.New("config migration rows not visible yet")
+	}
+	if fileExists(s.jsonPath) {
+		s.backupLegacyJSON()
+	}
 	return nil
+}
+
+func (s *SQLiteStore) backupPath() string {
+	return s.jsonPath + ConfigMigrationBackupSuffix
+}
+
+// legacySourceExists reports whether any legacy JSON source (live file or
+// migration backup) is present, so fallback/recovery paths can distinguish
+// "no legacy data" from "legacy data moved aside".
+func (s *SQLiteStore) legacySourceExists() bool {
+	return fileExists(s.jsonPath) || fileExists(s.backupPath())
 }
 
 func (s *SQLiteStore) backupLegacyJSON() {
@@ -153,6 +194,11 @@ func (s *SQLiteStore) backupLegacyJSON() {
 
 func (s *SQLiteStore) loadLegacyJSON() (corelib.AppConfig, error) {
 	data, err := os.ReadFile(s.jsonPath)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		// The live file may have been moved aside by a (racing or crashed)
+		// migration; the backup holds the same document and is a valid source.
+		data, err = os.ReadFile(s.backupPath())
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return corelib.AppConfigDefaults(), nil
@@ -169,6 +215,15 @@ func (s *SQLiteStore) loadLegacyJSON() (corelib.AppConfig, error) {
 	return cfg, nil
 }
 
+// obsoleteLegacyConfigKeys are residues that must not survive migration. The
+// desktop-only hardware gateway token predates Hub's device pairing protocol;
+// the GUI scrubs it from the legacy JSON on load, and the backup rename would
+// otherwise move that scrub target out from under it, leaking the token into
+// the database where nothing removes it.
+var obsoleteLegacyConfigKeys = map[string]bool{
+	"hardware_gateway_token": true,
+}
+
 func decodeLegacyEntries(data []byte) (map[string]json.RawMessage, error) {
 	var cfg corelib.AppConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -180,7 +235,7 @@ func decodeLegacyEntries(data []byte) (map[string]json.RawMessage, error) {
 	}
 	entries := make(map[string]json.RawMessage, len(raw))
 	for key, value := range raw {
-		if key == "" || !json.Valid(value) {
+		if key == "" || obsoleteLegacyConfigKeys[key] || !json.Valid(value) {
 			continue
 		}
 		entries[key] = value

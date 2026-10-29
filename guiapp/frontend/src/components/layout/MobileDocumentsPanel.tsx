@@ -9,6 +9,8 @@ import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, peekPendingFile
 import { classifyCloudDriveItem, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveGroup, type CloudFolderId, type DocumentCategoryId } from './cloudDriveFolders';
 import { CloudDriveFileIcon } from './CloudDriveFileIcon';
 import { GlyphCloudDrive, GlyphClose, GlyphDropInbox, GlyphFolder, GlyphRefresh, GlyphSearch, GlyphUploadCloud } from './cloudDriveGlyphs';
+import { normalizeLang } from '../../i18n/langSelect';
+import { surfaceText } from '../../i18n/mnSurface';
 
 type ToolbarGlyphProps = { size?: number };
 
@@ -150,19 +152,22 @@ type UploadJob = {
   message?: string;
 };
 
-function cloudDriveDuplicateNotice(skips: { name: string; existing: string }[], nothingNew: boolean, zh: boolean): string {
+function cloudDriveDuplicateNotice(skips: { name: string; existing: string }[], nothingNew: boolean, lang: string): string {
   if (skips.length === 0) return '';
+  const isZh = String(lang || '').startsWith('zh');
   const end = nothingNew ? '，避免重复占用空间。' : '。';
   if (skips.length === 1) {
-    const incoming = skips[0].name || (zh ? '新文件' : 'New file');
-    const held = skips[0].existing || (zh ? '已有文件' : 'an existing file');
-    if (zh) return `「${incoming}」与云盘中的「${held}」内容相同，已跳过上传${end}`;
+    const incoming = skips[0].name || (isZh ? '新文件' : surfaceText(lang, 'New file', '新文件'));
+    const held = skips[0].existing || (isZh ? '已有文件' : surfaceText(lang, 'an existing file', '已有文件'));
+    if (isZh) return `「${incoming}」与云盘中的「${held}」内容相同，已跳过上传${end}`;
     const again = nothingNew ? ' again' : '';
-    return `“${incoming}” matches “${held}” already in the cloud drive, so it was not uploaded${again}.`;
+    const en = `“${incoming}” matches “${held}” already in the cloud drive, so it was not uploaded${again}.`;
+    return surfaceText(lang, en, en);
   }
-  if (zh) return `有 ${skips.length} 个文件与云盘中已有内容相同，已跳过上传${end}`;
+  if (isZh) return `有 ${skips.length} 个文件与云盘中已有内容相同，已跳过上传${end}`;
   const again = nothingNew ? ' again' : '';
-  return `${skips.length} files match content already in the cloud drive, so they were not uploaded${again}.`;
+  const en = `${skips.length} files match content already in the cloud drive, so they were not uploaded${again}.`;
+  return surfaceText(lang, en, en);
 }
 type MobileDocumentQuota = { document_quota_bytes?: number; document_quota_used_bytes?: number; document_quota_remaining?: number };
 
@@ -554,7 +559,6 @@ function libraryPreviewTheme() {
 }
 
 function MobileDraftFilePreview({ item, lang }: { item: MobileLibraryItem; lang: string }) {
-  const isZh = lang !== 'en' && !String(lang).startsWith('en');
   const fileName = item.source_filename || `${item.title || 'document'}.md`;
   const kind = filePreviewKindFromName(fileName);
   const rawMarkdown = item.markdown || item.preview || '';
@@ -617,7 +621,7 @@ function MobileDraftFilePreview({ item, lang }: { item: MobileLibraryItem; lang:
   if (loading) {
     return (
       <div data-testid="mobile-documents-preview-loading" className="mdoc-preview-loading">
-        {isZh ? '正在加载预览…' : 'Loading preview…'}
+        {surfaceText(lang, 'Loading preview…', '正在加载预览…')}
       </div>
     );
   }
@@ -778,12 +782,14 @@ function titleFromFilename(name: string): string {
   return (i > 0 ? base.slice(0, i) : base).trim() || base;
 }
 
-function formatUpdatedAt(raw?: string, isZh?: boolean): string {
+function formatUpdatedAt(raw?: string, lang?: string): string {
   if (!raw) return '';
   const d = Date.parse(raw);
   if (Number.isNaN(d)) return raw;
+  const isZh = String(lang || '').startsWith('zh');
+  const locale = isZh ? 'zh-CN' : (normalizeLang(lang) === 'mn' ? 'mn-MN' : 'en-US');
   try {
-    return new Date(d).toLocaleString(isZh ? 'zh-CN' : 'en-US', {
+    return new Date(d).toLocaleString(locale, {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
@@ -860,7 +866,6 @@ function filterCloudGroups(groups: Array<CloudDriveGroup<MobileLibraryItem>>, qu
  */
 export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: MobileDocumentsPanelProps) {
   const { showConfirm } = useDialog();
-  const isZh = lang !== 'en' && !String(lang).startsWith('en');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [banner, setBanner] = useState('');
@@ -904,8 +909,8 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
   });
 
   const t = useCallback(
-    (en: string, zh: string) => (isZh ? zh : en),
-    [isZh],
+    (en: string, zh: string) => surfaceText(lang || '', en, zh),
+    [lang],
   );
 
   const revealCloudItem = useCallback((item: MobileLibraryItem) => {
@@ -1144,7 +1149,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
   }, [open, selected?.id, cloudGroups, folderOpen, searchOpen]);
   const fileCountLabel = filteredCount === 1
     ? t('1 file', '1 个文件')
-    : t(`${filteredCount} files`, `${filteredCount} 个文件`);
+    : `${filteredCount} ${t('files', '个文件')}`;
 
   const selectDraft = async (d: MobileLibraryItem) => {
     const gen = ++selectionGenRef.current;
@@ -1300,7 +1305,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
           `已添加 ${ok} 个文件到云盘。手机端「文档」可直接打开。`,
         )
         : '';
-      const skipText = cloudDriveDuplicateNotice(skippedNames, ok === 0, isZh);
+      const skipText = cloudDriveDuplicateNotice(skippedNames, ok === 0, lang);
       setBanner(added && skipText ? `${added}${skipText}` : (added || skipText));
       await refresh();
       if (!isCurrent()) return;
@@ -2000,7 +2005,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
               <MeetingRecordingPlayer item={selected} t={t} />
               <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div className="mdoc-audio-message">{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div className="mdoc-audio-track"><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #2e75cb)', borderRadius: 3 }} /></div> : null}</div>
               {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div className="mdoc-audio-docs">{selected.derived_documents?.transcript_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--accent" onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
-              {selected.retention_until ? <div className="mdoc-retention">{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
+              {selected.retention_until ? <div className="mdoc-retention">{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, lang)}</div> : null}
             </div>
           ) : <MobileDraftFilePreview key={selected.id} item={selected} lang={lang} />
         ) : (
@@ -2064,7 +2069,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
                 <span className="mdoc-item-size">{formatLibraryFileSize(size)}</span>
               ) : null}
               {d.updated_at ? (
-                <span className="mdoc-item-date">{formatUpdatedAt(d.updated_at, isZh)}</span>
+                <span className="mdoc-item-date">{formatUpdatedAt(d.updated_at, lang)}</span>
               ) : null}
             </span>
           ) : null}

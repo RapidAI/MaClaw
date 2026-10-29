@@ -5,6 +5,7 @@ import { colors } from "./styles";
 import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
 import { SuggestCombobox } from "../ui/SuggestCombobox";
 import { capabilityBandName, hubOfficialModelAliases, officialModelAlias } from "../../utils/capabilityModelLabel";
+import { panelText } from "../../i18n/mnPanel";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
 type RoleAssignment = { model?: string; inherit_hub?: boolean };
@@ -153,7 +154,7 @@ function applyVisionProbeToProvider(provider: Provider, model: string, status?: 
 
 export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0, descriptionAction }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant = zhHans) =>
-        lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en, [lang]);
+        panelText(lang ?? "", en, zhHans, zhHant), [lang]);
     const [state, setState] = useState<PanelState | null>(null);
     const [draft, setDraft] = useState<PanelState["profiles"] | null>(null);
     const [loading, setLoading] = useState(true);

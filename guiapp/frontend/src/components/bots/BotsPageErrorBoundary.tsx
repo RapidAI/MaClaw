@@ -1,4 +1,5 @@
 import { Component, Fragment, type ErrorInfo, type ReactNode } from 'react';
+import { localizeText } from '../../i18n';
 import { reportFrontendIssue } from '../../frontendIssueReport';
 
 type Props = { lang: string; children: ReactNode };
@@ -22,11 +23,11 @@ export class BotsPageErrorBoundary extends Component<Props, State> {
 
     render() {
         if (!this.state.error) return <Fragment key={this.state.retry}>{this.props.children}</Fragment>;
-        const en = String(this.props.lang || '').toLowerCase().startsWith('en');
+        const lang = this.props.lang;
         return (
             <div className="desktop-bot-workspace__crash" data-testid="bots-page-crash" role="alert" style={{ padding: 24 }}>
-                <p>{en ? 'The Bot page hit an error and was stopped.' : 'Bot 页面出错了，已停下。'}</p>
-                <button type="button" onClick={() => this.setState(prev => ({ error: null, retry: prev.retry + 1 }))}>{en ? 'Try again' : '重试'}</button>
+                <p>{localizeText(lang, 'The Bot page hit an error and was stopped.', 'Bot 页面出错了，已停下。')}</p>
+                <button type="button" onClick={() => this.setState(prev => ({ error: null, retry: prev.retry + 1 }))}>{localizeText(lang, 'Try again', '重试')}</button>
             </div>
         );
     }

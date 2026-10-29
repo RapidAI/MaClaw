@@ -63,19 +63,17 @@ type chatChunk struct {
 	Usage json.RawMessage `json:"usage"`
 	// Server-side error chunks ({code:"provider_error", …}) surface as a
 	// body-level code/message pair instead of a choices array.
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    json.RawMessage `json:"code"`
+	Message string          `json:"message"`
 }
 
 // chatBodyJSON builds the wire body: OpenAI-shaped messages plus the session
-// metadata the agent_chat_generation router expects.
+// metadata the agent_chat_generation router expects. Model-key canonicalization
+// lives in applyAgentChatContract so the probe and the agent-loop transport
+// cannot sign different keys.
 func chatBodyJSON(req ChatRequest) (string, error) {
-	// The model key runs through the same canonicalization as the agent-loop
-	// transport so legacy display names (qwen3.8-max …) cannot leak to the
-	// agent_chat node's model validation.
-	model := canonicalQoderModelKey(req.Model)
 	body := map[string]any{
-		"model":    model,
+		"model":    req.Model,
 		"messages": req.Messages,
 	}
 	if req.Temperature != 0 {
@@ -105,10 +103,6 @@ func ChatProbe(ctx context.Context, profile Profile, uid, accessToken, model, pr
 	if strings.TrimSpace(model) == "" {
 		model = DefaultModel
 	}
-	// The signer and the body must carry the same catalog key. Leaving a
-	// legacy display name on the signer sends the gateway a model it will
-	// not start, and the probe then sits until the header budget expires.
-	model = canonicalQoderModelKey(model)
 	signing, err := cosy.New(MachineID(), ClientVersion, strings.TrimSpace(uid))
 	if err != nil {
 		return "", fmt.Errorf("Qoder 聊天签名上下文初始化失败: %w", err)
@@ -126,7 +120,9 @@ func ChatProbe(ctx context.Context, profile Profile, uid, accessToken, model, pr
 	if err != nil {
 		return "", err
 	}
-	prepared, err := signing.PrepareInferRequest(strings.TrimRight(profile.ChatOrigin, "/"), bodyJSON, model, "system")
+	// Sign the catalog key the body carries. A display name on this argument
+	// and a catalog key in the body is a model the node will not start.
+	prepared, err := signing.PrepareInferRequest(strings.TrimRight(profile.ChatOrigin, "/"), bodyJSON, agentChatModel(bodyJSON), "system")
 	if err != nil {
 		return "", fmt.Errorf("Qoder 聊天请求构建失败: %w", err)
 	}
@@ -203,8 +199,8 @@ func parseChatSSE(body io.Reader) (string, error) {
 		if err := json.Unmarshal([]byte(envelope.Body), &chunk); err != nil {
 			continue
 		}
-		if chunk.Code != "" {
-			return "", fmt.Errorf("Qoder 聊天被上游拒绝 (%s): %s", chunk.Code, chunk.Message)
+		if code := jsonCodeString(chunk.Code); code != "" {
+			return "", fmt.Errorf("Qoder 聊天被上游拒绝 (%s): %s", code, chunk.Message)
 		}
 		for _, choice := range chunk.Choices {
 			// A reasoning model can spend the whole reply in reasoning_content.

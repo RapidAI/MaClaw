@@ -1,5 +1,8 @@
 import type { CSSProperties, MouseEvent } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { intlLocale, normalizeLang } from "../../i18n";
+import { chromeText } from "../../i18n/chromeText";
+
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,27 +55,18 @@ export function formatRelativeTime(isoStr: string, lang?: string): string {
   if (isNaN(then)) return isoStr;
 
   const diffMs = now - then;
-  if (diffMs < 0) return lang === "en" ? "just now" : "刚刚";
-
-  const seconds = Math.floor(diffMs / 1000);
+  const seconds = Math.floor(Math.abs(diffMs) / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
 
-  if (lang === "en") {
-    if (seconds < 60) return "just now";
-    if (minutes < 60) return `${minutes}m ago`;
-    if (hours < 24) return `${hours}h ago`;
-    if (days < 30) return `${days}d ago`;
-    return new Date(isoStr).toLocaleDateString("en");
-  }
-
-  // Chinese (default)
-  if (seconds < 60) return "刚刚";
-  if (minutes < 60) return `${minutes}分钟前`;
-  if (hours < 24) return `${hours}小时前`;
-  if (days < 30) return `${days}天前`;
-  return new Date(isoStr).toLocaleDateString("zh-CN");
+  if (diffMs < 0 || seconds < 60) return chromeText(lang, "just now", "刚刚");
+  if (minutes < 60) return chromeText(lang, "{n}m ago", "{n}分钟前").replace("{n}", String(minutes));
+  if (hours < 24) return chromeText(lang, "{n}h ago", "{n}小时前").replace("{n}", String(hours));
+  if (days < 30) return chromeText(lang, "{n}d ago", "{n}天前").replace("{n}", String(days));
+  const normalized = normalizeLang(lang);
+  const dateLocale = normalized === "zh-Hans" || normalized === "zh-Hant" ? "zh-CN" : intlLocale(lang);
+  return new Date(isoStr).toLocaleDateString(dateLocale);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +77,9 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
   const { category, title, priority, is_read, created_at } = notification;
   const catColor = CATEGORY_COLORS[category] || CATEGORY_COLORS.custom;
   const catLabel = CATEGORY_LABELS[category] || CATEGORY_LABELS.custom;
-  const isZh = lang !== "en";
+  const priorityLabel = priority === "urgent"
+    ? chromeText(lang, "Urgent", "紧急")
+    : chromeText(lang, "Important", "重要");
 
   const handleClick = (e: MouseEvent) => {
     e.preventDefault();
@@ -154,18 +150,18 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
       onClick={handleClick}
       role="button"
       tabIndex={0}
-      aria-label={`${is_read ? "" : (isZh ? "未读：" : "Unread: ")}${title}`}
+      aria-label={`${is_read ? "" : chromeText(lang, "Unread: ", "未读：")}${title}`}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(notification); } }}
       style={containerStyle}
     >
       {/* Top row: category pill + priority + time */}
       <div className="ni-top-row">
-        <span style={pillStyle}>{isZh ? catLabel.zh : catLabel.en}</span>
+        <span style={pillStyle}>{chromeText(lang, catLabel.en, catLabel.zh)}</span>
         {priorityStyle && (
           <span
             style={priorityStyle}
-            title={priority === "urgent" ? (isZh ? "紧急" : "Urgent") : (isZh ? "重要" : "Important")}
-            aria-label={priority === "urgent" ? (isZh ? "紧急" : "Urgent") : (isZh ? "重要" : "Important")}
+            title={priorityLabel}
+            aria-label={priorityLabel}
           />
         )}
         <span className="ni-spacer" />

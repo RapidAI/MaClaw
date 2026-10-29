@@ -6,6 +6,7 @@ import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { AssistantWarmupSplash } from "./AssistantWarmupSplash";
 import { t as translate } from "../../i18n";
+import { chromeText } from "../../i18n/chromeText";
 import { brandLineParts, formatBrandLine } from "../../utils/brandProductLine";
 
 /** Synthesize a phone-boot-style startup sound: majestic arpeggio with metallic touch. */
@@ -163,7 +164,7 @@ export function AssistantConversationBody({
             {onboardingIncomplete ? (
                 <div className="acb-empty">
                     <div style={{ color: t.textMuted, fontSize: "13px" }}>
-                        {lang === "en" ? "Setup not completed" : "\u8bbe\u7f6e\u672a\u5b8c\u6210"}
+                        {(chromeText(lang, "Setup not completed", "\u8bbe\u7f6e\u672a\u5b8c\u6210"))}
                     </div>
                     <button
                         onClick={onOpenOnboarding}
@@ -171,7 +172,7 @@ export function AssistantConversationBody({
                         onMouseEnter={e => (e.currentTarget.style.opacity = "0.85")}
                         onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
                     >
-                        {lang === "en" ? "Complete Setup" : "\u5b8c\u6210\u8bbe\u7f6e"}
+                        {(chromeText(lang, "Complete Setup", "\u5b8c\u6210\u8bbe\u7f6e"))}
                     </button>
                 </div>
             ) : !ready ? (
@@ -191,7 +192,7 @@ export function AssistantConversationBody({
                 emptyContent !== undefined ? emptyContent : (
                     liveActivityLabel ? null : (
                         <span style={{ color: t.emptyHint }}>
-                            {lang === "en" ? "Ask me anything..." : "\u6709\u4ec0\u4e48\u53ef\u4ee5\u5e2e\u4f60\u7684\uff1f"}
+                            {(chromeText(lang, "Ask me anything...", "\u6709\u4ec0\u4e48\u53ef\u4ee5\u5e2e\u4f60\u7684\uff1f"))}
                         </span>
                     )
                 )

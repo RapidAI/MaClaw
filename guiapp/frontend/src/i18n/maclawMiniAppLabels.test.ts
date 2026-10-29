@@ -18,12 +18,14 @@ describe('maclawMiniAppLabels', () => {
         expect(miniAppShortLabel('en')).toBe('MiniAPP');
         expect(miniAppShortLabel('zh-Hans')).toBe('小程序');
         expect(miniAppShortLabel('zh-Hant')).toBe('小程序');
+        expect(miniAppShortLabel('mn')).toBe('MiniAPP');
     });
 
     it('uses settings entry labels', () => {
         expect(miniAppEntryLabel('en')).toBe('MiniAPP entry');
         expect(miniAppEntryLabel('zh-Hans')).toBe('小程序入口');
         expect(miniAppEntryLabel('zh-Hant')).toBe('小程序入口');
+        expect(miniAppEntryLabel('mn')).toBe('MiniAPP орох цэг');
     });
 
     it('derives product and studio names from atomic names', () => {

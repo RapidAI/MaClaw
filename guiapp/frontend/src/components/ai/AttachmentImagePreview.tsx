@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState, type CSSProperties } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { ImagePreviewOverlay } from "./AttachmentImagePreviewOverlay";
+import { tailText } from "../../i18n/mnTail"
 
 export interface AttachmentImageThumbnailProps {
     /** Thumbnail bytes already resolved by the caller. */
@@ -23,8 +24,8 @@ export interface AttachmentImageThumbnailProps {
 export function AttachmentImageThumbnail({ src, filePath, fileName, lang, theme: t, frameStyle, imageStyle, title, onImageError }: AttachmentImageThumbnailProps) {
     const [previewOpen, setPreviewOpen] = useState(false);
     const triggerRef = useRef<HTMLButtonElement | null>(null);
-    const isZh = !lang.startsWith("en");
-    const label = isZh ? `预览图片 ${fileName}` : `Preview image ${fileName}`;
+    const isZh = lang.startsWith("zh");
+    const label = tailText(lang, `Preview image ${fileName}`, `预览图片 ${fileName}`);
     const close = useCallback(() => {
         setPreviewOpen(false);
         triggerRef.current?.focus();

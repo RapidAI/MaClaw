@@ -3,19 +3,9 @@ import { AIAssistantAttachmentPreviewDataURL } from "../../../wailsjs/go/main/Ap
 import { BufferEntry, AttachmentInfo, getTextPreview } from "./useBufferQueue";
 import { AssistantInputIcon, getInputActionButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
+import { localizeText } from "../../i18n";
 
 export type { Theme };
-
-// ---------------------------------------------------------------------------
-// Localization helper (same pattern as AIAssistantPanel)
-// ---------------------------------------------------------------------------
-
-const localizeText = (
-    lang: string | undefined,
-    en: string,
-    zhHans: string,
-    zhHant: string = zhHans,
-) => (lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") ? zhHans : en);
 
 /** Compact size so queue actions match each other without the 34px toolbar lock. */
 export const QUEUE_ACTION_BTN_SIZE = 24;

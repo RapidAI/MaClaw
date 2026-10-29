@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { intlLocale, localizeText, normalizeLang } from "../../i18n";
 import {
     ListMemories,
     SaveMemory,
@@ -111,7 +112,7 @@ const labelStyle: React.CSSProperties = {
 /** Shared date formatter. */
 function fmtDate(s: string, lang: string): string {
     if (!s) return "-";
-    const locale = lang === 'zh-Hans' ? 'zh-CN' : lang === 'zh-Hant' ? 'zh-TW' : 'en-US';
+    const locale = intlLocale(lang);
     try { return new Date(s).toLocaleString(locale); }
     catch { return s; }
 }
@@ -122,6 +123,21 @@ function catLabel(cat: string, lang: string): string {
     if (!found) return cat;
     if (lang === 'zh-Hans') return found.label.zh;
     if (lang === 'zh-Hant') return found.label.zh; // TODO: add zhHant to CATEGORIES
+    if (normalizeLang(lang) === 'mn') {
+        const mn: Record<string, string> = {
+            All: 'Бүгд',
+            'Self Identity': 'Өөрийг таних',
+            'User Fact': 'Хэрэглэгчийн баримт',
+            Preference: 'Тохиргоо',
+            Project: 'Төсөл',
+            Instruction: 'Заавар',
+            Summary: 'Хураангуй',
+            Checkpoint: 'Шалгах цэг',
+            'Task Artifact': 'Даалгаврын үр дүн',
+            Profile: 'Хэрэглэгчийн товч',
+        };
+        return mn[found.label.en] || found.label.en;
+    }
     return found.label.en;
 }
 
@@ -184,7 +200,7 @@ const dangerBtnStyle: React.CSSProperties = {
 export function MemoryManagementPanel({ lang, traceFocus }: Props) {
     const [tab, setTab] = useState<"edit" | "timemachine" | "history" | "status">(traceFocus?.seq ? "status" : "edit");
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        localizeText(lang, en, zhHans, zhHant), [lang]);
     // Revision counter — bumped by TimeMachine after restore/compress so
     // MemoryEditTab can re-fetch without unmount/remount.
     const [revision, setRevision] = useState(0);

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { intlLocale, localizeText as pickInlineText } from '../../i18n';
 import { GossipSnapshot, GossipPublish, GossipComment, GossipRate, GossipGetComments } from '../../../wailsjs/go/main/App';
 import { colors, radius, remoteCardStyle, remoteEmptyStateStyle, remoteLoadingStateStyle } from '../remote/styles';
 import { IconLock, IconStar, IconUsers } from '../ai/WorkbenchIcons';
@@ -32,7 +33,7 @@ const PAGE_SIZE = 10;
 const POLL_INTERVAL = 30_000; // 30s
 
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+    pickInlineText(lang, en, zhHans, zhHant)
 );
 
 const categoryLabel = (lang: string, cat: string) => {
@@ -42,9 +43,7 @@ const categoryLabel = (lang: string, cat: string) => {
     return cat;
 };
 
-const getDateTimeLocale = (lang: string) => (
-    lang === 'zh-Hans' ? 'zh-CN' : lang === 'zh-Hant' ? 'zh-TW' : 'en-US'
-);
+const getDateTimeLocale = (lang: string) => intlLocale(lang);
 
 const toolbarInputStyle = {
     padding: '5px 10px',

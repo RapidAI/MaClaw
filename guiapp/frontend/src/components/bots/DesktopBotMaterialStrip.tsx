@@ -1,14 +1,14 @@
 import { useRef } from 'react';
+import { localizeText } from '../../i18n';
 import { formatMaterialSize, materialFileName, type MaterialItem } from './desktopBotMaterials';
 
 function words(lang: string) {
-    const en = String(lang).toLowerCase().startsWith('en');
     return {
-        attach: en ? 'Attach files' : '添加素材',
-        attached: en ? 'Attached files' : '已附加文件',
-        remove: en ? 'Remove' : '移除',
-        tooLarge: en ? 'Over 200 MB' : '超过 200 MB',
-        failed: en ? 'Upload failed' : '上传失败',
+        attach: localizeText(lang, 'Attach files', '添加素材'),
+        attached: localizeText(lang, 'Attached files', '已附加文件'),
+        remove: localizeText(lang, 'Remove', '移除'),
+        tooLarge: localizeText(lang, 'Over 200 MB', '超过 200 MB'),
+        failed: localizeText(lang, 'Upload failed', '上传失败'),
     };
 }
 

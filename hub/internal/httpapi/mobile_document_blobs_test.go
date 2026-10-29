@@ -470,12 +470,12 @@ func TestMobileDocumentUploadPayloadTrackedReportsDraftRepair(t *testing.T) {
 		TaskID: "pu", OwnerID: "ow", DraftID: "pd",
 		Filename: "a.png", Status: "needs_ocr",
 	}
-	payload, repaired := mobileDocumentUploadPayloadTracked(mobileDocuments.uploads["pu"])
+	payload, changes := mobileDocumentUploadPayloadTracked(mobileDocuments.uploads["pu"])
 	draft := mobileDocuments.drafts["pd"]
 	mobileDocuments.Unlock()
 
-	if !repaired {
-		t.Fatal("expected repaired=true for missing draft blob")
+	if len(changes.drafts) == 0 {
+		t.Fatal("expected repaired draft change for missing draft blob")
 	}
 	if draft.SourcePath != "" || draft.SourceSize != 0 {
 		t.Fatalf("draft meta not cleared: path=%q size=%d", draft.SourcePath, draft.SourceSize)
@@ -530,12 +530,12 @@ func TestMobileUploadPayloadTrackedClearsGhostUploadSourceURL(t *testing.T) {
 		Filename:   "a.png",
 		SourcePath: "missing/up.bin", SourceSize: 12,
 	}
-	payload, repaired := mobileDocumentUploadPayloadTracked(mobileDocuments.uploads["pu-ghost"])
+	payload, changes := mobileDocumentUploadPayloadTracked(mobileDocuments.uploads["pu-ghost"])
 	up := mobileDocuments.uploads["pu-ghost"]
 	mobileDocuments.Unlock()
 
-	if !repaired {
-		t.Fatal("expected repaired=true")
+	if len(changes.uploads) == 0 {
+		t.Fatal("expected repaired upload change")
 	}
 	if up.SourcePath != "" || up.SourceSize != 0 {
 		t.Fatalf("upload ghost not cleared: %#v", up)
@@ -716,6 +716,72 @@ func TestMobileUploadSourceFallsBackToDraftOriginal(t *testing.T) {
 	}
 	if !bytes.Equal(rec.Body.Bytes(), raw) {
 		t.Fatalf("body=%q want draft original", rec.Body.Bytes())
+	}
+}
+
+func TestMobileUploadStatusPersistsOCRPipelineDraftPromotion(t *testing.T) {
+	// A needs_ocr upload whose draft temporarily vanished (e.g. the result
+	// handler persisted the intermediate state before the draft existed) is
+	// promoted by the status poll: OCR markdown moves into the draft and the
+	// upload becomes ready. Both rows must survive a restart — persisting only
+	// the upload would lose the draft promotion.
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "blob-status-pipeline@example.com")
+	clearMobileStateForTest(t)
+
+	statePath := filepath.Join(t.TempDir(), "mobile-state.json")
+	blobRoot := t.TempDir()
+	setMobileStatePathForTest(t, statePath)
+	t.Setenv(mobileBlobDirEnv, blobRoot)
+	mobileStatePersistence.Lock()
+	mobileStatePersistence.loaded = true
+	mobileStatePersistence.Unlock()
+	t.Cleanup(func() {
+		mobileStatePersistence.Lock()
+		mobileStatePersistence.loaded = false
+		mobileStatePersistence.Unlock()
+	})
+
+	now := time.Now().UTC()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["pipe-draft"] = mobileDocumentDraftRecord{
+		ID: "pipe-draft", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Title: "scan",
+		UpdatedAt: now,
+	}
+	mobileDocuments.uploads["pipe-task"] = mobileDocumentUploadRecord{
+		TaskID: "pipe-task", OwnerID: enroll.UserID, TenantID: enroll.TenantID, DraftID: "pipe-draft",
+		Filename: "scan.png", Status: "needs_ocr", ClaimedBy: enroll.MachineID,
+		OCRMarkdown: "# OCR text", OCRMessage: "ok",
+		UploadedAt: now, UpdatedAt: now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/upload/pipe-task", nil)
+	req.SetPathValue("taskId", "pipe-task")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadStatusHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Simulate a restart: memory maps are rebuilt from the SQLite state.
+	mobileDocuments.Lock()
+	mobileDocuments.drafts = make(map[string]mobileDocumentDraftRecord)
+	mobileDocuments.uploads = make(map[string]mobileDocumentUploadRecord)
+	mobileDocuments.Unlock()
+	mobileResetStatePersistenceForTest()
+	mobileEnsureStateLoaded()
+
+	mobileDocuments.Lock()
+	draft := mobileDocuments.drafts["pipe-draft"]
+	upload := mobileDocuments.uploads["pipe-task"]
+	mobileDocuments.Unlock()
+	if draft.Markdown != "# OCR text" {
+		t.Fatalf("draft markdown lost after restart: %q", draft.Markdown)
+	}
+	if upload.Status != "ready" {
+		t.Fatalf("upload status after restart = %q, want ready", upload.Status)
 	}
 }
 

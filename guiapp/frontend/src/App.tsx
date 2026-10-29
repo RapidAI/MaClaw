@@ -1,6 +1,6 @@
 import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
-import { DesktopBotAccess, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
+import { DesktopBotAccess, GetCurrentLanguage, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
 import { reportFrontendIssue } from './frontendIssueReport';
 import { appVersion, buildNumber } from './version';
@@ -150,7 +150,7 @@ const EMPTY_MODEL_MULTIPLIERS: Record<string, number> = {};
 import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderID, contactedProfileProviderName, quickModelWriteProfile } from './utils/contactedModelRoute';
 import { applySavedUIZoomFactor, recommendUIScale, subscribeDisplayScaleChanges, uiScaleEquals } from './utils/uiScale';
 import { getWailsAppModule } from './utils/wailsAppModule';
-import { translations } from './i18n/appTranslations';
+import { htmlLang, localizeText as textForLang, normalizeLang, t as translateKey } from './i18n';
 import { miniAppLabels, pickMiniAppLabel } from './i18n/maclawMiniAppLabels';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
@@ -1712,13 +1712,14 @@ function App() {
     const isWindows = /window/i.test(navigator.userAgent);
     const [hasWindowsTerminal, setHasWindowsTerminal] = useState(false);
     const [lang, setLang] = useState("en");
-    const translate = (key: string) => translations[lang][key] || translations["en"][key] || key;
+    useEffect(() => {
+        document.documentElement.lang = htmlLang(lang);
+    }, [lang]);
+    const translate = (key: string) => translateKey(key, lang);
     const formatText = (key: string, values: Record<string, string> = {}) => {
         return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, value), translate(key));
     };
-    const localizeText = (en: string, zhHans: string, zhHant: string) => (
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-    );
+    const localizeText = (en: string, zhHans: string, zhHant?: string) => textForLang(lang, en, zhHans, zhHant);
     const [toastMessage, setToastMessage] = useState<string>("");
     const [showToast, setShowToast] = useState(false);
     // toastKey remounts stacked toasts to replay the fade; duration overrides .toast's baked-in 3s.
@@ -2166,16 +2167,16 @@ function App() {
     }, [envLogs]);
 
     useEffect(() => {
-        // Language detection
-        const userLang = navigator.language;
-        let initialLang = "en";
-        if (userLang.startsWith("zh-TW") || userLang.startsWith("zh-HK")) {
-            initialLang = "zh-Hant";
-        } else if (userLang.startsWith("zh")) {
-            initialLang = "zh-Hans";
-        }
-        setLang(initialLang);
-        void callBackend(() => SetLanguage(initialLang));
+        // OS UI language (or a saved config.language) comes from Go.
+        // WebView2 navigator.language is often en-US even on a Chinese desktop,
+        // so it must not choose the shell language. Do not write config here.
+        const languageReady = callBackend(() => GetCurrentLanguage())
+            .then((detected) => normalizeLang(detected))
+            .catch(() => "en");
+        void languageReady.then((initialLang) => {
+            setLang(initialLang);
+            void callBackend(() => SetLanguage(initialLang));
+        });
 
         // Load brand info from backend
         callBackend(() => GetBrandInfo()).then((info: any) => {
@@ -2394,8 +2395,8 @@ function App() {
         // A silent install cannot report failure: the app quit before the
         // installer ran and the installer shows nothing. Surface a launch that
         // never landed so a failed update is not mistaken for a good one.
-        void buildPendingUpdateDialog({
-            translate: key => translations[initialLang][key] || translations["en"][key] || key,
+        void languageReady.then((initialLang) => buildPendingUpdateDialog({
+            translate: key => translateKey(key, initialLang),
             callBackend,
             closeDialog: () => setConfirmDialog(prev => ({ ...prev, show: false })),
         }).then(dialog => {
@@ -2406,17 +2407,16 @@ function App() {
                 if (prev.show) return prev;
                 return { ...prev, ...dialog };
             });
-        }).catch(() => {});
+        })).catch(() => {});
 
         // Load environment check interval and check if due
         callBackend(() => GetEnvCheckInterval()).then(val => setEnvCheckInterval(val)).catch(() => {});
 
-        callBackend(() => ShouldCheckEnvironment()).then(due => {
+        void languageReady.then((initialLang) => callBackend(() => ShouldCheckEnvironment()).then(due => {
             if (due) {
                 // Fetch interval again to use in message
                 callBackend(() => GetEnvCheckInterval()).then(days => {
-                    const currentLang = initialLang;
-                    const localT = (key: string) => translations[currentLang][key] || translations["en"][key] || key;
+                    const localT = (key: string) => translateKey(key, initialLang);
 
                     setConfirmDialog({
                         show: true,
@@ -2438,7 +2438,7 @@ function App() {
                     });
                 }).catch(() => {});
             }
-        }).catch(() => {});
+        }).catch(() => {}));
 
         // Load Python environments
         callBackend(() => ListPythonEnvironments()).then((envs) => {
@@ -2519,8 +2519,9 @@ function App() {
             applyStartupAssistantFonts(cfg);
 
             if (cfg && cfg.language) {
-                setLang(cfg.language);
-                void callBackend(() => SetLanguage(cfg.language));
+                const savedLang = normalizeLang(cfg.language);
+                setLang(savedLang);
+                void callBackend(() => SetLanguage(savedLang));
             }
 
             // Automatic update check on startup disabled - use "Online Update" button instead
@@ -2575,8 +2576,9 @@ function App() {
                     });
                     applyStartupAssistantFonts(cfg);
                     if (cfg && cfg.language) {
-                        setLang(cfg.language);
-                        void callBackend(() => SetLanguage(cfg.language));
+                        const savedLang = normalizeLang(cfg.language);
+                        setLang(savedLang);
+                        void callBackend(() => SetLanguage(savedLang));
                     }
                     // Config recovered late — leave loading shell (and clear safety timer).
                     if (loadingShellCtlRef.current) {
@@ -2824,8 +2826,12 @@ function App() {
     }, [config, maclawLLMOnline, requestOnboarding]);
 
     const applyLanguage = useCallback((newLang: string) => {
-        setLang(newLang);
-        void callBackend(() => SetLanguage(newLang));
+        const normalized = normalizeLang(newLang);
+        setLang(normalized);
+        void callBackend(() => SetLanguage(normalized));
+        void callBackend(() => PatchConfigFields({ language: normalized })).then((saved) => {
+            if (saved) setConfig(new corelib.AppConfig(saved));
+        }).catch((err) => console.error('Failed to save language:', err));
     }, []);
 
     const handleLangChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -3444,11 +3450,11 @@ function App() {
                 '',
                 lang,
                 (message) => {
-                    showAlert(lang === 'zh-Hans'
-                        ? `无法创建 LaTeX 文档：${message}`
-                        : lang === 'zh-Hant'
-                            ? `無法建立 LaTeX 文件：${message}`
-                            : `The LaTeX document could not be created: ${message}`);
+                    showAlert(localizeText(
+                        `The LaTeX document could not be created: ${message}`,
+                        `无法创建 LaTeX 文档：${message}`,
+                        `無法建立 LaTeX 文件：${message}`,
+                    ));
                 },
             );
             return {
@@ -3457,11 +3463,11 @@ function App() {
             };
         } catch (error) {
             console.error('[task_management] create expert task failed:', error);
-            showAlert(lang === 'zh-Hans'
-                ? '无法打开专家：任务项未能保存到左侧任务管理。请稍后重试。'
-                : lang === 'zh-Hant'
-                    ? '無法開啟專家：任務項未能儲存到左側任務管理。請稍後重試。'
-                    : 'The expert could not be opened because its task could not be saved to Task Management. Please try again.');
+            showAlert(localizeText(
+                'The expert could not be opened because its task could not be saved to Task Management. Please try again.',
+                '无法打开专家：任务项未能保存到左侧任务管理。请稍后重试。',
+                '無法開啟專家：任務項未能儲存到左側任務管理。請稍後重試。',
+            ));
             refreshTasks();
             throw error;
         }
@@ -3682,11 +3688,11 @@ function App() {
                 const rawExperts = typeof app.ListExperts === 'function' ? await app.ListExperts() : '';
                 const expert = parseExpertListJSON(rawExperts).find(item => item.id === expertID);
                 if (!expert) {
-                    showAlert(lang === 'zh-Hans'
-                        ? '该 AI 专家已不可用。请从 AI 专家页面选择其他专家，或移除此任务项。'
-                        : lang === 'zh-Hant'
-                            ? '此 AI 專家已不可用。請從 AI 專家頁面選擇其他專家，或移除此任務項。'
-                            : 'This AI expert is no longer available. Choose another expert from AI Experts or remove this task.');
+                    showAlert(localizeText(
+                        'This AI expert is no longer available. Choose another expert from AI Experts or remove this task.',
+                        '该 AI 专家已不可用。请从 AI 专家页面选择其他专家，或移除此任务项。',
+                        '此 AI 專家已不可用。請從 AI 專家頁面選擇其他專家，或移除此任務項。',
+                    ));
                     return false;
                 }
                 // Bind the tab to the exact row the user clicked. The backend
@@ -3705,11 +3711,11 @@ function App() {
             if (cloudWorkspaceId) {
                 const bound = await ResumeCloudWorkspaceTask(cloudWorkspaceId, projectPath);
                 if (!bound?.project_path) {
-                    throw new Error(lang === 'zh-Hans'
-                        ? '无法打开云端工作区任务'
-                        : lang === 'zh-Hant'
-                            ? '無法開啟雲端工作區任務'
-                            : 'Unable to open the cloud workspace task');
+                    throw new Error(localizeText(
+                        'Unable to open the cloud workspace task',
+                        '无法打开云端工作区任务',
+                        '無法開啟雲端工作區任務',
+                    ));
                 }
                 projectPath = bound.project_path;
             }
@@ -4240,7 +4246,7 @@ function App() {
             safeBrowserOpenURL(url);
             return;
         }
-        showAlert(lang === 'zh-Hans' ? 'Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00 Credits \u9875\u9762\u3002' : 'Hub URL is missing, so the Credits page cannot be opened.');
+        showAlert(localizeText('Hub URL is missing, so the Credits page cannot be opened.', 'Hub 地址缺失，暂时无法打开 Credits 页面。'));
     }, [config, lang, showAlert]);
 
     const handleHubCheckin = useCallback(async () => {
@@ -4340,21 +4346,21 @@ function App() {
             // Refresh sidebar display with authoritative data from backend
             void refreshSidebarTokenUsage();
             // Toast notification
-            const toastMsg = lang === 'en'
-                ? `Switched to "${providerName}". Effective on next AI request.`
-                : lang === 'zh-Hant'
-                    ? `\u5df2\u5207\u63db\u70ba\u300c${providerName}\u300d\uff0c\u4e0b\u6b21 AI \u5c0d\u8a71\u6642\u751f\u6548`
-                    : `\u5df2\u5207\u6362\u4e3a\u300c${providerName}\u300d\uff0c\u4e0b\u6b21 AI \u5bf9\u8bdd\u65f6\u751f\u6548`;
+            const toastMsg = localizeText(
+                `Switched to "${providerName}". Effective on next AI request.`,
+                `已切换为「${providerName}」，下次 AI 对话时生效`,
+                `已切換為「${providerName}」，下次 AI 對話時生效`,
+            );
             showToastMessage?.(toastMsg);
         }).catch((err) => {
             console.error('Failed to switch LLM provider:', err);
             // Revert optimistic update on failure
             void refreshSidebarTokenUsage();
-            const errMsg = lang === 'en'
-                ? `Failed to switch provider: ${err}`
-                : lang === 'zh-Hant'
-                    ? `\u5207\u63db\u670d\u52d9\u5546\u5931\u6557\uff1a${err}`
-                    : `\u5207\u6362\u670d\u52a1\u5546\u5931\u8d25\uff1a${err}`;
+            const errMsg = localizeText(
+                `Failed to switch provider: ${err}`,
+                `切换服务商失败：${err}`,
+                `切換服務商失敗：${err}`,
+            );
             showAlert(errMsg);
         });
     }, [lang, refreshSidebarTokenUsage, showAlert]);
@@ -4496,22 +4502,22 @@ function App() {
         ));
         callBackend(() => SetMaclawLLMCurrentModel(next)).then(() => {
             void refreshSidebarTokenUsage();
-            const toastMsg = lang === 'en'
-                ? `Model switched to "${next}". Effective on next AI request.`
-                : lang === 'zh-Hant'
-                    ? `\u5df2\u5207\u63db\u6a21\u578b\u70ba\u300c${next}\u300d\uff0c\u4e0b\u6b21 AI \u5c0d\u8a71\u6642\u751f\u6548`
-                    : `\u5df2\u5207\u6362\u6a21\u578b\u4e3a\u300c${next}\u300d\uff0c\u4e0b\u6b21 AI \u5bf9\u8bdd\u65f6\u751f\u6548`;
+            const toastMsg = localizeText(
+                `Model switched to "${next}". Effective on next AI request.`,
+                `已切换模型为「${next}」，下次 AI 对话时生效`,
+                `已切換模型為「${next}」，下次 AI 對話時生效`,
+            );
             showToastMessage?.(toastMsg);
         }).catch((err) => {
             console.error('Failed to switch LLM model:', err);
             setSidebarCurrentModel(previous);
             void refreshSidebarTokenUsage();
             void refreshSidebarModelOptions();
-            const errMsg = lang === 'en'
-                ? `Failed to switch model: ${err}`
-                : lang === 'zh-Hant'
-                    ? `\u5207\u63db\u6a21\u578b\u5931\u6557\uff1a${err}`
-                    : `\u5207\u6362\u6a21\u578b\u5931\u8d25\uff1a${err}`;
+            const errMsg = localizeText(
+                `Failed to switch model: ${err}`,
+                `切换模型失败：${err}`,
+                `切換模型失敗：${err}`,
+            );
             showAlert(errMsg);
         });
     }, [lang, refreshSidebarTokenUsage, refreshSidebarModelOptions, showAlert, sidebarCurrentModel]);
@@ -4724,11 +4730,11 @@ function App() {
             const nextRevision = String(next?.revision ?? next?.Revision ?? '').trim();
             const followUp = queued && nextRevision && (queued.providerID !== providerID || queued.model !== model);
             if (!followUp) {
-                showToastMessage?.(lang === 'en'
-                    ? `Switched to "${model}". The next session will use it.`
-                    : lang === 'zh-Hant'
-                        ? `已切換為「${model}」，下次會話將使用該模型。`
-                        : `已切换为「${model}」，下次会话将使用该模型。`);
+                showToastMessage?.(localizeText(
+                    `Switched to "${model}". The next session will use it.`,
+                    `已切换为「${model}」，下次会话将使用该模型。`,
+                    `已切換為「${model}」，下次會話將使用該模型。`,
+                ));
             }
             if (followUp && queued) {
                 queueMicrotask(() => commitQuickProfileSelectionRef.current(queued.profile, queued.providerID, queued.model, nextRevision));
@@ -4741,7 +4747,7 @@ function App() {
                 openLLMSettingsPage();
                 return;
             }
-            showAlert(lang === 'en' ? `Failed to update model: ${message}` : `模型更新失败：${message}`);
+            showAlert(localizeText(`Failed to update model: ${message}`, `模型更新失败：${message}`, `模型更新失敗：${message}`));
             void refreshLLMProfilePanelState();
         }).finally(() => {
             if (saveSeq === quickProfileSaveSeqRef.current) setQuickProfileSavePending(false);
@@ -4824,24 +4830,16 @@ function App() {
         callBackend(op).then(() => {
             setMoaSession(prev => ({ ...prev, active: on, preset: on ? (presetId || prev.preset) : undefined }));
             const toastMsg = on
-                ? (lang === 'en'
-                    ? 'Multi-model council kept on for this session.'
-                    : lang === 'zh-Hant'
-                        ? '\u5df2\u958b\u555f\u672c\u6703\u8a71\u591a\u6a21\u578b\u6703\u8a3a'
-                        : '\u5df2\u5f00\u542f\u672c\u4f1a\u8bdd\u591a\u6a21\u578b\u4f1a\u8bca')
-                : (lang === 'en'
-                    ? 'Multi-model council session mode turned off.'
-                    : lang === 'zh-Hant'
-                        ? '\u5df2\u95dc\u9589\u672c\u6703\u8a71\u591a\u6a21\u578b\u6703\u8a3a'
-                        : '\u5df2\u5173\u95ed\u672c\u4f1a\u8bdd\u591a\u6a21\u578b\u4f1a\u8bca');
+                ? localizeText('Multi-model council kept on for this session.', '已开启本会话多模型会诊', '已開啟本會話多模型會診')
+                : localizeText('Multi-model council session mode turned off.', '已关闭本会话多模型会诊', '已關閉本會話多模型會診');
             showToastMessage?.(toastMsg);
             refreshMoASession();
         }).catch((err) => {
-            const errMsg = lang === 'en'
-                ? `Failed to toggle multi-model council: ${err}`
-                : lang === 'zh-Hant'
-                    ? `\u5207\u63db\u591a\u6a21\u578b\u6703\u8a3a\u5931\u6557\uff1a${err}`
-                    : `\u5207\u6362\u591a\u6a21\u578b\u4f1a\u8bca\u5931\u8d25\uff1a${err}`;
+            const errMsg = localizeText(
+                `Failed to toggle multi-model council: ${err}`,
+                `切换多模型会诊失败：${err}`,
+                `切換多模型會診失敗：${err}`,
+            );
             showAlert(errMsg);
             refreshMoASession();
         });
@@ -4856,9 +4854,9 @@ function App() {
                 safeBrowserOpenURL(url);
                 return;
             }
-            showAlert(lang === 'zh-Hans' ? 'Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00\u670d\u52a1\u5361\u5546\u5e97\u3002' : lang === 'zh-Hant' ? 'Hub \u4f4d\u5740\u7f3a\u5931\uff0c\u66ab\u6642\u7121\u6cd5\u6253\u958b\u670d\u52d9\u5361\u5546\u5e97\u3002' : 'Hub URL is missing, so the card store cannot be opened.');
+            showAlert(localizeText('Hub URL is missing, so the card store cannot be opened.', 'Hub 地址缺失，暂时无法打开服务卡商店。', 'Hub 位址缺失，暫時無法打開服務卡商店。'));
         } catch (error) {
-            showAlert(String(error || (lang === 'zh-Hans' ? '\u6253\u5f00\u670d\u52a1\u5361\u5546\u5e97\u5931\u8d25' : lang === 'zh-Hant' ? '\u6253\u958b\u670d\u52d9\u5361\u5546\u5e97\u5931\u6557' : 'Failed to open card store')));
+            showAlert(String(error || localizeText('Failed to open card store', '打开服务卡商店失败', '打開服務卡商店失敗')));
         }
     }, [config, lang, showAlert]);
 
@@ -4898,10 +4896,10 @@ function App() {
         return d.toLocaleDateString(undefined, { year: '2-digit', month: '2-digit', day: '2-digit' });
     }, []);
 
-    const noHubAuthorizationText = lang === 'zh-Hans' ? '\u65e0' : lang === 'zh-Hant' ? '\u7121' : 'None';
-    const longTermHubExpiryText = lang === 'zh-Hans' ? '\u957f\u671f' : lang === 'zh-Hant' ? '\u9577\u671f' : 'Long-term';
-    const unlimitedHubCreditText = lang === 'zh-Hans' ? '\u65e0\u9650' : lang === 'zh-Hant' ? '\u7121\u9650' : 'Unlimited';
-    const freeUseHubCreditText = lang === 'zh-Hans' ? '\u7545\u7528' : lang === 'zh-Hant' ? '\u66a2\u7528' : 'Free use';
+    const noHubAuthorizationText = localizeText('None', '无', '無');
+    const longTermHubExpiryText = localizeText('Long-term', '长期', '長期');
+    const unlimitedHubCreditText = localizeText('Unlimited', '无限', '無限');
+    const freeUseHubCreditText = localizeText('Free use', '畅用', '暢用');
 
     const formatSidebarHubExpiry = useCallback((credits: SidebarHubCredits | null) => {
         if (!credits) return '-';
@@ -5577,7 +5575,7 @@ function App() {
         }
         setShowRemoteActivationModal(false);
         if (pendingRemoteLaunchTool) {
-            setStatus(lang === 'zh-Hans' ? '正在启动远程...' : lang === 'zh-Hant' ? '正在啟動遠端...' : 'Starting remotely...');
+            setStatus(localizeText('Starting remotely...', '正在启动远程...', '正在啟動遠端...'));
             setLaunchingTool(pendingRemoteLaunchTool);
             await quickStartRemoteSession(pendingRemoteLaunchTool as any);
             setPendingRemoteLaunchTool("");
@@ -5684,11 +5682,11 @@ function App() {
             await ShowItemInFolder(zipPath);
 
             // Prepare mailto body
-            const instruction = lang === 'zh-Hans'
-                ? `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`
-                : lang === 'zh-Hant'
-                    ? `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`
-                    : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
+            const instruction = localizeText(
+                'Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n',
+                'Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n',
+                'Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n',
+            );
 
             const body = `Product: ${brandInfo?.displayName || 'MaClaw'}
 Version: ${APP_VERSION}
@@ -5963,7 +5961,7 @@ ${instruction}`;
                 <div className="ai-main-panel-host" hidden={navTab !== 'ai'}>
                     <Suspense fallback={
                         <div className="app-main-content-loading" role="status" aria-live="polite">
-                            {lang === 'zh-Hans' ? '加载助手…' : lang === 'zh-Hant' ? '載入助手…' : 'Loading assistant…'}
+                            {localizeText('Loading assistant…', '加载助手…', '載入助手…')}
                         </div>
                     }>
                     <div className="ai-main-panel-shell">
@@ -6312,11 +6310,11 @@ ${instruction}`;
                                     setStatus("");
                                 }).catch((err: any) => {
                                     console.error(preferBeta ? "CheckUpdateBeta error:" : "CheckUpdate error:", err);
-                                    setStatus((lang === 'zh-Hans' ? '检查更新失败：' : lang === 'zh-Hant' ? '檢查更新失敗：' : 'Update check failed: ') + err);
+                                    setStatus(localizeText('Update check failed: ', '检查更新失败：', '檢查更新失敗：') + err);
                                     setUpdateResult({
                                         has_update: false,
                                         check_failed: true,
-                                        message: lang === 'zh-Hans' ? '无法检查更新，请检查网络后重试。' : lang === 'zh-Hant' ? '無法檢查更新，請檢查網路後重試。' : 'Unable to check for updates. Check your connection and try again.',
+                                        message: localizeText('Unable to check for updates. Check your connection and try again.', '无法检查更新，请检查网络后重试。', '無法檢查更新，請檢查網路後重試。'),
                                         release_url: ""
                                     });
                                     setShowUpdateModal(true);
@@ -6381,11 +6379,7 @@ ${instruction}`;
                     <div className="codex-config-progress-overlay" role="status" aria-live="polite">
                         <div className="codex-config-progress-panel">
                             <div className="codex-config-progress-title">
-                                {lang === 'zh-Hans' || lang === 'zh'
-                                    ? "Updating Codex configuration"
-                                    : lang === 'zh-Hant'
-                                        ? "Updating Codex configuration"
-                                        : 'Updating Codex configuration'}
+                                {localizeText('Updating Codex configuration', 'Updating Codex configuration', 'Updating Codex configuration')}
                             </div>
                             <div className="codex-config-progress-track" aria-hidden="true">
                                 <div className="codex-config-progress-bar" />

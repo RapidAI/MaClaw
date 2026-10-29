@@ -1,7 +1,8 @@
 // Re-export from unified i18n module for backward compatibility.
 // New code should import from '../../i18n' directly.
 export { localizeText } from '../../i18n';
-import { localizeText } from '../../i18n';
+import { localizeText, normalizeLang } from '../../i18n';
+import { mnApproxAfter, mnDurationUnit } from '../../utils/hubServiceI18n';
 
 /** English label for the new-task page. It is not a task. */
 export const LOCAL_ASSISTANT_TITLE_EN = "New task";
@@ -53,6 +54,10 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
     // failure prefix), so translate the complete actionable message here.
     const officialPeriodLimited = raw.match(/MaClaw\s*官方周期限流：当前周期额度已用尽，约\s*(.+?)\s*后恢复(?:；请刷新 Hub 服务状态)?。?/);
     if (officialPeriodLimited) {
+        if (normalizeLang(lang) === "mn") {
+            const duration = mnRetryDuration(officialPeriodLimited[1]);
+            return `MaClaw албан ёсны мөчлөг хязгаарлагдсан: одоогийн кредит дууссан, ${mnApproxAfter(duration)} сэргэнэ.`;
+        }
         const retry = localizeHubRetry(officialPeriodLimited[1], lang);
         return localizeText(
             lang,
@@ -77,6 +82,7 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
         const heldEn = held ? ` (${held} held by in-flight requests)` : '';
         const heldZh = held ? `，其中 ${held} Credits 被在途请求冻结` : '';
         const heldZhHant = held ? `，其中 ${held} Credits 被在途請求凍結` : '';
+        if (normalizeLang(lang) === "mn") return mnCreditFailure(need, available, held);
         return localizeText(
             lang,
             `LLM call failed: insufficient credits for this request: need ${need} credits, available ${available}${heldEn}`,
@@ -93,6 +99,7 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
         const heldEn = held ? ` (${held} held by in-flight requests)` : '';
         const heldZh = held ? `，其中 ${held} Credits 被在途请求冻结` : '';
         const heldZhHant = held ? `，其中 ${held} Credits 被在途請求凍結` : '';
+        if (normalizeLang(lang) === "mn") return mnCreditFailure(need, available, held);
         return localizeText(
             lang,
             `LLM call failed: insufficient credits for this request: need ${need} credits, available ${available}${heldEn}`,
@@ -106,6 +113,11 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
     );
     if (exhausted) {
         const isPeriodLimit = exhausted[1].toLowerCase().startsWith("current period");
+        if (normalizeLang(lang) === "mn") {
+            return isPeriodLimit
+                ? "LLM дуудлага амжилтгүй: одоогийн мөчлөгийн кредит дууссан."
+                : "LLM дуудлага амжилтгүй: олголтын кредит дууссан.";
+        }
         return localizeText(
             lang,
             raw.replace(/^Error:\s*/i, ""),
@@ -124,6 +136,7 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
         /^(?:Error:\s*)?(?:LLM\s+(?:call\s+failed|调用失败|調用失敗))\s*[:：]\s*insufficient\s+credits?\s*$/i,
     );
     if (insufficient) {
+        if (normalizeLang(lang) === "mn") return "LLM дуудлага амжилтгүй: кредит хүрэлцэхгүй.";
         return localizeText(
             lang,
             raw.replace(/^Error:\s*/i, ""),
@@ -173,6 +186,7 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
             zhHansDetail = "额度不足";
             zhHantDetail = "額度不足";
         }
+        if (normalizeLang(lang) === "mn") return `LLM дуудлага амжилтгүй: ${mnGenericDetail(enDetail)}`;
         return localizeText(lang, `LLM call failed: ${enDetail}`, `LLM 调用失败：${zhHansDetail}`, `LLM 調用失敗：${zhHantDetail}`);
     }
 
@@ -182,6 +196,34 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
 // Implementation moved to ./aiAssistantErrorDescription to keep this module
 // under its file-size budget; re-exported so existing imports keep working.
 export { describeAIAssistantError, type AIAssistantErrorDescription } from "./aiAssistantErrorDescription";
+
+function mnCreditFailure(need: string, available: string, held?: string): string {
+    const heldMn = held ? ` (${held} кредит замд байгаа хүсэлтэд түгжигдсэн)` : "";
+    return `LLM дуудлага амжилтгүй: ${need} кредит хэрэгтэй, боломжтой ${available}${heldMn}.`;
+}
+
+function mnGenericDetail(detail: string): string {
+    const normalized = detail.toLowerCase();
+    if (normalized.includes("timeout") || normalized.includes("timed out") || normalized.includes("deadline exceeded")) return "хүсэлтийн хугацаа дууссан";
+    if (normalized.includes("service unavailable")) return detail.replace(/service unavailable/gi, "үйлчилгээ түр боломжгүй");
+    if (normalized.includes("rate exceeded") || normalized.includes("rate limit")) return "хүсэлтийн давтамж хэтэрсэн, дараа дахин оролдоно уу";
+    if (normalized.includes("no active model service entitlement")) return "одоо ашиглах боломжтой загварын зөвшөөрөл алга";
+    if (normalized.includes("current period credit limit is exhausted") || normalized.includes("the current period credit limit is exhausted")) return "одоогийн мөчлөгийн кредит дууссан";
+    if (normalized.includes("grant credits are exhausted") || normalized === "credits are exhausted") return "олголтын кредит дууссан";
+    if (normalized.includes("insufficient credits")) return "кредит хүрэлцэхгүй";
+    return detail;
+}
+
+function mnRetryDuration(raw: string): string {
+    const parts: string[] = [];
+    const hours = raw.match(/(\d+(?:\.\d+)?)\s*(?:小时|小時|hours?)/i);
+    const minutes = raw.match(/(\d+(?:\.\d+)?)\s*(?:分钟|分鐘|minutes?)/i);
+    const seconds = raw.match(/(\d+(?:\.\d+)?)\s*(?:秒|seconds?)/i);
+    if (hours) parts.push(mnDurationUnit(Number(hours[1]), "hour"));
+    if (minutes) parts.push(mnDurationUnit(Number(minutes[1]), "minute"));
+    if (seconds) parts.push(mnDurationUnit(Number(seconds[1]), "second"));
+    return parts.length > 0 ? parts.join(" ") : raw;
+}
 
 function localizeHubRetry(value: string, lang?: string | null): string {
     const raw = String(value || "").trim();

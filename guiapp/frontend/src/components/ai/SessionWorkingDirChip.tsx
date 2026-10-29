@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CS
 import { createPortal } from "react-dom";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
-import { localizeText } from "./aiAssistantI18n";
+import { chromeText } from "../../i18n/chromeText";
 import { cloudWorkspaceIdFromPath, isCloudWorkspacePath, lookupCloudWorkspaceDisplayName, remoteWorkspaceLocationLabel, subscribeCloudWorkspaceDisplayNames } from "./codingTaskMode";
 import { IconFolder, IconFolderOpen } from "./WorkbenchIcons";
 import { DEFAULT_EXPERT_ICON } from "./expertTypes";
+
 
 export interface SessionWorkingDirChipProps {
     /** Current active tab ID. Empty string = local tab. */
@@ -75,7 +76,7 @@ export function workingDirDisplayLabel(
         const name = String(cloudName || "").trim()
             || lookupCloudWorkspaceDisplayName(cloudWorkspaceIdFromPath(path));
         if (name) return name;
-        return localizeText(lang, "Cloud workspace", "云端工作区", "雲端工作區");
+        return chromeText(lang, "Cloud workspace", "云端工作区", "雲端工作區");
     }
     const host = String(remote?.host || "").trim();
     const remoteDir = String(remote?.workDir || "").trim();
@@ -90,12 +91,12 @@ export function composerWorkspaceKindLabel(
     remote?: { host?: string; workDir?: string; port?: number } | null,
 ): string {
     if (isCloudWorkspacePath(path)) {
-        return localizeText(lang, "Cloud workspace", "云端工作区", "雲端工作區");
+        return chromeText(lang, "Cloud workspace", "云端工作区", "雲端工作區");
     }
     if (String(remote?.host || "").trim() || String(remote?.workDir || "").trim()) {
-        return localizeText(lang, "Remote", "远程", "遠端");
+        return chromeText(lang, "Remote", "远程", "遠端");
     }
-    return localizeText(lang, "Local", "本地", "本地");
+    return chromeText(lang, "Local", "本地", "本地");
 }
 
 /** Live workspace name. An empty id stays empty and still follows later cache writes. */
@@ -137,7 +138,7 @@ function composerExpertBadge(
             data-testid="composer-expert-badge"
             className="swdc-expert"
             title={name}
-            aria-label={localizeText(lang, `Expert: ${name}`, `专家：${name}`, `專家：${name}`)}
+            aria-label={chromeText(lang, `Expert: ${name}`, `专家：${name}`, `專家：${name}`)}
         >
             <span className="swdc-expert-icon" aria-hidden="true">{icon}</span>
             <span className="swdc-expert-name">{name}</span>
@@ -351,14 +352,14 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
         whiteSpace: "nowrap",
     };
     const openDirLabel = isCloud
-        ? (lang === "en" ? "Open cloud workspace files" : "打开云端工作区文件")
-        : (lang === "en" ? "Open containing folder" : "打开所在目录");
+        ? ((chromeText(lang, "Open cloud workspace files", "打开云端工作区文件")))
+        : ((chromeText(lang, "Open containing folder", "打开所在目录")));
     const copyLabel = isCloud
-        ? localizeText(lang, "Copy workspace name", "复制工作区名称", "複製工作區名稱")
-        : (lang === "en" ? "Copy path" : "复制路径");
+        ? chromeText(lang, "Copy workspace name", "复制工作区名称", "複製工作區名稱")
+        : ((chromeText(lang, "Copy path", "复制路径")));
     const copyAriaLabel = isCloud
         ? copyLabel
-        : (lang === "en" ? "Copy working directory path" : "复制工作目录路径");
+        : ((chromeText(lang, "Copy working directory path", "复制工作目录路径")));
 
     return (
         <div
@@ -373,7 +374,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                     className="mc-working-dir-chip"
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
-                    aria-label={(lang === "en" ? "Session working directory: " : "会话工作目录：") + (detailLabel && detailLabel !== kindLabel ? `${kindLabel} · ${detailLabel}` : kindLabel)}
+                    aria-label={((chromeText(lang, "Session working directory: ", "会话工作目录："))) + (detailLabel && detailLabel !== kindLabel ? `${kindLabel} · ${detailLabel}` : kindLabel)}
                     title={detailLabel}
                     onClick={() => setMenuOpen(!menuOpen)}
                     onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }}
@@ -428,10 +429,10 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                                 className="mc-dir-chip-menu-item"
                                 onClick={handleSwitchDir}
                                 disabled={selectingDirectory}
-                                aria-label={lang === "en" ? "Choose a different working directory" : "选择其他工作目录"}
+                                aria-label={(chromeText(lang, "Choose a different working directory", "选择其他工作目录"))}
                                 style={{ ...menuItemStyle, cursor: selectingDirectory ? "progress" : "pointer", opacity: selectingDirectory ? 0.6 : 1 }}
                             >
-                                {selectingDirectory ? (lang === "en" ? "Choosing…" : "选择中…") : (lang === "en" ? "Switch directory…" : "切换目录…")}
+                                {selectingDirectory ? ((chromeText(lang, "Choosing…", "选择中…"))) : ((chromeText(lang, "Switch directory…", "切换目录…")))}
                             </button>
                         )}
                         <button

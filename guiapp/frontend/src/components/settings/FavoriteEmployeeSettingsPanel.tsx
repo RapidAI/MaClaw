@@ -4,6 +4,7 @@ import { participantIdentityMatches } from '../ai/participantIdentity';
 import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
 import { isVirtualEmployeeOnline } from '../ai/virtualEmployeeStatus';
 import { MAX_USER_FAVORITES } from './favoriteEmployees';
+import { tailText } from '../../i18n/mnTail'
 
 interface FavoriteEmployeeSettingsPanelProps {
     favoriteEmployeeIds: string[];
@@ -15,13 +16,12 @@ interface FavoriteEmployeeSettingsPanelProps {
 }
 
 export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onAdd, onRemove, onReorder, lang }: FavoriteEmployeeSettingsPanelProps) {
-    const isZh = !lang || lang.startsWith('zh');
     const [showAddPicker, setShowAddPicker] = useState(false);
     const rootRef = useRef<HTMLDivElement | null>(null);
     const dragSourceIndex = useRef<number | null>(null);
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-    const onlineLabel = isZh ? '在线' : 'Online';
-    const offlineLabel = isZh ? '离线' : 'Offline';
+    const onlineLabel = tailText(lang ?? "", 'Online', '在线');
+    const offlineLabel = tailText(lang ?? "", 'Offline', '离线');
 
     const veById = useMemo(() => {
         const map = new Map<string, VirtualEmployeeEntry>();
@@ -83,15 +83,15 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
 
     return (
         <div ref={rootRef} className="favorite-employee-settings" data-testid="fav-employee-settings" onKeyDown={handleKeyDown}>
-            <h3 className="favorite-employee-settings__title">{isZh ? '常用数字员工' : 'Favorite Employees'}</h3>
+            <h3 className="favorite-employee-settings__title">{tailText(lang ?? "", 'Favorite Employees', '常用数字员工')}</h3>
             <p className="favorite-employee-settings__hint">
-                {isZh ? `最多设置 ${MAX_USER_FAVORITES} 个常用数字员工，显示在左侧导航栏中。拖动调整顺序。` : `Pin up to ${MAX_USER_FAVORITES} digital employees to the sidebar. Drag to reorder.`}
+                {tailText(lang ?? "", `Pin up to ${MAX_USER_FAVORITES} digital employees to the sidebar. Drag to reorder.`, `最多设置 ${MAX_USER_FAVORITES} 个常用数字员工，显示在左侧导航栏中。拖动调整顺序。`)}
             </p>
 
             {/* Current favorites list */}
             {favoriteVEs.length === 0 ? (
                 <div className="favorite-employee-settings__empty">
-                    {isZh ? '暂无常用数字员工' : 'No favorites set'}
+                    {tailText(lang ?? "", 'No favorites set', '暂无常用数字员工')}
                 </div>
             ) : (
                 <div className="favorite-employee-settings__grid" role="list">
@@ -118,10 +118,10 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
                             <button
                                 className="favorite-employee-settings__remove"
                                 type="button"
-                                aria-label={isZh ? `移除常用数字员工：${fav.name}` : `Remove favorite employee: ${fav.name}`}
+                                aria-label={tailText(lang ?? "", `Remove favorite employee: ${fav.name}`, `移除常用数字员工：${fav.name}`)}
                                 onClick={() => onRemove(fav.id)}
                             >
-                                {isZh ? '移除' : 'Remove'}
+                                {tailText(lang ?? "", 'Remove', '移除')}
                             </button>
                         </div>
                     ))}
@@ -138,14 +138,14 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
                         aria-haspopup="true"
                         onClick={() => setShowAddPicker(!showAddPicker)}
                     >
-                        + {isZh ? '添加常用' : 'Add Favorite'}
+                        + {tailText(lang ?? "", 'Add Favorite', '添加常用')}
                     </button>
 
                     {showAddPicker && (
-                        <div className="favorite-employee-settings__picker" aria-label={isZh ? '可添加的数字员工' : 'Available employees'}>
+                        <div className="favorite-employee-settings__picker" aria-label={tailText(lang ?? "", 'Available employees', '可添加的数字员工')}>
                             {availableVEs.length === 0 ? (
                                 <div className="favorite-employee-settings__picker-empty">
-                                    {isZh ? '无可添加的数字员工' : 'No employees available'}
+                                    {tailText(lang ?? "", 'No employees available', '无可添加的数字员工')}
                                 </div>
                             ) : (
                                 availableVEs.map(ve => {

@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { localizeText } from "../../i18n";
 import { AIAssistantAttachmentPreviewDataURL, AIAssistantFileTypeIconDataURL } from "../../../wailsjs/go/main/App";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 import type { AttachmentInfo } from "./useBufferQueue";
@@ -182,7 +183,7 @@ function AttachmentChipIcon({ filePath, fileName, isImage, lang, theme }: {
 }
 
 function attachmentRemoveLabel(lang: string, fileName: string): string {
-    return lang.startsWith("en") ? `Remove ${fileName}` : `移除 ${fileName}`;
+    return localizeText(lang, "Remove", "移除", "移除") + " " + fileName;
 }
 
 function attachmentRowStyle(theme: Theme): CSSProperties {
@@ -272,7 +273,7 @@ export function AssistantAttachmentsStrip({
             className="ai-attachment-strip"
             data-testid={pendingAttachmentsTestId}
             role="list"
-            aria-label={lang.startsWith("en") ? "Attached files" : "已附加文件"}
+            aria-label={localizeText(lang, "Attached files", "已附加文件", "已附加文件")}
             style={{
                 gap: "6px",
                 alignSelf: "flex-start",

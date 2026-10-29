@@ -4,6 +4,7 @@ import { colors, radius } from "./styles";
 import type { LLMProvider } from "./LLMConfigPanelShared";
 import { NONE_PROVIDER, HUB_SERVICE_PROVIDER_NAME } from "./LLMConfigPanelShared";
 import { CreateMobileLLMDesktopQRSession, FetchProviderModels } from "../../../wailsjs/go/main/App";
+import { panelText } from "../../i18n/mnPanel";
 
 interface MobileQRCodeDialogProps {
     open: boolean;
@@ -17,7 +18,7 @@ const MODELS_MAX_COUNT = 30;
 
 export function MobileQRCodeDialog({ open, onClose, providers, currentName, lang }: MobileQRCodeDialogProps) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en, [lang]);
+        panelText(lang ?? "", en, zhHans, zhHant), [lang]);
 
     // Only show providers that have url and key configured (excluding "None" and Hub official)
     const availableProviders = useMemo(() =>
@@ -239,7 +240,7 @@ export function MobileQRCodeDialog({ open, onClose, providers, currentName, lang
                                 {modelsFetched && (
                                     <span style={{ fontSize: "0.7rem", color: colors.textSecondary }}>
                                         {modelList.length > 0
-                                            ? t(`${modelList.length} models`, `${modelList.length} 个模型`)
+                                            ? t("{count} models", "{count} 个模型").replaceAll("{count}", String(modelList.length))
                                             : t("No models found, using current model", "未获取到模型列表，使用当前模型")}
                                     </span>
                                 )}

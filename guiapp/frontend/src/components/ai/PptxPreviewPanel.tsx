@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { AIAssistantAttachmentFullDataURL, PptxPreviewEnsure, PptxSlideThumbnailDataURL } from "../../../wailsjs/go/main/App";
 import type { CodePreviewTheme } from "./FileTabBar";
 import { PREVIEW_BAR_DELAY_MS, PreviewLoadingStatus } from "./PreviewProgressBar";
+import { tailText } from "../../i18n/mnTail"
 
 type PptxPreviewResult = {
     file_path?: string;
@@ -147,7 +148,7 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
         );
     }
     if (!images) {
-        const sentence = isZh ? "正在渲染 PPT 预览…" : "Rendering slide preview…";
+        const sentence = tailText(lang, "Rendering slide preview…", "正在渲染 PPT 预览…");
         return (
             <PreviewLoadingStatus
                 testId="pptx-preview-loading"
@@ -178,7 +179,7 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
             <div
                 data-testid="pptx-preview-thumbnails"
                 role="listbox"
-                aria-label={isZh ? "页面列表" : "Slides"}
+                aria-label={tailText(lang, "Slides", "页面列表")}
                 onKeyDown={handleThumbsKeyDown}
                 style={{
                     width: 150,
@@ -211,7 +212,7 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
                                 }
                                 setSelected(index);
                             }}
-                            title={isZh ? `第 ${index + 1} 页` : `Slide ${index + 1}`}
+                            title={tailText(lang, `Slide ${index + 1}`, `第 ${index + 1} 页`)}
                             style={{
                                 position: "relative",
                                 display: "block",
@@ -242,7 +243,7 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
                     {currentUrl ? (
                         <img
                             src={currentUrl}
-                            alt={isZh ? `第 ${current + 1} 页` : `Slide ${current + 1}`}
+                            alt={tailText(lang, `Slide ${current + 1}`, `第 ${current + 1} 页`)}
                             draggable={false}
                             data-testid="pptx-preview-slide"
                             className="pptx-slide-img"
@@ -252,14 +253,14 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
                         // in place with the thumbnail so a fast flip feels instant.
                         <img
                             src={thumbs.get(current)}
-                            alt={isZh ? `第 ${current + 1} 页（预览）` : `Slide ${current + 1} (preview)`}
+                            alt={tailText(lang, `Slide ${current + 1} (preview)`, `第 ${current + 1} 页（预览）`)}
                             draggable={false}
                             data-testid="pptx-preview-slide-placeholder"
                             className="pptx-slide-img pptx-slide-img--placeholder"
                         />
                     ) : (
                         <span data-testid="pptx-preview-slide-loading" role="status" style={{ color: theme.textMuted, fontSize: 12 }}>
-                            {isZh ? "正在加载页面…" : "Loading slide…"}
+                            {tailText(lang, "Loading slide…", "正在加载页面…")}
                         </span>
                     )}
                 </div>

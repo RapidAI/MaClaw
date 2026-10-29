@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { companionFill, cs, getCompanionUiLang, setCompanionUiLang } from "../../i18n/mnCompanion";
 import {
     AddFileCompanionGroupMember,
     CreateFileCompanionGroup,
@@ -137,12 +138,12 @@ const companionGroupIcons = ["book", "people", "star", "pen", "leaf", "flask"] a
 type CompanionGroupIcon = (typeof companionGroupIcons)[number];
 
 const companionGroupIconLabel: Record<CompanionGroupIcon, string> = {
-    book: "书",
-    people: "同伴",
-    star: "星",
-    pen: "笔",
-    leaf: "叶",
-    flask: "实验",
+    book: cs("书"),
+    people: cs("同伴"),
+    star: cs("星"),
+    pen: cs("笔"),
+    leaf: cs("叶"),
+    flask: cs("实验"),
 };
 
 function companionGroupIcon(value: string): CompanionGroupIcon {
@@ -151,8 +152,8 @@ function companionGroupIcon(value: string): CompanionGroupIcon {
 
 function companionGroupNameError(name: string): string {
     const cleaned = name.trim();
-    if (!cleaned) return "请填写群组名称";
-    if ([...cleaned].length > 40) return "群组名称过长";
+    if (!cleaned) return cs("请填写群组名称");
+    if ([...cleaned].length > 40) return cs("群组名称过长");
     return "";
 }
 
@@ -202,7 +203,7 @@ function companionHostFlag(record: Record<string, unknown>): boolean {
 
 function libraryError(err: unknown): string {
     const raw = (err instanceof Error ? err.message : typeof err === "string" ? err : "").trim();
-    return raw || "操作失败";
+    return raw || cs("操作失败");
 }
 
 function readItem(raw: unknown): CompanionLibraryItem | null {
@@ -213,7 +214,7 @@ function readItem(raw: unknown): CompanionLibraryItem | null {
     if (!id && !name) return null;
     return {
         id,
-        name: name || "未命名文档",
+        name: name || cs("未命名文档"),
         path: textOf(record, "path", "Path"),
         source: textOf(record, "source", "Source") || "local",
         openedAt: textOf(record, "openedAt", "OpenedAt"),
@@ -260,7 +261,7 @@ function readGroups(raw: unknown): CompanionGroup[] {
         }).filter((member): member is CompanionGroupMember => member !== null);
         return {
             id,
-            name: textOf(group, "name", "Name") || "未命名群组",
+            name: textOf(group, "name", "Name") || cs("未命名群组"),
             owner: textOf(group, "owner", "Owner"),
             admin: boolOf(group, "admin", "Admin"),
             icon: companionGroupIcon(textOf(group, "icon", "Icon")),
@@ -425,13 +426,13 @@ export function companionLibrarySync(raw: unknown): { updates: CompanionShareUpd
 // closes because the host cancelled the share. The host name is who to ask
 // for another copy. With no name, the sentence still says to ask the host.
 export function companionWithdrawnNotice(articleCount: number, hosts: string[]): string {
-    const withdrawn = articleCount > 1 ? "这些文章已经取消分享" : "该文章已经取消分享";
+    const withdrawn = articleCount > 1 ? cs("这些文章已经取消分享") : cs("该文章已经取消分享");
     const names: string[] = [];
     for (const host of hosts) {
         const name = host.trim();
         if (name && !names.includes(name)) names.push(name);
     }
-    const ask = names.length > 0 ? `请联系主持人 ${names.join("、")}` : "请联系分享的主持人";
+    const ask = names.length > 0 ? `请联系主持人 ${names.join("、")}` : cs("请联系分享的主持人");
     return `${withdrawn}，如果需要继续阅读，${ask}`;
 }
 
@@ -674,10 +675,10 @@ export function companionShareHosts(raw: unknown): Map<string, CompanionShareHos
 }
 
 function audienceLabel(visibility: string): string {
-    if (visibility === "private") return "私密";
-    if (visibility === "person") return "指定的人";
-    if (visibility === "group") return "群组";
-    return "公开";
+    if (visibility === "private") return cs("私密");
+    if (visibility === "person") return cs("指定的人");
+    if (visibility === "group") return cs("群组");
+    return cs("公开");
 }
 
 function shareDays(span: ShareSpan, amount: string): number | null {
@@ -708,9 +709,10 @@ function shareSpanFromExpiry(expiresAt: string): { span: ShareSpan; amount: stri
 }
 
 function whenLabel(item: CompanionLibraryItem): string {
-    if (item.expired) return item.expiresAt ? `已过期 · ${item.expiresAt.slice(0, 10)}` : "已过期";
-    if (item.permanent || (item.source === "cloud" && !item.expiresAt)) return "永久";
-    if (item.expiresAt) return `至 ${item.expiresAt.slice(0, 10)}`;
+    const lang = getCompanionUiLang();
+    if (item.expired) return item.expiresAt ? companionFill(lang, "已过期 · ${date}", { date: item.expiresAt.slice(0, 10) }) : cs("已过期");
+    if (item.permanent || (item.source === "cloud" && !item.expiresAt)) return cs("永久");
+    if (item.expiresAt) return companionFill(lang, "至 ${date}", { date: item.expiresAt.slice(0, 10) });
     if (item.openedAt) return item.openedAt.slice(0, 10);
     return "";
 }
@@ -720,9 +722,10 @@ function whenLabel(item: CompanionLibraryItem): string {
 function sharedMarkTitle(item: CompanionLibraryItem, row: CompanionLibraryItem | null): string {
     if (row) {
         const range = audienceLabel(row.visibility || item.visibility);
-        return item.mine ? `已分享 — ${range}，${whenLabel(row)}` : `收到的分享 — ${range}，${whenLabel(row)}`;
+        const when = whenLabel(row);
+        return item.mine ? companionFill(getCompanionUiLang(), "已分享 — ${range}，${when}", { range, when }) : companionFill(getCompanionUiLang(), "收到的分享 — ${range}，${when}", { range, when });
     }
-    return "已分享 — 到云端项目里可以修改分享范围和有效期";
+    return cs("已分享 — 到云端项目里可以修改分享范围和有效期");
 }
 
 function fmtSize(size: number): string {
@@ -743,7 +746,7 @@ function kindOf(name: string): string {
 
 function kindLabel(name: string): string {
     const kind = kindOf(name);
-    return (kind || "文档").slice(0, 5).toUpperCase();
+    return (kind || cs("文档")).slice(0, 5).toUpperCase();
 }
 
 function dateOf(timestamp: string): string {
@@ -757,7 +760,7 @@ function dateOf(timestamp: string): string {
 function companionRemoveConfirm(item: CompanionLibraryItem, name: string): { message: string; title: string } {
     if (item.source !== "cloud") {
         return {
-            title: "删除伴读数据",
+            title: cs("删除伴读数据"),
             message: `确认删除“${name}”？\n源文件会保留。本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
         };
     }
@@ -766,18 +769,18 @@ function companionRemoveConfirm(item: CompanionLibraryItem, name: string): { mes
         // revoke the link so every participant drops the copy and closes the
         // tab. An expired link has no reader to notify and is removed locally.
         return {
-            title: "取消分享",
+            title: cs("取消分享"),
             message: `确认取消分享“${name}”？\n所有参与者会从文档管理移除，并在伴读中关闭该文档。\n本机的文档、高亮、批注和手绘会保留。\n此操作不可撤销。`,
         };
     }
     if (item.expired) {
         return {
-            title: "移除文档",
+            title: cs("移除文档"),
             message: `确认从文档管理移除“${name}”？\n源文件会保留；这份分享已过期。\n本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
         };
     }
     return {
-        title: "移除文档",
+        title: cs("移除文档"),
         message: `确认从文档管理移除“${name}”？\n源文件会保留；这份分享仍属于分享者。\n本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
     };
 }
@@ -785,9 +788,9 @@ function companionRemoveConfirm(item: CompanionLibraryItem, name: string): { mes
 async function copyText(text: string, showToast: LibraryToast): Promise<void> {
     try {
         await navigator.clipboard.writeText(text);
-        showToast("已复制分享链接", "success", 6000);
+        showToast(cs("已复制分享链接"), "success", 6000);
     } catch {
-        showToast("复制失败，请手动选择链接", "error", 6000);
+        showToast(cs("复制失败，请手动选择链接"), "error", 6000);
     }
 }
 
@@ -823,6 +826,7 @@ function useDialogFocus<T extends HTMLElement>(selector: string, ready = true) {
 // discussion travel together. Actions open it for reading, share it, sync the
 // newest marks, or pack it as a companion project zip.
 export function CompanionLibraryView({
+    lang,
     activePath,
     showToast,
     onOpen,
@@ -837,6 +841,7 @@ export function CompanionLibraryView({
     listedSnapshot,
     dialogOpen,
 }: {
+    lang?: string;
     activePath: string;
     showToast: LibraryToast;
     onOpen: (path: string) => void;
@@ -857,6 +862,7 @@ export function CompanionLibraryView({
     listedSnapshot?: unknown;
     dialogOpen?: boolean;
 }) {
+    if (lang) setCompanionUiLang(lang);
     const [items, setItems] = useState<CompanionLibraryItem[]>([]);
     const [notice, setNotice] = useState("");
     const [loading, setLoading] = useState(true);
@@ -958,7 +964,7 @@ export function CompanionLibraryView({
         beginRow(item.id, "sync");
         try {
             await SyncFileCompanionShare(item.path, marksJSONOf(item.path));
-            showToast("已同步到云端", "success", 6000);
+            showToast(cs("已同步到云端"), "success", 6000);
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
         }
@@ -977,7 +983,7 @@ export function CompanionLibraryView({
         try {
             const dest = await FileCompanionExportProject(item.path, marksJSONOf(item.path));
             if (dest) {
-                showToast("已导出项目", "success", 6000);
+                showToast(cs("已导出项目"), "success", 6000);
                 void ShowItemInFolder(dest).catch(() => undefined);
             }
         } catch (err) {
@@ -992,7 +998,7 @@ export function CompanionLibraryView({
         deleteGate.current = true;
         try {
             beginRow(item.id, "confirm");
-            const name = item.name.trim() || "这个项目";
+            const name = item.name.trim() || cs("这个项目");
             const confirm = companionRemoveConfirm(item, name);
             confirmOpenRef.current = true;
             let ok = false;
@@ -1001,8 +1007,8 @@ export function CompanionLibraryView({
                     confirm.message,
                     confirm.title,
                     {
-                        confirmText: item.source === "cloud" && item.mine && !item.expired ? "取消分享" : "删除",
-                        cancelText: "取消",
+                        confirmText: item.source === "cloud" && item.mine && !item.expired ? cs("取消分享") : cs("删除"),
+                        cancelText: cs("取消"),
                         confirmVariant: "danger",
                     },
                 );
@@ -1021,7 +1027,7 @@ export function CompanionLibraryView({
                     // token as deleted and withdraws the copy and open tab.
                     await DeleteFileCompanionShare(item.token);
                     if (libraryDeleteGen) libraryDeleteGen.current += 1;
-                    showToast("已取消分享，参与者会移除并关闭该文档", "success", 6000);
+                    showToast(cs("已取消分享，参与者会移除并关闭该文档"), "success", 6000);
                 } else {
                     const raw = await DeleteFileCompanionProject(item.id) as Record<string, unknown>;
                     // Any list that started before this delete finished still has
@@ -1036,7 +1042,7 @@ export function CompanionLibraryView({
                         saveChatMarks(path, []);
                         onProjectDeleted?.(path);
                     }
-                    showToast(cleared ? "已删除伴读数据，源文件仍在" : "已从文档管理移除，源文件仍在", "success", 6000);
+                    showToast(cleared ? cs("已删除伴读数据，源文件仍在") : cs("已从文档管理移除，源文件仍在"), "success", 6000);
                 }
             } catch (err) {
                 showToast(libraryError(err), "error", 6000);
@@ -1084,8 +1090,8 @@ export function CompanionLibraryView({
             : 0;
         const meta = [
             item.source === "cloud"
-                ? (item.mine ? "我的分享" : (item.owner || "别人的分享"))
-                : "本机",
+                ? (item.mine ? cs("我的分享") : (item.owner || cs("别人的分享")))
+                : cs("本机"),
             fmtSize(item.size),
             // A cloud row's openedAt is when the share was created, so the
             // card says 分享于 instead of 打开于.
@@ -1119,14 +1125,14 @@ export function CompanionLibraryView({
                         >
                             {item.name}
                         </button>
-                        {isOpen ? <span className="file-companion-badge" data-tone="active">打开中</span> : null}
-                        {!item.path && item.source === "cloud" ? <span className="file-companion-badge" data-tone="pending">未导入</span> : null}
+                        {isOpen ? <span className="file-companion-badge" data-tone="active">{cs("打开中")}</span> : null}
+                        {!item.path && item.source === "cloud" ? <span className="file-companion-badge" data-tone="pending">{cs("未导入")}</span> : null}
                     </div>
                     <p className="file-companion-project-meta">
-                        <span className="file-companion-badge" data-tone="source">{item.source === "cloud" ? "云端" : "本机"}</span>
+                        <span className="file-companion-badge" data-tone="source">{item.source === "cloud" ? cs("云端") : cs("本机")}</span>
                         {item.source === "cloud" ? <span className="file-companion-badge">{audienceLabel(item.visibility)}</span> : null}
                         {item.source === "cloud" && item.host ? (
-                            <span className="file-companion-badge" data-tone="active">主持人</span>
+                            <span className="file-companion-badge" data-tone="active">{cs("主持人")}</span>
                         ) : null}
                         <span className="file-companion-badge">{whenLabel(item)}</span>
                         {marks > 0 ? <span className="file-companion-badge" data-tone="mark">标注 {marks}</span> : null}
@@ -1142,9 +1148,9 @@ export function CompanionLibraryView({
                             className="file-companion-badge"
                             data-tone="mark"
                             data-testid={`file-companion-library-expired-mark-${item.id}`}
-                            title="分享已过期，可以重新分享"
+                            title={cs("分享已过期，可以重新分享")}
                         >
-                            已过期
+                            {cs("已过期")}
                         </span>
                     ) : alreadyShared ? (
                         <span
@@ -1153,7 +1159,7 @@ export function CompanionLibraryView({
                             title={sharedMarkTitle(item, shareRow)}
                         >
                             <LibraryGlyph name="share" size={12} />
-                            <span>{item.source === "cloud" && !item.mine ? "收到的" : "已分享"}</span>
+                            <span>{item.source === "cloud" && !item.mine ? cs("收到的") : cs("已分享")}</span>
                         </span>
                     ) : (
                         <button
@@ -1161,10 +1167,10 @@ export function CompanionLibraryView({
                             className="file-companion-project-action"
                             data-testid={`file-companion-library-share-action-${item.id}`}
                             disabled={!item.path || Boolean(busy)}
-                            title="分享 — 上传文档、高亮和聊天，生成云端链接"
+                            title={cs("分享 — 上传文档、高亮和聊天，生成云端链接")}
                             onClick={() => onShareProject(item.path)}
                         >
-                            分享
+                            {cs("分享")}
                         </button>
                     )}
                     {item.source === "cloud" && shareRow ? (
@@ -1173,7 +1179,7 @@ export function CompanionLibraryView({
                             className="file-companion-project-action"
                             data-testid={`file-companion-library-edit-share-${item.id}`}
                             disabled={Boolean(busy)}
-                            title="修改分享 — 调整分享范围、有效期，链接不变"
+                            title={cs("修改分享 — 调整分享范围、有效期，链接不变")}
                             onClick={() => onEditShare({
                                 path: shareRow.path,
                                 token: shareRow.token,
@@ -1192,7 +1198,7 @@ export function CompanionLibraryView({
                                 groupId: shareRow.groupId,
                             })}
                         >
-                            修改
+                            {cs("修改")}
                         </button>
                     ) : null}
                     {item.path && item.source === "cloud" && item.host ? (
@@ -1201,10 +1207,10 @@ export function CompanionLibraryView({
                             className="file-companion-project-action"
                             data-testid={`file-companion-library-sync-${item.id}`}
                             disabled={Boolean(busy)}
-                            title="同步 — 把这份项目的新标注和聊天推到云端"
+                            title={cs("同步 — 把这份项目的新标注和聊天推到云端")}
                             onClick={() => { void syncRow(item); }}
                         >
-                            {busy === "sync" ? "同步中…" : "同步"}
+                            {busy === "sync" ? cs("同步中…") : cs("同步")}
                         </button>
                     ) : null}
                     {item.path ? (
@@ -1213,10 +1219,10 @@ export function CompanionLibraryView({
                             className="file-companion-project-action"
                             data-testid={`file-companion-library-export-${item.id}`}
                             disabled={Boolean(busy)}
-                            title="导出项目 — 打包文档、高亮和聊天为 zip"
+                            title={cs("导出项目 — 打包文档、高亮和聊天为 zip")}
                             onClick={() => { void exportRow(item); }}
                         >
-                            {busy === "export" ? "导出中…" : "导出"}
+                            {busy === "export" ? cs("导出中…") : cs("导出")}
                         </button>
                     ) : null}
                     <button
@@ -1226,14 +1232,14 @@ export function CompanionLibraryView({
                         disabled={Boolean(busy)}
                         title={item.source === "cloud"
                             ? (item.mine && !item.expired
-                                ? "取消分享 — 参与者会移除并关闭该文档"
-                                : item.expired ? "移除已过期的分享" : "从文档管理移除；云端分享仍属于分享者")
-                            : "删除伴读数据，不删除源文件"}
+                                ? cs("取消分享 — 参与者会移除并关闭该文档")
+                                : item.expired ? cs("移除已过期的分享") : cs("从文档管理移除；云端分享仍属于分享者"))
+                            : cs("删除伴读数据，不删除源文件")}
                         onClick={() => { void deleteRow(item); }}
                     >
                         {busy === "delete"
-                            ? (item.source === "cloud" && item.mine ? "取消中…" : "删除中…")
-                            : item.source === "cloud" && item.mine && !item.expired ? "取消分享" : item.source === "cloud" ? "移除" : "删除"}
+                            ? (item.source === "cloud" && item.mine ? cs("取消中…") : cs("删除中…"))
+                            : item.source === "cloud" && item.mine && !item.expired ? cs("取消分享") : item.source === "cloud" ? cs("移除") : cs("删除")}
                     </button>
                 </div>
             </div>
@@ -1246,9 +1252,9 @@ export function CompanionLibraryView({
             <div className="file-companion-dialog-card file-companion-library-dialog" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
-                        <h2 id="file-companion-library-title">文档管理</h2>
+                        <h2 id="file-companion-library-title">{cs("文档管理")}</h2>
                         <p className="file-companion-dialog-sub">
-                            每个项目包含文档、高亮和讨论，{items.length > 0 ? `共 ${items.length} 个` : "还没有项目"}
+                            每个项目包含文档、高亮和讨论，{items.length > 0 ? `共 ${items.length} 个` : cs("还没有项目")}
                         </p>
                     </div>
                     <div className="file-companion-dialog-head-actions">
@@ -1256,37 +1262,37 @@ export function CompanionLibraryView({
                             type="button"
                             className="file-companion-dialog-secondary"
                             data-testid="file-companion-library-import-open"
-                            title="导入分享 — 粘贴链接存进本机"
+                            title={cs("导入分享 — 粘贴链接存进本机")}
                             onClick={() => onImportLink("")}
                         >
-                            导入分享
+                            {cs("导入分享")}
                         </button>
                         <button
                             type="button"
                             className="file-companion-dialog-x"
                             data-testid="file-companion-library-back"
-                            aria-label="关闭"
-                            title="关闭"
+                            aria-label={cs("关闭")}
+                            title={cs("关闭")}
                             onClick={onExit}
                         >
                             <LibraryGlyph name="x" size={13} />
-                            <span className="file-companion-sr">关闭</span>
+                            <span className="file-companion-sr">{cs("关闭")}</span>
                         </button>
                     </div>
                 </header>
                 <div className="file-companion-dialog-body">
                     {notice ? <p className="file-companion-library-notice" data-testid="file-companion-library-notice" role="status">{notice}</p> : null}
-                    {loading ? <p className="file-companion-library-note">正在读取…</p> : null}
-                    <section className="file-companion-library-section" data-testid="file-companion-library-local" aria-label="本机项目">
-                        <h3 className="file-companion-dialog-label">本机项目<span className="file-companion-dialog-optional">{localItems.length}</span></h3>
+                    {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
+                    <section className="file-companion-library-section" data-testid="file-companion-library-local" aria-label={cs("本机项目")}>
+                        <h3 className="file-companion-dialog-label">{cs("本机项目")}<span className="file-companion-dialog-optional">{localItems.length}</span></h3>
                         {localItems.length === 0
-                            ? <p className="file-companion-library-empty">还没有本机项目 — 打开或导入一个文档开始</p>
+                            ? <p className="file-companion-library-empty">{cs("还没有本机项目 — 打开或导入一个文档开始")}</p>
                             : <div className="file-companion-project-list">{localItems.map(renderRow)}</div>}
                     </section>
-                    <section className="file-companion-library-section" data-testid="file-companion-library-cloud" aria-label="云端项目">
-                        <h3 className="file-companion-dialog-label">云端项目<span className="file-companion-dialog-optional">{cloudItems.length}</span></h3>
+                    <section className="file-companion-library-section" data-testid="file-companion-library-cloud" aria-label={cs("云端项目")}>
+                        <h3 className="file-companion-dialog-label">{cs("云端项目")}<span className="file-companion-dialog-optional">{cloudItems.length}</span></h3>
                         {cloudItems.length === 0
-                            ? <p className="file-companion-library-empty">还没有云端项目 — 分享后会出现在这里</p>
+                            ? <p className="file-companion-library-empty">{cs("还没有云端项目 — 分享后会出现在这里")}</p>
                             : <div className="file-companion-project-list">{cloudItems.map(renderRow)}</div>}
                     </section>
                 </div>
@@ -1299,12 +1305,15 @@ export function CompanionLibraryView({
 // the selected group's settings on the right. Admins rename, re-icon, invite,
 // remove members, or dissolve; a member can leave.
 export function CompanionGroupsDialog({
+    lang,
     showToast,
     onClose,
 }: {
+    lang?: string;
     showToast: LibraryToast;
     onClose: () => void;
 }) {
+    if (lang) setCompanionUiLang(lang);
     const [groups, setGroups] = useState<CompanionGroup[]>([]);
     const [notice, setNotice] = useState("");
     const [loading, setLoading] = useState(true);
@@ -1399,7 +1408,7 @@ export function CompanionGroupsDialog({
             // Select the new group so its settings are what the reader sees;
             // otherwise the pane keeps showing whatever was selected before.
             if (created) setSelectedID(created.id);
-            showToast("已创建群组", "success", 6000);
+            showToast(cs("已创建群组"), "success", 6000);
             await reload();
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
@@ -1411,14 +1420,14 @@ export function CompanionGroupsDialog({
     const addMember = async (id: string) => {
         const contact = (groupContact[id] || "").trim();
         if (!contact) {
-            showToast("请填写要邀请的邮箱或手机号", "error", 6000);
+            showToast(cs("请填写要邀请的邮箱或手机号"), "error", 6000);
             return;
         }
         if (!beginGroupAction()) return;
         try {
             rememberGroup(await AddFileCompanionGroupMember(id, contact));
             setGroupContact((current) => ({ ...current, [id]: "" }));
-            showToast("已发送入群邀请", "success", 6000);
+            showToast(cs("已发送入群邀请"), "success", 6000);
             await reload();
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
@@ -1431,7 +1440,7 @@ export function CompanionGroupsDialog({
         if (!beginGroupAction()) return;
         try {
             rememberGroup(await RemoveFileCompanionGroupMember(id, contact));
-            showToast("已移出群组", "success", 6000);
+            showToast(cs("已移出群组"), "success", 6000);
             await reload();
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
@@ -1473,7 +1482,7 @@ export function CompanionGroupsDialog({
         if (!beginGroupAction()) return;
         try {
             rememberGroup(await UpdateFileCompanionGroup(id, edit.name.trim(), edit.icon));
-            showToast("已更新群组", "success", 6000);
+            showToast(cs("已更新群组"), "success", 6000);
             await reload();
             // Drop the draft only after the list arrives, so the field does not
             // fall back to the previous name while the reload is still in flight.
@@ -1493,7 +1502,7 @@ export function CompanionGroupsDialog({
             // The removed group cannot stay selected: the rail would show no
             // highlighted row and the pane would silently fall back.
             if (selectedID === id) setSelectedID("");
-            showToast("已解散群组", "success", 6000);
+            showToast(cs("已解散群组"), "success", 6000);
             await reload();
             clearGroupDraft(id);
         } catch (err) {
@@ -1509,7 +1518,7 @@ export function CompanionGroupsDialog({
             await LeaveFileCompanionGroup(id);
             forgetGroup(id);
             if (selectedID === id) setSelectedID("");
-            showToast("已退出群组", "success", 6000);
+            showToast(cs("已退出群组"), "success", 6000);
             await reload();
             clearGroupDraft(id);
         } catch (err) {
@@ -1541,19 +1550,19 @@ export function CompanionGroupsDialog({
             <div className="file-companion-dialog-card file-companion-groups-dialog" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
-                        <h2 id="file-companion-groups-title">阅读群组</h2>
-                        <p className="file-companion-dialog-sub">用邮箱或手机号邀请，对方在主界面通知里同意后加入。</p>
+                        <h2 id="file-companion-groups-title">{cs("阅读群组")}</h2>
+                        <p className="file-companion-dialog-sub">{cs("用邮箱或手机号邀请，对方在主界面通知里同意后加入。")}</p>
                     </div>
                     <button
                         type="button"
                         className="file-companion-dialog-x"
                         data-testid="file-companion-groups-back"
-                        aria-label="关闭"
-                        title="关闭"
+                        aria-label={cs("关闭")}
+                        title={cs("关闭")}
                         onClick={onClose}
                     >
                         <LibraryGlyph name="x" size={13} />
-                        <span className="file-companion-sr">关闭</span>
+                        <span className="file-companion-sr">{cs("关闭")}</span>
                     </button>
                 </header>
 
@@ -1569,21 +1578,21 @@ export function CompanionGroupsDialog({
                             <input
                                 className="file-companion-dialog-input"
                                 data-testid="file-companion-group-name"
-                                aria-label="新群组名称"
-                                placeholder="新群组名称"
+                                aria-label={cs("新群组名称")}
+                                placeholder={cs("新群组名称")}
                                 value={groupName}
                                 onChange={(event) => setGroupName(event.target.value)}
                             />
                             <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-group-create" disabled={groupBusy}>
-                                创建
+                                {cs("创建")}
                             </button>
                         </form>
                         {notice ? <p className="file-companion-library-notice" data-testid="file-companion-groups-notice" role="status">{notice}</p> : null}
-                        {loading ? <p className="file-companion-library-note">正在读取…</p> : null}
+                        {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
                         <div
                             className="file-companion-groups-list"
                             role="listbox"
-                            aria-label="我的群组"
+                            aria-label={cs("我的群组")}
                             onKeyDown={(event) => {
                                 // Roving tabindex: arrows move the selection, so the
                                 // list is one tab stop instead of N.
@@ -1605,8 +1614,8 @@ export function CompanionGroupsDialog({
                         >
                             {groups.length === 0 && !loading ? (
                                 <div className="file-companion-groups-empty">
-                                    <p>还没有群组</p>
-                                    <small>创建后可以邀请同伴一起读同一份文档。</small>
+                                    <p>{cs("还没有群组")}</p>
+                                    <small>{cs("创建后可以邀请同伴一起读同一份文档。")}</small>
                                 </div>
                             ) : groups.map((group) => {
                                 const edit = draftOf(group);
@@ -1628,7 +1637,7 @@ export function CompanionGroupsDialog({
                                         </span>
                                         <span className="file-companion-groups-item-text">
                                             <strong>{group.name}</strong>
-                                            <small>{group.admin ? "管理员" : (group.owner || "成员")}{group.members.length > 0 ? ` · ${group.members.length} 人` : ""}</small>
+                                            <small>{group.admin ? cs("管理员") : (group.owner || cs("成员"))}{group.members.length > 0 ? ` · ${group.members.length} 人` : ""}</small>
                                         </span>
                                     </button>
                                 );
@@ -1640,7 +1649,7 @@ export function CompanionGroupsDialog({
                         {!selected ? (
                             <div className="file-companion-groups-placeholder">
                                 <LibraryGlyph name="people" size={26} />
-                                <p>选择左侧的群组查看设置</p>
+                                <p>{cs("选择左侧的群组查看设置")}</p>
                             </div>
                         ) : (
                             <>
@@ -1650,15 +1659,15 @@ export function CompanionGroupsDialog({
                                     </span>
                                     <div className="file-companion-library-group-title">
                                         <strong>{selected.name}</strong>
-                                        <small>{selected.admin ? "你是管理员" : `成员 · ${selected.owner || "群主"}`}</small>
+                                        <small>{selected.admin ? cs("你是管理员") : `成员 · ${selected.owner || cs("群主")}`}</small>
                                     </div>
                                 </div>
 
                                 {selected.admin ? (
                                     <>
                                         <div className="file-companion-groups-field">
-                                            <h3 className="file-companion-dialog-label">群组图标</h3>
-                                            <div className="file-companion-groups-icons" role="group" aria-label="群组图标">
+                                            <h3 className="file-companion-dialog-label">{cs("群组图标")}</h3>
+                                            <div className="file-companion-groups-icons" role="group" aria-label={cs("群组图标")}>
                                                 {companionGroupIcons.map((icon) => (
                                                     <button
                                                         key={icon}
@@ -1681,12 +1690,12 @@ export function CompanionGroupsDialog({
                                         </div>
 
                                         <div className="file-companion-groups-field">
-                                            <h3 className="file-companion-dialog-label">群组名称</h3>
+                                            <h3 className="file-companion-dialog-label">{cs("群组名称")}</h3>
                                             <div className="file-companion-library-inline">
                                                 <input
                                                     className="file-companion-dialog-input"
                                                     data-testid={`file-companion-group-rename-${selected.id}`}
-                                                    aria-label="修改群组名称"
+                                                    aria-label={cs("修改群组名称")}
                                                     value={selectedEdit?.name ?? selected.name}
                                                     disabled={groupBusy}
                                                     onChange={(event) => setGroupEdits((current) => ({
@@ -1694,7 +1703,7 @@ export function CompanionGroupsDialog({
                                                         [selected.id]: { name: event.target.value, icon: current[selected.id]?.icon ?? companionGroupIcon(selected.icon) },
                                                     }))}
                                                 />
-                                                <button type="button" className="file-companion-dialog-secondary" data-testid={`file-companion-group-save-${selected.id}`} disabled={groupBusy} onClick={() => { void saveGroup(selected.id); }}>保存</button>
+                                                <button type="button" className="file-companion-dialog-secondary" data-testid={`file-companion-group-save-${selected.id}`} disabled={groupBusy} onClick={() => { void saveGroup(selected.id); }}>{cs("保存")}</button>
                                             </div>
                                         </div>
 
@@ -1712,22 +1721,22 @@ export function CompanionGroupsDialog({
                                                 <input
                                                     className="file-companion-dialog-input"
                                                     data-testid={`file-companion-group-contact-${selected.id}`}
-                                                    aria-label="邀请邮箱或手机号"
-                                                    placeholder="邀请的邮箱或手机号"
+                                                    aria-label={cs("邀请邮箱或手机号")}
+                                                    placeholder={cs("邀请的邮箱或手机号")}
                                                     value={groupContact[selected.id] || ""}
                                                     disabled={groupBusy}
                                                     onChange={(event) => setGroupContact((current) => ({ ...current, [selected.id]: event.target.value }))}
                                                 />
-                                                <button type="submit" className="file-companion-dialog-secondary" data-testid={`file-companion-group-add-${selected.id}`} disabled={groupBusy}>邀请</button>
+                                                <button type="submit" className="file-companion-dialog-secondary" data-testid={`file-companion-group-add-${selected.id}`} disabled={groupBusy}>{cs("邀请")}</button>
                                             </form>
                                             {selected.members.length === 0 ? (
-                                                <p className="file-companion-dialog-hint">还没有成员。邀请后对方会收到通知。</p>
+                                                <p className="file-companion-dialog-hint">{cs("还没有成员。邀请后对方会收到通知。")}</p>
                                             ) : (
                                                 <div className="file-companion-library-members">
                                                     {selected.members.map((member) => (
                                                         <div key={member.contact} className="file-companion-library-member">
                                                             <span className="file-companion-library-member-contact">{member.contact}</span>
-                                                            <small className="file-companion-library-member-status" data-ok={member.status === "accepted" ? "true" : undefined}>{member.status === "accepted" ? "已加入" : member.status === "ignored" ? "已忽略" : "待确认"}</small>
+                                                            <small className="file-companion-library-member-status" data-ok={member.status === "accepted" ? "true" : undefined}>{member.status === "accepted" ? cs("已加入") : member.status === "ignored" ? cs("已忽略") : cs("待确认")}</small>
                                                             <button
                                                                 type="button"
                                                                 className="file-companion-library-x"
@@ -1738,7 +1747,7 @@ export function CompanionGroupsDialog({
                                                                 onClick={() => { void removeMember(selected.id, member.contact); }}
                                                             >
                                                                 <LibraryGlyph name="x" size={12} />
-                                                                <span className="file-companion-sr">移除</span>
+                                                                <span className="file-companion-sr">{cs("移除")}</span>
                                                             </button>
                                                         </div>
                                                     ))}
@@ -1748,32 +1757,32 @@ export function CompanionGroupsDialog({
 
                                         <div className="file-companion-groups-danger">
                                             <div>
-                                                <strong>解散群组</strong>
-                                                <small>成员会失去这份分享的访问权限，文档本身不受影响。</small>
+                                                <strong>{cs("解散群组")}</strong>
+                                                <small>{cs("成员会失去这份分享的访问权限，文档本身不受影响。")}</small>
                                             </div>
                                             {selectedConfirm === "dissolve" ? (
                                                 <div className="file-companion-dialog-actions">
-                                                    <button type="button" disabled={groupBusy} onClick={cancelConfirm}>取消</button>
-                                                    <button type="button" className="file-companion-dialog-danger" data-testid={`file-companion-group-dissolve-confirm-${selected.id}`} disabled={groupBusy} onClick={() => { void dissolveGroup(selected.id); }}>确认解散</button>
+                                                    <button type="button" disabled={groupBusy} onClick={cancelConfirm}>{cs("取消")}</button>
+                                                    <button type="button" className="file-companion-dialog-danger" data-testid={`file-companion-group-dissolve-confirm-${selected.id}`} disabled={groupBusy} onClick={() => { void dissolveGroup(selected.id); }}>{cs("确认解散")}</button>
                                                 </div>
                                             ) : (
-                                                <button type="button" className="file-companion-dialog-danger" data-testid={`file-companion-group-dissolve-${selected.id}`} disabled={groupBusy} onClick={() => setGroupConfirm((current) => ({ ...current, [selected.id]: "dissolve" }))}>解散群组</button>
+                                                <button type="button" className="file-companion-dialog-danger" data-testid={`file-companion-group-dissolve-${selected.id}`} disabled={groupBusy} onClick={() => setGroupConfirm((current) => ({ ...current, [selected.id]: "dissolve" }))}>{cs("解散群组")}</button>
                                             )}
                                         </div>
                                     </>
                                 ) : (
                                     <div className="file-companion-groups-danger">
                                         <div>
-                                            <strong>退出群组</strong>
-                                            <small>退出后不再看到这个群组分享的文档。</small>
+                                            <strong>{cs("退出群组")}</strong>
+                                            <small>{cs("退出后不再看到这个群组分享的文档。")}</small>
                                         </div>
                                         {selectedConfirm === "leave" ? (
                                             <div className="file-companion-dialog-actions">
-                                                <button type="button" disabled={groupBusy} onClick={cancelConfirm}>取消</button>
-                                                <button type="button" className="file-companion-dialog-danger" data-testid={`file-companion-group-leave-confirm-${selected.id}`} disabled={groupBusy} onClick={() => { void leaveGroup(selected.id); }}>确认退出</button>
+                                                <button type="button" disabled={groupBusy} onClick={cancelConfirm}>{cs("取消")}</button>
+                                                <button type="button" className="file-companion-dialog-danger" data-testid={`file-companion-group-leave-confirm-${selected.id}`} disabled={groupBusy} onClick={() => { void leaveGroup(selected.id); }}>{cs("确认退出")}</button>
                                             </div>
                                         ) : (
-                                            <button type="button" className="file-companion-dialog-danger" data-testid={`file-companion-group-leave-${selected.id}`} disabled={groupBusy} onClick={() => setGroupConfirm((current) => ({ ...current, [selected.id]: "leave" }))}>退出群组</button>
+                                            <button type="button" className="file-companion-dialog-danger" data-testid={`file-companion-group-leave-${selected.id}`} disabled={groupBusy} onClick={() => setGroupConfirm((current) => ({ ...current, [selected.id]: "leave" }))}>{cs("退出群组")}</button>
                                         )}
                                     </div>
                                 )}
@@ -1791,6 +1800,7 @@ export function CompanionGroupsDialog({
 // returns a link. With a share it edits that link — the same link keeps
 // working, only who can open it and how long it lasts change.
 export function CompanionShareDialog({
+    lang,
     path,
     name,
     share,
@@ -1799,6 +1809,7 @@ export function CompanionShareDialog({
     libraryDeleteGen,
     onClose,
 }: {
+    lang?: string;
     path: string;
     name: string;
     // share is the existing cloud row this dialog edits. Absent means 分享.
@@ -1808,6 +1819,7 @@ export function CompanionShareDialog({
     libraryDeleteGen?: { current: number };
     onClose: () => void;
 }) {
+    if (lang) setCompanionUiLang(lang);
     const editing = Boolean(share?.token);
     const initialSpan = useMemo(() => shareSpanFromExpiry(share?.expiresAt ?? ""), [share?.expiresAt]);
     const [visibility, setVisibility] = useState<ShareAudience>((share?.visibility as ShareAudience) || "public");
@@ -1904,7 +1916,7 @@ export function CompanionShareDialog({
         // as "keep the expiry already on the link".
         const days = editing && !expiryTouched ? -1 : shareDays(span, amount);
         if (days === null) {
-            showToast("分享时间不正确", "error", 6000);
+            showToast(cs("分享时间不正确"), "error", 6000);
             return;
         }
         const secret = password.trim();
@@ -1916,21 +1928,21 @@ export function CompanionShareDialog({
         if (visibility === "private" && !keepStoredPassword) {
             const n = Array.from(secret).length;
             if (n === 0) {
-                showToast("请设置分享密码", "error", 6000);
+                showToast(cs("请设置分享密码"), "error", 6000);
                 return;
             }
             if (n < 4 || n > 64) {
-                showToast("分享密码需为 4–64 个字符", "error", 6000);
+                showToast(cs("分享密码需为 4–64 个字符"), "error", 6000);
                 return;
             }
         }
         const target = visibility === "person" ? personTarget.trim() : visibility === "group" ? groupID : "";
         if (visibility === "person" && target === "") {
-            showToast("请填写邮箱或手机号", "error", 6000);
+            showToast(cs("请填写邮箱或手机号"), "error", 6000);
             return;
         }
         if (visibility === "group" && target === "") {
-            showToast("请选择群组", "error", 6000);
+            showToast(cs("请选择群组"), "error", 6000);
             return;
         }
         setShareBusy(true);
@@ -1947,7 +1959,7 @@ export function CompanionShareDialog({
             // field means the next save keeps it instead of hashing it again.
             setPassword("");
             setExpiryTouched(false);
-            showToast(editing ? "已更新分享" : "分享成功，链接已生成", "success", 6000);
+            showToast(editing ? cs("已更新分享") : cs("分享成功，链接已生成"), "success", 6000);
             await reload();
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
@@ -1961,7 +1973,7 @@ export function CompanionShareDialog({
         setShareBusy(true);
         try {
             await SyncFileCompanionShare(path, marksJSON);
-            showToast("已同步到云端", "success", 6000);
+            showToast(cs("已同步到云端"), "success", 6000);
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
         }
@@ -1977,11 +1989,11 @@ export function CompanionShareDialog({
     const deleteCurrent = async () => {
         const token = share?.token ?? "";
         if (!token || shareBusy) return;
-        const docName = name || share?.name || "当前文档";
+        const docName = name || share?.name || cs("当前文档");
         const ok = await showConfirm(
             `确认删除“${docName}”的分享？\n链接会立即失效，其他人将无法再打开。\n源文件仍会保留。`,
-            "删除分享",
-            { confirmText: "删除", cancelText: "取消", confirmVariant: "danger" },
+            cs("删除分享"),
+            { confirmText: cs("删除"), cancelText: cs("取消"), confirmVariant: "danger" },
         );
         if (!ok) return;
         setShareBusy(true);
@@ -1998,7 +2010,7 @@ export function CompanionShareDialog({
         // Close before asking for the list: a slow hub must not keep a deleted
         // share's dialog on screen. The background refresh still pushes the
         // new list into 文档管理.
-        showToast("已删除分享", "success", 6000);
+        showToast(cs("已删除分享"), "success", 6000);
         onClose();
         await reload();
     };
@@ -2010,7 +2022,7 @@ export function CompanionShareDialog({
         const contact = hostContact.trim();
         if (!token || hostBusy) return;
         if (!contact) {
-            setHostError("请填写参与者邮箱或手机号");
+            setHostError(cs("请填写参与者邮箱或手机号"));
             return;
         }
         setHostBusy(true);
@@ -2019,7 +2031,7 @@ export function CompanionShareDialog({
             await TransferFileCompanionShareHost(token, contact);
             setPendingHost(contact);
             setHostContact("");
-            showToast("已发送主持人转移邀请，等待对方接受", "success", 6000);
+            showToast(cs("已发送主持人转移邀请，等待对方接受"), "success", 6000);
             await reload();
         } catch (err) {
             setHostError(libraryError(err));
@@ -2036,9 +2048,9 @@ export function CompanionShareDialog({
         const ok = await showConfirm(
             pendingHost
                 ? `确认取消提名 ${pendingHost} 接任主持人？`
-                : "确认收回主持权，由你重新担任主持人？",
-            pendingHost ? "取消转移" : "收回主持权",
-            { confirmText: "确认", cancelText: "取消", confirmVariant: "danger" },
+                : cs("确认收回主持权，由你重新担任主持人？"),
+            pendingHost ? cs("取消转移") : cs("收回主持权"),
+            { confirmText: cs("确认"), cancelText: cs("取消"), confirmVariant: "danger" },
         );
         if (!ok) return;
         const cancelling = Boolean(pendingHost);
@@ -2048,7 +2060,7 @@ export function CompanionShareDialog({
             await RevokeFileCompanionShareHost(token, cancelling ? "cancel" : "revoke");
             if (!cancelling) setHostIsMe(true);
             setPendingHost("");
-            showToast(cancelling ? "已取消主持人转移" : "已收回主持权", "success", 6000);
+            showToast(cancelling ? cs("已取消主持人转移") : cs("已收回主持权"), "success", 6000);
             await reload();
         } catch (err) {
             setHostError(libraryError(err));
@@ -2068,10 +2080,10 @@ export function CompanionShareDialog({
             <div className="file-companion-dialog-card file-companion-share" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
-                        <h2 id="file-companion-share-dialog-title">{editing ? "修改分享" : "分享到云端"}</h2>
+                        <h2 id="file-companion-share-dialog-title">{editing ? cs("修改分享") : cs("分享到云端")}</h2>
                         <p className="file-companion-dialog-sub">
-                            <span className="file-companion-dialog-doc">{name || share?.name || "当前文档"}</span>
-                            {editing ? <span className="file-companion-dialog-dot">当前 {audienceLabel(echoVisibility)} · {echoExpiresAt ? `至 ${echoExpiresAt.slice(0, 10)}` : "永久"}</span> : null}
+                            <span className="file-companion-dialog-doc">{name || share?.name || cs("当前文档")}</span>
+                            {editing ? <span className="file-companion-dialog-dot">当前 {audienceLabel(echoVisibility)} · {echoExpiresAt ? `至 ${echoExpiresAt.slice(0, 10)}` : cs("永久")}</span> : null}
                             {!editing && highlightsCount > 0 ? <span className="file-companion-dialog-dot">标注 {highlightsCount}</span> : null}
                         </p>
                     </div>
@@ -2079,34 +2091,34 @@ export function CompanionShareDialog({
                         type="button"
                         className="file-companion-dialog-x"
                         data-testid="file-companion-share-dialog-close"
-                        aria-label="关闭"
-                        title="关闭"
+                        aria-label={cs("关闭")}
+                        title={cs("关闭")}
                         onClick={onClose}
                     >
                         <LibraryGlyph name="x" size={13} />
-                        <span className="file-companion-sr">关闭</span>
+                        <span className="file-companion-sr">{cs("关闭")}</span>
                     </button>
                 </header>
 
                 <div className="file-companion-dialog-body">
                     <section className="file-companion-dialog-section">
-                        <h3 className="file-companion-dialog-label">可见范围</h3>
-                        <div className="file-companion-audience" role="group" aria-label="可见范围">
+                        <h3 className="file-companion-dialog-label">{cs("可见范围")}</h3>
+                        <div className="file-companion-audience" role="group" aria-label={cs("可见范围")}>
                             <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-public" aria-pressed={visibility === "public"} onClick={() => setVisibility("public")}>
                                 <LibraryGlyph name="globe" size={15} />
-                                <span>完全公开</span>
+                                <span>{cs("完全公开")}</span>
                             </button>
                             <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-private" aria-pressed={visibility === "private"} onClick={() => setVisibility("private")}>
                                 <LibraryGlyph name="lock" size={15} />
-                                <span>私密分享</span>
+                                <span>{cs("私密分享")}</span>
                             </button>
                             <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-person" aria-pressed={visibility === "person"} onClick={() => setVisibility("person")}>
                                 <LibraryGlyph name="person" size={15} />
-                                <span>指定的人</span>
+                                <span>{cs("指定的人")}</span>
                             </button>
                             <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-group" aria-pressed={visibility === "group"} onClick={() => setVisibility("group")}>
                                 <LibraryGlyph name="people" size={15} />
-                                <span>群组</span>
+                                <span>{cs("群组")}</span>
                             </button>
                         </div>
                         {visibility === "private" ? (
@@ -2114,8 +2126,8 @@ export function CompanionShareDialog({
                                 className="file-companion-dialog-input"
                                 data-testid="file-companion-share-password"
                                 type="password"
-                                aria-label="分享密码"
-                                placeholder={editing ? "留空则保持原密码" : "设置密码，4–64 个字符"}
+                                aria-label={cs("分享密码")}
+                                placeholder={editing ? cs("留空则保持原密码") : cs("设置密码，4–64 个字符")}
                                 value={password}
                                 onChange={(event) => setPassword(event.target.value)}
                             />
@@ -2124,8 +2136,8 @@ export function CompanionShareDialog({
                             <input
                                 className="file-companion-dialog-input"
                                 data-testid="file-companion-share-target"
-                                aria-label="邮箱或手机号"
-                                placeholder="对方的邮箱或手机号"
+                                aria-label={cs("邮箱或手机号")}
+                                placeholder={cs("对方的邮箱或手机号")}
                                 value={personTarget}
                                 onChange={(event) => setPersonTarget(event.target.value)}
                             />
@@ -2135,11 +2147,11 @@ export function CompanionShareDialog({
                                 <select
                                     className="file-companion-dialog-input"
                                     data-testid="file-companion-share-group-pick"
-                                    aria-label="选择群组"
+                                    aria-label={cs("选择群组")}
                                     value={groupID}
                                     onChange={(event) => setGroupID(event.target.value)}
                                 >
-                                    <option value="">选择群组</option>
+                                    <option value="">{cs("选择群组")}</option>
                                     {groups.filter((group) => group.admin).map((group) => (
                                         <option key={group.id} value={group.id}>{group.name}</option>
                                     ))}
@@ -2149,12 +2161,12 @@ export function CompanionShareDialog({
                     </section>
 
                     <section className="file-companion-dialog-section">
-                        <h3 className="file-companion-dialog-label">有效期</h3>
+                        <h3 className="file-companion-dialog-label">{cs("有效期")}</h3>
                         <div className="file-companion-dialog-row">
-                            <div className="file-companion-segment" role="group" aria-label="有效期">
-                                <button type="button" data-testid="file-companion-share-forever" aria-pressed={span === "forever"} onClick={() => { setSpan("forever"); setExpiryTouched(true); }}>永久</button>
-                                <button type="button" data-testid="file-companion-share-days" aria-pressed={span === "days"} onClick={() => { setSpan("days"); setExpiryTouched(true); }}>几天</button>
-                                <button type="button" data-testid="file-companion-share-months" aria-pressed={span === "months"} onClick={() => { setSpan("months"); setExpiryTouched(true); }}>几月</button>
+                            <div className="file-companion-segment" role="group" aria-label={cs("有效期")}>
+                                <button type="button" data-testid="file-companion-share-forever" aria-pressed={span === "forever"} onClick={() => { setSpan("forever"); setExpiryTouched(true); }}>{cs("永久")}</button>
+                                <button type="button" data-testid="file-companion-share-days" aria-pressed={span === "days"} onClick={() => { setSpan("days"); setExpiryTouched(true); }}>{cs("几天")}</button>
+                                <button type="button" data-testid="file-companion-share-months" aria-pressed={span === "months"} onClick={() => { setSpan("months"); setExpiryTouched(true); }}>{cs("几月")}</button>
                             </div>
                             {span !== "forever" ? (
                                 <label className="file-companion-dialog-amount">
@@ -2164,11 +2176,11 @@ export function CompanionShareDialog({
                                         type="number"
                                         min={1}
                                         max={span === "months" ? 122 : 3660}
-                                        aria-label={span === "months" ? "分享月数" : "分享天数"}
+                                        aria-label={span === "months" ? cs("分享月数") : cs("分享天数")}
                                         value={amount}
                                         onChange={(event) => { setAmount(event.target.value); setExpiryTouched(true); }}
                                     />
-                                    <span>{span === "months" ? "个月" : "天"}</span>
+                                    <span>{span === "months" ? cs("个月") : cs("天")}</span>
                                 </label>
                             ) : null}
                         </div>
@@ -2176,9 +2188,9 @@ export function CompanionShareDialog({
 
                     {editing && share?.admin ? (
                         <section className="file-companion-dialog-section" data-testid="file-companion-share-host">
-                            <h3 className="file-companion-dialog-label">主持人</h3>
+                            <h3 className="file-companion-dialog-label">{cs("主持人")}</h3>
                             <p className="file-companion-dialog-hint" data-testid="file-companion-share-host-current">
-                                {hostLabel ? `当前主持人：${hostLabel}` : "当前主持人：你"}
+                                {hostLabel ? `当前主持人：${hostLabel}` : cs("当前主持人：你")}
                             </p>
                             {pendingHost ? (
                                 <div className="file-companion-dialog-row">
@@ -2186,7 +2198,7 @@ export function CompanionShareDialog({
                                         已提名 {pendingHost}，等待对方在通知里接受。
                                     </p>
                                     <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-host-cancel" disabled={hostBusy} onClick={() => { void revokeHost(); }}>
-                                        取消转移
+                                        {cs("取消转移")}
                                     </button>
                                 </div>
                             ) : (
@@ -2194,22 +2206,22 @@ export function CompanionShareDialog({
                                     <input
                                         className="file-companion-dialog-input"
                                         data-testid="file-companion-share-host-target"
-                                        aria-label="新主持人的邮箱或手机号"
-                                        placeholder="参与者的邮箱或手机号"
+                                        aria-label={cs("新主持人的邮箱或手机号")}
+                                        placeholder={cs("参与者的邮箱或手机号")}
                                         value={hostContact}
                                         onChange={(event) => setHostContact(event.target.value)}
                                     />
                                     <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-host-transfer" disabled={hostBusy} onClick={() => { void transferHost(); }}>
-                                        转移主持权
+                                        {cs("转移主持权")}
                                     </button>
                                     {!hostIsMe ? (
                                         <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-host-revoke" disabled={hostBusy} onClick={() => { void revokeHost(); }}>
-                                            收回主持权
+                                            {cs("收回主持权")}
                                         </button>
                                     ) : null}
                                 </div>
                             )}
-                            <p className="file-companion-dialog-hint">对方接受后才转移；你保留管理权，可随时收回或另行指定。</p>
+                            <p className="file-companion-dialog-hint">{cs("对方接受后才转移；你保留管理权，可随时收回或另行指定。")}</p>
                             {hostError ? (
                                 <p className="file-companion-dialog-error" data-testid="file-companion-share-host-error" role="alert">{hostError}</p>
                             ) : null}
@@ -2218,12 +2230,12 @@ export function CompanionShareDialog({
 
                     {shareURL ? (
                         <section className="file-companion-dialog-section file-companion-dialog-result" data-testid="file-companion-share-result">
-                            <h3 className="file-companion-dialog-label">{editing ? "分享链接" : "链接已生成"}</h3>
+                            <h3 className="file-companion-dialog-label">{editing ? cs("分享链接") : cs("链接已生成")}</h3>
                             <div className="file-companion-dialog-linkrow">
                                 <p className="file-companion-dialog-link" data-testid="file-companion-library-link">{shareURL}</p>
-                                <button type="button" className="file-companion-dialog-copy" data-testid="file-companion-library-copy" aria-label="复制分享链接" title="复制分享链接" onClick={() => { void copyText(shareURL, showToast); }}>
+                                <button type="button" className="file-companion-dialog-copy" data-testid="file-companion-library-copy" aria-label={cs("复制分享链接")} title={cs("复制分享链接")} onClick={() => { void copyText(shareURL, showToast); }}>
                                     <LibraryGlyph name="copy" size={13} />
-                                    <span className="file-companion-sr">复制</span>
+                                    <span className="file-companion-sr">{cs("复制")}</span>
                                 </button>
                             </div>
                         </section>
@@ -2232,20 +2244,20 @@ export function CompanionShareDialog({
 
                 <footer className="file-companion-dialog-foot">
                     <p className="file-companion-dialog-hint">
-                        {editing ? "改范围或有效期后，链接不变，已导入的人继续可用。" : "分享包含文档、高亮和聊天，之后可同步新标注。"}
+                        {editing ? cs("改范围或有效期后，链接不变，已导入的人继续可用。") : cs("分享包含文档、高亮和聊天，之后可同步新标注。")}
                     </p>
                     <div className="file-companion-dialog-actions">
                         {editing ? (
                             <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-delete" disabled={shareBusy} onClick={() => { void deleteCurrent(); }}>
-                                删除分享
+                                {cs("删除分享")}
                             </button>
                         ) : (
                             <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-library-sync" disabled={shareBusy} onClick={() => { void syncCurrent(); }}>
-                                同步更新
+                                {cs("同步更新")}
                             </button>
                         )}
                         <button type="button" className="file-companion-dialog-primary" data-testid="file-companion-library-share" disabled={shareBusy} aria-busy={shareBusy} onClick={() => { void shareCurrent(); }}>
-                            {shareBusy ? (editing ? "正在保存…" : "正在分享…") : (editing ? "保存修改" : "分享到云端")}
+                            {shareBusy ? (editing ? cs("正在保存…") : cs("正在分享…")) : (editing ? cs("保存修改") : cs("分享到云端"))}
                         </button>
                     </div>
                 </footer>
@@ -2257,6 +2269,7 @@ export function CompanionShareDialog({
 // CompanionImportDialog pulls a share link into the library. A private share
 // asks for its password; the older hubs answer with their own message.
 export function CompanionImportDialog({
+    lang,
     initialLink,
     showToast,
     onOpen,
@@ -2265,6 +2278,7 @@ export function CompanionImportDialog({
     libraryDeleteGen,
     onClose,
 }: {
+    lang?: string;
     initialLink: string;
     showToast: LibraryToast;
     onOpen: (path: string) => void;
@@ -2273,6 +2287,7 @@ export function CompanionImportDialog({
     libraryDeleteGen?: { current: number };
     onClose: () => void;
 }) {
+    if (lang) setCompanionUiLang(lang);
     const [importLink, setImportLink] = useState(initialLink);
     const [importPassword, setImportPassword] = useState("");
     const [importBusy, setImportBusy] = useState(false);
@@ -2294,7 +2309,7 @@ export function CompanionImportDialog({
     const runImport = async (link: string, secret: string) => {
         const trimmed = link.trim();
         if (!trimmed) {
-            showToast("请粘贴分享链接", "error", 6000);
+            showToast(cs("请粘贴分享链接"), "error", 6000);
             return;
         }
         setImportBusy(true);
@@ -2315,7 +2330,7 @@ export function CompanionImportDialog({
                     replaceMessages: false,
                 });
             }
-            showToast("已导入文档库", "success", 6000);
+            showToast(cs("已导入文档库"), "success", 6000);
             if (imported?.path) onOpen(imported.path);
             // The file is already on disk. A library refresh also re-reads every
             // other share, and a link from another Hub waits on that Hub again.
@@ -2341,41 +2356,41 @@ export function CompanionImportDialog({
             <div className="file-companion-dialog-card file-companion-share" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
-                        <h2 id="file-companion-import-dialog-title">导入分享</h2>
-                        <p className="file-companion-dialog-sub">导入后文档、高亮和聊天一起存进本机，成为一个可继续阅读的项目。</p>
+                        <h2 id="file-companion-import-dialog-title">{cs("导入分享")}</h2>
+                        <p className="file-companion-dialog-sub">{cs("导入后文档、高亮和聊天一起存进本机，成为一个可继续阅读的项目。")}</p>
                     </div>
                     <button
                         type="button"
                         className="file-companion-dialog-x"
                         data-testid="file-companion-import-dialog-close"
-                        aria-label="关闭"
-                        title="关闭"
+                        aria-label={cs("关闭")}
+                        title={cs("关闭")}
                         onClick={onClose}
                     >
                         <LibraryGlyph name="x" size={13} />
-                        <span className="file-companion-sr">关闭</span>
+                        <span className="file-companion-sr">{cs("关闭")}</span>
                     </button>
                 </header>
                 <div className="file-companion-dialog-body">
                     <section className="file-companion-dialog-section">
-                        <h3 className="file-companion-dialog-label">分享链接</h3>
+                        <h3 className="file-companion-dialog-label">{cs("分享链接")}</h3>
                         <input
                             className="file-companion-dialog-input"
                             data-testid="file-companion-library-import-link"
-                            aria-label="分享链接"
-                            placeholder="粘贴分享链接"
+                            aria-label={cs("分享链接")}
+                            placeholder={cs("粘贴分享链接")}
                             value={importLink}
                             onChange={(event) => setImportLink(event.target.value)}
                         />
                     </section>
                     <section className="file-companion-dialog-section">
-                        <h3 className="file-companion-dialog-label">密码<span className="file-companion-dialog-optional">可选</span></h3>
+                        <h3 className="file-companion-dialog-label">{cs("密码")}<span className="file-companion-dialog-optional">{cs("可选")}</span></h3>
                         <input
                             className="file-companion-dialog-input"
                             data-testid="file-companion-library-import-password"
                             type="password"
-                            aria-label="导入密码"
-                            placeholder="私密分享才需要密码"
+                            aria-label={cs("导入密码")}
+                            placeholder={cs("私密分享才需要密码")}
                             value={importPassword}
                             onChange={(event) => setImportPassword(event.target.value)}
                         />
@@ -2384,10 +2399,10 @@ export function CompanionImportDialog({
                 <footer className="file-companion-dialog-foot">
                     <div className="file-companion-dialog-actions">
                         <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-import-dialog-cancel" onClick={onClose}>
-                            取消
+                            {cs("取消")}
                         </button>
                         <button type="button" className="file-companion-dialog-primary" data-testid="file-companion-library-import" disabled={importBusy} aria-busy={importBusy} onClick={() => { void runImport(importLink, importPassword); }}>
-                            {importBusy ? "正在导入…" : "导入到文档库"}
+                            {importBusy ? cs("正在导入…") : cs("导入到文档库")}
                         </button>
                     </div>
                 </footer>

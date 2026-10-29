@@ -16,6 +16,8 @@ import type { SidebarHubCheckin } from '../../types/appShell';
 import { expertsNavLabel, expertsPageTitle, toolsNavLabel, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
 import { LATEX_TEMPLATES_NAV_TAB } from '../../utils/latexTemplates';
+import { localizeText } from '../../i18n';
+
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -115,43 +117,44 @@ export const SidebarNavRail = ({
         remoteViewerToken: config?.remote_viewer_token,
         remoteTenantId: config?.remote_tenant_id,
     });
-    const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
+    const text = (en: string, zhHansText: string, zhHantText: string = zhHansText) => localizeText(lang, en, zhHansText, zhHantText);
+    const aiAssistantLabel = text('AI Asst', zhHans.aiAssistant, zhHant.aiAssistant);
     const appsLabel = miniAppShortLabel(lang);
-    const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflows';
+    const workflowLabel = text('Workflows', '工作流', '工作流');
     const showWorkflowEntry = config?.show_workflow_entry !== false;
-    const proFeaturesLabel = lang === 'zh-Hans' ? '专业功能' : lang === 'zh-Hant' ? '專業功能' : 'Features';
+    const proFeaturesLabel = text('Features', '专业功能', '專業功能');
     const expertsMenuLabel = expertsNavLabel(lang);
     const resolvedUtilitiesLabel = utilitiesLabel || (showToolsEntry ? expertsNavLabel(lang) : utilitiesNavLabel(lang));
     const resolvedUtilitiesTitle = showToolsEntry ? expertsPageTitle(lang) : utilitiesPageTitle(lang);
     const resolvedToolsLabel = toolsNavLabel(lang);
-    const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
+    const systemLabel = text('System', zhHans.system, zhHant.system);
     // Background runs plus bot tasks still in progress. Scheduled tasks and
     // passthrough commands stay off this badge; they are not running.
     const botTaskCount = useInProgressBotTaskCount(desktopBotAccountId(config), botAllowed);
     const runningTaskTotal = Math.max(0, Math.trunc(Number(runningTaskCount) || 0)) + botTaskCount;
-    const extensionsLabel = lang === 'zh-Hans' ? '扩展' : lang === 'zh-Hant' ? '擴展' : 'Extensions';
+    const extensionsLabel = text('Extensions', '扩展', '擴展');
     // Check-in copy: highlighted (amber) until today's reward is claimed, then gray.
-    const checkinLabel = lang === 'zh-Hans' ? '签到' : lang === 'zh-Hant' ? '簽到' : 'Check-in';
+    const checkinLabel = text('Check-in', '签到', '簽到');
     const checkinCredits = Math.round((Number(hubCheckin?.credits) || 0) * 100) / 100;
     const checkinDays = Math.max(0, Math.trunc(Number(hubCheckin?.durationDays) || 0));
     const checkinTitle = hubCheckin?.checkedInToday
-        ? (lang === 'zh-Hans' ? '今日已签到' : lang === 'zh-Hant' ? '今日已簽到' : 'Checked in today')
+        ? text('Checked in today', '今日已签到', '今日已簽到')
         : checkinDays > 0
-            ? (lang === 'zh-Hans' ? `签到领 ${checkinCredits} 积分，${checkinDays} 天内有效` : lang === 'zh-Hant' ? `簽到領 ${checkinCredits} 積分，${checkinDays} 天內有效` : `Check in for ${checkinCredits} credits, valid for ${checkinDays} days`)
-            : (lang === 'zh-Hans' ? `签到领 ${checkinCredits} 积分` : lang === 'zh-Hant' ? `簽到領 ${checkinCredits} 積分` : `Check in for ${checkinCredits} credits`);
-    const inviteLabel = lang === 'zh-Hans' ? '推荐' : lang === 'zh-Hant' ? '推薦' : 'Referral';
-    const inviteTitle = lang === 'zh-Hans' ? '推荐好友注册' : lang === 'zh-Hant' ? '推薦好友註冊' : 'Refer friends';
-    const botTitle = lang === 'zh-Hans' ? 'Bot为24小时驻守远程电脑上的数字助理。' : lang === 'zh-Hant' ? 'Bot為24小時駐守遠端電腦上的數位助理。' : 'A bot is a digital assistant stationed on the remote computer around the clock.';
-    const connectorsLabel = lang === 'zh-Hans' ? '连接器' : lang === 'zh-Hant' ? '連接器' : 'Connectors';
-    const connectLabel = lang === 'en' ? 'Connect' : lang === 'zh-Hant' ? '連接' : '连接';
-    const connectTitle = lang === 'en' ? 'Connect chat, email and hardware' : lang === 'zh-Hant' ? '連接即時通訊、郵箱和硬體' : '连接即时通讯、邮箱和硬件';
-    const connectEmailLabel = lang === 'en' ? 'Email' : lang === 'zh-Hant' ? '郵箱' : '邮箱';
-    const connectHardwareLabel = lang === 'en' ? 'Hardware' : lang === 'zh-Hant' ? '硬體' : '硬件';
+            ? text('Check in for {credits} credits, valid for {days} days', '签到领 {credits} 积分，{days} 天内有效', '簽到領 {credits} 積分，{days} 天內有效').replaceAll('{credits}', String(checkinCredits)).replaceAll('{days}', String(checkinDays))
+            : text('Check in for {credits} credits', '签到领 {credits} 积分', '簽到領 {credits} 積分').replaceAll('{credits}', String(checkinCredits));
+    const inviteLabel = text('Referral', '推荐', '推薦');
+    const inviteTitle = text('Refer friends', '推荐好友注册', '推薦好友註冊');
+    const botTitle = text('A bot is a digital assistant stationed on the remote computer around the clock.', 'Bot为24小时驻守远程电脑上的数字助理。', 'Bot為24小時駐守遠端電腦上的數位助理。');
+    const connectorsLabel = text('Connectors', '连接器', '連接器');
+    const connectLabel = text('Connect', '连接', '連接');
+    const connectTitle = text('Connect chat, email and hardware', '连接即时通讯、邮箱和硬件', '連接即時通訊、郵箱和硬體');
+    const connectEmailLabel = text('Email', '邮箱', '郵箱');
+    const connectHardwareLabel = text('Hardware', '硬件', '硬體');
     const connectSolo = connectSoloActive(navTab, settingsNavSoloTab || '');
-    const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
-    const mobileDocsLabel = lang === 'zh-Hans' ? '云盘' : lang === 'zh-Hant' ? '雲端硬碟' : 'Cloud drive';
-    const knowledgeLabel = lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base';
-    const latexTemplatesLabel = lang === 'zh-Hans' ? 'Latex模板' : lang === 'zh-Hant' ? 'Latex 模板' : 'LaTeX templates';
+    const libraryLabel = text('Library', '资料库', '資料庫');
+    const mobileDocsLabel = text('Cloud drive', '云盘', '雲端硬碟');
+    const knowledgeLabel = text('Knowledge base', '知识库', '知識庫');
+    const latexTemplatesLabel = text('LaTeX templates', 'Latex模板', 'Latex 模板');
     const knowledgeActive = navTab === 'settings' && settingsTab === 'knowledge';
     // The LaTeX template library is one of the library entries, so the rail item
     // stays highlighted while the page is open.
@@ -302,7 +305,7 @@ export const SidebarNavRail = ({
                     <span className="snr-system-label">{systemLabel}</span>
                 </div>
             </div>
-            <button type="button" role="button" className="mc-profile-rail" data-testid="system-menu-trigger" aria-label={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} title={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu" aria-current={systemPageActive ? 'page' : undefined} onClick={event => toggleSystemMenu(event.currentTarget)} onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}>
+            <button type="button" role="button" className="mc-profile-rail" data-testid="system-menu-trigger" aria-label={text('System menu', '系统菜单', '系統選單')} title={text('System menu', '系统菜单', '系統選單')} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu" aria-current={systemPageActive ? 'page' : undefined} onClick={event => toggleSystemMenu(event.currentTarget)} onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}>
                 <span className="mc-profile-rail__avatar mc-profile-rail__avatar--system" aria-hidden="true"><SystemIcon /></span>
             </button>
             {systemMenuOpen && (

@@ -4,6 +4,8 @@ import type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./
 import { getPrimaryDiscussionTraceFocus } from "./groupDiscussionTraceFocus";
 import { AssistantGroupDiscussionDropdown } from "./AssistantGroupDiscussionDropdown";
 import { buildGroupDiscussionStatusSafeHandoff } from "./AssistantGroupDiscussionSafeHandoff";
+import { chromeText } from "../../i18n/chromeText";
+
 
 export interface GroupDiscussionInvite {
     id?: string;
@@ -43,7 +45,7 @@ const GROUP_DISCUSSION_SHORT_LABEL = "GD";
 export function AssistantGroupDiscussionMenu(props: AssistantGroupDiscussionMenuProps) {
     const { groupDiscussionStatus, groupDiscussionOpen, groupPendingInvites, inline, lang, setGroupDiscussionOpen, theme: t } = props;
     const [copiedHandoff, setCopiedHandoff] = useState(false);
-    const title = lang === "en" ? `Group discussion (${GROUP_DISCUSSION_SHORT_LABEL}): ${props.groupDiscussionLabel}` : `\u7fa4\u7ec4\u8ba8\u8bba\uff1a${props.groupDiscussionLabel}`;
+    const title = chromeText(lang, `Group discussion (${GROUP_DISCUSSION_SHORT_LABEL}): {label}`, '群组讨论：{label}').replace('{label}', props.groupDiscussionLabel);
     const buttonColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#3f6f62" : t.textMuted) : t.actionBtnColor;
     const statusColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#4f7f6f" : "#7a8a9b") : t.textMuted;
     const primaryTraceFocus = getPrimaryDiscussionTraceFocus(groupDiscussionStatus);

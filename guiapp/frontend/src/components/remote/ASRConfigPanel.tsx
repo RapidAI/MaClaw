@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { localizeText } from '../../i18n';
 import { GetASREnabled, SetASREnabled, CheckASRModel, DownloadASRModel, LoadConfig, PatchConfigFields } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { ModelStatusBox } from "./ModelStatusBox";
@@ -38,7 +39,7 @@ function rmsF32(data: Float32Array): number {
 
 export function ASRConfigPanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        localizeText(lang, en, zhHans, zhHant), [lang]);
     const [enabled, setEnabled] = useState(false);
     const [voiceCorrectionEnabled, setVoiceCorrectionEnabled] = useState(true);
     const [modelExists, setModelExists] = useState(false);

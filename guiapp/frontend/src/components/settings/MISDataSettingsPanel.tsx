@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
+import { localizeText } from '../../i18n';
 import type { ReactNode } from 'react';
 import { GetMISDataConfig, SaveMISDataConfig, TestMISDataConnection } from '../../../wailsjs/go/main/App';
 
@@ -187,5 +188,5 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: '
 }
 
 function makeTranslator(lang: string) {
-    return (en: string, zhHans: string, zhHant: string = zhHans) => lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en;
+    return (en: string, zhHans: string, zhHant: string = zhHans) => localizeText(lang, en, zhHans, zhHant);
 }

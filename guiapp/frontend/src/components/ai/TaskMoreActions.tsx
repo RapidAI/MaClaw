@@ -1,4 +1,5 @@
 import type { MouseEvent } from "react";
+import { localizeText } from "../../i18n";
 
 type TaskMoreActionsProps = {
     lang: string;
@@ -15,7 +16,7 @@ type TaskMoreActionsProps = {
     recordSkillPending?: boolean;
 };
 
-const label = (lang: string, en: string, zh: string, hant = zh) => lang.startsWith("en") ? en : lang.startsWith("zh-Hant") ? hant : zh;
+const label = (lang: string, en: string, zh: string, hant = zh) => localizeText(lang, en, zh, hant);
 
 export function TaskMoreActions({ lang, onSave, onClear, onCopyTitle, onPreview, onRecordSkill, recordSkillDisabled, recordSkillPending }: TaskMoreActionsProps) {
     const close = (event: MouseEvent<HTMLButtonElement>) => {

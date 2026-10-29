@@ -12,7 +12,8 @@
   var topButton = document.querySelector(".back-to-top");
 
   function setLang(next) {
-    lang = next === "en" ? "en" : "zh";
+    var raw = String(next || "").trim().toLowerCase().replace(/_/g, "-");
+    lang = raw === "zh" || raw.indexOf("zh-") === 0 ? "zh" : "en";
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     document.title = lang === "zh" ? "MaClaw 第三方硬件接入协议" : "MaClaw Third-Party Hardware Protocol";
     try {

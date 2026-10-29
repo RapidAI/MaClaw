@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { localizeText } from '../../i18n';
 
 // One-tap corrections under an acceptance line, plus a last "Other" chip that
 // opens a one-line input. Nothing here holds the run: the first option is
@@ -9,7 +10,6 @@ export function DesktopBotOptionChips({ options, lang, onPick, onOther }: {
     onPick: (option: string) => void;
     onOther: (text: string) => void;
 }) {
-    const en = String(lang).toLowerCase().startsWith('en');
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState('');
     const submit = () => {
@@ -40,7 +40,7 @@ export function DesktopBotOptionChips({ options, lang, onPick, onOther }: {
                     data-testid="desktop-bot-option-other"
                     onClick={() => setOpen(value => !value)}
                 >
-                    {en ? 'Other' : '其它'}
+                    {localizeText(lang, 'Other', '其它')}
                 </button>
             </div>
             {open ? (
@@ -50,7 +50,7 @@ export function DesktopBotOptionChips({ options, lang, onPick, onOther }: {
                         className="desktop-bot-chat__other-input"
                         data-testid="desktop-bot-other-input"
                         value={draft}
-                        placeholder={en ? 'Tell me what you meant' : '写下你想要的'}
+                        placeholder={localizeText(lang, 'Tell me what you meant', '写下你想要的')}
                         onChange={event => setDraft(event.target.value)}
                         onKeyDown={event => {
                             if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
@@ -70,7 +70,7 @@ export function DesktopBotOptionChips({ options, lang, onPick, onOther }: {
                         disabled={!draft.trim()}
                         onClick={submit}
                     >
-                        {en ? 'Send' : '发送'}
+                        {localizeText(lang, 'Send', '发送')}
                     </button>
                 </div>
             ) : null}

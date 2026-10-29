@@ -146,11 +146,12 @@
     <header class="topbar">
       <a class="brand" href="/maclaw-app-manual">
         <span class="mark">M</span>
-        <span><strong>MaClaw App Studio</strong><span>Manual / 使用手册</span></span>
+        <span><strong>MaClaw App Studio</strong><span>Manual / 使用手册 / Гарын авлага</span></span>
       </a>
       <div class="lang" role="group" aria-label="Language">
         <button type="button" data-set-lang="zh" aria-pressed="true">中文</button>
         <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
+        <button type="button" data-set-lang="mn" aria-pressed="false">Монгол</button>
       </div>
     </header>
 
@@ -389,6 +390,124 @@
         </div>
       </div>
     </section>
+
+    <section class="lang-panel" data-lang-panel="mn" hidden>
+      <section class="hero">
+        <div>
+          <p class="kicker">Түргэн эхлэл</p>
+          <h1>MaClaw App Studio гарын авлага</h1>
+          <p class="lead">Skill, ажлын урсгал эсвэл MIS/DataSrv чадварыг нэг товшилтоор ажиллах бизнес апп болгоно. Дараах дарааллаар гүйцэтгэнэ: төрлөө сонгох, чадвараа холбох, нэг удаа ажиллуулах, дараа нь нийтлэх эсвэл дотооддоо үлдээх.</p>
+          <div class="hero-actions">
+            <a class="button-link primary" href="#mn-start">3 минутын эхлэл</a>
+            <a class="button-link" href="#mn-map">Интерфэйсийн зураглал</a>
+            <a class="button-link" href="#mn-publish">Нийтлэлийн жагсаалт</a>
+          </div>
+          <nav class="quick" aria-label="Түргэн шилжилт">
+            <a href="#mn-start">Эхлэх зам</a><a href="#mn-choose">Төрөл сонгох</a><a href="#mn-run">Ажиллуулж шалгах</a><a href="#mn-troubleshooting">Алдаа засах</a>
+          </nav>
+        </div>
+        <div class="hero-visual" aria-label="Чадварыг апп болгон угсарч буйг харуулсан зураг">
+          <svg viewBox="0 0 360 260" role="img">
+            <title>Чадвар апп болно</title>
+            <rect x="8" y="8" width="344" height="244" rx="14" fill="#f8fbff" stroke="#d9e2ee"/>
+            <path d="M82 70h78M82 130h78M82 190h78M212 130h54" stroke="#9db8df" stroke-width="2.2" stroke-linecap="round"/>
+            <path d="M153 70l43 60-43 60M266 130l-12-9M266 130l-12 9" stroke="#2563eb" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <g><rect x="34" y="48" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><path d="M58 66h14M58 73h22M91 59l12 7-12 7z" stroke="#2563eb" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><text x="82" y="86" text-anchor="middle" class="visual-label">Skill</text></g>
+            <g><rect x="34" y="108" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><path d="M57 126h16m0 0 8-8m-8 8 8 8m19-16h8a8 8 0 0 1 0 16h-8" stroke="#147d58" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><text x="82" y="146" text-anchor="middle" class="visual-label">Ажлын урсгал</text></g>
+            <g><rect x="34" y="168" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><ellipse cx="82" cy="182" rx="24" ry="8" fill="none" stroke="#2563eb" stroke-width="2"/><path d="M58 182v12c0 4.5 10.7 8 24 8s24-3.5 24-8v-12" stroke="#2563eb" stroke-width="2" fill="none"/><text x="82" y="206" text-anchor="middle" class="visual-label">DataSrv</text></g>
+            <g><rect x="170" y="94" width="86" height="72" rx="14" fill="#eef5ff" stroke="#8db4ef"/><path d="M192 118h42M192 132h42M192 146h28" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/><text x="213" y="184" text-anchor="middle" class="visual-label">App Studio</text></g>
+            <g><rect x="272" y="94" width="58" height="72" rx="14" fill="#eaf7f1" stroke="#9bd8bc"/><path d="M291 120h20M291 134h20M301 108v38" stroke="#147d58" stroke-width="2.4" stroke-linecap="round"/><text x="301" y="184" text-anchor="middle" class="visual-label">Апп</text><text x="301" y="202" text-anchor="middle" class="visual-muted">Нийтлэх / хэрэглэх</text></g>
+          </svg>
+        </div>
+      </section>
+
+      <div class="grid">
+        <nav class="toc" aria-label="Агуулга">
+          <a href="#mn-start">3 минутын эхлэл</a><a href="#mn-map">Интерфэйсийн зураглал</a><a href="#mn-choose">Төрөл сонгох</a><a href="#mn-create">Апп үүсгэх</a><a href="#mn-run">Ажиллуулж шалгах</a><a href="#mn-done">Дууссан шалгуур</a><a href="#mn-publish">Нийтлэх</a><a href="#mn-troubleshooting">Алдаа засах</a>
+        </nav>
+        <div class="content">
+          <section id="mn-start" class="section">
+            <h2>1. 3 минутын эхлэл</h2>
+            <div class="flow" aria-label="App Studio-ийн үндсэн урсгал">
+              <div class="flow-card"><em>1</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/></svg><strong>App Studio нээх</strong><p>Апп → App Studio.</p></div>
+              <div class="flow-card"><em>2</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 7h16M7 4v6M17 4v6"/><path d="M7 15h10M10 12v6M14 12v6"/></svg><strong>Төрөл сонгох</strong><p>Эргэлзвэл «Хэрэгслийн апп»-аас эхэлнэ.</p></div>
+              <div class="flow-card"><em>3</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M7 7h10v10H7z"/><path d="M3 12h4M17 12h4M12 3v4M12 17v4"/></svg><strong>Чадвар холбох</strong><p>Skill сонгох, эсвэл бизнес объектын талбарыг бөглөнө.</p></div>
+              <div class="flow-card"><em>4</em><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/><path d="M4 20h16"/></svg><strong>Нэг удаа ажиллуулах</strong><p>Оролт, үр дүн, бүтээгдэхүүн болон зөвшөөрлийн төлөвийг шалгана.</p></div>
+              <div class="flow-card"><em>5</em><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M5 21h14"/></svg><strong>Нийтлэх эсвэл хэрэглэх</strong><p>Зах зээлд илгээх, эсвэл дотоод самбар дээр үлдээх.</p></div>
+            </div>
+          </section>
+
+          <section id="mn-map" class="section">
+            <h2>2. Интерфэйсийн зураглал</h2>
+            <div class="intro-grid">
+              <div class="intro-card"><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h5"/></svg><strong>Апп үүсгэх</strong><p>Аппын бүртгэл үүсгэж, нэр, тайлбар, дүрс, оролт, гаралт болон дэлгэцийн бүтцийг тохируулна.</p></div>
+              <div class="intro-card"><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/><path d="M8 5v4M16 10v4M11 15v4"/></svg><strong>Апп удирдах</strong><p>Тогтоох, эрэмбэлэх, хувилах, засах, идэвхгүй болгох, сэргээх болон манифестийг шалгах.</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V8z"/><path d="M9 12l2 2 4-5"/></svg><strong>Хянах / нийтлэх</strong><p>Илгээхээс өмнө нотолгоо, хамаарал болон засаглалын шалгалтыг гүйцээнэ.</p></div>
+            </div>
+          </section>
+
+          <section id="mn-choose" class="section">
+            <h2>3. Аппын төрөл сонгох</h2>
+            <div class="decision-table">
+              <div class="table-card"><strong>Хэрэгслийн апп</strong><span>Дотоод Skill аль хэдийн байгаа бөгөөд товчны оролт хэрэгтэй.</span><span>Баримт, тайлан, файл хөрвүүлэлт, хайлт.</span></div>
+              <div class="table-card"><strong>Автоматжуулалтын апп</strong><span>Тогтсон процессыг давтан ажиллуулах шаардлагатай.</span><span>Хуваарьт шалгалт, багц ажил, хяналтаас өдөөгдөх ажил.</span></div>
+              <div class="table-card"><strong>Байгууллагын ердийн апп</strong><span>Байгууллагын өгөгдөл эсвэл бизнес объект хэрэгтэй.</span><span>Харилцагч, захиалга, нөөц, гэрээ.</span></div>
+              <div class="table-card"><strong>Байгууллагын зөвшөөрлийн апп</strong><span>Дуусахаас өмнө хяналт эсвэл зөвшөөрөл хэрэгтэй.</span><span>Зардал, гэрээ, өөрчлөлт, хүсэлт, мэдрэмтгий үйлдэл.</span></div>
+            </div>
+          </section>
+
+          <section id="mn-create" class="section">
+            <h2>4. Апп үүсгэх: хамгийн богино бөглөх зам</h2>
+            <div class="mini-flow"><span>Төрөл сонгох</span><span>Нэг мөрийн тайлбар</span><span>Skill холбох</span><span>Үр дүн тохируулах</span><span>Хадгалах</span></div>
+            <ol>
+              <li>Хэрэглэгчийн үйлдэл мэт нэрлэнэ. Жишээ нь: Гэрээ архивлах, Харилцагчийн идэвхжилийн тайлан.</li>
+              <li>Нэг өгүүлбэрээр бичнэ: ямар оролт боловсруулж, ямар үр дүн буцаахыг.</li>
+              <li>Skill эсвэл бизнес объектыг холбоно. Байгууллагын аппад DataSrv/MIS талбарыг бөглөнө.</li>
+              <li>Хянаж болох гаралт үлдээнэ: хураангуй, файл, төлөв эсвэл бичлэгийн дугаар.</li>
+              <li>Дахин ашиглахаар Skill-ийн тодорхойлолтод хадгалах, эсвэл түр дотоод хэрэглээнд зөвхөн самбарт нэмнэ.</li>
+            </ol>
+            <div class="callout">Хамгийн багаар ашиглаж болох апп: хэрэглэгч юу хийхийг мэднэ, нэг удаа ажиллуулж чадна, үр дүнг хянаж чадна.</div>
+          </section>
+
+          <section id="mn-run" class="section">
+            <h2>5. Нийтлэхийн өмнө ажиллуулж шалгах</h2>
+            <ul class="checklist">
+              <li>Оролтын талбарын нэр ойлгомжтой.</li>
+              <li>Үр дүнд хянаж болох хураангуй, бичлэг эсвэл бүтээгдэхүүн байна.</li>
+              <li>Бүтээгдэхүүнийг нээж, татаж авах эсвэл байршлыг нь олох боломжтой.</li>
+              <li>Зөвшөөрлийн апп зөвшөөрлийн төлөв болон бичлэг үүсгэнэ.</li>
+              <li>Шаардлагатай Skill суусан бөгөөд хувилбар нь нийцтэй харагдана.</li>
+              <li>DataSrv/MIS холболт, түрээслэгч болон эрх тохируулагдсан.</li>
+            </ul>
+          </section>
+
+          <section id="mn-done" class="section">
+            <h2>6. Дууссан шалгуур</h2>
+            <div class="intro-grid">
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/><path d="M4 20h16"/></svg><strong>Хэрэглэгч ойлгоно</strong><p>Нэр, тайлбар нь дотоод мэргэжлийн үгнээс зайлсхийж, хэрэглэгч хэзээ дарахаа мэднэ.</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6 4h12v16H6z"/><path d="M9 9h6M9 13h6M9 17h3"/></svg><strong>Үр дүнг хянаж болно</strong><p>Гаралт нь мөшгихөд зориулсан хураангуй, бичлэгийн дугаар, файлын зам эсвэл зөвшөөрлийн төлөвтэй.</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V8z"/><path d="M9 12l2 2 4-5"/></svg><strong>Нийтлэлийг хянаж болно</strong><p>Ажиллах үеийн нотолгоо, хамаарал, туршилтын протокол болон засаглалын мета өгөгдөлд саад байхгүй.</p></div>
+            </div>
+          </section>
+
+          <section id="mn-publish" class="section">
+            <h2>7. Хянах / нийтлэх</h2>
+            <div class="mini-flow"><span>Хянах / нийтлэхийг нээх</span><span>Шалгах жагсаалт унших</span><span>Дутуу зүйлийг засах</span><span>Зах зээлд илгээх</span><span>Хяналтыг хүлээх</span></div>
+            <p>Нийтлэх таб нь дутуу ажиллах үеийн нотолгоо, туршилтын протокол, ажлын урсгалын гэрээ, хамаарал эсвэл засаглалын мета өгөгдлийг заана. Илгээхээс өмнө эдгээрийг засна.</p>
+            <div class="callout warning">Hub боломжгүй үед App Studio илгээлтийг дотоод синхрончлолын дараалалд үлдээж, дараа нь синхрончилно.</div>
+          </section>
+
+          <section id="mn-troubleshooting" class="section">
+            <h2>8. Алдаа засах</h2>
+            <div class="callout warning">Түгээмэл алдаа: зөвхөн бүртгэл үүсгээд ажиллах үеийн нотолгоо үлдээлгүй орхих; тайлбарт дотоод кодын нэр ашиглах; хянаж болох гаралтгүйгээр зөвхөн «амжилттай» буцаах; шаардлагатай Skill-ийг суулгалгүйгээр илгээх.</div>
+            <h3>Аль төрлийг сонгохоо мэдэхгүй</h3><p>«Хэрэгслийн апп»-аас эхэлнэ. Байгууллагын өгөгдөл, зөвшөөрөл эсвэл автоматжуулалт хэрэгтэй болоход дараа нь солино.</p>
+            <h3>Нийтлэх товч идэвхгүй</h3><p>Ихэвчлэн ажиллах үеийн нотолгоо, туршилтын протокол, хамаарлын мэдэгдэл эсвэл зах зээлийн холболт дутуу байдаг. Эхлээд «Хянах / нийтлэх» шалгах жагсаалтыг уншина уу.</p>
+            <h3>Хамаарлын шалгалт амжилтгүй</h3><p>Дутуу Skill-ийг суулгана. Байгууллагын зах зээлийн хамаарал бол суулгах эрхийг администратораар баталгаажуулна уу.</p>
+            <h3>DataSrv бэлэн биш</h3><p>MIS/DataSrv тохиргоог нээж, холболт, түрээслэгч, эрх болон бизнес объектуудыг шалгана.</p>
+          </section>
+        </div>
+      </div>
+    </section>
   </main>
   <script>
     const panels = Array.from(document.querySelectorAll('[data-lang-panel]'));
@@ -397,10 +516,12 @@
     const titles = {
       zh: 'MaClaw 应用工作室使用手册',
       en: 'MaClaw App Studio Manual',
+      mn: 'MaClaw App Studio гарын авлага',
     };
     function preferredLangFromHash() {
       if (window.location.hash.startsWith('#en-')) return 'en';
       if (window.location.hash.startsWith('#zh-')) return 'zh';
+      if (window.location.hash.startsWith('#mn-')) return 'mn';
       return '';
     }
     function storedLang() {
@@ -420,7 +541,7 @@
     function pairedHashForLang(lang) {
       const current = window.location.hash.replace(/^#/, '');
       if (!current) return '';
-      const pair = current.replace(/^(zh|en)-/, `${lang}-`);
+      const pair = current.replace(/^(zh|en|mn)-/, `${lang}-`);
       return document.getElementById(pair) ? pair : '';
     }
     function scrollCurrentHashIntoView() {
@@ -430,12 +551,23 @@
       if (target) window.requestAnimationFrame(() => target.scrollIntoView({ block: 'start' }));
     }
     function setLang(lang, options = {}) {
-      const normalized = lang === 'en' ? 'en' : 'zh';
-      document.documentElement.lang = normalized === 'zh' ? 'zh-CN' : 'en';
+      const raw = String(lang || '').trim().toLowerCase().replace(/_/g, '-');
+      let normalized = 'en';
+      if (raw === 'zh' || raw.indexOf('zh-') === 0) normalized = 'zh';
+      else if (raw === 'mn-mong' || raw.indexOf('mn-mong-') === 0) normalized = 'en';
+      else if (
+        raw === 'mn' ||
+        raw === 'mn-mn' ||
+        raw === 'mn-cyrl' ||
+        raw === 'mn-cyrl-mn' ||
+        raw.indexOf('mn-cyrl-') === 0 ||
+        raw.indexOf('mn-mn-') === 0
+      ) normalized = 'mn';
+      document.documentElement.lang = normalized === 'zh' ? 'zh-CN' : normalized === 'mn' ? 'mn' : 'en';
       document.title = titles[normalized];
       if (skipLink) {
-        skipLink.setAttribute('href', normalized === 'zh' ? '#zh-start' : '#en-start');
-        skipLink.textContent = normalized === 'zh' ? '跳到正文 / Skip to content' : 'Skip to content / 跳到正文';
+        skipLink.setAttribute('href', normalized === 'zh' ? '#zh-start' : normalized === 'mn' ? '#mn-start' : '#en-start');
+        skipLink.textContent = normalized === 'zh' ? '跳到正文 / Skip to content' : normalized === 'mn' ? 'Агуулга руу очих' : 'Skip to content / 跳到正文';
       }
       panels.forEach((panel) => { panel.hidden = panel.dataset.langPanel !== normalized; });
       buttons.forEach((button) => { button.setAttribute('aria-pressed', String(button.dataset.setLang === normalized)); });
@@ -447,7 +579,7 @@
     }
     buttons.forEach((button) => button.addEventListener('click', () => setLang(button.dataset.setLang, { syncHash: true })));
     const initialLang = new URLSearchParams(location.search).get('lang') || storedLang() || navigator.language;
-    setLang(preferredLangFromHash() || (String(initialLang).toLowerCase().startsWith('en') ? 'en' : 'zh'));
+    setLang(preferredLangFromHash() || initialLang);
     scrollCurrentHashIntoView();
     window.addEventListener('hashchange', () => {
       const hashLang = preferredLangFromHash();

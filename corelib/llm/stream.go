@@ -27,9 +27,11 @@ var maxOutputTokensCache sync.Map
 // UpstreamModelError is a model or gateway rejection carried inside an HTTP 200
 // body (an SSE error frame, or a JSON error object with no choices). It is not
 // a transport failure: callers should show Message instead of treating the
-// turn as an empty completion.
+// turn as an empty completion. Code is the provider machine code when the
+// frame kept one; UserFacingError classifies it instead of showing Message raw.
 type UpstreamModelError struct {
 	Message string
+	Code    string
 }
 
 func (e *UpstreamModelError) Error() string {
@@ -43,70 +45,127 @@ func (e *UpstreamModelError) Error() string {
 // one SSE event or a non-stream JSON body. A normal completion chunk has no
 // error field and returns nil.
 func upstreamModelErrorFromPayload(payload []byte) error {
-	msg := openAIUpstreamErrorText(payload)
+	msg, code := openAIUpstreamErrorText(payload)
 	if msg == "" {
 		return nil
 	}
 	msg = truncateUpstreamError(msg)
 	log.Printf("[LLM-stream] upstream model error: %s", msg)
-	return &UpstreamModelError{Message: msg}
+	return &UpstreamModelError{Message: msg, Code: code}
 }
 
-func openAIUpstreamErrorText(payload []byte) string {
+func openAIUpstreamErrorText(payload []byte) (string, string) {
 	var probe struct {
-		Code    string          `json:"code"`
+		Code    json.RawMessage `json:"code"`
 		Message string          `json:"message"`
 		Choices json.RawMessage `json:"choices"`
 		Error   json.RawMessage `json:"error"`
 	}
 	if len(bytes.TrimSpace(payload)) == 0 || json.Unmarshal(payload, &probe) != nil {
-		return ""
+		return "", ""
 	}
-	if msg := openAIErrorFieldText(probe.Error); msg != "" {
-		if code := strings.TrimSpace(probe.Code); code != "" && !strings.Contains(msg, code) {
-			return msg + " (" + code + ")"
+	if msg, code := openAIErrorFieldText(probe.Error); msg != "" {
+		if code == "" {
+			code = jsonCodeText(probe.Code)
 		}
-		return msg
+		if code != "" && !codeAlreadyShown(msg, code) {
+			msg += " (" + code + ")"
+		}
+		return msg, code
 	}
 	// Qoder rejections that never became an error frame: {"code","message"}
 	// with no choices. A completion chunk does not use that shape.
-	if strings.TrimSpace(probe.Code) != "" && strings.TrimSpace(probe.Message) != "" && len(bytes.TrimSpace(probe.Choices)) == 0 {
-		return strings.TrimSpace(probe.Message) + " (" + strings.TrimSpace(probe.Code) + ")"
+	code := jsonCodeText(probe.Code)
+	if code != "" && strings.TrimSpace(probe.Message) != "" && len(bytes.TrimSpace(probe.Choices)) == 0 {
+		return strings.TrimSpace(probe.Message) + " (" + code + ")", code
 	}
-	return ""
+	return "", ""
 }
 
-func openAIErrorFieldText(raw json.RawMessage) string {
+func openAIErrorFieldText(raw json.RawMessage) (string, string) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
-		return ""
+		return "", ""
 	}
 	if raw[0] == '"' {
 		var text string
 		if json.Unmarshal(raw, &text) != nil {
-			return ""
+			return "", ""
 		}
-		return strings.TrimSpace(text)
+		return strings.TrimSpace(text), ""
 	}
 	var probe struct {
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
-		Code    string `json:"code"`
+		Message string          `json:"message"`
+		Msg     string          `json:"msg"`
+		Code    json.RawMessage `json:"code"`
 	}
 	if json.Unmarshal(raw, &probe) != nil {
-		return ""
+		return "", ""
 	}
 	msg := strings.TrimSpace(probe.Message)
 	if msg == "" {
 		msg = strings.TrimSpace(probe.Msg)
 	}
 	if msg == "" {
-		return ""
+		return "", ""
 	}
-	if code := strings.TrimSpace(probe.Code); code != "" && !strings.Contains(msg, code) {
+	code := jsonCodeText(probe.Code)
+	if code != "" && !codeAlreadyShown(msg, code) {
 		msg += " (" + code + ")"
 	}
-	return msg
+	return msg, code
+}
+
+// jsonCodeText reads a JSON string or number code. A number must not fail the
+// object around it: code 110 arrives as both "110" and 110.
+func jsonCodeText(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return ""
+		}
+		return strings.TrimSpace(s)
+	}
+	if raw[0] == '-' || (raw[0] >= '0' && raw[0] <= '9') {
+		var n json.Number
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if dec.Decode(&n) != nil {
+			return ""
+		}
+		return n.String()
+	}
+	return ""
+}
+
+// codeAlreadyShown reports that code is already a token in msg. A substring
+// check would treat 110 as present inside 1100 and hide the real code.
+func codeAlreadyShown(msg, code string) bool {
+	if code == "" {
+		return false
+	}
+	rest := msg
+	for {
+		idx := strings.Index(rest, code)
+		if idx < 0 {
+			return false
+		}
+		end := idx + len(code)
+		leftOK := idx == 0 || !isASCIIDigit(rest[idx-1])
+		rightOK := end == len(rest) || !isASCIIDigit(rest[end])
+		if leftOK && rightOK {
+			return true
+		}
+		rest = rest[idx+1:]
+	}
+}
+
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }
 
 func truncateUpstreamError(msg string) string {

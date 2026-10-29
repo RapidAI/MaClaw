@@ -203,11 +203,19 @@ func (a *App) persistConfig(path string, fallback corelib.AppConfig) error {
 // Caller must hold configMu for writing when calling this.
 func (a *App) unlockConfigAndFinish(cfg corelib.AppConfig, path string, persist bool) error {
 	a.publishConfigLocked(cfg)
+	if persist {
+		// Mark the write window before releasing configMu so a concurrent
+		// cold load that lost its fingerprint cannot publish stale disk
+		// contents over this freshly published snapshot while the persist is
+		// still queued (see loadConfigLocked's in-flight guard).
+		a.configWritesInFlight.Add(1)
+	}
 	a.configMu.Unlock()
 	a.runConfigPostUnlock(cfg)
 	if !persist {
 		return nil
 	}
+	defer a.configWritesInFlight.Add(-1)
 	if path == "" {
 		var err error
 		path, err = a.getConfigPath()

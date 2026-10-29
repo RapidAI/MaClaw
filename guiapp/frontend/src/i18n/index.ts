@@ -18,7 +18,7 @@ import { normalizeLang } from './langSelect';
 
 // Re-export language helpers and the translations table for direct access
 export { translations };
-export { localizeText, normalizeLang } from './langSelect';
+export { htmlLang, intlLocale, isChineseLang, isTraditionalLang, localizeText, normalizeLang } from './langSelect';
 
 // Product naming for the MaClaw MiniAPP (码卡龙小程序) feature surface.
 export {
@@ -59,14 +59,20 @@ export function t(key: string, lang: string | undefined | null): string {
     const normalized = normalizeLang(lang);
     const table = translations[normalized];
     if (table && key in table) return table[key];
-    // Fallback chain: zh-Hans → en → raw key
-    if (normalized !== 'zh-Hans') {
-        const zhTable = translations['zh-Hans'];
-        if (zhTable && key in zhTable) return zhTable[key];
-    }
-    if (normalized !== 'en') {
+    // Mongolian and English never fall through to Chinese.
+    // zh-Hans / zh-Hant keep the previous chain: zh-Hans, then en.
+    if (normalized === 'mn' || normalized === 'en') {
         const enTable = translations['en'];
         if (enTable && key in enTable) return enTable[key];
+    } else {
+        if (normalized !== 'zh-Hans') {
+            const zhTable = translations['zh-Hans'];
+            if (zhTable && key in zhTable) return zhTable[key];
+        }
+        if (normalized !== 'en') {
+            const enTable = translations['en'];
+            if (enTable && key in enTable) return enTable[key];
+        }
     }
     if (import.meta.env?.DEV) {
         console.warn(`[i18n] missing key: "${key}"`);

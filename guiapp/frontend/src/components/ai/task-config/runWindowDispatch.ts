@@ -19,6 +19,7 @@ import { openExpertConversation } from "../../../utils/expertConversationNavigat
 import { builtinExpertIcon, expertTabId } from "../expertTypes";
 import { runTaskConfigSend } from "./taskConfigSend";
 import { isRunWindowDue, taskDraftFromRunWindow, type RunWindowTaskRecord } from "./runWindow";
+import { tailText } from "../../../i18n/mnTail"
 
 function callable<T extends (...args: never[]) => unknown>(fn: T | undefined): fn is T {
     return typeof fn === "function";
@@ -97,7 +98,7 @@ async function dispatchDueRunWindowsOnce(launch: (task: RunWindowTaskRecord) => 
 /** Replay a scheduled new-task through the same create-and-open path as an immediate send. */
 export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-Hans"): Promise<string> {
     const draft = taskDraftFromRunWindow(task);
-    const isZh = !lang.startsWith("en");
+    const isZh = lang.startsWith("zh");
     let projectPath = "";
     const result = await runTaskConfigSend({
         text: task.prompt,
@@ -105,6 +106,7 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
         draft,
         force: true,
         isZh,
+        lang,
         bindings: {
             createTaskUnified: async (opts) => {
                 // The next scheduled paper is allocated before its turn can
@@ -155,7 +157,7 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
                     failure = message;
                 });
                 if (!document?.relative_path) {
-                    throw new Error(failure || (isZh ? "无法创建 LaTeX 文档" : "The LaTeX document could not be created"));
+                    throw new Error(failure || (tailText(lang, "The LaTeX document could not be created", "无法创建 LaTeX 文档")));
                 }
                 const workspacePath = String(document.workspace_path || "").trim();
                 if (workspacePath) {
@@ -172,8 +174,8 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
         },
     });
     if (!result.ok) {
-        throw new Error(result.error || (isZh ? "创建任务失败" : "Failed to create task"));
+        throw new Error(result.error || (tailText(lang, "Failed to create task", "创建任务失败")));
     }
-    if (!projectPath) throw new Error(isZh ? "创建任务失败：未返回任务路径" : "Failed to create task: no task path returned");
+    if (!projectPath) throw new Error(tailText(lang, "Failed to create task: no task path returned", "创建任务失败：未返回任务路径"));
     return projectPath;
 }

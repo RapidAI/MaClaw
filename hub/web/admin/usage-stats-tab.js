@@ -194,7 +194,7 @@ const USAGE_STATS_I18N = {
     , rankingLoadFailed: '\u52a0\u8f7d\u7528\u6237\u6392\u884c\u5931\u8d25: {error}'
   }
 };
-const ust = (key, vars = {}) => ((USAGE_STATS_I18N[currentLang] || USAGE_STATS_I18N.en)[key] || USAGE_STATS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const ust = (key, vars = {}) => (window.hubDict ? window.hubDict('USAGE_STATS', USAGE_STATS_I18N, key, vars) : ((USAGE_STATS_I18N[currentLang] || USAGE_STATS_I18N.en)[key] || USAGE_STATS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 let usageStatsCache = null;
 let usageStatsState = {
   subtab: 'usage',
@@ -223,11 +223,11 @@ function ensureUsageStatsDefaults() {
   if (!usageStatsState.year) usageStatsState.year = String(now.getUTCFullYear());
 }
 function fmtInt(value) {
-  const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
+  const locale = (window.hubAdminLang && window.hubAdminLang() === 'mn') ? 'mn-MN' : (currentLang === 'zh' ? 'zh-CN' : 'en-US');
   return Number(value || 0).toLocaleString(locale);
 }
 function fmtPercent(part, total) {
-  const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
+  const locale = (window.hubAdminLang && window.hubAdminLang() === 'mn') ? 'mn-MN' : (currentLang === 'zh' ? 'zh-CN' : 'en-US');
   const numerator = Number(part || 0);
   const denominator = Number(total || 0);
   if (!denominator || !Number.isFinite(numerator) || !Number.isFinite(denominator)) return '0%';
@@ -1020,7 +1020,7 @@ function renderUsageStats() {
   const generatedAt = document.getElementById('usageStatsGeneratedAt');
   if (!generatedAt) return;
   if (usageStatsCache && usageStatsCache.generated_at) {
-    const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
+    const locale = (window.hubAdminLang && window.hubAdminLang() === 'mn') ? 'mn-MN' : (currentLang === 'zh' ? 'zh-CN' : 'en-US');
     const ts = new Date(usageStatsCache.generated_at).toLocaleString(locale);
     generatedAt.textContent = ust('generatedAt', { time: ts });
   } else {
@@ -1050,7 +1050,7 @@ function renderUserRankings() {
   }
   const generatedAt = document.getElementById('userRankingGeneratedAt');
   if (generatedAt && userRankingCache && userRankingCache.generated_at) {
-    const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
+    const locale = (window.hubAdminLang && window.hubAdminLang() === 'mn') ? 'mn-MN' : (currentLang === 'zh' ? 'zh-CN' : 'en-US');
     generatedAt.textContent = ust('generatedAt', { time: new Date(userRankingCache.generated_at).toLocaleString(locale) });
   }
   const pager = document.getElementById('userRankingPager');

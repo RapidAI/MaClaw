@@ -1,3 +1,5 @@
+import { normalizeLang } from '../i18n/langSelect';
+
 function appendQuery(path: string, params: Record<string, string | undefined>) {
     const query = Object.entries(params)
         .map(([key, value]) => [key, String(value || '').trim()] as const)
@@ -248,11 +250,14 @@ export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenant
     return token ? `${creditsURL}#token=${encodeURIComponent(token)}` : creditsURL;
 }
 
-/** Normalize UI lang to hub guide query: en | zh | '' (omit). */
+/** Normalize UI lang to a hub guide query: en | zh | mn | '' (omit). */
 export function normalizeHubGuideLang(lang?: string): string {
     const raw = String(lang || '').trim();
     if (!raw) return '';
-    return raw.toLowerCase().startsWith('en') ? 'en' : 'zh';
+    const code = normalizeLang(raw);
+    if (code === 'zh-Hans' || code === 'zh-Hant') return 'zh';
+    if (code === 'mn') return 'mn';
+    return 'en';
 }
 
 function buildHubGuideURL(hubURL: string | undefined, path: string, lang?: string): string {

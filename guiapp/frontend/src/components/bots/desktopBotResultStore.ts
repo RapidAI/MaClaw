@@ -51,7 +51,7 @@ export function desktopBotRecentChat(ownerId: string, botId: string): string[] {
         .map(item => `${item.role === 'user' ? '你' : '我'}: ${oneLine(item.content).slice(0, 160)}`);
 }
 
-let resultLang = 'zh-Hans';
+let resultLang = 'en';
 export function setDesktopBotResultLang(lang: string) {
     if (lang) resultLang = lang;
 }

@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import { tailText } from '../../i18n/mnTail'
 
 type AppStatusMessageBarProps = {
     status: string;
@@ -143,17 +144,17 @@ export const AppStatusMessageBar = ({
                             flexShrink: 1,
                         }}
                         onClick={() => { if (isImIssue) { onOpenIMSettings(); } else { onOpenLLMSettings(); } }}
-                        title={lang?.startsWith('zh') ? '点击配置' : 'Click to configure'}
+                        title={tailText(lang ?? "", 'Click to configure', '点击配置')}
                     >
                         <img src={(!maclawLLMOnline && !remoteActivated) ? lobsterOffline : lobsterHalf} alt="" className="asmb-warn-icon" />
                         <span className="asmb-ellipsis">
                             {!maclawLLMOnline
                                 ? (maclawLLMConfigured
-                                    ? (lang?.startsWith('zh') ? 'LLM unreachable, remote commands unavailable' : 'LLM unreachable, remote commands unavailable')
-                                    : (lang?.startsWith('zh') ? 'LLM not configured, remote commands unavailable' : 'LLM not configured, remote commands unavailable'))
+                                    ? (tailText(lang ?? "", 'LLM unreachable, remote commands unavailable', 'LLM unreachable, remote commands unavailable'))
+                                    : (tailText(lang ?? "", 'LLM not configured, remote commands unavailable', 'LLM not configured, remote commands unavailable')))
                                 : !remoteActivated
-                                    ? (lang?.startsWith('zh') ? 'Mobile not registered' : 'Mobile not registered')
-                                        : (lang?.startsWith('zh') ? 'IM not connected' : 'IM not connected')}
+                                    ? (tailText(lang ?? "", 'Mobile not registered', 'Mobile not registered'))
+                                        : (tailText(lang ?? "", 'IM not connected', 'IM not connected'))}
                         </span>
                     </span>
                 )}

@@ -26,8 +26,9 @@
       <nav class="top-actions" aria-label="Store actions">
         <span id="tenantChip" class="context-chip is-empty" data-i18n="tenantUnknown">未绑定 Hub 租户</span>
         <div class="lang-switch" role="group" aria-label="Language">
-          <button type="button" data-lang="zh" class="active">中</button>
           <button type="button" data-lang="en">EN</button>
+          <button type="button" data-lang="zh">中文</button>
+          <button type="button" data-lang="mn">Монгол</button>
         </div>
       </nav>
     </header>
@@ -148,12 +149,16 @@
     </section>
   </main>
 
+  <script src="/i18n/lang.js"></script>
   <script>
   (function(){
     'use strict';
 
+    var savedLang = '';
+    try { savedLang = localStorage.getItem('maclaw.computeStore.language') || ''; } catch (e) {}
+    var browserLangs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ''];
     var state = {
-      lang: 'zh',
+      lang: window.HubCenterI18n.detectHubLang(browserLangs, savedLang),
       selectedCardTypeID: '',
       selectedPayChannel: '',
       cardTypes: [],
@@ -260,7 +265,8 @@
         cancelled: '已取消',
         bank_transfer: '银行转账',
         wechat: '微信',
-        alipay: '支付宝'
+        alipay: '支付宝',
+        tenantRequired: '当前页面未绑定 Hub 租户，请从 Hub 管理后台的算力商店入口进入后再购买。'
       },
       /*
       zh_legacy_corrupt: {
@@ -349,7 +355,8 @@
         cancelled: '已取消',
         bank_transfer: '银行转账',
         wechat: '微信',
-        alipay: '支付宝'
+        alipay: '支付宝',
+        tenantRequired: '当前页面未绑定 Hub 租户，请从 Hub 管理后台的算力商店入口进入后再购买。'
       },
       /*
       zh_legacy_corrupt: {
@@ -438,7 +445,8 @@
         cancelled: '已取消',
         bank_transfer: '银行转账',
         wechat: '微信',
-        alipay: '支付宝'
+        alipay: '支付宝',
+        tenantRequired: '当前页面未绑定 Hub 租户，请从 Hub 管理后台的算力商店入口进入后再购买。'
       },
       */
       en: {
@@ -535,7 +543,105 @@
         cancelled: 'Cancelled',
         bank_transfer: 'Bank transfer',
         wechat: 'WeChat',
-        alipay: 'Alipay'
+        alipay: 'Alipay',
+        tenantRequired: 'This page is not bound to a Hub tenant. Open it from the compute store entry in Hub admin before purchasing.'
+      },
+      mn: {
+        brandTitle: 'MaClaw LLM тооцооллын зах',
+        brandSubtitle: 'HubCenter-ын Credits болон загварын үйлчилгээний бүлэг',
+        tenantUnknown: 'Hub түрээслэгч холбогдоогүй',
+        heroKicker: 'LLM тооцооллын хандалт',
+        heroTitle: 'Hub түрээслэгчид тогтвортой, аудитад нийцсэн LLM Credits нээнэ',
+        heroLead: 'Тооцооллын карт сонгоод захиалга үүсгэнэ. Төлбөр баталгаажсаны дараа Credits нь HubCenter эрхэнд бичигдэж, хэрэглээг хянах боломжтой.',
+        browseCards: 'Картуудыг үзэх',
+        checkOrders: 'Захиалга шалгах',
+        routeTitle: 'Холболтын зам',
+        metricCredit: 'Credits',
+        metricSettle: 'Баталгаа',
+        metricSettleValue: 'Гар / шууд',
+        metricAudit: 'Аудит',
+        metricAuditValue: 'Хэрэглээний дэлгэрэнгүй',
+        loading: 'Ачаалж байна...',
+        ready: 'Зах бэлэн',
+        storeStateDesc: 'Картын төрлийг HubCenter админ тохируулж, загварын үйлчилгээний бүлэгт холбоно.',
+        paymentTitle: 'Төлбөрийн баталгаа',
+        paymentDesc: 'QR, шилжүүлэг эсвэл төлбөрийн гарц. Баталгаажсаны дараа түрээслэгчийн эрх үүснэ.',
+        usageTitle: 'Хэрэглээг хянах',
+        usageDesc: 'Оролт, гаралт, хүсэлтийн тоо болон Credits зарцуулалт HubCenter-д бүртгэгдэнэ.',
+        productsKicker: 'Багцууд',
+        productsTitle: 'Худалдан авах тооцооллын картууд',
+        productsDesc: 'Хугацаа болон Credits-ээр LLM төсвөө сонгоно уу.',
+        noProducts: 'Худалдан авах тооцооллын карт алга.',
+        loadFailed: 'Ачаалж чадсангүй. Дахин шинэчилнэ үү.',
+        checkoutKicker: 'Захиалга',
+        checkoutTitle: 'Тооцооллын захиалга үүсгэх',
+        notSelected: 'Карт сонгоогүй',
+        adminEmail: 'Админы имэйл',
+        hubTenant: 'Hub / түрээслэгч',
+        paymentChannel: 'Төлбөрийн хэлбэр',
+        alipayDirectHint: 'Төлбөр Alipay-ын албан кассаар үргэлжилнэ.',
+        selectBeforeBuy: 'Худалдахын тулд карт сонгоно уу',
+        buyNow: 'Одоо авах',
+        submitting: 'Илгээж байна...',
+        checkoutHint: 'Захиалга илгээхээс өмнө Credits хасагдахгүй. Төлбөрийг админ эсвэл гарц баталгаажуулна.',
+        orderCreatedKicker: 'Захиалга үүссэн',
+        orderCreated: 'Захиалга үүслээ',
+        orderCreatedLead: 'Доорх хэлбэрээр төлбөрөө хийнэ үү. Баталгаажсаны дараа Credits түрээслэгчийн эрхэнд бичигдэнэ.',
+        scanToPay: 'QR уншуулж төлөөд, админы баталгааг хүлээнэ үү.',
+        goPay: 'Төлбөр рүү очих',
+        paymentMethodTitle: 'Төлбөрийн хэлбэр сонгох',
+        paymentDetails: 'Төлбөрийн мэдээлэл',
+        orderSummary: 'Захиалгын товч',
+        currentMethod: 'Одоогийн хэлбэр',
+        gatewayPayment: 'Төлбөрийн гарц',
+        qrPayment: 'QR-ээр төлөх',
+        paymentRemark: 'Төлбөрийн тэмдэглэл',
+        payee: 'Хүлээн авагч',
+        bankName: 'Банк',
+        bankAccount: 'Данс',
+        bankHolder: 'Дансны нэр',
+        contactInfo: 'Баталгаажуулах холбоо',
+        copy: 'Хуулах',
+        copied: 'Хуулсан',
+        noPaymentDetail: 'Төлбөрийн мэдээлэл алга. Админтай холбогдоно уу.',
+        orderNo: 'Захиалгын дугаар',
+        amount: 'Дүн',
+        status: 'Төлөв',
+        close: 'Хаах',
+        payOrder: 'Төлбөр үргэлжлүүлэх',
+        deleteOrder: 'Устгах',
+        deleteOrderConfirm: 'Энэ боловсруулаагүй захиалгыг устгах уу?',
+        deleteFailed: 'Устгаж чадсангүй: ',
+        ordersKicker: 'Хүлээгдэж буй',
+        ordersTitle: 'Хүлээгдэж буй захиалга',
+        refreshOrders: 'Шинэчлэх',
+        ordersNeedEmail: 'Хүлээгдэж буй захиалгыг үзэхийн тулд имэйл оруулна уу.',
+        noOrders: 'Хүлээгдэж буй захиалга алга.',
+        emailRequired: 'Админы имэйл оруулна уу.',
+        cardRequired: 'Тооцооллын карт сонгоно уу.',
+        purchaseFailed: 'Худалдан авалт амжилтгүй: ',
+        month: 'Сарын',
+        quarter: 'Улирлын',
+        year: 'Жилийн',
+        credits: 'Credits',
+        selectCard: 'Энэ картыг сонгох',
+        selected: 'Сонгосон',
+        computeAgent: 'Тооцооллын төлөөлөгч',
+        serviceGroup: 'Үйлчилгээний бүлэг',
+        period: 'Хугацаа',
+        created: 'Төлбөр хүлээж буй',
+        payment_started: 'Төлбөр хүлээж буй',
+        payment_failed: 'Төлбөр амжилтгүй',
+        pending: 'Төлбөр хүлээж буй',
+        personal_created: 'Төлбөр хүлээж буй',
+        personal_opened: 'Баталгаа хүлээж буй',
+        paid: 'Төлсөн',
+        activated: 'Цэнэглэгдсэн',
+        cancelled: 'Цуцалсан',
+        bank_transfer: 'Банкны шилжүүлэг',
+        wechat: 'WeChat',
+        alipay: 'Alipay',
+        tenantRequired: 'Энэ хуудас Hub түрээслэгчтэй холбогдоогүй. Худалдан авахаас өмнө Hub админы тооцооллын дэлгүүрийн оролтаас нээнэ үү.'
       }
     };
 
@@ -550,7 +656,12 @@
       { id: 'slate_tech', tones: ['#0f172a', '#334155', '#64748b'] }
     ];
 
-    function tr(key) { return (TEXT[state.lang] && TEXT[state.lang][key]) || TEXT.zh[key] || key; }
+    function tr(key) {
+      var table = TEXT[state.lang] || {};
+      if (table[key]) return table[key];
+      if (state.lang === 'mn') return (TEXT.en && TEXT.en[key]) || key;
+      return (TEXT[state.lang] && TEXT[state.lang][key]) || (TEXT.zh && TEXT.zh[key]) || key;
+    }
     function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
     function money(v) { return '¥' + Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
     function periodLabel(period) { return tr(period) || period || '-'; }
@@ -732,9 +843,7 @@
     function idSafe(s) { return String(s || 'card').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 42) || 'card'; }
 
     function tenantRequiredMessage() {
-      return state.lang === 'en'
-        ? 'This page is not bound to a Hub tenant. Open it from the compute store entry in Hub admin before purchasing.'
-        : '当前页面未绑定 Hub 租户，请从 Hub 管理后台的算力商店入口进入后再购买。';
+      return tr('tenantRequired');
     }
 
     function showStoreNotice(message, type) {
@@ -764,7 +873,8 @@
     }
 
     function applyI18n() {
-      document.documentElement.lang = state.lang === 'zh' ? 'zh-CN' : 'en';
+      document.documentElement.lang = state.lang === 'mn' ? window.HubCenterI18n.htmlLang('mn') : window.HubCenterI18n.htmlLang(state.lang);
+      document.title = tr('brandTitle');
       document.querySelectorAll('[data-i18n]').forEach(function(el) {
         el.textContent = tr(el.getAttribute('data-i18n'));
       });
@@ -1212,7 +1322,8 @@
     function init() {
       document.querySelectorAll('.lang-switch button').forEach(function(btn) {
         btn.addEventListener('click', function() {
-          state.lang = btn.dataset.lang === 'en' ? 'en' : 'zh';
+          state.lang = window.HubCenterI18n.normalizeHubLang(btn.dataset.lang);
+          try { localStorage.setItem('maclaw.computeStore.language', state.lang); } catch (e) {}
           applyI18n();
           renderProducts();
           renderPaymentChannels();

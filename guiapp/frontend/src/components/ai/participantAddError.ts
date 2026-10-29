@@ -1,9 +1,10 @@
+import { tailText } from "../../i18n/mnTail"
 export function participantAddErrorText(err: unknown, lang?: string): string {
-    const isZh = !lang || lang.startsWith("zh");
-    const generic = isZh ? "\u6dfb\u52a0\u5931\u8d25" : "Failed to add";
     const raw = extractErrorMessage(err);
-    if (!raw || raw === "participant_add_failed") return generic;
-    return isZh ? `${generic}\uff1a${raw}` : `${generic}: ${raw}`;
+    if (!raw || raw === "participant_add_failed") {
+        return tailText(lang ?? "", "Failed to add", "\u6dfb\u52a0\u5931\u8d25");
+    }
+    return tailText(lang ?? "", `Failed to add: ${raw}`, `\u6dfb\u52a0\u5931\u8d25\uff1a${raw}`);
 }
 
 export function extractErrorMessage(err: unknown): string {

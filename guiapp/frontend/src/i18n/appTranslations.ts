@@ -1,3 +1,5 @@
+import { mnCatalog } from './mnCatalog';
+
 export const translations: Record<string, Record<string, string>> = {
     "en": {
         "title": "MaClaw",
@@ -2442,5 +2444,6 @@ export const translations: Record<string, Record<string, string>> = {
         "dbProfilesWriteEnabledHint": "允許 execute，仍需本機核准。",
         "dbProfilesAllowExternalHostHint": "連線公網或非內網（非 RFC1918）主機時需要勾選。",
         "dbProfilesAllowDdlHint": "允許 CREATE / ALTER / DROP；會開啟寫入並取消唯讀。"
-    }
+    },
+    "mn": mnCatalog
 };

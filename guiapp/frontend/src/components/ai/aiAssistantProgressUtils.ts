@@ -1,6 +1,8 @@
 import type { ChatMessage } from "./useAIAssistant";
 import { legacyMarkVisual } from "../remote/remoteStreamMarks";
 import { displayMathAfterLine, markdownFenceAfterLine } from "./aiAssistantMarkdownNormalize";
+import { isChineseLang, localizeText } from "../../i18n";
+
 
 /**
  * Decorative pictograph ranges (no emoji literals in source).
@@ -290,8 +292,8 @@ export function formatToolProgressStatus(text: string, lang: string): string {
         .replace(/\s*[（(](?:可继续输入|you can type ahead)[）)]\s*$/i, "")
         .replace(/\s*(?:\.\.\.|…)\s*$/, "")
         .trim();
-    const runningAction = lang === "en" ? "Running" : "\u6b63\u5728\u6267\u884c";
-    const startingAction = lang === "en" ? "Starting" : "\u6b63\u5728\u542f\u52a8";
+    const runningAction = (localizeText(lang, "Running", "\u6b63\u5728\u6267\u884c"));
+    const startingAction = (localizeText(lang, "Starting", "\u6b63\u5728\u542f\u52a8"));
     const skillMatch = cleaned.match(/(\u6b63\u5728\u6267\u884c|\u6b63\u5728\u542f\u52a8)\s*Skill[\u300c"]([^\u300d"]+)[\u300d"]?/);
     if (skillMatch?.[2]) {
         return `${isStartingToolAction(skillMatch[1]) ? startingAction : runningAction} ${stripDecorativePictographs(skillMatch[2])}`;
@@ -304,7 +306,7 @@ export function formatToolProgressStatus(text: string, lang: string): string {
     if (englishSkillMatch?.[2]) {
         return `${isStartingToolAction(englishSkillMatch[1]) ? "Starting" : "Running"} ${stripDecorativePictographs(englishSkillMatch[2])}`;
     }
-    return stripDecorativePictographs(cleaned) || (lang === "en" ? "Working" : "\u6b63\u5728\u6267\u884c");
+    return stripDecorativePictographs(cleaned) || ((localizeText(lang, "Working", "\u6b63\u5728\u6267\u884c")));
 }
 
 function isRunningToolStatus(text: string): boolean {

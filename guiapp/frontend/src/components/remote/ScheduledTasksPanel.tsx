@@ -17,6 +17,9 @@ import { colors, radius, remoteActionButtonStyle, remoteDangerActionButtonStyle,
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { formatRunWindowInstant, runWindowStatusLabel, toDatetimeLocalValue, type RunWindowTaskRecord } from "../ai/task-config/runWindow";
 import { AssistantInputIcon } from "../ai/aiAssistantPanelTheme";
+import { intlLocale, localizeText, normalizeLang } from "../../i18n";
+import { chromeText } from "../../i18n/chromeText";
+import { tailText } from "../../i18n/mnTail";
 
 interface DeliveryTarget {
     kind: "group" | "user";
@@ -94,12 +97,11 @@ function deliveryRunStatus(task: ScheduledTask): "none" | "pending" | "ok" | "wa
 }
 
 function deliveryStatusLabel(st: ReturnType<typeof deliveryRunStatus>, lang: string): string {
-    const zh = lang.startsWith("zh");
     switch (st) {
-        case "ok": return zh ? "投递正常" : "Push OK";
-        case "warn": return zh ? "投递警告" : "Push warn";
-        case "fail": return zh ? "投递失败" : "Push fail";
-        case "pending": return zh ? "待投递" : "Push pending";
+        case "ok": return tailText(lang, "Push OK", "投递正常");
+        case "warn": return tailText(lang, "Push warn", "投递警告");
+        case "fail": return tailText(lang, "Push fail", "投递失败");
+        case "pending": return tailText(lang, "Push pending", "待投递");
         default: return "";
     }
 }
@@ -177,6 +179,7 @@ const WEEKDAYS = {
     'zh-Hans': ["周日", "周一", "周二", "周三", "周四", "周五", "周六"],
     'zh-Hant': ["週日", "週一", "週二", "週三", "週四", "週五", "週六"],
     'en': ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+    'mn': ["Ня", "Да", "Мя", "Лх", "Пү", "Ба", "Бя"],
 } as const;
 
 const inputStyle: React.CSSProperties = {
@@ -195,12 +198,13 @@ type WailsNoDragStyle = React.CSSProperties & {
 };
 
 function getWeekdays(lang: string): readonly string[] {
-    const key = lang === 'zh-Hant' ? 'zh-Hant' : lang === 'zh-Hans' ? 'zh-Hans' : 'en';
-    return WEEKDAYS[key];
+    const key = normalizeLang(lang);
+    if (key === 'zh-Hans' || key === 'zh-Hant' || key === 'mn') return WEEKDAYS[key];
+    return WEEKDAYS.en;
 }
 
 function getDateTimeLocale(lang: string): string {
-    return lang === 'zh-Hans' ? 'zh-CN' : lang === 'zh-Hant' ? 'zh-TW' : 'en-US';
+    return intlLocale(lang);
 }
 
 function fmtDate(s: string | null, lang: string): string {
@@ -216,20 +220,23 @@ function fmtDate(s: string | null, lang: string): string {
 
 function formatInterval(minutes: number, lang: string): string {
     if (minutes <= 0) return "";
-    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
     if (minutes >= 1440) {
         const days = minutes / 1440;
-        return Number.isInteger(days)
-            ? (isZh ? `${days}天` : `${days} day${days !== 1 ? "s" : ""}`)
-            : (isZh ? `${days.toFixed(1)}天` : `${days.toFixed(1)} days`);
+        if (Number.isInteger(days)) {
+            const en = days === 1 ? "{n} day" : "{n} days";
+            return chromeText(lang, en, "{n}天").replace("{n}", String(days));
+        }
+        return chromeText(lang, "{n} days", "{n}天").replace("{n}", days.toFixed(1));
     }
     if (minutes >= 60) {
         const hours = minutes / 60;
-        return Number.isInteger(hours)
-            ? (isZh ? `${hours}小时` : `${hours} hour${hours !== 1 ? "s" : ""}`)
-            : (isZh ? `${hours.toFixed(1)}小时` : `${hours.toFixed(1)} hours`);
+        if (Number.isInteger(hours)) {
+            const en = hours === 1 ? "{n} hour" : "{n} hours";
+            return chromeText(lang, en, "{n}小时").replace("{n}", String(hours));
+        }
+        return chromeText(lang, "{n} hours", "{n}小时").replace("{n}", hours.toFixed(1));
     }
-    return isZh ? `${minutes}分钟` : `${minutes} min`;
+    return chromeText(lang, "{n} min", "{n}分钟").replace("{n}", String(minutes));
 }
 
 // A sub-day interval hides an anchor that hits the same instants as midnight.
@@ -244,21 +251,21 @@ function intervalAnchorVisible(hour: number, minute: number, intervalMinutes: nu
 }
 
 function intervalScheduleText(intervalMinutes: number, hour: number, minute: number, lang: string): string {
-    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
-    const cadence = isZh ? `每${formatInterval(intervalMinutes, lang)}` : `Every ${formatInterval(intervalMinutes, lang)}`;
-    if (!intervalAnchorVisible(hour, minute, intervalMinutes)) return cadence;
+    const interval = formatInterval(intervalMinutes, lang);
+    if (!intervalAnchorVisible(hour, minute, intervalMinutes)) {
+        return chromeText(lang, "Every {interval}", "每{interval}").replace("{interval}", interval);
+    }
     const time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
     if (intervalMinutes % 1440 === 0) {
-        return isZh ? `${cadence} ${time}` : `${cadence} at ${time}`;
+        return chromeText(lang, "Every {interval} at {time}", "每{interval} {time}").replace("{interval}", interval).replace("{time}", time);
     }
-    return isZh ? `${cadence}（从 ${time} 起）` : `${cadence} (from ${time})`;
+    return chromeText(lang, "Every {interval} (from {time})", "每{interval}（从 {time} 起）").replace("{interval}", interval).replace("{time}", time);
 }
 
 function scheduleDayText(t: ScheduledTask, lang: string): string {
-    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
     const parts: string[] = [];
     if (t.day_of_month > 0) {
-        parts.push(isZh ? `每月${t.day_of_month}号` : `day ${t.day_of_month}`);
+        parts.push(chromeText(lang, "day {n}", "每月{n}号").replace("{n}", String(t.day_of_month)));
     }
     if (t.day_of_week >= 0 && t.day_of_week <= 6) {
         parts.push(getWeekdays(lang)[t.day_of_week]);
@@ -267,7 +274,6 @@ function scheduleDayText(t: ScheduledTask, lang: string): string {
 }
 
 function scheduleDesc(t: ScheduledTask, lang: string): string {
-    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
     const weekdays = getWeekdays(lang);
     const time = `${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")}`;
 
@@ -287,15 +293,13 @@ function scheduleDesc(t: ScheduledTask, lang: string): string {
 
     let desc = "";
     if (isOneTime) {
-        desc = lang === 'zh-Hans' ? `${t.start_date} ${time}（仅一次）`
-            : lang === 'zh-Hant' ? `${t.start_date} ${time}（僅一次）`
-            : `${t.start_date} ${time} (once)`;
+        desc = chromeText(lang, "{date} {time} (once)", "{date} {time}（仅一次）", "{date} {time}（僅一次）").replace("{date}", t.start_date).replace("{time}", time);
     } else if (t.day_of_month > 0) {
-        desc = isZh ? `每月${t.day_of_month}号 ${time}` : `${t.day_of_month}th of month at ${time}`;
+        desc = chromeText(lang, "{day}th of month at {time}", "每月{day}号 {time}").replace("{day}", String(t.day_of_month)).replace("{time}", time);
     } else if (t.day_of_week >= 0 && t.day_of_week <= 6) {
-        desc = isZh ? `每${weekdays[t.day_of_week]} ${time}` : `Every ${weekdays[t.day_of_week]} at ${time}`;
+        desc = chromeText(lang, "Every {weekday} at {time}", "每{weekday} {time}").replace("{weekday}", weekdays[t.day_of_week]).replace("{time}", time);
     } else {
-        desc = isZh ? `每天 ${time}` : `Daily at ${time}`;
+        desc = chromeText(lang, "Daily at {time}", "每天 {time}").replace("{time}", time);
     }
     if (!isOneTime && (t.start_date || t.end_date)) {
         desc += ` (${t.start_date || "..."} ~ ${t.end_date || "..."})`;
@@ -459,7 +463,7 @@ export function buildTaskMetaRows(
 
 export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        localizeText(lang, en, zhHans, zhHant), [lang]);
 
     const [tasks, setTasks] = useState<ScheduledTask[]>([]);
     const [runWindows, setRunWindows] = useState<RunWindowTaskRecord[]>([]);

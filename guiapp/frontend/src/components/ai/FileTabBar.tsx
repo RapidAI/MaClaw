@@ -24,6 +24,8 @@ import {
     type CodeFile,
 } from './useCodePreviewState';
 import { ShowItemInFolder, OpenSystemUrl } from '../../../wailsjs/go/main/App';
+import { chromeText } from '../../i18n/chromeText';
+
 
 // ── Theme Interface ──
 
@@ -483,11 +485,7 @@ function FileTabContextMenu({
     cloudMode?: boolean;
 }) {
     // Match CodePreviewPanel default (`lang = 'en'`) — undefined is English, not Chinese.
-    const isZh = (lang ?? 'en').startsWith('zh');
-    const isZhHant = lang === 'zh-Hant';
-    const text = (en: string, zhHans: string, zhHant: string = zhHans) => (
-        isZhHant ? zhHant : isZh ? zhHans : en
-    );
+    const text = (en: string, zhHans: string, zhHant: string = zhHans) => chromeText(lang, en, zhHans, zhHant);
     const hasAbsPath = !cloudMode && Boolean(menu.absPath);
     const hasCloseActions = Boolean(onCloseFile || onCloseOtherFiles || onCloseFilesToTheRight || onCloseAllFiles);
 
@@ -1289,9 +1287,6 @@ export function FileTabBar({
     // Show open-editors control whenever there is more than one file, or overflow.
     const showEditorsButton = filePaths.length > 1 || hasOverflow;
 
-    const isZh = (lang ?? 'en').startsWith('zh');
-    const isZhHant = lang === 'zh-Hant';
-
     return (
         <>
             {contextMenu && (
@@ -1395,32 +1390,12 @@ export function FileTabBar({
                             minWidth: OVERFLOW_CONTROL_WIDTH,
                             textAlign: 'center',
                         }}
-                        title={
-                            lang === 'en'
-                                ? hasOverflow
-                                    ? `Open Editors — ${overflowCount} more (Ctrl+P)`
-                                    : 'Open Editors (Ctrl+P)'
-                                : isZhHant
-                                    ? hasOverflow
-                                        ? `已開啟編輯器 — 還有 ${overflowCount} 個 (Ctrl+P)`
-                                        : '已開啟編輯器 (Ctrl+P)'
-                                    : hasOverflow
-                                        ? `已打开的编辑器 — 还有 ${overflowCount} 个 (Ctrl+P)`
-                                        : '已打开的编辑器 (Ctrl+P)'
-                        }
-                        aria-label={
-                            lang === 'en'
-                                ? hasOverflow
-                                    ? `Open editors, ${overflowCount} more`
-                                    : 'Open editors'
-                                : isZhHant
-                                    ? hasOverflow
-                                        ? `已開啟編輯器，還有 ${overflowCount} 個`
-                                        : '已開啟編輯器'
-                                    : hasOverflow
-                                        ? `已打开的编辑器，还有 ${overflowCount} 个`
-                                        : '已打开的编辑器'
-                        }
+                        title={hasOverflow
+                            ? chromeText(lang, 'Open Editors — {count} more (Ctrl+P)', '已打开的编辑器 — 还有 {count} 个 (Ctrl+P)', '已開啟編輯器 — 還有 {count} 個 (Ctrl+P)').replace('{count}', String(overflowCount))
+                            : chromeText(lang, 'Open Editors (Ctrl+P)', '已打开的编辑器 (Ctrl+P)', '已開啟編輯器 (Ctrl+P)')}
+                        aria-label={hasOverflow
+                            ? chromeText(lang, 'Open editors, {count} more', '已打开的编辑器，还有 {count} 个', '已開啟編輯器，還有 {count} 個').replace('{count}', String(overflowCount))
+                            : chromeText(lang, 'Open editors', '已打开的编辑器', '已開啟編輯器')}
                     >
                         {formatOverflowControlLabel(overflowCount, hasOverflow)}
                     </button>
@@ -1457,13 +1432,7 @@ export function FileTabBar({
                                     setFilterQuery(e.target.value);
                                     setHighlightIndex(0);
                                 }}
-                                placeholder={
-                                    lang === 'en'
-                                        ? 'Filter open editors…'
-                                        : isZhHant
-                                            ? '篩選已開啟檔案…'
-                                            : '筛选已打开文件…'
-                                }
+                                placeholder={chromeText(lang, 'Filter open editors…', '筛选已打开文件…', '篩選已開啟檔案…')}
                                 style={{
                                     width: '100%',
                                     boxSizing: 'border-box',
@@ -1483,11 +1452,7 @@ export function FileTabBar({
                                 color: theme.textMuted,
                                 padding: '0 2px',
                             }}>
-                                {lang === 'en'
-                                    ? `${filteredEditors.length} of ${mruCycleOrder.length} open`
-                                    : isZhHant
-                                        ? `${filteredEditors.length} / ${mruCycleOrder.length} 個已開啟`
-                                        : `${filteredEditors.length} / ${mruCycleOrder.length} 个已打开`}
+                                {chromeText(lang, '{shown} of {total} open', '{shown} / {total} 个已打开', '{shown} / {total} 個已開啟').replace('{shown}', String(filteredEditors.length)).replace('{total}', String(mruCycleOrder.length))}
                             </div>
                         </div>
                         <div className="ftb-overflow-list">
@@ -1501,7 +1466,7 @@ export function FileTabBar({
                                         textAlign: 'center',
                                     }}
                                 >
-                                    {lang === 'en' ? 'No matching files' : isZhHant ? '無相符檔案' : '无匹配文件'}
+                                    {chromeText(lang, 'No matching files', '无匹配文件', '無相符檔案')}
                                 </div>
                             ) : (
                                 filteredEditors.map((filePath, index) => {
@@ -1564,7 +1529,7 @@ export function FileTabBar({
                                                         flexShrink: 0,
                                                         padding: '0 2px',
                                                     }}
-                                                    title={isZh ? '关闭' : 'Close'}
+                                                    title={chromeText(lang, 'Close', '关闭')}
                                                 >{'\u00d7'}</span>
                                             )}
                                         </div>

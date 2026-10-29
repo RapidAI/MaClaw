@@ -1,5 +1,8 @@
 import { localizeText } from "./aiAssistantI18n";
+import { chromeText } from "../../i18n/chromeText";
 import type { ProjectSearchItem } from "./projectSearchTypes";
+
+
 
 export function formatArtifactSummary(item: ProjectSearchItem, lang: string, includeSource = false): string {
     const artifact = item.recent_artifacts?.find(a => a.title || a.preview || a.source_url);
@@ -20,5 +23,5 @@ export function formatWorkflowType(type: string | undefined, lang: string): stri
         writing: { en: "Writing", zh: "\u5199\u4f5c" },
     };
     const hit = labels[type];
-    return hit ? (lang === "en" ? hit.en : hit.zh) : type.replace(/_/g, " ");
+    return hit ? chromeText(lang, hit.en, hit.zh) : type.replace(/_/g, " ");
 }

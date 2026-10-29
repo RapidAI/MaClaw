@@ -19,11 +19,11 @@ func refuseUnpublishedFileDestination(msg IMUserMessage) (*IMAgentResponse, bool
 		return nil, false
 	}
 	scope := dest.ChannelScope()
-	text := unfinishedSlotText(msg.Lang,
-		fmt.Sprintf("This channel cannot deliver a file to %s. This turn will not generate a new document and will not hand a path to im_message.", scope),
-		fmt.Sprintf("当前通道不能把文件发到 %s。这一轮不会生成新文档，也不会把文件路径交给 im_message。", scope),
-		fmt.Sprintf("目前通道不能把檔案發到 %s。這一輪不會生成新文件，也不會把路徑交給 im_message。", scope),
-	)
+	text := fmt.Sprintf(unfinishedSlotText(msg.Lang,
+		"This channel cannot deliver a file to %s. This turn will not generate a new document and will not hand a path to im_message.",
+		"当前通道不能把文件发到 %s。这一轮不会生成新文档，也不会把文件路径交给 im_message。",
+		"目前通道不能把檔案發到 %s。這一輪不會生成新文件，也不會把路徑交給 im_message。",
+	), scope)
 	return &IMAgentResponse{
 		Text:           text,
 		Error:          "semantic_delivery_channel_unsupported",

@@ -75,11 +75,12 @@
   }
 
   function getCurrentLang() {
-    if (typeof currentLang !== 'undefined' && (currentLang === 'zh' || currentLang === 'en')) return currentLang;
-    if (global.currentLang === 'zh' || global.currentLang === 'en') return global.currentLang;
+    if (global.hubAdminLang) return global.hubAdminLang();
+    if (typeof currentLang !== 'undefined' && (currentLang === 'zh' || currentLang === 'en' || currentLang === 'mn')) return currentLang;
+    if (global.currentLang === 'zh' || global.currentLang === 'en' || global.currentLang === 'mn') return global.currentLang;
     try {
       var saved = global.localStorage && global.localStorage.getItem('maclaw_admin_lang');
-      if (saved === 'zh' || saved === 'en') return saved;
+      if (saved === 'zh' || saved === 'en' || saved === 'mn') return saved;
     } catch (_) {}
     return (global.document && global.document.documentElement && global.document.documentElement.lang === 'zh-CN') ? 'zh' : 'en';
   }
@@ -89,6 +90,7 @@
   }
 
   function text(zh, en) {
+    if (global.hubLine) return global.hubLine('SECURITY_INLINE', zh, en);
     return isZh() ? zh : en;
   }
 
@@ -514,6 +516,7 @@
   };
 
   function st(key, vars) {
+    if (global.hubEntry) return global.hubEntry('SECURITY', SECURITY_I18N, key, vars);
     var entry = SECURITY_I18N[key];
     var value = entry ? (isZh() ? entry.zh : entry.en) : key;
     if (!vars) return value;

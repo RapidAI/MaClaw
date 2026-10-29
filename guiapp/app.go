@@ -106,6 +106,12 @@ type App struct {
 	// fsnotify watcher uses this to suppress redundant config-updated events
 	// triggered by our own writes (debounce window: 500ms).
 	configLastInternalWrite atomic.Int64
+	// watchedConfigStoragePath is the storage path currently registered with the
+	// fsnotify watcher. The storage can switch from config.json to config.db
+	// when the legacy migration lands after startup, so the watcher must be
+	// re-pointed or external edits to the database would go unnoticed.
+	watchedConfigStoragePath atomic.Value // stores string
+	configWatchMu            sync.Mutex
 	// verifiedInstaller is the installer produced by the most recent
 	// successful DownloadUpdate*. LaunchInstallerAndExit runs it silently (and
 	// on Windows with elevation), so it only ever accepts that exact file,
@@ -4046,6 +4052,32 @@ func (a *App) buildRemoteLaunchSpec(
 	}, nil
 }
 
+// ensureConfigWatchedStoragePath registers the current config storage path
+// with the file watcher, re-pointing it when the storage moved (legacy
+// migration renaming config.json to config.db). Idempotent and safe to call
+// on every config load/save; a nil watcher (tests, startup failure) is a no-op.
+func (a *App) ensureConfigWatchedStoragePath() {
+	if a == nil || a.watcher == nil {
+		return
+	}
+	configPath, err := a.getConfigPath()
+	if err != nil {
+		return
+	}
+	storagePath := a.configStoreForPath(configPath).StoragePath()
+	a.configWatchMu.Lock()
+	defer a.configWatchMu.Unlock()
+	if v, ok := a.watchedConfigStoragePath.Load().(string); ok && v == storagePath {
+		return
+	}
+	if err := a.watcher.Add(storagePath); err != nil {
+		a.log("Failed to watch config storage: " + err.Error())
+		return
+	}
+	a.watchedConfigStoragePath.Store(storagePath)
+	a.log("Watching config storage: " + storagePath)
+}
+
 func (a *App) startConfigWatcher() {
 	var err error
 	a.watcher, err = fsnotify.NewWatcher()
@@ -4094,21 +4126,14 @@ func (a *App) startConfigWatcher() {
 			}
 		}
 	}()
-	configPath, err := a.getConfigPath()
-	if err == nil {
-		storagePath := a.configStoreForPath(configPath).StoragePath()
-		if err := a.watcher.Add(storagePath); err != nil {
-			a.log("Failed to watch config storage: " + err.Error())
-		} else {
-			a.log("Watching config storage: " + storagePath)
-		}
-	}
+	a.ensureConfigWatchedStoragePath()
 }
 func (a *App) SetLanguage(lang string) {
-	a.CurrentLanguage = lang
-	setAgentViewLang(lang)
+	normalized := string(normalizeAppLanguageKind(lang))
+	a.CurrentLanguage = normalized
+	setAgentViewLang(normalized)
 	if UpdateTrayMenu != nil {
-		UpdateTrayMenu(lang)
+		UpdateTrayMenu(normalized)
 	}
 }
 
@@ -6381,9 +6406,23 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	}
 	log.Printf("[config] LoadConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
-	// Publish immutable snap + data-dir pointer; heavy reset deferred.
-	a.publishConfigLocked(config)
 	recordedPath := configStore.StoragePath()
+	// The storage path can switch here (legacy migration config.json →
+	// config.db); make sure the file watcher follows it.
+	a.ensureConfigWatchedStoragePath()
+	// Publish immutable snap + data-dir pointer; heavy reset deferred.
+	// A same-process write may be committing right now (its persist runs after
+	// configMu is released). Its published snapshot is newer than anything on
+	// disk, so publishing the disk read we just made would regress the cache
+	// and let the pending commitConfigToDisk persist our stale copy over it.
+	if a.configWritesInFlight.Load() > 0 {
+		if p := a.configSnap.Load(); p != nil {
+			cfg := a.attachPublishedSkills(*p)
+			log.Printf("[config] LoadConfig:defer_to_in_flight_write path=%q", recordedPath)
+			return cfg, nil
+		}
+	}
+	a.publishConfigLocked(config)
 	if recordedPath != readPath {
 		configFileInfo = nil
 	}
@@ -9943,6 +9982,9 @@ func (a *App) saveToPath(path string, config corelib.AppConfig) error {
 	if err == nil {
 		a.configLastInternalWrite.Store(time.Now().UnixMilli())
 		a.recordConfigFileStateAfterWrite(store.StoragePath())
+		// A successful save means the storage is the database now; make sure
+		// the watcher follows a storage that switched (first-run migration).
+		a.ensureConfigWatchedStoragePath()
 	}
 	return err
 }
@@ -15466,18 +15508,22 @@ var translations = map[string]map[string]string{
 	"Show AI assistant button": {
 		"zh-Hans": "\u663e\u793a AI \u52a9\u624b\u6309\u94ae",
 		"zh-Hant": "\u986f\u793a AI \u52a9\u624b\u6309\u9215",
+		"mn":      "AI \u0442\u0443\u0441\u043b\u0430\u0445 \u0442\u043e\u0432\u0447\u0438\u0439\u0433 \u0445\u0430\u0440\u0443\u0443\u043b\u0430\u0445",
 	},
 	"Service Redeem": {
 		"zh-Hans": "\u670d\u52a1\u5151\u6362",
 		"zh-Hant": "\u670d\u52d9\u5151\u63db",
+		"mn":      "\u04ae\u0439\u043b\u0447\u0438\u043b\u0433\u044d\u044d \u0438\u0434\u044d\u0432\u0445\u0436\u04af\u04af\u043b\u044d\u0445",
 	},
 	"Security": {
 		"zh-Hans": "\u5b89\u5168",
 		"zh-Hant": "\u5b89\u5168",
+		"mn":      "\u0410\u044e\u0443\u043b\u0433\u04af\u0439 \u0431\u0430\u0439\u0434\u0430\u043b",
 	},
 	"New version %s is available. Open About to download the update.": {
 		"zh-Hans": "\u53d1\u73b0\u65b0\u7248\u672c %s\uff0c\u53ef\u524d\u5f80\u5173\u4e8e\u9875\u9762\u4e0b\u8f7d\u66f4\u65b0\u3002",
 		"zh-Hant": "\u767c\u73fe\u65b0\u7248\u672c %s\uff0c\u53ef\u524d\u5f80\u95dc\u65bc\u9801\u9762\u4e0b\u8f09\u66f4\u65b0\u3002",
+		"mn":      "\u0428\u0438\u043d\u044d \u0445\u0443\u0432\u0438\u043b\u0431\u0430\u0440 %s \u0431\u0430\u0439\u043d\u0430. \u0428\u0438\u043d\u044d\u0447\u043b\u044d\u043b\u0438\u0439\u0433 \u0422\u0443\u0445\u0430\u0439 \u0445\u0443\u0443\u0434\u0441\u0430\u0430\u0441 \u0442\u0430\u0442\u043d\u0430 \u0443\u0443.",
 	},
 }
 

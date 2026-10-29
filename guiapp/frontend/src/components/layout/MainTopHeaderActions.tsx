@@ -1,6 +1,7 @@
 import { type Dispatch, type SetStateAction } from 'react';
 import { ReadTutorial } from '../../../wailsjs/go/main/App';
 import { isSkillTool, isToolTab } from '../../config/toolCatalog';
+import { localizeText } from '../../i18n';
 
 const zhHans = {
     back: '\u8fd4\u56de',
@@ -78,7 +79,7 @@ export const MainTopHeaderActions = ({
         {isToolTab(navTab) && (
             <>
                 <button className="btn-link" onClick={() => setShowModelSettings(true)} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)', '--wails-draggable': 'no-drag' } as any}>
-                    {lang === 'zh-Hans' ? zhHans.providerConfig : lang === 'zh-Hant' ? zhHant.providerConfig : 'Provider Config'}
+                    {localizeText(lang, 'Provider Config', zhHans.providerConfig, zhHant.providerConfig)}
                 </button>
                 {isSkillTool(navTab) && (
                     <button className="btn-link" onClick={() => { setSelectedSkillsToInstall([]); setShowInstallSkillModal(true); }} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-success)', color: 'var(--theme-success)', '--wails-draggable': 'no-drag' } as any}>

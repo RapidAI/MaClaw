@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type M
 import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
 import { IconMessage } from '../ai/WorkbenchIcons';
 import { MAX_USER_FAVORITES } from '../settings/favoriteEmployees';
+import { normalizeLang } from '../../i18n';
 
 export interface FavoriteEmployeeSlot {
     veId: string;
@@ -139,9 +140,46 @@ const MENU_WIDTH = 160;
 const MENU_HEIGHT = 240;
 const MENU_MARGIN = 8;
 
+const favoriteMn: typeof labels.en = {
+    startChat: 'Яриа эхлүүлэх',
+    rename: 'Нэр өөрчлөх',
+    viewInfo: 'Мэдээлэл харах',
+    moveUp: 'Дээш',
+    moveDown: 'Доош',
+    remove: 'Түгээмэлээс хасах',
+    resident: 'Байнга',
+    renameTitle: 'Цахим ажилтны нэр өөрчлөх',
+    nameLabel: 'Харагдах нэр',
+    cancel: 'Болих',
+    save: 'Хадгалах',
+    saveFailed: 'Нэр өөрчилж чадсангүй. Дахин оролдоно уу.',
+    offline: 'холбогдоогүй',
+    infoTitle: 'Цахим ажилтны мэдээлэл',
+    infoSource: 'Эх сурвалж',
+    infoSourceVirtual: 'Виртуал ажилтан (алсын)',
+    infoSourceLocal: 'Энэ компьютерын ажилтан',
+    infoSkill: 'Skill',
+    infoPolicy: 'Хандалтын бодлого',
+    infoRegistered: 'Бүртгэсэн цаг',
+    infoStatus: 'Төлөв',
+    infoOnline: 'Холбогдсон',
+    infoOffline: 'Холбогдоогүй',
+    infoResident: 'Байнга (үргэлж харагдана)',
+    infoPolicyPublic: 'Нээлттэй',
+    infoPolicyWhitelist: 'Зөвшөөрөгдсөн жагсаалт',
+    infoPolicyBlacklist: 'Хориглосон жагсаалт',
+    infoPolicyPerRequest: 'Зөвшөөрөл шаардлагатай',
+    infoClose: 'Хаах',
+    infoNoDescription: 'Skill-ийн танилцуулга алга',
+    infoDepartments: 'Хандах хэлтэс',
+    infoDepartmentsUnrestricted: 'Хязгааргүй',
+};
+
 function favoriteLabels(lang?: string) {
-    if (lang === 'zh-Hans' || lang === 'zh') return labels.zhHans;
-    if (lang === 'zh-Hant') return labels.zhHant;
+    const kind = normalizeLang(lang);
+    if (kind === 'zh-Hant') return labels.zhHant;
+    if (kind === 'zh-Hans') return labels.zhHans;
+    if (kind === 'mn') return favoriteMn;
     return labels.en;
 }
 

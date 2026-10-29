@@ -80,6 +80,9 @@ func UserFacingErrorWithProvider(err error, providerName string) string {
 	if msg := classifyOfficialOwnerUnreachable(err.Error()); msg != "" {
 		return msg
 	}
+	if msg := classifyDailyBillingQuotaError(err, providerName); msg != "" {
+		return msg
+	}
 	return err.Error()
 }
 
@@ -268,11 +271,20 @@ func ClassifyHubErrorBody(body []byte) string {
 // Returns empty when code is not a known structured denial.
 func classifyStructuredCode(f llmErrorFields, statusCode int, provider string) string {
 	code := strings.TrimSpace(f.Code)
+	// Hub codes win when both are present. A daily-billing denial often has
+	// no Hub code: the machine code is "110", or only the provider sentence
+	// survived. That check has to run before the empty-code return, or an
+	// HTTP body with just the sentence falls through to a generic status line.
+	if code != "" {
+		if msg := ClassifyHubServiceError(code, f.Message, f.RetryAfterSeconds, f.RetryAfterAt); msg != "" {
+			return msg
+		}
+	}
+	if msg := dailyBillingQuotaMessage(code, f.Message, provider); msg != "" {
+		return msg
+	}
 	if code == "" {
 		return ""
-	}
-	if msg := ClassifyHubServiceError(code, f.Message, f.RetryAfterSeconds, f.RetryAfterAt); msg != "" {
-		return msg
 	}
 
 	detail := summarizeUserFacingMessage(f.Message)
@@ -404,7 +416,7 @@ func extractLLMErrorFields(body []byte) llmErrorFields {
 		return out
 	}
 
-	out.Code = mapString(payload, "code")
+	out.Code = mapCode(payload, "code")
 	out.Type = mapString(payload, "type")
 	out.Message = firstNonEmpty(
 		mapString(payload, "message"),
@@ -419,7 +431,7 @@ func extractLLMErrorFields(body []byte) llmErrorFields {
 	switch errVal := payload["error"].(type) {
 	case map[string]any:
 		if out.Code == "" {
-			out.Code = mapString(errVal, "code")
+			out.Code = mapCode(errVal, "code")
 		}
 		// Anthropic: outer type="error", nested error.type is the real class.
 		if nestedType := mapString(errVal, "type"); nestedType != "" && (out.Type == "" || out.Type == "error") {
@@ -442,6 +454,26 @@ func mapString(m map[string]any, key string) string {
 	}
 	s, _ := m[key].(string)
 	return strings.TrimSpace(s)
+}
+
+func mapCode(m map[string]any, key string) string {
+	if text := mapString(m, key); text != "" {
+		return text
+	}
+	if m == nil {
+		return ""
+	}
+	switch n := m[key].(type) {
+	case float64:
+		if n == float64(int64(n)) {
+			return strconv.FormatInt(int64(n), 10)
+		}
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	case json.Number:
+		return n.String()
+	default:
+		return ""
+	}
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -515,6 +547,65 @@ func formatHubRetryText(seconds int64, retryAfterAt string) string {
 	}
 	days := (hours + 23) / 24
 	return fmt.Sprintf("%d 天", days)
+}
+
+// classifyDailyBillingQuotaError maps Qoder's daily billing cap (machine code
+// 110) to the sentence the assistant already shows for an LLM failure.
+// Streams keep the code on UpstreamModelError. Older paths only kept it
+// inside a sentence, so those sentences are still recognized.
+func classifyDailyBillingQuotaError(err error, providerName string) string {
+	if err == nil {
+		return ""
+	}
+	var upstream *UpstreamModelError
+	if errors.As(err, &upstream) && upstream != nil {
+		if msg := dailyBillingQuotaMessage(upstream.Code, upstream.Message, providerName); msg != "" {
+			return msg
+		}
+	}
+	return dailyBillingQuotaMessage("", err.Error(), providerName)
+}
+
+func dailyBillingQuotaMessage(code, message, provider string) string {
+	if !isDailyBillingQuota(code, message) {
+		return ""
+	}
+	name := strings.TrimSpace(provider)
+	if name == "" || name == "模型服务" {
+		if strings.Contains(message, "Qoder") {
+			name = "Qoder"
+		} else {
+			name = "模型服务"
+		}
+	}
+	return name + " 日调用额度已用尽，请明日再试或切换其他模型提供方。"
+}
+
+func isDailyBillingQuota(code, message string) bool {
+	if strings.TrimSpace(code) == "110" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(message), "billing daily count exceeded") {
+		return true
+	}
+	// Stream transport writes "上游错误 (110)"; the connection check writes
+	// "聊天被上游拒绝 (110)". Both drop the typed code and keep this token.
+	return qoderCodeToken(message, "上游错误 (110)") || qoderCodeToken(message, "聊天被上游拒绝 (110)")
+}
+
+func qoderCodeToken(message, marker string) bool {
+	rest := message
+	for {
+		idx := strings.Index(rest, marker)
+		if idx < 0 {
+			return false
+		}
+		after := rest[idx+len(marker):]
+		if after == "" || after[0] < '0' || after[0] > '9' {
+			return true
+		}
+		rest = after
+	}
 }
 
 func summarizeUserFacingMessage(msg string) string {

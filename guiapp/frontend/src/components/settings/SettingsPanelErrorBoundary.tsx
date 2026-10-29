@@ -1,4 +1,5 @@
 import { Component, Fragment, type ErrorInfo, type ReactNode } from 'react';
+import { localizeText } from '../../i18n';
 import { SettingsPanelFallback } from './SettingsPanelFallback';
 
 type Props = {
@@ -42,12 +43,8 @@ export class SettingsPanelErrorBoundary extends Component<Props, State> {
     render() {
         if (this.state.error) {
             const { lang } = this.props;
-            const message = lang === 'zh-Hans'
-                ? '\u8bbe\u7f6e\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002'
-                : lang === 'zh-Hant'
-                    ? '\u8a2d\u5b9a\u8f09\u5165\u5931\u6557\uff0c\u8acb\u91cd\u8a66\u3002'
-                    : 'Failed to load this settings panel. Please retry.';
-            const actionLabel = lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u91cd\u8bd5' : 'Retry';
+            const message = localizeText(lang, 'Failed to load this settings panel. Please retry.', '\u8bbe\u7f6e\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002', '\u8a2d\u5b9a\u8f09\u5165\u5931\u6557\uff0c\u8acb\u91cd\u8a66\u3002');
+            const actionLabel = localizeText(lang, 'Retry', '\u91cd\u8bd5', '\u91cd\u8a66');
             return <SettingsPanelFallback message={message} actionLabel={actionLabel} onAction={this.retry} />;
         }
 

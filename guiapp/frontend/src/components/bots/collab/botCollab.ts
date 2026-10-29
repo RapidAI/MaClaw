@@ -1,6 +1,8 @@
 import type {
     DeleteBotRoom, GetBotCollabFeatures, ListBotAssignments, ListBotRooms, ListBotSaid, PostBotRoomMessage, SaveBotRoom,
 } from '../../../../wailsjs/go/main/App';
+import { isChineseLang } from '../../../i18n/langSelect';
+import { tailText } from '../../../i18n/mnTail';
 
 export type CollabFeatures = Awaited<ReturnType<typeof GetBotCollabFeatures>>;
 export type SaidItem = Awaited<ReturnType<typeof ListBotSaid>>[number];
@@ -34,8 +36,8 @@ export const FEATURES_OFF: CollabFeatures = { assignments: false, peer_review: f
 
 export type BotRef = { id: string; title: string; primary?: boolean };
 
-export function botName(bots: BotRef[], id: string): string {
-    if (id === 'human') return '我';
+export function botName(bots: BotRef[], id: string, lang = 'zh-Hans'): string {
+    if (id === 'human') return tailText(lang, 'Me', '我');
     return bots.find(b => b.id === id)?.title || id;
 }
 
@@ -54,8 +56,26 @@ export const STATE_LABEL: Record<string, string> = {
     returned: '已退回重做',
 };
 
-export function stateLabel(state: string): string {
-    return STATE_LABEL[state] || state;
+const STATE_EN: Record<string, string> = {
+    queued: 'Queued',
+    running: 'Running',
+    progress: 'Running',
+    held: 'Waiting for your confirmation',
+    waiting_human: 'Waiting for your answer',
+    needs_login: 'Needs you to sign in',
+    blocked: 'Stuck',
+    failed: 'Failed',
+    completed: 'Completed',
+    awaiting_review: 'Waiting for review',
+    accepted: 'Accepted',
+    returned: 'Returned for rework',
+};
+
+export function stateLabel(state: string, lang = 'zh-Hans'): string {
+    const zh = STATE_LABEL[state];
+    const en = STATE_EN[state];
+    if (!zh || !en) return state;
+    return tailText(lang, en, zh);
 }
 
 /** States where the person has to do something. */
@@ -69,20 +89,26 @@ const ACTIVE = new Set(['queued', 'running', 'progress']);
  * The one-line status: who is working and on what stage, at most three
  * bots, then "等 N 个". Empty when nobody is busy.
  */
-export function statusRowText(assignments: Assignment[], bots: BotRef[], max = 3): string {
+export function statusRowText(assignments: Assignment[], bots: BotRef[], max = 3, lang = 'zh-Hans'): string {
     const seen = new Set<string>();
     const parts: string[] = [];
+    const zh = isChineseLang(lang);
     for (const a of assignments) {
         if (!ACTIVE.has(a.state) || seen.has(a.target_bot)) continue;
         seen.add(a.target_bot);
         if (parts.length >= max) continue;
-        const verb = a.state === 'queued' ? '排队中' : a.last_report ? '正在做' : '在想';
+        const name = botName(bots, a.target_bot, lang);
         const stage = shorten(a.last_report || a.task, 18);
-        parts.push(`${botName(bots, a.target_bot)} ${verb}：${stage}`);
+        const verbZh = a.state === 'queued' ? '排队中' : a.last_report ? '正在做' : '在想';
+        const verbEn = a.state === 'queued' ? 'is queued' : a.last_report ? 'is working' : 'is thinking';
+        parts.push(tailText(lang, `${name} ${verbEn}: ${stage}`, `${name} ${verbZh}：${stage}`));
     }
     if (!parts.length) return '';
     const more = seen.size - parts.length;
-    return parts.join('；') + (more > 0 ? `；还有 ${more} 个机器人在忙` : '');
+    const sep = zh ? '；' : '; ';
+    const joined = parts.join(sep);
+    if (more <= 0) return joined;
+    return `${joined}${sep}${tailText(lang, `${more} more bots are busy`, `还有 ${more} 个机器人在忙`)}`;
 }
 
 export function shorten(text: string, n: number): string {
@@ -91,15 +117,31 @@ export function shorten(text: string, n: number): string {
 }
 
 /** What the person must do for an assignment that waits on them. */
-export function humanPrompt(a: Assignment, bots: BotRef[]): { title: string; body: string } | null {
-    const who = botName(bots, a.target_bot);
+export function humanPrompt(a: Assignment, bots: BotRef[], lang = 'zh-Hans'): { title: string; body: string } | null {
+    const who = botName(bots, a.target_bot, lang);
     switch (a.state) {
-        case 'waiting_human':
-            return { title: `${who} 在等你回答`, body: (a.last_report ? `问题：${a.last_report}\n` : '') + `直接在和 ${who} 的对话里回复就行，它收到后会接着做。` };
-        case 'needs_login':
-            return { title: `${who} 需要你登录`, body: `网站要求登录${a.last_report ? `（${a.last_report}）` : ''}。请打开 ${who} 的桌面，自己完成登录，然后在对话里告诉它“登好了”。机器人不会替你输入密码。` };
+        case 'waiting_human': {
+            const en = (a.last_report ? `Question: ${a.last_report}\n` : '') + `Reply to ${who} in the chat and it will continue.`;
+            const zh = (a.last_report ? `问题：${a.last_report}\n` : '') + `直接在和 ${who} 的对话里回复就行，它收到后会接着做。`;
+            return { title: tailText(lang, `${who} is waiting for your answer`, `${who} 在等你回答`), body: tailText(lang, en, zh) };
+        }
+        case 'needs_login': {
+            const detailEn = a.last_report ? ` (${a.last_report})` : '';
+            const detailZh = a.last_report ? `（${a.last_report}）` : '';
+            return {
+                title: tailText(lang, `${who} needs you to sign in`, `${who} 需要你登录`),
+                body: tailText(
+                    lang,
+                    `The site asks you to sign in${detailEn}. Open ${who}'s desktop, sign in yourself, then say you are signed in. The bot will not type your password.`,
+                    `网站要求登录${detailZh}。请打开 ${who} 的桌面，自己完成登录，然后在对话里告诉它“登好了”。机器人不会替你输入密码。`,
+                ),
+            };
+        }
         case 'held':
-            return { title: `${who} 的任务等你确认`, body: '这件事涉及安装、删除或付款，需要你在对话里确认后才会开始。' };
+            return {
+                title: tailText(lang, `${who} is waiting for you to confirm`, `${who} 的任务等你确认`),
+                body: tailText(lang, 'Confirm this in the chat before it starts. It may install, delete, or pay.', '这件事涉及安装、删除或付款，需要你在对话里确认后才会开始。'),
+            };
     }
     return null;
 }

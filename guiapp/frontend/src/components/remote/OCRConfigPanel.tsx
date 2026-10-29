@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { CheckFormulaModel, CheckOCRModel, DownloadFormulaModel, DownloadOCRModel, GetFormulaEnabled, GetOCREnabled, SetFormulaEnabled, SetOCREnabled, SetOCRModelTier } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { ModelStatusBox } from './ModelStatusBox';
+import { localizeText } from '../../i18n';
+
 
 type Props = { lang: string };
 
@@ -10,7 +12,7 @@ type Props = { lang: string };
 // 'ocr-download-progress' and 'formula-download-progress' events.
 export function OCRConfigPanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        localizeText(lang, en, zhHans, zhHant), [lang]);
     const [enabled, setEnabled] = useState(true);
     const [tier, setTier] = useState('small');
     const [exists, setExists] = useState(false);
@@ -179,7 +181,7 @@ export function OCRConfigPanel({ lang }: Props) {
                 >
                     {tierOptions.map(option => (
                         <option key={option.id} value={option.id}>
-                            {lang === 'en' ? option.en : lang === 'zh-Hant' ? option.zhHant : option.zh}
+                            {t(option.en, option.zh, option.zhHant)}
                         </option>
                     ))}
                 </select>

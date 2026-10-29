@@ -67,6 +67,15 @@ describe('hubCredits URL builders', () => {
         expect(normalizeHubGuideLang('en-US')).toBe('en');
         expect(normalizeHubGuideLang('zh-Hans')).toBe('zh');
         expect(normalizeHubGuideLang('')).toBe('');
+        expect(normalizeHubGuideLang('   ')).toBe('');
+        expect(normalizeHubGuideLang('mn')).toBe('mn');
+        expect(normalizeHubGuideLang('mn-MN')).toBe('mn');
+        expect(normalizeHubGuideLang('mn-Mong')).toBe('en');
+        expect(normalizeHubGuideLang('ja')).toBe('en');
+        expect(buildHubPetStoreURL('https://hub.example.com', 'mn')).toContain('lang=mn');
+        expect(buildHubPetStoreURL('https://hub.example.com', 'mn-Mong')).toContain('lang=en');
+        expect(buildHubMaclawAppManualURL('https://hub.example.com', 'mn')).toContain('lang=mn');
+        expect(buildHubPetPackHelpURL('https://hub.example.com', 'mn')).toContain('lang=mn');
         expect(buildHubMaclawAppManualURL('')).toBe('');
     });
 });

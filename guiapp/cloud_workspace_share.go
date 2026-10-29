@@ -51,14 +51,7 @@ func wrapCloudWorkspaceShareError(kind error) error {
 
 func cloudWorkspaceTr(en, zhHans, zhHant string) string {
 	lang, _ := agentViewCurrentLang.Load().(string)
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageZhHant:
-		return zhHant
-	case appLanguageEnglish:
-		return en
-	default:
-		return zhHans
-	}
+	return pickUI(lang, en, zhHans, zhHant)
 }
 
 func cloudWorkspaceShareKindText(kind error) string {
@@ -948,8 +941,8 @@ func (a *App) importCloudWorkspaceShareLink(token string) {
 	}
 	from := cloudWorkspaceSharedFromLabel(result.Tags)
 	if from != "" {
-		a.ShowToast(cloudWorkspaceTr("Joined “"+name+"” (from "+from+")", "已加入「"+name+"」（来自 "+from+"）", "已加入「"+name+"」（來自 "+from+"）"), "success")
+		a.ShowToast(fmt.Sprintf(cloudWorkspaceTr("Joined “%s” (from %s)", "已加入「%s」（来自 %s）", "已加入「%s」（來自 %s）"), name, from), "success")
 		return
 	}
-	a.ShowToast(cloudWorkspaceTr("Joined shared cloud workspace “"+name+"”", "已加入分享的云端工作区「"+name+"」", "已加入分享的雲端工作區「"+name+"」"), "success")
+	a.ShowToast(fmt.Sprintf(cloudWorkspaceTr("Joined shared cloud workspace “%s”", "已加入分享的云端工作区「%s」", "已加入分享的雲端工作區「%s」"), name), "success")
 }

@@ -14,6 +14,8 @@ import {
     remoteTableHeaderCellStyle,
     remoteTableHeaderRowStyle,
 } from "./styles";
+import { localizeText } from '../../i18n';
+
 
 type PassthroughParam = {
     name: string;
@@ -105,7 +107,7 @@ const paramNamePattern = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const placeholderPattern = /\$\{([^}]*)\}/g;
 
 function text(lang: string, zh: string, en: string) {
-    return lang === "en" ? en : zh;
+    return localizeText(lang, en, zh);
 }
 
 function splitCommandLine(input: string): string[] {

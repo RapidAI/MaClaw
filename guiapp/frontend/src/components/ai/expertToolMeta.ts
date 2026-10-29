@@ -1,3 +1,4 @@
+import { tailText } from "../../i18n/mnTail"
 /**
  * Human-facing metadata for expert allow-list pickers:
  * - category grouping
@@ -269,12 +270,12 @@ export function toolCategory(name: string, entry?: ToolCatalogEntry): ToolCatego
 
 export function toolDisplayLabel(
     name: string,
-    isZh: boolean,
+    isZh: boolean | string,
     backendDescription?: string,
     entry?: ToolCatalogEntry,
 ): string {
     const resolved = resolveToolMeta(entry || { name, description: backendDescription });
-    const label = isZh ? resolved.labelZh : resolved.labelEn;
+    const label = tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), resolved.labelEn, resolved.labelZh);
     if (label && label !== name) return label;
     const desc = String(backendDescription || entry?.description || '').trim().replace(/\s+/g, ' ');
     if (desc && desc.length <= 28) return desc;
@@ -298,10 +299,10 @@ export function skillCategory(name: string): SkillCategoryId {
     return lookupSkillRule(name)?.category || 'other';
 }
 
-export function skillDisplayLabel(name: string, isZh: boolean): string {
+export function skillDisplayLabel(name: string, isZh: boolean | string): string {
     const rule = lookupSkillRule(name);
     if (rule?.labelZh || rule?.labelEn) {
-        return isZh ? (rule.labelZh || name) : (rule.labelEn || name);
+        return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), rule.labelEn || name, rule.labelZh || name);
     }
     return name;
 }
@@ -340,7 +341,7 @@ export function groupSkills(skills: string[]): SkillGroup[] {
         .filter((g) => g.items.length > 0);
 }
 
-export function toolCategoryLabel(category: ToolCategoryId, isZh: boolean): string {
+export function toolCategoryLabel(category: ToolCategoryId, isZh: boolean | string): string {
     const zh: Record<ToolCategoryId, string> = {
         interaction: '对话与会话',
         files: '文件与代码',
@@ -363,10 +364,10 @@ export function toolCategoryLabel(category: ToolCategoryId, isZh: boolean): stri
         system: 'System & privileged',
         other: 'Other',
     };
-    return isZh ? zh[category] : en[category];
+    return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), en[category], zh[category]);
 }
 
-export function skillCategoryLabel(category: SkillCategoryId, isZh: boolean): string {
+export function skillCategoryLabel(category: SkillCategoryId, isZh: boolean | string): string {
     const zh: Record<SkillCategoryId, string> = {
         docs: '文档',
         office: '办公产出',
@@ -381,11 +382,11 @@ export function skillCategoryLabel(category: SkillCategoryId, isZh: boolean): st
         security: 'Security',
         other: 'Other',
     };
-    return isZh ? zh[category] : en[category];
+    return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), en[category], zh[category]);
 }
 
-export function riskLabel(risk: ToolRisk, isZh: boolean): string {
-    if (risk === 'dangerous') return isZh ? '高风险' : 'High risk';
-    if (risk === 'elevated') return isZh ? '需谨慎' : 'Elevated';
-    return isZh ? '低风险' : 'Low risk';
+export function riskLabel(risk: ToolRisk, isZh: boolean | string): string {
+    if (risk === 'dangerous') return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'High risk', '高风险');
+    if (risk === 'elevated') return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'Elevated', '需谨慎');
+    return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'Low risk', '低风险');
 }

@@ -12,6 +12,7 @@ import {
     webPreviewSandbox,
     type WebPreviewAddress,
 } from './webPreviewAddress';
+import { tailText } from '../../i18n/mnTail'
 
 type WebPreviewInfo = {
     id?: string;
@@ -64,12 +65,8 @@ export function WebPreviewBrowser({
             : { mode: 'srcdoc' as const, src: '', srcDoc: String(content || '') }
     ));
 
-    const remoteHint = isZh
-        ? '若页面空白，该网站可能禁止嵌入。可以在系统浏览器中打开。'
-        : 'If this page stays blank, the site may refuse to be embedded. Open it in the system browser.';
-    const assetHint = isZh
-        ? '相对资源未能从本地目录加载，当前显示的是文件内容。'
-        : 'Relative assets could not be loaded. Showing the file contents.';
+    const remoteHint = tailText(lang, 'If this page stays blank, the site may refuse to be embedded. Open it in the system browser.', '若页面空白，该网站可能禁止嵌入。可以在系统浏览器中打开。');
+    const assetHint = tailText(lang, 'Relative assets could not be loaded. Showing the file contents.', '相对资源未能从本地目录加载，当前显示的是文件内容。');
 
     const setAddressIfIdle = (next: string) => {
         if (!addressFocused.current) setAddress(next);
@@ -128,14 +125,14 @@ export function WebPreviewBrowser({
             const provided = String(contentRef.current || '');
             const entry: HistoryEntry = {
                 url: '',
-                label: isZh ? '页面内容' : 'Page content',
+                label: tailText(lang, 'Page content', '页面内容'),
                 rel: '',
                 mode: 'srcdoc',
             };
             publishHistory([entry], 0);
             setFrame({ mode: 'srcdoc', src: '', srcDoc: provided });
             setNotice('');
-            setError(provided.trim() ? '' : (isZh ? '没有可预览的页面' : 'Nothing to preview'));
+            setError(provided.trim() ? '' : (tailText(lang, 'Nothing to preview', '没有可预览的页面')));
             return () => {
                 marker.current = false;
             };
@@ -162,7 +159,7 @@ export function WebPreviewBrowser({
             }
             if (!info?.entry_url || !info.token || !info.origin || !info.root) {
                 const provided = String(contentRef.current || '').trim();
-                if (!provided) setError(isZh ? '无法打开这个页面' : 'This page cannot be opened');
+                if (!provided) setError(tailText(lang, 'This page cannot be opened', '无法打开这个页面'));
                 else setNotice(assetHint);
                 return;
             }
@@ -232,7 +229,7 @@ export function WebPreviewBrowser({
         const gen = ++navGenRef.current;
         const classified: WebPreviewAddress = classifyWebPreviewAddress(raw);
         if (classified.kind === 'invalid') {
-            setError(isZh ? '无法打开这个地址' : 'This address cannot be opened');
+            setError(tailText(lang, 'This address cannot be opened', '无法打开这个地址'));
             return;
         }
         setError('');
@@ -247,7 +244,7 @@ export function WebPreviewBrowser({
             } catch (err) {
                 if (gen !== navGenRef.current) return;
                 const message = err instanceof Error ? err.message : String(err || '');
-                setError(message || (isZh ? '无法打开这个文件' : 'This file cannot be opened'));
+                setError(message || (tailText(lang, 'This file cannot be opened', '无法打开这个文件')));
                 return;
             }
             if (gen !== navGenRef.current) {
@@ -255,7 +252,7 @@ export function WebPreviewBrowser({
                 return;
             }
             if (!info?.entry_url || !info.origin || !info.token || !info.root) {
-                setError(isZh ? '无法打开这个文件' : 'This file cannot be opened');
+                setError(tailText(lang, 'This file cannot be opened', '无法打开这个文件'));
                 return;
             }
             const previous = sessionRef.current?.id;
@@ -273,7 +270,7 @@ export function WebPreviewBrowser({
         }
         const session = sessionRef.current;
         if (!session?.origin || !session.token) {
-            setError(isZh ? '先打开一个本地页面，或输入 http(s) 网址' : 'Open a local page first, or enter an http(s) URL');
+            setError(tailText(lang, 'Open a local page first, or enter an http(s) URL', '先打开一个本地页面，或输入 http(s) 网址'));
             return;
         }
         const { path, suffix } = splitPreviewLocation(classified.path);
@@ -356,8 +353,8 @@ export function WebPreviewBrowser({
                 <button
                     type="button"
                     data-testid="web-preview-back"
-                    aria-label={isZh ? '后退' : 'Back'}
-                    title={isZh ? '后退' : 'Back'}
+                    aria-label={tailText(lang, 'Back', '后退')}
+                    title={tailText(lang, 'Back', '后退')}
                     disabled={histIndex <= 0}
                     onClick={() => goHistory(-1)}
                     style={buttonStyle(histIndex <= 0)}
@@ -367,8 +364,8 @@ export function WebPreviewBrowser({
                 <button
                     type="button"
                     data-testid="web-preview-forward"
-                    aria-label={isZh ? '前进' : 'Forward'}
-                    title={isZh ? '前进' : 'Forward'}
+                    aria-label={tailText(lang, 'Forward', '前进')}
+                    title={tailText(lang, 'Forward', '前进')}
                     disabled={histIndex >= histLength - 1}
                     onClick={() => goHistory(1)}
                     style={buttonStyle(histIndex >= histLength - 1)}
@@ -378,8 +375,8 @@ export function WebPreviewBrowser({
                 <button
                     type="button"
                     data-testid="web-preview-reload"
-                    aria-label={isZh ? '刷新' : 'Reload'}
-                    title={isZh ? '刷新' : 'Reload'}
+                    aria-label={tailText(lang, 'Reload', '刷新')}
+                    title={tailText(lang, 'Reload', '刷新')}
                     onClick={reloadPreview}
                     style={buttonStyle(false)}
                 >
@@ -387,10 +384,10 @@ export function WebPreviewBrowser({
                 </button>
                 <input
                     data-testid="web-preview-address"
-                    aria-label={isZh ? '网址' : 'Address'}
+                    aria-label={tailText(lang, 'Address', '网址')}
                     value={address}
                     spellCheck={false}
-                    placeholder={isZh ? '网址、本地 HTML 路径，或页面内的相对路径' : 'URL, local HTML path, or a relative path'}
+                    placeholder={tailText(lang, 'URL, local HTML path, or a relative path', '网址、本地 HTML 路径，或页面内的相对路径')}
                     onChange={(event) => setAddress(event.target.value)}
                     onFocus={() => { addressFocused.current = true; }}
                     onBlur={() => { addressFocused.current = false; }}
@@ -410,18 +407,18 @@ export function WebPreviewBrowser({
                     }}
                 />
                 <button type="submit" data-testid="web-preview-go" style={buttonStyle(false)}>
-                    {isZh ? '打开' : 'Open'}
+                    {tailText(lang, 'Open', '打开')}
                 </button>
                 <button
                     type="button"
                     data-testid="web-preview-external"
-                    aria-label={isZh ? '在系统浏览器中打开' : 'Open in system browser'}
-                    title={isZh ? '在系统浏览器中打开' : 'Open in system browser'}
+                    aria-label={tailText(lang, 'Open in system browser', '在系统浏览器中打开')}
+                    title={tailText(lang, 'Open in system browser', '在系统浏览器中打开')}
                     disabled={!externalURL}
                     onClick={openExternal}
                     style={buttonStyle(!externalURL)}
                 >
-                    {isZh ? '系统浏览器' : 'Browser'}
+                    {tailText(lang, 'Browser', '系统浏览器')}
                 </button>
             </form>
             {error ? (
@@ -438,7 +435,7 @@ export function WebPreviewBrowser({
                 <iframe
                     key={`${frame.mode}:${frame.src}:${reloadNonce}`}
                     data-testid="html-preview-panel"
-                    title={isZh ? '网页预览' : 'Web preview'}
+                    title={tailText(lang, 'Web preview', '网页预览')}
                     sandbox={webPreviewSandbox(frame.mode === 'srcdoc' ? 'srcdoc' : 'framed')}
                     referrerPolicy="no-referrer"
                     src={frame.mode === 'url' ? frame.src : undefined}

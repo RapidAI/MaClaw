@@ -12,6 +12,7 @@ import {
     type CodingAgentProgress,
     type CodingAgentStatusVariant,
 } from '../ai/CodingAgentProgressStatus';
+import { tailText } from '../../i18n/mnTail'
 
 type CodingAgentCompactStatusVariant = Extract<CodingAgentStatusVariant, 'sidebar' | 'status-bar'>;
 
@@ -39,7 +40,7 @@ export const CodingAgentCompactStatus = ({ progress, lang, testId, variant, isDa
     // File preview only on sidebar when no turn-snapshot card will show it below.
     // (Sidebar card body owns files when a snapshot is present.)
     const filePreview = isSidebar ? codingAgentFilePreviewText(normalized, lang) : undefined;
-    const filesLabel = lang.startsWith('zh') ? '\u6587\u4ef6' : 'Files';
+    const filesLabel = tailText(lang, 'Files', '\u6587\u4ef6');
 
     return (
         <span

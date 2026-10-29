@@ -5,6 +5,8 @@ import type { CodingTaskLaunch as SharedCodingTaskLaunch } from '../ai/codingTas
 import { toolsBackHintLabel, toolsBackLabel } from '../../i18n/utilitiesLabels';
 import { startVisibleInterval } from '../../utils/visibleInterval';
 import './VirtualRepositoryWorkspace.css';
+import { tailText } from '../../i18n/mnTail'
+import { normalizeLang } from '../../i18n/langSelect'
 
 type RepoKind = 'git' | 'svn' | 'local';
 
@@ -377,9 +379,10 @@ const nodeId = () => `node_${Date.now()}_${Math.random().toString(36).slice(2, 8
 const errorMessage = (error: unknown) => String((error as any)?.message || error);
 type BackgroundSyncPhase = 'idle' | 'queued' | 'running' | 'retry_wait' | 'failed' | 'conflict';
 const BACKGROUND_SYNC_PHASES: ReadonlySet<string> = new Set(['idle', 'queued', 'running', 'retry_wait', 'failed', 'conflict']);
-const localizeVRepoError = (value: unknown, isZh: boolean) => {
+const localizeVRepoError = (value: unknown, isZh: boolean | string) => {
 	const message = errorMessage(value).trim();
-	if (!isZh || !message) return message;
+	const chinese = typeof isZh === "string" ? (normalizeLang(isZh) === "zh-Hans" || normalizeLang(isZh) === "zh-Hant") : !!isZh;
+	if (!chinese || !message) return message;
 	const lower = message.toLowerCase();
 	if (lower.includes('cloud data changed while syncing')) return '云端数据在同步过程中被其他设备更新。请稍后再点「立即同步」；若仍失败，请确认仅有一台设备在同时同步。';
 	if (lower.includes('automatic virtual repository synchronization is in progress')) return '后台正在同步虚拟仓库配置，请稍后再试。';
@@ -536,169 +539,301 @@ function VRepoDialog({ title, titleId, onClose, closeLabel, closeDisabled = fals
     </div>;
 }
 
-export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: { isZh: boolean; onBack: () => void; onOpenCodingTask?: (launch: CodingTaskLaunch) => void }) {
+export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: { isZh: boolean | string; onBack: () => void; onOpenCodingTask?: (launch: CodingTaskLaunch) => void }) {
 	const { showConfirm } = useDialog();
-	    const text = isZh ? {
-        title: '虚拟仓库', back: toolsBackLabel('zh-Hans'), newRepo: '新建虚拟仓库', openRepo: '打开已有目录',
-        recent: '最近使用', repositoryList: '仓库', searchRepositories: '搜索仓库', repositoryCount: '个仓库', noSearchResults: '没有匹配的虚拟仓库', selectRepository: '选择一个虚拟仓库', selectRepositoryHint: '从左侧打开仓库，查看目录映射、健康状态和操作记录。', localRepository: '本机', remoteRepository: '远程 SSH', mappings: '个映射', health: '健康概览', healthy: '正常', needsAttention: '需处理', pendingStatus: '尚未检查', lastOpened: '最近打开', repositoryActions: '仓库操作',
-        empty: '尚未创建虚拟仓库', emptyHint: '选择一个根目录，MaClaw 会在其中创建 .vrepo/manifest.json。',
-        name: '名称', root: '根目录', choose: '选择目录', save: '保存', cancel: '取消', refresh: '刷新状态',
-		addGroup: '新建虚拟目录', addRepo: '添加映射', editGroup: '编辑虚拟目录', editMapping: '编辑映射', credentials: '仓库凭据', gitClient: 'Git 工具', svnClient: 'SVN 工具',
-	        type: '类型', path: '目录位置', remote: '仓库地址', enabled: '启用', parent: '上级目录', rootNode: '（根）', refType: '版本类型', refName: '分支/标签', defaultRef: '默认分支', checkout: '检出仓库', checkingOut: '正在检出…', checkoutAfterSave: '保存后立即检出', notCheckedOut: '尚未检出', checkedOut: '已检出', checkedOutClean: '已检出 · 干净', checkedOutChanged: '已检出 · 有变更', branchRef: '分支', tagRef: '标签',
-        edit: '编辑', remove: '删除', openFolder: '打开目录', createDir: '目录不存在时创建', localDirectoryCreated: '本地映射保存后会自动创建目录', clean: '干净', changed: '有变更',
-	        local: '纯本地目录', loading: '加载中…', noGitClient: '未找到 Git 命令行工具', noClient: '未找到 SVN 命令行工具', clientNotFound: '未找到', search: '重新搜索', resetClient: '恢复自动搜索', specifyGit: '指定 git', specify: '指定 svn',
-        installSVN: '安装说明',
-        foundClient: '已找到', credentialName: '凭据名称', username: '用户名', password: '密码或令牌', scope: '主机/Realm（可选）',
-        addCredential: '新增凭据', manageCredentials: '凭据管理', noCredentials: '尚无已保存凭据', passwordHint: '编辑时留空表示不修改',
-		deleteIndex: '从最近使用中移除', deleteRepository: '删除虚拟仓库', deleteRepositoryConfirm: '确认从 MaClaw 列表中移除“{name}”？\n\n这不会删除 .vrepo 目录或真实文件，但会解除本机凭据绑定和 SSH 密码保存。', manifestNote: '删除这里只移除 MaClaw 索引，不会删除 .vrepo 或真实文件。',
-		syncNow: '立即同步', syncing: '正在同步…', checkingSync: '正在检查同步状态…', backgroundSyncing: '后台正在同步…', backgroundSyncRetry: '自动同步失败，将自动重试', backgroundSyncFailed: '自动同步已暂停', backgroundSyncConflict: '自动同步发现冲突，请点「立即同步」处理', repairRemoteConnection: '修复远程连接', syncReady: '自动同步已开启', syncSuccess: '已同步', syncConflict: '同步冲突', syncConflictMessage: '“{name}”同时在本机和另一台设备上被修改。是否保留本机版本？', syncConflictCloud: '是否改为采用 Hub 版本？选择“否”会保留两个版本，并将本机版本另存为副本。', useLocal: '保留本机', useCloud: '采用 Hub', keepCopy: '保留副本', syncUnavailable: '同步需要先连接并注册 Hub。',
-		commit: '提交', push: '推送', syncWorkingCopies: '同步已检出仓库', syncWorkingCopiesTitle: '同步已检出仓库', syncWorkingCopiesHint: 'Git 将执行仅快进更新；SVN 将执行 update。存在本地改动或冲突时不会自动合并。', commitPush: '提交并推送', revert: '还原', execute: '执行', preview: '预览',
-		commitMessage: '提交说明', repositories: '个仓库', localSkipped: '个本地目录已跳过', revertWarning: '未提交的已跟踪更改将被丢弃；未跟踪文件会保留。',
-        operation: '操作', close: '关闭', retryFailed: '重试失败项', calculateSize: '计算大小', files: '文件数', size: '大小', branch: '分支', status: '状态',
-        noCredential: '不使用凭据', anyHost: '任意主机', operationRunningHint: '仓库操作运行期间不能修改虚拟目录树或启动其他操作。',
-			location: '位置', localLocation: '本机', remoteLocation: '远程 SSH', editConnection: '编辑连接', repairConnectionHint: '此处仅用于验证并修复 SSH 连接；连接恢复后请关闭窗口并点击「立即同步」。', moveRoot: '迁移根目录', moveRootTitle: '迁移仓库根目录', moveRootHint: '复制文件、验证仓库清单后才会切换到新位置；旧根目录会保留，方便你确认后自行清理。', currentRoot: '当前根目录', destinationRoot: '新根目录', rootManagedByMigration: '已有仓库的根目录由“迁移根目录”操作管理。', inspectMigration: '检查迁移', migrationReady: '预检通过，可以迁移。', migrationConflict: '目标目录不能包含另一个虚拟仓库，且不能与源目录重叠。已有的同名文件也会阻止迁移。', sourceFiles: '源文件', destinationFiles: '目标文件', migrateNow: '开始迁移', migrating: '正在迁移…', migrationComplete: '迁移完成。旧根目录仍被保留。', chooseDestination: '选择目标目录', previewAgain: '重新检查', chooseNewRoot: '请选择新的仓库根目录。', locationUnavailable: '根目录不可用', locationUnavailableHint: '此仓库来自其它设备，尚未在本机设置根目录。请选择一个空目录，或包含同一虚拟仓库的目录。', setLocalRoot: '设置本机根目录', bindLocalRootTitle: '设置本机仓库根目录', bindLocalRootHint: '此设置仅保存在本机，不会覆盖其它设备的目录位置。', bindLocalRoot: '绑定根目录', bindingRoot: '正在绑定…', reconnectLocalRoot: '重新连接本机根目录', reconnectRoot: '重新连接根目录', reconnectRootTitle: '重新连接本机根目录', reconnectRootHint: '请选择包含同一虚拟仓库清单的目录；不会初始化或覆盖目录内容。', reconnectRootUnavailableHint: '原本机根目录不可用。只能重新连接到匹配的仓库。', rootRepairListHint: '原本机根目录不可用。请选择包含同一虚拟仓库的目录以重新连接。', startCodingTask: '启动编程任务', startingCodingTask: '正在启动…', server: '服务器', port: '端口', sshUser: 'SSH 用户名', sshPassword: 'SSH 密码', remoteRoot: '远程根目录', testConnection: '测试连接', trustHostKey: '首次创建时设置信任主机密钥', hostKeyPrompt: '首次连接，请核对并信任服务器指纹', hostKeyChangedPrompt: '服务器主机密钥与已保存指纹不一致。请先独立核对下方指纹；确认后移除旧记录，再重新测试并明确保存新密钥。', removeSavedHostKey: '移除已保存密钥', removeSavedHostKeyConfirm: '这将移除该远程仓库的已保存 SSH 主机密钥，不会信任下方的新密钥。请先通过独立渠道核对指纹；移除后必须重新测试并明确保存新密钥。', connected: '连接成功', rootMissingPrompt: 'SSH 已连接，但远程根目录不存在。是否创建该目录？', createRemoteRoot: '创建远程根目录', createRemoteRootConfirm: '确认在远程服务器上创建此根目录？',
-		cleanStatus: '仓库干净', changedStatus: '仓库有变更', errorStatus: '仓库状态异常', changes: '变更', changesTitle: 'Git 变更', changesHint: '查看工作区文件变更与最近提交关系；此页面只读，不会修改仓库。', refreshChanges: '刷新变更', loadingChanges: '正在读取变更…', noChanges: '工作区没有未提交的变更', changesTruncated: '仅显示前 2,000 个变更文件；请使用 Git 客户端查看完整列表。', changedFiles: '文件变更', recentCommits: '最近提交', selectChange: '选择一个文件查看差异', noDiff: '该文件没有可显示的文本差异', conflict: '冲突', staged: '已暂存', modified: '已修改', untracked: '未跟踪', renamed: '重命名', deleted: '已删除', graph: '提交图', changesUnavailable: '仅已检出的 Git 映射可查看变更', closeChanges: '关闭变更',
-		machineMappings: '机器/根映射', addMachineMapping: '添加机器映射', editMachineMapping: '编辑映射', mappingName: '名称', mappingKind: '类型', localMachine: '本机', remoteSSHMachine: '远程 SSH', testMappingConnection: '测试连接', verifyMappingPath: '验证路径', setDefaultMapping: '设为默认', defaultMappingBadge: '默认', removeMapping: '移除', removeMappingConfirm: '确认移除映射“{label}”？\n\n不会删除任何真实文件；远程映射会同时解除其 SSH 密码保存。', removeLastMapping: '仓库至少需要保留一个映射。', mappingDefaultLocked: '默认映射的坐标由「迁移根目录」管理，这里只能修改名称。', mappingUnverified: '尚未验证', mappingHealthy: '状态正常', mappingFailed: '连接失败', currentMapping: '当前映射', selectCodingTarget: '选择目标机器', selectCodingTargetHint: '此仓库可在本机或远程 SSH 上开发。本机映射启动本地开发，SSH 映射启动远程编程。', localCodingAgent: '本地开发', remoteCodingAgent: '远程编程', startLocalCoding: '启动本地开发', startRemoteCoding: '启动远程编程', mappingNameRequired: '请填写映射名称。', mappingRootRequired: '请选择本机根目录。', mappingRemoteRequired: '请填写服务器、用户名和远程根目录。', mappingTestRequired: '请先测试连接，成功后再保存。', mappingTesting: '正在测试…',
-    } : {
-        title: 'Virtual Repository', back: toolsBackLabel('en'), newRepo: 'New virtual repository', openRepo: 'Open existing root',
-        recent: 'Recent', repositoryList: 'Repositories', searchRepositories: 'Search repositories', repositoryCount: 'repositories', noSearchResults: 'No virtual repositories match your search', selectRepository: 'Select a virtual repository', selectRepositoryHint: 'Open a repository from the list to review mappings, health, and operations.', localRepository: 'Local', remoteRepository: 'Remote SSH', mappings: 'mappings', health: 'Health overview', healthy: 'Healthy', needsAttention: 'Needs attention', pendingStatus: 'Not checked', lastOpened: 'Last opened', repositoryActions: 'Repository actions',
-        empty: 'No virtual repositories yet', emptyHint: 'Choose a root directory; MaClaw creates .vrepo/manifest.json inside it.',
-        name: 'Name', root: 'Root directory', choose: 'Choose', save: 'Save', cancel: 'Cancel', refresh: 'Refresh status',
-		addGroup: 'New virtual folder', addRepo: 'Add mapping', editGroup: 'Edit virtual folder', editMapping: 'Edit mapping', credentials: 'Repository credentials', gitClient: 'Git client', svnClient: 'SVN client',
-	        type: 'Type', path: 'Directory location', remote: 'Repository URL', enabled: 'Enabled', parent: 'Parent folder', rootNode: '(root)', refType: 'Version type', refName: 'Branch/tag', defaultRef: 'Default branch', checkout: 'Checkout repository', checkingOut: 'Checking out…', checkoutAfterSave: 'Checkout after saving', notCheckedOut: 'Not checked out', checkedOut: 'Checked out', checkedOutClean: 'Checked out · Clean', checkedOutChanged: 'Checked out · Changed', branchRef: 'Branch', tagRef: 'Tag',
-        edit: 'Edit', remove: 'Remove', openFolder: 'Open folder', createDir: 'Create directory if missing', localDirectoryCreated: 'The local mapping directory is created automatically when saved', clean: 'Clean', changed: 'Changed',
-	        local: 'Local directory', loading: 'Loading…', noGitClient: 'Git command line client not found', noClient: 'SVN command line client not found', clientNotFound: 'Not found', search: 'Search again', resetClient: 'Use automatic search', specifyGit: 'Choose git', specify: 'Choose svn',
-        installSVN: 'Installation guide',
-        foundClient: 'Found', credentialName: 'Credential name', username: 'Username', password: 'Password or token', scope: 'Host/realm (optional)',
-        addCredential: 'Add credential', manageCredentials: 'Credential manager', noCredentials: 'No saved credentials', passwordHint: 'Leave blank while editing to keep the secret',
-		deleteIndex: 'Remove from recent', deleteRepository: 'Delete virtual repository', deleteRepositoryConfirm: 'Remove “{name}” from the MaClaw list?\n\nThis does not delete .vrepo or real files, but it removes local credential bindings and the saved SSH password.', manifestNote: 'This only removes the MaClaw index entry; .vrepo and real files remain untouched.',
-		syncNow: 'Sync now', syncing: 'Syncing…', checkingSync: 'Checking sync status…', backgroundSyncing: 'Syncing in the background…', backgroundSyncRetry: 'Automatic sync failed; will retry', backgroundSyncFailed: 'Automatic sync paused', backgroundSyncConflict: 'Automatic sync found conflicts — click Sync now to resolve', repairRemoteConnection: 'Repair remote connection', syncReady: 'Automatic sync is on', syncSuccess: 'Synced', syncConflict: 'Sync conflict', syncConflictMessage: '“{name}” changed both here and on another device. Keep this computer’s version?', syncConflictCloud: 'Use the Hub version instead? Choosing “No” keeps both by saving this computer’s version as a copy.', useLocal: 'Keep local', useCloud: 'Use Hub', keepCopy: 'Keep copy', syncUnavailable: 'Connect and register with Hub before syncing.',
-		commit: 'Commit', push: 'Push', syncWorkingCopies: 'Sync checked-out repositories', syncWorkingCopiesTitle: 'Sync checked-out repositories', syncWorkingCopiesHint: 'Git uses fast-forward-only pull; SVN uses update. Local changes and conflicts are never merged automatically.', commitPush: 'Commit & push', revert: 'Revert', execute: 'Execute', preview: 'Preview',
-		commitMessage: 'Commit message', repositories: 'repositories', localSkipped: 'local directories skipped', revertWarning: 'Uncommitted tracked changes will be discarded. Untracked files are preserved.',
-        operation: 'Operation', close: 'Close', retryFailed: 'Retry failed', calculateSize: 'Calculate size', files: 'Files', size: 'Size', branch: 'Branch', status: 'Status',
-        noCredential: 'No credential', anyHost: 'any host', operationRunningHint: 'The virtual tree and other operations are locked while a repository operation is running.',
-			location: 'Location', localLocation: 'This computer', remoteLocation: 'Remote SSH', editConnection: 'Edit connection', repairConnectionHint: 'This dialog only verifies and repairs the SSH connection. After it succeeds, close it and click Sync now.', moveRoot: 'Move root', moveRootTitle: 'Move repository root', moveRootHint: 'Files are copied and the manifest is verified before switching to the new location. The old root is kept for review.', currentRoot: 'Current root', destinationRoot: 'New root', rootManagedByMigration: 'An existing repository root is managed by the Move root action.', inspectMigration: 'Check migration', migrationReady: 'Preflight passed. This repository is ready to move.', migrationConflict: 'The destination cannot contain another virtual repository or overlap the source. Existing files with the same path also block the move.', sourceFiles: 'Source files', destinationFiles: 'Destination files', migrateNow: 'Start migration', migrating: 'Migrating…', migrationComplete: 'Migration complete. The old root was kept.', chooseDestination: 'Choose destination', previewAgain: 'Check again', chooseNewRoot: 'Choose a new repository root.', locationUnavailable: 'Root directory unavailable', locationUnavailableHint: 'This repository came from another device and has no root directory on this computer yet. Choose an empty directory, or one containing this virtual repository.', setLocalRoot: 'Set local root', bindLocalRootTitle: 'Set local repository root', bindLocalRootHint: 'This setting is stored only on this computer and never replaces another device’s location.', bindLocalRoot: 'Bind root', bindingRoot: 'Binding…', reconnectLocalRoot: 'Reconnect local root', reconnectRoot: 'Reconnect root', reconnectRootTitle: 'Reconnect local repository root', reconnectRootHint: 'Choose a directory containing the same virtual repository manifest. No directory contents will be initialized or overwritten.', reconnectRootUnavailableHint: 'The previous local root is unavailable. Reconnect only to the matching repository.', rootRepairListHint: 'Local root unavailable — choose the matching repository to reconnect it.', startCodingTask: 'Start coding task', startingCodingTask: 'Starting…', server: 'Server', port: 'Port', sshUser: 'SSH username', sshPassword: 'SSH password', remoteRoot: 'Remote root directory', testConnection: 'Test connection', trustHostKey: 'Trust and save host key', hostKeyPrompt: 'First connection: verify and trust this server fingerprint', hostKeyChangedPrompt: 'The server host key differs from the saved fingerprint. Verify the fingerprint independently, then remove the old saved key, test again, and explicitly save the new key.', removeSavedHostKey: 'Remove saved key', removeSavedHostKeyConfirm: 'This removes the saved SSH host key for this remote repository; it does not trust the newly observed key. Verify the fingerprint independently first. You must test again and explicitly save the new key.', connected: 'Connected', rootMissingPrompt: 'SSH is connected, but the remote root does not exist. Create it now?', createRemoteRoot: 'Create remote root', createRemoteRootConfirm: 'Create this root directory on the remote server?',
-		cleanStatus: 'Repository is clean', changedStatus: 'Repository has changes', errorStatus: 'Repository status error', changes: 'Changes', changesTitle: 'Git changes', changesHint: 'Review working-tree files and recent commit relationships. This view is read-only.', refreshChanges: 'Refresh changes', loadingChanges: 'Loading changes…', noChanges: 'The working tree has no uncommitted changes', changesTruncated: 'Showing the first 2,000 changed files. Use a Git client for the full list.', changedFiles: 'Changed files', recentCommits: 'Recent commits', selectChange: 'Select a file to view its diff', noDiff: 'This file has no text diff to display', conflict: 'Conflict', staged: 'Staged', modified: 'Modified', untracked: 'Untracked', renamed: 'Renamed', deleted: 'Deleted', graph: 'Commit graph', changesUnavailable: 'Changes are available for checked-out Git mappings only', closeChanges: 'Close changes',
-		machineMappings: 'Machine/root mappings', addMachineMapping: 'Add machine mapping', editMachineMapping: 'Edit machine mapping', mappingName: 'Name', mappingKind: 'Type', localMachine: 'This computer', remoteSSHMachine: 'Remote SSH', testMappingConnection: 'Test connection', verifyMappingPath: 'Verify path', setDefaultMapping: 'Set as default', defaultMappingBadge: 'Default', removeMapping: 'Remove', removeMappingConfirm: 'Remove mapping “{label}”?\n\nNo real files are deleted; a remote mapping also drops its saved SSH password.', removeLastMapping: 'A repository needs at least one mapping.', mappingDefaultLocked: 'The default mapping’s coordinates are managed by the Move root action; only its name can be edited here.', mappingUnverified: 'Not verified yet', mappingHealthy: 'Connection healthy', mappingFailed: 'Connection failed', currentMapping: 'Active mapping', selectCodingTarget: 'Choose target machine', selectCodingTargetHint: 'This repository can run locally or over SSH. A local mapping starts local coding; an SSH mapping starts remote coding.', localCodingAgent: 'Local coding', remoteCodingAgent: 'Remote coding', startLocalCoding: 'Start local coding', startRemoteCoding: 'Start remote coding', mappingNameRequired: 'A mapping name is required.', mappingRootRequired: 'Choose a local root directory.', mappingRemoteRequired: 'Server, username and remote root are required.', mappingTestRequired: 'Test the connection successfully before saving.', mappingTesting: 'Testing…',
-    };
+	const lang = typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en");
+	    const text = {
+    title: tailText(lang, 'Virtual Repository', '虚拟仓库'),
+    back: tailText(lang, toolsBackLabel('en'), toolsBackLabel('zh-Hans')),
+    newRepo: tailText(lang, 'New virtual repository', '新建虚拟仓库'),
+    openRepo: tailText(lang, 'Open existing root', '打开已有目录'),
+    recent: tailText(lang, 'Recent', '最近使用'),
+    repositoryList: tailText(lang, 'Repositories', '仓库'),
+    searchRepositories: tailText(lang, 'Search repositories', '搜索仓库'),
+    repositoryCount: tailText(lang, 'repositories', '个仓库'),
+    noSearchResults: tailText(lang, 'No virtual repositories match your search', '没有匹配的虚拟仓库'),
+    selectRepository: tailText(lang, 'Select a virtual repository', '选择一个虚拟仓库'),
+    selectRepositoryHint: tailText(lang, 'Open a repository from the list to review mappings, health, and operations.', '从左侧打开仓库，查看目录映射、健康状态和操作记录。'),
+    localRepository: tailText(lang, 'Local', '本机'),
+    remoteRepository: tailText(lang, 'Remote SSH', '远程 SSH'),
+    mappings: tailText(lang, 'mappings', '个映射'),
+    health: tailText(lang, 'Health overview', '健康概览'),
+    healthy: tailText(lang, 'Healthy', '正常'),
+    needsAttention: tailText(lang, 'Needs attention', '需处理'),
+    pendingStatus: tailText(lang, 'Not checked', '尚未检查'),
+    lastOpened: tailText(lang, 'Last opened', '最近打开'),
+    repositoryActions: tailText(lang, 'Repository actions', '仓库操作'),
+    empty: tailText(lang, 'No virtual repositories yet', '尚未创建虚拟仓库'),
+    emptyHint: tailText(lang, 'Choose a root directory; MaClaw creates .vrepo/manifest.json inside it.', '选择一个根目录，MaClaw 会在其中创建 .vrepo/manifest.json。'),
+    name: tailText(lang, 'Name', '名称'),
+    root: tailText(lang, 'Root directory', '根目录'),
+    choose: tailText(lang, 'Choose', '选择目录'),
+    save: tailText(lang, 'Save', '保存'),
+    cancel: tailText(lang, 'Cancel', '取消'),
+    refresh: tailText(lang, 'Refresh status', '刷新状态'),
+    addGroup: tailText(lang, 'New virtual folder', '新建虚拟目录'),
+    addRepo: tailText(lang, 'Add mapping', '添加映射'),
+    editGroup: tailText(lang, 'Edit virtual folder', '编辑虚拟目录'),
+    editMapping: tailText(lang, 'Edit mapping', '编辑映射'),
+    credentials: tailText(lang, 'Repository credentials', '仓库凭据'),
+    gitClient: tailText(lang, 'Git client', 'Git 工具'),
+    svnClient: tailText(lang, 'SVN client', 'SVN 工具'),
+    type: tailText(lang, 'Type', '类型'),
+    path: tailText(lang, 'Directory location', '目录位置'),
+    remote: tailText(lang, 'Repository URL', '仓库地址'),
+    enabled: tailText(lang, 'Enabled', '启用'),
+    parent: tailText(lang, 'Parent folder', '上级目录'),
+    rootNode: tailText(lang, '(root)', '（根）'),
+    refType: tailText(lang, 'Version type', '版本类型'),
+    refName: tailText(lang, 'Branch/tag', '分支/标签'),
+    defaultRef: tailText(lang, 'Default branch', '默认分支'),
+    checkout: tailText(lang, 'Checkout repository', '检出仓库'),
+    checkingOut: tailText(lang, 'Checking out…', '正在检出…'),
+    checkoutAfterSave: tailText(lang, 'Checkout after saving', '保存后立即检出'),
+    notCheckedOut: tailText(lang, 'Not checked out', '尚未检出'),
+    checkedOut: tailText(lang, 'Checked out', '已检出'),
+    checkedOutClean: tailText(lang, 'Checked out · Clean', '已检出 · 干净'),
+    checkedOutChanged: tailText(lang, 'Checked out · Changed', '已检出 · 有变更'),
+    branchRef: tailText(lang, 'Branch', '分支'),
+    tagRef: tailText(lang, 'Tag', '标签'),
+    edit: tailText(lang, 'Edit', '编辑'),
+    remove: tailText(lang, 'Remove', '删除'),
+    openFolder: tailText(lang, 'Open folder', '打开目录'),
+    createDir: tailText(lang, 'Create directory if missing', '目录不存在时创建'),
+    localDirectoryCreated: tailText(lang, 'The local mapping directory is created automatically when saved', '本地映射保存后会自动创建目录'),
+    clean: tailText(lang, 'Clean', '干净'),
+    changed: tailText(lang, 'Changed', '有变更'),
+    local: tailText(lang, 'Local directory', '纯本地目录'),
+    loading: tailText(lang, 'Loading…', '加载中…'),
+    noGitClient: tailText(lang, 'Git command line client not found', '未找到 Git 命令行工具'),
+    noClient: tailText(lang, 'SVN command line client not found', '未找到 SVN 命令行工具'),
+    clientNotFound: tailText(lang, 'Not found', '未找到'),
+    search: tailText(lang, 'Search again', '重新搜索'),
+    resetClient: tailText(lang, 'Use automatic search', '恢复自动搜索'),
+    specifyGit: tailText(lang, 'Choose git', '指定 git'),
+    specify: tailText(lang, 'Choose svn', '指定 svn'),
+    installSVN: tailText(lang, 'Installation guide', '安装说明'),
+    foundClient: tailText(lang, 'Found', '已找到'),
+    credentialName: tailText(lang, 'Credential name', '凭据名称'),
+    username: tailText(lang, 'Username', '用户名'),
+    password: tailText(lang, 'Password or token', '密码或令牌'),
+    scope: tailText(lang, 'Host/realm (optional)', '主机/Realm（可选）'),
+    addCredential: tailText(lang, 'Add credential', '新增凭据'),
+    manageCredentials: tailText(lang, 'Credential manager', '凭据管理'),
+    noCredentials: tailText(lang, 'No saved credentials', '尚无已保存凭据'),
+    passwordHint: tailText(lang, 'Leave blank while editing to keep the secret', '编辑时留空表示不修改'),
+    deleteIndex: tailText(lang, 'Remove from recent', '从最近使用中移除'),
+    deleteRepository: tailText(lang, 'Delete virtual repository', '删除虚拟仓库'),
+    deleteRepositoryConfirm: tailText(lang, 'Remove “{name}” from the MaClaw list?\n\nThis does not delete .vrepo or real files, but it removes local credential bindings and the saved SSH password.', '确认从 MaClaw 列表中移除“{name}”？\n\n这不会删除 .vrepo 目录或真实文件，但会解除本机凭据绑定和 SSH 密码保存。'),
+    manifestNote: tailText(lang, 'This only removes the MaClaw index entry; .vrepo and real files remain untouched.', '删除这里只移除 MaClaw 索引，不会删除 .vrepo 或真实文件。'),
+    syncNow: tailText(lang, 'Sync now', '立即同步'),
+    syncing: tailText(lang, 'Syncing…', '正在同步…'),
+    checkingSync: tailText(lang, 'Checking sync status…', '正在检查同步状态…'),
+    backgroundSyncing: tailText(lang, 'Syncing in the background…', '后台正在同步…'),
+    backgroundSyncRetry: tailText(lang, 'Automatic sync failed; will retry', '自动同步失败，将自动重试'),
+    backgroundSyncFailed: tailText(lang, 'Automatic sync paused', '自动同步已暂停'),
+    backgroundSyncConflict: tailText(lang, 'Automatic sync found conflicts — click Sync now to resolve', '自动同步发现冲突，请点「立即同步」处理'),
+    repairRemoteConnection: tailText(lang, 'Repair remote connection', '修复远程连接'),
+    syncReady: tailText(lang, 'Automatic sync is on', '自动同步已开启'),
+    syncSuccess: tailText(lang, 'Synced', '已同步'),
+    syncConflict: tailText(lang, 'Sync conflict', '同步冲突'),
+    syncConflictMessage: tailText(lang, '“{name}” changed both here and on another device. Keep this computer’s version?', '“{name}”同时在本机和另一台设备上被修改。是否保留本机版本？'),
+    syncConflictCloud: tailText(lang, 'Use the Hub version instead? Choosing “No” keeps both by saving this computer’s version as a copy.', '是否改为采用 Hub 版本？选择“否”会保留两个版本，并将本机版本另存为副本。'),
+    useLocal: tailText(lang, 'Keep local', '保留本机'),
+    useCloud: tailText(lang, 'Use Hub', '采用 Hub'),
+    keepCopy: tailText(lang, 'Keep copy', '保留副本'),
+    syncUnavailable: tailText(lang, 'Connect and register with Hub before syncing.', '同步需要先连接并注册 Hub。'),
+    commit: tailText(lang, 'Commit', '提交'),
+    push: tailText(lang, 'Push', '推送'),
+    syncWorkingCopies: tailText(lang, 'Sync checked-out repositories', '同步已检出仓库'),
+    syncWorkingCopiesTitle: tailText(lang, 'Sync checked-out repositories', '同步已检出仓库'),
+    syncWorkingCopiesHint: tailText(lang, 'Git uses fast-forward-only pull; SVN uses update. Local changes and conflicts are never merged automatically.', 'Git 将执行仅快进更新；SVN 将执行 update。存在本地改动或冲突时不会自动合并。'),
+    commitPush: tailText(lang, 'Commit & push', '提交并推送'),
+    revert: tailText(lang, 'Revert', '还原'),
+    execute: tailText(lang, 'Execute', '执行'),
+    preview: tailText(lang, 'Preview', '预览'),
+    commitMessage: tailText(lang, 'Commit message', '提交说明'),
+    repositories: tailText(lang, 'repositories', '个仓库'),
+    localSkipped: tailText(lang, 'local directories skipped', '个本地目录已跳过'),
+    revertWarning: tailText(lang, 'Uncommitted tracked changes will be discarded. Untracked files are preserved.', '未提交的已跟踪更改将被丢弃；未跟踪文件会保留。'),
+    operation: tailText(lang, 'Operation', '操作'),
+    close: tailText(lang, 'Close', '关闭'),
+    retryFailed: tailText(lang, 'Retry failed', '重试失败项'),
+    calculateSize: tailText(lang, 'Calculate size', '计算大小'),
+    files: tailText(lang, 'Files', '文件数'),
+    size: tailText(lang, 'Size', '大小'),
+    branch: tailText(lang, 'Branch', '分支'),
+    status: tailText(lang, 'Status', '状态'),
+    noCredential: tailText(lang, 'No credential', '不使用凭据'),
+    anyHost: tailText(lang, 'any host', '任意主机'),
+    operationRunningHint: tailText(lang, 'The virtual tree and other operations are locked while a repository operation is running.', '仓库操作运行期间不能修改虚拟目录树或启动其他操作。'),
+    location: tailText(lang, 'Location', '位置'),
+    localLocation: tailText(lang, 'This computer', '本机'),
+    remoteLocation: tailText(lang, 'Remote SSH', '远程 SSH'),
+    editConnection: tailText(lang, 'Edit connection', '编辑连接'),
+    repairConnectionHint: tailText(lang, 'This dialog only verifies and repairs the SSH connection. After it succeeds, close it and click Sync now.', '此处仅用于验证并修复 SSH 连接；连接恢复后请关闭窗口并点击「立即同步」。'),
+    moveRoot: tailText(lang, 'Move root', '迁移根目录'),
+    moveRootTitle: tailText(lang, 'Move repository root', '迁移仓库根目录'),
+    moveRootHint: tailText(lang, 'Files are copied and the manifest is verified before switching to the new location. The old root is kept for review.', '复制文件、验证仓库清单后才会切换到新位置；旧根目录会保留，方便你确认后自行清理。'),
+    currentRoot: tailText(lang, 'Current root', '当前根目录'),
+    destinationRoot: tailText(lang, 'New root', '新根目录'),
+    rootManagedByMigration: tailText(lang, 'An existing repository root is managed by the Move root action.', '已有仓库的根目录由“迁移根目录”操作管理。'),
+    inspectMigration: tailText(lang, 'Check migration', '检查迁移'),
+    migrationReady: tailText(lang, 'Preflight passed. This repository is ready to move.', '预检通过，可以迁移。'),
+    migrationConflict: tailText(lang, 'The destination cannot contain another virtual repository or overlap the source. Existing files with the same path also block the move.', '目标目录不能包含另一个虚拟仓库，且不能与源目录重叠。已有的同名文件也会阻止迁移。'),
+    sourceFiles: tailText(lang, 'Source files', '源文件'),
+    destinationFiles: tailText(lang, 'Destination files', '目标文件'),
+    migrateNow: tailText(lang, 'Start migration', '开始迁移'),
+    migrating: tailText(lang, 'Migrating…', '正在迁移…'),
+    migrationComplete: tailText(lang, 'Migration complete. The old root was kept.', '迁移完成。旧根目录仍被保留。'),
+    chooseDestination: tailText(lang, 'Choose destination', '选择目标目录'),
+    previewAgain: tailText(lang, 'Check again', '重新检查'),
+    chooseNewRoot: tailText(lang, 'Choose a new repository root.', '请选择新的仓库根目录。'),
+    locationUnavailable: tailText(lang, 'Root directory unavailable', '根目录不可用'),
+    locationUnavailableHint: tailText(lang, 'This repository came from another device and has no root directory on this computer yet. Choose an empty directory, or one containing this virtual repository.', '此仓库来自其它设备，尚未在本机设置根目录。请选择一个空目录，或包含同一虚拟仓库的目录。'),
+    setLocalRoot: tailText(lang, 'Set local root', '设置本机根目录'),
+    bindLocalRootTitle: tailText(lang, 'Set local repository root', '设置本机仓库根目录'),
+    bindLocalRootHint: tailText(lang, 'This setting is stored only on this computer and never replaces another device’s location.', '此设置仅保存在本机，不会覆盖其它设备的目录位置。'),
+    bindLocalRoot: tailText(lang, 'Bind root', '绑定根目录'),
+    bindingRoot: tailText(lang, 'Binding…', '正在绑定…'),
+    reconnectLocalRoot: tailText(lang, 'Reconnect local root', '重新连接本机根目录'),
+    reconnectRoot: tailText(lang, 'Reconnect root', '重新连接根目录'),
+    reconnectRootTitle: tailText(lang, 'Reconnect local repository root', '重新连接本机根目录'),
+    reconnectRootHint: tailText(lang, 'Choose a directory containing the same virtual repository manifest. No directory contents will be initialized or overwritten.', '请选择包含同一虚拟仓库清单的目录；不会初始化或覆盖目录内容。'),
+    reconnectRootUnavailableHint: tailText(lang, 'The previous local root is unavailable. Reconnect only to the matching repository.', '原本机根目录不可用。只能重新连接到匹配的仓库。'),
+    rootRepairListHint: tailText(lang, 'Local root unavailable — choose the matching repository to reconnect it.', '原本机根目录不可用。请选择包含同一虚拟仓库的目录以重新连接。'),
+    startCodingTask: tailText(lang, 'Start coding task', '启动编程任务'),
+    startingCodingTask: tailText(lang, 'Starting…', '正在启动…'),
+    server: tailText(lang, 'Server', '服务器'),
+    port: tailText(lang, 'Port', '端口'),
+    sshUser: tailText(lang, 'SSH username', 'SSH 用户名'),
+    sshPassword: tailText(lang, 'SSH password', 'SSH 密码'),
+    remoteRoot: tailText(lang, 'Remote root directory', '远程根目录'),
+    testConnection: tailText(lang, 'Test connection', '测试连接'),
+    trustHostKey: tailText(lang, 'Trust and save host key', '首次创建时设置信任主机密钥'),
+    hostKeyPrompt: tailText(lang, 'First connection: verify and trust this server fingerprint', '首次连接，请核对并信任服务器指纹'),
+    hostKeyChangedPrompt: tailText(lang, 'The server host key differs from the saved fingerprint. Verify the fingerprint independently, then remove the old saved key, test again, and explicitly save the new key.', '服务器主机密钥与已保存指纹不一致。请先独立核对下方指纹；确认后移除旧记录，再重新测试并明确保存新密钥。'),
+    removeSavedHostKey: tailText(lang, 'Remove saved key', '移除已保存密钥'),
+    removeSavedHostKeyConfirm: tailText(lang, 'This removes the saved SSH host key for this remote repository; it does not trust the newly observed key. Verify the fingerprint independently first. You must test again and explicitly save the new key.', '这将移除该远程仓库的已保存 SSH 主机密钥，不会信任下方的新密钥。请先通过独立渠道核对指纹；移除后必须重新测试并明确保存新密钥。'),
+    connected: tailText(lang, 'Connected', '连接成功'),
+    rootMissingPrompt: tailText(lang, 'SSH is connected, but the remote root does not exist. Create it now?', 'SSH 已连接，但远程根目录不存在。是否创建该目录？'),
+    createRemoteRoot: tailText(lang, 'Create remote root', '创建远程根目录'),
+    createRemoteRootConfirm: tailText(lang, 'Create this root directory on the remote server?', '确认在远程服务器上创建此根目录？'),
+    cleanStatus: tailText(lang, 'Repository is clean', '仓库干净'),
+    changedStatus: tailText(lang, 'Repository has changes', '仓库有变更'),
+    errorStatus: tailText(lang, 'Repository status error', '仓库状态异常'),
+    changes: tailText(lang, 'Changes', '变更'),
+    changesTitle: tailText(lang, 'Git changes', 'Git 变更'),
+    changesHint: tailText(lang, 'Review working-tree files and recent commit relationships. This view is read-only.', '查看工作区文件变更与最近提交关系；此页面只读，不会修改仓库。'),
+    refreshChanges: tailText(lang, 'Refresh changes', '刷新变更'),
+    loadingChanges: tailText(lang, 'Loading changes…', '正在读取变更…'),
+    noChanges: tailText(lang, 'The working tree has no uncommitted changes', '工作区没有未提交的变更'),
+    changesTruncated: tailText(lang, 'Showing the first 2,000 changed files. Use a Git client for the full list.', '仅显示前 2,000 个变更文件；请使用 Git 客户端查看完整列表。'),
+    changedFiles: tailText(lang, 'Changed files', '文件变更'),
+    recentCommits: tailText(lang, 'Recent commits', '最近提交'),
+    selectChange: tailText(lang, 'Select a file to view its diff', '选择一个文件查看差异'),
+    noDiff: tailText(lang, 'This file has no text diff to display', '该文件没有可显示的文本差异'),
+    conflict: tailText(lang, 'Conflict', '冲突'),
+    staged: tailText(lang, 'Staged', '已暂存'),
+    modified: tailText(lang, 'Modified', '已修改'),
+    untracked: tailText(lang, 'Untracked', '未跟踪'),
+    renamed: tailText(lang, 'Renamed', '重命名'),
+    deleted: tailText(lang, 'Deleted', '已删除'),
+    graph: tailText(lang, 'Commit graph', '提交图'),
+    changesUnavailable: tailText(lang, 'Changes are available for checked-out Git mappings only', '仅已检出的 Git 映射可查看变更'),
+    closeChanges: tailText(lang, 'Close changes', '关闭变更'),
+    machineMappings: tailText(lang, 'Machine/root mappings', '机器/根映射'),
+    addMachineMapping: tailText(lang, 'Add machine mapping', '添加机器映射'),
+    editMachineMapping: tailText(lang, 'Edit machine mapping', '编辑映射'),
+    mappingName: tailText(lang, 'Name', '名称'),
+    mappingKind: tailText(lang, 'Type', '类型'),
+    localMachine: tailText(lang, 'This computer', '本机'),
+    remoteSSHMachine: tailText(lang, 'Remote SSH', '远程 SSH'),
+    testMappingConnection: tailText(lang, 'Test connection', '测试连接'),
+    verifyMappingPath: tailText(lang, 'Verify path', '验证路径'),
+    setDefaultMapping: tailText(lang, 'Set as default', '设为默认'),
+    defaultMappingBadge: tailText(lang, 'Default', '默认'),
+    removeMapping: tailText(lang, 'Remove', '移除'),
+    removeMappingConfirm: tailText(lang, 'Remove mapping “{label}”?\n\nNo real files are deleted; a remote mapping also drops its saved SSH password.', '确认移除映射“{label}”？\n\n不会删除任何真实文件；远程映射会同时解除其 SSH 密码保存。'),
+    removeLastMapping: tailText(lang, 'A repository needs at least one mapping.', '仓库至少需要保留一个映射。'),
+    mappingDefaultLocked: tailText(lang, 'The default mapping’s coordinates are managed by the Move root action; only its name can be edited here.', '默认映射的坐标由「迁移根目录」管理，这里只能修改名称。'),
+    mappingUnverified: tailText(lang, 'Not verified yet', '尚未验证'),
+    mappingHealthy: tailText(lang, 'Connection healthy', '状态正常'),
+    mappingFailed: tailText(lang, 'Connection failed', '连接失败'),
+    currentMapping: tailText(lang, 'Active mapping', '当前映射'),
+    selectCodingTarget: tailText(lang, 'Choose target machine', '选择目标机器'),
+    selectCodingTargetHint: tailText(lang, 'This repository can run locally or over SSH. A local mapping starts local coding; an SSH mapping starts remote coding.', '此仓库可在本机或远程 SSH 上开发。本机映射启动本地开发，SSH 映射启动远程编程。'),
+    localCodingAgent: tailText(lang, 'Local coding', '本地开发'),
+    remoteCodingAgent: tailText(lang, 'Remote coding', '远程编程'),
+    startLocalCoding: tailText(lang, 'Start local coding', '启动本地开发'),
+    startRemoteCoding: tailText(lang, 'Start remote coding', '启动远程编程'),
+    mappingNameRequired: tailText(lang, 'A mapping name is required.', '请填写映射名称。'),
+    mappingRootRequired: tailText(lang, 'Choose a local root directory.', '请选择本机根目录。'),
+    mappingRemoteRequired: tailText(lang, 'Server, username and remote root are required.', '请填写服务器、用户名和远程根目录。'),
+    mappingTestRequired: tailText(lang, 'Test the connection successfully before saving.', '请先测试连接，成功后再保存。'),
+    mappingTesting: tailText(lang, 'Testing…', '正在测试…')
+};
 
 	// Hover/title strings for toolbar and dialog actions. Kept separate from
 	// button labels so short labels can still carry a fuller functional hint.
-	const tips = isZh ? {
-		back: toolsBackHintLabel('zh-Hans'),
-		searchGit: '在系统中重新搜索 Git 可执行文件',
-		specifyGit: '手动选择 Git 可执行文件',
-		resetClient: '清除手动路径并恢复自动搜索',
-		searchSvn: '在系统中重新搜索 SVN 可执行文件',
-		specifySvn: '手动选择 SVN 可执行文件',
-		installSvn: '打开 SVN 官方安装说明页面',
-		syncConfig: '与 Hub 同步虚拟仓库配置',
-		openRepo: '打开本机已有虚拟仓库根目录',
-		newRepo: '创建新的虚拟仓库',
-		moveRoot: '将仓库迁移到新的根目录位置',
-		editConnection: '编辑远程 SSH 连接信息',
-		startCoding: '以当前仓库根目录启动编程任务',
-		refresh: '刷新各映射的检出与变更状态',
-		syncWC: '对已检出仓库执行 pull/update（仅快进）',
-		commit: '预览并提交已检出仓库的本地更改',
-		push: '预览并推送已提交更改到远端',
-		commitPush: '预览后提交本地更改并推送到远端',
-		revert: '预览并丢弃未提交的已跟踪更改',
-		credentials: '管理 Git/SVN 登录凭据',
-		deleteRepo: '从列表移除此仓库（不删除磁盘文件）',
-		openRecent: '打开此虚拟仓库',
-		setLocalRoot: '为本机绑定仓库根目录',
-		reconnectRoot: '重新连接匹配的本机根目录',
-		expand: '展开',
-		collapse: '折叠',
-		addGroup: '在当前层级新建虚拟目录',
-		addRepo: '添加 Git/SVN/本地目录映射',
-		editNode: '编辑所选目录或映射',
-		removeNode: '删除所选目录或映射',
-		openFolder: '在文件管理器中打开映射目录',
-		checkout: '将远程仓库检出到映射路径',
-		calcSize: '统计本地目录文件数与占用空间',
-		cancel: '取消并关闭',
-		save: '保存当前更改',
-		chooseRoot: '选择本机目录',
-		chooseDest: '选择目标目录',
-		testConn: '测试远程 SSH 连接',
-		createRemoteRoot: '在远程服务器创建根目录',
-		inspectMigration: '检查迁移是否可行',
-		migrateNow: '开始迁移到新根目录',
-		bindRoot: '绑定所选目录为本机根目录',
-		previewOp: '预览将受影响的仓库',
-		executeOp: '确认并执行操作',
-		retryFailed: '仅重试失败项',
-		addCredential: '新增仓库登录凭据',
-		editCredential: '编辑此凭据',
-		removeCredential: '删除此凭据',
-		addMachineMapping: '添加一个机器/根映射',
-		editMachineMapping: '编辑此映射',
-		removeMachineMapping: '移除此映射（不删除真实文件）',
-		setDefaultMapping: '将此映射设为默认',
-		testMapping: '测试此映射的连接或路径',
-		codingTarget: '选择编程任务的目标机器：本机映射启动本地开发，SSH 映射启动远程编程',
-		startLocalCoding: '在此本机根目录启动本地编程 agent',
-		startRemoteCoding: '在此 SSH 根目录启动远程编程 agent',
-	} : {
-		back: toolsBackHintLabel('en'),
-		searchGit: 'Search the system for the Git executable',
-		specifyGit: 'Manually choose the Git executable',
-		resetClient: 'Clear the manual path and use automatic search',
-		searchSvn: 'Search the system for the SVN executable',
-		specifySvn: 'Manually choose the SVN executable',
-		installSvn: 'Open the official SVN installation guide',
-		syncConfig: 'Sync virtual repository config with Hub',
-		openRepo: 'Open an existing virtual repository root',
-		newRepo: 'Create a new virtual repository',
-		moveRoot: 'Move the repository to a new root directory',
-		editConnection: 'Edit the remote SSH connection',
-		startCoding: 'Start a coding task at this repository root',
-		refresh: 'Refresh checkout and change status for all mappings',
-		syncWC: 'Pull/update checked-out repositories (fast-forward only)',
-		commit: 'Preview and commit local changes in checked-out repositories',
-		push: 'Preview and push committed changes to remotes',
-		commitPush: 'Preview, commit local changes, then push',
-		revert: 'Preview and discard uncommitted tracked changes',
-		credentials: 'Manage Git/SVN login credentials',
-		deleteRepo: 'Remove this repository from the list (files stay on disk)',
-		openRecent: 'Open this virtual repository',
-		setLocalRoot: 'Bind a local root directory for this repository',
-		reconnectRoot: 'Reconnect the matching local root directory',
-		expand: 'Expand',
-		collapse: 'Collapse',
-		addGroup: 'Create a virtual folder at this level',
-		addRepo: 'Add a Git/SVN/local directory mapping',
-		editNode: 'Edit the selected folder or mapping',
-		removeNode: 'Remove the selected folder or mapping',
-		openFolder: 'Open the mapped folder in the file manager',
-		checkout: 'Check out the remote repository into the mapped path',
-		calcSize: 'Count files and size for the local directory',
-		cancel: 'Cancel and close',
-		save: 'Save current changes',
-		chooseRoot: 'Choose a local directory',
-		chooseDest: 'Choose the destination directory',
-		testConn: 'Test the remote SSH connection',
-		createRemoteRoot: 'Create the root directory on the remote server',
-		inspectMigration: 'Check whether the migration can proceed',
-		migrateNow: 'Start migration to the new root',
-		bindRoot: 'Bind the chosen directory as the local root',
-		previewOp: 'Preview repositories that will be affected',
-		executeOp: 'Confirm and run the operation',
-		retryFailed: 'Retry only the failed items',
-		addCredential: 'Add a repository credential',
-		editCredential: 'Edit this credential',
-		removeCredential: 'Delete this credential',
-		addMachineMapping: 'Add a machine/root mapping',
-		editMachineMapping: 'Edit this mapping',
-		removeMachineMapping: 'Remove this mapping (real files stay untouched)',
-		setDefaultMapping: 'Make this mapping the default',
-		testMapping: 'Test this mapping’s connection or path',
-		codingTarget: 'Choose the coding task target: local mappings start local coding, SSH mappings start remote coding',
-		startLocalCoding: 'Start a local coding agent at this computer root',
-		startRemoteCoding: 'Start a remote coding agent at this SSH root',
-	};
+	const tips = {
+    back: tailText(lang, toolsBackHintLabel('en'), toolsBackHintLabel('zh-Hans')),
+    searchGit: tailText(lang, 'Search the system for the Git executable', '在系统中重新搜索 Git 可执行文件'),
+    specifyGit: tailText(lang, 'Manually choose the Git executable', '手动选择 Git 可执行文件'),
+    resetClient: tailText(lang, 'Clear the manual path and use automatic search', '清除手动路径并恢复自动搜索'),
+    searchSvn: tailText(lang, 'Search the system for the SVN executable', '在系统中重新搜索 SVN 可执行文件'),
+    specifySvn: tailText(lang, 'Manually choose the SVN executable', '手动选择 SVN 可执行文件'),
+    installSvn: tailText(lang, 'Open the official SVN installation guide', '打开 SVN 官方安装说明页面'),
+    syncConfig: tailText(lang, 'Sync virtual repository config with Hub', '与 Hub 同步虚拟仓库配置'),
+    openRepo: tailText(lang, 'Open an existing virtual repository root', '打开本机已有虚拟仓库根目录'),
+    newRepo: tailText(lang, 'Create a new virtual repository', '创建新的虚拟仓库'),
+    moveRoot: tailText(lang, 'Move the repository to a new root directory', '将仓库迁移到新的根目录位置'),
+    editConnection: tailText(lang, 'Edit the remote SSH connection', '编辑远程 SSH 连接信息'),
+    startCoding: tailText(lang, 'Start a coding task at this repository root', '以当前仓库根目录启动编程任务'),
+    refresh: tailText(lang, 'Refresh checkout and change status for all mappings', '刷新各映射的检出与变更状态'),
+    syncWC: tailText(lang, 'Pull/update checked-out repositories (fast-forward only)', '对已检出仓库执行 pull/update（仅快进）'),
+    commit: tailText(lang, 'Preview and commit local changes in checked-out repositories', '预览并提交已检出仓库的本地更改'),
+    push: tailText(lang, 'Preview and push committed changes to remotes', '预览并推送已提交更改到远端'),
+    commitPush: tailText(lang, 'Preview, commit local changes, then push', '预览后提交本地更改并推送到远端'),
+    revert: tailText(lang, 'Preview and discard uncommitted tracked changes', '预览并丢弃未提交的已跟踪更改'),
+    credentials: tailText(lang, 'Manage Git/SVN login credentials', '管理 Git/SVN 登录凭据'),
+    deleteRepo: tailText(lang, 'Remove this repository from the list (files stay on disk)', '从列表移除此仓库（不删除磁盘文件）'),
+    openRecent: tailText(lang, 'Open this virtual repository', '打开此虚拟仓库'),
+    setLocalRoot: tailText(lang, 'Bind a local root directory for this repository', '为本机绑定仓库根目录'),
+    reconnectRoot: tailText(lang, 'Reconnect the matching local root directory', '重新连接匹配的本机根目录'),
+    expand: tailText(lang, 'Expand', '展开'),
+    collapse: tailText(lang, 'Collapse', '折叠'),
+    addGroup: tailText(lang, 'Create a virtual folder at this level', '在当前层级新建虚拟目录'),
+    addRepo: tailText(lang, 'Add a Git/SVN/local directory mapping', '添加 Git/SVN/本地目录映射'),
+    editNode: tailText(lang, 'Edit the selected folder or mapping', '编辑所选目录或映射'),
+    removeNode: tailText(lang, 'Remove the selected folder or mapping', '删除所选目录或映射'),
+    openFolder: tailText(lang, 'Open the mapped folder in the file manager', '在文件管理器中打开映射目录'),
+    checkout: tailText(lang, 'Check out the remote repository into the mapped path', '将远程仓库检出到映射路径'),
+    calcSize: tailText(lang, 'Count files and size for the local directory', '统计本地目录文件数与占用空间'),
+    cancel: tailText(lang, 'Cancel and close', '取消并关闭'),
+    save: tailText(lang, 'Save current changes', '保存当前更改'),
+    chooseRoot: tailText(lang, 'Choose a local directory', '选择本机目录'),
+    chooseDest: tailText(lang, 'Choose the destination directory', '选择目标目录'),
+    testConn: tailText(lang, 'Test the remote SSH connection', '测试远程 SSH 连接'),
+    createRemoteRoot: tailText(lang, 'Create the root directory on the remote server', '在远程服务器创建根目录'),
+    inspectMigration: tailText(lang, 'Check whether the migration can proceed', '检查迁移是否可行'),
+    migrateNow: tailText(lang, 'Start migration to the new root', '开始迁移到新根目录'),
+    bindRoot: tailText(lang, 'Bind the chosen directory as the local root', '绑定所选目录为本机根目录'),
+    previewOp: tailText(lang, 'Preview repositories that will be affected', '预览将受影响的仓库'),
+    executeOp: tailText(lang, 'Confirm and run the operation', '确认并执行操作'),
+    retryFailed: tailText(lang, 'Retry only the failed items', '仅重试失败项'),
+    addCredential: tailText(lang, 'Add a repository credential', '新增仓库登录凭据'),
+    editCredential: tailText(lang, 'Edit this credential', '编辑此凭据'),
+    removeCredential: tailText(lang, 'Delete this credential', '删除此凭据'),
+    addMachineMapping: tailText(lang, 'Add a machine/root mapping', '添加一个机器/根映射'),
+    editMachineMapping: tailText(lang, 'Edit this mapping', '编辑此映射'),
+    removeMachineMapping: tailText(lang, 'Remove this mapping (real files stay untouched)', '移除此映射（不删除真实文件）'),
+    setDefaultMapping: tailText(lang, 'Make this mapping the default', '将此映射设为默认'),
+    testMapping: tailText(lang, 'Test this mapping’s connection or path', '测试此映射的连接或路径'),
+    codingTarget: tailText(lang, 'Choose the coding task target: local mappings start local coding, SSH mappings start remote coding', '选择编程任务的目标机器：本机映射启动本地开发，SSH 映射启动远程编程'),
+    startLocalCoding: tailText(lang, 'Start a local coding agent at this computer root', '在此本机根目录启动本地编程 agent'),
+    startRemoteCoding: tailText(lang, 'Start a remote coding agent at this SSH root', '在此 SSH 根目录启动远程编程 agent')
+};
 
     const [repos, setRepos] = useState<any[]>([]);
     const [repo, setRepo] = useState<VRepo | null>(null);
@@ -943,7 +1078,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 				: text.syncNow;
 	const formatBackgroundSyncDetail = () => {
 		const detail = localizeVRepoError(backgroundSyncDetail, isZh);
-		const sep = isZh ? '：' : ': ';
+		const sep = (typeof isZh === 'string' ? (normalizeLang(isZh) === 'zh-Hans' || normalizeLang(isZh) === 'zh-Hant') : !!isZh) ? '：' : ': ';
 		if (backgroundSyncPhase === 'retry_wait') {
 			const when = backgroundSyncNextRetryAt ? (() => { try { return new Date(backgroundSyncNextRetryAt).toLocaleString(); } catch { return backgroundSyncNextRetryAt; } })() : '';
 			const base = detail ? `${text.backgroundSyncRetry}${sep}${detail}` : text.backgroundSyncRetry;
@@ -1229,7 +1364,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		const id = String(item?.id || '').trim();
 		closeRepositoryContextMenu();
 		if (!id) {
-			setError(isZh ? '该虚拟仓库缺少标识，无法从列表中删除。' : 'This virtual repository has no identifier and cannot be removed from the list.');
+			setError(tailText(lang, 'This virtual repository has no identifier and cannot be removed from the list.', '该虚拟仓库缺少标识，无法从列表中删除。'));
 			return;
 		}
 		repositoryDeletionRef.current = true;
@@ -1249,7 +1384,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		try {
 			const backend = app();
 			if (!backend?.DeleteVirtualRepository) {
-				throw new Error(isZh ? '当前版本不支持删除虚拟仓库。' : 'Deleting virtual repositories is not supported by this version.');
+				throw new Error(tailText(lang, 'Deleting virtual repositories is not supported by this version.', '当前版本不支持删除虚拟仓库。'));
 			}
 			await backend.DeleteVirtualRepository(id);
 			setRemovedRepositoryIDs((current) => new Set(current).add(id));
@@ -1400,7 +1535,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const migrateRoot = async () => {
 		if (!repo || !migrationPreview?.can_migrate || busyRef.current) return;
 		const confirmed = await showConfirm(
-			isZh ? `将“${repo.name}”迁移到\n${migrationPreview.destination_root}\n\n文件会先复制并校验，成功后才切换仓库位置。旧根目录不会自动删除。` : `Move “${repo.name}” to\n${migrationPreview.destination_root}\n\nFiles are copied and verified before the repository location switches. The old root is not deleted.`,
+			tailText(lang, `Move “${repo.name}” to\n${migrationPreview.destination_root}\n\nFiles are copied and verified before the repository location switches. The old root is not deleted.`, `将“${repo.name}”迁移到\n${migrationPreview.destination_root}\n\n文件会先复制并校验，成功后才切换仓库位置。旧根目录不会自动删除。`),
 			text.moveRoot,
 			{ confirmText: text.migrateNow, cancelText: text.cancel },
 		);
@@ -1535,7 +1670,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         setStartingRepositoryID(id); setStartingCodingMappingID(mappingID); setError('');
         try {
             const launch = await app()?.StartVirtualRepositoryCodingTask?.(id, mappingID);
-            if (!launch?.project_path) throw new Error(isZh ? '创建编程任务失败' : 'Failed to create coding task');
+            if (!launch?.project_path) throw new Error(tailText(lang, 'Failed to create coding task', '创建编程任务失败'));
             setMode('none');
             onOpenCodingTask?.(launch);
 		} catch (e: any) { setError(String(e?.message || e)); }
@@ -1790,8 +1925,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		const backend = app();
 		const isRemote = mapping ? mapping.kind === 'remote_ssh' : !!targetRepository.remote;
 		const inspect = isRemote ? backend?.InspectRemoteVirtualRepository : backend?.InspectVirtualRepository;
-		if (typeof inspect !== 'function') throw new Error(isZh ? '当前版本不支持检查虚拟仓库状态。' : 'This version does not support virtual repository status checks.');
-		if (isRemote && !targetRepository.id) throw new Error(isZh ? '远程虚拟仓库 ID 缺失。' : 'Remote virtual repository id is missing.');
+		if (typeof inspect !== 'function') throw new Error(tailText(lang, 'This version does not support virtual repository status checks.', '当前版本不支持检查虚拟仓库状态。'));
+		if (isRemote && !targetRepository.id) throw new Error(tailText(lang, 'Remote virtual repository id is missing.', '远程虚拟仓库 ID 缺失。'));
 		const raw = isRemote
 			? await backend.InspectRemoteVirtualRepository(targetRepository.id, mapping?.id || '')
 			: await backend.InspectVirtualRepository(mapping?.root_path || targetRepository.root_path);
@@ -1850,7 +1985,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
 	const loadChanges = useCallback(async (targetRepository: VRepo, nodeID: string, filePath = '', repositorySession = repositorySessionRef.current, mapping?: MachineMapping) => {
 		const backend = app();
-		if (typeof backend?.GetVirtualRepositoryChanges !== 'function') throw new Error(isZh ? '当前版本不支持查看 Git 变更。' : 'This version does not support Git changes.');
+		if (typeof backend?.GetVirtualRepositoryChanges !== 'function') throw new Error(tailText(lang, 'This version does not support Git changes.', '当前版本不支持查看 Git 变更。'));
 		const isRemote = mapping ? mapping.kind === 'remote_ssh' : !!targetRepository.remote;
 		const requestID = ++changesRequestRef.current;
 		setChangesLoading(true);
@@ -1899,10 +2034,10 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	}, [repo, changesNodeID, loadChanges, activeMapping, isZh]);
 
 	const checkoutRepositoryNode = async (targetRepository: VRepo, targetNodeID: string, mapping?: MachineMapping) => {
-		if (!targetRepository.id) throw new Error(isZh ? '虚拟仓库 ID 缺失，无法检出。' : 'The virtual repository id is missing, so checkout cannot start.');
+		if (!targetRepository.id) throw new Error(tailText(lang, 'The virtual repository id is missing, so checkout cannot start.', '虚拟仓库 ID 缺失，无法检出。'));
 		const isRemote = mapping ? mapping.kind === 'remote_ssh' : !!targetRepository.remote;
 		const checkout = isRemote ? app()?.CheckoutRemoteVirtualRepositoryNode : app()?.CheckoutVirtualRepositoryNode;
-		if (typeof checkout !== 'function') throw new Error(isZh ? '当前版本不支持检出虚拟仓库。' : 'This version does not support virtual repository checkout.');
+		if (typeof checkout !== 'function') throw new Error(tailText(lang, 'This version does not support virtual repository checkout.', '当前版本不支持检出虚拟仓库。'));
 		await checkout(targetRepository.id, targetNodeID, mapping?.id || '');
 	};
 
@@ -2009,16 +2144,16 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         const id = draft.id || nodeId();
         const parentID = String(draft.parent_id || '').trim();
 		if (mode === 'mapping' && !String(draft.name || '').trim()) {
-			setError(isZh ? '映射目录名称不能为空。' : 'A mapping directory name is required.');
+			setError(tailText(lang, 'A mapping directory name is required.', '映射目录名称不能为空。'));
 			return;
 		}
         const parent = parentID ? repo.nodes.find((item) => item.id === parentID) : undefined;
         if (parentID && (!parent || parent.repository || parentID === id)) {
-            setError(isZh ? '请选择有效的虚拟目录作为上级目录。' : 'Choose a valid virtual folder as the parent.');
+            setError(tailText(lang, 'Choose a valid virtual folder as the parent.', '请选择有效的虚拟目录作为上级目录。'));
             return;
         }
         if (parentID && wouldCreateTreeCycle(repo.nodes, id, parentID)) {
-            setError(isZh ? '不能将目录移动到自身或其子目录中。' : 'A folder cannot be placed inside itself or one of its descendants.');
+            setError(tailText(lang, 'A folder cannot be placed inside itself or one of its descendants.', '不能将目录移动到自身或其子目录中。'));
             return;
         }
         const node: VRepoNode = {
@@ -2057,9 +2192,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 					// remote repositories.
 					setActiveRepository(saved); setMode('none'); setDraft({}); setSelectedId(id);
 					await loadRecent();
-					throw new Error(isZh
-						? `映射已保存，但凭据绑定更新失败：${errorMessage(bindingError)}`
-						: `The mapping was saved, but its credential binding could not be updated: ${errorMessage(bindingError)}`);
+					throw new Error(tailText(lang, `The mapping was saved, but its credential binding could not be updated: ${errorMessage(bindingError)}`, `映射已保存，但凭据绑定更新失败：${errorMessage(bindingError)}`));
                 }
 				await loadCredentialBindings(saved.id);
 			}
@@ -2085,9 +2218,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 						await checkoutRepositoryNode(saved, id, activeMapping);
 					} catch (checkoutError) {
 						if (savedRepositorySession === repositorySessionRef.current) {
-							setError(isZh
-								? `映射已保存，但检出失败：${errorMessage(checkoutError)}`
-								: `The mapping was saved, but checkout failed: ${errorMessage(checkoutError)}`);
+							setError(tailText(lang, `The mapping was saved, but checkout failed: ${errorMessage(checkoutError)}`, `映射已保存，但检出失败：${errorMessage(checkoutError)}`));
 						}
 						return;
 					}
@@ -2095,17 +2226,13 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 						await inspectRepositoryStatuses(saved, savedRepositorySession, activeMapping);
 					} catch (inspectError) {
 						if (savedRepositorySession === repositorySessionRef.current) {
-							setError(isZh
-								? `映射已保存，检出已完成，但状态刷新失败：${errorMessage(inspectError)}`
-								: `The mapping was saved and checkout completed, but the status refresh failed: ${errorMessage(inspectError)}`);
+							setError(tailText(lang, `The mapping was saved and checkout completed, but the status refresh failed: ${errorMessage(inspectError)}`, `映射已保存，检出已完成，但状态刷新失败：${errorMessage(inspectError)}`));
 						}
 					}
 				}
 			}
 			if (directoryCreationError) {
-				throw new Error(isZh
-					? `映射已保存，但目录创建失败：${errorMessage(directoryCreationError)}`
-					: `The mapping was saved, but its directory could not be created: ${errorMessage(directoryCreationError)}`);
+				throw new Error(tailText(lang, `The mapping was saved, but its directory could not be created: ${errorMessage(directoryCreationError)}`, `映射已保存，但目录创建失败：${errorMessage(directoryCreationError)}`));
 			}
 	        } catch (e: any) { setError(String(e?.message || e)); } finally { setBusy(false); }
     };
@@ -2130,7 +2257,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			}
         }
         const label = repo.nodes.find((node) => node.id === id)?.name || id;
-        if (!await showConfirm(isZh ? `确认从虚拟目录树移除“${label}”及其子项？不会删除真实文件。` : `Remove “${label}” and its children from the virtual tree? Real files will not be deleted.`, text.remove, { confirmText: text.remove, cancelText: text.cancel, confirmVariant: 'danger' })) return;
+        if (!await showConfirm(tailText(lang, `Remove “${label}” and its children from the virtual tree? Real files will not be deleted.`, `确认从虚拟目录树移除“${label}”及其子项？不会删除真实文件。`), text.remove, { confirmText: text.remove, cancelText: text.cancel, confirmVariant: 'danger' })) return;
         await saveRepo({ ...repo, nodes: repo.nodes.filter((node) => !descendants.has(node.id)) });
         setSelectedId('');
     };
@@ -2398,7 +2525,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
 	const deleteCredential = async (credential: Credential) => {
 		if (credentialDeleteInFlightRef.current) return;
-		if (!await showConfirm(isZh ? `确认删除凭据“${credential.name}”？所有仓库绑定将同时解除。` : `Delete credential “${credential.name}”? All repository bindings to it will be removed.`, text.remove, { confirmText: text.remove, cancelText: text.cancel, confirmVariant: 'danger' })) return;
+		if (!await showConfirm(tailText(lang, `Delete credential “${credential.name}”? All repository bindings to it will be removed.`, `确认删除凭据“${credential.name}”？所有仓库绑定将同时解除。`), text.remove, { confirmText: text.remove, cancelText: text.cancel, confirmVariant: 'danger' })) return;
 		if (credentialDeleteInFlightRef.current) return;
 		credentialDeleteInFlightRef.current = true;
 		// A list request started before this mutation may resolve afterwards with a
@@ -2839,7 +2966,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
                     <label>{text.name}<input value={draft.name || ''} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label>
                     <label>{text.parent}<select value={draft.parent_id || ''} onChange={(e) => setDraft({ ...draft, parent_id: e.target.value })}><option value="">{text.rootNode}</option>{repo.nodes.filter((n) => !n.repository).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}</select></label>
                     {mode === 'mapping' ? <>
-	                        <label>{isZh ? '仓库说明（可选）' : 'Repository description (optional)'}<input value={draft.description || ''} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></label>
+	                        <label>{tailText(lang, 'Repository description (optional)', '仓库说明（可选）')}<input value={draft.description || ''} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></label>
                         <label>{text.type}<select value={draft.kind || 'git'} onChange={(e) => setDraft({ ...draft, kind: e.target.value, credential_id: '' })}><option value="git">Git</option><option value="svn">SVN</option><option value="local">{text.local}</option></select></label>
 							{draft.kind !== 'local' ? <><label>{text.remote}<input value={draft.remote_url || ''} onChange={(e) => setDraft({ ...draft, remote_url: e.target.value })} /></label><label>{text.refType}<select value={draft.ref_type || 'branch'} onChange={(e) => setDraft({ ...draft, ref_type: e.target.value })}><option value="branch">{text.branchRef}</option><option value="tag">{text.tagRef}</option></select></label><label>{text.refName}<input value={draft.ref_name || ''} placeholder={text.defaultRef} onChange={(e) => setDraft({ ...draft, ref_name: e.target.value })} /></label><label>{text.credentials}<div className="vrepo-inline"><select value={draft.credential_id || credentialBindings[draft.id] || ''} onFocus={() => { const kind = draft.kind === 'svn' ? 'svn' : 'git'; if (!credentials.some((item) => item.kind === kind)) void loadMappingCredentials(kind); }} onChange={(e) => setDraft({ ...draft, credential_id: e.target.value })}><option value="">{text.noCredential}</option>{credentials.filter((item) => item.kind === draft.kind).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select><button type="button" className="secondary vrepo-credential-add" title={tips.addCredential} onClick={() => void startCredentialManager(true)}>{text.addCredential}</button></div></label></> : null}
 						{draft.kind !== 'local' ? <label className="vrepo-check"><input type="checkbox" disabled={draft.enabled === false} checked={!!draft.checkout_after_save} onChange={(e) => setDraft({ ...draft, checkout_after_save: e.target.checked })} />{text.checkoutAfterSave}</label> : null}
@@ -2870,12 +2997,12 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         </VRepoDialog> : null}
 		{operationResult ? <section className="vrepo-operation-result" role="region" aria-live="polite" aria-atomic="false">
 			<div className="vrepo-detail__title"><div><h2>{text.operation}: {operationResult.status}</h2><p>{operationResult.completed ?? 0} / {operationResult.target_count ?? 0} {text.repositories}</p>{operationRunning ? <p>{text.operationRunningHint}</p> : null}</div><div>{operationRunning ? <button type="button" className="danger" disabled={operationCancelPending} title={tips.cancel} onClick={() => void cancelOperation()}>{operationCancelPending ? text.loading : text.cancel}</button> : <button type="button" className="secondary" title={text.close} onClick={() => { operationResultRef.current = null; operationFullResultJobRef.current = ''; setOperationResult(null); setOperationCancelPending(false); }}>{text.close}</button>}</div></div>
-			{!operationRunning && operationResult.completed > operationItems.length ? <button type="button" className="secondary" onClick={() => void loadTerminalOperationResult(operationResult.job_id)}>{isZh ? '加载完整结果' : 'Load full results'}</button> : null}
+			{!operationRunning && operationResult.completed > operationItems.length ? <button type="button" className="secondary" onClick={() => void loadTerminalOperationResult(operationResult.job_id)}>{tailText(lang, 'Load full results', '加载完整结果')}</button> : null}
 			{visibleOperationItems.map((item: any) => <div key={item.node_id || item.name} className={item.status === 'failed' ? 'is-error' : ''}><strong>{item.name || text.operation}</strong><span>{item.status}{item.error_code ? ` · ${item.error_code}` : ''}{item.error ? ` · ${localizeVRepoError(item.error, isZh)}` : ''}</span></div>)}
-			{operationItems.length > OPERATION_RESULT_PAGE_SIZE ? <nav aria-label={isZh ? '操作结果分页' : 'Operation result pages'}>
-				<button type="button" className="secondary" disabled={operationResultPageSafe <= 1} onClick={() => setOperationResultPage(Math.max(1, operationResultPageSafe - 1))}>{isZh ? '上一页' : 'Previous'}</button>
-				<span>{isZh ? `第 ${operationResultPageSafe} / ${operationResultPageCount} 页` : `Page ${operationResultPageSafe} of ${operationResultPageCount}`}</span>
-				<button type="button" className="secondary" disabled={operationResultPageSafe >= operationResultPageCount} onClick={() => setOperationResultPage(Math.min(operationResultPageCount, operationResultPageSafe + 1))}>{isZh ? '下一页' : 'Next'}</button>
+			{operationItems.length > OPERATION_RESULT_PAGE_SIZE ? <nav aria-label={tailText(lang, 'Operation result pages', '操作结果分页')}>
+				<button type="button" className="secondary" disabled={operationResultPageSafe <= 1} onClick={() => setOperationResultPage(Math.max(1, operationResultPageSafe - 1))}>{tailText(lang, 'Previous', '上一页')}</button>
+				<span>{tailText(lang, `Page ${operationResultPageSafe} of ${operationResultPageCount}`, `第 ${operationResultPageSafe} / ${operationResultPageCount} 页`)}</span>
+				<button type="button" className="secondary" disabled={operationResultPageSafe >= operationResultPageCount} onClick={() => setOperationResultPage(Math.min(operationResultPageCount, operationResultPageSafe + 1))}>{tailText(lang, 'Next', '下一页')}</button>
 			</nav> : null}
 			{operationResult.status !== 'cancelled' && !operationRunning && operationResult.items?.some((item: any) => item.status === 'failed' && item.node_id) ? <button type="button" onClick={() => { const retry = retryOperationForResult(operationResult); setRetryNodeIds(retry.failed.map((item: any) => item.node_id)); setOperation({ action: retry.action, message: operationResult.message || '' }); operationResultRef.current = null; operationFullResultJobRef.current = ''; setOperationResult(null); setOperationCancelPending(false); }} title={tips.retryFailed}>{text.retryFailed}</button> : null}
 		</section> : null}

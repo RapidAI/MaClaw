@@ -21,6 +21,7 @@ import {
     type MinimapColors,
     type MinimapThumbMetrics,
 } from './codePreviewMinimapHelpers';
+import { tailText } from '../../i18n/mnTail'
 
 const EMPTY_MATCHES: number[] = [];
 const EMPTY_LINES: string[] = [];
@@ -348,7 +349,7 @@ export const CodePreviewMinimap = React.memo(function CodePreviewMinimap({
 
     const isZh = lang.startsWith('zh');
     const isZhHant = lang === 'zh-Hant';
-    const label = isZhHant ? '文件縮略圖，按頁定位' : isZh ? '文件缩略图，按页定位' : 'Document minimap, jump by page';
+    const label = isZhHant ? '文件縮略圖，按頁定位' : tailText(lang, 'Document minimap, jump by page', '文件缩略图，按页定位');
     const valueNow = thumb.travel <= 0
         ? 0
         : Math.round((thumb.top / thumb.travel) * thumb.maxScroll);

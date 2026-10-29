@@ -13,6 +13,7 @@
  */
 
 import { isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../../utils/latexTemplates";
+import { tailText } from "../../../i18n/mnTail"
 
 /** 「自动判断」哨兵值：发送后由系统语义拦截匹配工作流。 */
 export const WORKFLOW_AUTO = 'auto';
@@ -273,14 +274,14 @@ export function needsLocalPath(draft: TaskDraft): boolean {
 }
 
 /** 工作空间 chip 上显示的摘要值。 */
-export function workspaceSummaryLabel(draft: TaskDraft, isZh = true): string {
+export function workspaceSummaryLabel(draft: TaskDraft, isZh: boolean | string = true): string {
     const ws = draft.workspace;
     if (ws.kind === 'local') {
         if (ws.localPath) return ws.localPath;
         return needsLocalPath(draft)
-            ? (isZh ? '请选择目录' : 'Select directory')
-            : (isZh ? '默认' : 'Default');
+            ? (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'Select directory', '请选择目录'))
+            : (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'Default', '默认'));
     }
-    if (ws.kind === 'cloud') return ws.cloudName || (isZh ? '云端工作区' : 'Cloud workspace');
-    return ws.remote?.host || (isZh ? '远程服务器' : 'Remote server');
+    if (ws.kind === 'cloud') return ws.cloudName || (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'Cloud workspace', '云端工作区'));
+    return ws.remote?.host || (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), 'Remote server', '远程服务器'));
 }

@@ -14,6 +14,7 @@ import { addParticipantIdentityKeys } from "./participantIdentity";
 import type { CodingTaskLaunch } from "./codingTaskLaunch";
 import { userTurnDisplayOptions } from "./userTurnDisplay";
 import { getNewTaskCoverHeld, subscribeNewTaskCoverHeld } from "./task-config/newTaskCoverHold";
+import { localizeText } from "../../i18n";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
 export type PendingProjectTabOpen = CodingTaskLaunch;
@@ -88,9 +89,8 @@ function isConversationMessage(value: unknown): value is { role?: unknown } {
     return !!value && typeof value === "object";
 }
 
-const textForPendingTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
-    lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
-);
+const textForPendingTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string =>
+    localizeText(lang, en, zhHans, zhHant);
 
 function newTaskContextMessage(
     launch: Pick<CodingTaskLaunch, "agentMode" | "remoteHost" | "newTaskContext">,

@@ -28,6 +28,8 @@ import {
 import { motionSoundPresetOptionIds, normalizeMotionSoundPreset, type MotionSoundPreset } from './petMotionSounds';
 import { useDialog } from './CustomDialog';
 import { PetStoreDialog } from './PetStoreDialog';
+import { normalizeLang } from '../i18n/langSelect';
+import { petMn } from '../i18n/mnPet';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type PetStoreListing = { id: string; status: string };
@@ -90,6 +92,7 @@ const defaultEnabledToggleKeys = new Set<PetToggleKey>(['pet_motion_enabled', 'p
 function text(lang: Lang, zhHans: string, zhHant: string, en: string): string {
     if (lang === 'zh-Hans') return zhHans;
     if (lang === 'zh-Hant') return zhHant;
+    if (normalizeLang(lang) === 'mn') return petMn(lang, en);
     return en;
 }
 

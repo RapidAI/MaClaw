@@ -1,4 +1,5 @@
 import type { BotFeedMeta } from './botFeedLine';
+import { normalizeLang } from '../../i18n/langSelect';
 import { visibleActivityPhrase } from './visibleDesktopTurn';
 
 export interface DesktopBot {
@@ -249,11 +250,12 @@ export function desktopBotLocalControl(text: string): DesktopBotLocalControl {
     return '';
 }
 
-function desktopBotVoice(lang: string): 'en' | 'hant' | 'hans' {
-    const value = String(lang || '').trim();
-    if (value.toLowerCase().startsWith('en')) return 'en';
-    if (value.includes('Hant')) return 'hant';
-    return 'hans';
+function desktopBotVoice(lang: string): 'en' | 'hant' | 'hans' | 'mn' {
+    const kind = normalizeLang(lang);
+    if (kind === 'zh-Hant') return 'hant';
+    if (kind === 'zh-Hans') return 'hans';
+    if (kind === 'mn') return 'mn';
+    return 'en';
 }
 
 // The same sentences Hub speaks. A spoken status is never the working
@@ -263,11 +265,12 @@ export function desktopBotRunningSentence(titles: string[], lang: string): strin
     const names = titles.map(item => item.trim()).filter(Boolean);
     const voice = desktopBotVoice(lang);
     if (names.length === 1) {
+        if (voice === 'mn') return `「${names[0]}」 дээр ажиллаж байна.`;
         if (voice === 'en') return `Working on "${names[0]}".`;
         if (voice === 'hant') return `在做。這件是「${names[0]}」。`;
         return `在做。这件是「${names[0]}」。`;
     }
-    const head = voice === 'en' ? 'Working on these:' : voice === 'hant' ? '在做這幾件：' : '在做这几件：';
+    const head = voice === 'mn' ? 'Эдгээрийг хийж байна:' : voice === 'en' ? 'Working on these:' : voice === 'hant' ? '在做這幾件：' : '在做这几件：';
     return [head, ...names].join('\n');
 }
 
@@ -275,6 +278,7 @@ export function desktopBotRunningSentence(titles: string[], lang: string): strin
 // The older read-ahead lines stay in queuedAckReply.
 export function desktopBotQueuedSentence(lang: string): string {
     const voice = desktopBotVoice(lang);
+    if (voice === 'mn') return 'Одоогийнх дууссаны дараа үүнийг хийнэ.';
     if (voice === 'en') return "I'll do this once the one in progress is finished.";
     if (voice === 'hant') return '好，這個等手上的做完我就做。';
     return '好，这个等手上的做完我就做。';
@@ -282,6 +286,7 @@ export function desktopBotQueuedSentence(lang: string): string {
 
 export function desktopBotAdmittingSentence(lang: string): string {
     const voice = desktopBotVoice(lang);
+    if (voice === 'mn') return 'Дөнгөж хүлээн авлаа. Арын ажилд шилжүүлж байна.';
     if (voice === 'en') return 'Just accepted. Still handing it to the background.';
     if (voice === 'hant') return '剛接下，還在交給後台。';
     return '刚接下，还在交给后台。';
@@ -289,7 +294,7 @@ export function desktopBotAdmittingSentence(lang: string): string {
 
 export function desktopBotWaitingSentence(reason: string, lang: string): string {
     const voice = desktopBotVoice(lang);
-    const lead = voice === 'en' ? 'Waiting on you.' : voice === 'hant' ? '停在你這兒。' : '停在你这儿。';
+    const lead = voice === 'mn' ? 'Таныг хүлээж байна.' : voice === 'en' ? 'Waiting on you.' : voice === 'hant' ? '停在你這兒。' : '停在你这儿。';
     const extra = reason.trim();
     if (!extra || extra === lead || extra.startsWith(lead)) return extra || lead;
     return `${lead}${extra}`;
@@ -297,6 +302,7 @@ export function desktopBotWaitingSentence(reason: string, lang: string): string 
 
 export function desktopBotStatusUnreachableSentence(lang: string): string {
     const voice = desktopBotVoice(lang);
+    if (voice === 'mn') return 'Арын ажилд хүрч чадсангүй. Дахин хэлнэ үү.';
     if (voice === 'en') return 'I could not reach the background. Say it again.';
     if (voice === 'hant') return '剛才沒問到後台，你再說一次。';
     return '刚才没问到后台，你再说一次。';
@@ -304,6 +310,7 @@ export function desktopBotStatusUnreachableSentence(lang: string): string {
 
 export function desktopBotStillHandingReason(lang: string): string {
     const voice = desktopBotVoice(lang);
+    if (voice === 'mn') return 'арын ажилд шилжүүлсээр байна';
     if (voice === 'en') return 'still handing it to the background';
     if (voice === 'hant') return '還在交給後台';
     return '还在交给后台';
@@ -313,6 +320,7 @@ export function desktopBotStillHandingReason(lang: string): string {
 // arrangement is the only way that sentence used to start work.
 export function desktopBotTypedConfirmSentence(lang: string): string {
     const voice = desktopBotVoice(lang);
+    if (voice === 'mn') return 'Төлөвлөгөөний доорх товчийг дарна уу. Энэ өгүүлбэрийг бичсэнээр эхлэхгүй.';
     if (voice === 'en') return 'Use the button under the arrangement. Typing this sentence does not start it.';
     if (voice === 'hant') return '點安排下面那個按鈕就行，打這句不會開始。';
     return '点安排下面那个按钮就行，打这句不会开始。';
@@ -321,11 +329,16 @@ export function desktopBotTypedConfirmSentence(lang: string): string {
 export function desktopBotStoppedSentence(titles: string[], hadNext: boolean, lang: string): string {
     const voice = desktopBotVoice(lang);
     if (hadNext) {
+        if (voice === 'mn') return 'Зогслоо. Дараагийнх нь тэмдэглэгдсэн бөгөөд та хүсвэл хийнэ.';
         if (voice === 'en') return 'Stopped. One more is written down, and I can do it when you ask.';
         if (voice === 'hant') return '停了。後面還有一件記下的，你要的話我再做。';
         return '停了。后面还有一件记下的，你要的话我再做。';
     }
     const names = titles.map(item => item.trim()).filter(Boolean);
+    if (voice === 'mn') {
+        if (names.length > 1) return `Зогслоо.\n${names.map(name => `${name} үргэлжлэхгүй.`).join('\n')}`;
+        return names[0] ? `Зогслоо. ${names[0]} үргэлжлэхгүй.` : 'Зогслоо.';
+    }
     if (voice === 'en') {
         if (names.length > 1) return `Stopped.\n${names.map(name => `${name} will not continue.`).join('\n')}`;
         return names[0] ? `Stopped. ${names[0]} will not continue.` : 'Stopped.';
@@ -340,6 +353,7 @@ export function desktopBotStoppedSentence(titles: string[], hadNext: boolean, la
 
 export function desktopBotStopIdleSentence(lang: string): string {
     const voice = desktopBotVoice(lang);
+    if (voice === 'mn') return 'Одоо хийгдэж буй зүйл байхгүй тул зогсоох зүйл алга.';
     if (voice === 'en') return 'Nothing is running, so there is nothing to stop.';
     if (voice === 'hant') return '現在沒有在做的事，不用停。';
     return '现在没有在做的事，不用停。';
@@ -347,6 +361,7 @@ export function desktopBotStopIdleSentence(lang: string): string {
 
 export function desktopBotPauseAskSentence(lang: string): string {
     const voice = desktopBotVoice(lang);
+    if (voice === 'mn') return 'Түр зогсоолоо. Бүгдийг зогсоох уу, эсвэл зөвхөн хийж буй агуулгыг өөрчлөх үү?';
     if (voice === 'en') return "I've paused it. Should I stop the whole thing, or only change what's in it?";
     if (voice === 'hant') return '我先停一下。是整個停下，還是只改正在做的內容？';
     return '我先停一下。是整个停下，还是只改正在做的内容？';
@@ -375,10 +390,12 @@ export function desktopBotStopFailedSentence(reason: string, lang: string): stri
     const clean = reason.trim().replace(/[。．.]+$/u, '');
     const voice = desktopBotVoice(lang);
     if (!clean) {
+        if (voice === 'mn') return 'Зогссонгүй.';
         if (voice === 'en') return 'It did not stop.';
         if (voice === 'hant') return '沒停下來。';
         return '没停下来。';
     }
+    if (voice === 'mn') return `Зогссонгүй: ${clean}.`;
     if (voice === 'en') return `It did not stop: ${clean}.`;
     if (voice === 'hant') return `沒停下來：${clean}。`;
     return `没停下来：${clean}。`;

@@ -70,6 +70,8 @@
       failureLogsEntity: '\u5b9e\u4f53 ID',
       failureLogsCategory: '\u5206\u7c7b'
     });
+    var failureMn = (global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.FAILURE_LOGS) || {};
+    I18N.mn = Object.assign({}, I18N.mn || {}, failureMn);
   }
 
   const state = {

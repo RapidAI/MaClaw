@@ -56,6 +56,7 @@ function sameLatexTemplateList(left: LatexTemplate[], right: LatexTemplate[]): b
 }
 import type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 import type { ExpertOption, WorkflowOption } from "./TaskConfigBar";
+import { tailText } from "../../../i18n/mnTail"
 
 /** Human-readable size for the cloud workspace row subtitle. */
 function formatCloudWorkspaceSize(bytes: number): string {
@@ -67,16 +68,16 @@ function formatCloudWorkspaceSize(bytes: number): string {
 }
 
 /** Localized status text for the entitlement workspace `status` field. */
-function cloudWorkspaceStateLabel(status: unknown, isZh: boolean): string {
+function cloudWorkspaceStateLabel(status: unknown, isZh: boolean | string): string {
     const raw = (typeof status === "string" ? status : "").trim().toLowerCase();
     switch (raw) {
-        case "active": return isZh ? "可用" : "Active";
-        case "running": return isZh ? "运行中" : "Running";
-        case "stopped": return isZh ? "已停止" : "Stopped";
-        case "provisioning": return isZh ? "创建中" : "Provisioning";
+        case "active": return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Active", "可用");
+        case "running": return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Running", "运行中");
+        case "stopped": return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Stopped", "已停止");
+        case "provisioning": return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Provisioning", "创建中");
         case "error":
-        case "failed": return isZh ? "异常" : "Error";
-        default: return raw || (isZh ? "未知" : "Unknown");
+        case "failed": return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Error", "异常");
+        default: return raw || (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Unknown", "未知"));
     }
 }
 
@@ -253,7 +254,6 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     // as the list); failures degrade to an empty list.
     const loadTaskConfigCloudWorkspaces = useCallback(async (): Promise<CloudWorkspaceOption[] | null> => {
         const gen = ++cloudListGenRef.current;
-        const isZh = !lang?.startsWith("en");
         try {
             const ent = await CloudWorkspaceEntitlement();
             if (gen !== cloudListGenRef.current) return null;
@@ -264,7 +264,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                         id,
                         name: String(row?.name || "").trim() || id,
                         spec: formatCloudWorkspaceSize(Number(row?.retained_bytes) || Number(row?.used_bytes) || 0),
-                        state: cloudWorkspaceStateLabel(row?.status, isZh),
+                        state: cloudWorkspaceStateLabel(row?.status, lang ?? ""),
                     };
                 })
                 .filter((row) => row.id);
@@ -287,7 +287,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const handleTaskConfigCreateCloud = useCallback(async (name: string) => {
         const trimmed = name.trim();
         if (!trimmed) {
-            throw new Error(!lang?.startsWith("en") ? "请填写工作区名称" : "Workspace name is required");
+            throw new Error(tailText(lang ?? "", "Workspace name is required", "请填写工作区名称"));
         }
         try {
             const created = await CreateCloudWorkspace(trimmed);
@@ -297,16 +297,15 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             const createdName = String(created?.name || trimmed).trim() || trimmed;
             if (id) {
                 if (loaded) {
-                    const isZh = !lang?.startsWith("en");
                     const merged = loaded.some((row) => row.id === id)
                         ? loaded.map((row) => row.id === id ? { ...row, name: createdName } : row)
-                        : [{ id, name: createdName, spec: "0 B", state: isZh ? "可用" : "Active" }, ...loaded];
+                        : [{ id, name: createdName, spec: "0 B", state: tailText(lang ?? "", "Active", "可用") }, ...loaded];
                     setTaskConfigCloudWorkspaces(merged);
                 }
                 setTaskConfigDraft((prev) => withCloudWorkspace(prev, id, createdName));
             }
         } catch (err) {
-            setTaskConfigError(extractErrorMessage(err) || (!lang?.startsWith("en") ? "新建云端工作区失败" : "Failed to create cloud workspace"));
+            setTaskConfigError(extractErrorMessage(err) || (tailText(lang ?? "", "Failed to create cloud workspace", "新建云端工作区失败")));
             throw err;
         }
     }, [lang, loadTaskConfigCloudWorkspaces]);
@@ -315,7 +314,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         const workspaceId = id.trim();
         const trimmed = name.trim();
         if (!workspaceId || !trimmed) {
-            throw new Error(!lang?.startsWith("en") ? "请填写工作区名称" : "Workspace name is required");
+            throw new Error(tailText(lang ?? "", "Workspace name is required", "请填写工作区名称"));
         }
         try {
             const renamed = await RenameCloudWorkspace(workspaceId, trimmed);
@@ -330,7 +329,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                 return withCloudWorkspace(prev, workspaceId, nextName);
             });
         } catch (err) {
-            setTaskConfigError(extractErrorMessage(err) || (!lang?.startsWith("en") ? "云端工作区改名失败" : "Failed to rename cloud workspace"));
+            setTaskConfigError(extractErrorMessage(err) || (tailText(lang ?? "", "Failed to rename cloud workspace", "云端工作区改名失败")));
             throw err;
         }
     }, [lang, loadTaskConfigCloudWorkspaces]);
@@ -408,9 +407,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             const path = String(dir || "").trim();
             if (!path) return null;
             if (isCloudWorkspacePath(path)) {
-                setTaskConfigError(!lang?.startsWith("en")
-                    ? "该目录是云端工作区缓存目录，请选择其他目录"
-                    : "That folder is a cloud workspace cache. Pick another folder.");
+                setTaskConfigError(tailText(lang ?? "", "That folder is a cloud workspace cache. Pick another folder.", "该目录是云端工作区缓存目录，请选择其他目录"));
                 return null;
             }
             setTaskConfigError("");
@@ -488,12 +485,12 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         }
         const next = mismatchedTaskType(draft.taskType, suggestion);
         if (!next) return draft;
-        const isZh = !lang?.startsWith("en");
+        const isZh = !!lang?.startsWith("zh");
         const copy = taskTypeMismatchCopy({
             current: draft.taskType,
             suggested: next,
             dropsCloud: draft.workspace.kind === "cloud" && next === "coding",
-            isZh,
+            isZh: (lang || (isZh ? "zh-Hans" : "en")),
         });
         let accepted = false;
         try {
@@ -532,7 +529,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                 draft,
                 force,
                 initialMessage: initialMessage || undefined,
-                isZh: !lang?.startsWith("en"),
+                isZh: !!lang?.startsWith("zh"),
+                lang: lang || undefined,
                 bindings: {
                     createTaskUnified: (opts) => CreateTaskUnified(opts as unknown as Parameters<typeof CreateTaskUnified>[0]),
                     abandonFreshLatexTask: (projectPath) => AbandonUnopenedFreshLatexTask(projectPath),
@@ -574,7 +572,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                             failure = message;
                         });
                         if (!document?.relative_path) {
-                            throw new Error(failure || (!lang?.startsWith("en") ? "无法创建 LaTeX 文档" : "The LaTeX document could not be created"));
+                            throw new Error(failure || (tailText(lang ?? "", "The LaTeX document could not be created", "无法创建 LaTeX 文档")));
                         }
                         // Reusing a paper that is already in the chosen folder does
                         // not retarget the expert tab. Point the tools at that
@@ -595,7 +593,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                 },
             });
             if (!result.ok) {
-                setTaskConfigError(result.error || (!lang?.startsWith("en") ? "创建任务失败" : "Failed to create task"));
+                setTaskConfigError(result.error || (tailText(lang ?? "", "Failed to create task", "创建任务失败")));
                 return false;
             }
             // Success: the launch/expert handoff owns the first message. Reset
@@ -607,7 +605,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             handoffComposer();
             return true;
         } catch (err) {
-            setTaskConfigError(extractErrorMessage(err) || (!lang?.startsWith("en") ? "创建任务失败" : "Failed to create task"));
+            setTaskConfigError(extractErrorMessage(err) || (tailText(lang ?? "", "Failed to create task", "创建任务失败")));
             return false;
         } finally {
             taskConfigSendingRef.current = false;
@@ -644,14 +642,14 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     }, [guidePendingAttachments, guideSelectedFilePaths, isLocalTabActive, pendingAttachments, selectedFilePaths, settleGuideAttachments, settleSessionAttachments, wizardOverlay]);
 
     const scheduleConfiguredTask = useCallback(async (named: string, initialMessage: string, classifyText = ""): Promise<boolean> => {
-        const isZh = !lang?.startsWith("en");
-        const check = validateRunWindow(taskConfigDraftRef.current.runWindow, new Date(), isZh);
+        const isZh = !!lang?.startsWith("zh");
+        const check = validateRunWindow(taskConfigDraftRef.current.runWindow, new Date(), (lang || (isZh ? "zh-Hans" : "en")));
         if (!check.ok) {
             setTaskConfigError(check.error);
             return false;
         }
         if (typeof CreateRunWindowTask !== "function") {
-            setTaskConfigError(isZh ? "运行时段不可用" : "Run windows are unavailable");
+            setTaskConfigError(tailText(lang ?? "", "Run windows are unavailable", "运行时段不可用"));
             return false;
         }
         if (taskConfigSendingRef.current) return false;
@@ -669,7 +667,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             await CreateRunWindowTask(runWindowCreateRequest(named, named, initialMessage, draft) as unknown as Parameters<typeof CreateRunWindowTask>[0]);
             created = true;
         } catch (err) {
-            setTaskConfigError(extractErrorMessage(err) || (isZh ? "加入计划任务失败" : "Could not schedule the task"));
+            setTaskConfigError(extractErrorMessage(err) || (tailText(lang ?? "", "Could not schedule the task", "加入计划任务失败")));
             return false;
         } finally {
             // Hold the send lock through the confirmation. Releasing it here
@@ -679,7 +677,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                 setTaskConfigSending(false);
             }
         }
-        const notice = runWindowCreatedNotice(named, startAt, endAt, isZh);
+        const notice = runWindowCreatedNotice(named, startAt, endAt, (lang || (isZh ? "zh-Hans" : "en")));
         try {
             await Promise.resolve(showAlert?.(notice.message, notice.title));
         } catch (err) {

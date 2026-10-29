@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { corelib } from '../../../wailsjs/go/models';
 import { GetHubSecurityPolicy, IsHubSecurityReadOnly } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
+import { panelText } from '../../i18n/mnPanel';
 
 type SecurityPolicyMode = "none" | "relaxed" | "standard" | "strict" | "developer";
 
@@ -139,7 +140,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
     const [hubPolicy, setHubPolicy] = useState<any>(null);
 
     const t = (en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en;
+        panelText(lang, en, zhHans, zhHant);
 
     useEffect(() => {
         let mounted = true;

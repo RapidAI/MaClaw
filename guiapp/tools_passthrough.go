@@ -6,10 +6,18 @@ import (
 	"strings"
 )
 
+func (h *IMMessageHandler) passthroughUILang() string {
+	if h != nil && h.app != nil {
+		return h.app.CurrentLanguage
+	}
+	return "en"
+}
+
 func (h *IMMessageHandler) toolPassthroughTask(args map[string]interface{}) string {
 	if h == nil || h.app == nil {
 		return "passthrough registry is not available"
 	}
+	lang := h.passthroughUILang()
 	actionText := strings.ToLower(strings.TrimSpace(stringVal(args, "action")))
 	action := normalizePassthroughToolAction(actionText)
 	registry := h.app.ensurePassthroughRegistry()
@@ -20,7 +28,7 @@ func (h *IMMessageHandler) toolPassthroughTask(args map[string]interface{}) stri
 			return fmt.Sprintf("list passthrough tasks failed: %v", err)
 		}
 		if len(commands) == 0 {
-			return "还没有注册直通任务。可以先创建脚本，再用 action=save 注册。"
+			return pickUI(lang, "No passthrough tasks are registered yet. Create a script first, then register it with action=save.", "还没有注册直通任务。可以先创建脚本，再用 action=save 注册。", "还没有注册直通任务。可以先创建脚本，再用 action=save 注册。")
 		}
 		out, _ := json.MarshalIndent(commands, "", "  ")
 		return string(out)
@@ -37,7 +45,7 @@ func (h *IMMessageHandler) toolPassthroughTask(args map[string]interface{}) stri
 		if err != nil {
 			return fmt.Sprintf("load passthrough audit failed: %v", err)
 		}
-		return formatPassthroughStatus(registry.Path(), commands, settings, len(audit))
+		return formatPassthroughStatusWithLang(registry.Path(), commands, settings, len(audit), lang)
 	case passthroughToolActionShow:
 		name := strings.TrimSpace(stringVal(args, "name"))
 		if name == "" {
@@ -85,7 +93,7 @@ func (h *IMMessageHandler) toolPassthroughTask(args map[string]interface{}) stri
 		if err != nil {
 			return fmt.Sprintf("save passthrough task failed: %v", err)
 		}
-		return fmt.Sprintf("已保存直通任务 %s。\n运行示例：%s\n远程注册命令：%s\n查询：/runctl show %s\n最近记录：/runctl audit", saved.Name, passthroughCommandRunExample(saved), passthroughRunctlSaveExample(saved), saved.Name)
+		return fmt.Sprintf(pickUI(lang, "Saved passthrough task %s.\nRun example: %s\nRemote registration command: %s\nShow: /runctl show %s\nRecent records: /runctl audit", "已保存直通任务 %s。\n运行示例：%s\n远程注册命令：%s\n查询：/runctl show %s\n最近记录：/runctl audit", "已保存直通任务 %s。\n运行示例：%s\n远程注册命令：%s\n查询：/runctl show %s\n最近记录：/runctl audit"), saved.Name, passthroughCommandRunExample(saved), passthroughRunctlSaveExample(saved), saved.Name)
 	case passthroughToolActionDelete:
 		name := strings.TrimSpace(stringVal(args, "name"))
 		if name == "" {
@@ -94,7 +102,7 @@ func (h *IMMessageHandler) toolPassthroughTask(args map[string]interface{}) stri
 		if err := registry.DeleteWithAudit(name, "assistant:tool"); err != nil {
 			return fmt.Sprintf("delete passthrough task failed: %v", err)
 		}
-		return fmt.Sprintf("已删除直通任务 %s。", name)
+		return fmt.Sprintf(pickUI(lang, "Deleted passthrough task %s.", "已删除直通任务 %s。", "已删除直通任务 %s。"), name)
 	case passthroughToolActionSetEnabled:
 		name := strings.TrimSpace(stringVal(args, "name"))
 		if name == "" {
@@ -104,11 +112,10 @@ func (h *IMMessageHandler) toolPassthroughTask(args map[string]interface{}) stri
 		if err := registry.SetEnabledWithAudit(name, enabled, "assistant:tool"); err != nil {
 			return fmt.Sprintf("update passthrough task failed: %v", err)
 		}
-		state := "启用"
-		if !enabled {
-			state = "禁用"
+		if enabled {
+			return fmt.Sprintf(pickUI(lang, "Enabled passthrough task %s.", "已启用直通任务 %s。", "已启用直通任务 %s。"), name)
 		}
-		return fmt.Sprintf("已%s直通任务 %s。", state, name)
+		return fmt.Sprintf(pickUI(lang, "Disabled passthrough task %s.", "已禁用直通任务 %s。", "已禁用直通任务 %s。"), name)
 	case passthroughToolActionAudit:
 		limit := passthroughIntArg(args, "limit", 10)
 		if limit <= 0 {

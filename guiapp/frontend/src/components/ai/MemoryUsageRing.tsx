@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { tailText } from "../../i18n/mnTail"
 
 interface MemoryUsageRingProps {
     theme: Theme;
@@ -83,9 +84,7 @@ export function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: Memory
 
     const trackColor = themeMode === "dark" ? "rgba(148, 163, 184, 0.18)" : "rgba(15, 23, 42, 0.08)";
 
-    const tooltip = lang?.startsWith("zh")
-        ? `记忆 ${status.total_entries}/${status.max_capacity} (${Math.round(percent)}%)`
-        : `Memory ${status.total_entries}/${status.max_capacity} (${Math.round(percent)}%)`;
+    const tooltip = tailText(lang ?? "", `Memory ${status.total_entries}/${status.max_capacity} (${Math.round(percent)}%)`, `记忆 ${status.total_entries}/${status.max_capacity} (${Math.round(percent)}%)`);
 
     return (
         <span

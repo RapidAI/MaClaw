@@ -9,6 +9,7 @@ import { useInputHistoryAutocomplete } from "./useInputHistoryAutocomplete";
 import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
 import { asTextareaRef, insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
+import { tailText } from "../../i18n/mnTail"
 
 const EMPTY_SUBMITTED_PROMPTS: string[] = [];
 
@@ -175,7 +176,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                 />
             </div>
             <div data-testid={toolbarTestId} style={toolbarStyle}>
-                <div style={toolbarLeftStyle} role="group" aria-label={lang?.startsWith("zh") ? "\u8f93\u5165\u64cd\u4f5c" : "Input actions"}>
+                <div style={toolbarLeftStyle} role="group" aria-label={tailText(lang ?? "", "Input actions", "\u8f93\u5165\u64cd\u4f5c")}>
                     <AssistantInputActionsLeft
                         active={active}
                         attachButtonTestId={attachButtonTestId}
@@ -221,7 +222,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                 <div style={toolbarRightStyle}>
                     {showMemoryUsage && <MemoryUsageRing theme={t} themeMode={themeMode} lang={lang} size={20} />}
                     <span aria-hidden="true" style={{ fontSize: "11px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
-                        {lang?.startsWith("zh") ? "Enter \u53d1\u9001 · Ctrl/⌘+Enter \u6362\u884c" : "Enter to send · Ctrl/⌘+Enter for a new line"}
+                        {tailText(lang ?? "", "Enter to send · Ctrl/⌘+Enter for a new line", "Enter \u53d1\u9001 · Ctrl/⌘+Enter \u6362\u884c")}
                     </span>
                     <AssistantInputActionsRight
                         canSend={canSend}

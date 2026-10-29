@@ -76,6 +76,64 @@ func ReplaceManagedEntries(path string, entries map[string]json.RawMessage, mana
 	return saveEntries(path, entries, managed, false)
 }
 
+// InsertEntriesAbsent inserts only keys that have no existing row. The
+// legacy-JSON migration uses it so a concurrent full-config save
+// (ReplaceManagedEntries/ReplaceEntries) always wins regardless of
+// transaction interleaving: an upsert migration committing after a full save
+// would resurrect stale JSON values over the newer save.
+func InsertEntriesAbsent(path string, entries map[string]json.RawMessage) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir config dir: %w", err)
+	}
+	db, err := open(path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("config connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("begin config transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	stmt, err := conn.PrepareContext(ctx, `INSERT INTO config_entries(key, value_json, updated_at, value_hash) VALUES(?, ?, ?, ?)
+		ON CONFLICT(key) DO NOTHING`)
+	if err != nil {
+		return fmt.Errorf("prepare config insert: %w", err)
+	}
+	now := timeNowUnixNano()
+	for key, value := range entries {
+		if !json.Valid(value) {
+			stmt.Close()
+			return fmt.Errorf("invalid JSON for config key %q", key)
+		}
+		text := string(value)
+		if _, err := stmt.ExecContext(ctx, key, text, now, configValueHash(text)); err != nil {
+			stmt.Close()
+			return fmt.Errorf("insert config key %q: %w", key, err)
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		return fmt.Errorf("close config insert: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("commit config transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 func saveEntries(path string, entries map[string]json.RawMessage, dropMissing []string, replace bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir config dir: %w", err)

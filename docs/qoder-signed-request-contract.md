@@ -12,7 +12,7 @@ Go 侧实现：`corelib/qoder/cosy`（wazero 内嵌官方 `qoder_auth_wasm`）�
 | 设备令牌轮询/刷新 | openapi.qoder.com.cn / openapi.qoder.sh | `/api/v1/deviceToken/poll`、`/api/v1/deviceToken/refresh` |
 | 账号信息（plan/额度） | 同上 | `/api/v1/userinfo`、`/api/v2/user/plan`、`/api/v3/user/status` |
 | 模型目录 | gateway.qoder.com.cn / api2.qoder.sh | **`/algo/api/v2/model/list`**（无 `?Encode=1`） |
-| 聊天 | api2-v2.qoder.sh | `/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1` |
+| 聊天 | gateway.qoder.com.cn / api3.qoder.sh | `/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1` |
 
 要点：
 - **所有推理类请求路径带 `/algo` 前缀**。官方日志显示的是剥离后的路径
@@ -60,17 +60,26 @@ NHA(m=推理host origin, b=JSON.stringify(body), k=model_config.key, v=model_con
 
 **聊天 host 按版本**（实测确认）：
 - 国内版：`https://gateway.qoder.com.cn`（与目录同 host）
-- 国际版：`https://api2-v2.qoder.sh`
+- 国际版：`https://api3.qoder.sh`
+- `https://api2-v2.qoder.sh/model/v1` 只是两边共用的 OpenAI 入口，不提供 `/algo`，直接 POST 聊天会 404。签名时第一参给上面的 origin。
 原始 URL 由 wasm 定型为 `<host>/algo/api/v2/service/pro/sse/agent_chat_generation
 ?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1`。
 
-### 请求体（实测打通的最小形状，普通 OpenAI content 形态直通）
+### 请求体（国际版 agent_router 要能选中 flow）
+
+国内网关接受只有 `business.type/scene`、`task_id` 为空的最小体。国际版
+`api3.qoder.sh` 会把这种请求交给 `agent_router`，并回
+`[FAIL]node:agent_router msg:None flow nodes found for router agent_router`。
+选中 `agent_common` / `common` 这条 flow 后，同一条设备令牌可以正常出 token。
 
 ```json
-{"model":"<模型 key，如 qfmodel|auto>",
+{"model":"<模型 key，如 dfmodel|qfmodel>",
  "stream":true,"temperature":0.7,"max_tokens":64,
- "request_id":"<uuid>","request_set_id":"<uuid>","session_id":"<uuid>","task_id":"",
- "business":{"type":"agent","scene":"cli"},
+ "request_id":"<uuid>","request_set_id":"<uuid>","chat_record_id":"<同 request_set_id>",
+ "session_id":"<uuid>","session_type":"qodercli","chat_task":"FREE_INPUT",
+ "is_reply":true,"is_retry":false,"source":1,"version":"3",
+ "agent_id":"agent_common","task_id":"common",
+ "business":{"product":"cli","version":"1.0.0","type":"agent","scene":"cli","stage":"start","id":"<uuid>","begin_at":<unix ms>},
  "messages":[{"role":"user","content":"<文本>"}],
  "model_config":{"key":"<同 model>","source":"system"},
  "data_policy_agreed":true}
@@ -97,7 +106,7 @@ tool]"（算法网关把内容为空的消息降级处理）。`contents` 字段
   拦截 ChatBase 的 POST，`prepareAgentChatBody`（含遗留模型名映射
   qwen3.8-max→qmodel_38max 等），`prepareInferRequest` 签名+编码，
   `unwrapSSE` 把信封解回标准 OpenAI 流；**聊天 gateway 按 token 所属 edition 选**
-  （CN→gateway.qoder.com.cn，intl→api2-v2.qoder.sh，与 URL front 无关——
+  （CN→gateway.qoder.com.cn，intl→api3.qoder.sh，与 URL front 无关——
   两个 provider 共用一个 ChatBase）。
 - agent 环流验证：GUI 配置 URL + CN 凭证 → 流式回复 ok →agent-loop wire OK。
 

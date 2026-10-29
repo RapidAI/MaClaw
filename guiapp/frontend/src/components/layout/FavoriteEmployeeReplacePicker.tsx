@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { tailText } from '../../i18n/mnTail'
 
 interface FavoriteEmployeeReplacePickerProps {
     currentSlots: { veId: string; name: string }[];
@@ -10,7 +11,6 @@ interface FavoriteEmployeeReplacePickerProps {
 
 export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onReplace, onCancel, lang }: FavoriteEmployeeReplacePickerProps) {
     const ref = useRef<HTMLDivElement>(null);
-    const isZh = !lang || lang.startsWith('zh');
 
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
@@ -38,17 +38,17 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                 className="ferp-dialog"
             >
                 <div className="ferp-title">
-                    {isZh ? '常用已满，选择要替换的位置' : 'Favorites full — pick a slot to replace'}
+                    {tailText(lang ?? "", 'Favorites full — pick a slot to replace', '常用已满，选择要替换的位置')}
                 </div>
                 <div className="ferp-hint">
-                    {isZh ? `将「${newVeName}」替换到：` : `Replace with "${newVeName}":`}
+                    {tailText(lang ?? "", `Replace with "${newVeName}":`, `将「${newVeName}」替换到：`)}
                 </div>
                 {currentSlots.map((slot, index) => (
                     <button
                         key={slot.veId}
                         type="button"
                         data-testid={`replace-slot-${index}`}
-                        aria-label={isZh ? `替换第 ${index + 1} 个常用数字员工：${slot.name}` : `Replace favorite slot ${index + 1}: ${slot.name}`}
+                        aria-label={tailText(lang ?? "", `Replace favorite slot ${index + 1}: ${slot.name}`, `替换第 ${index + 1} 个常用数字员工：${slot.name}`)}
                         onClick={() => onReplace(index)}
                         className="ferp-slot-btn"
                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--theme-hover, rgba(0,0,0,0.05))'; }}
@@ -61,7 +61,7 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                             {slot.name}
                         </span>
                         <span className="ferp-slot-action">
-                            {isZh ? '点击替换' : 'click to replace'}
+                            {tailText(lang ?? "", 'click to replace', '点击替换')}
                         </span>
                     </button>
                 ))}
@@ -71,7 +71,7 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                         onClick={onCancel}
                         className="ferp-cancel-btn"
                     >
-                        {isZh ? '取消' : 'Cancel'}
+                        {tailText(lang ?? "", 'Cancel', '取消')}
                     </button>
                 </div>
             </div>

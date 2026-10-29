@@ -70,7 +70,7 @@ const TLS_I18N = {
     statusPendingBadge: '[\u5f85\u751f\u6210]'
   }
 };
-const tlsx = (key, vars = {}) => ((TLS_I18N[currentLang] || TLS_I18N.en)[key] || TLS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const tlsx = (key, vars = {}) => (window.hubDict ? window.hubDict('TLS', TLS_I18N, key, vars) : ((TLS_I18N[currentLang] || TLS_I18N.en)[key] || TLS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 function applyTLSI18n() {
   _s('tlsTitle', 'textContent', tlsx('title'));
   _s('tlsDesc', 'textContent', tlsx('desc'));
@@ -157,7 +157,7 @@ const ROUTING_I18N = {
     saved: '\u5de5\u4f5c\u6a21\u5f0f\u5df2\u4fdd\u5b58\u3002'
   }
 };
-const srx = (key, vars = {}) => ((ROUTING_I18N[currentLang] || ROUTING_I18N.en)[key] || ROUTING_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const srx = (key, vars = {}) => (window.hubDict ? window.hubDict('ROUTING', ROUTING_I18N, key, vars) : ((ROUTING_I18N[currentLang] || ROUTING_I18N.en)[key] || ROUTING_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 const REGISTRATION_AUTH_I18N = {
   en: {
     title: 'Registration Verification',
@@ -218,7 +218,7 @@ const REGISTRATION_AUTH_I18N = {
     required: '\u53ea\u8981\u542f\u7528\u624b\u673a\u53f7\u6ce8\u518c\uff0c\u5c31\u9700\u8981\u586b\u5199\u963f\u91cc\u4e91 AccessKey ID\u3001AccessKey Secret\u3001\u77ed\u4fe1\u7b7e\u540d\u3001\u6709\u6548\u5206\u949f\u6570\u3001\u9a8c\u8bc1\u7801\u4f4d\u6570\u548c\u6bcf\u65e5\u53d1\u9001\u4e0a\u9650\u3002'
   }
 };
-const rax = (key, vars = {}) => ((REGISTRATION_AUTH_I18N[currentLang] || REGISTRATION_AUTH_I18N.en)[key] || REGISTRATION_AUTH_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const rax = (key, vars = {}) => (window.hubDict ? window.hubDict('REGISTRATION_AUTH', REGISTRATION_AUTH_I18N, key, vars) : ((REGISTRATION_AUTH_I18N[currentLang] || REGISTRATION_AUTH_I18N.en)[key] || REGISTRATION_AUTH_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 const USER_REFERRAL_SYSTEM_I18N = {
   en: {
     title: 'User Invitations', desc: 'Control whether tenant users can share referral links and set OEM installer destinations.', reload: 'Reload',
@@ -235,7 +235,7 @@ const USER_REFERRAL_SYSTEM_I18N = {
     save: '\u4fdd\u5b58\u9080\u8bf7\u7cfb\u7edf\u8bbe\u7f6e', saving: '\u4fdd\u5b58\u4e2d...', saved: '\u9080\u8bf7\u7cfb\u7edf\u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002', defaults: '\u6062\u590d\u5b98\u65b9\u94fe\u63a5', restored: '\u5df2\u6062\u590d\u5b98\u65b9 MaClaw \u5b89\u88c5\u5668\u94fe\u63a5\uff0c\u8bf7\u4fdd\u5b58\u4ee5\u751f\u6548\u3002', loadFailed: '\u52a0\u8f7d\u9080\u8bf7\u7cfb\u7edf\u8bbe\u7f6e\u5931\u8d25\uff1a{error}', saveFailed: '\u4fdd\u5b58\u9080\u8bf7\u7cfb\u7edf\u8bbe\u7f6e\u5931\u8d25\uff1a{error}', conflict: '\u5176\u4ed6\u7ba1\u7406\u5458\u5df2\u66f4\u65b0\u9080\u8bf7\u8bbe\u7f6e\uff0c\u5df2\u91cd\u65b0\u52a0\u8f7d\u6700\u65b0\u503c\u3002'
   }
 };
-const urx = (key, vars = {}) => ((USER_REFERRAL_SYSTEM_I18N[currentLang] || USER_REFERRAL_SYSTEM_I18N.en)[key] || USER_REFERRAL_SYSTEM_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const urx = (key, vars = {}) => (window.hubDict ? window.hubDict('USER_REFERRAL_SYSTEM', USER_REFERRAL_SYSTEM_I18N, key, vars) : ((USER_REFERRAL_SYSTEM_I18N[currentLang] || USER_REFERRAL_SYSTEM_I18N.en)[key] || USER_REFERRAL_SYSTEM_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 const USER_REFERRAL_OFFICIAL_DOWNLOADS = {
   windows_amd64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-windows-amd64.exe', windows_arm64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-windows-arm64.exe',
   macos_amd64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-darwin-amd64', macos_arm64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-darwin-arm64',
@@ -318,7 +318,7 @@ const TENANT_MAIL_SENDER_I18N = {
     saveFailed: '\u4fdd\u5b58\u53d1\u4ef6\u4eba\u540d\u79f0\u5931\u8d25: {error}'
   }
 };
-const tmsx = (key, vars = {}) => ((TENANT_MAIL_SENDER_I18N[currentLang] || TENANT_MAIL_SENDER_I18N.en)[key] || TENANT_MAIL_SENDER_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const tmsx = (key, vars = {}) => (window.hubDict ? window.hubDict('TENANT_MAIL_SENDER', TENANT_MAIL_SENDER_I18N, key, vars) : ((TENANT_MAIL_SENDER_I18N[currentLang] || TENANT_MAIL_SENDER_I18N.en)[key] || TENANT_MAIL_SENDER_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 const TENANT_MAIL_SENDER_MAX_RUNES = 80;
 const TENANT_MIGRATION_SETTINGS_I18N = {
   en: {
@@ -348,7 +348,7 @@ const TENANT_MIGRATION_SETTINGS_I18N = {
     invalid: '\u8bf7\u8f93\u5165 100 \u5230 1024 MB \u4e4b\u95f4\u7684\u6574\u6570\u3002'
   }
 };
-const tmgx = (key, vars = {}) => ((TENANT_MIGRATION_SETTINGS_I18N[currentLang] || TENANT_MIGRATION_SETTINGS_I18N.en)[key] || TENANT_MIGRATION_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const tmgx = (key, vars = {}) => (window.hubDict ? window.hubDict('TENANT_MIGRATION_SETTINGS', TENANT_MIGRATION_SETTINGS_I18N, key, vars) : ((TENANT_MIGRATION_SETTINGS_I18N[currentLang] || TENANT_MIGRATION_SETTINGS_I18N.en)[key] || TENANT_MIGRATION_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 const TENANT_DIGITAL_ASSETS_SETTINGS_I18N = {
   en: {
     title: 'Digital Assets',
@@ -385,7 +385,7 @@ const TENANT_DIGITAL_ASSETS_SETTINGS_I18N = {
     syncOffSaved: '\u5df2\u5173\u95ed\u5ba2\u6237\u7aef\u540c\u6b65\u3002'
   }
 };
-const tdax = (key, vars = {}) => ((TENANT_DIGITAL_ASSETS_SETTINGS_I18N[currentLang] || TENANT_DIGITAL_ASSETS_SETTINGS_I18N.en)[key] || TENANT_DIGITAL_ASSETS_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const tdax = (key, vars = {}) => (window.hubDict ? window.hubDict('TENANT_DIGITAL_ASSETS_SETTINGS', TENANT_DIGITAL_ASSETS_SETTINGS_I18N, key, vars) : ((TENANT_DIGITAL_ASSETS_SETTINGS_I18N[currentLang] || TENANT_DIGITAL_ASSETS_SETTINGS_I18N.en)[key] || TENANT_DIGITAL_ASSETS_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 const TENANT_CHECKIN_SETTINGS_I18N = {
   en: {
     title: 'Daily Check-in',
@@ -448,7 +448,7 @@ const TENANT_CHECKIN_SETTINGS_I18N = {
     recordsLoadFailed: '\u52a0\u8f7d\u7b7e\u5230\u8bb0\u5f55\u5931\u8d25\uff1a{error}'
   }
 };
-const tcix = (key, vars = {}) => ((TENANT_CHECKIN_SETTINGS_I18N[currentLang] || TENANT_CHECKIN_SETTINGS_I18N.en)[key] || TENANT_CHECKIN_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const tcix = (key, vars = {}) => (window.hubDict ? window.hubDict('TENANT_CHECKIN_SETTINGS', TENANT_CHECKIN_SETTINGS_I18N, key, vars) : ((TENANT_CHECKIN_SETTINGS_I18N[currentLang] || TENANT_CHECKIN_SETTINGS_I18N.en)[key] || TENANT_CHECKIN_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
   en: {
     title: 'System Free LLM (system-free)',
@@ -487,7 +487,7 @@ const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
     providers: '\u670d\u52a1\u5546: {ids}'
   }
 };
-const tslx = (key, vars = {}) => ((TENANT_SYSTEM_LLM_DEFAULTS_I18N[currentLang] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en)[key] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const tslx = (key, vars = {}) => (window.hubDict ? window.hubDict('TENANT_SYSTEM_LLM_DEFAULTS', TENANT_SYSTEM_LLM_DEFAULTS_I18N, key, vars) : ((TENANT_SYSTEM_LLM_DEFAULTS_I18N[currentLang] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en)[key] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? ''));
 const TENANT_MIGRATION_MIN_MB = 100;
 const TENANT_MIGRATION_MAX_MB = 1024;
 // Declared early: applyTenantSystemLLMDefaultsI18n() runs at script load and renders status from this cache.

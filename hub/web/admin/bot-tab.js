@@ -207,7 +207,12 @@
   };
 
   function text() {
-    return copy[global.currentLang === 'en' ? 'en' : 'zh'];
+    var lang = global.hubAdminLang ? global.hubAdminLang() : (global.currentLang === 'zh' ? 'zh' : 'en');
+    if (lang === 'mn') {
+      var mn = global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.BOT;
+      return Object.assign({}, copy.en, mn || {});
+    }
+    return copy[lang] || copy.en;
   }
 
   function byID(id) {

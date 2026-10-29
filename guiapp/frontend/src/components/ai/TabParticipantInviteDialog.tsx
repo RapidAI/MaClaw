@@ -9,6 +9,7 @@ import { virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGr
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+import { tailText } from "../../i18n/mnTail"
 
 type TabParticipantInviteDialogProps = {
     tab: AITab;
@@ -28,8 +29,6 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
     const [error, setError] = useState("");
     const [addingId, setAddingId] = useState("");
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !addingId });
-    const isZh = !lang || lang.startsWith("zh");
-
     useEffect(() => {
         const handler = (event: KeyboardEvent) => {
             if (event.key === "Escape" && !addingId) onClose();
@@ -69,14 +68,14 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
             }));
         }).catch(() => {
             if (!cancelled) {
-                setError(isZh ? "\u83b7\u53d6\u5217\u8868\u5931\u8d25" : "Failed to load");
+                setError(tailText(lang ?? "", "Failed to load", "\u83b7\u53d6\u5217\u8868\u5931\u8d25"));
                 setAvailable([]);
             }
         }).finally(() => {
             if (!cancelled) setLoading(false);
         });
         return () => { cancelled = true; };
-    }, [isZh, tab]);
+    }, [lang, tab]);
 
     if (tab.readOnly || (!tab.veId && !tab.discussionId)) return null;
 
@@ -93,12 +92,12 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
                 {...dialogProps}
             >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 8px", borderBottom: `1px solid ${theme.divider}`, marginBottom: 4 }}>
-                    <span className="tpid-title">{isZh ? "" : "Invite digital employee"}</span>
+                    <span className="tpid-title">{tailText(lang ?? "", "Invite digital employee", "邀请数字员工")}</span>
                     <button data-testid="tab-participant-invite-close" type="button" disabled={!!addingId} onClick={onClose} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: addingId ? "default" : "pointer", fontSize: 16, lineHeight: 1, opacity: addingId ? 0.45 : 1 }}>x</button>
                 </div>
-                {loading && <div style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</div>}
+                {loading && <div style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{tailText(lang ?? "", "Loading...", "\u52a0\u8f7d\u4e2d...")}</div>}
                 {!loading && error && <div data-testid="tab-participant-invite-error" style={{ padding: "10px 8px", fontSize: 12, color: theme.errorText || "#c43d34" }}>{error}</div>}
-                {!loading && !error && available.length === 0 && <div data-testid="tab-participant-invite-empty" style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{isZh ? "\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u6570\u5b57\u5458\u5de5" : "No available digital employees"}</div>}
+                {!loading && !error && available.length === 0 && <div data-testid="tab-participant-invite-empty" style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{tailText(lang ?? "", "No available digital employees", "\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u6570\u5b57\u5458\u5de5")}</div>}
                 {!loading && !error && available.map((ve, index) => {
                     const participantId = virtualEmployeeParticipantId(ve);
                     const displayName = virtualEmployeeDisplayName(ve, index, lang);
@@ -117,7 +116,7 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
                         }
                     }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", border: "none", background: "transparent", color: theme.text, cursor: addingId ? "default" : "pointer", textAlign: "left", borderRadius: "var(--radius-sm, 6px)", opacity: addingId && addingId !== participantId ? 0.55 : 1 }}>
                         <span className="tpid-presence" />
-                        <span className="tpid-name">{addingId === participantId ? (isZh ? "" : "Adding...") : displayName}</span>
+                        <span className="tpid-name">{addingId === participantId ? (tailText(lang ?? "", "Adding...", "添加中...")) : displayName}</span>
                     </button>;
                 })}
             </div>

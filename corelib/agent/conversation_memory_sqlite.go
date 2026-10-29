@@ -48,7 +48,18 @@ CREATE INDEX IF NOT EXISTS conversation_entries_walk
     ON conversation_entries(session_id, node_id, parent_id);
 CREATE INDEX IF NOT EXISTS conversation_entries_order
     ON conversation_entries(session_id, entry_order, node_id);
+CREATE TABLE IF NOT EXISTS conversation_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 `
+
+// conversationMetaLegacyImportKey marks that the one-shot legacy JSON import
+// committed. Deciding "already imported" from the database file's existence
+// strands legacy sessions when the process dies after the file is created but
+// before the import transaction commits: the next open would skip the import
+// while the untouched JSON files are never read again.
+const conversationMetaLegacyImportKey = "legacy_import"
 
 type conversationSQLiteStore struct {
 	db   *sql.DB
@@ -95,7 +106,11 @@ func openConversationSQLite(storePath string) (*conversationSQLiteStore, error) 
 	if _, err := db.Exec(conversationSQLiteSchema); err != nil {
 		return fail(err)
 	}
-	if newDB {
+	imported, err := sqliteLegacyImportDone(db)
+	if err != nil {
+		return fail(err)
+	}
+	if !imported {
 		migration, err := readLegacyConversationMigration(storePath)
 		if err != nil {
 			return fail(err)
@@ -110,6 +125,18 @@ func openConversationSQLite(storePath string) (*conversationSQLiteStore, error) 
 		}
 	}
 	return store, nil
+}
+
+func sqliteLegacyImportDone(db *sql.DB) (bool, error) {
+	var value string
+	err := db.QueryRow(`SELECT value FROM conversation_meta WHERE key=?`, conversationMetaLegacyImportKey).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return value != "", nil
 }
 
 func readLegacyConversationMigration(storePath string) (legacyConversationMigration, error) {
@@ -281,6 +308,9 @@ func (s *conversationSQLiteStore) importLegacy(migration legacyConversationMigra
 		if err := writeSQLiteSession(tx, userID, session, path, nil, true); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO conversation_meta(key, value) VALUES(?, ?)`, conversationMetaLegacyImportKey, "1"); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

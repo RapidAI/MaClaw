@@ -248,10 +248,22 @@
 </div>
 <script>
   try {
-    var nav = (navigator.language || '').toLowerCase();
+    var nav = (navigator.language || '').toLowerCase().replace(/_/g, '-');
+    var mn = nav === 'mn' || nav.indexOf('mn-mn') === 0 || nav.indexOf('mn-cyrl') === 0;
     var hans = nav === 'zh' || nav === 'zh-cn' || nav.indexOf('zh-hans') === 0 || nav === 'zh-sg';
     var hant = nav === 'zh-tw' || nav === 'zh-hk' || nav === 'zh-mo' || nav.indexOf('zh-hant') === 0;
-    if (hans || hant) {
+    if (mn) {
+      document.documentElement.lang = 'mn';
+      document.getElementById('boot-title').textContent = 'Орчин бэлтгэж байна';
+      document.getElementById('boot-sub').textContent = 'Ажиллах орчныг бэлтгэж байна. Дууссаны дараа үндсэн цонх нээгдэнэ.';
+      document.getElementById('boot-status').textContent = 'Preparing runtime...';
+      document.getElementById('boot-node-desc').textContent = 'JavaScript орчин';
+      document.getElementById('boot-git-desc').textContent = 'Кодын хувилбар';
+      document.getElementById('boot-python-desc').textContent = 'Python орчин';
+      document.getElementById('boot-node-state').textContent = 'Хүлээж байна';
+      document.getElementById('boot-git-state').textContent = 'Хүлээж байна';
+      document.getElementById('boot-python-state').textContent = 'Хүлээж байна';
+    } else if (hans || hant) {
       document.documentElement.lang = hans ? 'zh-Hans' : 'zh-Hant';
       document.getElementById('boot-title').textContent = hans ? '环境准备中' : '環境準備中';
       document.getElementById('boot-sub').textContent = hans

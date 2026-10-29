@@ -4,6 +4,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { IconBell } from "./WorkbenchIcons";
+import { tailText } from "../../i18n/mnTail"
 
 // --- Types ---
 
@@ -145,21 +146,21 @@ async function playAuthRequestSound() {
 
 // --- Component ---
 
-function authTextForLang(isZh: boolean, en: string, zh: string): string {
-    return isZh ? zh : en;
+function authTextForLang(isZh: boolean | string, en: string, zh: string): string {
+    return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), en, zh);
 }
 
 function readableAuthName(
     name: string | undefined,
     id: string | undefined,
-    isZh: boolean,
+    lang: boolean | string,
     fallbackEn: string,
     fallbackZh: string,
 ): string {
     const trimmed = String(name || "").trim();
     const rawId = String(id || "").trim();
     if (trimmed && trimmed !== rawId && !looksLikeRawParticipantId(trimmed)) return trimmed;
-    return authTextForLang(isZh, fallbackEn, fallbackZh);
+    return authTextForLang(lang, fallbackEn, fallbackZh);
 }
 
 export function VEAuthorizationDialog({
@@ -171,8 +172,6 @@ export function VEAuthorizationDialog({
     const [responding, setResponding] = useState<string | null>(null);
     const mountedRef = useRef(true);
     const requestIdsRef = useRef<Set<string>>(new Set());
-
-    const isZh = !lang || lang.startsWith("zh");
 
     // Listen for auth request events
     useEffect(() => {
@@ -259,7 +258,7 @@ export function VEAuthorizationDialog({
                         color: theme.headingColor || theme.text,
                     }}
                 >
-                    {isZh ? "授权请求" : "Authorization Request"}
+                    {tailText(lang ?? "", "Authorization Request", "授权请求")}
                 </h3>
 
                 {requests.map((req) => (
@@ -277,15 +276,15 @@ export function VEAuthorizationDialog({
                         <div style={{ fontSize: 13, color: theme.text, marginBottom: 8 }}>
                             <div className="vead-req-block">
                                 <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                                    {isZh ? "请求者：" : "Requester: "}
+                                    {tailText(lang ?? "", "Requester: ", "请求者：")}
                                 </span>
-                                <strong>{readableAuthName(req.requester_name, req.requester_machine_id, isZh, "Requester", "请求者")}</strong>
+                                <strong>{readableAuthName(req.requester_name, req.requester_machine_id, lang ?? "en", "Requester", "请求者")}</strong>
                             </div>
                             <div>
                                 <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                                    {isZh ? "目标数字员工：" : "Target digital employee: "}
+                                    {tailText(lang ?? "", "Target digital employee: ", "目标数字员工：")}
                                 </span>
-                                <strong>{readableAuthName(req.target_ve_name, req.target_ve_id, isZh, "Digital employee", "数字员工")}</strong>
+                                <strong>{readableAuthName(req.target_ve_name, req.target_ve_id, lang ?? "en", "Digital employee", "数字员工")}</strong>
                             </div>
                         </div>
 
@@ -305,7 +304,7 @@ export function VEAuthorizationDialog({
                                     opacity: responding === req.id ? 0.5 : 1,
                                 }}
                             >
-                                {isZh ? "拒绝" : "Deny"}
+                                {tailText(lang ?? "", "Deny", "拒绝")}
                             </button>
                             <button
                                 data-testid={`ve-auth-allow-${req.id}`}
@@ -323,7 +322,7 @@ export function VEAuthorizationDialog({
                                     opacity: responding === req.id ? 0.5 : 1,
                                 }}
                             >
-                                {isZh ? "允许" : "Allow"}
+                                {tailText(lang ?? "", "Allow", "允许")}
                             </button>
                         </div>
                     </div>
@@ -409,8 +408,6 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
     const respondingRef = useRef<string | null>(null);
     const requestIdsRef = useRef<Set<string>>(new Set());
     const triggerRef = useRef<HTMLButtonElement | null>(null);
-    const isZh = !lang || lang.startsWith("zh");
-
     const updatePopoverFrame = useCallback(() => {
         const trigger = triggerRef.current;
         if (!trigger) return;
@@ -519,18 +516,19 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
             console.error("Failed to respond to auth request:", err);
             if (mountedRef.current) {
                 const message = err instanceof Error ? err.message : String(err || "");
-                setRespondError(isZh ? `处理失败：${message || "请稍后重试"}` : `Access request failed: ${message || "try again later"}`);
+                const detail = message || tailText(lang ?? "", "try again later", "请稍后重试");
+                setRespondError(tailText(lang ?? "", `Access request failed: ${detail}`, `处理失败：${detail}`));
             }
         } finally {
             respondingRef.current = null;
             if (mountedRef.current) setResponding(null);
         }
-    }, [isZh, respondAuthRequest]);
+    }, [lang, respondAuthRequest]);
 
     if (requests.length === 0) return null;
 
-    const title = isZh ? "访问请求" : "Access requests";
-    const hint = isZh ? "首次访问需确认。处理后对端会收到通过、拒绝或无法访问状态。" : "First access requires confirmation. The requester is updated after your decision.";
+    const title = tailText(lang ?? "", "Access requests", "访问请求");
+    const hint = tailText(lang ?? "", "First access requires confirmation. The requester is updated after your decision.", "首次访问需确认。处理后对端会收到通过、拒绝或无法访问状态。");
 
     return (
         <div className="ve-auth-request-center" data-testid="ve-auth-request-center" style={{ position: "relative", display: "inline-flex", ...(inline ? { WebkitAppRegion: "no-drag" } as any : {}) }}>
@@ -539,7 +537,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                 type="button"
                 className="ai-titlebar-tool ve-auth-request-trigger ve-auth-request-trigger--blink"
                 data-testid="ve-auth-request-trigger"
-                aria-label={isZh ? `${requests.length} 个访问请求待确认` : `${requests.length} pending access request(s)`}
+                aria-label={tailText(lang ?? "", `${requests.length} pending access request(s)`, `${requests.length} 个访问请求待确认`)}
                 onMouseDown={(e) => { if (inline) { e.preventDefault(); e.stopPropagation(); updatePopoverFrame(); setOpen((value) => !value); } }}
                 onClick={(e) => { if (!inline) { e.preventDefault(); e.stopPropagation(); updatePopoverFrame(); setOpen((value) => !value); } }}
                 style={{
@@ -591,28 +589,28 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                             <div style={{ fontSize: 12, lineHeight: 1.45, color: theme.textMuted, marginTop: 3 }}>{hint}</div>
                             {respondError && <div role="alert" style={{ fontSize: 12, lineHeight: 1.45, color: theme.errorText || "#c43d34", marginTop: 6 }}>{respondError}</div>}
                         </div>
-                        <button type="button" onClick={() => setOpen(false)} aria-label={isZh ? "关闭" : "Close"} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", fontSize: 12, lineHeight: 1, fontWeight: 700 }}>X</button>
+                        <button type="button" onClick={() => setOpen(false)} aria-label={tailText(lang ?? "", "Close", "关闭")} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", fontSize: 12, lineHeight: 1, fontWeight: 700 }}>X</button>
                     </div>
                     <div className="vead-pop-body">
                         {requests.map((req) => {
-                            const requester = readableAuthName(req.requester_name, req.requester_machine_id, isZh, "Requester", "请求者");
-                            const target = readableAuthName(req.target_ve_name, req.target_ve_id, isZh, "Digital employee", "数字员工");
+                            const requester = readableAuthName(req.requester_name, req.requester_machine_id, lang ?? "en", "Requester", "请求者");
+                            const target = readableAuthName(req.target_ve_name, req.target_ve_id, lang ?? "en", "Digital employee", "数字员工");
                             const busy = responding !== null;
                             return (
                                 <div key={req.id} data-testid={`ve-auth-request-${req.id}`} style={{ border: `1px solid ${theme.divider}`, background: theme.fieldBg, borderRadius: 8, padding: 10 }}>
                                     <div style={{ fontSize: 13, lineHeight: 1.45, color: theme.text }}>
-                                        <strong>{requester}</strong>{isZh ? " 请求访问 " : " requests access to "}<strong>{target}</strong>
+                                        <strong>{requester}</strong>{tailText(lang ?? "", " requests access to ", " 请求访问 ")}<strong>{target}</strong>
                                     </div>
                                     <div style={{ display: "grid", gridTemplateColumns: "72px 1fr", rowGap: 4, columnGap: 8, marginTop: 8, fontSize: 12, color: theme.textMuted }}>
-                                        <span>{isZh ? "来源" : "Source"}</span><span>{req.source || (isZh ? "数字员工会话" : "Digital employee chat")}</span>
-                                        <span>{isZh ? "关系" : "Relation"}</span><span>{isZh ? "首次访问" : "First access"}</span>
-                                        {req.message && <><span>{isZh ? "留言" : "Message"}</span><span>{req.message}</span></>}
+                                        <span>{tailText(lang ?? "", "Source", "来源")}</span><span>{req.source || (tailText(lang ?? "", "Digital employee chat", "数字员工会话"))}</span>
+                                        <span>{tailText(lang ?? "", "Relation", "关系")}</span><span>{tailText(lang ?? "", "First access", "首次访问")}</span>
+                                        {req.message && <><span>{tailText(lang ?? "", "Message", "留言")}</span><span>{req.message}</span></>}
                                     </div>
                                     <div className="vead-pop-actions">
-                                        <button data-testid={`ve-auth-deny-${req.id}`} disabled={busy} onClick={() => respond(req.id, "deny")} className="ve-auth-action ve-auth-action--ghost">{isZh ? "拒绝" : "Deny"}</button>
-                                        <button data-testid={`ve-auth-block-${req.id}`} disabled={busy} onClick={() => respond(req.id, "block")} className="ve-auth-action ve-auth-action--danger">{isZh ? "拒绝并拉黑" : "Block"}</button>
-                                        <button data-testid={`ve-auth-allow-once-${req.id}`} disabled={busy} onClick={() => respond(req.id, "allow_once")} className="ve-auth-action ve-auth-action--secondary">{isZh ? "允许一次" : "Allow once"}</button>
-                                        <button data-testid={`ve-auth-allow-long-${req.id}`} disabled={busy} onClick={() => respond(req.id, "allow_long")} className="ve-auth-action ve-auth-action--primary">{isZh ? "允许长期" : "Allow always"}</button>
+                                        <button data-testid={`ve-auth-deny-${req.id}`} disabled={busy} onClick={() => respond(req.id, "deny")} className="ve-auth-action ve-auth-action--ghost">{tailText(lang ?? "", "Deny", "拒绝")}</button>
+                                        <button data-testid={`ve-auth-block-${req.id}`} disabled={busy} onClick={() => respond(req.id, "block")} className="ve-auth-action ve-auth-action--danger">{tailText(lang ?? "", "Block", "拒绝并拉黑")}</button>
+                                        <button data-testid={`ve-auth-allow-once-${req.id}`} disabled={busy} onClick={() => respond(req.id, "allow_once")} className="ve-auth-action ve-auth-action--secondary">{tailText(lang ?? "", "Allow once", "允许一次")}</button>
+                                        <button data-testid={`ve-auth-allow-long-${req.id}`} disabled={busy} onClick={() => respond(req.id, "allow_long")} className="ve-auth-action ve-auth-action--primary">{tailText(lang ?? "", "Allow always", "允许长期")}</button>
                                     </div>
                                 </div>
                             );
@@ -640,8 +638,6 @@ export function VEAuthBlinkingIndicator({ theme, lang }: VEAuthBlinkingIndicator
     const [visible, setVisible] = useState(true);
     const blinkRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const pendingIdsRef = useRef<Set<string>>(new Set());
-
-    const isZh = !lang || lang.startsWith("zh");
 
     useEffect(() => {
         const requestIdFromEvent = (data: any): string => {
@@ -723,7 +719,7 @@ export function VEAuthBlinkingIndicator({ theme, lang }: VEAuthBlinkingIndicator
                 transition: "opacity 0.2s",
                 opacity: visible ? 1 : 0.3,
             }}
-            title={isZh ? `${pendingCount} 个授权请求待处理` : `${pendingCount} pending auth request(s)`}
+            title={tailText(lang ?? "", `${pendingCount} pending auth request(s)`, `${pendingCount} 个授权请求待处理`)}
         >
             <span className="vead-badge">
                 <IconBell size={12} color="currentColor" />

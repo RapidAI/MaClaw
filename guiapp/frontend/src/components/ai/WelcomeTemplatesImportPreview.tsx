@@ -2,6 +2,7 @@ import { useEffect, useId, useRef } from "react";
 import type { CSSProperties } from "react";
 import { primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import type { WelcomeTemplatesImportPreview } from "./welcomeTaskMemory";
+import { tailText } from "../../i18n/mnTail"
 
 export type WelcomeTemplatesImportPreviewPanelProps = {
     lang: string;
@@ -21,14 +22,14 @@ export function WelcomeTemplatesImportPreviewPanel({
     onConfirm,
     onCancel,
 }: WelcomeTemplatesImportPreviewPanelProps) {
-    const isZh = !lang?.startsWith("en");
+    const isZh = !!lang?.startsWith("zh");
     const titleId = useId();
     const descId = useId();
     const panelRef = useRef<HTMLDivElement | null>(null);
     const confirmRef = useRef<HTMLButtonElement | null>(null);
     const modeLabel = preview.mode === "replace"
-        ? (isZh ? "替换" : "Replace")
-        : (isZh ? "合并" : "Merge");
+        ? (tailText(lang ?? "", "Replace", "替换"))
+        : (tailText(lang ?? "", "Merge", "合并"));
 
     // Focus the panel on mount; Esc cancels.
     useEffect(() => {
@@ -75,31 +76,29 @@ export function WelcomeTemplatesImportPreviewPanel({
             }}
         >
             <div id={titleId} style={{ fontSize: 12, fontWeight: 600, color: t.text, marginBottom: 6 }}>
-                {isZh ? `导入预览（${modeLabel}）` : `Import preview (${modeLabel})`}
+                {tailText(lang ?? "", `Import preview (${modeLabel})`, `导入预览（${modeLabel}）`)}
             </div>
             <div id={descId} style={{ fontSize: 11, color: t.textMuted, marginBottom: 8 }}>
-                {isZh
-                    ? `将新增 ${preview.toAdd.length}，跳过 ${preview.toSkip.length}`
-                    : `Will add ${preview.toAdd.length}, skip ${preview.toSkip.length}`}
+                {tailText(lang ?? "", `Will add ${preview.toAdd.length}, skip ${preview.toSkip.length}`, `将新增 ${preview.toAdd.length}，跳过 ${preview.toSkip.length}`)}
                 {preview.hasExtras && (
                     <span>
-                        {isZh ? " · 将恢复 " : " · Will restore "}
+                        {tailText(lang ?? "", " · Will restore ", " · 将恢复 ")}
                         {[
-                            preview.extras.userRole && (isZh ? `角色(${preview.extras.userRole})` : `role(${preview.extras.userRole})`),
-                            preview.extras.recentCount > 0 && (isZh ? `最近${preview.extras.recentCount}项` : `${preview.extras.recentCount} recent`),
-                            preview.extras.lastScenarioTab && (isZh ? `分类(${preview.extras.lastScenarioTab})` : `tab(${preview.extras.lastScenarioTab})`),
+                            preview.extras.userRole && (tailText(lang ?? "", `role(${preview.extras.userRole})`, `角色(${preview.extras.userRole})`)),
+                            preview.extras.recentCount > 0 && (tailText(lang ?? "", `${preview.extras.recentCount} recent`, `最近${preview.extras.recentCount}项`)),
+                            preview.extras.lastScenarioTab && (tailText(lang ?? "", `tab(${preview.extras.lastScenarioTab})`, `分类(${preview.extras.lastScenarioTab})`)),
                         ].filter(Boolean).join(isZh ? "、" : ", ")}
                     </span>
                 )}
                 <span className="wtip-hint">
-                    {isZh ? "Esc 取消 · Enter 确认（焦点在确认按钮时）" : "Esc to cancel · Enter confirms when focused"}
+                    {tailText(lang ?? "", "Esc to cancel · Enter confirms when focused", "Esc 取消 · Enter 确认（焦点在确认按钮时）")}
                 </span>
             </div>
 
             {preview.toAdd.length > 0 && (
                 <div className="wtip-section" data-testid="welcome-import-preview-add">
                     <div style={{ fontSize: 11, fontWeight: 600, color: t.text, marginBottom: 4 }}>
-                        {isZh ? "将新增" : "To add"}
+                        {tailText(lang ?? "", "To add", "将新增")}
                     </div>
                     <ul style={listStyle}>
                         {preview.toAdd.slice(0, 12).map((item, i) => (
@@ -110,7 +109,7 @@ export function WelcomeTemplatesImportPreviewPanel({
                             </li>
                         ))}
                         {preview.toAdd.length > 12 && (
-                            <li>{isZh ? `…另有 ${preview.toAdd.length - 12} 项` : `…and ${preview.toAdd.length - 12} more`}</li>
+                            <li>{tailText(lang ?? "", `…and ${preview.toAdd.length - 12} more`, `…另有 ${preview.toAdd.length - 12} 项`)}</li>
                         )}
                     </ul>
                 </div>
@@ -119,7 +118,7 @@ export function WelcomeTemplatesImportPreviewPanel({
             {preview.toSkip.length > 0 && (
                 <div className="wtip-section" data-testid="welcome-import-preview-skip">
                     <div style={{ fontSize: 11, fontWeight: 600, color: t.text, marginBottom: 4 }}>
-                        {isZh ? "将跳过" : "To skip"}
+                        {tailText(lang ?? "", "To skip", "将跳过")}
                     </div>
                     <ul style={listStyle}>
                         {preview.toSkip.slice(0, 8).map((item, i) => (
@@ -127,12 +126,12 @@ export function WelcomeTemplatesImportPreviewPanel({
                                 <strong style={{ color: t.text }}>{item.title}</strong>
                                 {" — "}
                                 {item.reason === "duplicate"
-                                    ? (isZh ? "正文已存在" : "duplicate body")
-                                    : (isZh ? "超出上限" : "over limit")}
+                                    ? (tailText(lang ?? "", "duplicate body", "正文已存在"))
+                                    : (tailText(lang ?? "", "over limit", "超出上限"))}
                             </li>
                         ))}
                         {preview.toSkip.length > 8 && (
-                            <li>{isZh ? `…另有 ${preview.toSkip.length - 8} 项` : `…and ${preview.toSkip.length - 8} more`}</li>
+                            <li>{tailText(lang ?? "", `…and ${preview.toSkip.length - 8} more`, `…另有 ${preview.toSkip.length - 8} 项`)}</li>
                         )}
                     </ul>
                 </div>
@@ -140,7 +139,7 @@ export function WelcomeTemplatesImportPreviewPanel({
 
             {preview.toAdd.length === 0 && preview.toSkip.length > 0 && (
                 <div style={{ fontSize: 11, color: t.textMuted, marginBottom: 8 }}>
-                    {isZh ? "没有可新增的模板（可能全部重复或超限）。" : "Nothing new to add (all duplicates or over limit)."}
+                    {tailText(lang ?? "", "Nothing new to add (all duplicates or over limit).", "没有可新增的模板（可能全部重复或超限）。")}
                 </div>
             )}
 
@@ -159,7 +158,7 @@ export function WelcomeTemplatesImportPreviewPanel({
                         cursor: "pointer",
                     }}
                 >
-                    {isZh ? "取消" : "Cancel"}
+                    {tailText(lang ?? "", "Cancel", "取消")}
                 </button>
                 <button
                     ref={confirmRef}
@@ -176,7 +175,7 @@ export function WelcomeTemplatesImportPreviewPanel({
                         opacity: preview.toAdd.length === 0 && !preview.hasExtras ? 0.45 : 1,
                     })}
                 >
-                    {isZh ? "确认导入" : "Confirm import"}
+                    {tailText(lang ?? "", "Confirm import", "确认导入")}
                 </button>
             </div>
         </div>

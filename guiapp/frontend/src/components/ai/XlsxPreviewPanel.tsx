@@ -6,6 +6,7 @@ import { isTaskResultPdfPreviewURL, localizeTaskResultPreviewError, type TaskRes
 import { previewWorkbookGrids, readPreviewWorkbook, releasePreviewWorkbook, type ParsedWorkbook } from "./xlsxPreviewParse";
 import { isPreviewAbortError, readPreviewBody } from "./previewBytes";
 import { PREVIEW_BAR_DELAY_MS, PREVIEW_HEAVY_PARSE_BYTES, PreviewLoadingStatus, yieldPreviewPaint, type PreviewProgress } from "./PreviewProgressBar";
+import { tailText } from "../../i18n/mnTail"
 
 export { buildSheetGrid, previewWorkbookGrids, readPreviewWorkbook, releasePreviewWorkbook } from "./xlsxPreviewParse";
 
@@ -244,23 +245,23 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
                 ratio={progress.ratio}
                 showBar={barOn}
                 phrases={{
-                    wait: isZh ? "正在加载表格预览…" : "Loading spreadsheet preview…",
-                    read: isZh ? "正在读取表格…" : "Reading spreadsheet…",
-                    parse: isZh ? "正在解析表格…" : "Parsing spreadsheet…",
+                    wait: tailText(lang, "Loading spreadsheet preview…", "正在加载表格预览…"),
+                    read: tailText(lang, "Reading spreadsheet…", "正在读取表格…"),
+                    parse: tailText(lang, "Parsing spreadsheet…", "正在解析表格…"),
                 }}
             />
         );
     }
     const noticeBits: string[] = [];
-    if (grid.truncatedRows > 0) noticeBits.push(isZh ? `仅显示前 ${grid.shownRows} 行` : `first ${grid.shownRows} rows`);
-    if (grid.truncatedCols > 0) noticeBits.push(isZh ? `仅显示前 ${grid.shownCols} 列` : `first ${grid.shownCols} columns`);
+    if (grid.truncatedRows > 0) noticeBits.push(tailText(lang, `first ${grid.shownRows} rows`, `仅显示前 ${grid.shownRows} 行`));
+    if (grid.truncatedCols > 0) noticeBits.push(tailText(lang, `first ${grid.shownCols} columns`, `仅显示前 ${grid.shownCols} 列`));
     return (
         <div data-testid="xlsx-preview-panel" style={fill}>
             {parsed!.names.length > 1 ? (
                 <div
                     data-testid="xlsx-preview-sheet-tabs"
                     role="tablist"
-                    aria-label={isZh ? "工作表" : "Sheets"}
+                    aria-label={tailText(lang, "Sheets", "工作表")}
                     style={{
                         display: "flex",
                         gap: 4,
@@ -302,7 +303,7 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
             ) : null}
             {grid.rows.length === 0 ? (
                 <div data-testid="xlsx-preview-empty" style={{ padding: 20, color: theme.textMuted, fontSize: 13 }}>
-                    {isZh ? `「${sheetName}」没有可显示的内容` : `Sheet "${sheetName}" has no content`}
+                    {tailText(lang, `Sheet "${sheetName}" has no content`, `「${sheetName}」没有可显示的内容`)}
                 </div>
             ) : (
                 <div ref={gridScrollRef} data-testid="xlsx-preview-grid" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
@@ -362,9 +363,7 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
                         flexShrink: 0,
                     }}
                 >
-                    {isZh
-                        ? `${noticeBits.join("、")}，完整内容请用 Excel 打开`
-                        : `Showing ${noticeBits.join(", ")} — open in Excel for the full content`}
+                    {tailText(lang, `Showing ${noticeBits.join(", ")} — open in Excel for the full content`, `${noticeBits.join("、")}，完整内容请用 Excel 打开`)}
                 </div>
             ) : null}
         </div>

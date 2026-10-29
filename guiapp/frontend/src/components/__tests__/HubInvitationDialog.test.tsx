@@ -233,6 +233,17 @@ describe('HubInvitationDialog', () => {
     expect(screen.queryByDisplayValue('https://hub.example/invite/demo')).toBeNull();
   });
 
+  it('shows Khalkha invitation copy', async () => {
+    renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="mn" />);
+
+    expect(await screen.findByRole('heading', { name: 'Найзуудаа урих' })).toBeTruthy();
+    expect(screen.getByText('Амжилттай бүртгэлээр танд 20 Credits, найздаа 10 Credits олгоно.')).toBeTruthy();
+    expect(screen.getByText('Шагнал бүр уригдсан хүн бүртгүүлснээс хойш 30 хоног хүчинтэй.')).toBeTruthy();
+    expect(screen.getByText('21 хүн')).toBeTruthy();
+    expect(screen.getByText('Хуудас 1 / 2')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Шинэчлэх' })).toBeTruthy();
+  });
+
   it('does not apply a rotation response after the dialog has closed', async () => {
     let resolveRotate: (value: InvitationPage) => void = () => {};
     vi.mocked(RotateHubUserInvitation).mockReturnValueOnce(new Promise((resolve) => { resolveRotate = resolve; }));

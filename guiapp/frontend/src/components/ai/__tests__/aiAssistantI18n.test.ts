@@ -9,8 +9,10 @@ describe('aiAssistantI18n', () => {
         expect(localizeText('zh-HK', 'English', '\u7b80\u4f53', '\u7e41\u9ad4')).toBe('\u7e41\u9ad4');
     });
 
-    it('keeps the existing default as simplified Chinese', () => {
-        expect(localizeText('', 'English', '\u7b80\u4f53', '\u7e41\u9ad4')).toBe('\u7b80\u4f53');
+    it('uses English when the language is empty or not Chinese', () => {
+        expect(localizeText('', 'English', '\u7b80\u4f53', '\u7e41\u9ad4')).toBe('English');
+        expect(localizeText('ja', 'English', '\u7b80\u4f53', '\u7e41\u9ad4')).toBe('English');
+        expect(localizeText('mn', 'Close', '\u5173\u95ed', '\u95dc\u9589')).toBe('\u0425\u0430\u0430\u0445');
     });
 
     it('localizes insufficient-credit errors while preserving amounts', () => {
@@ -129,5 +131,73 @@ describe('aiAssistantI18n', () => {
         // No colon: keep the full sentence as the title.
         expect(describeAIAssistantError('MaClaw official credits are exhausted. Redeem more credits or switch to another provider.', 'en'))
             .toEqual({ title: 'MaClaw official credits are exhausted. Redeem more credits or switch to another provider.' });
+    });
+
+    it('localizes credit and official-service errors into Khalkha', () => {
+        expect(localizeAIAssistantError('MaClaw 官方周期限流：当前周期额度已用尽，约 1 小时 后恢复。', 'mn'))
+            .toBe('MaClaw албан ёсны мөчлөг хязгаарлагдсан: одоогийн кредит дууссан, ойролцоогоор 1 цагийн дараа сэргэнэ.');
+        expect(localizeAIAssistantError('LLM call failed: insufficient credits for this request: need 14.039 credits, available 9.360', 'mn'))
+            .toBe('LLM дуудлага амжилтгүй: 14.039 кредит хэрэгтэй, боломжтой 9.360.');
+        expect(localizeAIAssistantError('LLM call failed: insufficient credits for this request: need 56.003 credits, available 6.430 (993.570 held by in-flight requests)', 'mn'))
+            .toBe('LLM дуудлага амжилтгүй: 56.003 кредит хэрэгтэй, боломжтой 6.430 (993.570 кредит замд байгаа хүсэлтэд түгжигдсэн).');
+        expect(localizeAIAssistantError('LLM call failed: current period credit limit is exhausted', 'mn'))
+            .toBe('LLM дуудлага амжилтгүй: одоогийн мөчлөгийн кредит дууссан.');
+        expect(localizeAIAssistantError('LLM call failed: timeout', 'mn'))
+            .toBe('LLM дуудлага амжилтгүй: хүсэлтийн хугацаа дууссан');
+    });
+
+    it('describes Khalkha credit errors with amounts, holds, and a hint', () => {
+        expect(describeAIAssistantError(
+            localizeAIAssistantError('LLM call failed: insufficient credits for this request: need 14.039 credits, available 9.360', 'mn'),
+            'mn',
+        )).toEqual({
+            title: 'Credits хүрэлцэхгүй',
+            detail: 'Энэ хүсэлтэд 14.039 кредит хэрэгтэй, боломжтой 9.360 кредит.',
+            hint: 'Нэмж Credits аваарай, эсвэл нийлүүлэгчээ солиод дахин оролдоно уу.',
+        });
+        const held = describeAIAssistantError(
+            localizeAIAssistantError('LLM call failed: insufficient credits for this request: need 56.003 credits, available 6.430 (993.570 held by in-flight requests)', 'mn'),
+            'mn',
+        );
+        expect(held.title).toBe('Credits хүрэлцэхгүй');
+        expect(held.detail).toContain('56.003');
+        expect(held.detail).toContain('993.570');
+        expect(held.hint).toBe('Нэмж Credits аваарай, эсвэл нийлүүлэгчээ солиод дахин оролдоно уу.');
+        expect(describeAIAssistantError(
+            localizeAIAssistantError('LLM call failed: insufficient credits for this request: need 20.000 credits, available 0.000 (20.000 held by in-flight requests)', 'mn'),
+            'mn',
+        )).toEqual({
+            title: 'Credits хүрэлцэхгүй',
+            detail: '20.000 кредит замд байгаа хүсэлтэд түгжигдсэн, одоо чөлөөтэй кредит алга.',
+            hint: 'Дараа дахин оролдоно уу.',
+        });
+        expect(describeAIAssistantError(
+            localizeAIAssistantError('LLM call failed: current period credit limit is exhausted', 'mn'),
+            'mn',
+        )).toEqual({
+            title: 'Одоогийн мөчлөгийн кредит дууссан',
+            hint: 'Нэмж Credits аваарай, эсвэл нийлүүлэгчээ солиод дахин оролдоно уу.',
+        });
+        expect(describeAIAssistantError(
+            localizeAIAssistantError('LLM call failed: selected model grant credits are exhausted', 'mn'),
+            'mn',
+        )).toEqual({
+            title: 'Олголтын кредит дууссан',
+            hint: 'Нэмж Credits аваарай, эсвэл нийлүүлэгчээ солиод дахин оролдоно уу.',
+        });
+        expect(describeAIAssistantError(
+            localizeAIAssistantError('LLM call failed: timeout', 'mn'),
+            'mn',
+        )).toEqual({
+            title: 'Хүсэлтийн хугацаа дууссан',
+            hint: 'Дараа дахин оролдоно уу.',
+        });
+        expect(describeAIAssistantError(
+            localizeAIAssistantError('MaClaw 官方周期限流：当前周期额度已用尽，约 1 小时 后恢复。', 'mn'),
+            'mn',
+        )).toEqual({
+            title: 'MaClaw албан ёсны мөчлөг хязгаарлагдсан',
+            detail: 'одоогийн кредит дууссан, ойролцоогоор 1 цагийн дараа сэргэнэ.',
+        });
     });
 });

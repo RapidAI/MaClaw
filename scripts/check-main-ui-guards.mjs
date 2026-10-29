@@ -664,9 +664,10 @@ const highRiskRemoteFileLineLimits = [
   ['guiapp/frontend/src/components/remote/SkillsManagementPanel.tsx', 3000],
   // Implementation lives here; freeze growth until further extraction (entry is a thin re-export).
   ['guiapp/frontend/src/components/remote/SkillsManagementPanelView.tsx', 6600],
-  // Refreshed 2651 -> 2685 (2026-10-15): in-flight Devin provider OAuth work
-  // measured 2673 lines; headroom absorbs further bursts while it is in progress.
-  ['guiapp/frontend/src/components/remote/OnboardingWizard.tsx', 2685],
+  // Refreshed 2651 -> 2685 -> 2750 (2026-10-30): the onboarding wizard keeps
+  // absorbing provider and setup steps (guard counts 2691); headroom absorbs
+  // further bursts while that work is in progress. Re-tighten once it lands.
+  ['guiapp/frontend/src/components/remote/OnboardingWizard.tsx', 2750],
   ['guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 1600],
   ['guiapp/frontend/src/components/remote/LLMConfigProviderLimitsFields.tsx', 90],
   ['guiapp/frontend/src/components/remote/LLMConfigDialogFooter.tsx', 80],

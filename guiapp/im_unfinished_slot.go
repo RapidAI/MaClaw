@@ -284,14 +284,7 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 }
 
 func localizedPreviousTaskDismissedMessage(lang string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Previous task dismissed. Tell me the new task."
-	case appLanguageZhHant:
-		return "已忽略上次未完成任務。請告訴我新的任務。"
-	default:
-		return "已忽略上次未完成任务。请告诉我新的任务。"
-	}
+	return pickUI(lang, "Previous task dismissed. Tell me the new task.", "已忽略上次未完成任务。请告诉我新的任务。", "已忽略上次未完成任務。請告訴我新的任務。")
 }
 
 func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trimmed string, freshTask bool, decision explicitTaskSlotDecision, unfinishedSlot *agent.UnfinishedTaskSlot) (*IMAgentResponse, bool) {
@@ -412,10 +405,10 @@ func buildUnfinishedSlotResumeContextWithLang(slot *agent.UnfinishedTaskSlot, la
 	// may not contain the unpaired tool call that was in flight when the process
 	// exited, so relying only on the transcript would hide that uncertainty.
 	if toolName := safeRecoveryToolName(slot.LastToolName); toolName != "" {
-		b.WriteString(unfinishedSlotText(lang,
-			"- Interrupted tool evidence: `"+toolName+"` may have started, but its final state is unknown. Do not repeat it merely because this task was recovered.\n",
-			"- 中断工具证据：`"+toolName+"` 可能已开始执行，但最终状态未知。不要因为任务已恢复而直接重复该工具。\n",
-			"- 中斷工具證據：`"+toolName+"` 可能已開始執行，但最終狀態未知。不要因為任務已恢復而直接重複該工具。\n"))
+		b.WriteString(fmt.Sprintf(unfinishedSlotText(lang,
+			"- Interrupted tool evidence: `%s` may have started, but its final state is unknown. Do not repeat it merely because this task was recovered.\n",
+			"- 中断工具证据：`%s` 可能已开始执行，但最终状态未知。不要因为任务已恢复而直接重复该工具。\n",
+			"- 中斷工具證據：`%s` 可能已開始執行，但最終狀態未知。不要因為任務已恢復而直接重複該工具。\n"), toolName))
 	}
 	if strings.TrimSpace(slot.RecoveryMode) == "requires_review" {
 		b.WriteString(unfinishedSlotText(lang,
@@ -476,25 +469,11 @@ func buildUnfinishedSlotHintWithLang(slot *agent.UnfinishedTaskSlot, lang string
 	}
 	title = localizedUnfinishedSlotSummary(title, lang)
 	title = truncateRunes(title, 60)
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return "Detected an unfinished task: " + title + ". Choose resume to continue it."
-	case appLanguageZhHant:
-		return "偵測到未完成任務：" + title + "。選擇「繼續上次任務」可繼續。"
-	default:
-		return "\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a" + title + "\u3002\u9009\u62e9\u201c\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1\u201d\u53ef\u7ee7\u7eed\u3002"
-	}
+	return pickUI(lang, "Detected an unfinished task: ", "\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a", "偵測到未完成任務：") + title + pickUI(lang, ". Choose resume to continue it.", "\u3002\u9009\u62e9\u201c\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1\u201d\u53ef\u7ee7\u7eed\u3002", "。選擇「繼續上次任務」可繼續。")
 }
 
 func unfinishedSlotText(lang, en, zhHans, zhHant string) string {
-	switch normalizeAppLanguageKind(lang) {
-	case appLanguageEnglish:
-		return en
-	case appLanguageZhHant:
-		return zhHant
-	default:
-		return zhHans
-	}
+	return pickUI(lang, en, zhHans, zhHant)
 }
 
 func isSlotActionCommand(text string) bool {
@@ -538,11 +517,16 @@ func externalDeliveryReviewResponse(msg IMUserMessage, slot *agent.UnfinishedTas
 		"上一次外部發送的結果還不能確定。這一輪不會再次投遞，也不會重放那次發送。",
 	)
 	if scope != "" {
-		text = unfinishedSlotText(msg.Lang,
-			fmt.Sprintf("The previous send to %s has an uncertain result, and this channel cannot deliver a file there. This turn will not deliver again, will not generate a new document, and will not hand a path to im_message.", scope),
-			fmt.Sprintf("上一次发到 %s 的结果还不能确定，而且当前通道不能把文件投递到 %s。这一轮不会再次投递，不会生成新文档，也不会把文件路径交给 im_message。", scope, scope),
-			fmt.Sprintf("上一次發到 %s 的結果還不能確定，而且目前通道不能把檔案投遞到 %s。這一輪不會再次投遞，不會生成新文件，也不會把路徑交給 im_message。", scope, scope),
+		format := unfinishedSlotText(msg.Lang,
+			"The previous send to %s has an uncertain result, and this channel cannot deliver a file there. This turn will not deliver again, will not generate a new document, and will not hand a path to im_message.",
+			"上一次发到 %s 的结果还不能确定，而且当前通道不能把文件投递到 %s。这一轮不会再次投递，不会生成新文档，也不会把文件路径交给 im_message。",
+			"上一次發到 %s 的結果還不能確定，而且目前通道不能把檔案投遞到 %s。這一輪不會再次投遞，不會生成新文件，也不會把路徑交給 im_message。",
 		)
+		if strings.Count(format, "%s") == 2 {
+			text = fmt.Sprintf(format, scope, scope)
+		} else {
+			text = fmt.Sprintf(format, scope)
+		}
 	}
 	return &IMAgentResponse{
 		Text:           text,

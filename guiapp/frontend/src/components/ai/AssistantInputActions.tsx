@@ -18,6 +18,7 @@ import { VoiceLevelVisualizer } from "./aiAssistantControls";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { AssistantPermissionModeMenu } from "./AssistantPermissionModeMenu";
 import { clampMenuPosition, focusMenuItem, MENU_MIN_INTERACTIVE_HEIGHT, MENU_MIN_WIDTH, menuItems } from "./assistantInputActionsMenu";
+import { tailText } from "../../i18n/mnTail"
 
 export { clampMenuPosition } from "./assistantInputActionsMenu";
 
@@ -122,7 +123,7 @@ export function AssistantInputActionsLeft({
     const plusButtonRef = useRef<HTMLButtonElement | null>(null);
     const plusMenuId = useId();
     // Match AIAssistantPanel / WelcomeView: non-English UI uses Chinese copy.
-    const isZh = !lang?.startsWith("en");
+    const isZh = !!lang?.startsWith("zh");
     const dark = themeMode === "dark";
     // Keep + usable while the agent is busy: /btw is designed for side queries during work.
     // Only not-ready should block the menu (input may still accept type-ahead while busy).
@@ -277,10 +278,10 @@ export function AssistantInputActionsLeft({
         const active = item.kind === "compose" && item.composeAction === composeAction;
         const itemDisabled = !!(item.disableWhenBusy && inputLocked);
         const isComposeMode = item.kind === "compose";
-        const label = isZh ? item.labelZh : item.labelEn;
+        const label = tailText(lang ?? "", item.labelEn, item.labelZh);
         const hint = itemDisabled
-            ? (isZh ? "请等待当前任务完成" : "Please wait for the current task to finish")
-            : (isZh ? item.hintZh : item.hintEn);
+            ? (tailText(lang ?? "", "Please wait for the current task to finish", "请等待当前任务完成"))
+            : (tailText(lang ?? "", item.hintEn ?? "", item.hintZh ?? ""));
         return (
             <button
                 key={item.id}
@@ -316,7 +317,7 @@ export function AssistantInputActionsLeft({
                     <AssistantInputIcon name={item.icon} size={15} />
                 </span>
                 <span className="aia-item-label">{label}</span>
-                {active && <span style={{ fontSize: "11px", color: t.textMuted, flexShrink: 0 }}>{isZh ? "已选" : "On"}</span>}
+                {active && <span style={{ fontSize: "11px", color: t.textMuted, flexShrink: 0 }}>{tailText(lang ?? "", "On", "已选")}</span>}
             </button>
         );
     };
@@ -421,7 +422,7 @@ export function AssistantInputActionsLeft({
                     }}
                 >
                     <AssistantInputIcon name={getComposeActionIcon(composeAction)} size={12} />
-                    <span>{getComposeActionLabel(composeAction, isZh)}</span>
+                    <span>{getComposeActionLabel(composeAction, (lang || (isZh ? "zh-Hans" : "en")))}</span>
                     <span aria-hidden="true" className="aia-clear-mark">×</span>
                 </button>
             )}
@@ -459,7 +460,7 @@ export function AssistantInputActionsRight({ canSend, cancelSession, handleCance
             aria-label={localizeText(lang, "Cancel", "\u53d6\u6d88")}
         >
             {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(199, 215, 232, 0.24)" : `color-mix(in srgb, ${t.btnColor} 18%, transparent)`}`, borderTopColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, borderRightColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
-            <span className="aia-cancel-a11y">{localizeText(lang, "Cancel", "")}</span>
+            <span className="aia-cancel-a11y">{localizeText(lang, "Cancel", "\u53d6\u6d88")}</span>
         </button>
     ) : (
         <>

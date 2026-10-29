@@ -11,6 +11,8 @@ func TestLanguageFromLANGID(t *testing.T) {
 		0x0404: "zh-Hant", // zh-TW
 		0x0C04: "zh-Hant", // zh-HK
 		0x1404: "zh-Hant", // zh-MO
+		0x0450: "mn",      // mn-MN, Cyrillic
+		0x0850: "en",      // traditional Mongolian, PRC
 	}
 	for id, want := range cases {
 		if got := languageFromLANGID(id); got != want {
@@ -22,8 +24,8 @@ func TestLanguageFromLANGID(t *testing.T) {
 func TestGetCurrentLanguageFallsBackToOSWhenUnset(t *testing.T) {
 	app := &App{}
 	got := app.GetCurrentLanguage()
-	if got != "en" && got != "zh-Hans" && got != "zh-Hant" {
-		t.Fatalf("GetCurrentLanguage() = %q, want en or zh-*", got)
+	if got != "en" && got != "zh-Hans" && got != "zh-Hant" && got != "mn" {
+		t.Fatalf("GetCurrentLanguage() = %q, want en, zh-*, or mn", got)
 	}
 	app.CurrentLanguage = "zh-CN"
 	if got := app.GetCurrentLanguage(); got != "zh-Hans" {

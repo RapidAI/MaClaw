@@ -265,39 +265,19 @@ func formatMainAgentStatus(rs RuntimeStatus, lang string) string {
 		languageKind = normalizeAppLanguageKind(lang)
 	}
 
+	uiLang := string(languageKind)
 	if !rs.MainAgentRunning {
-		switch languageKind {
-		case appLanguageEnglish:
-			return "**Main Agent**: Idle"
-		case appLanguageZhHant:
-			return "**主 Agent**: 閒置"
-		default:
-			return "**主 Agent**: 空闲"
-		}
+		return pickUI(uiLang, "**Main Agent**: Idle", "**主 Agent**: 空闲", "**主 Agent**: 閒置")
 	}
 
 	taskPreview := rs.MainAgentTask
 	if strings.TrimSpace(taskPreview) == "" {
-		switch languageKind {
-		case appLanguageEnglish:
-			taskPreview = "Task details are initializing."
-		case appLanguageZhHant:
-			taskPreview = "任務詳情正在初始化。"
-		default:
-			taskPreview = "任务详情正在初始化。"
-		}
+		taskPreview = pickUI(uiLang, "Task details are initializing.", "任务详情正在初始化。", "任務詳情正在初始化。")
 	}
 	if len([]rune(taskPreview)) > 80 {
 		taskPreview = string([]rune(taskPreview)[:80]) + "..."
 	}
-	switch languageKind {
-	case appLanguageEnglish:
-		return fmt.Sprintf("**Main Agent**: Running (for %s)\n   Task: %s", rs.MainAgentElapsed, taskPreview)
-	case appLanguageZhHant:
-		return fmt.Sprintf("**主 Agent**: 正在執行任務（已運行 %s）\n   任務: %s", rs.MainAgentElapsed, taskPreview)
-	default:
-		return fmt.Sprintf("**主 Agent**: 正在执行任务（已运行 %s）\n   任务: %s", rs.MainAgentElapsed, taskPreview)
-	}
+	return fmt.Sprintf(pickUI(uiLang, "**Main Agent**: Running (for %s)\n   Task: %s", "**主 Agent**: 正在执行任务（已运行 %s）\n   任务: %s", "**主 Agent**: 正在執行任務（已運行 %s）\n   任務: %s"), rs.MainAgentElapsed, taskPreview)
 }
 
 // agentStatusByTaskID looks up a specific task by ID across all managers.

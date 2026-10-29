@@ -79,6 +79,11 @@
   <div class="header">
     <h1 id="pageTitle">MaClaw Binding Manager</h1>
     <p id="pageDesc"></p>
+    <div id="langToggle" style="display:flex;gap:8px;margin-top:12px">
+      <button type="button" data-bind-lang="zh" style="height:32px;padding:0 12px;border-radius:999px;border:1px solid #e2e6ee;background:#fff;font:inherit;font-size:12px;font-weight:650;cursor:pointer">中文</button>
+      <button type="button" data-bind-lang="en" style="height:32px;padding:0 12px;border-radius:999px;border:1px solid #e2e6ee;background:#fff;font:inherit;font-size:12px;font-weight:650;cursor:pointer">English</button>
+      <button type="button" data-bind-lang="mn" style="height:32px;padding:0 12px;border-radius:999px;border:1px solid #e2e6ee;background:#fff;font:inherit;font-size:12px;font-weight:650;cursor:pointer">Монгол</button>
+    </div>
   </div>
   <div class="tabs" role="tablist" aria-label="Binding workflows">
     <button type="button" role="tab" data-tab="bind" id="tabButton-bind" class="active" aria-selected="true" aria-controls="tab-bind" data-i18n="tabBind">Bind Device</button>
@@ -122,56 +127,74 @@
 (function() {
   'use strict';
 
-  var LANG = (navigator.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en';
-  document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
+  function normalizeBindLang(tag) {
+    var raw = String(tag || '').trim().toLowerCase().replace(/_/g, '-');
+    if (!raw) return 'en';
+    if (raw === 'zh' || raw === 'chinese' || raw === 'cn' || raw.indexOf('zh-') === 0) return 'zh';
+    if (raw === 'mn-mong' || raw.indexOf('mn-mong-') === 0) return 'en';
+    if (raw === 'mn' || raw === 'mn-mn' || raw === 'mn-cyrl' || raw === 'mn-cyrl-mn' || raw.indexOf('mn-cyrl-') === 0 || raw.indexOf('mn-mn-') === 0) return 'mn';
+    return 'en';
+  }
+  function readSavedBindLang() {
+    try {
+      var saved = localStorage.getItem('maclaw_bind_lang');
+      if (saved === 'zh' || saved === 'en' || saved === 'mn') return saved;
+    } catch (e) {}
+    return '';
+  }
+  var LANG = readSavedBindLang() || normalizeBindLang((navigator.languages && navigator.languages[0]) || navigator.language);
+  function bindHtmlLang() { return LANG === 'zh' ? 'zh-CN' : LANG === 'mn' ? 'mn' : 'en'; }
+  function bindDateLocale() { return LANG === 'zh' ? 'zh-CN' : LANG === 'mn' ? 'mn-MN' : 'en-US'; }
+  document.getElementById('html-root').lang = bindHtmlLang();
 
   var I18N = {
-    title: { zh: '绑定管理', en: 'Binding Manager' },
-    pageTitle: { zh: 'MaClaw 绑定管理', en: 'MaClaw Binding Manager' },
-    pageDesc: { zh: '绑定、查询或解除您的设备绑定。', en: 'Bind, query, or remove your device binding.' },
-    tabBind: { zh: '绑定设备', en: 'Bind Device' },
-    tabQuery: { zh: '查询绑定', en: 'Query Binding' },
-    tabUnbind: { zh: '解除绑定', en: 'Unbind Device' },
-    emailLabel: { zh: '邮箱', en: 'Email' },
-    inviteCodeLabel: { zh: '邀请码', en: 'Invitation Code' },
-    inviteCodePlaceholder: { zh: '请输入邀请码', en: 'Enter invitation code' },
-    bindAction: { zh: '绑定', en: 'Bind' },
-    queryAction: { zh: '查询', en: 'Query' },
-    sendCodeChannel: { zh: '验证码发送渠道', en: 'Verification Channel' },
-    channelEmail: { zh: '邮箱', en: 'Email' },
-    channelFeishu: { zh: '飞书', en: 'Feishu' },
-    channelBoth: { zh: '邮箱 + 飞书', en: 'Both' },
-    verifyCodeLabel: { zh: '验证码', en: 'Verification Code' },
-    verifyCodePlaceholder: { zh: '6 位验证码', en: '6-digit code' },
-    sendCode: { zh: '发送验证码', en: 'Send Code' },
-    unbindConfirm: { zh: '确认解除绑定', en: 'Confirm Unbind' },
-    unbindWarning: { zh: '解绑将删除所有设备绑定和 IM 绑定。', en: 'Unbinding will remove all device bindings and IM bindings (Feishu/QQ, etc.).' },
-    unbindWarningInvite: { zh: '原邀请码将失效，解绑后需要获取新的邀请码才能重新绑定。', en: 'The original invitation code will become invalid. You will need a new invitation code to bind again.' },
-    pleaseEnterEmail: { zh: '请输入邮箱。', en: 'Please enter your email.' },
-    pleaseEnterEmailAndCode: { zh: '请输入邮箱和验证码。', en: 'Please enter your email and verification code.' },
-    bindSuccess: { zh: '绑定成功', en: 'Bind successful' },
-    pendingApproval: { zh: '已提交，等待管理员审核。', en: 'Submitted. Waiting for administrator approval.' },
-    manualBindingRequired: { zh: '需要管理员手动绑定，请联系管理员。', en: 'Manual administrator binding is required. Please contact the administrator.' },
-    bindFailed: { zh: '绑定失败', en: 'Bind failed' },
-    queryNoBinding: { zh: '该邮箱尚未绑定。', en: 'This email is not bound yet.' },
-    networkError: { zh: '网络错误', en: 'Network error' },
-    statusLabel: { zh: '状态', en: 'Status' },
-    boundBadge: { zh: '已绑定', en: 'Bound' },
-    userStatusLabel: { zh: '用户状态', en: 'User Status' },
-    createdAtLabel: { zh: '创建时间', en: 'Created At' },
-    deviceIdLabel: { zh: '设备 ID', en: 'Device ID' },
-    codeSent: { zh: '验证码已发送至：{channels}', en: 'Verification code sent to: {channels}' },
-    sendFailed: { zh: '发送失败', en: 'Send failed' },
-    confirmUnbind: { zh: '确定要解除 {email} 的所有绑定吗？\n\n将会：\n- 删除所有设备绑定\n- 删除飞书/QQ 等 IM 绑定', en: 'Are you sure you want to remove all bindings for {email}?\n\nThis will:\n- Remove all device bindings\n- Remove IM bindings such as Feishu/QQ' },
-    confirmUnbindInvite: { zh: '\n- 原邀请码将失效\n\n解绑后需要获取新的邀请码才能重新绑定。', en: '\n- The original invitation code will be invalidated\n\nYou will need a new invitation code to bind again.' },
-    unbindSuccess: { zh: '解绑成功，已移除 {count} 个设备。', en: 'Unbind successful. Removed {count} device(s).' },
-    codesDeleted: { zh: '，并移除 {count} 个邀请码', en: ', and removed {count} invitation code(s)' },
-    needNewInvite: { zh: '重新绑定需要新的邀请码。', en: 'A new invitation code is required to bind again.' },
-    unbindFailed: { zh: '解绑失败', en: 'Unbind failed' }
+    title: { zh: '绑定管理', en: 'Binding Manager', mn: 'Холболтын удирдлага' },
+    pageTitle: { zh: 'MaClaw 绑定管理', en: 'MaClaw Binding Manager', mn: 'MaClaw холболтын удирдлага' },
+    pageDesc: { zh: '绑定、查询或解除您的设备绑定。', en: 'Bind, query, or remove your device binding.', mn: 'Төхөөрөмжийн холболтыг холбох, шалгах эсвэл салгах.' },
+    tabBind: { zh: '绑定设备', en: 'Bind Device', mn: 'Төхөөрөмж холбох' },
+    tabQuery: { zh: '查询绑定', en: 'Query Binding', mn: 'Холболт шалгах' },
+    tabUnbind: { zh: '解除绑定', en: 'Unbind Device', mn: 'Холболт салгах' },
+    emailLabel: { zh: '邮箱', en: 'Email', mn: 'Имэйл' },
+    inviteCodeLabel: { zh: '邀请码', en: 'Invitation Code', mn: 'Урилгын код' },
+    inviteCodePlaceholder: { zh: '请输入邀请码', en: 'Enter invitation code', mn: 'Урилгын кодоо оруулна уу' },
+    bindAction: { zh: '绑定', en: 'Bind', mn: 'Холбох' },
+    queryAction: { zh: '查询', en: 'Query', mn: 'Шалгах' },
+    sendCodeChannel: { zh: '验证码发送渠道', en: 'Verification Channel', mn: 'Баталгаажуулах суваг' },
+    channelEmail: { zh: '邮箱', en: 'Email', mn: 'Имэйл' },
+    channelFeishu: { zh: '飞书', en: 'Feishu', mn: 'Feishu' },
+    channelBoth: { zh: '邮箱 + 飞书', en: 'Both', mn: 'Имэйл + Feishu' },
+    verifyCodeLabel: { zh: '验证码', en: 'Verification Code', mn: 'Баталгаажуулах код' },
+    verifyCodePlaceholder: { zh: '6 位验证码', en: '6-digit code', mn: '6 оронтой код' },
+    sendCode: { zh: '发送验证码', en: 'Send Code', mn: 'Код илгээх' },
+    unbindConfirm: { zh: '确认解除绑定', en: 'Confirm Unbind', mn: 'Салгахыг батлах' },
+    unbindWarning: { zh: '解绑将删除所有设备绑定和 IM 绑定。', en: 'Unbinding will remove all device bindings and IM bindings (Feishu/QQ, etc.).', mn: 'Салгаснаар бүх төхөөрөмж болон IM холболт устана.' },
+    unbindWarningInvite: { zh: '原邀请码将失效，解绑后需要获取新的邀请码才能重新绑定。', en: 'The original invitation code will become invalid. You will need a new invitation code to bind again.', mn: 'Өмнөх урилгын код хүчингүй болно. Дахин холбоход шинэ урилгын код хэрэгтэй.' },
+    pleaseEnterEmail: { zh: '请输入邮箱。', en: 'Please enter your email.', mn: 'Имэйлээ оруулна уу.' },
+    pleaseEnterEmailAndCode: { zh: '请输入邮箱和验证码。', en: 'Please enter your email and verification code.', mn: 'Имэйл болон баталгаажуулах кодоо оруулна уу.' },
+    bindSuccess: { zh: '绑定成功', en: 'Bind successful', mn: 'Холболт амжилттай' },
+    pendingApproval: { zh: '已提交，等待管理员审核。', en: 'Submitted. Waiting for administrator approval.', mn: 'Илгээгдлээ. Админ шалгахыг хүлээж байна.' },
+    manualBindingRequired: { zh: '需要管理员手动绑定，请联系管理员。', en: 'Manual administrator binding is required. Please contact the administrator.', mn: 'Админ гараар холбох шаардлагатай. Админтай холбогдоно уу.' },
+    bindFailed: { zh: '绑定失败', en: 'Bind failed', mn: 'Холболт амжилтгүй' },
+    queryNoBinding: { zh: '该邮箱尚未绑定。', en: 'This email is not bound yet.', mn: 'Энэ имэйл холбогдоогүй байна.' },
+    networkError: { zh: '网络错误', en: 'Network error', mn: 'Сүлжээний алдаа' },
+    statusLabel: { zh: '状态', en: 'Status', mn: 'Төлөв' },
+    boundBadge: { zh: '已绑定', en: 'Bound', mn: 'Холбогдсон' },
+    userStatusLabel: { zh: '用户状态', en: 'User Status', mn: 'Хэрэглэгчийн төлөв' },
+    createdAtLabel: { zh: '创建时间', en: 'Created At', mn: 'Үүссэн огноо' },
+    deviceIdLabel: { zh: '设备 ID', en: 'Device ID', mn: 'Төхөөрөмжийн ID' },
+    codeSent: { zh: '验证码已发送至：{channels}', en: 'Verification code sent to: {channels}', mn: 'Баталгаажуулах кодыг илгээсэн: {channels}' },
+    sendFailed: { zh: '发送失败', en: 'Send failed', mn: 'Илгээж чадсангүй' },
+    confirmUnbind: { zh: '确定要解除 {email} 的所有绑定吗？\n\n将会：\n- 删除所有设备绑定\n- 删除飞书/QQ 等 IM 绑定', en: 'Are you sure you want to remove all bindings for {email}?\n\nThis will:\n- Remove all device bindings\n- Remove IM bindings such as Feishu/QQ', mn: '{email}-н бүх холболтыг салгах уу?\n\nИнгэснээр:\n- Бүх төхөөрөмжийн холболт устана\n- Feishu/QQ зэрэг IM холболт устана' },
+    confirmUnbindInvite: { zh: '\n- 原邀请码将失效\n\n解绑后需要获取新的邀请码才能重新绑定。', en: '\n- The original invitation code will be invalidated\n\nYou will need a new invitation code to bind again.', mn: '\n- Өмнөх урилгын код хүчингүй болно\n\nДахин холбоход шинэ урилгын код хэрэгтэй.' },
+    unbindSuccess: { zh: '解绑成功，已移除 {count} 个设备。', en: 'Unbind successful. Removed {count} device(s).', mn: 'Салгалаа. {count} төхөөрөмж хасагдсан.' },
+    codesDeleted: { zh: '，并移除 {count} 个邀请码', en: ', and removed {count} invitation code(s)', mn: ', мөн {count} урилгын код хасагдсан' },
+    needNewInvite: { zh: '重新绑定需要新的邀请码。', en: 'A new invitation code is required to bind again.', mn: 'Дахин холбоход шинэ урилгын код хэрэгтэй.' },
+    unbindFailed: { zh: '解绑失败', en: 'Unbind failed', mn: 'Салгаж чадсангүй' }
   };
 
   function t(key, vars) {
-    var text = (I18N[key] && I18N[key][LANG]) || key;
+    var row = I18N[key] || {};
+    var text = row[LANG] || row.en || key;
     return String(text).replace(/\{(\w+)\}/g, function(_, name) {
       return vars && vars[name] != null ? vars[name] : '';
     });
@@ -192,7 +215,31 @@
     });
     document.getElementById('bindCode').placeholder = t('inviteCodePlaceholder');
     document.getElementById('unbindCode').placeholder = t('verifyCodePlaceholder');
+    document.getElementById('html-root').lang = bindHtmlLang();
+    document.querySelectorAll('[data-bind-lang]').forEach(function(button) {
+      var active = button.getAttribute('data-bind-lang') === LANG;
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      button.style.background = active ? '#303744' : '#fff';
+      button.style.color = active ? '#fff' : '#59636f';
+    });
+    renderUnbindWarning();
   }
+
+  function renderUnbindWarning() {
+    var warn = document.getElementById('unbindWarning');
+    if (!warn || warn.classList.contains('hidden')) return;
+    var msg = esc(t('unbindWarning'));
+    if (invCodeRequired) msg += '<br>' + esc(t('unbindWarningInvite'));
+    warn.innerHTML = msg;
+  }
+
+  document.getElementById('langToggle').addEventListener('click', function(event) {
+    var button = event.target.closest('[data-bind-lang]');
+    if (!button) return;
+    LANG = normalizeBindLang(button.getAttribute('data-bind-lang'));
+    try { localStorage.setItem('maclaw_bind_lang', LANG); } catch (e) {}
+    applyI18n();
+  });
 
   if (new URLSearchParams(window.location.search).get('embed') === '1') {
     document.body.classList.add('embed');
@@ -211,11 +258,8 @@
       var f = document.getElementById('bindCodeField');
       if (f) f.classList.add('hidden');
     }
-    var warn = document.getElementById('unbindWarning');
-    var msg = esc(t('unbindWarning'));
-    if (invCodeRequired) msg += '<br>' + esc(t('unbindWarningInvite'));
-    warn.innerHTML = msg;
-    warn.classList.remove('hidden');
+    document.getElementById('unbindWarning').classList.remove('hidden');
+    renderUnbindWarning();
   }).catch(function() {});
 
   function selectTab(btn) {
@@ -337,7 +381,7 @@
         h += '<div class="info-row"><span class="info-label">' + esc(t('emailLabel')) + '</span><span class="info-value">' + esc(data.email) + '</span></div>';
         h += '<div class="info-row"><span class="info-label">SN</span><span class="info-value">' + esc(data.sn) + '</span></div>';
         h += '<div class="info-row"><span class="info-label">' + esc(t('userStatusLabel')) + '</span><span class="info-value">' + esc(data.status) + '</span></div>';
-        h += '<div class="info-row"><span class="info-label">' + esc(t('createdAtLabel')) + '</span><span class="info-value">' + esc(new Date(data.created_at).toLocaleString(LANG === 'zh' ? 'zh-CN' : 'en-US')) + '</span></div>';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('createdAtLabel')) + '</span><span class="info-value">' + esc(new Date(data.created_at).toLocaleString(bindDateLocale())) + '</span></div>';
         h += '</div>';
         showResult('queryResult', h, 'info');
       } else {

@@ -1,9 +1,30 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Hub Center · MaClaw 部署中枢与控制平面</title>
+<title>Hub Center · MaClaw deployment hub and control plane</title>
+<script src="/i18n/lang.js"></script>
+<script>
+(function () {
+  var TITLE = {
+    en: 'Hub Center · MaClaw deployment hub and control plane',
+    zh: 'Hub Center · MaClaw 部署中枢与控制平面',
+    mn: 'Hub Center · MaClaw байршуулалтын төв ба удирдлагын хавтгай'
+  };
+  try {
+    var saved = null;
+    try { saved = localStorage.getItem('hubcenter_home_lang'); } catch (e) {}
+    var lang = window.HubCenterI18n.detectHubLang(navigator.languages, saved);
+    document.documentElement.lang = window.HubCenterI18n.htmlLang(lang);
+    document.documentElement.setAttribute('data-hub-lang', lang);
+    document.title = window.HubCenterI18n.pick(TITLE, lang);
+    window.__hubHomeLang = lang;
+  } catch (e) {
+    document.documentElement.setAttribute('data-i18n-ready', '1');
+  }
+})();
+</script>
 <meta name="description" content="Hub Center 是 MaClaw 的中枢控制平面：节点注册与发现、智能路由、策略与安全治理、能力市场、积分计费与高可用集群，把分散的 MaClaw 客户端组织成可治理、可运营的企业级网络。" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="MaClaw Hub Center" />
@@ -145,7 +166,11 @@
   .js .rv{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .6s ease}
   .js .rv.on{opacity:1;transform:none}
   @media(prefers-reduced-motion:reduce){.js .rv{opacity:1;transform:none;transition:none}}
+  html:not([data-i18n-ready]) body{visibility:hidden}
+  .lang-btn{margin-right:4px;background:transparent;border:1px solid var(--line);color:#475569;font-size:13px;font-weight:600;padding:7px 11px;border-radius:8px;cursor:pointer;font-family:inherit;line-height:1.4}
+  .lang-btn:hover,.lang-btn[aria-pressed="true"]{color:var(--brand);border-color:#bfdbfe;background:var(--brand-soft)}
 </style>
+<noscript><style>body{visibility:visible!important}</style></noscript>
 </head>
 <body>
 
@@ -156,10 +181,13 @@
       Hub Center
     </a>
     <div class="links">
-      <a href="#features">平台能力</a>
-      <a href="#maclaw">MaClaw 简介</a>
-      <a href="#links">快速入口</a>
-      <a class="nav-cta" href="/admin">进入管理后台</a>
+      <a href="#features" data-i18n="nav.features">平台能力</a>
+      <a href="#maclaw" data-i18n="nav.about">MaClaw 简介</a>
+      <a href="#links" data-i18n="nav.links">快速入口</a>
+      <button class="lang-btn" type="button" data-set-lang="en" aria-pressed="false">EN</button>
+      <button class="lang-btn" type="button" data-set-lang="zh" aria-pressed="false">中文</button>
+      <button class="lang-btn" type="button" data-set-lang="mn" aria-pressed="false">Монгол</button>
+      <a class="nav-cta" href="/admin" data-i18n="nav.admin">进入管理后台</a>
     </div>
   </div>
 </nav>
@@ -168,19 +196,19 @@
   <div class="hero-bg"></div>
   <div class="wrap">
     <div class="hero-copy">
-      <span class="badge"><span class="dot"></span> 自托管 · 控制平面 · 高可用集群</span>
+      <span class="badge"><span class="dot"></span> <span data-i18n="hero.badge">自托管 · 控制平面 · 高可用集群</span></span>
       <h1>Hub <span class="grad">Center</span></h1>
-      <div class="os-tag">MaClaw 部署中枢 · 控制平面</div>
-      <p class="lede">Hub Center 是 MaClaw 生态的<strong>中枢控制平面</strong>：负责节点注册与发现、路由解析、策略与安全治理、能力市场与积分计费。它把分散在各处的 MaClaw 客户端与 Hub 节点组织成一张<strong>可治理、可运营、可扩展</strong>的企业级网络。</p>
+      <div class="os-tag" data-i18n="hero.tag">MaClaw 部署中枢 · 控制平面</div>
+      <p class="lede" data-i18n-html="hero.lede">Hub Center 是 MaClaw 生态的<strong>中枢控制平面</strong>：负责节点注册与发现、路由解析、策略与安全治理、能力市场与积分计费。它把分散在各处的 MaClaw 客户端与 Hub 节点组织成一张<strong>可治理、可运营、可扩展</strong>的企业级网络。</p>
       <div class="cta">
-        <a class="btn btn-primary" href="/admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg> 进入管理后台</a>
-        <a class="btn btn-ghost" href="#features">了解平台能力<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        <a class="btn btn-primary" href="/admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg> <span data-i18n="cta.admin">进入管理后台</span></a>
+        <a class="btn btn-ghost" href="#features"><span data-i18n="cta.features">了解平台能力</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
       </div>
       <div class="hero-meta">
-        <div class="stat"><b>多节点</b><span>高可用集群与状态同步</span></div>
-        <div class="stat"><b>全链路</b><span>路由解析与策略治理</span></div>
-        <div class="stat"><b>双市场</b><span>能力市场与专家市场</span></div>
-        <div class="stat"><b>实时</b><span>积分账务与计费体系</span></div>
+        <div class="stat"><b data-i18n="stat.nodes.b">多节点</b><span data-i18n="stat.nodes.s">高可用集群与状态同步</span></div>
+        <div class="stat"><b data-i18n="stat.path.b">全链路</b><span data-i18n="stat.path.s">路由解析与策略治理</span></div>
+        <div class="stat"><b data-i18n="stat.markets.b">双市场</b><span data-i18n="stat.markets.s">能力市场与专家市场</span></div>
+        <div class="stat"><b data-i18n="stat.live.b">实时</b><span data-i18n="stat.live.s">积分账务与计费体系</span></div>
       </div>
     </div>
     <div class="hero-art" aria-hidden="true">
@@ -205,15 +233,15 @@
         <circle cx="220" cy="180" r="40" fill="none" stroke="#fff" stroke-width="1.5"/>
         <text x="220" y="188" text-anchor="middle" font-size="20" font-weight="800" fill="#fff" font-family="-apple-system,Segoe UI,Roboto,sans-serif">HC</text>
         <g font-size="13" font-weight="700" fill="#334155" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
-          <circle cx="220" cy="50" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="220" y="55" text-anchor="middle">客户端</text>
-          <circle cx="338" cy="122" r="26" fill="#eff6ff" stroke="#bfdbfe"/><text x="338" y="127" text-anchor="middle" fill="#1e40af">Hub 节点</text>
-          <circle cx="338" cy="238" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="338" y="243" text-anchor="middle">数据服务</text>
-          <circle cx="220" cy="310" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="220" y="315" text-anchor="middle">设备</text>
-          <circle cx="102" cy="238" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="102" y="243" text-anchor="middle">市场</text>
-          <circle cx="102" cy="122" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="102" y="127" text-anchor="middle">策略</text>
+          <circle cx="220" cy="50" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="220" y="55" text-anchor="middle" data-i18n="svg.client">客户端</text>
+          <circle cx="338" cy="122" r="26" fill="#eff6ff" stroke="#bfdbfe"/><text x="338" y="127" text-anchor="middle" fill="#1e40af" data-i18n="svg.hub">Hub 节点</text>
+          <circle cx="338" cy="238" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="338" y="243" text-anchor="middle" data-i18n="svg.data">数据服务</text>
+          <circle cx="220" cy="310" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="220" y="315" text-anchor="middle" data-i18n="svg.device">设备</text>
+          <circle cx="102" cy="238" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="102" y="243" text-anchor="middle" data-i18n="svg.market">市场</text>
+          <circle cx="102" cy="122" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="102" y="127" text-anchor="middle" data-i18n="svg.policy">策略</text>
         </g>
       </svg>
-      <div class="art-cap">控制平面运行时 · 一个中枢连接客户端、节点与市场</div>
+      <div class="art-cap" data-i18n="art.cap">控制平面运行时 · 一个中枢连接客户端、节点与市场</div>
       </div>
     </div>
   </div>
@@ -223,17 +251,17 @@
 <section id="features">
   <div class="wrap">
     <div class="sec-head">
-      <div class="kicker">Hub Center Features</div>
-      <h2>Hub Center 功能描述</h2>
-      <p>从节点接入到能力分发、从策略治理到积分计费，Hub Center 为整个 MaClaw 网络提供统一的中枢服务。</p>
+      <div class="kicker" data-i18n="feat.kicker">Hub Center Features</div>
+      <h2 data-i18n="feat.h">Hub Center 功能描述</h2>
+      <p data-i18n="feat.p">从节点接入到能力分发、从策略治理到积分计费，Hub Center 为整个 MaClaw 网络提供统一的中枢服务。</p>
     </div>
     <div class="grid g3">
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div><h3>节点注册与发现</h3><p>Hub 节点向 Hub Center 注册并保持心跳，管理员在后台统一查看节点运行时状态、版本与容量，新节点接入即被自动发现。</p></div>
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/><path d="M8.5 11h5M11 8.5v5"/></svg></div><h3>智能路由解析</h3><p>集中维护「客户端 → Hub 节点」的路由表，邀请码与账号归属实时可查；节点扩缩容、迁移与故障切换对客户端透明。</p></div>
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg></div><h3>策略与安全治理</h3><p>封禁邮箱 / IP、消息与评论审核、LLM 内容策略集中配置；管理动作全程留痕，治理策略即时下发到全网节点。</p></div>
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16l-1-4H5L4 9Z"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/></svg></div><h3>能力与专家市场</h3><p>运营 SkillHub 能力市场与专家市场：能力包上架审核、付费分发、专家入驻与订单交付，形成完整的能力生态。</p></div>
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M4 10h16"/><path d="M8 15h4"/></svg></div><h3>积分与计费</h3><p>统一积分账务：充值、消费、分成、提现与退款负债全流程记账；Token 银行与流水可审计，支撑商业闭环。</p></div>
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8.5h14"/><path d="M5 15.5h14"/><circle cx="5" cy="8.5" r="2"/><circle cx="19" cy="15.5" r="2"/></svg></div><h3>高可用与运维</h3><p>多节点 HA 集群数据实时同步，单节点故障不影响服务；消息公告、故障日志、路由诊断等运维工具开箱即用。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div><h3 data-i18n="f1.t">节点注册与发现</h3><p data-i18n="f1.d">Hub 节点向 Hub Center 注册并保持心跳，管理员在后台统一查看节点运行时状态、版本与容量，新节点接入即被自动发现。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/><path d="M8.5 11h5M11 8.5v5"/></svg></div><h3 data-i18n="f2.t">智能路由解析</h3><p data-i18n="f2.d">集中维护「客户端 → Hub 节点」的路由表，邀请码与账号归属实时可查；节点扩缩容、迁移与故障切换对客户端透明。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg></div><h3 data-i18n="f3.t">策略与安全治理</h3><p data-i18n="f3.d">封禁邮箱 / IP、消息与评论审核、LLM 内容策略集中配置；管理动作全程留痕，治理策略即时下发到全网节点。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16l-1-4H5L4 9Z"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/></svg></div><h3 data-i18n="f4.t">能力与专家市场</h3><p data-i18n="f4.d">运营 SkillHub 能力市场与专家市场：能力包上架审核、付费分发、专家入驻与订单交付，形成完整的能力生态。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M4 10h16"/><path d="M8 15h4"/></svg></div><h3 data-i18n="f5.t">积分与计费</h3><p data-i18n="f5.d">统一积分账务：充值、消费、分成、提现与退款负债全流程记账；Token 银行与流水可审计，支撑商业闭环。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8.5h14"/><path d="M5 15.5h14"/><circle cx="5" cy="8.5" r="2"/><circle cx="19" cy="15.5" r="2"/></svg></div><h3 data-i18n="f6.t">高可用与运维</h3><p data-i18n="f6.d">多节点 HA 集群数据实时同步，单节点故障不影响服务；消息公告、故障日志、路由诊断等运维工具开箱即用。</p></div>
     </div>
   </div>
 </section>
@@ -242,20 +270,20 @@
 <section id="maclaw" style="background:linear-gradient(180deg,#fff,#f7f8fc)">
   <div class="wrap">
     <div class="sec-head">
-      <div class="kicker">About MaClaw</div>
-      <h2>MaClaw 简介</h2>
-      <p>Hub Center 治理之下的终端，是一个真正懂你业务的 AI 助手客户端。</p>
+      <div class="kicker" data-i18n="about.kicker">About MaClaw</div>
+      <h2 data-i18n="about.h">MaClaw 简介</h2>
+      <p data-i18n="about.p">Hub Center 治理之下的终端，是一个真正懂你业务的 AI 助手客户端。</p>
     </div>
     <div class="twocol">
       <div>
-        <p class="quote">"AI 不应只是一问一答的助手，而应成为真正懂你业务、守你规则、记得你过往的数字员工。"</p>
-        <p style="color:var(--muted)">MaClaw 是跨平台的 AI 助手客户端，把<strong>对话、技能（Skill）、MCP 工具、记忆与知识</strong>放进同一个工作台。它既可以是企业统一推送能力的「数字员工」，也可以是数据主权完全属于个人的私有 AI 伙伴——所有能力可治理、可审计、可撤销。</p>
+        <p class="quote" data-i18n="about.quote">"AI 不应只是一问一答的助手，而应成为真正懂你业务、守你规则、记得你过往的数字员工。"</p>
+        <p style="color:var(--muted)" data-i18n-html="about.body">MaClaw 是跨平台的 AI 助手客户端，把<strong>对话、技能（Skill）、MCP 工具、记忆与知识</strong>放进同一个工作台。它既可以是企业统一推送能力的「数字员工」，也可以是数据主权完全属于个人的私有 AI 伙伴——所有能力可治理、可审计、可撤销。</p>
       </div>
       <div class="pillars">
-        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div><div><h4>跨平台客户端</h4><p>Windows / macOS / Linux 桌面端与命令行、移动端全覆盖，一套体验随处可用。</p></div></div>
-        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div><div><h4>一体化工作台</h4><p>对话、任务、技能与 MCP 工具、组织记忆与知识库在同一界面内协同。</p></div></div>
-        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="m5 19 5.5-5 3 3L17 14l4 4"/><path d="M15 8h4"/></svg></div><div><h4>多模态能力</h4><p>语音、图像、文档与长上下文原生支持，从会议纪要到产线巡检都能承接。</p></div></div>
-        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/></svg></div><div><h4>企业级治理</h4><p>能力包可推送、可编排、可撤销；策略贯穿每一次调用，数据留在自有节点。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div><div><h4 data-i18n="p1.t">跨平台客户端</h4><p data-i18n="p1.d">Windows / macOS / Linux 桌面端与命令行、移动端全覆盖，一套体验随处可用。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div><div><h4 data-i18n="p2.t">一体化工作台</h4><p data-i18n="p2.d">对话、任务、技能与 MCP 工具、组织记忆与知识库在同一界面内协同。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="m5 19 5.5-5 3 3L17 14l4 4"/><path d="M15 8h4"/></svg></div><div><h4 data-i18n="p3.t">多模态能力</h4><p data-i18n="p3.d">语音、图像、文档与长上下文原生支持，从会议纪要到产线巡检都能承接。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/></svg></div><div><h4 data-i18n="p4.t">企业级治理</h4><p data-i18n="p4.d">能力包可推送、可编排、可撤销；策略贯穿每一次调用，数据留在自有节点。</p></div></div>
       </div>
     </div>
   </div>
@@ -265,15 +293,15 @@
 <section id="links">
   <div class="wrap">
     <div class="sec-head">
-      <div class="kicker">Quick Links</div>
-      <h2>快速入口</h2>
-      <p>本站点提供的核心服务入口，点击直达。</p>
+      <div class="kicker" data-i18n="links.kicker">Quick Links</div>
+      <h2 data-i18n="links.h">快速入口</h2>
+      <p data-i18n="links.p">本站点提供的核心服务入口，点击直达。</p>
     </div>
     <div class="grid g4">
-      <a class="card qlink" href="/admin"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg></div><h3>管理后台</h3><p>节点、路由、策略、市场与计费的统一管理控制台。</p><span class="go">打开 /admin <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
-      <a class="card qlink" href="/skillhub"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16l-1-4H5L4 9Z"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/></svg></div><h3>能力市场</h3><p>发现与安装 Skill / MCP 能力包，免费与付费能力一键获取。</p><span class="go">打开 /skillhub <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
-      <a class="card qlink" href="/expert-market"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 4.5a3.2 3.2 0 0 1 0 7M17.5 13.6a5.5 5.5 0 0 1 3 5.4"/></svg></div><h3>专家市场</h3><p>领域专家与专家团队，为复杂业务提供方法论与经验包。</p><span class="go">打开 /expert-market <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
-      <a class="card qlink" href="/gossip"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5Z"/><path d="M9 11h.01M13 11h.01M17 11h.01"/></svg></div><h3>社区广场</h3><p>用户交流与反馈的公共空间，问题报告直达运营团队。</p><span class="go">打开 /gossip <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+      <a class="card qlink" href="/admin"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg></div><h3 data-i18n="l1.t">管理后台</h3><p data-i18n="l1.d">节点、路由、策略、市场与计费的统一管理控制台。</p><span class="go"><span data-i18n="l1.go">打开 /admin</span> <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+      <a class="card qlink" href="/skillhub"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16l-1-4H5L4 9Z"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/></svg></div><h3 data-i18n="l2.t">能力市场</h3><p data-i18n="l2.d">发现与安装 Skill / MCP 能力包，免费与付费能力一键获取。</p><span class="go"><span data-i18n="l2.go">打开 /skillhub</span> <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+      <a class="card qlink" href="/expert-market"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 4.5a3.2 3.2 0 0 1 0 7M17.5 13.6a5.5 5.5 0 0 1 3 5.4"/></svg></div><h3 data-i18n="l3.t">专家市场</h3><p data-i18n="l3.d">领域专家与专家团队，为复杂业务提供方法论与经验包。</p><span class="go"><span data-i18n="l3.go">打开 /expert-market</span> <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+      <a class="card qlink" href="/gossip"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5Z"/><path d="M9 11h.01M13 11h.01M17 11h.01"/></svg></div><h3 data-i18n="l4.t">社区广场</h3><p data-i18n="l4.d">用户交流与反馈的公共空间，问题报告直达运营团队。</p><span class="go"><span data-i18n="l4.go">打开 /gossip</span> <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
     </div>
   </div>
 </section>
@@ -282,18 +310,145 @@
   <div class="wrap">
     <div>
       <div class="fbrand"><svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#1d4ed8"/><circle cx="16" cy="16" r="4" fill="#fff"/><circle cx="16" cy="5.5" r="2.4" fill="#fff"/><circle cx="25.5" cy="21.5" r="2.4" fill="#fff"/><circle cx="6.5" cy="21.5" r="2.4" fill="#fff"/><path d="M16 9.5v2.5M21 20.2l-2.2-1.2M11 20.2l2.2-1.2" stroke="#fff" stroke-width="1.8"/></svg>Hub Center</div>
-      <div class="fmeta">© MaClaw · 自托管部署中枢 · AI Native 组织操作系统</div>
+      <div class="fmeta" data-i18n="foot.meta">© MaClaw · 自托管部署中枢 · AI Native 组织操作系统</div>
     </div>
     <div class="links">
-      <a href="/admin">管理后台</a>
-      <a href="/skillhub">能力市场</a>
-      <a href="https://www.maclaw.top" target="_blank" rel="noopener">MaClaw 官网</a>
+      <a href="/admin" data-i18n="foot.admin">管理后台</a>
+      <a href="/skillhub" data-i18n="foot.market">能力市场</a>
+      <a href="https://www.maclaw.top" target="_blank" rel="noopener" data-i18n="foot.site">MaClaw 官网</a>
     </div>
   </div>
 </footer>
 
 <script>
   (function(){
+    var KEY = 'hubcenter_home_lang';
+    var COPY = {
+      'meta.title': { en: 'Hub Center · MaClaw deployment hub and control plane', zh: 'Hub Center · MaClaw 部署中枢与控制平面', mn: 'Hub Center · MaClaw байршуулалтын төв ба удирдлагын хавтгай' },
+      'meta.desc': { en: 'Hub Center is the MaClaw control plane: node registration and discovery, intelligent routing, policy and security governance, capability markets, Credits billing, and high-availability clusters. It organizes distributed MaClaw clients into an enterprise network that can be governed and operated.', zh: 'Hub Center 是 MaClaw 的中枢控制平面：节点注册与发现、智能路由、策略与安全治理、能力市场、积分计费与高可用集群，把分散的 MaClaw 客户端组织成可治理、可运营的企业级网络。', mn: 'Hub Center нь MaClaw-н удирдлагын хавтгай: зангилаа бүртгэл ба илрүүлэлт, ухаалаг чиглүүлэлт, бодлого ба аюулгүй байдлын засаглал, чадамжийн зах зээл, Credits тооцоо болон өндөр хүртээмжтэй кластер. Тархсан MaClaw клиентүүдийг удирдаж, ажиллуулж болох байгууллагын сүлжээ болгон зохион байгуулна.' },
+      'meta.ogDesc': { en: 'Node registration and discovery, intelligent routing, policy and security governance, capability markets, Credits billing, and high-availability clusters. Distributed MaClaw clients become an enterprise network that can be governed and operated.', zh: '节点注册与发现、智能路由、策略与安全治理、能力市场、积分计费与高可用集群——把分散的 MaClaw 客户端组织成可治理、可运营的企业级网络。', mn: 'Зангилаа бүртгэл ба илрүүлэлт, ухаалаг чиглүүлэлт, бодлого ба аюулгүй байдлын засаглал, чадамжийн зах зээл, Credits тооцоо болон өндөр хүртээмжтэй кластер. Тархсан MaClaw клиентүүд удирдаж, ажиллуулж болох байгууллагын сүлжээ болно.' },
+      'nav.features': { en: 'Capabilities', zh: '平台能力', mn: 'Платформын чадамж' },
+      'nav.about': { en: 'About MaClaw', zh: 'MaClaw 简介', mn: 'MaClaw-н тухай' },
+      'nav.links': { en: 'Quick links', zh: '快速入口', mn: 'Шуурхай холбоос' },
+      'nav.admin': { en: 'Open admin', zh: '进入管理后台', mn: 'Удирдлагын самбар' },
+      'hero.badge': { en: 'Self-hosted · Control plane · HA cluster', zh: '自托管 · 控制平面 · 高可用集群', mn: 'Өөрөө байршуулсан · Удирдлагын хавтгай · Өндөр хүртээмжтэй кластер' },
+      'hero.tag': { en: 'MaClaw deployment hub · control plane', zh: 'MaClaw 部署中枢 · 控制平面', mn: 'MaClaw байршуулалтын төв · удирдлагын хавтгай' },
+      'hero.lede': { en: 'Hub Center is the <strong>central control plane</strong> of the MaClaw ecosystem: node registration and discovery, route resolution, policy and security governance, capability markets, and Credits billing. It organizes scattered MaClaw clients and Hub nodes into an enterprise network that is <strong>governable, operable, and scalable</strong>.', zh: 'Hub Center 是 MaClaw 生态的<strong>中枢控制平面</strong>：负责节点注册与发现、路由解析、策略与安全治理、能力市场与积分计费。它把分散在各处的 MaClaw 客户端与 Hub 节点组织成一张<strong>可治理、可运营、可扩展</strong>的企业级网络。', mn: 'Hub Center нь MaClaw экосистемийн <strong>төв удирдлагын хавтгай</strong>: зангилаа бүртгэл ба илрүүлэлт, чиглэл тогтоолт, бодлого ба аюулгүй байдлын засаглал, чадамжийн зах зээл болон Credits тооцоог хариуцна. Тархсан MaClaw клиент ба Hub зангилааг <strong>удирдаж, ажиллуулж, өргөтгөж болох</strong> байгууллагын сүлжээ болгон нэгтгэнэ.' },
+      'cta.admin': { en: 'Open admin', zh: '进入管理后台', mn: 'Удирдлагын самбар нээх' },
+      'cta.features': { en: 'See platform capabilities', zh: '了解平台能力', mn: 'Платформын чадамжтай танилцах' },
+      'stat.nodes.b': { en: 'Many nodes', zh: '多节点', mn: 'Олон зангилаа' },
+      'stat.nodes.s': { en: 'HA cluster and state sync', zh: '高可用集群与状态同步', mn: 'Өндөр хүртээмжтэй кластер ба төлвийн синхрончлол' },
+      'stat.path.b': { en: 'Full path', zh: '全链路', mn: 'Бүтэн хэлхээ' },
+      'stat.path.s': { en: 'Route resolution and policy', zh: '路由解析与策略治理', mn: 'Чиглэл тогтоолт ба бодлогын засаглал' },
+      'stat.markets.b': { en: 'Two markets', zh: '双市场', mn: 'Хоёр зах зээл' },
+      'stat.markets.s': { en: 'Capability market and expert market', zh: '能力市场与专家市场', mn: 'Чадамжийн зах зээл ба шинжээчийн зах зээл' },
+      'stat.live.b': { en: 'Live', zh: '实时', mn: 'Бодит цаг' },
+      'stat.live.s': { en: 'Credits ledger and billing', zh: '积分账务与计费体系', mn: 'Credits данс ба тооцооны систем' },
+      'svg.client': { en: 'Client', zh: '客户端', mn: 'Клиент' },
+      'svg.hub': { en: 'Hub', zh: 'Hub 节点', mn: 'Hub' },
+      'svg.data': { en: 'Data', zh: '数据服务', mn: 'Өгөгдөл' },
+      'svg.device': { en: 'Device', zh: '设备', mn: 'Төхөөрөмж' },
+      'svg.market': { en: 'Market', zh: '市场', mn: 'Зах' },
+      'svg.policy': { en: 'Policy', zh: '策略', mn: 'Бодлого' },
+      'art.cap': { en: 'Control-plane runtime · one hub links clients, nodes, and markets', zh: '控制平面运行时 · 一个中枢连接客户端、节点与市场', mn: 'Удирдлагын хавтгайн ажиллагаа · нэг төв клиент, зангилаа, зах зээлийг холбоно' },
+      'feat.kicker': { en: 'Hub Center Features', zh: 'Hub Center 能力', mn: 'Hub Center-н чадамж' },
+      'feat.h': { en: 'What Hub Center does', zh: 'Hub Center 功能描述', mn: 'Hub Center-н үйл ажиллагаа' },
+      'feat.p': { en: 'From node onboarding to capability distribution, and from policy governance to Credits billing, Hub Center is the single control plane for the whole MaClaw network.', zh: '从节点接入到能力分发、从策略治理到积分计费，Hub Center 为整个 MaClaw 网络提供统一的中枢服务。', mn: 'Зангилаа холбохоос чадамж түгээх хүртэл, бодлогын засаглалаас Credits тооцоо хүртэл Hub Center нь бүх MaClaw сүлжээнд нэгдсэн төв үйлчилгээ үзүүлнэ.' },
+      'f1.t': { en: 'Node registration and discovery', zh: '节点注册与发现', mn: 'Зангилаа бүртгэл ба илрүүлэлт' },
+      'f1.d': { en: 'Hub nodes register with Hub Center and send a heartbeat. Administrators see runtime status, version, and capacity in one console. A new node is discovered as soon as it joins.', zh: 'Hub 节点向 Hub Center 注册并保持心跳，管理员在后台统一查看节点运行时状态、版本与容量，新节点接入即被自动发现。', mn: 'Hub зангилаа Hub Center-т бүртгүүлж амьд дохио илгээнэ. Админ нэг самбараас ажиллагааны төлөв, хувилбар, багтаамжийг харна. Шинэ зангилаа холбогдмогц автоматаар илэрнэ.' },
+      'f2.t': { en: 'Intelligent route resolution', zh: '智能路由解析', mn: 'Ухаалаг чиглэл тогтоолт' },
+      'f2.d': { en: 'One routing table from client to Hub node. Invite codes and account ownership can be queried live. Scale-out, migration, and failover stay transparent to clients.', zh: '集中维护「客户端 → Hub 节点」的路由表，邀请码与账号归属实时可查；节点扩缩容、迁移与故障切换对客户端透明。', mn: '«Клиент → Hub зангилаа» чиглэлийн хүснэгтийг төвлөрүүлэн хөтөлнө. Урилгын код ба бүртгэлийн харьяаллыг бодит цагт шалгана. Өргөтгөл, шилжилт, эвдрэл солих нь клиентэд ил тод.' },
+      'f3.t': { en: 'Policy and security governance', zh: '策略与安全治理', mn: 'Бодлого ба аюулгүй байдлын засаглал' },
+      'f3.d': { en: 'Block email and IP addresses, review messages and comments, and set LLM content policy in one place. Admin actions are audited, and policy reaches every node immediately.', zh: '封禁邮箱 / IP、消息与评论审核、LLM 内容策略集中配置；管理动作全程留痕，治理策略即时下发到全网节点。', mn: 'И-мэйл / IP хаах, зурвас ба сэтгэгдэл шалгах, LLM агуулгын бодлогыг нэг дор тохируулна. Удирдлагын үйлдэл бүртгэгдэж, бодлого бүх зангилаанд шууд хүрдэг.' },
+      'f4.t': { en: 'Capability and expert markets', zh: '能力与专家市场', mn: 'Чадамж ба шинжээчийн зах зээл' },
+      'f4.d': { en: 'Run the SkillHub capability market and the expert market: review listings, paid distribution, expert onboarding, and order delivery.', zh: '运营 SkillHub 能力市场与专家市场：能力包上架审核、付费分发、专家入驻与订单交付，形成完整的能力生态。', mn: 'SkillHub чадамжийн зах зээл ба шинжээчийн зах зээлийг ажиллуулна: багц шалгалт, төлбөртэй түгээлт, шинжээч бүртгэл ба захиалга хүргэлт.' },
+      'f5.t': { en: 'Credits and billing', zh: '积分与计费', mn: 'Credits ба тооцоо' },
+      'f5.d': { en: 'One Credits ledger for top-up, spend, revenue share, withdrawal, and refund liability. The token bank and statements stay auditable.', zh: '统一积分账务：充值、消费、分成、提现与退款负债全流程记账；Token 银行与流水可审计，支撑商业闭环。', mn: 'Нэгдсэн Credits данс: цэнэглэлт, зарцуулалт, хуваарилалт, таталт ба буцаалтын өр. Token банк ба гүйлгээ аудитад нээлттэй.' },
+      'f6.t': { en: 'High availability and operations', zh: '高可用与运维', mn: 'Өндөр хүртээмж ба ашиглалт' },
+      'f6.d': { en: 'Multi-node HA clusters sync state in real time. One failed node does not stop the service. Announcements, failure logs, and route diagnostics are included.', zh: '多节点 HA 集群数据实时同步，单节点故障不影响服务；消息公告、故障日志、路由诊断等运维工具开箱即用。', mn: 'Олон зангилаат HA кластер төлвөө бодит цагт синхрончилно. Нэг зангилаа уншсан ч үйлчилгээ зогсохгүй. Зарлал, алдааны бүртгэл, чиглэлийн оношилгоо бэлэн.' },
+      'about.kicker': { en: 'About MaClaw', zh: '关于 MaClaw', mn: 'MaClaw-н тухай' },
+      'about.h': { en: 'About MaClaw', zh: 'MaClaw 简介', mn: 'MaClaw-н товч танилцуулга' },
+      'about.p': { en: 'The client under Hub Center governance is an AI assistant that actually understands the work.', zh: 'Hub Center 治理之下的终端，是一个真正懂你业务的 AI 助手客户端。', mn: 'Hub Center-н засаглал доорх клиент нь ажлыг үнэхээр ойлгодог AI туслах юм.' },
+      'about.quote': { en: '"AI should not stop at one question and one answer. It should be a digital colleague that understands the work, keeps the rules, and remembers the past."', zh: '"AI 不应只是一问一答的助手，而应成为真正懂你业务、守你规则、记得你过往的数字员工。"', mn: '"AI зөвхөн нэг асуулт, нэг хариултын туслах байх ёсгүй. Ажлыг чинь ойлгож, дүрмийг чинь сахиж, өнгөрснийг чинь санадаг тоон ажилтан байх ёстой."' },
+      'about.body': { en: 'MaClaw is a cross-platform AI assistant client. It puts <strong>conversation, Skills, MCP tools, memory, and knowledge</strong> in one workbench. It can be a digital colleague whose capabilities the organization pushes, or a private AI partner whose data stays with the person. Every capability can be governed, audited, and revoked.', zh: 'MaClaw 是跨平台的 AI 助手客户端，把<strong>对话、技能（Skill）、MCP 工具、记忆与知识</strong>放进同一个工作台。它既可以是企业统一推送能力的「数字员工」，也可以是数据主权完全属于个人的私有 AI 伙伴——所有能力可治理、可审计、可撤销。', mn: 'MaClaw нь олон платформын AI туслах клиент. <strong>Яриа, Skill, MCP хэрэгсэл, санах ой ба мэдлэг</strong> нэг ажлын талбарт байна. Байгууллагаас түгээсэн тоон ажилтан ч, өгөгдөл нь хувь хүнд үлдсэн хувийн AI хамтрагч ч болно. Чадвар бүрийг удирдаж, аудитлаж, цуцалж болно.' },
+      'p1.t': { en: 'Cross-platform client', zh: '跨平台客户端', mn: 'Олон платформын клиент' },
+      'p1.d': { en: 'Windows, macOS, and Linux desktop, plus command line and mobile. One experience everywhere.', zh: 'Windows / macOS / Linux 桌面端与命令行、移动端全覆盖，一套体验随处可用。', mn: 'Windows, macOS, Linux дэлгэц, командын мөр ба гар утас. Нэг туршлага хаана ч.' },
+      'p2.t': { en: 'One workbench', zh: '一体化工作台', mn: 'Нэгдсэн ажлын талбар' },
+      'p2.d': { en: 'Conversation, tasks, Skills and MCP tools, organization memory, and knowledge work in one place.', zh: '对话、任务、技能与 MCP 工具、组织记忆与知识库在同一界面内协同。', mn: 'Яриа, даалгавар, Skill ба MCP хэрэгсэл, байгууллагын санах ой ба мэдлэгийн сан нэг интерфэйст хамтарна.' },
+      'p3.t': { en: 'Multimodal', zh: '多模态能力', mn: 'Олон горимт чадвар' },
+      'p3.d': { en: 'Voice, images, documents, and long context, from meeting notes to on-site inspection.', zh: '语音、图像、文档与长上下文原生支持，从会议纪要到产线巡检都能承接。', mn: 'Дуу, зураг, баримт ба урт контекст. Уулзалтын тэмдэглэлээс талбайн шалгалт хүртэл.' },
+      'p4.t': { en: 'Enterprise governance', zh: '企业级治理', mn: 'Байгууллагын засаглал' },
+      'p4.d': { en: 'Capability packs can be pushed, composed, and revoked. Policy covers every call. Data stays on your own nodes.', zh: '能力包可推送、可编排、可撤销；策略贯穿每一次调用，数据留在自有节点。', mn: 'Чадамжийн багцыг түгээж, бүрдүүлж, цуцалж болно. Бодлого дуудлага бүрд үйлчилнэ. Өгөгдөл өөрийн зангилаан дээр үлдэнэ.' },
+      'links.kicker': { en: 'Quick Links', zh: '快速入口', mn: 'Шуурхай холбоос' },
+      'links.h': { en: 'Quick links', zh: '快速入口', mn: 'Шуурхай холбоос' },
+      'links.p': { en: 'Core services on this site. Open them directly.', zh: '本站点提供的核心服务入口，点击直达。', mn: 'Энэ сайтын үндсэн үйлчилгээ. Шууд нээнэ.' },
+      'l1.t': { en: 'Admin console', zh: '管理后台', mn: 'Удирдлагын самбар' },
+      'l1.d': { en: 'One console for nodes, routes, policy, markets, and billing.', zh: '节点、路由、策略、市场与计费的统一管理控制台。', mn: 'Зангилаа, чиглэл, бодлого, зах зээл ба тооцооны нэгдсэн самбар.' },
+      'l1.go': { en: 'Open /admin', zh: '打开 /admin', mn: 'Нээх /admin' },
+      'l2.t': { en: 'Capability market', zh: '能力市场', mn: 'Чадамжийн зах зээл' },
+      'l2.d': { en: 'Discover and install Skill and MCP packs, free or paid.', zh: '发现与安装 Skill / MCP 能力包，免费与付费能力一键获取。', mn: 'Skill / MCP багцыг олж суулгана. Үнэгүй ба төлбөртэй.' },
+      'l2.go': { en: 'Open /skillhub', zh: '打开 /skillhub', mn: 'Нээх /skillhub' },
+      'l3.t': { en: 'Expert market', zh: '专家市场', mn: 'Шинжээчийн зах зээл' },
+      'l3.d': { en: 'Domain experts and teams, with methods and experience packs for complex work.', zh: '领域专家与专家团队，为复杂业务提供方法论与经验包。', mn: 'Салбарын шинжээч ба баг. Нарийн ажилд арга ба туршлагын багц.' },
+      'l3.go': { en: 'Open /expert-market', zh: '打开 /expert-market', mn: 'Нээх /expert-market' },
+      'l4.t': { en: 'Community', zh: '社区广场', mn: 'Нийтийн талбай' },
+      'l4.d': { en: 'A public space for discussion and feedback. Problem reports reach the operators.', zh: '用户交流与反馈的公共空间，问题报告直达运营团队。', mn: 'Хэрэглэгчийн яриа ба саналын нийтийн талбай. Асуудлын мэдээлэл операторт шууд очно.' },
+      'l4.go': { en: 'Open /gossip', zh: '打开 /gossip', mn: 'Нээх /gossip' },
+      'foot.meta': { en: '© MaClaw · Self-hosted deployment hub · AI Native organization OS', zh: '© MaClaw · 自托管部署中枢 · AI Native 组织操作系统', mn: '© MaClaw · Өөрөө байршуулсан байршуулалтын төв · AI Native байгууллагын үйлдлийн систем' },
+      'foot.admin': { en: 'Admin', zh: '管理后台', mn: 'Удирдлага' },
+      'foot.market': { en: 'Capability market', zh: '能力市场', mn: 'Чадамжийн зах зээл' },
+      'foot.site': { en: 'MaClaw website', zh: 'MaClaw 官网', mn: 'MaClaw вэб' }
+    };
+    var LANG = window.__hubHomeLang;
+    if (window.HubCenterI18n && LANG !== 'en' && LANG !== 'zh' && LANG !== 'mn') {
+      var saved = null;
+      try { saved = localStorage.getItem(KEY); } catch (e) {}
+      LANG = window.HubCenterI18n.detectHubLang(navigator.languages, saved);
+    }
+    function t(key) {
+      if (!window.HubCenterI18n) return '';
+      var value = window.HubCenterI18n.pick(COPY[key], LANG);
+      return value == null ? '' : String(value);
+    }
+    function applyHomeLang() {
+      if (!window.HubCenterI18n) return;
+      document.documentElement.lang = window.HubCenterI18n.htmlLang(LANG);
+      document.documentElement.setAttribute('data-hub-lang', LANG);
+      document.querySelectorAll('[data-i18n]').forEach(function (el) {
+        el.textContent = t(el.getAttribute('data-i18n'));
+      });
+      document.querySelectorAll('[data-i18n-html]').forEach(function (el) {
+        el.innerHTML = t(el.getAttribute('data-i18n-html'));
+      });
+      document.querySelectorAll('.lang-btn[data-set-lang]').forEach(function (btn) {
+        btn.setAttribute('aria-pressed', btn.getAttribute('data-set-lang') === LANG ? 'true' : 'false');
+      });
+      document.title = t('meta.title');
+      var desc = t('meta.desc');
+      var og = t('meta.ogDesc');
+      var md = document.querySelector('meta[name="description"]');
+      if (md) md.setAttribute('content', desc);
+      ['og:description', 'twitter:description'].forEach(function (name) {
+        var node = document.querySelector('meta[property="' + name + '"],meta[name="' + name + '"]');
+        if (node) node.setAttribute('content', og);
+      });
+      ['og:title', 'twitter:title'].forEach(function (name) {
+        var node = document.querySelector('meta[property="' + name + '"],meta[name="' + name + '"]');
+        if (node) node.setAttribute('content', t('meta.title'));
+      });
+    }
+    window.setHubHomeLang = function (lang) {
+      if (!window.HubCenterI18n) return;
+      LANG = window.HubCenterI18n.normalizeHubLang(lang);
+      try { localStorage.setItem(KEY, LANG); } catch (e) {}
+      applyHomeLang();
+    };
+    try { applyHomeLang(); } catch (e) {}
+    document.documentElement.setAttribute('data-i18n-ready', '1');
+    document.querySelectorAll('.lang-btn[data-set-lang]').forEach(function (btn) {
+      btn.addEventListener('click', function () { window.setHubHomeLang(btn.getAttribute('data-set-lang')); });
+    });
+
     var nav=document.querySelector('.nav');
     var onScroll=function(){if(nav)nav.classList.toggle('scrolled',window.scrollY>8)};
     window.addEventListener('scroll',onScroll,{passive:true});onScroll();

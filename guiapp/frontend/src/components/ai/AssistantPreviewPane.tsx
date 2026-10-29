@@ -10,6 +10,8 @@ import type { AgentView } from "./agentViewTypes";
 import type { CodePreviewUIState } from "./useCodePreviewState";
 import type { CodeFile } from "./useCodePreviewState";
 import type { WorkflowUIState } from "./useWorkflowState";
+import { chromeText } from "../../i18n/chromeText";
+
 
 interface AssistantPreviewPaneProps {
     agentView?: AgentView | null;
@@ -67,17 +69,17 @@ function previewTabIcon(mode: PreviewPaneMode): string {
 
 function previewTabTooltip(mode: PreviewPaneMode, lang: string, cloudMode = false): string {
     if (mode === "workflow") {
-        return lang === "en" ? "Progress" : "\u6d41\u7a0b/\u8fdb\u5ea6";
+        return (chromeText(lang, "Progress", "\u6d41\u7a0b/\u8fdb\u5ea6"));
     }
     if (mode === "agent") {
-        return lang === "en" ? "Agent Task" : "\u667a\u80fd\u4f53\u4efb\u52a1";
+        return (chromeText(lang, "Agent Task", "\u667a\u80fd\u4f53\u4efb\u52a1"));
     }
     if (mode === "conflict") {
-        return lang === "en" ? "Conflicts" : "\u51b2\u7a81";
+        return (chromeText(lang, "Conflicts", "\u51b2\u7a81"));
     }
     return cloudMode
-        ? (lang === "en" ? "Cloud files" : "\u4e91\u7aef\u6587\u4ef6")
-        : (lang === "en" ? "Source" : "\u6e90\u7801\u67e5\u770b");
+        ? ((chromeText(lang, "Cloud files", "\u4e91\u7aef\u6587\u4ef6")))
+        : ((chromeText(lang, "Source", "\u6e90\u7801\u67e5\u770b")));
 }
 
 /** Neutral preview chrome. Keep these out of the assistant scheme's blue-tinted divider. */
@@ -206,15 +208,15 @@ function PreviewTabRail({
                 type="button"
                 onClick={onClose}
                 style={previewCloseButtonStyle(theme, { marginBottom: "4px" })}
-                title={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
-                aria-label={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
+                title={(chromeText(lang, "Close preview", "\u5173\u95ed\u9884\u89c8"))}
+                aria-label={(chromeText(lang, "Close preview", "\u5173\u95ed\u9884\u89c8"))}
             >
                 X
             </button>
             <div
                 role="tablist"
                 aria-orientation="vertical"
-                aria-label={lang === "en" ? "Preview mode" : "\u9884\u89c8\u6a21\u5f0f"}
+                aria-label={(chromeText(lang, "Preview mode", "\u9884\u89c8\u6a21\u5f0f"))}
                 onKeyDown={handleKeyDown}
                 className="appn-mode-tabs"
             >
@@ -534,7 +536,7 @@ export function AssistantPreviewPane({
                 data-testid="assistant-preview-resize-handle"
                 role="separator"
                 aria-orientation="vertical"
-                aria-label={lang === "en" ? "Resize preview panel" : "调整预览面板宽度"}
+                aria-label={(chromeText(lang, "Resize preview panel", "调整预览面板宽度"))}
                 aria-valuemin={20}
                 aria-valuemax={80}
                 aria-valuenow={Math.round(splitRatio * 100)}
@@ -677,8 +679,8 @@ export function AssistantPreviewPane({
                         type="button"
                         onClick={handleClose}
                         style={previewCloseButtonStyle(theme)}
-                        title={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
-                        aria-label={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
+                        title={(chromeText(lang, "Close preview", "\u5173\u95ed\u9884\u89c8"))}
+                        aria-label={(chromeText(lang, "Close preview", "\u5173\u95ed\u9884\u89c8"))}
                     >
                         X
                     </button>

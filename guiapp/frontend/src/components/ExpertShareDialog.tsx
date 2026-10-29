@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { SubmitExpertMarketListing, SubmitExpertMarketListingWithDistribution } from '../../wailsjs/go/main/App';
 import { useDialog } from './CustomDialog';
 import type { ExpertDefinition } from './ai/expertTypes';
+import { tailText } from '../i18n/mnTail'
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 
-const t = (lang: Lang, zh: string, en: string) => lang.startsWith('zh') ? zh : en;
+const t = (lang: Lang, zh: string, en: string) => tailText(lang, en, zh);
 const message = (err: unknown) => err instanceof Error ? err.message : String(err || 'Unknown error');
 
 /**

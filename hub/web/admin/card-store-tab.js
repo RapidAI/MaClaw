@@ -24,9 +24,9 @@
   function currentAdminTenantID() { const profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null; return profile && String(profile.scope || '').toLowerCase() === 'tenant' ? String(profile.tenant_id || '').trim() : ''; }
   function publicStoreURL() { const tenantID = currentAdminTenantID(); return tenantID ? '/card_store?tenant_id=' + encodeURIComponent(tenantID) : '/card_store'; }
   function alipayReturnPreviewURL() { const tenantID = currentAdminTenantID(); return global.location.origin + '/api/card-store/orders/{orderNo}/alipay/return' + (tenantID ? '?tenant_id=' + encodeURIComponent(tenantID) : ''); }
-  function lang() { return global.currentLang === 'zh' ? 'zh' : 'en'; }
-  function t(key, vars) { let text = (I18N[lang()] && I18N[lang()][key]) || I18N.en[key] || key; Object.keys(vars || {}).forEach(function(k) { text = text.replace('{' + k + '}', vars[k]); }); return text; }
-  function cardStoreLabel(key, fallback) { return (I18N[lang()] && I18N[lang()][key]) || (EXTRA_I18N[lang()] && EXTRA_I18N[lang()][key]) || I18N.en[key] || EXTRA_I18N.en[key] || fallback || key; }
+  function cardTables() { return { en: Object.assign({}, I18N.en, EXTRA_I18N.en), zh: Object.assign({}, I18N.zh, EXTRA_I18N.zh) }; }
+  function t(key, vars) { return global.hubDict ? global.hubDict('CARD_STORE', cardTables(), key, vars) : ((I18N.en && I18N.en[key]) || key); }
+  function cardStoreLabel(key, fallback) { var text = t(key); return text && text !== key ? text : (fallback || key); }
   function setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
   function updateStorefrontPreviewLink() { const openLink = document.getElementById('cardStoreOpenLink'); if (!openLink) return; openLink.href = publicStoreURL(); openLink.title = t('open'); openLink.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/><path d="M5 5h5"/><path d="M5 5v5"/></svg><span>' + t('open') + '</span>'; }
   function money(value) { return Number(value || 0).toFixed(2); }

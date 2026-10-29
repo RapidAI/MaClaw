@@ -6,6 +6,7 @@ import { PreviewFileActions } from "./PreviewFileActions";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { usePreviewSlideLifecycle } from "./previewSlide";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { tailText } from "../../i18n/mnTail"
 
 /** Above the assistant panel and welcome dialogs; below alert dialogs (120000). */
 const IMAGE_PREVIEW_Z_INDEX = 110000;
@@ -87,7 +88,7 @@ export interface ImagePreviewOverlayProps {
 
 /** Full-image preview panel for a chat attachment: slides in from the right; Esc, backdrop, or close button slides it back out. */
 export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, theme: t, onClose }: ImagePreviewOverlayProps) {
-    const isZh = !lang.startsWith("en");
+    const isZh = lang.startsWith("zh");
     const { src, loading, failed } = useFullResolutionSource(filePath, thumbnailSrc);
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -172,11 +173,11 @@ export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, th
         "--wails-draggable": "no-drag",
     };
 
-    const closeLabel = isZh ? "关闭" : "Close";
+    const closeLabel = tailText(lang, "Close", "关闭");
     const status = loading
-        ? (isZh ? "正在加载原图…" : "Loading full image…")
+        ? (tailText(lang, "Loading full image…", "正在加载原图…"))
         : failed || imageBroken
-            ? (isZh ? "无法加载原图" : "This image cannot be loaded")
+            ? (tailText(lang, "This image cannot be loaded", "无法加载原图"))
             : fileName;
 
     const overlay = (
@@ -189,7 +190,7 @@ export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, th
             <div
                 role="dialog"
                 aria-modal="true"
-                aria-label={isZh ? `图片预览：${fileName}` : `Image preview: ${fileName}`}
+                aria-label={tailText(lang, `Image preview: ${fileName}`, `图片预览：${fileName}`)}
                 aria-describedby={PREVIEW_STATUS_ID}
                 data-testid="attachment-image-preview-dialog"
                 ref={dialogRef}

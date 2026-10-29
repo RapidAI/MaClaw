@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { normalizeLang } from '../../i18n';
 import {
     buildTokenTrend,
     earliestRecordedDay,
@@ -24,6 +25,29 @@ const grains: TokenTrendGrain[] = ['day', 'week', 'month'];
 function textFor(lang: string, en: string, zhHans: string, zhHant: string) {
     if (lang === 'zh-Hans') return zhHans;
     if (lang === 'zh-Hant') return zhHant;
+    if (normalizeLang(lang) === 'mn') {
+        const fixed: Record<string, string> = {
+            'Last 30 days': 'Сүүлийн 30 өдөр',
+            'Last 8 weeks': 'Сүүлийн 8 долоо хоног',
+            'Usage trend range': 'Хэрэглээний хандлагын хүрээ',
+            Day: 'Өдөр',
+            Week: 'Долоо хоног',
+            Month: 'Сар',
+            'no record': 'бүртгэлгүй',
+            in: 'оролт',
+            out: 'гаралт',
+        };
+        if (fixed[en]) return fixed[en];
+        const months = /^Last (\d+) months$/.exec(en);
+        if (months) return `Сүүлийн ${months[1]} сар`;
+        const trend = /^(.*) token trend, (.*) total$/.exec(en);
+        if (trend) return `${trend[1]} Token хандлага, нийт ${trend[2]}`;
+        const dailyStart = /^Daily records start (.+), kept for (\d+) days; dashed stretches have no record\. Earlier usage stays in the total\.$/.exec(en);
+        if (dailyStart) return `Өдрийн бүртгэл ${dailyStart[1]}-аас эхэлнэ (${dailyStart[2]} хоног хадгална; тасархай хэсэгт бүртгэл байхгүй). Өмнөх хэрэглээ нийт дүнд үлдэнэ.`;
+        const dailyKept = /^Daily records kept for (\d+) days; dashed stretches have no record\. Earlier usage stays in the total\.$/.exec(en);
+        if (dailyKept) return `Өдрийн бүртгэлийг ${dailyKept[1]} хоног хадгална; тасархай хэсэгт бүртгэл байхгүй. Өмнөх хэрэглээ нийт дүнд үлдэнэ.`;
+        return en;
+    }
     return en;
 }
 

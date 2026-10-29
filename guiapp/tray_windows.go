@@ -152,7 +152,7 @@ func startSystray(app *App) {
 
 				UpdateTrayMenu = func(lang string) {
 					tr := trayTranslations()
-					t, ok := tr[lang]
+					t, ok := tr[string(normalizeAppLanguageKind(lang))]
 					if !ok {
 						t = tr["en"]
 					}

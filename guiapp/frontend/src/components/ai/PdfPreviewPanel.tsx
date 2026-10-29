@@ -9,6 +9,7 @@ import {
     objectURLFromPdfDataURL,
     type TaskResultPreviewPayload,
 } from "./taskResultPreview";
+import { tailText } from "../../i18n/mnTail"
 
 export { isPdfFileName };
 
@@ -28,7 +29,6 @@ export interface PdfPreviewPanelProps {
  * blob URL for the iframe.
  */
 export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: PdfPreviewPanelProps) {
-    const isZh = lang.startsWith("zh");
     const langRef = useRef(lang);
     useEffect(() => {
         langRef.current = lang;
@@ -41,7 +41,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: P
     useEffect(() => {
         let cancelled = false;
         let objectUrl = "";
-        const emptyLabel = () => langRef.current.startsWith("zh") ? "该 PDF 没有可预览的内容" : "This PDF has no content to preview";
+        const emptyLabel = () => tailText(langRef.current, "This PDF has no content to preview", "该 PDF 没有可预览的内容");
         const fail = (message: string) => {
             if (cancelled) return;
             setError(localizeTaskResultPreviewError(message, langRef.current));
@@ -125,7 +125,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: P
     if (loading) {
         return (
             <div data-testid="pdf-preview-loading" role="status" style={{ ...fill, padding: 20, color: theme.textMuted, fontSize: 13, boxSizing: "border-box" }}>
-                {isZh ? "正在加载 PDF 预览…" : "Loading PDF preview…"}
+                {tailText(lang, "Loading PDF preview…", "正在加载 PDF 预览…")}
             </div>
         );
     }
@@ -135,7 +135,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: P
                 <iframe
                     key={src}
                     data-testid="pdf-preview-panel"
-                    title={isZh ? "PDF 预览" : "PDF preview"}
+                    title={tailText(lang, "PDF preview", "PDF 预览")}
                     src={src}
                     style={{ flex: 1, minHeight: 0, width: "100%", border: "none", background: theme.bg }}
                 />

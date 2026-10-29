@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { companionHostTransferErrorText, companionShareOpenErrorText } from "./AssistantTitleBarNotifications.companionShare";
+import { tailText } from "../../i18n/mnTail"
 
 /** The Wails bindings live on window.go.main.App; a stale webview may lack them. */
 function appBinding(name: string): ((arg: string) => Promise<unknown>) | null {
@@ -14,9 +15,9 @@ function appBinding(name: string): ((arg: string) => Promise<unknown>) | null {
 function staleBindingErrorText(lang: string, action: "share" | "hostTransfer"): string {
     const isZh = lang.startsWith("zh");
     if (action === "share") {
-        return isZh ? "当前版本无法打开分享，请更新应用" : "This version cannot open shares. Please update the app.";
+        return tailText(lang, "This version cannot open shares. Please update the app.", "当前版本无法打开分享，请更新应用");
     }
-    return isZh ? "当前版本无法处理主持人转移，请更新应用" : "This version cannot handle host transfers. Please update the app.";
+    return tailText(lang, "This version cannot handle host transfers. Please update the app.", "当前版本无法处理主持人转移，请更新应用");
 }
 
 export type ShareActions = {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
+import { tailText } from "../../i18n/mnTail"
 
 /** Default auto-dismiss for the post-send save offer (ms). */
 export const WELCOME_TEMPLATE_OFFER_AUTO_DISMISS_MS = 12_000;
@@ -29,7 +30,6 @@ export function WelcomeTemplateSaveOfferBanner({
     onDismiss,
     autoDismissMs = WELCOME_TEMPLATE_OFFER_AUTO_DISMISS_MS,
 }: WelcomeTemplateSaveOfferProps) {
-    const isZh = !lang?.startsWith("en");
     const [paused, setPaused] = useState(false);
     const remainingRef = useRef(autoDismissMs);
     const lastTickRef = useRef(0);
@@ -110,7 +110,7 @@ export function WelcomeTemplateSaveOfferBanner({
             <div className="wtso-banner">
                 <div className="wtso-text">
                     <div className="wtso-title">
-                        {isZh ? "保存为常用模板？" : "Save as a reusable template?"}
+                        {tailText(lang ?? "", "Save as a reusable template?", "保存为常用模板？")}
                     </div>
                     <div style={{
                         fontSize: 11,
@@ -125,8 +125,8 @@ export function WelcomeTemplateSaveOfferBanner({
                         {autoDismissMs > 0 && (
                             <span className="wtso-meta">
                                 {paused
-                                    ? (isZh ? "· 已暂停" : "· paused")
-                                    : (isZh ? "· 稍后自动关闭" : "· auto-closes")}
+                                    ? (tailText(lang ?? "", "· paused", "· 已暂停"))
+                                    : (tailText(lang ?? "", "· auto-closes", "· 稍后自动关闭"))}
                             </span>
                         )}
                     </div>
@@ -146,7 +146,7 @@ export function WelcomeTemplateSaveOfferBanner({
                             cursor: "pointer",
                         }}
                     >
-                        {isZh ? "忽略" : "Dismiss"}
+                        {tailText(lang ?? "", "Dismiss", "忽略")}
                     </button>
                     <button
                         type="button"
@@ -160,7 +160,7 @@ export function WelcomeTemplateSaveOfferBanner({
                             cursor: "pointer",
                         })}
                     >
-                        {isZh ? "保存" : "Save"}
+                        {tailText(lang ?? "", "Save", "保存")}
                     </button>
                 </div>
             </div>

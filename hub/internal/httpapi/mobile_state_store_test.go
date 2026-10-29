@@ -378,6 +378,95 @@ func TestMobileStateMigrationPreservesReadResponses(t *testing.T) {
 	}
 }
 
+func TestMobileStatePurgeAllRowsKeepsInitializedMarker(t *testing.T) {
+	// Purging the only owner empties every entity table. A later restart must
+	// not re-import stale data: the initialized marker survives the purge and
+	// no legacy JSON exists to re-import, so state stays empty.
+	clearMobileStateForTest(t)
+	resetMobilePurgeState(t)
+	t.Cleanup(mobileResetKnowledgePurgeStateForTest)
+	initMobileCoreAgentForTest(t, t.TempDir())
+	root := t.TempDir()
+	statePath := filepath.Join(root, "mobile", "state.json")
+	setMobileStatePathForTest(t, statePath)
+	const tenantID, ownerID = "tenant-purge-empty", "user-purge-empty"
+
+	legacy := mobilePersistentState{Drafts: map[string]mobileDocumentDraftRecord{
+		"draft-a": {ID: "draft-a", TenantID: tenantID, OwnerID: ownerID, Markdown: "private"},
+	}}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mobileResetStatePersistenceForTest()
+	mobileEnsureStateLoaded()
+
+	// Purge the only owner: every entity table is now empty.
+	(&UserDataPurger{}).purgeMobileUserData(context.Background(), tenantID, ownerID, nil, func(string, error) {})
+
+	db := mobileStateDBForTest(t, statePath)
+	for _, table := range mobileEntityTables {
+		var count int
+		if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("table %s not empty after purge: %d", table, count)
+		}
+	}
+	var marker string
+	if err := db.QueryRow(`SELECT value FROM mobile_state_meta WHERE key='initialized'`).Scan(&marker); err != nil {
+		t.Fatalf("initialized marker lost after purge: %v", err)
+	}
+
+	// Restart: state must load from the (empty) DB, not from any backup JSON.
+	mobileDocuments.Lock()
+	mobileDocuments.drafts = make(map[string]mobileDocumentDraftRecord)
+	mobileDocuments.Unlock()
+	mobileResetStatePersistenceForTest()
+	mobileEnsureStateLoaded()
+	mobileDocuments.Lock()
+	_, resurrected := mobileDocuments.drafts["draft-a"]
+	mobileDocuments.Unlock()
+	if resurrected {
+		t.Fatal("purged draft resurrected after restart on emptied DB")
+	}
+	if _, err := os.Stat(statePath + ".migrated.bak"); err != nil {
+		t.Fatalf("unexpected re-migration backup appeared: %v", err)
+	}
+}
+
+func TestMobileStateEmptyLegacyStateMigratesOnce(t *testing.T) {
+	// An empty legacy JSON still counts as a successful migration: the marker
+	// is committed so later startups take the DB path instead of re-running
+	// the import and re-renaming a missing file.
+	clearMobileStateForTest(t)
+	root := t.TempDir()
+	statePath := filepath.Join(root, "mobile", "state.json")
+	setMobileStatePathForTest(t, statePath)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mobileResetStatePersistenceForTest()
+	mobileEnsureStateLoaded()
+	if _, err := os.Stat(statePath + ".migrated.bak"); err != nil {
+		t.Fatalf("legacy file was not renamed after empty migration: %v", err)
+	}
+	var marker string
+	if err := mobileStateDBForTest(t, statePath).QueryRow(`SELECT value FROM mobile_state_meta WHERE key='initialized'`).Scan(&marker); err != nil {
+		t.Fatalf("initialized marker missing after empty migration: %v", err)
+	}
+}
+
 func TestMobileStateLateWritesCannotResurrectPurgedOwner(t *testing.T) {
 	resetMobilePurgeState(t)
 	t.Cleanup(mobileResetKnowledgePurgeStateForTest)
