@@ -3,6 +3,7 @@ package desktopd
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,4 +147,19 @@ func TestDemoShotFetch(t *testing.T) {
 
 func decodeB64(s string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
+}
+
+func TestDemoBeginRefusesASleepingDisplay(t *testing.T) {
+	t.Setenv(demoskill.EnvFlag, "1")
+	deps := demoDeps{
+		ctl:  func(context.Context, map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil },
+		shot: func(context.Context) ([]byte, error) { return nil, errors.New("no display") },
+	}
+	tbl := &demoTable{sessions: map[string]*demoSession{}, now: time.Now}
+	if _, err := tbl.handle(context.Background(), "k", desktop.CtlDemoBegin, nil, deps); err == nil {
+		t.Fatal("recording started on a display that cannot be captured")
+	}
+	if len(tbl.sessions) != 0 {
+		t.Fatal("session left open")
+	}
 }

@@ -161,6 +161,14 @@ func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) [
 		if c.botMissesContainer(name) {
 			continue
 		}
+		if name == "delegate_task" && c.hubBotInstance() {
+			// A Hub bot hands work to a teammate with desktop
+			// action=delegate. The in-process sub-agent is not a teammate:
+			// asked to "let collab-b write it", the bot ran delegate_task
+			// and reported the sub-agent's code as collab-b's, with no
+			// note in Hub (papers 2026-10-30 run_928f4029).
+			continue
+		}
 		if name == "web_search" || name == "web_fetch" {
 			if seenWeb[name] {
 				continue

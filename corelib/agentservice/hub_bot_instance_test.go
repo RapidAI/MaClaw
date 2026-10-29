@@ -21,3 +21,13 @@ func TestWakeTurnSkipsDesktopOutcomeCheck(t *testing.T) {
 		t.Fatalf("wake turn was checked: %+v", d)
 	}
 }
+
+func TestHubBotSurfaceDropsInProcessDelegate(t *testing.T) {
+	c := &coreAgentCallbacks{instance: Instance{Metadata: map[string]string{"hub_bot": "1"}}}
+	out := c.finishToolSurface([]map[string]interface{}{{"name": "delegate_task"}, {"name": "read_file"}})
+	for _, tool := range out {
+		if tool["name"] == "delegate_task" {
+			t.Fatal("hub bot still offers delegate_task")
+		}
+	}
+}

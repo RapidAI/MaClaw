@@ -108,6 +108,15 @@ func (t *demoTable) begin(ctx context.Context, key, title string, deps demoDeps)
 		return map[string]any{"ok": true, "id": old.id, "already": true}, nil
 	}
 	t.mu.Unlock()
+	if deps.shot != nil {
+		// A bot display that went to sleep still answers the supervisor, so
+		// a recording on it "succeeded" with no window and no screenshot:
+		// only the narration reached distill (papers 2026-10-30, three empty
+		// recordings). Refuse at start so the person opens the desktop first.
+		if data, err := deps.shot(ctx); err != nil || len(data) == 0 {
+			return nil, fmt.Errorf("%w: this bot's desktop is not running; open its desktop, then start the recording", ErrInvalid)
+		}
+	}
 	if _, err := deps.ctl(ctx, map[string]any{"op": desktop.CtlDemoInputBegin}); err != nil {
 		return nil, err
 	}
