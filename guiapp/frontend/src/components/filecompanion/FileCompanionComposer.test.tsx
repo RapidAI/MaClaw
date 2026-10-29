@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from "react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setCompanionUiLang } from "../../i18n/mnCompanion";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { FileCompanionComposer } from "./FileCompanionComposer";
 import { fileCompanionInputHistory, hydrateFileCompanionInputHistory, rememberFileCompanionInput } from "./fileCompanionInputHistory";
@@ -35,7 +36,18 @@ beforeEach(() => {
     hydrateFileCompanionInputHistory([]);
 });
 
+afterEach(() => {
+    setCompanionUiLang("zh-Hans");
+});
+
 describe("FileCompanionComposer", () => {
+    it("shows the Khalkha send button when lang is mn", () => {
+        render(<FileCompanionComposer path="a.pdf" value="" lang="mn" onChange={() => undefined} onSubmit={() => undefined} />);
+        const send = screen.getByTestId("file-companion-send");
+        expect(send.textContent).toBe("Илгээх");
+        expect(send.textContent).not.toMatch(/[\u3400-\u9fff]/);
+    });
+
     it("walks sent questions with the arrow keys and restores the draft on Escape", async () => {
         render(<Harness />);
         fireEvent.change(input(), { target: { value: "文件里有什么" } });

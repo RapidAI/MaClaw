@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { FileCompanionFigureDataURL } from "../../../wailsjs/go/main/App";
-import { tailText } from "../../i18n/mnTail";
+import { companionSay } from "../../i18n/mnCompanion";
 
 /** One drawing from the open file, placed under the answer that talks about it. */
 export type CompanionFigure = {
@@ -84,7 +84,7 @@ export function CompanionFigureStrip({ figures, messageId, lang = "en" }: { figu
 
     if (figures.length === 0) return null;
     const noteFrames = figures.every((figure) => figure.label.startsWith("板书") || figure.label.startsWith("关键帧"));
-    const heading = noteFrames ? tailText(lang, "Keyframes", "关键帧") : tailText(lang, "Source figures", "原文配图");
+    const heading = noteFrames ? companionSay(lang, "关键帧") : companionSay(lang, "原文配图");
     const open = (event: MouseEvent, path: string) => {
         event.preventDefault();
         event.stopPropagation();
@@ -118,7 +118,7 @@ export function CompanionFigureStrip({ figures, messageId, lang = "en" }: { figu
                                 </button>
                             ) : (
                                 <div style={{ height: 112, display: "grid", placeItems: "center", color: "var(--theme-text-muted, #94a3b8)", fontSize: 12 }}>
-                                    {failed[figure.path] ? tailText(lang, "Could not load image", "无法取图") : tailText(lang, "Loading image…", "正在取图…")}
+                                    {failed[figure.path] ? companionSay(lang, "无法取图") : companionSay(lang, "正在取图…")}
                                 </div>
                             )}
                             <figcaption style={{ padding: "4px 6px", fontSize: 11, color: "var(--theme-text-secondary, #475569)", lineHeight: 1.4, overflowWrap: "anywhere" }}>

@@ -176,6 +176,8 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
         return { kind: "text", content: "" };
     },
     GetBrandInfo: (...args: unknown[]) => getBrandInfo(...args),
+    // Absent in older mocks. Vitest 4 throws on a missing export, and these cases still expect Chinese.
+    GetCurrentLanguage: undefined,
     SetMainWindowScreenPosition: (...args: unknown[]) => setScreenPosition(...args),
 }));
 
@@ -6315,6 +6317,46 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-paper-save").textContent).toBe("已保存");
         });
+    });
+
+    it("treats a typed paper command as the same paper turn as the button", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha", sessionId: "a.md" }));
+        let release: (value?: unknown) => void = () => undefined;
+        send.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-editor");
+        const input = screen.getByTestId("file-companion-input") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "read the paper" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        const sent = send.mock.calls[0][0] as Record<string, unknown>;
+        expect(sent.text).toBe("read the paper");
+        expect(sent.purpose).toBe("paper");
+        expect(sent.selection).toBeUndefined();
+        expect(screen.getByTestId("file-companion-message-user").textContent).toBe("read the paper");
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-paper").textContent).toBe("正在解读…");
+        });
+        const requestID = String(sent.request_id);
+        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.md", text: "SECRET_MARKDOWN", request_id: requestID }));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-answer").textContent).toContain("正在生成论文解读");
+        });
+        expect(screen.getByTestId("file-companion-answer").textContent).not.toContain("SECRET_MARKDOWN");
+        runtime.emit("ai-assistant-response", JSON.stringify({
+            session_key: "file-companion:a.md",
+            text: "SECRET_MARKDOWN",
+            local_file_path: "C:/maclaw/data/file-companion/results/a.md/a-论文解读.pdf",
+            request_id: requestID,
+        }));
+        await act(async () => { release(); await Promise.resolve(); });
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-answer").textContent).toContain("已生成论文解读");
+        });
+        expect(screen.getByTestId("file-companion-answer").textContent).not.toContain("SECRET_MARKDOWN");
+        expect(screen.getByTestId("task-result-view-btn")).toBeTruthy();
     });
 
     it("asks what a new document is, once, and leaves that question out of input history", async () => {

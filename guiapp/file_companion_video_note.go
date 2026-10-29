@@ -157,7 +157,28 @@ func fileCompanionVideoNotePhraseMatches(text string) bool {
 	case "视频笔记", "音频笔记", "整理成笔记", "帮我记笔记":
 		return true
 	}
+	if fileCompanionNoteAlias(text) {
+		return true
+	}
 	return fileCompanionVideoNotePhraseRe.MatchString(text)
+}
+
+// fileCompanionCommandKey is the exact phrase after trim and trailing
+// punctuation, compared case-insensitively. A longer sentence must not match.
+func fileCompanionCommandKey(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.TrimRight(text, "。.!！?？")
+	return strings.ToLower(text)
+}
+
+func fileCompanionNoteAlias(text string) bool {
+	switch fileCompanionCommandKey(text) {
+	case "generate notes", "take notes", "make notes", "make a note", "create a note",
+		"тэмдэглэл үүсгэх", "тэмдэглэл хийх", "тэмдэглэл бичих":
+		return true
+	default:
+		return false
+	}
 }
 
 func fileCompanionPurposeConflict(path string, req FileCompanionTurnRequest) string {

@@ -1,6 +1,7 @@
 package cardstore
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
@@ -126,18 +127,18 @@ func AlipayReturnHandler(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		storeURL, ordersURL := alipayReturnStoreURLs(r, svc, "")
 		if svc == nil || strings.TrimSpace(svc.alipay.AlipayPublicKey) == "" {
-			writeAlipayReturnPage(w, false, "", "Alipay return verification is not configured.", storeURL, ordersURL)
+			writeAlipayReturnPage(w, r, false, "", "Alipay return verification is not configured.", storeURL, ordersURL)
 			return
 		}
 		values, err := verifyAlipayReturnQuery(r.URL.Query(), svc.alipay.AlipayPublicKey)
 		if err != nil {
 			storeURL, ordersURL = alipayReturnStoreURLs(r, svc, "")
-			writeAlipayReturnPage(w, false, "", "Alipay return signature verification failed. Please check the order status in the compute store.", storeURL, ordersURL)
+			writeAlipayReturnPage(w, r, false, "", "Alipay return signature verification failed. Please check the order status in the compute store.", storeURL, ordersURL)
 			return
 		}
 		orderNo := strings.TrimSpace(values.Get("out_trade_no"))
 		storeURL, ordersURL = alipayReturnStoreURLs(r, svc, orderNo)
-		writeAlipayReturnPage(w, true, orderNo, alipayReturnMessage(r, svc, orderNo), storeURL, ordersURL)
+		writeAlipayReturnPage(w, r, true, orderNo, alipayReturnMessage(r, svc, orderNo), storeURL, ordersURL)
 	}
 }
 
@@ -229,7 +230,100 @@ func alipayReturnMessage(r *http.Request, svc *Service, orderNo string) string {
 	}
 }
 
-func writeAlipayReturnPage(w http.ResponseWriter, ok bool, orderNo, message, storeURL, ordersURL string) {
+func alipayReturnUILang(r *http.Request) string {
+	if r == nil {
+		return "en"
+	}
+	tag := r.Header.Get("Accept-Language")
+	if i := strings.IndexAny(tag, ",;"); i >= 0 {
+		tag = tag[:i]
+	}
+	tag = strings.ToLower(strings.TrimSpace(tag))
+	switch {
+	case tag == "mn" || strings.HasPrefix(tag, "mn-mn") || strings.HasPrefix(tag, "mn-cyrl"):
+		return "mn"
+	case strings.HasPrefix(tag, "zh"):
+		return "zh"
+	default:
+		return "en"
+	}
+}
+
+// alipayReturnPhrases is the browser-return chrome. A sentence that is not
+// listed stays as it was passed in, so a test token is not rewritten.
+var alipayReturnPhrases = map[string]struct{ zh, mn string }{
+	"Payment returned":                              {"支付已返回", "Төлбөр буцаж ирлээ"},
+	"Payment return failed":                         {"支付返回失败", "Төлбөрийн буцаалт амжилтгүй"},
+	"Alipay return verification is not configured.": {"尚未配置支付宝返回校验。", "Alipay буцаалтын баталгаажуулалт тохируулаагүй."},
+	"Alipay return signature verification failed. Please check the order status in the compute store.": {"支付宝返回签名校验失败。请在算力商店查看订单状态。", "Alipay буцаалтын гарын үсгийн баталгаажуулалт амжилтгүй. Захиалгын төлөвийг тооцооллын дэлгүүрээс шалгана уу."},
+	"Payment returned. Credits will activate after the Alipay server notification is received.":        {"支付已返回。收到支付宝服务器通知后，信用点会开通。", "Төлбөр буцаж ирлээ. Alipay серверийн мэдэгдэл ирсний дараа Credits идэвхжинэ."},
+	"Order confirmed. Compute credits have been activated.":                                            {"订单已确认。算力信用点已开通。", "Захиалга баталгаажлаа. Тооцооллын Credits идэвхжлээ."},
+	"Payment confirmed. Compute credits are activating.":                                               {"支付已确认。算力信用点正在开通。", "Төлбөр баталгаажлаа. Тооцооллын Credits идэвхжиж байна."},
+	"Order":                     {"订单号", "Захиалгын дугаар"},
+	"Back to the compute store": {"返回算力商店", "Тооцооллын дэлгүүр лүү буцах"},
+	"View orders":               {"查看订单", "Захиалга харах"},
+}
+
+func alipayReturnLocalized(lang, english string) string {
+	row, ok := alipayReturnPhrases[english]
+	if !ok {
+		return english
+	}
+	switch lang {
+	case "zh":
+		return row.zh
+	case "mn":
+		return row.mn
+	default:
+		return english
+	}
+}
+
+func alipayReturnChrome(lang string) (htmlLang, back, orders string) {
+	switch lang {
+	case "zh":
+		return "zh-CN", alipayReturnLocalized("zh", "Back to the compute store"), alipayReturnLocalized("zh", "View orders")
+	case "mn":
+		return "mn", alipayReturnLocalized("mn", "Back to the compute store"), alipayReturnLocalized("mn", "View orders")
+	default:
+		return "en", "Back to the compute store", "View orders"
+	}
+}
+
+type alipayReturnScriptRow struct {
+	HTML       string `json:"html"`
+	Status     string `json:"status"`
+	Message    string `json:"message"`
+	OrderLabel string `json:"orderLabel"`
+	Back       string `json:"back"`
+	Orders     string `json:"orders"`
+}
+
+func alipayReturnScriptCopy(status, message, orderNo string) string {
+	payload := map[string]alipayReturnScriptRow{}
+	for _, lang := range []string{"en", "zh", "mn"} {
+		htmlLang, back, orders := alipayReturnChrome(lang)
+		orderLabel := ""
+		if strings.TrimSpace(orderNo) != "" {
+			orderLabel = alipayReturnLocalized(lang, "Order") + ": " + orderNo
+		}
+		payload[lang] = alipayReturnScriptRow{
+			HTML:       htmlLang,
+			Status:     alipayReturnLocalized(lang, status),
+			Message:    alipayReturnLocalized(lang, message),
+			OrderLabel: orderLabel,
+			Back:       back,
+			Orders:     orders,
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
+func writeAlipayReturnPage(w http.ResponseWriter, r *http.Request, ok bool, orderNo, message, storeURL, ordersURL string) {
 	status := "Payment return failed"
 	if ok {
 		status = "Payment returned"
@@ -240,15 +334,19 @@ func writeAlipayReturnPage(w http.ResponseWriter, ok bool, orderNo, message, sto
 	if strings.TrimSpace(ordersURL) == "" {
 		ordersURL = "/compute-store#ordersPanel"
 	}
+	lang := alipayReturnUILang(r)
+	htmlLang, backLabel, ordersLabel := alipayReturnChrome(lang)
+	statusText := alipayReturnLocalized(lang, status)
+	messageText := alipayReturnLocalized(lang, message)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	redirectMeta := ""
 	if ok {
 		redirectMeta = `<meta http-equiv="refresh" content="1;url=` + html.EscapeString(ordersURL) + `">`
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` + redirectMeta + `<title>` + html.EscapeString(status) + `</title><style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:#f6f8fb;color:#172033}.wrap{max-width:560px;margin:12vh auto;padding:28px;background:#fff;border:1px solid #dbe3ef;border-radius:10px;box-shadow:0 10px 28px rgba(15,23,42,.07)}h1{margin:0 0 12px;font-size:24px}p{line-height:1.7;color:#667085}.meta{padding:10px 12px;background:#f8fafc;border:1px solid #e5eaf2;border-radius:8px;color:#344054}.actions{display:flex;gap:10px;margin-top:22px}.btn{height:38px;display:inline-flex;align-items:center;padding:0 14px;border-radius:8px;text-decoration:none;font-weight:700}.primary{background:#2563eb;color:#fff}.secondary{border:1px solid #dbe3ef;color:#2563eb;background:#fff}</style></head><body><main class="wrap"><h1>` + html.EscapeString(status) + `</h1><p>` + html.EscapeString(message) + `</p>`))
+	_, _ = w.Write([]byte(`<!doctype html><html lang="` + htmlLang + `"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` + redirectMeta + `<title>` + html.EscapeString(statusText) + `</title><style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:#f6f8fb;color:#172033}.wrap{max-width:560px;margin:12vh auto;padding:28px;background:#fff;border:1px solid #dbe3ef;border-radius:10px;box-shadow:0 10px 28px rgba(15,23,42,.07)}h1{margin:0 0 12px;font-size:24px}p{line-height:1.7;color:#667085}.meta{padding:10px 12px;background:#f8fafc;border:1px solid #e5eaf2;border-radius:8px;color:#344054}.actions{display:flex;gap:10px;margin-top:22px}.btn{height:38px;display:inline-flex;align-items:center;padding:0 14px;border-radius:8px;text-decoration:none;font-weight:700}.primary{background:#2563eb;color:#fff}.secondary{border:1px solid #dbe3ef;color:#2563eb;background:#fff}</style></head><body><main class="wrap"><h1>` + html.EscapeString(statusText) + `</h1><p>` + html.EscapeString(messageText) + `</p>`))
 	if orderNo != "" {
-		_, _ = w.Write([]byte(`<p class="meta">Order: ` + html.EscapeString(orderNo) + `</p>`))
+		_, _ = w.Write([]byte(`<p class="meta">` + html.EscapeString(alipayReturnLocalized(lang, "Order")+": "+orderNo) + `</p>`))
 	}
-	_, _ = w.Write([]byte(`<div class="actions"><a class="btn primary" href="` + html.EscapeString(storeURL) + `">&#36820;&#22238;&#31639;&#21147;&#21830;&#24215;</a><a class="btn secondary" href="` + html.EscapeString(ordersURL) + `">&#26597;&#30475;&#35746;&#21333;</a></div></main></body></html>`))
+	_, _ = w.Write([]byte(`<div class="actions"><a class="btn primary" href="` + html.EscapeString(storeURL) + `">` + html.EscapeString(backLabel) + `</a><a class="btn secondary" href="` + html.EscapeString(ordersURL) + `">` + html.EscapeString(ordersLabel) + `</a></div></main><script>(function(){var saved="";try{saved=localStorage.getItem("maclaw.computeStore.language")||"";}catch(e){}if(saved!=="en"&&saved!=="zh"&&saved!=="mn")return;var copy=` + alipayReturnScriptCopy(status, message, orderNo) + `;var row=copy[saved];if(!row)return;document.documentElement.lang=row.html;document.title=row.status;var h=document.querySelector("h1");if(h)h.textContent=row.status;var p=document.querySelector("main p");if(p)p.textContent=row.message;var meta=document.querySelector(".meta");if(meta&&row.orderLabel)meta.textContent=row.orderLabel;var links=document.querySelectorAll(".actions a");if(links[0])links[0].textContent=row.back;if(links[1])links[1].textContent=row.orders;})();</script></body></html>`))
 }

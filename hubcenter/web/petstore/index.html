@@ -40,6 +40,7 @@
     .lang-switch{display:flex;gap:4px}
     .lang-switch button{min-height:32px;border:1px solid var(--line);background:#fff;border-radius:8px;padding:0 8px;font:inherit;font-size:12px;font-weight:650;color:#475569}
     .lang-switch button[aria-pressed="true"]{background:#eaf1ff;border-color:#9cbcf4;color:#174ea6}
+    @media(max-width:760px){.top-side{align-items:flex-start;margin-top:12px}}
   </style>
   <noscript><style>body{visibility:visible!important}</style></noscript>
 </head>
@@ -57,20 +58,148 @@
   (function(){
     const token=(new URLSearchParams(location.hash.slice(1))).get('token')||'';let packs=[];let purchaseTarget=null;let page=1,totalPages=1,totalCount=0,lastQuery='';
     const $=id=>document.getElementById(id),auth=()=>token?{Authorization:'Bearer '+token}:{},esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-    function credits(n){return Number(n)>0?Number(n)+' Credits':'免费'}
-    function card(p,mine){const div=document.createElement('article');div.className='card';const cover=p.preview_data_url?'<img loading="lazy" src="'+esc(p.preview_data_url)+'" alt="">':'<span class="mono">'+esc((p.name||'?').trim().slice(0,1)||'?')+'</span>';div.innerHTML='<div class="cover">'+cover+'</div><div class="card-top"><div><div class="name">'+esc(p.name)+'</div><div class="version">v'+esc(p.version||'1.0.0')+'</div></div><span class="price">'+credits(p.price)+'</span></div><div class="desc">'+esc(p.description||'暂无描述')+'</div><div class="meta"><span>下载 '+Number(p.download_count||0)+'</span><span>买断 '+Number(p.purchase_count||0)+'</span></div><div class="card-actions"></div>';const actions=div.querySelector('.card-actions');if(mine){const b=document.createElement('button');b.className='danger';b.textContent='下架';b.onclick=()=>withdraw(p.id);actions.append(b)}else{const b=document.createElement('button');b.className='primary';b.textContent=Number(p.price)>0?'买断':'免费获取';b.onclick=()=>openPurchase(p);actions.append(b)}return div}
-    async function request(url,opt={}){const r=await fetch(url,{...opt,headers:{...auth(),...(opt.headers||{})}});if(!r.ok)throw new Error((await r.text())||'请求失败');return r.headers.get('content-type')?.includes('application/json')?r.json():r}
-    async function load(q=lastQuery,pg=1){try{lastQuery=q;const d=await request('/api/v1/pet-store/packs?q='+encodeURIComponent(q)+'&page='+pg+'&page_size=12');packs=d.packs||[];page=d.page||pg;totalCount=d.total||0;totalPages=d.total_pages||0;$('packGrid').innerHTML='';packs.forEach(p=>$('packGrid').append(card(p,false)));$('resultCount').textContent='共 '+totalCount+' 个宠物包';$('pageInfo').textContent=totalPages>0?'第 '+page+' / '+totalPages+' 页':'无结果';$('prevPage').disabled=page<=1;$('nextPage').disabled=page>=totalPages;$('empty').hidden=!!packs.length}catch(e){$('resultCount').textContent='无法加载市场';$('empty').hidden=false;$('empty').textContent=e.message}}
-    async function loadWallet(){const w=$('wallet');if(!token){w.textContent='从 MaClaw 客户端进入可显示余额';return}try{const d=await request('/api/v1/pet-store/account');w.textContent='余额 '+Number(d.credits||0)+' Credits'}catch(e){w.textContent='余额不可用：'+e.message}}
-    async function loadRankings(){try{const d=await request('/api/v1/pet-store/rankings');const fill=(id,items,fmt)=>{const ol=$(id);ol.innerHTML='';(items||[]).forEach(p=>{const li=document.createElement('li');li.innerHTML=esc(p.name)+' <small>'+esc(fmt(p))+'</small>';ol.append(li)});if(!ol.children.length)ol.innerHTML='<li>暂无数据</li>'};fill('rankDownloads',d.downloads,p=>'下载 '+Number(p.download_count||0));fill('rankSales',d.sales,p=>'销售额 '+Number(p.sales_amount||0));fill('rankCreators',(d.creators||[]).map(c=>({name:c.creator,sales_amount:c.sales_amount})),p=>'销售额 '+Number(p.sales_amount||0))}catch(e){['rankDownloads','rankSales','rankCreators'].forEach(id=>{$(id).innerHTML='<li>无法加载</li>'})}}
-    async function downloadPack(id){const r=await fetch('/api/v1/pet-store/packs/'+encodeURIComponent(id)+'/download',{headers:auth()});if(!r.ok)throw new Error((await r.text())||'下载失败');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=id+'.zip';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000)}
-    async function loadMine(){try{const d=await request('/api/v1/pet-store/packs/mine');const ps=d.packs||[];$('myGrid').innerHTML='';ps.forEach(p=>$('myGrid').append(card(p,true)));$('myEmpty').hidden=!!ps.length}catch(e){$('myEmpty').hidden=false;$('myEmpty').textContent=token?'无法读取我的发布：'+e.message:'请从 MaClaw 客户端进入，或在 URL #token= 中提供市场会话。'}}
-    function openPurchase(p){purchaseTarget=p;$('purchaseTitle').textContent=p.price?'确认买断':'免费获取';$('purchaseText').textContent='“'+p.name+'”'+(p.price?'将花费 '+p.price+' Credits。':'免费获取后可永久下载。')+' 这不是订阅。';$('purchaseModal').hidden=false}
-    async function acquire(){if(!purchaseTarget)return;const b=$('confirmPurchase');b.disabled=true;b.textContent='处理中…';try{const d=await request('/api/v1/pet-store/packs/'+encodeURIComponent(purchaseTarget.id)+'/purchase',{method:'POST'});$('purchaseText').textContent='购买成功，正在下载…';await downloadPack(purchaseTarget.id);$('purchaseModal').hidden=true;loadWallet()}catch(e){$('purchaseText').textContent=e.message}finally{b.disabled=false;b.textContent='确认买断'}}
-    async function withdraw(id){if(!confirm('下架后会停止新的购买；已购用户仍可下载。确认下架？'))return;try{await request('/api/v1/pet-store/packs/'+encodeURIComponent(id)+'/withdraw',{method:'POST'});loadMine();load($('search').value)}catch(e){alert(e.message)}}
+    var STORE_KEY='hubcenter_petstore_lang';
+    var COPY={
+      'meta.title':{en:'MaClaw Pet Market',zh:'MaClaw 宠物市场',mn:'MaClaw тэжээвэр амьтны зах зээл'},
+      'brand.sub':{en:'Discover, buy, and publish desktop pet packs',zh:'发现、购买和发布桌面宠物包',mn:'Ширээний тэжээвэр амьтны багцыг олж, худалдан авч, нийтэлнэ'},
+      'wallet.login':{en:'Credits balance appears after sign-in',zh:'登录后显示 Credits 余额',mn:'Нэвтэрсний дараа Credits үлдэгдэл харагдана'},
+      'hero.h':{en:'Make your desktop companion more like you',zh:'让你的桌面伙伴更像你',mn:'Ширээний хамтрагчаа өөртэйгөө илүү төстэй болго'},
+      'hero.p':{en:'Pet packs are a one-time buyout. After purchase you can download the version you bought forever. There is no timed subscription and no auto-renewal.',zh:'宠物包采用一次性买断：购买后可永久下载自己的已购版本，不含按时订阅或自动续费。',mn:'Тэжээвэр амьтны багц нь нэг удаагийн бүрмөсөн худалдан авалт. Авсны дараа худалдаж авсан хувилбараа бүрмөсөн татаж болно. Хугацаат захиалга, автоматаар сунгалт байхгүй.'},
+      'search.aria':{en:'Search pet packs',zh:'搜索宠物包',mn:'Тэжээвэр амьтны багц хайх'},
+      'search.ph':{en:'Search name or description',zh:'搜索名称或描述',mn:'Нэр эсвэл тайлбараар хайх'},
+      'search.btn':{en:'Search',zh:'搜索',mn:'Хайх'},
+      'compat.title':{en:'Compatible with pet packs v3 / v2 / v1',zh:'兼容宠物包 v3 / v2 / v1',mn:'Тэжээвэр амьтны багц v3 / v2 / v1-тэй нийцнэ'},
+      'compat.p':{en:'Supports v1 still-frame packs, v2 continuous skeleton animation, and v3 character performance packs. Only images, manifests, and restricted skeleton JSON are accepted. JS, executables, and remote loading are not. You can unlist after publishing. Buyers keep download rights.',zh:'支持 v1 静态帧包、v2 连续骨骼动画包和 v3 角色表演包。只接受图片、清单与受限骨骼 JSON；不支持 JS、可执行文件或远程加载。发布后仍可下架；已购买用户保留下载权。',mn:'v1 хөдөлгөөнгүй кадар, v2 үргэлжилсэн скелет хөдөлгөөн, v3 дүрийн тоглолтын багцыг дэмжинэ. Зөвхөн зураг, манифест ба хязгаарлагдмал скелет JSON авна. JS, гүйцэтгэх файл, алсын ачааллыг дэмжихгүй. Нийтэлсний дараа жагсаалтаас буулгаж болно. Худалдан авагч татах эрхээ хадгална.'},
+      'tabs.aria':{en:'Pet market',zh:'宠物市场',mn:'Тэжээвэр амьтны зах зээл'},
+      'tab.browse':{en:'Browse',zh:'浏览市场',mn:'Зах зээлийг үзэх'},
+      'tab.publish':{en:'Publish a pet pack',zh:'发布宠物包',mn:'Багц нийтлэх'},
+      'tab.mine':{en:'My listings',zh:'我的发布',mn:'Миний нийтлэл'},
+      'rank.h':{en:'Rankings',zh:'排行榜',mn:'Чансаа'},
+      'rank.sub':{en:'Downloads / sales / creators',zh:'下载 / 销售额 / 创作者',mn:'Таталт / борлуулалт / бүтээгч'},
+      'rank.downloads':{en:'Downloads',zh:'下载榜',mn:'Таталтын чансаа'},
+      'rank.sales':{en:'Sales',zh:'销售榜',mn:'Борлуулалтын чансаа'},
+      'rank.creators':{en:'Creators',zh:'创作者榜',mn:'Бүтээгчийн чансаа'},
+      'loading':{en:'Loading…',zh:'加载中…',mn:'Ачаалж байна…'},
+      'packs.h':{en:'Pet packs',zh:'宠物包',mn:'Тэжээвэр амьтны багц'},
+      'empty':{en:'No matching pet packs.',zh:'暂无匹配的宠物包。',mn:'Тохирох тэжээвэр амьтны багц алга.'},
+      'prev':{en:'Previous page',zh:'上一页',mn:'Өмнөх хуудас'},
+      'next':{en:'Next page',zh:'下一页',mn:'Дараах хуудас'},
+      'publish.h':{en:'Share your pet pack',zh:'分享你的宠物包',mn:'Тэжээвэр амьтны багцаа хуваалц'},
+      'publish.sub':{en:'Free, or set a buyout price',zh:'免费或设定买断价格',mn:'Үнэгүй, эсвэл бүрмөсөн авах үнэ тохируул'},
+      'field.name':{en:'Name',zh:'名称',mn:'Нэр'},
+      'ph.name':{en:'Example: robot-cat work companion',zh:'例如：机器猫工作伙伴',mn:'Жишээ: робот муур ажлын хамтрагч'},
+      'field.desc':{en:'Summary',zh:'简介',mn:'Товч танилцуулга'},
+      'ph.desc':{en:'Describe the look, motion style, and where it fits',zh:'说明形象、动作风格和适用场景',mn:'Дүрс, хөдөлгөөний хэв маяг, тохирох нөхцөлийг тайлбарла'},
+      'field.version':{en:'Version',zh:'版本',mn:'Хувилбар'},
+      'field.packId':{en:'Pet pack ID (optional)',zh:'宠物包 ID（可选）',mn:'Багцын ID (заавал биш)'},
+      'ph.packId':{en:'Leave empty to use the id in pet-pack.yaml',zh:'留空则使用包内 pet-pack.yaml 的 id',mn:'Хоосон орхивол pet-pack.yaml доторх id-г авна'},
+      'hint.packId':{en:'The desktop client uses this to link a local pet pack. If set, it must be lowercase letters, digits, or hyphens and match the id in pet-pack.yaml.',zh:'桌面客户端发布时用于关联本地宠物包；若填写，必须是小写字母/数字/连字符且与 pet-pack.yaml 的 id 一致。',mn:'Ширээний клиент нийтлэхдээ локал багцыг холбоход ашиглана. Бөглөвөл жижиг үсэг, тоо, зураас байх ба pet-pack.yaml-н id-тай таарах ёстой.'},
+      'field.price':{en:'Pricing',zh:'定价',mn:'Үнэ'},
+      'price.free':{en:'Free',zh:'免费',mn:'Үнэгүй'},
+      'price.paid':{en:'Buyout price',zh:'买断收费',mn:'Бүрмөсөн авах үнэ'},
+      'ph.price':{en:'Price (Credits)',zh:'价格（Credits）',mn:'Үнэ (Credits)'},
+      'field.zip':{en:'Pet pack Zip',zh:'宠物包 Zip',mn:'Тэжээвэр амьтны багцын Zip'},
+      'hint.zip':{en:'Max 3 MB. Must include pet-pack.yaml. Supports v1 still frames, v2 native-skeleton, and v3 native-character. v2/v3 must include a static idle fallback frame.',zh:'最大 3 MB；必须包含 pet-pack.yaml。支持 v1 静态帧、v2 native-skeleton 和 v3 native-character；v2/v3 必须附带静态 idle 回退帧。',mn:'Хамгийн ихдээ 3 MB. pet-pack.yaml заавал орно. v1 хөдөлгөөнгүй кадар, v2 native-skeleton, v3 native-character дэмжинэ. v2/v3-д хөдөлгөөнгүй idle нөөц кадар заавал байна.'},
+      'publish.btn':{en:'Publish to the pet market',zh:'发布到宠物市场',mn:'Зах зээлд нийтлэх'},
+      'rules.h':{en:'Publish and unlist rules',zh:'发布与下架规则',mn:'Нийтлэх ба буулгах дүрэм'},
+      'rules.p':{en:'Price changes should ship as a new version. Buyers can keep downloading the version they bought. Unlisting only stops new purchases. It does not revoke purchased rights. Make sure you have the right to publish the assets and the name.',zh:'价格变更应作为新版本发布；已购用户可继续下载已购版本。下架只会停止新的购买，不会撤销已购权益。请确保你拥有资源和名称的发布权。',mn:'Үнийн өөрчлөлтийг шинэ хувилбараар нийтэл. Худалдан авагч авсан хувилбараа үргэлжлүүлэн татна. Жагсаалтаас буулгах нь зөвхөн шинэ худалдан авалтыг зогсооно. Авсан эрхийг цуцлахгүй. Нөөц ба нэрийг нийтлэх эрхтэй эсэхээ нягтал.'},
+      'mine.h':{en:'My listings',zh:'我的发布',mn:'Миний нийтлэл'},
+      'mine.sub':{en:'You can unlist public items',zh:'可下架公开商品',mn:'Нээлттэй барааг жагсаалтаас буулгаж болно'},
+      'mine.empty':{en:'No pet packs published yet.',zh:'还没有发布的宠物包。',mn:'Нийтэлсэн тэжээвэр амьтны багц хараахан алга.'},
+      'confirm.title':{en:'Confirm purchase',zh:'确认购买',mn:'Худалдан авалтыг батлах'},
+      'cancel':{en:'Cancel',zh:'取消',mn:'Болих'},
+      'confirm.buyout':{en:'Confirm buyout',zh:'确认买断',mn:'Бүрмөсөн авалтыг батлах'},
+      'free':{en:'Free',zh:'免费',mn:'Үнэгүй'},
+      'buyout':{en:'Buy out',zh:'买断',mn:'Бүрмөсөн авах'},
+      'getFree':{en:'Get for free',zh:'免费获取',mn:'Үнэгүй авах'},
+      'noDesc':{en:'No description',zh:'暂无描述',mn:'Тайлбар алга'},
+      'meta.downloads':{en:'Downloads {n}',zh:'下载 {n}',mn:'Таталт {n}'},
+      'meta.buyouts':{en:'Buyouts {n}',zh:'买断 {n}',mn:'Бүрмөсөн авсан {n}'},
+      'unlist':{en:'Unlist',zh:'下架',mn:'Буулгах'},
+      'requestFail':{en:'Request failed',zh:'请求失败',mn:'Хүсэлт амжилтгүй'},
+      'page.packs':{en:'{n} pet packs',zh:'共 {n} 个宠物包',mn:'Нийт {n} тэжээвэр амьтны багц'},
+      'page.info':{en:'Page {page} / {pages}',zh:'第 {page} / {pages} 页',mn:'Хуудас {page} / {pages}'},
+      'page.none':{en:'No results',zh:'无结果',mn:'Илэрцгүй'},
+      'loadMarketFail':{en:'Could not load the market',zh:'无法加载市场',mn:'Зах зээлийг ачаалж чадсангүй'},
+      'wallet.client':{en:'Open this page from the MaClaw client to see your balance',zh:'从 MaClaw 客户端进入可显示余额',mn:'Үлдэгдэл харахын тулд MaClaw клиентээс нээнэ үү'},
+      'wallet.balance':{en:'Balance {n} Credits',zh:'余额 {n} Credits',mn:'Үлдэгдэл {n} Credits'},
+      'wallet.bad':{en:'Balance unavailable: {error}',zh:'余额不可用：{error}',mn:'Үлдэгдэл боломжгүй: {error}'},
+      'rank.empty':{en:'No data yet',zh:'暂无数据',mn:'Мэдээлэл алга'},
+      'rank.salesAmt':{en:'Sales {n}',zh:'销售额 {n}',mn:'Борлуулалт {n}'},
+      'rank.fail':{en:'Could not load',zh:'无法加载',mn:'Ачаалж чадсангүй'},
+      'downloadFail':{en:'Download failed',zh:'下载失败',mn:'Таталт амжилтгүй'},
+      'mine.fail':{en:'Could not read your listings: {error}',zh:'无法读取我的发布：{error}',mn:'Нийтлэлийг уншиж чадсангүй: {error}'},
+      'mine.need':{en:'Open this page from the MaClaw client, or pass a market session in the URL as #token=.',zh:'请从 MaClaw 客户端进入，或在 URL #token= 中提供市场会话。',mn:'MaClaw клиентээс нээх, эсвэл URL дээр #token= гэж зах зээлийн сесс өгнө үү.'},
+      'confirm.freeTitle':{en:'Get for free',zh:'免费获取',mn:'Үнэгүй авах'},
+      'confirm.paidBody':{en:'“{name}” costs {price} Credits. This is not a subscription.',zh:'“{name}”将花费 {price} Credits。这不是订阅。',mn:'“{name}” {price} Credits болно. Энэ нь захиалга биш.'},
+      'confirm.freeBody':{en:'“{name}” is free and stays downloadable. This is not a subscription.',zh:'“{name}”免费获取后可永久下载。这不是订阅。',mn:'“{name}” үнэгүй бөгөөд бүрмөсөн татагдана. Энэ нь захиалга биш.'},
+      'working':{en:'Working…',zh:'处理中…',mn:'Боловсруулж байна…'},
+      'purchase.ok':{en:'Purchase complete. Downloading…',zh:'购买成功，正在下载…',mn:'Худалдан авалт амжилттай. Татаж байна…'},
+      'confirm.unlist':{en:'Unlisting stops new purchases. Buyers can still download. Unlist this pack?',zh:'下架后会停止新的购买；已购用户仍可下载。确认下架？',mn:'Буулгасны дараа шинэ худалдан авалт зогсоно. Авсан хэрэглэгч татсаар байна. Буулгах уу?'},
+      'price.invalid':{en:'Enter a whole number of at least 1 Credits.',zh:'请填写至少 1 Credits 的整数价格。',mn:'Дор хаяж 1 Credits бүхэл үнэ оруулна уу.'},
+      'publishing':{en:'Publishing…',zh:'正在发布…',mn:'Нийтэлж байна…'},
+      'published':{en:'Published: {name}',zh:'发布成功：{name}',mn:'Нийтлэгдлээ: {name}'}
+    };
+    function resolveStoreLang(storageKey){
+      var params=new URLSearchParams(location.search);
+      var queryLang=params.get('lang');
+      var saved=null;
+      try{saved=localStorage.getItem(storageKey);}catch(e){}
+      if(queryLang!=null&&String(queryLang).trim()!=='') return window.HubCenterI18n.normalizeHubLang(queryLang);
+      return window.HubCenterI18n.detectHubLang(navigator.languages, saved);
+    }
+    var LANG=window.__hubPetLang;
+    if(window.HubCenterI18n&&LANG!=='en'&&LANG!=='zh'&&LANG!=='mn') LANG=resolveStoreLang(STORE_KEY);
+    function tr(key,vars){
+      if(!window.HubCenterI18n) return '';
+      var value=window.HubCenterI18n.pick(COPY[key], LANG);
+      var s=value==null?'':String(value);
+      if(!vars) return s;
+      return s.replace(/\{(\w+)\}/g,function(_,n){return vars[n]!=null?String(vars[n]):'';});
+    }
+    function applyI18n(){
+      if(!window.HubCenterI18n) return;
+      document.documentElement.lang=window.HubCenterI18n.htmlLang(LANG);
+      document.documentElement.setAttribute('data-hub-lang', LANG);
+      document.title=tr('meta.title');
+      document.querySelectorAll('[data-i18n]').forEach(function(el){el.textContent=tr(el.getAttribute('data-i18n'));});
+      document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el){el.setAttribute('placeholder', tr(el.getAttribute('data-i18n-placeholder')));});
+      document.querySelectorAll('[data-i18n-aria]').forEach(function(el){el.setAttribute('aria-label', tr(el.getAttribute('data-i18n-aria')));});
+      document.querySelectorAll('.lang-switch button').forEach(function(btn){
+        var on=btn.getAttribute('data-lang')===LANG;
+        btn.setAttribute('aria-pressed', on?'true':'false');
+      });
+    }
+    function setStoreLang(lang){
+      if(!window.HubCenterI18n) return;
+      LANG=window.HubCenterI18n.normalizeHubLang(lang);
+      try{localStorage.setItem(STORE_KEY, LANG);}catch(e){}
+      applyI18n();
+      loadWallet();
+      loadRankings();
+      load(lastQuery, page);
+      if(!$('mine').hidden) loadMine();
+      if(purchaseTarget && !$('purchaseModal').hidden) openPurchase(purchaseTarget);
+    }
+    document.querySelectorAll('.lang-switch button').forEach(function(btn){
+      btn.addEventListener('click', function(){setStoreLang(btn.getAttribute('data-lang'));});
+    });
+    try{applyI18n();}catch(e){}
+    document.documentElement.setAttribute('data-i18n-ready','1');
+    function credits(n){return Number(n)>0?Number(n)+' Credits':tr('free')}
+    function card(p,mine){const div=document.createElement('article');div.className='card';const cover=p.preview_data_url?'<img loading="lazy" src="'+esc(p.preview_data_url)+'" alt="">':'<span class="mono">'+esc((p.name||'?').trim().slice(0,1)||'?')+'</span>';div.innerHTML='<div class="cover">'+cover+'</div><div class="card-top"><div><div class="name">'+esc(p.name)+'</div><div class="version">v'+esc(p.version||'1.0.0')+'</div></div><span class="price">'+credits(p.price)+'</span></div><div class="desc">'+esc(p.description||tr('noDesc'))+'</div><div class="meta"><span>'+esc(tr('meta.downloads',{n:Number(p.download_count||0)}))+'</span><span>'+esc(tr('meta.buyouts',{n:Number(p.purchase_count||0)}))+'</span></div><div class="card-actions"></div>';const actions=div.querySelector('.card-actions');if(mine){const b=document.createElement('button');b.className='danger';b.textContent=tr('unlist');b.onclick=()=>withdraw(p.id);actions.append(b)}else{const b=document.createElement('button');b.className='primary';b.textContent=Number(p.price)>0?tr('buyout'):tr('getFree');b.onclick=()=>openPurchase(p);actions.append(b)}return div}
+    async function request(url,opt={}){const r=await fetch(url,{...opt,headers:{...auth(),...(opt.headers||{})}});if(!r.ok)throw new Error((await r.text())||tr('requestFail'));return r.headers.get('content-type')?.includes('application/json')?r.json():r}
+    async function load(q=lastQuery,pg=1){try{lastQuery=q;const d=await request('/api/v1/pet-store/packs?q='+encodeURIComponent(q)+'&page='+pg+'&page_size=12');packs=d.packs||[];page=d.page||pg;totalCount=d.total||0;totalPages=d.total_pages||0;$('packGrid').innerHTML='';packs.forEach(p=>$('packGrid').append(card(p,false)));$('resultCount').textContent=tr('page.packs',{n:totalCount});$('pageInfo').textContent=totalPages>0?tr('page.info',{page:page,pages:totalPages}):tr('page.none');$('prevPage').disabled=page<=1;$('nextPage').disabled=page>=totalPages;$('empty').textContent=tr('empty');$('empty').hidden=!!packs.length}catch(e){$('resultCount').textContent=tr('loadMarketFail');$('empty').hidden=false;$('empty').textContent=e.message}}
+    async function loadWallet(){const w=$('wallet');if(!token){w.textContent=tr('wallet.client');return}try{const d=await request('/api/v1/pet-store/account');w.textContent=tr('wallet.balance',{n:Number(d.credits||0)})}catch(e){w.textContent=tr('wallet.bad',{error:e.message})}}
+    async function loadRankings(){try{const d=await request('/api/v1/pet-store/rankings');const fill=(id,items,fmt)=>{const ol=$(id);ol.innerHTML='';(items||[]).forEach(p=>{const li=document.createElement('li');li.innerHTML=esc(p.name)+' <small>'+esc(fmt(p))+'</small>';ol.append(li)});if(!ol.children.length)ol.innerHTML='<li>'+esc(tr('rank.empty'))+'</li>'};fill('rankDownloads',d.downloads,p=>tr('meta.downloads',{n:Number(p.download_count||0)}));fill('rankSales',d.sales,p=>tr('rank.salesAmt',{n:Number(p.sales_amount||0)}));fill('rankCreators',(d.creators||[]).map(c=>({name:c.creator,sales_amount:c.sales_amount})),p=>tr('rank.salesAmt',{n:Number(p.sales_amount||0)}))}catch(e){['rankDownloads','rankSales','rankCreators'].forEach(id=>{$(id).innerHTML='<li>'+esc(tr('rank.fail'))+'</li>'})}}
+    async function downloadPack(id){const r=await fetch('/api/v1/pet-store/packs/'+encodeURIComponent(id)+'/download',{headers:auth()});if(!r.ok)throw new Error((await r.text())||tr('downloadFail'));const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=id+'.zip';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000)}
+    async function loadMine(){try{const d=await request('/api/v1/pet-store/packs/mine');const ps=d.packs||[];$('myGrid').innerHTML='';ps.forEach(p=>$('myGrid').append(card(p,true)));$('myEmpty').hidden=!!ps.length}catch(e){$('myEmpty').hidden=false;$('myEmpty').textContent=token?tr('mine.fail',{error:e.message}):tr('mine.need');}}
+    function openPurchase(p){purchaseTarget=p;$('purchaseTitle').textContent=p.price?tr('confirm.buyout'):tr('confirm.freeTitle');$('purchaseText').textContent=p.price?tr('confirm.paidBody',{name:p.name,price:p.price}):tr('confirm.freeBody',{name:p.name});$('purchaseModal').hidden=false}
+    async function acquire(){if(!purchaseTarget)return;const b=$('confirmPurchase');b.disabled=true;b.textContent=tr('working');try{await request('/api/v1/pet-store/packs/'+encodeURIComponent(purchaseTarget.id)+'/purchase',{method:'POST'});$('purchaseText').textContent=tr('purchase.ok');await downloadPack(purchaseTarget.id);$('purchaseModal').hidden=true;loadWallet()}catch(e){$('purchaseText').textContent=e.message}finally{b.disabled=false;b.textContent=tr('confirm.buyout')}}
+    async function withdraw(id){if(!confirm(tr('confirm.unlist')))return;try{await request('/api/v1/pet-store/packs/'+encodeURIComponent(id)+'/withdraw',{method:'POST'});loadMine();load($('search').value)}catch(e){alert(e.message)}}
     document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-view]').forEach(x=>x.setAttribute('aria-selected',String(x===b)));document.querySelectorAll('.view').forEach(x=>x.hidden=x.id!==b.dataset.view);if(b.dataset.view==='mine')loadMine()});$('searchBtn').onclick=()=>load($('search').value);$('search').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();load(e.target.value)}};$('cancelPurchase').onclick=()=>{$('purchaseModal').hidden=true};$('confirmPurchase').onclick=acquire;$('purchaseModal').onclick=e=>{if(e.target===$('purchaseModal'))$('purchaseModal').hidden=true};$('prevPage').onclick=()=>{if(page>1)load(lastQuery,page-1)};$('nextPage').onclick=()=>{if(page<totalPages)load(lastQuery,page+1)};
     document.querySelectorAll('input[name="priceMode"]').forEach(x=>x.onchange=()=>{$('price').disabled=x.value!=='paid'||!x.checked;if(!$('price').disabled)$('price').focus()});
-    $('publishForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,notice=$('publishNotice'),paid=f.priceMode.value==='paid',price=paid?Number(f.price.value):0;if(paid&&(!Number.isInteger(price)||price<1)){notice.textContent='请填写至少 1 Credits 的整数价格。';return}const data=new FormData(f);data.set('price',String(price));notice.textContent='正在发布…';try{const p=await request('/api/v1/pet-store/packs',{method:'POST',body:data});notice.textContent='发布成功：'+p.name;f.reset();$('price').disabled=true;load()}catch(err){notice.textContent=err.message}};
+    $('publishForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,notice=$('publishNotice'),paid=f.priceMode.value==='paid',price=paid?Number(f.price.value):0;if(paid&&(!Number.isInteger(price)||price<1)){notice.textContent=tr('price.invalid');return}const data=new FormData(f);data.set('price',String(price));notice.textContent=tr('publishing');try{const p=await request('/api/v1/pet-store/packs',{method:'POST',body:data});notice.textContent=tr('published',{name:p.name});f.reset();$('price').disabled=true;load()}catch(err){notice.textContent=err.message}};
     const draft=new URLSearchParams(location.search),draftName=draft.get('draft_name'),draftPrice=draft.get('draft_price');if(draftName||draftPrice!==null){if(draftName)$('name').value=draftName;const price=Number(draftPrice);if(Number.isInteger(price)&&price>=0){if(price>0){document.querySelector('input[name="priceMode"][value="paid"]').checked=true;$('price').disabled=false;$('price').value=String(price)}else{document.querySelector('input[name="priceMode"][value="free"]').checked=true;$('price').disabled=true}}document.querySelector('[data-view="publish"]').click();}
     loadWallet();loadRankings();load();
   })();

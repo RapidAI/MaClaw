@@ -7,7 +7,7 @@
  * 用户消息保持 pre-wrap 纯文本（用户输入不含 Markdown 语法）。
  */
 import React, { useMemo, useRef } from "react";
-import { renderContentWithCodeBlocks, type Theme as MarkdownTheme } from "./aiAssistantMarkdown";
+import { renderContentWithCodeBlocks, type ChatMarkdownRenderOptions, type Theme as MarkdownTheme } from "./aiAssistantMarkdown";
 import { createIncrementalRenderState, renderContentIncremental, streamingMarkdownUsesIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
 import { appendRolePrefixStrip, createRolePrefixStreamCursor } from "./rolePrefixDisplay";
 
@@ -22,6 +22,8 @@ export interface MessageContentRendererProps {
     isStreaming?: boolean;
     /** 消息 ID（用于增量渲染状态的生命周期管理）。不传时禁用增量模式。 */
     messageId?: string;
+    /** Same options the live transcript passes, such as the thinking-trail fence. */
+    markdownOptions?: ChatMarkdownRenderOptions;
 }
 
 /**
@@ -29,7 +31,7 @@ export interface MessageContentRendererProps {
  * （代码块、表格、标题、加粗、斜体、链接、文件路径等）。
  * 用户消息保持 pre-wrap 纯文本。
  */
-export function MessageContentRenderer({ content, theme, isUser, isStreaming, messageId }: MessageContentRendererProps) {
+export function MessageContentRenderer({ content, theme, isUser, isStreaming, messageId, markdownOptions }: MessageContentRendererProps) {
     // Role-prefix only; line-leading pictograph strip runs inside renderContentWithCodeBlocks.
     // The cursor matches stripRolePrefixForDisplay and does not rescan a dead line.
     const roleCursorRef = useRef(createRolePrefixStreamCursor("keep-body"));
@@ -60,15 +62,15 @@ export function MessageContentRenderer({ content, theme, isUser, isStreaming, me
                 incRef.id = messageId;
                 incRef.state = createIncrementalRenderState();
             }
-            return renderContentIncremental(displayContent, theme, incRef.state);
+            return renderContentIncremental(displayContent, theme, incRef.state, markdownOptions);
         }
         // Non-streaming or short content: full parse (guarantees correctness).
         if (!isStreaming && incStateRef.current.id) {
             // Streaming just ended — reset incremental state for clean final render.
             incStateRef.current = { id: '', state: createIncrementalRenderState() };
         }
-        return renderContentWithCodeBlocks(displayContent, theme);
-    }, [displayContent, theme, isUser, isStreaming, messageId]);
+        return renderContentWithCodeBlocks(displayContent, theme, markdownOptions);
+    }, [displayContent, theme, isUser, isStreaming, messageId, markdownOptions]);
 
     if (isUser) {
         return <span className="mcr-user-text">{displayContent}</span>;

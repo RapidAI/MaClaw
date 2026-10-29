@@ -1,3 +1,5 @@
+import { companionNoteAlias } from "../../i18n/mnCompanion";
+
 /** Seconds for a note stamp. 12:05 is 725. 1:02:03 is 3723. 12:99 and 99:99 are not stamps. */
 export function noteTimestampSeconds(label: string): number | null {
     const match = /^(?:(\d+):)?(\d+):(\d+)$/.exec(label.trim());
@@ -54,6 +56,7 @@ export function companionVideoNotePhrase(text: string): boolean {
     if (raw.includes("不要") || raw.includes("别") || raw.includes("不用")) return false;
     if (raw.includes("，") || raw.includes(",")) return false;
     if (NOTE_EXACT.has(raw)) return true;
+    if (companionNoteAlias(raw)) return true;
     return NOTE_PHRASE.test(raw);
 }
 

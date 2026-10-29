@@ -72,6 +72,7 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 	if fileCompanionIsClearCommand(text) {
 		return a.ClearFileCompanionChat(path)
 	}
+	req = fileCompanionWithCommandAlias(req)
 	grant, canonical, err := a.fileCompanionGrant(path)
 	if err != nil {
 		return err

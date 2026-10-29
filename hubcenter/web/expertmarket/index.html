@@ -47,36 +47,147 @@
     .creator,.publish{border:1px solid #c9d8fb;border-radius:10px;background:#eaf1ff;font-size:12px}.creator{display:flex;align-items:center;gap:13px;margin:14px 0;padding:14px 16px}.creator strong{font-size:13px;color:#174ea6}.creator span{color:#536276}.creator a{margin-left:auto;font-weight:600;white-space:nowrap}.publish{margin-top:10px;padding:14px 16px;background:#fff;border-color:var(--line);color:#536276}.publish summary{cursor:pointer;color:#174ea6;font-weight:600}.publish-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:12px}.publish-form label{font-size:12px}.publish-form input,.publish-form select{display:block;width:100%;height:34px;margin-top:4px;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);font:inherit;font-size:12px}.publish-form input[type=file]{padding:5px}.publish-form .check{display:flex;align-items:flex-start;gap:7px;grid-column:1/-1;color:var(--muted);line-height:1.45}.publish-form .check input{width:15px;height:15px;margin:2px 0 0}.publish-form button{align-self:end;height:34px;border:0;border-radius:7px;background:var(--blue);color:#fff;cursor:pointer}.notice{margin:9px 0 0;color:var(--muted);font-size:12px}.notice.error{color:#b42318}.notice.success{color:#26704e}
     .dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(23,32,51,.38)}.dialog-backdrop[hidden]{display:none}.dialog{width:min(600px,100%);max-height:calc(100vh - 40px);overflow:auto;padding:22px;border:0;border-radius:14px;background:#fff;box-shadow:0 18px 55px rgba(15,23,42,.2)}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.dialog h2{margin:0;font-size:19px}.dialog-close{width:32px;height:32px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--muted);font-size:18px;cursor:pointer}.detail-meta{display:flex;flex-wrap:wrap;gap:9px;margin:9px 0 15px;color:var(--muted);font-size:12px}.detail-body{padding:13px;border:1px solid #edf1f5;border-radius:9px;background:#f8fafc;color:#536276;font-size:12px;line-height:1.7;white-space:pre-wrap}.detail-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
     @media(max-width:950px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:600px){.wrap{padding:18px 14px 40px}.top{align-items:flex-start;flex-direction:column}.top a{width:100%;justify-content:center}.toolbar{align-items:stretch;flex-wrap:wrap}.toolbar input{flex-basis:100%}.toolbar select,.toolbar button{flex:1}.grid{grid-template-columns:1fr}.creator{align-items:flex-start;flex-direction:column;gap:5px}.creator a{margin-left:0}.publish-form{grid-template-columns:1fr}.dialog-backdrop{padding:12px;place-items:end center}.dialog{max-height:calc(100vh - 24px);padding:16px}}
+    html:not([data-i18n-ready]) body{visibility:hidden}
+    .top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .lang-switch{display:flex;gap:4px}
+    .lang-switch button{min-height:35px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:#4d5b6e;font:inherit;font-size:12px;font-weight:650;cursor:pointer}
+    .lang-switch button[aria-pressed="true"]{background:var(--soft);border-color:#bfd2f8;color:#174ea6}
   </style>
+  <noscript><style>body{visibility:visible!important}</style></noscript>
 </head>
 <body>
   <div class="wrap">
-    <div class="top"><div class="crumb"><a href="/developer">开发者社区</a> / 专家市场</div><a class="primary" href="/developer/docs/#expert">专家开发文档 →</a></div>
-    <header class="hero"><h1>AI 专家市场</h1><p>发现经过审核的 AI 专家配置。专家由提示词、工具、Skill 和安全策略组成，购买后可在 MaClaw 桌面端安装使用；开发者可提交版本并按平台规则获得 Credits 收益。</p></header>
-    <div class="toolbar" role="search"><input id="query" type="search" placeholder="搜索专家名称或描述" aria-label="搜索专家"><select id="sort" aria-label="排序"><option value="">最新发布</option><option value="downloads">下载最多</option><option value="sales">收益最高</option></select><button id="search" type="button">搜索</button></div>
-    <div id="state" class="state" role="status" aria-live="polite">正在加载专家…</div><div id="grid" class="grid" hidden></div>
-    <div class="pager" hidden id="pager"><button id="prev" type="button">上一页</button><span id="pageInfo"></span><button id="next" type="button">下一页</button></div>
-    <section class="creator"><strong>发布你的 AI 专家</strong><span>在 MaClaw 桌面端完成打包与提交，平台审核通过后即可公开展示。</span><a href="/developer/docs/#publish">查看发布要求 →</a></section>
-    <details class="publish" id="publish"><summary>上传专家包（需要登录）</summary><form class="publish-form" id="publishForm"><label>版本<input name="version" value="1" maxlength="80" required></label><label>价格（Credits）<input name="price" type="number" min="0" max="999999" value="0" required></label><label>可见性<select name="visibility"><option value="public">公开审核</option><option value="private">仅自己可见</option></select></label><label>包文件<input name="package" type="file" accept=".zip,application/zip" required></label><label class="check"><input name="platform_distribution" type="checkbox" value="true"><span>允许平台分发（可选）<br>勾选后，审核通过的公开专家才可被企业/租户级目录分发；私有分享不会启用此权限。</span></label><button type="submit">提交审核</button></form><p id="publishNotice" class="notice" role="status" aria-live="polite"></p></details>
+    <div class="top"><div class="crumb"><a href="/developer" data-i18n="crumb.dev">开发者社区</a> / <span data-i18n="crumb.market">专家市场</span></div><div class="top-actions"><div class="lang-switch" role="group" aria-label="Language"><button type="button" data-lang="en" aria-pressed="false">EN</button><button type="button" data-lang="zh" aria-pressed="false">中文</button><button type="button" data-lang="mn" aria-pressed="false">Монгол</button></div><a class="primary" href="/developer/docs/#expert" data-i18n="docs">专家开发文档 →</a></div></div>
+    <header class="hero"><h1 data-i18n="hero.h">AI 专家市场</h1><p data-i18n="hero.p">发现经过审核的 AI 专家配置。专家由提示词、工具、Skill 和安全策略组成，购买后可在 MaClaw 桌面端安装使用；开发者可提交版本并按平台规则获得 Credits 收益。</p></header>
+    <div class="toolbar" role="search"><input id="query" type="search" data-i18n-placeholder="search.ph" placeholder="搜索专家名称或描述" data-i18n-aria="search.aria" aria-label="搜索专家"><select id="sort" data-i18n-aria="sort.aria" aria-label="排序"><option value="" data-i18n="sort.new">最新发布</option><option value="downloads" data-i18n="sort.downloads">下载最多</option><option value="sales" data-i18n="sort.sales">收益最高</option></select><button id="search" type="button" data-i18n="search.btn">搜索</button></div>
+    <div id="state" class="state" role="status" aria-live="polite" data-i18n="loading">正在加载专家…</div><div id="grid" class="grid" hidden></div>
+    <div class="pager" hidden id="pager"><button id="prev" type="button" data-i18n="prev">上一页</button><span id="pageInfo"></span><button id="next" type="button" data-i18n="next">下一页</button></div>
+    <section class="creator"><strong data-i18n="creator.h">发布你的 AI 专家</strong><span data-i18n="creator.p">在 MaClaw 桌面端完成打包与提交，平台审核通过后即可公开展示。</span><a href="/developer/docs/#publish" data-i18n="creator.link">查看发布要求 →</a></section>
+    <details class="publish" id="publish"><summary data-i18n="upload.summary">上传专家包（需要登录）</summary><form class="publish-form" id="publishForm"><label><span data-i18n="field.version">版本</span><input name="version" value="1" maxlength="80" required></label><label><span data-i18n="field.price">价格（Credits）</span><input name="price" type="number" min="0" max="999999" value="0" required></label><label><span data-i18n="field.visibility">可见性</span><select name="visibility"><option value="public" data-i18n="vis.public">公开审核</option><option value="private" data-i18n="vis.private">仅自己可见</option></select></label><label><span data-i18n="field.file">包文件</span><input name="package" type="file" accept=".zip,application/zip" required></label><label class="check"><input name="platform_distribution" type="checkbox" value="true"><span><span data-i18n="dist.label">允许平台分发（可选）</span><br><span data-i18n="dist.hint">勾选后，审核通过的公开专家才可被企业/租户级目录分发；私有分享不会启用此权限。</span></span></label><button type="submit" data-i18n="submit">提交审核</button></form><p id="publishNotice" class="notice" role="status" aria-live="polite"></p></details>
   </div>
-  <div id="detailBackdrop" class="dialog-backdrop" hidden><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="detailTitle"><div class="dialog-head"><div><h2 id="detailTitle">专家详情</h2><div id="detailMeta" class="detail-meta"></div></div><button id="detailClose" class="dialog-close" type="button" aria-label="关闭">×</button></div><div id="detailBody" class="detail-body">正在加载…</div><div class="detail-actions"><a id="detailDownload" class="market-action" hidden>下载</a><button id="detailBuy" class="market-action" type="button" hidden>获取</button></div></section></div>
+  <div id="detailBackdrop" class="dialog-backdrop" hidden><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="detailTitle"><div class="dialog-head"><div><h2 id="detailTitle" data-i18n="detail.title">专家详情</h2><div id="detailMeta" class="detail-meta"></div></div><button id="detailClose" class="dialog-close" type="button" data-i18n-aria="close" aria-label="关闭">×</button></div><div id="detailBody" class="detail-body" data-i18n="detail.loading">正在加载…</div><div class="detail-actions"><a id="detailDownload" class="market-action" hidden data-i18n="download">下载</a><button id="detailBuy" class="market-action" type="button" hidden data-i18n="acquire">获取</button></div></section></div>
   <script>
     (function(){
       var page=1,size=20,totalPages=1,currentDetail=null;
       var q=document.getElementById('query'),sort=document.getElementById('sort'),state=document.getElementById('state'),grid=document.getElementById('grid'),pager=document.getElementById('pager'),detailBackdrop=document.getElementById('detailBackdrop');
       function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-      function money(v){return Number(v)>0?esc(v)+' Credits':'免费'}
-      function statusText(status, fallback){var map={400:'提交内容不完整，请检查版本、价格和 ZIP 包。',401:'请先在开发者工作台登录后再继续。',402:'Credits 余额不足，无法获取该专家。',403:'当前账号没有执行此操作的权限。',404:'专家不存在或已下架。',409:'该专家已获取，或提交内容与已有版本冲突。',413:'专家包超过平台允许的大小。',429:'操作过于频繁，请稍后再试。'};return map[status]||fallback||'请求失败，请稍后重试。'}
+      var STORE_KEY='hubcenter_expertmarket_lang';
+      var COPY={
+        'meta.title':{en:'MaClaw AI Expert Market',zh:'MaClaw AI 专家市场',mn:'MaClaw AI шинжээчийн зах зээл'},
+        'meta.desc':{en:'MaClaw AI Expert Market: discover, acquire, and publish reusable AI expert configurations.',zh:'MaClaw AI 专家市场：发现、获取和发布可复用的 AI 专家配置。',mn:'MaClaw AI шинжээчийн зах зээл: дахин ашиглах AI шинжээчийн тохиргоог олж, авч, нийтэлнэ.'},
+        'crumb.dev':{en:'Developer community',zh:'开发者社区',mn:'Хөгжүүлэгчийн нийгэмлэг'},
+        'crumb.market':{en:'Expert market',zh:'专家市场',mn:'Шинжээчийн зах зээл'},
+        'docs':{en:'Expert developer docs →',zh:'专家开发文档 →',mn:'Шинжээч хөгжүүлэх баримт →'},
+        'hero.h':{en:'AI Expert Market',zh:'AI 专家市场',mn:'AI шинжээчийн зах зээл'},
+        'hero.p':{en:'Discover reviewed AI expert configurations. An expert is prompts, tools, Skills, and safety policy. After purchase you can install it in the MaClaw desktop app. Developers can submit versions and earn Credits under the platform rules.',zh:'发现经过审核的 AI 专家配置。专家由提示词、工具、Skill 和安全策略组成，购买后可在 MaClaw 桌面端安装使用；开发者可提交版本并按平台规则获得 Credits 收益。',mn:'Шалгагдсан AI шинжээчийн тохиргоог олно. Шинжээч нь сануулга, хэрэгсэл, Skill ба аюулгүй байдлын бодлогоос бүрдэнэ. Авсны дараа MaClaw ширээний программд суулгана. Хөгжүүлэгч хувилбар илгээж, платформын дүрмээр Credits олж болно.'},
+        'search.ph':{en:'Search expert name or description',zh:'搜索专家名称或描述',mn:'Шинжээчийн нэр эсвэл тайлбараар хайх'},
+        'search.aria':{en:'Search experts',zh:'搜索专家',mn:'Шинжээч хайх'},
+        'sort.aria':{en:'Sort',zh:'排序',mn:'Эрэмбэлэх'},
+        'sort.new':{en:'Newest',zh:'最新发布',mn:'Шинээр нийтэлсэн'},
+        'sort.downloads':{en:'Most downloaded',zh:'下载最多',mn:'Хамгийн их татагдсан'},
+        'sort.sales':{en:'Highest revenue',zh:'收益最高',mn:'Хамгийн өндөр орлого'},
+        'search.btn':{en:'Search',zh:'搜索',mn:'Хайх'},
+        'loading':{en:'Loading experts…',zh:'正在加载专家…',mn:'Шинжээч ачаалж байна…'},
+        'prev':{en:'Previous page',zh:'上一页',mn:'Өмнөх хуудас'},
+        'next':{en:'Next page',zh:'下一页',mn:'Дараах хуудас'},
+        'creator.h':{en:'Publish your AI expert',zh:'发布你的 AI 专家',mn:'AI шинжээчээ нийтэл'},
+        'creator.p':{en:'Package and submit it in the MaClaw desktop app. It appears publicly after review.',zh:'在 MaClaw 桌面端完成打包与提交，平台审核通过后即可公开展示。',mn:'MaClaw ширээний программ дээр багцалж илгээнэ. Шалгалт давсны дараа нээлттэй харагдана.'},
+        'creator.link':{en:'View publish requirements →',zh:'查看发布要求 →',mn:'Нийтлэх шаардлагыг үзэх →'},
+        'upload.summary':{en:'Upload an expert pack (sign-in required)',zh:'上传专家包（需要登录）',mn:'Шинжээчийн багц оруулах (нэвтрэх шаардлагатай)'},
+        'field.version':{en:'Version',zh:'版本',mn:'Хувилбар'},
+        'field.price':{en:'Price (Credits)',zh:'价格（Credits）',mn:'Үнэ (Credits)'},
+        'field.visibility':{en:'Visibility',zh:'可见性',mn:'Харагдац'},
+        'vis.public':{en:'Public review',zh:'公开审核',mn:'Нээлттэй шалгалт'},
+        'vis.private':{en:'Only me',zh:'仅自己可见',mn:'Зөвхөн надад'},
+        'field.file':{en:'Pack file',zh:'包文件',mn:'Багцын файл'},
+        'dist.label':{en:'Allow platform distribution (optional)',zh:'允许平台分发（可选）',mn:'Платформын түгээлтийг зөвшөөрөх (заавал биш)'},
+        'dist.hint':{en:'If checked, a reviewed public expert can be distributed in enterprise or tenant catalogs. Private sharing does not turn this on.',zh:'勾选后，审核通过的公开专家才可被企业/租户级目录分发；私有分享不会启用此权限。',mn:'Сонговол шалгалт давсан нээлттэй шинжээчийг байгууллага эсвэл түрээслэгчийн каталогоор түгээж болно. Хувийн хуваалцалт энэ эрхийг асаахгүй.'},
+        'submit':{en:'Submit for review',zh:'提交审核',mn:'Шалгалтад илгээх'},
+        'detail.title':{en:'Expert details',zh:'专家详情',mn:'Шинжээчийн дэлгэрэнгүй'},
+        'close':{en:'Close',zh:'关闭',mn:'Хаах'},
+        'detail.loading':{en:'Loading…',zh:'正在加载…',mn:'Ачаалж байна…'},
+        'download':{en:'Download',zh:'下载',mn:'Татах'},
+        'acquire':{en:'Get',zh:'获取',mn:'Авах'},
+        'free':{en:'Free',zh:'免费',mn:'Үнэгүй'},
+        'unnamed':{en:'Unnamed expert',zh:'未命名专家',mn:'Нэргүй шинжээч'},
+        'noIntro':{en:'No description yet',zh:'暂无介绍',mn:'Танилцуулга алга'},
+        'downloads':{en:'{n} downloads',zh:'{n} 次下载',mn:'{n} таталт'},
+        'detail.btn':{en:'Details',zh:'详情',mn:'Дэлгэрэнгүй'},
+        'empty':{en:'No experts match these filters.',zh:'暂时没有符合条件的专家。',mn:'Нөхцөлд тохирох шинжээч алга.'},
+        'page':{en:'Page {page} / {pages}',zh:'第 {page} / {pages} 页',mn:'Хуудас {page} / {pages}'},
+        'loadFail':{en:'Could not load: ',zh:'加载失败：',mn:'Ачаалж чадсангүй: '},
+        'detail.meta':{en:'v{version} · {n} downloads · {price}',zh:'v{version} · {n} 次下载 · {price}',mn:'v{version} · {n} таталт · {price}'},
+        'working':{en:'Working…',zh:'处理中…',mn:'Боловсруулж байна…'},
+        'submitting':{en:'Submitting…',zh:'提交中…',mn:'Илгээж байна…'},
+        'submitted':{en:'Submitted for review. It will appear in the expert market after approval.',zh:'已提交审核，审核通过后会出现在专家市场。',mn:'Шалгалтад илгээлээ. Зөвшөөрөгдсөний дараа шинжээчийн зах зээлд гарна.'},
+        'status.400':{en:'The submission is incomplete. Check the version, price, and Zip.',zh:'提交内容不完整，请检查版本、价格和 Zip 包。',mn:'Илгээлт дутуу байна. Хувилбар, үнэ, Zip багцаа шалгана уу.'},
+        'status.401':{en:'Sign in at the developer console before continuing.',zh:'请先在开发者工作台登录后再继续。',mn:'Үргэлжлүүлэхийн өмнө хөгжүүлэгчийн самбарт нэвтэрнэ үү.'},
+        'status.402':{en:'Not enough Credits to get this expert.',zh:'Credits 余额不足，无法获取该专家。',mn:'Энэ шинжээчийг авахад Credits хүрэлцэхгүй байна.'},
+        'status.403':{en:'This account cannot perform this action.',zh:'当前账号没有执行此操作的权限。',mn:'Энэ бүртгэлд энэ үйлдлийг хийх эрх алга.'},
+        'status.404':{en:'This expert does not exist or was unlisted.',zh:'专家不存在或已下架。',mn:'Шинжээч алга, эсвэл жагсаалтаас буусан байна.'},
+        'status.409':{en:'You already have this expert, or the submission conflicts with an existing version.',zh:'该专家已获取，或提交内容与已有版本冲突。',mn:'Энэ шинжээчийг аль хэдийн авсан, эсвэл илгээлт байгаа хувилбартай зөрчилдөж байна.'},
+        'status.413':{en:'The expert pack is larger than the platform allows.',zh:'专家包超过平台允许的大小。',mn:'Шинжээчийн багц платформын зөвшөөрсөн хэмжээнээс их байна.'},
+        'status.429':{en:'Too many requests. Try again later.',zh:'操作过于频繁，请稍后再试。',mn:'Хэт олон үйлдэл. Дараа дахин оролдоно уу.'},
+        'status.fail':{en:'Request failed. Try again later.',zh:'请求失败，请稍后重试。',mn:'Хүсэлт амжилтгүй. Дараа дахин оролдоно уу.'}
+      };
+      function resolveStoreLang(storageKey){
+        var params=new URLSearchParams(location.search);
+        var queryLang=params.get('lang');
+        var saved=null;
+        try{saved=localStorage.getItem(storageKey);}catch(e){}
+        if(queryLang!=null&&String(queryLang).trim()!=='') return window.HubCenterI18n.normalizeHubLang(queryLang);
+        return window.HubCenterI18n.detectHubLang(navigator.languages, saved);
+      }
+      var LANG=window.__hubExpertLang;
+      if(window.HubCenterI18n&&LANG!=='en'&&LANG!=='zh'&&LANG!=='mn') LANG=resolveStoreLang(STORE_KEY);
+      function tr(key,vars){
+        if(!window.HubCenterI18n) return '';
+        var value=window.HubCenterI18n.pick(COPY[key], LANG);
+        var s=value==null?'':String(value);
+        if(!vars) return s;
+        return s.replace(/\{(\w+)\}/g,function(_,n){return vars[n]!=null?String(vars[n]):'';});
+      }
+      function applyI18n(){
+        if(!window.HubCenterI18n) return;
+        document.documentElement.lang=window.HubCenterI18n.htmlLang(LANG);
+        document.documentElement.setAttribute('data-hub-lang', LANG);
+        document.title=tr('meta.title');
+        var desc=document.querySelector('meta[name="description"]');
+        if(desc) desc.setAttribute('content', tr('meta.desc'));
+        document.querySelectorAll('[data-i18n]').forEach(function(el){el.textContent=tr(el.getAttribute('data-i18n'));});
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el){el.setAttribute('placeholder', tr(el.getAttribute('data-i18n-placeholder')));});
+        document.querySelectorAll('[data-i18n-aria]').forEach(function(el){el.setAttribute('aria-label', tr(el.getAttribute('data-i18n-aria')));});
+        document.querySelectorAll('.lang-switch button').forEach(function(btn){
+          var on=btn.getAttribute('data-lang')===LANG;
+          btn.setAttribute('aria-pressed', on?'true':'false');
+        });
+      }
+      function setStoreLang(lang){
+        if(!window.HubCenterI18n) return;
+        LANG=window.HubCenterI18n.normalizeHubLang(lang);
+        try{localStorage.setItem(STORE_KEY, LANG);}catch(e){}
+        applyI18n();
+        var openId=currentDetail&&currentDetail.id;
+        load(page);
+        if(openId && !detailBackdrop.hidden) showDetail(openId);
+      }
+      document.querySelectorAll('.lang-switch button').forEach(function(btn){
+        btn.addEventListener('click', function(){setStoreLang(btn.getAttribute('data-lang'));});
+      });
+      try{applyI18n();}catch(e){}
+      document.documentElement.setAttribute('data-i18n-ready','1');
+      function money(v){return Number(v)>0?esc(v)+' Credits':esc(tr('free'))}
+      function statusText(status, fallback){var key='status.'+status;if(COPY[key]) return tr(key);return fallback||tr('status.fail')}
       function jsonResponse(response){return response.text().then(function(text){var body={};try{body=text?JSON.parse(text):{}}catch(_){ }if(!response.ok){var error=new Error(body.error||body.message||statusText(response.status));error.status=response.status;throw error}return body})}
-      function render(data){var items=Array.isArray(data.experts)?data.experts:[];totalPages=Number(data.total_pages)||1;grid.innerHTML=items.length?items.map(function(x){var id=esc(x.id),action=x.owned?'<a href="/api/v1/expert-market/experts/'+id+'/download" class="market-action">下载</a>':'<button type="button" class="market-action" data-buy="'+id+'">获取</button>';return '<article class="card"><div class="card-head"><span class="icon">✦</span><div><h2>'+esc(x.name||'未命名专家')+'</h2><span class="version">v'+esc(x.version||'1.0.0')+'</span></div></div><p>'+esc(x.description||'暂无介绍')+'</p><div class="meta"><span>'+esc(x.download_count||0)+' 次下载</span><span class="price">'+money(x.price)+'</span></div><div class="card-actions"><button type="button" class="market-action" data-detail="'+id+'">详情</button>'+action+'</div></article>'}).join(''):'<div class="state empty">暂时没有符合条件的专家。</div>';state.hidden=true;grid.hidden=false;pager.hidden=totalPages<=1;document.getElementById('pageInfo').textContent='第 '+page+' / '+totalPages+' 页';document.getElementById('prev').disabled=page<=1;document.getElementById('next').disabled=page>=totalPages}
-      function load(next){page=next||1;state.textContent='正在加载专家…';state.hidden=false;grid.hidden=true;fetch('/api/v1/expert-market/experts?q='+encodeURIComponent(q.value.trim())+'&sort='+encodeURIComponent(sort.value)+'&page='+page+'&page_size='+size).then(jsonResponse).then(render).catch(function(e){state.hidden=false;state.textContent='加载失败：'+(e.message||statusText(e.status));pager.hidden=true})}
+      function render(data){var items=Array.isArray(data.experts)?data.experts:[];totalPages=Number(data.total_pages)||1;grid.innerHTML=items.length?items.map(function(x){var id=esc(x.id),action=x.owned?'<a href="/api/v1/expert-market/experts/'+id+'/download" class="market-action">'+esc(tr('download'))+'</a>':'<button type="button" class="market-action" data-buy="'+id+'">'+esc(tr('acquire'))+'</button>';return '<article class="card"><div class="card-head"><span class="icon">✦</span><div><h2>'+esc(x.name||tr('unnamed'))+'</h2><span class="version">v'+esc(x.version||'1.0.0')+'</span></div></div><p>'+esc(x.description||tr('noIntro'))+'</p><div class="meta"><span>'+esc(tr('downloads',{n:x.download_count||0}))+'</span><span class="price">'+money(x.price)+'</span></div><div class="card-actions"><button type="button" class="market-action" data-detail="'+id+'">'+esc(tr('detail.btn'))+'</button>'+action+'</div></article>'}).join(''):'<div class="state empty">'+esc(tr('empty'))+'</div>';state.hidden=true;grid.hidden=false;pager.hidden=totalPages<=1;document.getElementById('pageInfo').textContent=tr('page',{page:page,pages:totalPages});document.getElementById('prev').disabled=page<=1;document.getElementById('next').disabled=page>=totalPages}
+      function load(next){page=next||1;state.textContent=tr('loading');state.hidden=false;grid.hidden=true;fetch('/api/v1/expert-market/experts?q='+encodeURIComponent(q.value.trim())+'&sort='+encodeURIComponent(sort.value)+'&page='+page+'&page_size='+size).then(jsonResponse).then(render).catch(function(e){state.hidden=false;state.textContent=tr('loadFail')+(e.message||statusText(e.status));pager.hidden=true})}
       function closeDetail(){detailBackdrop.hidden=true;currentDetail=null;document.getElementById('detailBuy').hidden=true;document.getElementById('detailDownload').hidden=true}
-      function showDetail(id){detailBackdrop.hidden=false;document.getElementById('detailTitle').textContent='专家详情';document.getElementById('detailMeta').textContent='';document.getElementById('detailBody').textContent='正在加载…';fetch('/api/v1/expert-market/experts/'+encodeURIComponent(id)).then(jsonResponse).then(function(x){currentDetail=x;document.getElementById('detailTitle').textContent=x.name||'未命名专家';document.getElementById('detailMeta').textContent='v'+(x.version||'1.0.0')+' · '+(x.download_count||0)+' 次下载 · '+(Number(x.price)>0?x.price+' Credits':'免费');document.getElementById('detailBody').textContent=x.description||'暂无介绍';var download=document.getElementById('detailDownload'),buy=document.getElementById('detailBuy');if(x.owned){download.href='/api/v1/expert-market/experts/'+encodeURIComponent(x.id)+'/download';download.hidden=false}else{buy.hidden=false}}).catch(function(e){document.getElementById('detailBody').textContent=e.message||statusText(e.status)})}
-      function purchase(id,button){button.disabled=true;button.textContent='处理中…';fetch('/api/v1/expert-market/experts/'+encodeURIComponent(id)+'/purchase',{method:'POST'}).then(jsonResponse).then(function(body){button.outerHTML='<a href="'+esc(body.download_url||('/api/v1/expert-market/experts/'+encodeURIComponent(id)+'/download'))+'" class="market-action">下载</a>';if(currentDetail&&currentDetail.id===id){closeDetail();load(page)}}).catch(function(e){button.disabled=false;button.textContent='获取';state.hidden=false;state.textContent=e.message||statusText(e.status)})}
+      function showDetail(id){detailBackdrop.hidden=false;document.getElementById('detailTitle').textContent=tr('detail.title');document.getElementById('detailMeta').textContent='';document.getElementById('detailBody').textContent=tr('detail.loading');fetch('/api/v1/expert-market/experts/'+encodeURIComponent(id)).then(jsonResponse).then(function(x){currentDetail=x;document.getElementById('detailTitle').textContent=x.name||tr('unnamed');document.getElementById('detailMeta').textContent=tr('detail.meta',{version:x.version||'1.0.0',n:x.download_count||0,price:Number(x.price)>0?x.price+' Credits':tr('free')});document.getElementById('detailBody').textContent=x.description||tr('noIntro');var download=document.getElementById('detailDownload'),buy=document.getElementById('detailBuy');if(x.owned){download.href='/api/v1/expert-market/experts/'+encodeURIComponent(x.id)+'/download';download.hidden=false}else{buy.hidden=false}}).catch(function(e){document.getElementById('detailBody').textContent=e.message||statusText(e.status)})}
+      function purchase(id,button){button.disabled=true;button.textContent=tr('working');fetch('/api/v1/expert-market/experts/'+encodeURIComponent(id)+'/purchase',{method:'POST'}).then(jsonResponse).then(function(body){button.outerHTML='<a href="'+esc(body.download_url||('/api/v1/expert-market/experts/'+encodeURIComponent(id)+'/download'))+'" class="market-action">'+esc(tr('download'))+'</a>';if(currentDetail&&currentDetail.id===id){closeDetail();load(page)}}).catch(function(e){button.disabled=false;button.textContent=tr('acquire');state.hidden=false;state.textContent=e.message||statusText(e.status)})}
       grid.addEventListener('click',function(e){var detail=e.target.closest('[data-detail]'),buy=e.target.closest('[data-buy]');if(detail){showDetail(detail.getAttribute('data-detail'));return}if(buy)purchase(buy.getAttribute('data-buy'),buy)});
       document.getElementById('detailClose').onclick=closeDetail;detailBackdrop.onclick=function(e){if(e.target===detailBackdrop)closeDetail()};document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!detailBackdrop.hidden)closeDetail()});document.getElementById('detailBuy').onclick=function(){if(currentDetail)purchase(currentDetail.id,this)};
       document.getElementById('search').onclick=function(){load(1)};q.addEventListener('keydown',function(e){if(e.key==='Enter')load(1)});sort.onchange=function(){load(1)};document.getElementById('prev').onclick=function(){load(page-1)};document.getElementById('next').onclick=function(){load(page+1)};
-      document.getElementById('publishForm').addEventListener('submit',function(e){e.preventDefault();var form=e.currentTarget,note=document.getElementById('publishNotice'),button=form.querySelector('button');note.className='notice';note.textContent='';button.disabled=true;button.textContent='提交中…';fetch('/api/v1/expert-market/experts',{method:'POST',body:new FormData(form)}).then(jsonResponse).then(function(){note.className='notice success';note.textContent='已提交审核，审核通过后会出现在专家市场。';form.reset();form.version.value='1';form.price.value='0';load(1)}).catch(function(err){note.className='notice error';note.textContent=err.message||statusText(err.status)}).finally(function(){button.disabled=false;button.textContent='提交审核'})});
+      document.getElementById('publishForm').addEventListener('submit',function(e){e.preventDefault();var form=e.currentTarget,note=document.getElementById('publishNotice'),button=form.querySelector('button');note.className='notice';note.textContent='';button.disabled=true;button.textContent=tr('submitting');fetch('/api/v1/expert-market/experts',{method:'POST',body:new FormData(form)}).then(jsonResponse).then(function(){note.className='notice success';note.textContent=tr('submitted');form.reset();form.version.value='1';form.price.value='0';load(1)}).catch(function(err){note.className='notice error';note.textContent=err.message||statusText(err.status)}).finally(function(){button.disabled=false;button.textContent=tr('submit')})});
       load(1);
     })();
   </script>

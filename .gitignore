@@ -390,3 +390,6 @@ mobile/maclaw_mobile/.idea/
 
 # Host-side firmware test binaries (built next to their .c sources).
 buddy/firmware/tools/host_tests/*.exe
+
+# i18n 抽取过程产生的日志（含 NUL 字节，不能作为源码提交）。
+hubcenter/web/i18n/_extract_log.txt

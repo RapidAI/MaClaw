@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { companionCommandBubble, companionFill, companionNoteAlias, companionPaperAlias, cs, setCompanionUiLang } from "../../i18n/mnCompanion";
+import { companionCommandBubble, companionFill, companionNoteAlias, companionPaperAlias, cs, getCompanionUiLang, setCompanionUiLang } from "../../i18n/mnCompanion";
 import {
     ChooseFileCompanionFiles,
     CancelFileCompanionTurn,
@@ -481,7 +481,7 @@ function fileErrorText(error: string): string {
         case "directories are not opened as tabs":
             return cs("不支持打开文件夹");
         default:
-            return error;
+            return cs(error);
     }
 }
 
@@ -497,7 +497,7 @@ function turnErrorText(error: string): string {
         case "path is outside the open file":
             return cs("这个文件没有打开");
         default:
-            return error;
+            return cs(error);
     }
 }
 
@@ -530,7 +530,7 @@ function exportErrorText(err: unknown): string {
     if (raw === "path is a directory") return cs("不支持上传文件夹");
     if (raw.includes("创建目录失败") || raw.includes("写入 PDF 失败")) return exportSaveError(raw);
     if (raw === "file too large to compress safely") return cs("文件太大，无法上传到云盘");
-    return raw || cs("操作失败");
+    return (raw && cs(raw)) || cs("操作失败");
 }
 
 function knowledgeResultText(result: { imported_files?: number; failed_files?: number; skipped_files?: number; last_item_reason?: string } | null | undefined): { ok: boolean; text: string } {
@@ -539,7 +539,7 @@ function knowledgeResultText(result: { imported_files?: number; failed_files?: n
     const skipped = Number(result?.skipped_files ?? 0);
     if (failed > 0 && imported === 0) {
         const reason = String(result?.last_item_reason ?? "").trim();
-        return { ok: false, text: reason ? `导入知识库失败：${reason}` : cs("导入知识库失败") };
+        return { ok: false, text: reason ? companionFill(getCompanionUiLang(), "导入知识库失败：${reason}", { reason: cs(reason) }) : cs("导入知识库失败") };
     }
     if (imported === 0 && skipped > 0) return { ok: true, text: cs("文件已在桌面知识库中") };
     return { ok: true, text: cs("已进入桌面知识库") };
@@ -1324,12 +1324,29 @@ async function loadCompanionFigureDataURL(path: string): Promise<string> {
  * that part of it is missing. A figure dropped in silence reads exactly like a
  * complete export until somebody opens it.
  */
-function companionExportNotice(missingFigures: number, missingDiagrams: number): string {
+function companionJoin(parts: string[]): string {
+    const lang = getCompanionUiLang();
+    return parts.join(lang === "zh-Hans" || lang === "zh-Hant" ? "、" : ", ");
+}
+
+function companionMissingBits(missingFigures: number, missingDiagrams: number): string {
+    const lang = getCompanionUiLang();
     const missing: string[] = [];
-    if (missingFigures > 0) missing.push(`${missingFigures} 张配图`);
-    if (missingDiagrams > 0) missing.push(`${missingDiagrams} 张流程图`);
-    if (missing.length === 0) return cs("已导出 PDF");
-    return `已导出 PDF，但 ${missing.join("、")}未能读取，未包含在内`;
+    if (missingFigures > 0) missing.push(companionFill(lang, "${n} 张配图", { n: missingFigures }));
+    if (missingDiagrams > 0) missing.push(companionFill(lang, "${n} 张流程图", { n: missingDiagrams }));
+    return companionJoin(missing);
+}
+
+function companionCloudDuplicate(held: string): string {
+    const lang = getCompanionUiLang();
+    const mark = held.trim() ? companionFill(lang, "（${held}）", { held: held.trim() }) : "";
+    return companionFill(lang, "云盘中已有相同内容${held}，未再次上传", { held: mark });
+}
+
+function companionExportNotice(missingFigures: number, missingDiagrams: number): string {
+    const missing = companionMissingBits(missingFigures, missingDiagrams);
+    if (!missing) return cs("已导出 PDF");
+    return companionFill(getCompanionUiLang(), "已导出 PDF，但 ${missing}未能读取，未包含在内", { missing });
 }
 
 function companionExportNoticeKind(missingFigures: number, missingDiagrams: number): "success" | "warning" {
@@ -1339,13 +1356,11 @@ function companionExportNoticeKind(missingFigures: number, missingDiagrams: numb
 function companionCloudExportNotice(uploaded: { duplicate?: boolean; duplicate_of_title?: string; title?: string } | null | undefined, missingFigures: number, missingDiagrams: number): string {
     const held = uploaded?.duplicate_of_title || uploaded?.title || "";
     const base = uploaded?.duplicate
-        ? `云盘中已有相同内容${held ? `（${held}）` : ""}，未再次上传`
+        ? companionCloudDuplicate(held)
         : cs("已上传到云盘，手机端「文档」可打开");
-    const missing: string[] = [];
-    if (missingFigures > 0) missing.push(`${missingFigures} 张配图`);
-    if (missingDiagrams > 0) missing.push(`${missingDiagrams} 张流程图`);
-    if (missing.length === 0) return base;
-    return `${base}，但 ${missing.join("、")}未能读取，未包含在内`;
+    const missing = companionMissingBits(missingFigures, missingDiagrams);
+    if (!missing) return base;
+    return companionFill(getCompanionUiLang(), "${base}，但 ${missing}未能读取，未包含在内", { base, missing });
 }
 
 /**
@@ -1822,22 +1837,23 @@ function companionArxivSearchStatus(error: string, query: string, submitted: str
     // A fallback searched only the words arXiv can match, which are usually
     // the English terms inside a Chinese goal — not the goal itself. Saying
     // "已按原文检索" would describe a query that was never sent.
+    const lang = getCompanionUiLang();
     const head = fallback ? cs("未能扩展关键词，已用原文中的英文词检索。") : "";
     if (current && count === 0 && page <= 1) {
-        return fallback ? `${head}检索完成，没有结果` : cs("检索完成，没有结果");
+        return companionFill(lang, "${head}检索完成，没有结果", { head });
     }
     // A later page can come back empty when the previous total was only a
     // lower bound. Saying "第 1 页" here would hide that the reader is stuck
     // past the last paper; the pager stays so they can go back.
     if (current && count === 0 && page > 1) {
-        return `${head}这一页没有论文`;
+        return companionFill(lang, "${head}这一页没有论文", { head });
     }
     if (current) {
         const size = pageSize > 0 ? pageSize : companionArxivPageSize;
         const safeTotal = Math.max(total, (Math.max(page, 1) - 1) * size + count);
         const pages = Math.max(1, Math.ceil(safeTotal / size));
         const shown = Math.min(Math.max(page, 1), pages);
-        return `${head}约 ${safeTotal} 篇，第 ${shown} / ${pages} 页`;
+        return companionFill(lang, "${head}约 ${total} 篇，第 ${page} / ${pages} 页", { head, total: safeTotal, page: shown, pages });
     }
     // A later page with no rows is still a result. Changing the box must say
     // the goal moved, not the idle hint that belongs to an empty first page.
@@ -1941,11 +1957,19 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // the default so a failed call leaves the label exactly as it was.
     const [brandName, setBrandName] = useState("MaClaw");
     // The test binding omits GetCurrentLanguage, and those tests still expect the old Chinese card labels.
+    // Vitest 4 throws when that export is missing, so a failed lookup is the same as no binding.
     // Production always has the binding. Until it answers, and if it fails, the language is English.
-    const [uiLang, setUiLang] = useState(() => (typeof GetCurrentLanguage === "function" ? "en" : "zh-Hans"));
+    const languageBinding = (() => {
+        try {
+            return typeof GetCurrentLanguage === "function";
+        } catch {
+            return false;
+        }
+    })();
+    const [uiLang, setUiLang] = useState(() => (languageBinding ? "en" : "zh-Hans"));
     setCompanionUiLang(uiLang);
     useEffect(() => {
-        if (typeof GetCurrentLanguage !== "function") return undefined;
+        if (!languageBinding) return undefined;
         let live = true;
         void GetCurrentLanguage().then((value) => {
             if (!live) return;
@@ -3832,7 +3856,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const showConvert = Boolean(activeTab && !isWebTab && kind === "pdf" && !activeTab.error && scanPaths.has(activeTab.path));
     const convertCard = activeTab ? convertResults[activeTab.path] : undefined;
     const convertTitle = convertBusy && activeTab && convertProgress[activeTab.path]
-        ? `已处理 ${convertProgress[activeTab.path].done}/${convertProgress[activeTab.path].total} 页`
+        ? companionFill(uiLang, "已处理 ${done}/${total} 页", { done: convertProgress[activeTab.path].done, total: convertProgress[activeTab.path].total })
         : cs("保留扫描版式，生成可以选中和搜索的 PDF");
     const noteBusy = Boolean(activeTab && noteBusyPaths.has(activeTab.path));
     const chatExportBusy = Boolean(activeTab && chatExportBusyPaths.has(activeTab.path));
@@ -3913,7 +3937,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 });
                 showToast(
                     uploaded?.duplicate
-                        ? `云盘中已有相同内容${held ? `（${held}）` : ""}，未再次上传`
+                        ? companionCloudDuplicate(held)
                         : cs("已上传到云盘，手机端「文档」可打开"),
                     "success",
                     6000,
@@ -4142,7 +4166,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const mediaKind = filePreviewKindFromName(activeTab.name);
         const notePhrase = !isWebTab && (mediaKind === "video" || mediaKind === "audio") && (companionVideoNotePhrase(text) || companionNoteAlias(text));
         const webNotePhrase = isWebTab && (text === "记笔记" || companionVideoNotePhrase(text) || companionNoteAlias(text));
-        const paperAlias = companionPaperAlias(text);
+        // The button and a typed alias share one paper turn. The request id is
+        // what hides the model draft and attaches the result card.
+        const paperTurn = !isWebTab && companionPaperAlias(text);
         // One player. A second web note would record over the one already running.
         if (webNotePhrase && otherWebNoteRunning(tabPath)) return false;
         // A new question always re-arms the follow, even if the reader had
@@ -4174,12 +4200,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         }
         // On a received share a question is the discussion. The host's agent
         // answers it and the reply comes back through the shared note list, so
-        // this machine does not run a second, private turn. A note command is a
-        // local operation on this reader's copy: it keeps its own turn and is
-        // not published as an annotation for the host to answer. A selection
-        // travels in the note so the host answers the passage the reader
-        // actually asked about.
-        const targeted = notePhrase || webNotePhrase;
+        // this machine does not run a second, private turn. A note command and a
+        // paper command are local operations on this reader's copy: each keeps
+        // its own turn and is not published as an annotation for the host to
+        // answer. A selection travels in the note so the host answers the
+        // passage the reader actually asked about.
+        const targeted = notePhrase || webNotePhrase || paperTurn;
         const composedNote = selection.trim()
             ? `${text}\n\n选中的原文：\n${selection.trim().slice(0, 800)}${selection.trim().length > 800 ? "…" : ""}`
             : text;
@@ -4193,7 +4219,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             if (shared) {
                 if (!shared.mine) {
                     if (!targeted && notesReplyRef.current) hostThread = true;
-                    if (!notePhrase) {
+                    if (!notePhrase && !paperTurn) {
                         void publishShareNoteRef.current(tabPath, shareNoteText).then((posted) => {
                             if (!posted || !hostThread) return;
                             // The list flag can still be missing. The note just
@@ -4205,7 +4231,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         });
                     }
                 }
-            } else if (!notePhrase) {
+            } else if (!notePhrase && !paperTurn) {
                 const queued = pendingShareNotesRef.current.get(key) ?? [];
                 queued.push({ path: tabPath, text: shareNoteText });
                 if (queued.length > pendingShareNoteCap) queued.splice(0, queued.length - pendingShareNoteCap);
@@ -4242,19 +4268,28 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         ...webCaptureFields(),
                     });
                 } else {
+                    if (paperTurn) {
+                        paperRequestIds.current.add(requestID);
+                        markPaperBusy(tabPath, true);
+                    }
                     await SendFileCompanionMessage({
                         path: tabPath,
                         text,
-                        selection,
                         request_id: requestID,
-                        ...(paperAlias ? { purpose: "paper" } : notePhrase ? { purpose: "video-note" } : {}),
-                        ...(selection && selectionStart >= 0 ? { selection_start: selectionStart } : {}),
+                        ...(paperTurn
+                            ? { purpose: "paper" }
+                            : {
+                                selection,
+                                ...(notePhrase ? { purpose: "video-note" } : {}),
+                                ...(selection && selectionStart >= 0 ? { selection_start: selectionStart } : {}),
+                            }),
                     });
                     // The host's question is part of the transcript participants
                     // are reading, so it goes out with the turn, not at 同步.
                     pushShareTranscriptRef.current(tabPath);
                 }
             } catch (err) {
+                if (paperTurn) paperRequestIds.current.delete(requestID);
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
                 const note = turnErrorText(err instanceof Error ? err.message : cs("发送失败"));
                 const assistantID = `${requestID}:assistant`;
@@ -4265,6 +4300,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }));
             } finally {
                 markSending(tabPath, false);
+                if (paperTurn) markPaperBusy(tabPath, false);
                 if (notePhrase || webNotePhrase) {
                     if (noteBusyRequestRef.current === requestID) noteBusyRequestRef.current = "";
                     markNoteBusy(tabPath, requestID, false);
@@ -5097,13 +5133,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         onMouseDown={() => setChatExportDestPath("")}
                     />
                 ) : null}
-                <span className="mc-header-brand" data-testid="file-companion-brand" aria-label={`${brandName}伴读`}>
+                <span className="mc-header-brand" data-testid="file-companion-brand" aria-label={companionFill(uiLang, "${brand}伴读", { brand: brandName })}>
                     <span className="mc-header-brand-mark" aria-hidden="true">
                         <svg viewBox="0 0 80 80" focusable="false">
                             <path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" strokeWidth="10.5" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
                     </span>
-                    <span>{brandName}伴读</span>
+                    <span>{companionFill(uiLang, "${brand}伴读", { brand: brandName })}</span>
                 </span>
                 <div className="file-companion-titlebar-files" data-testid="file-companion-titlebar-files">
                 {tabEnds.overflow ? (
@@ -5172,7 +5208,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         <span
                             className="file-companion-tab-close"
                             role="button"
-                            aria-label={`关闭 ${tab.name}`}
+                            aria-label={companionFill(uiLang, "关闭 ${name}", { name: tab.name })}
                             onClick={(event) => {
                                 event.stopPropagation();
                                 const closing = tab.path;
@@ -5275,10 +5311,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     ref={arxivInputRef}
                                     className="file-companion-open-input"
                                     data-testid="file-companion-arxiv-input"
-                                    aria-label={FILE_COMPANION_OPEN_HINT}
+                                    aria-label={cs(FILE_COMPANION_OPEN_HINT)}
                                     value={arxivInput}
                                     disabled={arxivBusy}
-                                    placeholder={FILE_COMPANION_OPEN_HINT}
+                                    placeholder={cs(FILE_COMPANION_OPEN_HINT)}
                                     spellCheck={false}
                                     onChange={(event) => {
                                         setArxivInput(event.target.value);
@@ -5320,7 +5356,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 data-state={arxivMessage ? "error" : "hint"}
                                 role="status"
                             >
-                                {arxivMessage || FILE_COMPANION_OPEN_HINT}
+                                {arxivMessage || cs(FILE_COMPANION_OPEN_HINT)}
                             </p>
                         </div>
                         </>
@@ -5372,7 +5408,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 data-state={readHost.mine ? "mine" : "guest"}
                                 title={readHost.mine ? cs("你是这份文档的主持人") : cs("这份文档由对方分享，对方是主持人")}
                             >
-                                {readHost.mine ? cs("你是主持人") : `主持人：${readHost.owner || cs("其他人")}`}
+                                {readHost.mine ? cs("你是主持人") : companionFill(uiLang, "主持人：${owner}", { owner: readHost.owner || cs("其他人") })}
                             </span>
                         ) : null}
                         {hostSeat && !sharedRow ? (
@@ -5618,7 +5654,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             <div data-testid="file-companion-unsupported">
                                 <p>{cs("此文件类型暂不支持预览")}</p>
                                 <p>{activeTab.name}</p>
-                                <p>{activeTab.size} 字节</p>
+                                <p>{companionFill(uiLang, "${size} 字节", { size: activeTab.size })}</p>
                             </div>
                         ) : null}
                         {playerTab && playerHost !== "pending" ? (
@@ -5832,7 +5868,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                         </p>
                                         {message.discussion?.question ? (
                                             <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)", borderLeft: "2px solid var(--theme-border, #cbd5e1)", paddingLeft: 8 }}>
-                                                回复 {message.discussion.askedBy || cs("读者")}：{message.discussion.question}
+                                                {companionFill(uiLang, "回复 ${name}：${question}", { name: message.discussion.askedBy || cs("读者"), question: message.discussion.question })}
                                             </p>
                                         ) : null}
                                         <MessageContentRenderer
@@ -5849,6 +5885,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         </div>
                         {chatMenu ? (
                             <CompanionChatMarkMenu
+                                lang={uiLang}
                                 state={chatMenu}
                                 quote={chatMenu.selected || chatMenu.slices.map((slice) => slice.text).join(" ")}
                                 hasSelection={chatMenu.slices.length > 0}
@@ -5862,7 +5899,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         ) : null}
                         {activeTab.shareToken && (!activeTab.shareMine || (activeTab.notes && activeTab.notes.length > 0)) ? (
                             <div className="file-companion-annotations" data-testid="file-companion-annotations">
-                                <p className="file-companion-annotations-kicker">批注{pendingReviewCount > 0 ? ` · 待审核 ${pendingReviewCount}` : ""}</p>
+                                <p className="file-companion-annotations-kicker">{pendingReviewCount > 0 ? companionFill(uiLang, "批注 · 待审核 ${count}", { count: pendingReviewCount }) : cs("批注")}</p>
                                 {activeTab.notes && activeTab.notes.length > 0 ? activeTab.notes.map((note) => {
                                     const answered = activeTab.notes?.some((other) => other.host && other.replyTo === note.id) ?? false;
                                     const decision = note.host ? "" : (note.decision ?? "");
@@ -5880,7 +5917,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     return (
                                         <div key={note.id} className="file-companion-annotation-row" data-testid={`file-companion-annotation-${note.id}`}>
                                             <p className="file-companion-annotations-author">
-                                                {note.host ? `主持人${note.author ? ` · ${note.author}` : ""}` : note.author || cs("读者")}
+                                                {note.host ? (note.author ? companionFill(uiLang, "主持人 · ${author}", { author: note.author }) : cs("主持人")) : note.author || cs("读者")}
                                             </p>
                                             <CompanionAnnotationBody noteId={note.id} text={note.text} theme={appearance.assistantTheme} />
                                             {!note.host && decision === "ignored" ? (
@@ -6253,7 +6290,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                                         {hit.abstract ? <span className="file-companion-arxiv-hit-abstract">{hit.abstract}</span> : null}
                                                     </span>
                                                     <span className="file-companion-arxiv-hit-action">
-                                                        {opening ? <span className="file-companion-arxiv-hit-status">正在下载…</span> : <span className="file-companion-arxiv-hit-open">{cs("打开")}</span>}
+                                                        {opening ? <span className="file-companion-arxiv-hit-status">{cs("正在下载…")}</span> : <span className="file-companion-arxiv-hit-open">{cs("打开")}</span>}
                                                     </span>
                                                 </button>
                                             </li>
@@ -6276,7 +6313,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 <div className="file-companion-arxiv-empty">
                                     {arxivSearchPage <= 1 ? (
                                         <>
-                                            <p className="file-companion-arxiv-empty-title">没有与「{arxivSearchFor}」匹配的论文</p>
+                                            <p className="file-companion-arxiv-empty-title">{companionFill(uiLang, "没有与「${query}」匹配的论文", { query: arxivSearchFor })}</p>
                                             <p className="file-companion-arxiv-empty-hint">{cs("换一种说法描述研究目标，或在上方输入 arXiv 编号（如 2510.16079）后检索。")}</p>
                                         </>
                                     ) : (

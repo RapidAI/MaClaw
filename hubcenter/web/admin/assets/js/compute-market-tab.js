@@ -898,6 +898,8 @@ if (typeof I18N_EN !== 'undefined') {
   }
 
   // Expose to global scope
+  window.applyComputeMarketPlaceholders = applyComputeMarketPlaceholders;
+  applyComputeMarketPlaceholders();
   window.initComputeMarketTab = initComputeMarketTab;
   window.switchComputeMarketSubTab = switchComputeMarketSubTab;
   window.showComputeCardEditor = showComputeCardEditor;

@@ -1,5 +1,34 @@
 (function () {
   const PROBLEM_REPORTS_PAGE_SIZE = 30;
+  const PR_TEXT = {
+    en: { heading: 'Fault reports', desc: 'Review diagnostic packages, contact details, and handling status.', all: 'All statuses', pending: 'Pending', fixed: 'Fixed', deferred: 'Deferred', rejected: 'Not processed', archived: 'Archived', refresh: 'Refresh', empty: 'No problem reports.', loading: 'Loading...', prev: 'Previous', next: 'Next', page: 'Showing {start}-{end} of {total}', reporter: 'Reporter ID / contact (admin only)', runtime: 'Runtime', os: 'Operating system', notProvided: 'Not provided', description: 'Description', attachments: 'Attachments', status: 'Status', note: 'Administrator note', save: 'Save status', forceDelete: 'Force delete', notAvailable: 'Not available', loadFailed: 'Failed to load reports: {error}', confirmDelete: 'Force delete this report and all stored attachments? This cannot be undone.', unavailable502: 'The original upload server is temporarily unavailable (502). The report and its attachments were not deleted; please try again shortly.', deleteFailed: 'Unable to delete the problem report.', downloadFailed: 'Unable to download attachment.', popupBlocked: 'Your browser blocked the download window. Please allow popups for this admin console and try again.' },
+    zh: { heading: '故障报告', desc: '查看用户诊断包、联系信息及处理状态。', all: '全部状态', pending: '待处理', fixed: '已修复', deferred: '延期', rejected: '不予处理', archived: '已归档', refresh: '刷新', empty: '暂无故障报告。', loading: '加载中...', prev: '上一页', next: '下一页', page: '显示 {start}-{end} / {total}', reporter: '报告人 ID / 联系方式（仅管理员）', runtime: '运行环境', os: '操作系统', notProvided: '未提供', description: '描述', attachments: '附件', status: '状态', note: '管理员备注', save: '保存状态', forceDelete: '强制删除', notAvailable: '不可用', loadFailed: '加载故障报告失败：{error}', confirmDelete: '强制删除此报告及其全部附件？此操作不可撤销。', unavailable502: '原始上传服务器暂时不可用（502）。报告及其附件未被删除，请稍后重试。', deleteFailed: '无法删除故障报告。', downloadFailed: '无法下载附件。', popupBlocked: '浏览器拦截了下载窗口。请允许此管理台的弹出窗口后重试。' },
+    mn: { heading: 'Алдааны тайлан', desc: 'Оношилгооны багц, холбоо барих мэдээлэл, шийдвэрлэлтийн төлөвийг хянана.', all: 'Бүх төлөв', pending: 'Хүлээгдэж буй', fixed: 'Зассан', deferred: 'Хойшлуулсан', rejected: 'Шийдвэрлэхгүй', archived: 'Архивласан', refresh: 'Шинэчлэх', empty: 'Алдааны тайлан алга.', loading: 'Ачаалж байна...', prev: 'Өмнөх', next: 'Дараах', page: '{total}-аас {start}-{end} харуулж байна', reporter: 'Мэдээлэгчийн ID / холбоо (зөвхөн админ)', runtime: 'Ажиллах орчин', os: 'Үйлдлийн систем', notProvided: 'Өгөөгүй', description: 'Тайлбар', attachments: 'Хавсралт', status: 'Төлөв', note: 'Админы тэмдэглэл', save: 'Төлөв хадгалах', forceDelete: 'Шууд устгах', notAvailable: 'Байхгүй', loadFailed: 'Тайлан ачаалах амжилтгүй: {error}', confirmDelete: 'Энэ тайлан ба хадгалсан бүх хавсралтыг шууд устгах уу? Үүнийг буцаах боломжгүй.', unavailable502: 'Анхны оруулалтын сервер түр боломжгүй (502). Тайлан ба хавсралт устсангүй. Түр хүлээгээд дахин оролдоно уу.', deleteFailed: 'Алдааны тайланг устгаж чадсангүй.', downloadFailed: 'Хавсралт татаж чадсангүй.', popupBlocked: 'Хөтөч татах цонхыг хаасан. Энэ админ консолд попап зөвшөөрөөд дахин оролдоно уу.' }
+  };
+  function pr(key, vars) {
+    const lang = window.currentLang === 'zh' ? 'zh' : window.currentLang === 'mn' ? 'mn' : 'en';
+    const table = PR_TEXT[lang] || PR_TEXT.en;
+    const raw = (table[key] || PR_TEXT.en[key] || key);
+    return String(raw).replace(/\{(\w+)\}/g, function (_, name) { return vars && vars[name] != null ? vars[name] : ''; });
+  }
+  function applyProblemReportsChrome() {
+    const panel = document.getElementById('tab-problemreports');
+    if (!panel) return;
+    const heading = panel.querySelector('.head h3');
+    const desc = panel.querySelector('.head .desc');
+    if (heading) heading.textContent = pr('heading');
+    if (desc) desc.textContent = pr('desc');
+    const select = document.getElementById('problemReportsStatus');
+    if (select) Array.prototype.forEach.call(select.options, function (option) { option.textContent = pr(option.value || 'all'); });
+    const refresh = panel.querySelector('.head .actions button');
+    if (refresh) refresh.textContent = pr('refresh');
+    const prev = document.getElementById('problemReportsPrev');
+    const next = document.getElementById('problemReportsNext');
+    if (prev) prev.textContent = pr('prev');
+    if (next) next.textContent = pr('next');
+    const hint = document.querySelector('#problemReportsList > .hint');
+    if (hint) hint.textContent = pr('empty');
+  }
   const ATTACHMENT_MANIFEST_CONCURRENCY = 3;
   let problemReportsPage = 1;
   let problemReportsLoadSeq = 0;
@@ -19,7 +48,8 @@
     if (typeof applyI18n === 'function') applyI18n();
     const panel = document.createElement('section');
     panel.id = 'tab-problemreports'; panel.className = 'panel card';
-    panel.innerHTML = '<div class="head"><div><h3>故障报告</h3><div class="desc">查看用户诊断包、联系信息及处理状态。</div></div><div class="actions"><select id="problemReportsStatus" onchange="changeProblemReportsStatus()"><option value="">全部状态</option><option value="pending">待处理</option><option value="fixed">已修复</option><option value="deferred">延期</option><option value="rejected">不予处理</option><option value="archived">已归档</option></select><button class="btn-ghost" onclick="loadProblemReports()">刷新</button></div></div><div id="problemReportsList" class="list"><div class="hint">暂无故障报告。</div></div><div id="problemReportsPager" class="pager pager-compact"><div id="problemReportsPageInfo" class="pager-meta" aria-live="polite"></div><div class="pager-actions"><button id="problemReportsPrev" class="btn-ghost" type="button" onclick="changeProblemReportsPage(-1)">Previous</button><button id="problemReportsNext" class="btn-ghost" type="button" onclick="changeProblemReportsPage(1)">Next</button></div></div>';
+    panel.innerHTML = '<div class="head"><div><h3></h3><div class="desc"></div></div><div class="actions"><select id="problemReportsStatus" onchange="changeProblemReportsStatus()"><option value=""></option><option value="pending"></option><option value="fixed"></option><option value="deferred"></option><option value="rejected"></option><option value="archived"></option></select><button class="btn-ghost" onclick="loadProblemReports()"></button></div></div><div id="problemReportsList" class="list"><div class="hint"></div></div><div id="problemReportsPager" class="pager pager-compact"><div id="problemReportsPageInfo" class="pager-meta" aria-live="polite"></div><div class="pager-actions"><button id="problemReportsPrev" class="btn-ghost" type="button" onclick="changeProblemReportsPage(-1)"></button><button id="problemReportsNext" class="btn-ghost" type="button" onclick="changeProblemReportsPage(1)"></button></div></div>';
+    applyProblemReportsChrome();
     main.appendChild(panel);
     const previousOpenTab = window.openTab;
     window.openTab = function (name) {
@@ -41,10 +71,10 @@
   }
   window.installProblemReportsTab = installProblemReportsTab;
   function escapeValue(value) { return typeof escapeHtml === 'function' ? escapeHtml(String(value || '')) : String(value || ''); }
-  function label(status) { return {pending:'Pending',fixed:'Fixed',deferred:'Deferred',rejected:'Not processed',archived:'Archived'}[status] || status; }
+  function label(status) { return pr(status) || status; }
   function reporterContact(value) {
     const contact = String(value || '').trim();
-    if (!contact) return 'Not available';
+    if (!contact) return pr('notAvailable');
     return contact.toLowerCase().indexOf('phone:') === 0 ? contact.slice(6) : contact;
   }
   async function request(path, options) {
@@ -58,9 +88,9 @@
     // Reverse proxies can return a full HTML 502 page.  It is neither useful
     // nor safe to dump that markup into an alert; retain the actionable status.
     if (/^<html[\s>]/i.test(raw) || /<title>\s*502\s+Bad Gateway/i.test(raw)) {
-      return 'The original upload server is temporarily unavailable (502). The report and its attachments were not deleted; please try again shortly.';
+      return pr('unavailable502');
     }
-    return raw || 'Unable to delete the problem report.';
+    return raw || pr('deleteFailed');
   }
   function renderProblemReportsPager(total, itemCount) {
     const pages = Math.max(1, Math.ceil(total / PROBLEM_REPORTS_PAGE_SIZE));
@@ -70,7 +100,7 @@
     const info = document.getElementById('problemReportsPageInfo');
     const prev = document.getElementById('problemReportsPrev');
     const next = document.getElementById('problemReportsNext');
-    if (info) info.textContent = 'Showing ' + start + '-' + end + ' of ' + total;
+    if (info) info.textContent = pr('page', { start: start, end: end, total: total });
     if (prev) prev.disabled = problemReportsPage <= 1;
     if (next) next.disabled = problemReportsPage >= pages;
   }
@@ -87,7 +117,7 @@
     if (!root) return;
     const seq = ++problemReportsLoadSeq;
     root.setAttribute('aria-busy', 'true');
-    root.textContent = 'Loading...';
+    root.textContent = pr('loading');
     const status = document.getElementById('problemReportsStatus')?.value || '';
     const params = new URLSearchParams({limit:String(PROBLEM_REPORTS_PAGE_SIZE), offset:String((problemReportsPage - 1) * PROBLEM_REPORTS_PAGE_SIZE)});
     if (status) params.set('status', status);
@@ -103,7 +133,7 @@
         return;
       }
       if (!items.length) {
-        root.innerHTML = '<div class="hint">No problem reports.</div>';
+        root.innerHTML = '<div class="hint">' + escapeValue(pr('empty')) + '</div>';
         renderProblemReportsPager(total, 0);
         return;
       }
@@ -112,16 +142,16 @@
           return '<button type="button" class="btn-ghost compact-btn" onclick="downloadProblemReportAttachment(\'' + String(item.id).replace(/'/g, "\\'") + '\',\'' + String(file).replace(/'/g, "\\'") + '\')">' + escapeValue(file) + '</button>';
         }).join(' ');
         return '<article class="item"><div class="head"><div><div class="item-title">' + escapeValue(item.id) + ' <span class="badge ' + (item.status === 'fixed' ? 'ok' : item.status === 'pending' ? 'warn' : '') + '">' + escapeValue(label(item.status)) + '</span></div><div class="item-meta">' + escapeValue(item.created_at) + '</div></div></div>' +
-          '<div class="grid2"><div><label>Reporter ID / contact (admin only)</label><div class="item-meta">' + escapeValue(item.reporter_user_id) + '<br>' + escapeValue(reporterContact(item.reporter_contact)) + '</div></div><div><label>运行环境</label><div class="item-meta">操作系统：' + escapeValue(item.os_version) + '<br>MaClaw GUI：' + escapeValue(item.gui_version || '未提供') + '</div></div></div>' +
-          '<div class="stack-gap-sm"><label>Description</label><pre class="item-meta problem-report-description">' + escapeValue(item.description) + '</pre></div>' +
-          '<details class="stack-gap-sm" ontoggle="if(this.open)loadProblemReportAttachmentManifest(\'' + String(item.id).replace(/'/g, "\\'") + '\')"><summary>Attachments</summary><div class="actions" id="problem-attachments-' + escapeValue(item.id) + '" data-report-id="' + escapeValue(item.id) + '" data-manifest-known="' + ((item.screenshot_paths || []).length ? '1' : '') + '">' + attachments + '</div></details>' +
-          '<div class="grid2 stack-gap-sm"><div><label>Status</label><select id="problem-status-' + escapeValue(item.id) + '"><option value="pending">Pending</option><option value="fixed">Fixed</option><option value="deferred">Deferred</option><option value="rejected">Not processed</option><option value="archived">Archived</option></select></div><div><label>Administrator note</label><input id="problem-note-' + escapeValue(item.id) + '" value="' + escapeValue(item.admin_note) + '"></div></div>' +
-          '<div class="actions section-gap"><button class="btn-primary" onclick="saveProblemReport(\'' + String(item.id).replace(/'/g, "\\'") + '\')">Save status</button><button class="btn-ghost" onclick="deleteProblemReport(\'' + String(item.id).replace(/'/g, "\\'") + '\')">Force delete</button></div></article>';
+          '<div class="grid2"><div><label>' + escapeValue(pr('reporter')) + '</label><div class="item-meta">' + escapeValue(item.reporter_user_id) + '<br>' + escapeValue(reporterContact(item.reporter_contact)) + '</div></div><div><label>' + escapeValue(pr('runtime')) + '</label><div class="item-meta">' + escapeValue(pr('os')) + '：' + escapeValue(item.os_version) + '<br>MaClaw GUI：' + escapeValue(item.gui_version || pr('notProvided')) + '</div></div></div>' +
+          '<div class="stack-gap-sm"><label>' + escapeValue(pr('description')) + '</label><pre class="item-meta problem-report-description">' + escapeValue(item.description) + '</pre></div>' +
+          '<details class="stack-gap-sm" ontoggle="if(this.open)loadProblemReportAttachmentManifest(\'' + String(item.id).replace(/'/g, "\\'") + '\')"><summary>' + escapeValue(pr('attachments')) + '</summary><div class="actions" id="problem-attachments-' + escapeValue(item.id) + '" data-report-id="' + escapeValue(item.id) + '" data-manifest-known="' + ((item.screenshot_paths || []).length ? '1' : '') + '">' + attachments + '</div></details>' +
+          '<div class="grid2 stack-gap-sm"><div><label>' + escapeValue(pr('status')) + '</label><select id="problem-status-' + escapeValue(item.id) + '"><option value="pending">' + escapeValue(pr('pending')) + '</option><option value="fixed">' + escapeValue(pr('fixed')) + '</option><option value="deferred">' + escapeValue(pr('deferred')) + '</option><option value="rejected">' + escapeValue(pr('rejected')) + '</option><option value="archived">' + escapeValue(pr('archived')) + '</option></select></div><div><label>' + escapeValue(pr('note')) + '</label><input id="problem-note-' + escapeValue(item.id) + '" value="' + escapeValue(item.admin_note) + '"></div></div>' +
+          '<div class="actions section-gap"><button class="btn-primary" onclick="saveProblemReport(\'' + String(item.id).replace(/'/g, "\\'") + '\')">' + escapeValue(pr('save')) + '</button><button class="btn-ghost" onclick="deleteProblemReport(\'' + String(item.id).replace(/'/g, "\\'") + '\')">' + escapeValue(pr('forceDelete')) + '</button></div></article>';
       }).join('');
       items.forEach(function (item) { const select = document.getElementById('problem-status-' + item.id); if (select) select.value = item.status; });
       renderProblemReportsPager(total, items.length);
     } catch (error) {
-      if (seq === problemReportsLoadSeq) root.innerHTML = '<div class="hint">Failed to load reports: ' + escapeValue(error.message || error) + '</div>';
+      if (seq === problemReportsLoadSeq) root.innerHTML = '<div class="hint">' + escapeValue(pr('loadFailed', { error: error.message || error })) + '</div>';
     } finally {
       if (seq === problemReportsLoadSeq) root.setAttribute('aria-busy', 'false');
     }
@@ -144,7 +174,7 @@
       // deliberately remain behind RequireAdmin, so a normal browser navigation
       // cannot work: it drops the Authorization header and gets ADMIN_UNAUTHORIZED.
       if (link && link.url) {
-        if (!popup) throw new Error('Your browser blocked the download window. Please allow popups for this admin console and try again.');
+        if (!popup) throw new Error(pr('popupBlocked'));
         popup.location.replace(link.url);
         return;
       }
@@ -155,7 +185,7 @@
       });
       if (!response.ok) {
         const detail = await response.text();
-        throw new Error(detail || response.statusText || 'Unable to download attachment.');
+        throw new Error(detail || response.statusText || pr('downloadFailed'));
       }
       const blobUrl = URL.createObjectURL(await response.blob());
       const anchor = document.createElement('a');
@@ -216,7 +246,7 @@
     pumpProblemReportAttachmentManifests();
   };
   window.deleteProblemReport = async function (id) {
-    if (!window.confirm('Force delete this report and all stored attachments? This cannot be undone.')) return;
+    if (!window.confirm(pr('confirmDelete'))) return;
     try { await request('/api/v1/admin/problem-reports/' + encodeURIComponent(id), {method:'DELETE'}); window.loadProblemReports(); }
     catch (error) { alert(problemReportErrorMessage(error)); }
   };
@@ -235,6 +265,18 @@
     // The admin shell may be replaced by another deferred module during startup.
     // Retry briefly instead of leaving this navigation entry silently absent.
     window.setTimeout(function () { installWhenAdminShellReady(attempt + 1); }, 50);
+  }
+  var originalSetLanguage = window.setLanguage;
+  if (typeof originalSetLanguage === 'function' && !window._problemReportsOrigSetLanguage) {
+    window._problemReportsOrigSetLanguage = originalSetLanguage;
+    window.setLanguage = function () {
+      var result = originalSetLanguage.apply(this, arguments);
+      applyProblemReportsChrome();
+      var panel = document.getElementById('tab-problemreports');
+      var signedIn = typeof window.token === 'function' && !!window.token();
+      if (panel && panel.classList.contains('active') && signedIn) window.loadProblemReports();
+      return result;
+    };
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () { installWhenAdminShellReady(0); }, { once: true });

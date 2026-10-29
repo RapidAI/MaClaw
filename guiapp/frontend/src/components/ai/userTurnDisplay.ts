@@ -82,16 +82,23 @@ function lineAsSelectedPath(line: string): string {
     return looksLikePath ? candidate : "";
 }
 
+/** True when the transcript should draw this path as an image preview. */
+export function isImageAttachmentPath(filePath: string): boolean {
+    const trimmed = filePath.trim();
+    if (!trimmed) return false;
+    const fileName = baseNameOf(trimmed);
+    // A binary document renamed like a picture must not render as one; the
+    // shared classifier keeps PDF/Office out of image previews.
+    return IMAGE_FILE_EXTENSIONS.has(extnameOf(trimmed)) && !isBinaryDocumentAttachment(fileName, "");
+}
+
 function attachmentFromFilePath(filePath: string): UserTurnDisplayAttachment {
     const trimmed = filePath.trim();
-    const fileName = baseNameOf(trimmed);
     return {
         filePath: trimmed,
-        fileName,
+        fileName: baseNameOf(trimmed),
         extension: extnameOf(trimmed),
-        // A binary document renamed like a picture must not render as one; the
-        // shared classifier keeps PDF/Office out of image previews.
-        isImage: IMAGE_FILE_EXTENSIONS.has(extnameOf(trimmed)) && !isBinaryDocumentAttachment(fileName, ""),
+        isImage: isImageAttachmentPath(trimmed),
     };
 }
 

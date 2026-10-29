@@ -39,6 +39,28 @@ func fileCompanionIsPaperPurpose(purpose string) bool {
 	return strings.EqualFold(strings.TrimSpace(purpose), fileCompanionPurposePaper)
 }
 
+// fileCompanionPaperAlias accepts the English and Khalkha commands. A typed
+// Chinese 论文解读 stays an ordinary question unless the button sets purpose.
+func fileCompanionPaperAlias(text string) bool {
+	switch fileCompanionCommandKey(text) {
+	case "read the paper", "paper briefing",
+		"өгүүллийн тайлбар", "өгүүллийг тайлбарлах":
+		return true
+	default:
+		return false
+	}
+}
+
+// fileCompanionWithCommandAlias promotes an English or Khalkha paper command
+// when the client sent no purpose. A typed Chinese label is left alone.
+func fileCompanionWithCommandAlias(req FileCompanionTurnRequest) FileCompanionTurnRequest {
+	if strings.TrimSpace(req.Purpose) != "" || !fileCompanionPaperAlias(req.Text) {
+		return req
+	}
+	req.Purpose = fileCompanionPurposePaper
+	return req
+}
+
 // fileCompanionOutgoing builds the model prompt for one companion turn.
 // A paper turn never forwards the chat draft or the selection.
 func fileCompanionOutgoing(canonical string, req FileCompanionTurnRequest) (prompt, turn, selection string, prefer int) {

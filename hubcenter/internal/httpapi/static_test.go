@@ -75,6 +75,37 @@ func TestRegisterSharedStaticAssetsServesProUI(t *testing.T) {
 	assertStaticAssetHeaders(t, rec)
 }
 
+func TestRegisterSharedStaticAssetsServesLangJS(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "i18n"), 0o755); err != nil {
+		t.Fatalf("mkdir i18n: %v", err)
+	}
+	body := []byte("function normalizeHubLang(){return \"mn\"}")
+	if err := os.WriteFile(filepath.Join(root, "i18n", "lang.js"), body, 0o644); err != nil {
+		t.Fatalf("write lang.js: %v", err)
+	}
+	mux := http.NewServeMux()
+	registerSharedStaticAssets(mux, root)
+	req := httptest.NewRequest(http.MethodGet, "/i18n/lang.js", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != string(body) {
+		t.Fatalf("unexpected lang.js body %q", rec.Body.String())
+	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/javascript") {
+		t.Fatalf("content-type = %q, want text/javascript", contentType)
+	}
+	if cacheControl := rec.Header().Get("Cache-Control"); cacheControl != staticHTMLCacheControl {
+		t.Fatalf("cache-control = %q, want %q", cacheControl, staticHTMLCacheControl)
+	}
+	if nosniff := rec.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Fatalf("x-content-type-options = %q, want nosniff", nosniff)
+	}
+}
+
 func TestAdminStaticRoutesServeSplitAssets(t *testing.T) {
 	root := t.TempDir()
 	assetsDir := filepath.Join(root, "assets")

@@ -27,7 +27,7 @@
         saved: '\u7ba1\u7406\u5458\u90ae\u7bb1\u5df2\u66f4\u65b0\u3002',
         failed: '\u66f4\u65b0\u7ba1\u7406\u5458\u90ae\u7bb1\u5931\u8d25\uff1a{error}',
         required: '\u8bf7\u8f93\u5165\u7ba1\u7406\u5458\u90ae\u7bb1\u3002'
-      });
+      });PROFILE_TEXT.mn={"title":"Администраторын профайл","desc":"Hub бүртгэлийн баталгаа ба платформын мэдэгдэлд ашиглах администраторын имэйлийг шинэчилнэ.","email":"Администраторын имэйл","username":"Администраторын нэр","usernameValue":"Одоогийн нэр","action":"Имэйл хадгалах","saved":"Администраторын имэйл шинэчлэгдлээ.","failed":"Администраторын имэйл шинэчлэх амжилтгүй: {error}","required":"Администраторын имэйл оруулна уу."};
       Object.assign(SERVER_TEXT.zh, {
         title: '\u5bf9\u5916\u57df\u540d',
         desc: '\u8bbe\u7f6e\u8282\u70b9\u4e2d\u5fc3\u5bf9\u5916\u8bbf\u95ee\u5730\u5740\uff0c\u7528\u4e8e\u751f\u6210\u8282\u70b9\u6ce8\u518c\u786e\u8ba4\u94fe\u63a5\u3002',
@@ -37,7 +37,7 @@
         failed: '\u4fdd\u5b58\u8282\u70b9\u4e2d\u5fc3\u5bf9\u5916\u5730\u5740\u5931\u8d25\uff1a{error}',
         loadFailed: '\u52a0\u8f7d\u8282\u70b9\u4e2d\u5fc3\u5bf9\u5916\u5730\u5740\u5931\u8d25\uff1a{error}',
         publicUrlRequired: '\u8bf7\u8f93\u5165\u5bf9\u5916\u5730\u5740\u3002'
-      });
+      });SERVER_TEXT.mn={"title":"Нийтийн домэйн","desc":"Hub бүртгэлийн баталгааны холбоос үүсгэхэд ашиглах Hub Center-ийн гадаад URL-ыг тохируулна.","publicBaseURL":"Hub Center-ийн нийтийн URL","save":"Нийтийн URL хадгалах","saved":"Hub Center-ийн нийтийн URL хадгалагдлаа.","failed":"Hub Center-ийн нийтийн URL хадгалах амжилтгүй: {error}","loadFailed":"Hub Center-ийн нийтийн URL ачаалах амжилтгүй: {error}","publicUrlRequired":"Нийтийн URL оруулна уу."};
       Object.assign(MAIL_TEXT.zh, {
         title: '\u90ae\u4ef6\u53d1\u9001',
         desc: '\u914d\u7f6e\u7528\u4e8e\u8282\u70b9\u6ce8\u518c\u786e\u8ba4\u7684 SMTP \u90ae\u4ef6\u53d1\u9001\uff0c\u5e76\u652f\u6301 QQ\u3001163\u3001126\u3001Gmail \u548c Outlook \u7b49\u5e38\u89c1\u670d\u52a1\u5546\u6d4b\u8bd5\u3002',
@@ -69,7 +69,7 @@
         sendFailed: '\u6d4b\u8bd5\u90ae\u4ef6\u53d1\u9001\u5931\u8d25\uff1a{error}',
         required: '\u8bf7\u5148\u586b\u5199 SMTP \u4e3b\u673a\u3001\u8d26\u53f7\u3001\u5bc6\u7801\u4ee5\u53ca\u53d1\u4ef6\u90ae\u7bb1\u3002',
         recipientRequired: '\u8bf7\u8f93\u5165\u6d4b\u8bd5\u6536\u4ef6\u4eba\u90ae\u7bb1\u3002'
-      });
+      });MAIL_TEXT.mn={"title":"Имэйл хүргэлт","desc":"Hub бүртгэлийн баталгаанд SMTP хүргэлт тохируулж, QQ, 163, 126, Gmail, Outlook зэргийг шалгана.","provider":"Үйлчилгээ үзүүлэгчийн загвар","presetCustom":"Өөрийн SMTP","presetQQ":"QQ имэйл","preset163":"163 имэйл","preset126":"126 имэйл","presetGmail":"Gmail","presetOutlook":"Outlook / Office 365","host":"SMTP хост","port":"SMTP порт","encryption":"Шифрлэлт","encryptionAuto":"Автомат","encryptionSSL":"SSL / TLS","encryptionStartTLS":"STARTTLS","encryptionPlain":"Энгийн","username":"SMTP хэрэглэгчийн нэр","password":"SMTP нууц үг / аппын нууц үг","fromName":"Илгээгчийн нэр","fromEmail":"Илгээгчийн имэйл","testRecipient":"Туршилтын хүлээн авагч","save":"Имэйлийн тохиргоо хадгалах","test":"Туршилтын имэйл илгээх","saved":"Имэйлийн тохиргоо хадгалагдлаа.","saveFailed":"Имэйлийн тохиргоо хадгалах амжилтгүй: {error}","loadFailed":"Имэйлийн тохиргоо ачаалах амжилтгүй: {error}","sent":"Туршилтын имэйл илгээгдлээ.","sendFailed":"Туршилтын имэйл амжилтгүй: {error}","required":"Эхлээд SMTP хост, бүртгэл, нууц үг, илгээгчийн имэйлийг бөглөнө үү.","recipientRequired":"Туршилтын хүлээн авагчийн имэйл оруулна уу."};
       Object.assign(SETUP_GATE_TEXT.zh, {
         title: '\u8bbe\u7f6e\u63d0\u9192',
         heading: '\u4ee5\u4e0b\u8bbe\u7f6e\u9879\u5c1a\u672a\u5b8c\u6210',
@@ -81,7 +81,7 @@
         publicBaseURL: '\u8bbe\u7f6e\u7528\u4e8e\u786e\u8ba4\u90ae\u4ef6\u7684\u8282\u70b9\u4e2d\u5fc3\u5bf9\u5916\u5730\u5740\u3002',
         mailConfig: '\u5b8c\u6210 SMTP \u90ae\u4ef6\u914d\u7f6e\u3002',
         mailTest: '\u53d1\u9001\u4e00\u6b21\u6d4b\u8bd5\u90ae\u4ef6\uff0c\u786e\u8ba4\u90ae\u4ef6\u80fd\u6b63\u5e38\u53d1\u9001\u3002'
-      });
+      });SETUP_GATE_TEXT.mn={"title":"Тохиргооны сануулга","heading":"Зарим тохиргоо анхаарал шаардсаар байна","desc":"Дараах зүйлс тохируулагдаагүй. Энэ сануулгыг хаагаад дараа нь тохируулж болно.","openSystem":"Системийн тохиргоо нээх","refresh":"Дахин шалгах","dismiss":"Хаах","adminEmail":"Hub бүртгэлийн баталгаа ба платформын мэдэгдэлд администраторын имэйл тохируулна уу.","publicBaseURL":"Баталгааны имэйлд ашиглах Hub Center-ийн нийтийн URL-ыг тохируулна уу.","mailConfig":"SMTP имэйлийн тохиргоог дуусгана уу.","mailTest":"Имэйл хүргэлтийг шалгах туршилтын имэйл амжилттай илгээнэ үү."};
       const profileText = key => (PROFILE_TEXT[currentLang] || PROFILE_TEXT.en)[key] || PROFILE_TEXT.en[key] || key;
       const serverText = key => (SERVER_TEXT[currentLang] || SERVER_TEXT.en)[key] || SERVER_TEXT.en[key] || key;
       const mailText = key => (MAIL_TEXT[currentLang] || MAIL_TEXT.en)[key] || MAIL_TEXT.en[key] || key;

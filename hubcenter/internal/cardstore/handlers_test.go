@@ -549,16 +549,36 @@ func TestAlipayReturnStoreURLsPreserveOrderTenantContext(t *testing.T) {
 }
 func TestWriteAlipayReturnPageAutoRedirectsOnlyOnSuccess(t *testing.T) {
 	rr := httptest.NewRecorder()
-	writeAlipayReturnPage(rr, true, "HC-RETURN", "ok", "/compute-store?email=owner%40example.com&hub_id=hub-1&tenant_id=tenant-a", "/compute-store?email=owner%40example.com&hub_id=hub-1&tenant_id=tenant-a#ordersPanel")
+	writeAlipayReturnPage(rr, nil, true, "HC-RETURN", "ok", "/compute-store?email=owner%40example.com&hub_id=hub-1&tenant_id=tenant-a", "/compute-store?email=owner%40example.com&hub_id=hub-1&tenant_id=tenant-a#ordersPanel")
 	body := rr.Body.String()
 	if !strings.Contains(body, `http-equiv="refresh"`) || !strings.Contains(body, `tenant_id=tenant-a#ordersPanel`) {
 		t.Fatalf("success return page missing redirect: %s", body)
 	}
 
 	rr = httptest.NewRecorder()
-	writeAlipayReturnPage(rr, false, "", "failed", "/compute-store", "/compute-store#ordersPanel")
+	writeAlipayReturnPage(rr, nil, false, "", "failed", "/compute-store", "/compute-store#ordersPanel")
 	if strings.Contains(rr.Body.String(), `http-equiv="refresh"`) {
 		t.Fatalf("failure return page should not auto redirect: %s", rr.Body.String())
+	}
+
+	mnReq := httptest.NewRequest(http.MethodGet, "/api/cardstore/payment/return", nil)
+	mnReq.Header.Set("Accept-Language", "mn-MN,zh-CN;q=0.8")
+	rr = httptest.NewRecorder()
+	writeAlipayReturnPage(rr, mnReq, false, "", "failed", "/compute-store", "/compute-store#ordersPanel")
+	mnBody := rr.Body.String()
+	visible := mnBody
+	if i := strings.Index(mnBody, "<script>"); i >= 0 {
+		visible = mnBody[:i]
+	}
+	if !strings.Contains(mnBody, `lang="mn"`) || !strings.Contains(visible, "Тооцооллын дэлгүүр лүү буцах") || !strings.Contains(visible, "Төлбөрийн буцаалт амжилтгүй") || strings.Contains(visible, "返回算力商店") || strings.Contains(visible, "Payment return failed") {
+		t.Fatalf("mn return page = %s", mnBody)
+	}
+	tradReq := httptest.NewRequest(http.MethodGet, "/api/cardstore/payment/return", nil)
+	tradReq.Header.Set("Accept-Language", "mn-Mong")
+	rr = httptest.NewRecorder()
+	writeAlipayReturnPage(rr, tradReq, false, "", "failed", "/compute-store", "/compute-store#ordersPanel")
+	if !strings.Contains(rr.Body.String(), `lang="en"`) || !strings.Contains(rr.Body.String(), "Back to the compute store") {
+		t.Fatalf("mn-Mong return page = %s", rr.Body.String())
 	}
 }
 func TestAlipayNotifyHandlerConfirmsAndActivatesOrder(t *testing.T) {
@@ -648,6 +668,7 @@ func signAlipayTestValues(t *testing.T, values url.Values, key *rsa.PrivateKey) 
 	}
 	return base64.StdEncoding.EncodeToString(sig)
 }
+
 // Note: order listing now requires at least one scoping filter (hub_id /
 // tenant_id / email / service_group_id). Without it an unauthenticated caller
 // could page through every tenant's orders, so these tests supply a hub_id

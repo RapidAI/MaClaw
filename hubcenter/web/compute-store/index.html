@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -659,8 +659,8 @@
     function tr(key) {
       var table = TEXT[state.lang] || {};
       if (table[key]) return table[key];
-      if (state.lang === 'mn') return (TEXT.en && TEXT.en[key]) || key;
-      return (TEXT[state.lang] && TEXT[state.lang][key]) || (TEXT.zh && TEXT.zh[key]) || key;
+      if (state.lang === 'zh') return key;
+      return (TEXT.en && TEXT.en[key]) || key;
     }
     function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
     function money(v) { return '¥' + Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }); }

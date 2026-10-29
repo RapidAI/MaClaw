@@ -1,6 +1,6 @@
 import { useState, type MouseEvent } from "react";
 import { ExportTaskResultFile, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
-import { tailText } from "../../i18n/mnTail";
+import { companionSay } from "../../i18n/mnCompanion";
 
 /** Companion paper PDF. Open and save only; preview stays hidden. */
 export function PaperResultCard({ filePath, messageId, lang = "en" }: { filePath: string; messageId: string; lang?: string }) {
@@ -24,22 +24,22 @@ export function PaperResultCard({ filePath, messageId, lang = "en" }: { filePath
         });
     };
     const saveLabel = saveState === "busy"
-        ? tailText(lang, "Saving...", "保存中...")
+        ? companionSay(lang, "保存中...")
         : saveState === "done"
-            ? tailText(lang, "Saved", "已保存")
+            ? companionSay(lang, "已保存")
             : saveState === "error"
-                ? tailText(lang, "Save failed", "保存失败")
-                : tailText(lang, "Save", "保存");
+                ? companionSay(lang, "保存失败")
+                : companionSay(lang, "保存");
     return (
         <div className="mc-task-artifacts" data-testid={`task-result-card-${messageId}`}>
-            <div className="mc-task-artifacts__label">{tailText(lang, "Artifacts", "产出物")}</div>
+            <div className="mc-task-artifacts__label">{companionSay(lang, "产出物")}</div>
             <div className="mc-task-artifacts__row">
                 <a className="mc-task-artifact" href="#" title={filePath} onClick={open}>
                     <span className="mc-task-artifact__name">{name}</span>
                 </a>
             </div>
             <div className="mc-task-result-card__actions">
-                <button type="button" data-testid="task-result-view-btn" onClick={open}>{tailText(lang, "View document", "查看文档")}</button>
+                <button type="button" data-testid="task-result-view-btn" onClick={open}>{companionSay(lang, "查看文档")}</button>
                 <button type="button" data-testid="file-companion-paper-save" aria-busy={saveState === "busy"} disabled={saveState === "busy"} onClick={save}>{saveLabel}</button>
             </div>
         </div>

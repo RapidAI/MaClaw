@@ -4,6 +4,7 @@
 // or clear a highlight the reader right-clicked on.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { companionFill, companionSay, getCompanionUiLang } from "../../i18n/mnCompanion";
 import { CHAT_MARK_COLORS, type ChatMarkColor } from "./chatMarks";
 
 export type ChatMenuState = { x: number; y: number };
@@ -54,6 +55,7 @@ export function CompanionChatMarkMenu({
     onPaint,
     onClear,
     onClose,
+    lang,
 }: {
     state: ChatMenuState;
     quote: string;
@@ -64,7 +66,10 @@ export function CompanionChatMarkMenu({
     onPaint: (color: ChatMarkColor) => void;
     onClear: () => void;
     onClose: () => void;
+    lang?: string;
 }) {
+    const shownLang = lang || getCompanionUiLang();
+    const say = (zh: string) => companionSay(shownLang, zh);
     const rootRef = useRef<HTMLDivElement>(null);
     const [place, setPlace] = useState({ left: state.x, top: state.y });
 
@@ -184,7 +189,7 @@ export function CompanionChatMarkMenu({
             className="companion-pdf-menu"
             data-testid="chat-highlight-menu"
             role="menu"
-            aria-label="选中文本操作"
+            aria-label={say("选中文本操作")}
             style={{ left: place.left, top: place.top }}
             onMouseDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => {
@@ -206,28 +211,32 @@ export function CompanionChatMarkMenu({
                         {...activate(onCopy)}
                     >
                         <ChatMenuGlyph kind="copy" />
-                        <span className="companion-pdf-menu-item-label">复制</span>
+                        <span className="companion-pdf-menu-item-label">{say("复制")}</span>
                     </button>
                 </div>
             ) : null}
             {canPaint ? (
                 <div className="companion-pdf-menu-group">
-                    <p className="companion-pdf-menu-title"><ChatMenuGlyph kind="highlight" />高亮</p>
-                    <div className="companion-pdf-menu-colors" role="group" aria-label="高亮颜色">
-                        {CHAT_MARK_COLORS.map((color) => (
+                    <p className="companion-pdf-menu-title"><ChatMenuGlyph kind="highlight" />{say("高亮")}</p>
+                    <div className="companion-pdf-menu-colors" role="group" aria-label={say("高亮颜色")}>
+                        {CHAT_MARK_COLORS.map((color) => {
+                            const colorName = say(color.label);
+                            const colorTitle = companionFill(shownLang, "${color}高亮", { color: colorName });
+                            return (
                             <button
                                 key={color.id}
                                 type="button"
                                 role="menuitem"
                                 data-testid={`chat-highlight-${color.id}`}
                                 className="companion-pdf-menu-color"
-                                aria-label={`${color.label}高亮`}
-                                title={`${color.label}高亮`}
+                                aria-label={colorTitle}
+                                title={colorTitle}
                                 {...activate(() => onPaint(color.id))}
                             >
                                 <span style={{ background: color.fill }} />
                             </button>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             ) : null}
@@ -241,7 +250,7 @@ export function CompanionChatMarkMenu({
                         {...activate(onClear)}
                     >
                         <ChatMenuGlyph kind="erase" />
-                        <span className="companion-pdf-menu-item-label">取消高亮</span>
+                        <span className="companion-pdf-menu-item-label">{say("取消高亮")}</span>
                     </button>
                 </div>
             ) : null}

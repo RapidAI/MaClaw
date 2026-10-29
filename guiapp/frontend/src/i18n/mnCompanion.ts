@@ -278,6 +278,7 @@ const ROWS: readonly Row[] = [
     ["这份文档由对方分享，对方是主持人", "Someone else shared this document and is the host", "Энэ баримтыг өөр хүн хуваалцсан бөгөөд тэр хөтлөгч"],
     ["这个视频还没有笔记。点「生成笔记」，或发送「生成笔记」。", "This video has no notes yet. Choose Generate notes, or send Generate notes.", "Энэ видеонд тэмдэглэл алга. «Тэмдэглэл үүсгэх»-ийг дарах, эсвэл «Тэмдэглэл үүсгэх» гэж илгээнэ үү."],
     ["这个文件没有打开", "This file is not open", "Энэ файл нээгдээгүй"],
+    ["这个文件不是论文，不能做论文解读", "This file is not a paper, so it cannot be briefed", "Энэ файл өгүүлэл биш тул тайлбар хийх боломжгүй"],
     ["这个项目", "This project", "Энэ төсөл"],
     ["这个页面没有打开", "This page is not open", "Энэ хуудас нээгдээгүй"],
     ["这个音频还没有笔记。点「生成笔记」，或发送「生成笔记」。", "This audio has no notes yet. Choose Generate notes, or send Generate notes.", "Энэ аудиод тэмдэглэл алга. «Тэмдэглэл үүсгэх»-ийг дарах, эсвэл «Тэмдэглэл үүсгэх» гэж илгээнэ үү."],
@@ -447,6 +448,18 @@ const ROWS: readonly Row[] = [
     ["如 2510.16079、arxiv.org/abs/…、视频页面，或伴读分享链接", "For example 2510.16079, arxiv.org/abs/…, a video page, or a companion share link", "Жишээ нь 2510.16079, arxiv.org/abs/…, видео хуудас, эсвэл дагалдан унших холбоос"],
     [" · 待审核 ${count}", " · ${count} waiting for review", " · ${count} шалгалт хүлээж байна"],
     ["${count} 人", "${count} people", "${count} хүн"],
+    ["回复 ${name}：${question}", "Reply to ${name}: ${question}", "${name}-д хариу: ${question}"],
+    ["黄色", "Yellow", "Шар"],
+    ["绿色", "Green", "Ногоон"],
+    ["蓝色", "Blue", "Цэнхэр"],
+    ["粉色", "Pink", "Ягаан"],
+    ["高亮", "Highlight", "Тодруулах"],
+    ["取消高亮", "Clear highlight", "Тодруулгыг арилгах"],
+    ["选中文本操作", "Selection actions", "Сонгосон текстийн үйлдэл"],
+    ["高亮颜色", "Highlight color", "Тодруулгын өнгө"],
+    ["${color}高亮", "${color} highlight", "${color} тодруулга"],
+    ["正在下载…", "Downloading…", "Татаж байна…"],
+    ["还没有管理的群组，先在「阅读群组」里创建一个。", "You do not manage a group yet. Create one under Reading groups.", "Таны удирдах бүлэг алга. «Унших бүлэг» дотор нэгийг үүсгэнэ үү."],
 ];
 
 const byZh = new Map<string, { en: string; mn: string }>();

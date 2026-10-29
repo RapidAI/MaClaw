@@ -1,7 +1,7 @@
 import { useState, type MouseEvent } from "react";
 import { ExportTaskResultFile, FileCompanionImportKnowledge, FileCompanionUploadCloud, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
 import { useToast } from "../Toast";
-import { tailText } from "../../i18n/mnTail";
+import { companionSay } from "../../i18n/mnCompanion";
 
 function noteMarkdownPath(pdfPath: string): string {
     return pdfPath.toLowerCase().endsWith(".pdf") ? `${pdfPath.slice(0, -4)}.md` : pdfPath;
@@ -38,9 +38,9 @@ export function NoteResultCard({ filePath, messageId, lang = "en" }: { filePath:
         if (importBusy || typeof FileCompanionImportKnowledge !== "function") return;
         setImportBusy(true);
         void FileCompanionImportKnowledge(markdown).then(() => {
-            showToast(tailText(lang, "Saved to the desktop knowledge base", "已进入桌面知识库"), "success", 6000);
+            showToast(companionSay(lang, "已进入桌面知识库"), "success", 6000);
         }).catch((err: unknown) => {
-            showToast(err instanceof Error ? err.message : tailText(lang, "Import failed", "导入失败"), "error", 6000);
+            showToast(err instanceof Error ? err.message : companionSay(lang, "导入失败"), "error", 6000);
         }).finally(() => setImportBusy(false));
     };
     const uploadNote = (event: MouseEvent) => {
@@ -49,31 +49,31 @@ export function NoteResultCard({ filePath, messageId, lang = "en" }: { filePath:
         if (uploadBusy || typeof FileCompanionUploadCloud !== "function") return;
         setUploadBusy(true);
         void FileCompanionUploadCloud(filePath).then(() => {
-            showToast(tailText(lang, "Uploaded to the cloud drive. Open it from Documents on the phone.", "已上传到云盘，手机端「文档」可打开"), "success", 6000);
+            showToast(companionSay(lang, "已上传到云盘，手机端「文档」可打开"), "success", 6000);
         }).catch((err: unknown) => {
-            showToast(err instanceof Error ? err.message : tailText(lang, "Upload failed", "上传失败"), "error", 6000);
+            showToast(err instanceof Error ? err.message : companionSay(lang, "上传失败"), "error", 6000);
         }).finally(() => setUploadBusy(false));
     };
     const saveLabel = saveState === "busy"
-        ? tailText(lang, "Saving...", "保存中...")
+        ? companionSay(lang, "保存中...")
         : saveState === "done"
-            ? tailText(lang, "Saved", "已保存")
+            ? companionSay(lang, "已保存")
             : saveState === "error"
-                ? tailText(lang, "Save failed", "保存失败")
-                : tailText(lang, "Save", "保存");
+                ? companionSay(lang, "保存失败")
+                : companionSay(lang, "保存");
     return (
         <div className="mc-task-artifacts" data-testid={`task-result-card-${messageId}`}>
-            <div className="mc-task-artifacts__label">{tailText(lang, "Artifacts", "产出物")}</div>
+            <div className="mc-task-artifacts__label">{companionSay(lang, "产出物")}</div>
             <div className="mc-task-artifacts__row">
                 <a className="mc-task-artifact" href="#" title={filePath} onClick={open}>
                     <span className="mc-task-artifact__name">{name}</span>
                 </a>
             </div>
             <div className="mc-task-result-card__actions">
-                <button type="button" data-testid="task-result-view-btn" onClick={open}>{tailText(lang, "View document", "查看文档")}</button>
+                <button type="button" data-testid="task-result-view-btn" onClick={open}>{companionSay(lang, "查看文档")}</button>
                 <button type="button" data-testid="file-companion-paper-save" aria-busy={saveState === "busy"} disabled={saveState === "busy"} onClick={save}>{saveLabel}</button>
-                <button type="button" data-testid="file-companion-note-import" aria-busy={importBusy} disabled={importBusy} onClick={importNote}>{importBusy ? tailText(lang, "Importing…", "正在导入…") : tailText(lang, "Import into knowledge", "导入知识库")}</button>
-                <button type="button" data-testid="file-companion-note-upload" aria-busy={uploadBusy} disabled={uploadBusy} onClick={uploadNote}>{uploadBusy ? tailText(lang, "Uploading…", "正在上传…") : tailText(lang, "Upload to cloud", "上传到云盘")}</button>
+                <button type="button" data-testid="file-companion-note-import" aria-busy={importBusy} disabled={importBusy} onClick={importNote}>{importBusy ? companionSay(lang, "正在导入…") : companionSay(lang, "导入知识库")}</button>
+                <button type="button" data-testid="file-companion-note-upload" aria-busy={uploadBusy} disabled={uploadBusy} onClick={uploadNote}>{uploadBusy ? companionSay(lang, "正在上传…") : companionSay(lang, "上传到云盘")}</button>
             </div>
         </div>
     );

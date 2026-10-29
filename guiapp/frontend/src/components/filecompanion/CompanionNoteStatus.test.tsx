@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setCompanionUiLang } from "../../i18n/mnCompanion";
 import { CompanionStatus } from "./CompanionNoteStatus";
 import { companionNoteStatus, noteStatusPercent } from "./noteStatusModel";
 
 afterEach(() => {
     vi.useRealTimers();
+    setCompanionUiLang("zh-Hans");
 });
 
 describe("CompanionStatus", () => {
@@ -29,5 +31,16 @@ describe("CompanionStatus", () => {
         expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe(
             String(noteStatusPercent(companionNoteStatus("正在整理笔记", "web")!, 0)),
         );
+    });
+
+    it("shows Khalkha chrome while the stage still follows the Chinese status", () => {
+        render(<CompanionStatus text="正在记录声音" kind="web" lang="mn" />);
+        const bar = screen.getByRole("progressbar");
+        expect(bar.getAttribute("aria-valuenow")).toBe("35");
+        expect(bar.getAttribute("aria-valuetext")).toBe("Дуу бичиж байна");
+        expect(screen.getByText("Тэмдэглэл")).toBeTruthy();
+        expect(screen.getByText("Дуу")).toBeTruthy();
+        expect(screen.queryByText("声音")).toBeNull();
+        expect(screen.queryByText("笔记")).toBeNull();
     });
 });
