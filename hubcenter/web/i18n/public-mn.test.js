@@ -40,6 +40,11 @@ pages.forEach(function (rel) {
   assert(cyrillic.test(src), rel + ' contains Khalkha Cyrillic UI copy');
   assert(!collapse.test(src), rel + ' does not collapse non-zh to en');
   assert(setsMn.test(src), rel + ' sets htmlLang(\'mn\') or lang = \'mn\'');
+  if (rel === 'skillhub/index.html') {
+    assert(src.indexOf("n >= 1000) return (n / 1000)") !== -1 && src.indexOf("мянга") !== -1, rel + ' counts мянга by thousands');
+    assert(src.indexOf("сая") !== -1, rel + ' counts сая by millions');
+    assert(!/\/\s*10000\)[\s\S]{0,80}мянга/.test(src), rel + ' does not label a 10000-scale figure as мянга');
+  }
   var langTag = '<script src="/i18n/lang.js"></script>';
   var langJs = src.indexOf(langTag);
   var inline = src.indexOf('<script>', langJs === -1 ? 0 : langJs + langTag.length);

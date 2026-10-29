@@ -49,4 +49,13 @@ describe("companion Mongolian copy", () => {
         expect(companionPaperAlias("论文解读")).toBe(false);
         expect(companionSay("mn", "这个文件不是论文，不能做论文解读")).toBe("Энэ файл өгүүлэл биш тул тайлбар хийх боломжгүй");
     });
+
+    it("translates host error sentences and keeps the Chinese password sentinel matchable", () => {
+        expect(companionSay("zh-Hans", "需要分享密码")).toBe("需要分享密码");
+        expect(companionSay("mn", "已取消生成笔记")).toBe("Тэмдэглэл үүсгэхийг цуцаллаа");
+        expect(companionSay("mn", "暂时无法连接云端")).toBe("Үүлэнтэй түр холбогдож чадсангүй");
+        expect(companionSay("mn", "分享密码不正确")).toBe("Хуваалцах нууц үг буруу.");
+        expect(companionSay("mn", "云端群组无法读取（HTTP 502）")).toBe("Үүлэн бүлгийг уншиж чадсангүй (HTTP 502)");
+        expect(companionSay("mn", "只有视频或音频可以生成笔记")).not.toMatch(/[\u3400-\u9fff]/);
+    });
 });

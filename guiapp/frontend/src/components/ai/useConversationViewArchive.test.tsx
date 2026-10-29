@@ -341,7 +341,7 @@ describe("useConversationViewArchive", () => {
     });
 
     it("drops a row that moved into the live transcript while the archive was loading", async () => {
-        let resolveDesktop: (value: unknown) => void = () => {};
+        let resolveDesktop: (value: Record<string, any>[] | PromiseLike<Record<string, any>[]>) => void = () => {};
         vi.mocked(ConversationViewArchiveCount).mockResolvedValue(1);
         vi.mocked(LoadAIAssistantUIArchive).mockImplementation(() => new Promise((resolve) => {
             resolveDesktop = resolve;
@@ -378,7 +378,7 @@ describe("useConversationViewArchive", () => {
     });
 
     it("ignores an archive load that finishes after the scope changes", async () => {
-        let resolveDesktop: (value: unknown) => void = () => {};
+        let resolveDesktop: (value: Record<string, any>[] | PromiseLike<Record<string, any>[]>) => void = () => {};
         vi.mocked(ConversationViewArchiveCount).mockResolvedValue(1);
         vi.mocked(LoadAIAssistantUIArchive).mockImplementation(() => new Promise((resolve) => {
             resolveDesktop = resolve;

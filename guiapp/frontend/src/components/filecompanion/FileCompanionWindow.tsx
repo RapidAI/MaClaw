@@ -4760,18 +4760,19 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             clearSharePassword();
             closeOpenMenu(focusInsideOpenMenu());
         } catch (err) {
-            const sentence = bindingErrorText(err) || cs("导入失败");
+            const sentence = bindingErrorText(err);
             if (sentence.includes("需要分享密码")) {
                 setSharePasswordLink(link);
-                setSharePasswordError(password ? sentence : "");
+                setSharePasswordError(password ? cs(sentence) : "");
                 if (!password) setSharePasswordValue("");
                 return;
             }
+            const shown = cs(sentence) || cs("导入失败");
             if (sharePasswordRef.current) {
-                setSharePasswordError(sentence);
+                setSharePasswordError(shown);
                 return;
             }
-            setArxivMessage(sentence);
+            setArxivMessage(shown);
         } finally {
             arxivBusyRef.current = false;
             setArxivBusy(false);
@@ -4823,7 +4824,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 const sessionId = String(opened?.sessionId || "").trim();
                 const failure = String(opened?.error || opened?.Error || "").trim();
                 if (failure || !frame || !sessionId) {
-                    setArxivMessage(failure || cs("打不开这个页面"));
+                    setArxivMessage(cs(failure) || cs("打不开这个页面"));
                     return;
                 }
                 const host = (() => {
@@ -4866,7 +4867,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setArxivInput("");
             closeOpenMenu(focusInsideOpenMenu());
         } catch (err) {
-            setArxivMessage(bindingErrorText(err) || (arxiv ? cs("下载失败") : cs("打开失败")));
+            setArxivMessage(cs(bindingErrorText(err)) || (arxiv ? cs("下载失败") : cs("打开失败")));
         } finally {
             arxivBusyRef.current = false;
             setArxivBusy(false);
@@ -4963,7 +4964,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setArxivSearchFallback(result.fallback);
         } catch (err) {
             if (gen !== arxivSearchGenRef.current) return;
-            setArxivSearchError(bindingErrorText(err) || cs("搜索失败"));
+            setArxivSearchError(cs(bindingErrorText(err)) || cs("搜索失败"));
             if (!turning) {
                 setArxivSearched(false);
                 setArxivSearchHits([]);
@@ -4997,7 +4998,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             dismissArxivSearch();
             closeOpenMenu(restore);
         } catch (err) {
-            setArxivSearchError(bindingErrorText(err) || cs("下载失败"));
+            setArxivSearchError(cs(bindingErrorText(err)) || cs("下载失败"));
         } finally {
             arxivBusyRef.current = false;
             setArxivBusy(false);

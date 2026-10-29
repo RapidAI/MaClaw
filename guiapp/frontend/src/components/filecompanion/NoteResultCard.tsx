@@ -40,7 +40,8 @@ export function NoteResultCard({ filePath, messageId, lang = "en" }: { filePath:
         void FileCompanionImportKnowledge(markdown).then(() => {
             showToast(companionSay(lang, "已进入桌面知识库"), "success", 6000);
         }).catch((err: unknown) => {
-            showToast(err instanceof Error ? err.message : companionSay(lang, "导入失败"), "error", 6000);
+            const raw = err instanceof Error ? err.message.trim() : typeof err === "string" ? err.trim() : "";
+            showToast(raw ? companionSay(lang, raw) : companionSay(lang, "导入失败"), "error", 6000);
         }).finally(() => setImportBusy(false));
     };
     const uploadNote = (event: MouseEvent) => {
@@ -51,7 +52,8 @@ export function NoteResultCard({ filePath, messageId, lang = "en" }: { filePath:
         void FileCompanionUploadCloud(filePath).then(() => {
             showToast(companionSay(lang, "已上传到云盘，手机端「文档」可打开"), "success", 6000);
         }).catch((err: unknown) => {
-            showToast(err instanceof Error ? err.message : companionSay(lang, "上传失败"), "error", 6000);
+            const raw = err instanceof Error ? err.message.trim() : typeof err === "string" ? err.trim() : "";
+            showToast(raw ? companionSay(lang, raw) : companionSay(lang, "上传失败"), "error", 6000);
         }).finally(() => setUploadBusy(false));
     };
     const saveLabel = saveState === "busy"

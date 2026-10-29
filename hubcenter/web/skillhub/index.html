@@ -137,9 +137,14 @@
 
     function formatCompactNumber(value) {
       var n = Number(value || 0);
+      // мянга is 1,000 and сая is 1,000,000. The 10,000 divisor belongs to 万 / w.
+      if (LANG === 'mn') {
+        if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + ' сая';
+        if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + ' мянга';
+        return String(n);
+      }
       if (n >= 10000) {
-        var unit = LANG === 'zh' ? '万' : (LANG === 'mn' ? ' мянга' : 'w');
-        return (n / 10000).toFixed(1).replace(/\.0$/, '') + unit;
+        return (n / 10000).toFixed(1).replace(/\.0$/, '') + (LANG === 'zh' ? '万' : 'w');
       }
       if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
       return String(n);
