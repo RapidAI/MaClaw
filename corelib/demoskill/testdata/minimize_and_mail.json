@@ -1,0 +1,14 @@
+{"id":"demo_fixture_1","title":"整理桌面并把日报发到邮箱草稿","started_at":"2026-10-29T09:00:00+08:00","events":[
+{"at":"2026-10-29T09:00:01+08:00","kind":"narration","text":"我要先把除了当前浏览器以外的窗口都最小化"},
+{"at":"2026-10-29T09:00:02+08:00","kind":"focus","app":"firefox","window":"Mail"},
+{"at":"2026-10-29T09:00:02.050+08:00","kind":"focus","app":"firefox","window":"Mail"},
+{"at":"2026-10-29T09:00:03+08:00","kind":"input","action":"click","x":10,"y":700},
+{"at":"2026-10-29T09:00:03.050+08:00","kind":"input","action":"click","x":10,"y":700},
+{"at":"2026-10-29T09:00:04+08:00","kind":"screenshot","ref":"s1.png","text":"只剩浏览器窗口"},
+{"at":"2026-10-29T09:00:05+08:00","kind":"screenshot","ref":"s2.png"},
+{"at":"2026-10-29T09:00:06+08:00","kind":"narration","text":"然后新建邮件，收件人是老板，标题写今天的日期加日报"},
+{"at":"2026-10-29T09:00:07+08:00","kind":"input","action":"type","text":"boss@example.com"},
+{"at":"2026-10-29T09:00:08+08:00","kind":"input","action":"type","text":"2026-10-29 日报"},
+{"at":"2026-10-29T09:00:09+08:00","kind":"narration","text":"   "},
+{"at":"2026-10-29T09:00:10+08:00","kind":"narration","text":"保存草稿就行，不要发送"}
+]}
