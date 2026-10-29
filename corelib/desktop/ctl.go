@@ -42,10 +42,19 @@ const (
 	CtlBotState      = "bot_state"
 	CtlTakeoverBegin = "takeover_begin"
 	CtlTakeoverEnd   = "takeover_end"
+	// CtlViewHold / CtlViewRelease are sent by the Hub while the owner has
+	// the Bot desktop view open (MACLAW_DEMO_SKILL human-takeover pause).
+	// desktopd answers them itself; bot_state then reports viewer=true.
+	CtlViewHold    = "view_hold"
+	CtlViewRelease = "view_release"
 )
 
+// IsCtlViewOp reports whether op is a Hub-only view hold op. A bot's own
+// desktop tool must not send it.
+func IsCtlViewOp(op string) bool { return op == CtlViewHold || op == CtlViewRelease }
+
 // CtlBotOps are accepted only for a bot desktop (desktop_mode=isolated).
-var CtlBotOps = []string{CtlBotState, CtlTakeoverBegin, CtlTakeoverEnd}
+var CtlBotOps = []string{CtlBotState, CtlTakeoverBegin, CtlTakeoverEnd, CtlViewHold, CtlViewRelease}
 
 // IsCtlBotOp reports whether op is one of CtlBotOps.
 func IsCtlBotOp(op string) bool {

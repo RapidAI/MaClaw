@@ -208,6 +208,9 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		}
 	}
 	novnc := s.desktopViewURL(tenantID, userID)
+	if novnc != "" && botIsolated(rec.Bots[index]) {
+		s.sendDesktopViewHold(ctx, tenantID, userID)
+	}
 	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 }
 
@@ -277,6 +280,9 @@ func (s *Service) ReleaseUserDesktopView(ctx context.Context, tenantID, userID, 
 	}
 	instanceID := rec.Bots[index].InstanceID
 	userID = desktopUserForBot(userID, rec.Bots[index])
+	if botIsolated(rec.Bots[index]) {
+		s.sendDesktopViewRelease(ctx, tenantID, userID)
+	}
 	epoch := desktopWatchEpoch(ctx)
 	s.mu.Lock()
 	s.ensureDesktopHydrated(tenantID)

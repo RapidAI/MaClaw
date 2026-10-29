@@ -174,3 +174,43 @@ func TestProgressReplansNeverAborts(t *testing.T) {
 		t.Fatal("should be complete")
 	}
 }
+
+func TestSpecRoundTripAndReview(t *testing.T) {
+	sk, _ := ParseSkill(goodAnswer)
+	found := FindSpec("tool result:\n" + sk.Guidance(nil) + "\nmore")
+	if found == nil || found.Deliverable != sk.Deliverable || len(found.Steps) != 3 {
+		t.Fatalf("found %+v", found)
+	}
+	p := NewProgress(found)
+	results := map[string]bool{}
+	judge := func(req string) (bool, string, error) {
+		if req == found.Steps[1].Check {
+			if !results["s2"] {
+				return false, "标题还是空的", nil
+			}
+		}
+		if strings.HasPrefix(req, "交付物") {
+			return results["deliver"], "草稿箱为空", nil
+		}
+		if req == found.Steps[2].Check {
+			return false, "", errors.New("judge down")
+		}
+		return true, "", nil
+	}
+	cont, d := p.Review(judge)
+	if !cont || !strings.Contains(d, "第 2 步") || !strings.Contains(d, "标题还是空的") || !p.Done[0] {
+		t.Fatalf("cont=%v d=%s", cont, d)
+	}
+	results["s2"] = true
+	cont, d = p.Review(judge)
+	if !cont || !strings.Contains(d, "交付物尚未达成") {
+		t.Fatalf("cont=%v d=%s", cont, d)
+	}
+	results["deliver"] = true
+	if cont, _ = p.Review(judge); cont || !p.Delivered {
+		t.Fatal("should finish")
+	}
+	if FindSpec("no marker") != nil || FindSpec(SpecMarker+"{bad") != nil {
+		t.Fatal("bad spec")
+	}
+}

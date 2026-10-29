@@ -1228,8 +1228,16 @@ func (s *Service) Ctl(ctx context.Context, tenantID, userID, display string, req
 				return nil, keyErr
 			}
 			request["key"] = key
+			switch strings.TrimSpace(op) {
+			case desktop.CtlViewHold:
+				return viewHolds.hold(key, request["ttl_seconds"]), nil
+			case desktop.CtlViewRelease:
+				return viewHolds.release(key), nil
+			}
 		}
 	}
+	viewKey, _ := request["key"].(string)
+	viewOp, _ := request["op"].(string)
 	tail, err := desktop.CtlArgs(request)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalid, strings.TrimPrefix(err.Error(), desktop.ErrInvalid.Error()+": "))
@@ -1256,6 +1264,9 @@ func (s *Service) Ctl(ctx context.Context, tenantID, userID, display string, req
 	result, err := desktop.DecodeCtl(out)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrDocker, err.Error())
+	}
+	if strings.TrimSpace(viewOp) == desktop.CtlBotState && viewHolds.active(viewKey) {
+		result["viewer"] = true
 	}
 	return result, nil
 }

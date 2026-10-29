@@ -47,6 +47,9 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if decision, handled := c.reviewDemoSkill(ctx, userText, draft, evidence, history, image); handled {
+		return decision
+	}
 	ok, gap, err := agent.JudgeDesktopOutcomeWithReply(ctx, c.llmCfg, c.httpClient, userText, draft, evidence, image)
 	if err != nil {
 		// A failed or unparseable check says nothing about the result:

@@ -232,6 +232,9 @@ func (b desktopPoolMCP) App(ctx context.Context, id desktopmcp.Identity, argv []
 	return b.pool.RunApp(ctx, id.TenantID, id.UserID, ":20", argv)
 }
 func (b desktopPoolMCP) Ctl(ctx context.Context, id desktopmcp.Identity, request map[string]any) (map[string]any, error) {
+	if op, _ := request["op"].(string); desktop.IsCtlViewOp(strings.TrimSpace(op)) {
+		return nil, fmt.Errorf("%s is Hub-only", op)
+	}
 	return b.pool.Ctl(ctx, id.TenantID, id.UserID, ":20", request)
 }
 func (b desktopPoolMCP) Open(ctx context.Context, id desktopmcp.Identity, program string, args []string) (string, error) {

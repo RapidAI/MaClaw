@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
+	"github.com/RapidAI/CodeClaw/corelib/demoskill"
 	"image/jpeg"
 	"image/png"
 	"log"
@@ -600,7 +601,11 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if err := desktopBlockedByPerson(scope); err != nil {
 		return "", err
 	}
-	if err := desktopBotYield(ctx, scope); err != nil {
+	if demoskill.Enabled() && action != "screenshot" {
+		if note, err := desktopWaitForPerson(ctx, scope); err != nil || note != "" {
+			return note, err
+		}
+	} else if err := desktopBotYield(ctx, scope); err != nil {
 		return "", err
 	}
 	if action == "navigate" && desktopArg(args, "url") == "" {

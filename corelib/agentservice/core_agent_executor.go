@@ -26,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/database"
+	"github.com/RapidAI/CodeClaw/corelib/demoskill"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -403,6 +404,9 @@ func (e *CoreAgentExecutor) CancelCodingRuntimeTask(req ExecuteRequest) (bool, e
 }
 
 type coreAgentCallbacks struct {
+	// demoProgress tracks a demo skill loaded in this turn (MACLAW_DEMO_SKILL).
+	demoProgress                  *demoskill.Progress
+	demoContinues                 int
 	ctx                           context.Context
 	appCfg                        corelib.AppConfig
 	llmCfg                        corelib.MaclawLLMConfig

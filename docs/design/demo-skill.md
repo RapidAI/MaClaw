@@ -1,6 +1,6 @@
 # 演示即技能（Demonstrate-and-Narrate to Skill）
 
-状态：阶段 1 已实现（特性开关 `MACLAW_DEMO_SKILL`，默认关闭）。灵感来自豆包 Work 的录制与回放，但不是回放。
+状态：阶段 1、2 已实现（特性开关 `MACLAW_DEMO_SKILL`，默认关闭）。灵感来自豆包 Work 的录制与回放，但不是回放。
 
 ## 0. 第一原则
 
@@ -65,6 +65,22 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 1 | 技能格式、去噪、LLM 提炼（含修复）、指导渲染、步骤跟踪/重新规划、入库到现有技能存储、单测（fixture 时间线） | 完成 |
-| 2 | 人类接管自动暂停/恢复（hub hold → 桌面动作等待）；`Progress` 接入工具循环 + outcome judge | 待做 |
+| 2 | 人类接管自动暂停/恢复（hub hold → desktopd viewer → srv 桌面动作等待）；`Progress` 接入结果判定 | 完成 |
 | 3 | desktopd 录制会话（截图/输入/焦点）+ hub API + 讲解（asr 或打字） | 待做 |
 | 4 | GUI/Web 录制面板与技能编辑页 | 待做 |
+
+## 8. 阶段 2 实现说明
+
+**步骤检查接入结果判定**（`corelib/agentservice/demo_skill_review.go`）
+- 技能指导末尾带一行机器可读的 `[demoskill-spec] {json}`。本轮历史里出现它（技能被加载）时，
+  `ReviewDesktopOutcome` 先按顺序用现有判定（`JudgeDesktopOutcomeWithReply`，同一证据与截图）检查每步的 check，
+  第一处不通过 → `Continue`，消息是 `Progress` 的重新规划指令（不中止）；全部通过后判定交付物 + 证据。
+- 判定调用出错的步骤先跳过，不让判定故障卡住进度。演示技能的修复轮上限 6（通用为 2），用完后回落到通用判定。
+
+**人类接管自动暂停/恢复**
+- hub：`HoldDesktopView`（隔离 bot）向 desktopd 发 `view_hold`（TTL 60s，20s 内不重复发）；`ReleaseUserDesktopView` 发 `view_release`。
+- desktopd：`view_hold/view_release` 由 Go 侧在内存表处理（TTL 上限 10 分钟），`bot_state` 回包附加 `viewer:true`。
+  bot 的 MCP 通道不能发这两个 op。
+- srv：开关打开时，桌面动作（截图除外）前若有人在场（接管、近期人工输入租约、或 viewer），
+  按 2s/4s/8s/15s 递增间隔巡检等待，不结束本轮；用户离开后**不执行旧动作**，返回“先截图观察、按意图重新规划”。
+  等满 15 分钟仍有人，返回“先做不需要桌面的部分，稍后再看，不要结束任务”。开关关闭时保持原有让步行为。

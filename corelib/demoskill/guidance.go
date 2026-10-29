@@ -69,6 +69,11 @@ func (sk *Skill) Guidance(params map[string]string) string {
 		fmt.Fprintf(&b, "完成证据：%s\n", sk.Evidence)
 	}
 	b.WriteString("结束前必须拿到交付物已完成的证据（截图、文件、链接或页面状态），并在回复里给出。\n")
+	if line := sk.SpecLine(); line != "" {
+		b.WriteString("\n")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 
