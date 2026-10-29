@@ -370,6 +370,54 @@ func (t *Transport) canonicalChatBody(req *http.Request, payload []byte) (string
 	return prepareAgentChatBody(payload)
 }
 
+// applyAgentChatContract fills the fields api3's agent_router uses to select
+// a flow. A body that only carries business.type/scene and an empty task_id
+// is accepted by the domestic gateway and rejected by the international one:
+// "[FAIL]node:agent_router msg:None flow nodes found for router agent_router".
+// The international CLI selects the agent_common / common flow instead.
+func applyAgentChatContract(obj map[string]any) {
+	if obj == nil {
+		return
+	}
+	obj["stream"] = true
+	if _, ok := obj["request_id"]; !ok {
+		obj["request_id"] = newUUID()
+	}
+	if _, ok := obj["request_set_id"]; !ok {
+		obj["request_set_id"] = newUUID()
+	}
+	if _, ok := obj["session_id"]; !ok {
+		obj["session_id"] = newUUID()
+	}
+	if _, ok := obj["chat_record_id"]; !ok {
+		obj["chat_record_id"] = obj["request_set_id"]
+	}
+	obj["agent_id"] = "agent_common"
+	obj["task_id"] = "common"
+	obj["session_type"] = "qodercli"
+	obj["chat_task"] = "FREE_INPUT"
+	obj["is_reply"] = true
+	obj["is_retry"] = false
+	obj["source"] = 1
+	obj["version"] = "3"
+	obj["business"] = map[string]any{
+		"product":  "cli",
+		"version":  "1.0.0",
+		"type":     "agent",
+		"scene":    "cli",
+		"stage":    "start",
+		"id":       newUUID(),
+		"begin_at": time.Now().UnixMilli(),
+	}
+	model, _ := obj["model"].(string)
+	if strings.TrimSpace(model) == "" {
+		model = DefaultModel
+		obj["model"] = model
+	}
+	obj["model_config"] = map[string]any{"key": model, "source": "system"}
+	obj["data_policy_agreed"] = true
+}
+
 // prepareAgentChatBody merges the OpenAI chat payload into the /algo wire
 // body and reports whether the caller asked for streaming.
 func prepareAgentChatBody(payload []byte) (string, bool) {
@@ -381,22 +429,7 @@ func prepareAgentChatBody(payload []byte) (string, bool) {
 	if model := canonicalQoderModelKey(agentChatModel(string(payload))); strings.TrimSpace(model) != "" {
 		obj["model"] = model
 	}
-	obj["stream"] = true
-	// Session metadata the agent_chat_generation node expects. Per-request ids
-	// are accepted (the session key is informational for the probe flow).
-	if _, ok := obj["request_id"]; !ok {
-		obj["request_id"] = newUUID()
-	}
-	if _, ok := obj["request_set_id"]; !ok {
-		obj["request_set_id"] = newUUID()
-	}
-	if _, ok := obj["session_id"]; !ok {
-		obj["session_id"] = newUUID()
-	}
-	obj["task_id"] = ""
-	obj["business"] = map[string]any{"type": "agent", "scene": "cli"}
-	obj["model_config"] = map[string]any{"key": obj["model"], "source": "system"}
-	obj["data_policy_agreed"] = true
+	applyAgentChatContract(obj)
 	out, err := marshalAgentChatJSON(obj)
 	if err != nil {
 		return string(payload), originalStream

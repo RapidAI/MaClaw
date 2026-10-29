@@ -68,40 +68,23 @@ type chatChunk struct {
 }
 
 // chatBodyJSON builds the wire body: OpenAI-shaped messages plus the session
-// metadata the agent_chat_generation node expects.
+// metadata the agent_chat_generation router expects.
 func chatBodyJSON(req ChatRequest) (string, error) {
-	sessionID := newUUID()
-	type chatBody struct {
-		Model            string         `json:"model"`
-		Stream           bool           `json:"stream"`
-		Temperature      float64        `json:"temperature,omitempty"`
-		MaxTokens        int            `json:"max_tokens,omitempty"`
-		RequestID        string         `json:"request_id"`
-		RequestSetID     string         `json:"request_set_id"`
-		SessionID        string         `json:"session_id"`
-		TaskID           string         `json:"task_id"`
-		Business         map[string]any `json:"business"`
-		Messages         []ChatMessage  `json:"messages"`
-		ModelConfig      map[string]any `json:"model_config"`
-		DataPolicyAgreed bool           `json:"data_policy_agreed"`
-	}
 	// The model key runs through the same canonicalization as the agent-loop
 	// transport so legacy display names (qwen3.8-max …) cannot leak to the
 	// agent_chat node's model validation.
 	model := canonicalQoderModelKey(req.Model)
-	body := chatBody{
-		Model:            model,
-		Stream:           true,
-		Temperature:      req.Temperature,
-		MaxTokens:        req.MaxTokens,
-		RequestID:        newUUID(),
-		RequestSetID:     newUUID(),
-		SessionID:        sessionID,
-		Business:         map[string]any{"type": "agent", "scene": "cli"},
-		Messages:         req.Messages,
-		ModelConfig:      map[string]any{"key": model, "source": "system"},
-		DataPolicyAgreed: true,
+	body := map[string]any{
+		"model":    model,
+		"messages": req.Messages,
 	}
+	if req.Temperature != 0 {
+		body["temperature"] = req.Temperature
+	}
+	if req.MaxTokens > 0 {
+		body["max_tokens"] = req.MaxTokens
+	}
+	applyAgentChatContract(body)
 	raw, err := marshalAgentChatJSON(body)
 	if err != nil {
 		return "", err

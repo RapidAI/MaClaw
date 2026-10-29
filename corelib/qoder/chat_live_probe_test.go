@@ -2,6 +2,7 @@ package qoder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -114,6 +115,99 @@ func enrichedProbeBody(model string, catalog Model) string {
 		return ""
 	}
 	return string(raw)
+}
+
+func enrichedWithRawConfig(model string, rawEntry []byte) string {
+	sessionID := newUUID()
+	recordID := newUUID()
+	var modelConfig any
+	if jsonUnmarshal(rawEntry, &modelConfig) != nil {
+		modelConfig = map[string]any{"key": model, "source": "system"}
+	}
+	body := map[string]any{
+		"model":              model,
+		"stream":             true,
+		"max_tokens":         16,
+		"request_id":         newUUID(),
+		"request_set_id":     recordID,
+		"chat_record_id":     recordID,
+		"session_id":         sessionID,
+		"chat_task":          "FREE_INPUT",
+		"is_reply":           true,
+		"is_retry":           false,
+		"source":             1,
+		"version":            "3",
+		"session_type":       "qodercli",
+		"agent_id":           "agent_common",
+		"task_id":            "common",
+		"messages":           []ChatMessage{{Role: "user", Content: "reply with ok"}},
+		"model_config":       modelConfig,
+		"data_policy_agreed": true,
+		"business": map[string]any{
+			"product": "cli", "version": "1.0.0", "type": "agent", "scene": "cli",
+			"stage": "start", "id": newUUID(), "begin_at": time.Now().UnixMilli(),
+		},
+	}
+	raw, err := marshalAgentChatJSON(body)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func jsonUnmarshal(raw []byte, dest any) error {
+	return json.Unmarshal(raw, dest)
+}
+
+func rawCatalogEntry(ctx context.Context, profile Profile, uid, token, key string) ([]byte, error) {
+	signed, err := cosy.New(MachineID(), ClientVersion, strings.TrimSpace(uid))
+	if err != nil {
+		return nil, err
+	}
+	defer signed.Close()
+	if err := signed.RefreshAuthFields(strings.TrimSpace(token)); err != nil {
+		return nil, err
+	}
+	prepared, err := signed.PrepareRequest(strings.TrimRight(profile.InferBase, "/"), "/algo/api/v2/model/list", http.MethodGet, "auth", "", "")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, prepared.URL, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, value := range prepared.Headers {
+		req.Header.Set(k, value)
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	resp, err := oauth.DoNoFollow(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	var scenes map[string][]json.RawMessage
+	if err := json.Unmarshal(body, &scenes); err != nil {
+		return nil, err
+	}
+	for _, entries := range scenes {
+		for _, entry := range entries {
+			var probe struct {
+				Key      string `json:"key"`
+				ModelKey string `json:"model_key"`
+			}
+			if json.Unmarshal(entry, &probe) != nil {
+				continue
+			}
+			if probe.Key == key || probe.ModelKey == key {
+				return entry, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("catalog entry %s missing", key)
 }
 
 func postSignedChat(ctx context.Context, profile Profile, uid, token, version, model, bodyJSON string) (int, string, string, error) {
