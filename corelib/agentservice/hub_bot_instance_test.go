@@ -13,3 +13,11 @@ func TestHubBotInstanceFallsBackToInstance(t *testing.T) {
 		t.Fatal("empty callbacks marked as hub bot")
 	}
 }
+
+func TestWakeTurnSkipsDesktopOutcomeCheck(t *testing.T) {
+	c := &coreAgentCallbacks{messageMetadata: map[string]string{"bot_phase": "execute", "bot_wake": "1"}}
+	d := c.ReviewDesktopOutcome("mailbox", "一句话", nil, nil)
+	if d.Continue || d.Replace != "" {
+		t.Fatalf("wake turn was checked: %+v", d)
+	}
+}

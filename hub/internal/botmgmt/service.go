@@ -682,8 +682,17 @@ func (s *Service) client() *http.Client {
 	return &http.Client{Timeout: 15 * time.Second, CheckRedirect: refuseCrossHostRedirect}
 }
 
+// demoSkillCallTimeout bounds one demo-skill distill or redistill call.
+const demoSkillCallTimeout = 5 * time.Minute
+
 func (s *Service) httpClient(path string) *http.Client {
 	base := s.client()
+	if strings.Contains(path, "/skills/demo/") {
+		// Distill captions every screenshot and then writes the skill with
+		// the model: tens of seconds. The 15s client cut it off and the
+		// person saw "bot service is unavailable" (papers 2026-10-30).
+		return &http.Client{Timeout: demoSkillCallTimeout, Transport: base.Transport, CheckRedirect: base.CheckRedirect}
+	}
 	if !strings.Contains(path, "/messages") {
 		return base
 	}

@@ -28,6 +28,13 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 	if c == nil || strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" {
 		return agent.DesktopOutcomeDecision{}
 	}
+	if strings.TrimSpace(c.messageMetadata["bot_wake"]) == "1" {
+		// A mailbox wake answers teammates; it has no desktop result to
+		// prove. Checking it made the bot take ~25 desktop steps of
+		// screenshots and then replaced its reply with the judge's gap text
+		// (papers 2026-10-30 run_084b5d76).
+		return agent.DesktopOutcomeDecision{}
+	}
 	// The draft can claim a result the screen does not show, so the check
 	// reads it only as the answer text: a chat answer is judged on it, a
 	// desktop result never is.
