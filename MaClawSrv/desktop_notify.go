@@ -320,7 +320,10 @@ func desktopDelegate(ctx context.Context, request agentruntime.TurnRequest, args
 	if dup, _ := out["duplicate"].(bool); dup {
 		return "This task was already handed over; do not send it again.", nil
 	}
-	return fmt.Sprintf("Handed to %s (order %v). Hub starts it now or when the desktop is free; its result arrives as a message in your mailbox and wakes you. Do not wait in this turn: finish it, telling the person who is doing what.", target, out["id"]), nil
+	// A fact, not instructions: models quoted the old imperative English
+	// receipt to the person verbatim ("工具原样返回: ... Do not wait in this
+	// turn"). How to reply after a handoff lives in the prompt.
+	return fmt.Sprintf("DELEGATED to=%s order=%v result=arrives_in_mailbox_and_feed", target, out["id"]), nil
 }
 
 const (

@@ -540,6 +540,11 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if phase == "execute" {
 		messageMeta["computer_helper"] = "1"
 	}
+	if strings.HasPrefix(clientMessageID, "xwake-") {
+		// MaClawSrv words a mailbox wake as a turn the person did not send:
+		// it must not echo the teammate report already in the feed.
+		messageMeta["bot_wake"] = "1"
+	}
 	for k, v := range botStyleMeta(&rec, rec.Bots[index].ID) {
 		messageMeta[k] = v
 	}

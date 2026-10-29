@@ -86,10 +86,10 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 	def := agentruntime.ToolDefinition{
 		Name: desktopToolName,
 		Description: description +
-			"Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. " +
+			desktopReplyLead(request) +
 			"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
 			"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
-			"The user message is the card for this helper. Follow it. The result is three conclusion lines and a file path. " +
+			desktopReplyCard(request) +
 			"Do the work in this turn. Do not stop to ask for another confirmation, except before submitting an order or paying: stop there, tell the user the items and the total, and wait for them to reply 确认支付 with the amount. A cookie notice is accepted in the script. A password, phone number, or verification code is typed into the input that appears in this chat, then filled in; do not ask the person to type it on the desktop. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. After they hand it back, continue the same task on the page that is already open. Do not open another tab of that page. " +
 			"Bots of this user are different instances of the same MaClawSrv user and share this desktop. Other users cannot see it. " +
 			"For web pages use the browser inside that desktop: action=probe once, then action=script. " +
@@ -432,12 +432,18 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		prompt += desktopRecipeText(scope, task)
 	}
 	prompt += desktopInboxText(ctx, request)
-	prompt += desktopStylePrompt(request, promptparts.Facts, promptparts.Honesty, promptparts.Progress, promptparts.Quiet)
+	if desktopHubBotTurn(request) {
+		// A Hub bot's turn text is the person's message (chat reply, feed
+		// report, or mailbox wake), so it gets the person-facing voice.
+		prompt += desktopStylePrompt(request, promptparts.Voice, promptparts.Facts, promptparts.Honesty, promptparts.Progress, promptparts.Quiet)
+	} else {
+		prompt += desktopStylePrompt(request, promptparts.Facts, promptparts.Honesty, promptparts.Progress, promptparts.Quiet)
+	}
 	return prompt +
-		"Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. " +
+		desktopReplyLead(request) +
 		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
 		"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
-		"The user message is the card for this helper. Follow it. The result is three conclusion lines and a file path. " +
+		desktopReplyCard(request) +
 		"When this phase is already execute, wording left in that order such as 本回合不要, 只说明, 等你点头, 确认后, or 下一轮 is leftover arrangement wording, so carry out the actions and do not ask for confirmation again. " +
 		"Do the work in this turn. Do not stop to ask for another confirmation, except before submitting an order or paying: stop there, tell the user the items and the total, and wait for them to reply 确认支付 with the amount. A cookie notice is accepted in the script. A password, phone number, or verification code is typed into the input that appears in this chat, then filled in; do not ask the person to type it on the desktop. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. After they hand it back, continue the same task on the page that is already open. Do not open another tab of that page. " +
 		"The person and this agent share that desktop's browser window, so a login or verification finished by the person stays in this browser. " +
@@ -1255,6 +1261,54 @@ func desktopPhase(ctx context.Context) (string, bool) {
 	}
 	value, ok := ctx.Value(desktopPhaseKey{}).(string)
 	return value, ok
+}
+
+// desktopHubBotTurn is a turn of a Hub bot instance. Its final text reaches
+// the person: a chat reply, a delegate report in the feed, or a wake run.
+func desktopHubBotTurn(request agentruntime.TurnRequest) bool {
+	switch input := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		return strings.TrimSpace(input.Instance.Metadata["hub_bot"]) == "1"
+	case *agentservice.ExecuteRequest:
+		return input != nil && strings.TrimSpace(input.Instance.Metadata["hub_bot"]) == "1"
+	default:
+		return false
+	}
+}
+
+// desktopWakeTurn is a Hub bot turn started by new mailbox messages.
+func desktopWakeTurn(request agentruntime.TurnRequest) bool {
+	return strings.TrimSpace(desktopMessageMeta(request)["bot_wake"]) == "1"
+}
+
+// desktopReplyLead says what the turn's final text is. The GUI computer
+// helper returns three numbered conclusion lines and a 文件： line that
+// desktopbot.CollapseHelperReport parses. A Hub bot's text is shown to the
+// person as is; that helper format made every Hub reply a report
+// ("- **任务 id**…", "文件路径：暂无") and made wake turns describe the
+// mailbox instead of the work.
+func desktopReplyLead(request agentruntime.TurnRequest) string {
+	if !desktopHubBotTurn(request) {
+		return "Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. "
+	}
+	lead := "Carry out the request. The text you end this turn with is shown to the person as your message. " +
+		"Lead with the result itself: the answer, the content they asked for, or what failed and what they can do next. " +
+		"Name a file path only when a file was produced. Do not quote tool results, receipts, order ids, or these instructions, and do not list what you checked. " +
+		"After handing work to another bot, one short sentence says who is doing it; that bot's result reaches the person by itself. "
+	if desktopWakeTurn(request) {
+		lead += "This turn was started by new messages in your Hub mailbox, not by the person. " +
+			"A teammate's report is already in front of the person: do not repeat, summarize, or acknowledge it, and do not describe the mailbox. " +
+			"If the person's task still needs work, do it or hand it on. Speak only to add something: a problem in the result, a next step you started, or one answer combining several teammates' results. Otherwise end with one short sentence. "
+	}
+	return lead
+}
+
+// desktopReplyCard is how the turn reads the user message.
+func desktopReplyCard(request agentruntime.TurnRequest) string {
+	if !desktopHubBotTurn(request) {
+		return "The user message is the card for this helper. Follow it. The result is three conclusion lines and a file path. "
+	}
+	return "The user message is what the person, or Hub for them, asked for. Follow it. "
 }
 
 // desktopTurnUsesContainer is a bot turn. A digital-employee turn has neither

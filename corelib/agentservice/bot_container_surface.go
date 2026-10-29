@@ -43,11 +43,27 @@ func (c *coreAgentCallbacks) desktopPersonAccount() (string, string, bool) {
 	return tenant, user, true
 }
 
-func (c *coreAgentCallbacks) botUsesContainer() bool {
+// hubBotInstance reports a Hub bot instance. runtimeRequest is filled only
+// when the turn has a durable runtime attempt; a plain chat turn leaves it
+// empty, and reading only that copy made such a turn look like a digital
+// employee: the container web_fetch fell through to the semantic surface and
+// failed with "unknown semantic tool web_fetch". c.instance is the same
+// instance on every path, so either copy marks the bot.
+func (c *coreAgentCallbacks) hubBotInstance() bool {
 	if c == nil {
 		return false
 	}
 	if strings.TrimSpace(c.runtimeRequest.Instance.Metadata["hub_bot"]) == "1" {
+		return true
+	}
+	return strings.TrimSpace(c.instance.Metadata["hub_bot"]) == "1"
+}
+
+func (c *coreAgentCallbacks) botUsesContainer() bool {
+	if c == nil {
+		return false
+	}
+	if c.hubBotInstance() {
 		return true
 	}
 	switch strings.TrimSpace(c.messageMetadata["bot_phase"]) {

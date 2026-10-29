@@ -2764,7 +2764,7 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 // desktopBotKeepsLoggedInBrowser is a Hub bot whose cloud desktop is on this
 // turn. A short follow-up would otherwise be a light turn and hide that desktop.
 func (c *coreAgentCallbacks) desktopBotKeepsLoggedInBrowser() bool {
-	if c == nil || strings.TrimSpace(c.runtimeRequest.Instance.Metadata["hub_bot"]) != "1" {
+	if c == nil || !c.hubBotInstance() {
 		return false
 	}
 	return c.runtimeToolExposed("desktop")
