@@ -31,7 +31,7 @@ func withPauseStub(t *testing.T, states []map[string]any) *int {
 }
 
 func TestDesktopWaitForPersonPausesAndResumes(t *testing.T) {
-	calls := withPauseStub(t, []map[string]any{{"viewer": true}, {"lease": "human"}, {"lease": "bot"}})
+	calls := withPauseStub(t, []map[string]any{{"lease": "human"}, {"lease": "human"}, {"lease": "bot"}})
 	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", "bot_1")}
 	note, err := desktopWaitForPerson(context.Background(), scope)
 	if err != nil || note != desktopResumeNote || *calls != 3 {
@@ -39,6 +39,14 @@ func TestDesktopWaitForPersonPausesAndResumes(t *testing.T) {
 	}
 	if !strings.Contains(note, "先截图") {
 		t.Fatal("resume must ask for a fresh screenshot")
+	}
+}
+
+func TestDesktopWaitForPersonKeepsWorkingWhileOnlyViewing(t *testing.T) {
+	calls := withPauseStub(t, []map[string]any{{"viewer": true, "lease": "bot"}})
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", "bot_1")}
+	if note, err := desktopWaitForPerson(context.Background(), scope); err != nil || note != "" || *calls != 1 {
+		t.Fatalf("view-only must not pause: note=%q err=%v calls=%d", note, err, *calls)
 	}
 }
 
@@ -65,7 +73,7 @@ func TestDesktopWaitForPersonCapKeepsTheRunGoing(t *testing.T) {
 }
 
 func TestDesktopWaitForPersonStopsOnCancel(t *testing.T) {
-	withPauseStub(t, []map[string]any{{"viewer": true}})
+	withPauseStub(t, []map[string]any{{"lease": "human"}})
 	desktopPauseIntervals = []time.Duration{time.Hour}
 	desktopPauseMax = 10 * time.Hour
 	ctx, cancel := context.WithCancel(context.Background())

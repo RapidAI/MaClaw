@@ -65,9 +65,9 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 1 | 技能格式、去噪、LLM 提炼（含修复）、指导渲染、步骤跟踪/重新规划、入库到现有技能存储、单测（fixture 时间线） | 完成 |
-| 2 | 人类接管自动暂停/恢复（hub hold → desktopd viewer → srv 桌面动作等待）；`Progress` 接入结果判定 | 完成 |
+| 2 | 人类**操作**时自动暂停/恢复（takeover 或近期输入租约；仅打开画面不暂停）；`Progress` 接入结果判定 | 完成 |
 | 3 | desktopd 录制会话（截图/输入/焦点）+ hub API + 讲解（asr 或打字） | 已完成（见 §9） |
-| 4 | GUI/Web 录制面板与技能编辑页 | 待做 |
+| 4 | stop→distill、截图说明、GUI 录制/编辑 | 完成（§10） |
 
 ## 8. 阶段 2 实现说明
 
@@ -92,3 +92,12 @@
 - **desktopd**（`desktopd/demo_record.go`）：每个 bot key 一个会话。每 2s 读一次 `windows` 拿当前焦点；焦点变了就记 focus 事件并截图，另外每 20s 截一次，开始和结束时各截一次。截图最多 120 张，存在 `$TMPDIR/maclaw-demo/<id>/NNN.png`，24h 后清理；单次录制最长 30 分钟，到时只停止采样，会话保留到 stop。结束时合并 supervisor 的输入：连续字符键合成一条 `type`（只写字符数），点击坐标按 0..1000 记录。最后按时间排序，返回 `demoskill.Timeline`。
 - **hub**：`POST /api/v1/bots/{id}/demo/start|narrate|stop`（`botmgmt.DemoRecord*`）。只对 owner 本人和 isolated bot 开放，开关关闭时返回 ErrDisabled。narrate 收 `{"text"}`，或 `{"audio_base64","mime"}`：Hub 的 ASR 可用时转写，不可用时返回 422 `ASR_UNAVAILABLE` 让用户改为打字。start 会返回 `asr_available`。
 - **已知限制**：只能采到 H.264 viewer 的输入，noVNC 直连 x11vnc 的输入采不到，但截图和焦点照样有。录制期间 stage 2 的 viewer 暂停行为不变。
+
+## 10. 阶段 4 实现说明
+
+- **暂停语义调整**：`desktopPersonPresent` 不再因 `viewer=true`（仅打开桌面页）暂停；只有 takeover 或近期 human 输入租约（`lease=human` / `yield`）才暂停。Hub 仍可发 `view_hold`，但不驱动暂停。
+- **desktopd `demo_shot`**：按 timeline id + Ref 取回 PNG（base64），供 caption 与 GUI 缩略图。录制结束后文件仍保留（24h）。
+- **caption**：`demoskill.Caption` 给无 Text 的截图补说明。优先多模态（`SupportsVision`），否则用本地 OCR（`desktopOCRLines`）。`Compact` 会丢掉无 Text 的截图，所以 caption 是 distill 用上画面信息的前提。
+- **srv**：`POST /api/v1/skills/demo/distill`、`/redistill`，`PUT /api/v1/skills/{name}/demo`。distill 后写入 `demo-timeline.json` 供重新提炼。
+- **hub**：`POST .../demo/distill`（取 shot → 调 srv）、`GET .../demo/shots/{demoID}/{ref}`、`POST .../demo/redistill`、`PUT .../demo/skills/{skillName}`。
+- **GUI**：`DemoSkillPanel`（开始/结束、旁白或按住说话、缩略图、时间线、提炼/编辑/重新提炼）+ Wails 绑定。需 Daniel 重建 guiapp。

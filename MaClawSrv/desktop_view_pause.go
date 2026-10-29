@@ -10,19 +10,20 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
-// With MACLAW_DEMO_SKILL on, a person on the bot's display (takeover, recent
-// input lease, or the owner's open desktop view) pauses the bot's desktop
-// action instead of ending the turn. The bot polls with growing intervals,
-// and when the person leaves it does NOT run the stale action: it is told to
-// screenshot and replan, because the person may have changed the screen.
+// With MACLAW_DEMO_SKILL on, a person actively operating the bot's display
+// (takeover or a recent input lease) pauses the bot's desktop action instead
+// of ending the turn. Merely opening the viewer does not pause: the bot keeps
+// working. The bot polls with growing intervals, and when the person stops
+// operating it does NOT run the stale action: it is told to screenshot and
+// replan, because the person may have changed the screen.
 var (
 	desktopPauseIntervals = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}
 	desktopPauseMax       = 15 * time.Minute
 )
 
-const desktopResumeNote = "用户刚才在这个桌面上查看或操作，现已离开，Bot 已自动恢复。上一个动作没有执行：画面可能已被用户改变，先截图观察当前状态，再按任务意图重新规划下一步，继续推进到交付结果。"
+const desktopResumeNote = "用户刚才在这个桌面上操作，现已离开，Bot 已自动恢复。上一个动作没有执行：画面可能已被用户改变，先截图观察当前状态，再按任务意图重新规划下一步，继续推进到交付结果。"
 
-const desktopStillHeldNote = "用户仍在这个桌面上查看或操作（已等待 %d 秒）。上一个动作没有执行：先做不需要桌面的部分，稍后再截图查看并继续；不要结束任务。"
+const desktopStillHeldNote = "用户仍在这个桌面上操作（已等待 %d 秒）。上一个动作没有执行：先做不需要桌面的部分，稍后再截图查看并继续；不要结束任务。"
 
 // desktopPersonPresent reads the display state once.
 func desktopPersonPresent(ctx context.Context, scope agentruntime.Scope) (bool, string) {
@@ -40,14 +41,12 @@ func desktopPersonPresent(ctx context.Context, scope agentruntime.Scope) (bool, 
 	lease, _ := out["lease"].(string)
 	yield, _ := out["yield"].(bool)
 	takeover, _ := out["takeover"].(bool)
-	viewer, _ := out["viewer"].(bool)
+	// "viewer" (owner has the page open but is not operating) must not pause.
 	switch {
 	case takeover:
 		return true, "takeover"
 	case yield || lease == "human":
 		return true, "input"
-	case viewer:
-		return true, "viewer"
 	}
 	return false, ""
 }
@@ -68,7 +67,7 @@ func desktopWaitForPerson(ctx context.Context, scope agentruntime.Scope) (string
 	}
 	started := time.Now()
 	log.Printf("[desktop] pause for person reason=%s run=%s", why, scope.RunID)
-	desktopEmitNote(scope, "takeover_pause", "bot", "用户正在查看或操作桌面，Bot 暂停桌面动作，等待用户离开")
+	desktopEmitNote(scope, "takeover_pause", "bot", "用户正在操作桌面，Bot 暂停桌面动作，等待用户操作结束")
 	for i := 0; ; i++ {
 		wait := desktopPauseIntervals[len(desktopPauseIntervals)-1]
 		if i < len(desktopPauseIntervals) {
