@@ -66,7 +66,7 @@
 |---|---|---|
 | 1 | 技能格式、去噪、LLM 提炼（含修复）、指导渲染、步骤跟踪/重新规划、入库到现有技能存储、单测（fixture 时间线） | 完成 |
 | 2 | 人类接管自动暂停/恢复（hub hold → desktopd viewer → srv 桌面动作等待）；`Progress` 接入结果判定 | 完成 |
-| 3 | desktopd 录制会话（截图/输入/焦点）+ hub API + 讲解（asr 或打字） | 待做 |
+| 3 | desktopd 录制会话（截图/输入/焦点）+ hub API + 讲解（asr 或打字） | 已完成（见 §9） |
 | 4 | GUI/Web 录制面板与技能编辑页 | 待做 |
 
 ## 8. 阶段 2 实现说明
@@ -84,3 +84,11 @@
 - srv：开关打开时，桌面动作（截图除外）前若有人在场（接管、近期人工输入租约、或 viewer），
   按 2s/4s/8s/15s 递增间隔巡检等待，不结束本轮；用户离开后**不执行旧动作**，返回“先截图观察、按意图重新规划”。
   等满 15 分钟仍有人，返回“先做不需要桌面的部分，稍后再看，不要结束任务”。开关关闭时保持原有让步行为。
+
+## 9. 阶段 3 实现说明
+
+- **ctl op**（`corelib/desktop/ctl.go`）：`demo_begin` / `demo_narrate` / `demo_end`（desktopd 在 Go 里处理）和 `demo_input_begin` / `demo_input_end`（supervisor）。全部是 bot op，并由 `IsCtlHubOnlyOp` 挡住 MCP：bot 自己不能开录制。
+- **supervisor**：录制打开时（`/desktops/<key>/demo_input.on`），`handle_input` 把 H.264 viewer 的输入追加到 `demo_input.jsonl`：按下/抬起（归一化坐标）、滚轮、按键。**可打印键只记成 `char`**，打出的内容（含密码）不落盘；具体值靠讲解给出。上限 2 万条。
+- **desktopd**（`desktopd/demo_record.go`）：每个 bot key 一个会话。每 2s 读一次 `windows` 拿当前焦点；焦点变了就记 focus 事件并截图，另外每 20s 截一次，开始和结束时各截一次。截图最多 120 张，存在 `$TMPDIR/maclaw-demo/<id>/NNN.png`，24h 后清理；单次录制最长 30 分钟，到时只停止采样，会话保留到 stop。结束时合并 supervisor 的输入：连续字符键合成一条 `type`（只写字符数），点击坐标按 0..1000 记录。最后按时间排序，返回 `demoskill.Timeline`。
+- **hub**：`POST /api/v1/bots/{id}/demo/start|narrate|stop`（`botmgmt.DemoRecord*`）。只对 owner 本人和 isolated bot 开放，开关关闭时返回 ErrDisabled。narrate 收 `{"text"}`，或 `{"audio_base64","mime"}`：Hub 的 ASR 可用时转写，不可用时返回 422 `ASR_UNAVAILABLE` 让用户改为打字。start 会返回 `asr_available`。
+- **已知限制**：只能采到 H.264 viewer 的输入，noVNC 直连 x11vnc 的输入采不到，但截图和焦点照样有。录制期间 stage 2 的 viewer 暂停行为不变。

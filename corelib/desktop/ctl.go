@@ -47,14 +47,33 @@ const (
 	// desktopd answers them itself; bot_state then reports viewer=true.
 	CtlViewHold    = "view_hold"
 	CtlViewRelease = "view_release"
+
+	// Demonstrate-and-narrate recording (MACLAW_DEMO_SKILL), Hub only.
+	// desktopd keeps the session (screenshots, focus, narration) and asks
+	// the supervisor for the person's input via CtlDemoInputBegin/End.
+	CtlDemoBegin      = "demo_begin"
+	CtlDemoNarrate    = "demo_narrate"
+	CtlDemoEnd        = "demo_end"
+	CtlDemoInputBegin = "demo_input_begin"
+	CtlDemoInputEnd   = "demo_input_end"
 )
+
+// IsCtlHubOnlyOp reports whether op may be sent only by the Hub, never by a
+// bot through MCP: the view hold ops and the demo recording ops.
+func IsCtlHubOnlyOp(op string) bool {
+	switch op {
+	case CtlViewHold, CtlViewRelease, CtlDemoBegin, CtlDemoNarrate, CtlDemoEnd, CtlDemoInputBegin, CtlDemoInputEnd:
+		return true
+	}
+	return false
+}
 
 // IsCtlViewOp reports whether op is a Hub-only view hold op. A bot's own
 // desktop tool must not send it.
 func IsCtlViewOp(op string) bool { return op == CtlViewHold || op == CtlViewRelease }
 
 // CtlBotOps are accepted only for a bot desktop (desktop_mode=isolated).
-var CtlBotOps = []string{CtlBotState, CtlTakeoverBegin, CtlTakeoverEnd, CtlViewHold, CtlViewRelease}
+var CtlBotOps = []string{CtlBotState, CtlTakeoverBegin, CtlTakeoverEnd, CtlViewHold, CtlViewRelease, CtlDemoBegin, CtlDemoNarrate, CtlDemoEnd, CtlDemoInputBegin, CtlDemoInputEnd}
 
 // IsCtlBotOp reports whether op is one of CtlBotOps.
 func IsCtlBotOp(op string) bool {

@@ -133,7 +133,7 @@ func (b mcpBackend) App(ctx context.Context, id desktopmcp.Identity, argv []stri
 }
 
 func (b mcpBackend) Ctl(ctx context.Context, id desktopmcp.Identity, request map[string]any) (map[string]any, error) {
-	if op, _ := request["op"].(string); desktop.IsCtlViewOp(strings.TrimSpace(op)) {
+	if op, _ := request["op"].(string); desktop.IsCtlHubOnlyOp(strings.TrimSpace(op)) {
 		return nil, fmt.Errorf("%w: %s is Hub-only", ErrInvalid, op)
 	}
 	display, _ := mcpScreen(id)

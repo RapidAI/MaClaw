@@ -5097,6 +5097,7 @@ class H264Viewer:
             return
         if self.key:
             touch_bot_file(self.key, "human_input")
+            demo_input_note(self.key, events)
         self.tick_lease()
 
     def reader_loop(self):
@@ -7168,6 +7169,82 @@ def ctl_status(request):
     return {"ok": True, "viewers": viewers, "screen": ctl_screen_size()}
 
 
+# Demonstrate-and-narrate recording (MACLAW_DEMO_SKILL). While a recording is
+# open for a bot key, the person's H.264 viewer input is appended to
+# demo_input.jsonl. Printable keys are stored only as "char": the text a person
+# types (passwords included) is never written. Narration carries the values.
+DEMO_INPUT_MAX_EVENTS = 20000
+DEMO_CHAR_CODE_RE = re.compile(r"^(Key[A-Z]|Digit[0-9]|Numpad[0-9]|Space|Minus|Equal|Bracket(Left|Right)|Backslash|Semicolon|Quote|Backquote|Comma|Period|Slash|NumpadDecimal|NumpadAdd|NumpadSubtract|NumpadMultiply|NumpadDivide)$")
+
+
+def demo_input_paths(key):
+    return ROOT / key / "demo_input.on", ROOT / key / "demo_input.jsonl"
+
+
+def demo_input_note(key, events):
+    marker, log = demo_input_paths(key)
+    if not marker.exists():
+        return
+    now = time.time()
+    lines = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("t")
+        rec = None
+        if kind in ("down", "up"):
+            rec = {"t": kind, "b": event.get("b"), "x": event.get("x"), "y": event.get("y")}
+        elif kind == "wheel":
+            rec = {"t": "wheel", "dx": event.get("dx"), "dy": event.get("dy")}
+        elif kind == "key" and event.get("down"):
+            code = str(event.get("code") or "")
+            rec = {"t": "key", "code": "char" if DEMO_CHAR_CODE_RE.match(code) else code[:32]}
+        if rec is not None:
+            rec["at"] = now
+            lines.append(json.dumps(rec, separators=(",", ":")))
+    if not lines:
+        return
+    try:
+        if log.exists() and log.stat().st_size > DEMO_INPUT_MAX_EVENTS * 80:
+            return
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
+def ctl_demo_input_begin(request):
+    key = ctl_bot_key(request)
+    marker, log = demo_input_paths(key)
+    marker.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        log.unlink()
+    except OSError:
+        pass
+    marker.write_text(str(time.time()), encoding="utf-8")
+    return {"ok": True}
+
+
+def ctl_demo_input_end(request):
+    key = ctl_bot_key(request)
+    marker, log = demo_input_paths(key)
+    events = []
+    try:
+        marker.unlink()
+    except OSError:
+        pass
+    try:
+        for line in log.read_text(encoding="utf-8").splitlines()[:DEMO_INPUT_MAX_EVENTS]:
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+        log.unlink()
+    except OSError:
+        pass
+    return {"ok": True, "events": events}
+
+
 CTL_OPS = {
     "clipboard_get": ctl_clipboard_get,
     "clipboard_set": ctl_clipboard_set,
@@ -7179,6 +7256,8 @@ CTL_OPS = {
     "bot_state": ctl_bot_state,
     "takeover_begin": ctl_takeover_begin,
     "takeover_end": ctl_takeover_end,
+    "demo_input_begin": ctl_demo_input_begin,
+    "demo_input_end": ctl_demo_input_end,
 }
 
 
