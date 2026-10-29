@@ -190,3 +190,24 @@ func (s *Service) readDemoTimeline(p Principal, name string) (demoskill.Timeline
 func decodeDemoShotB64(v string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(strings.TrimSpace(v))
 }
+
+// DemoSkillLLMConfig resolves the model config demo distill and captions use.
+// It follows the bot run path (executeDirect): the stored user config with
+// the selected provider projected to the flat fields, real secrets intact,
+// and the Hub bot service-group pin dropped so Hub applies the owner's
+// entitlements. GetUserConfig is for API output and masks secrets, which made
+// the provider reject the masked key (401).
+func (s *Service) DemoSkillLLMConfig(p Principal) (corelib.MaclawLLMConfig, error) {
+	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
+		return corelib.MaclawLLMConfig{}, err
+	}
+	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+	if err != nil {
+		return corelib.MaclawLLMConfig{}, err
+	}
+	llmCfg, err := ResolveLLMConfig(effectiveLLMFlatConfig(cfg.AppConfig))
+	if err != nil {
+		return corelib.MaclawLLMConfig{}, err
+	}
+	return PinHubBotLLMServiceGroup(llmCfg), nil
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -79,13 +80,9 @@ func (s *HTTPServer) runDemoDistill(ctx context.Context, p agentservice.Principa
 }
 
 func (s *HTTPServer) demoSkillModelFns(ctx context.Context, p agentservice.Principal) (demoskill.LLM, demoskill.VisionCaptioner, demoskill.OCRCaptioner, error) {
-	cfg, err := s.svc.GetUserConfig(ctx, p)
-	if err != nil || cfg == nil {
-		return nil, nil, nil, fmt.Errorf("user config unavailable")
-	}
-	llmCfg, err := agentservice.ResolveLLMConfig(cfg.AppConfig)
+	llmCfg, err := s.svc.DemoSkillLLMConfig(p)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("user llm config unavailable: %w", err)
 	}
 	llmFn := func(c context.Context, system, user string) (string, error) {
 		messages := []interface{}{
@@ -134,10 +131,11 @@ func (s *HTTPServer) demoSkillModelFns(ctx context.Context, p agentservice.Princ
 }
 
 func demoSkillComplete(ctx context.Context, cfg corelib.MaclawLLMConfig, _ *http.Client, messages []interface{}) (*llm.Response, error) {
+	client := &http.Client{Timeout: time.Duration(cfg.EffectiveTimeoutSec()) * time.Second}
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
-		return llm.DoAnthropicRequest(ctx, cfg, messages, nil, http.DefaultClient)
+		return llm.DoAnthropicRequest(ctx, cfg, messages, nil, client)
 	}
-	return llm.DoOpenAIRequestWithOptions(ctx, cfg, messages, nil, http.DefaultClient, llm.OpenAIChatRequestOptions{})
+	return llm.DoOpenAIRequestWithOptions(ctx, cfg, messages, nil, client, llm.OpenAIChatRequestOptions{})
 }
 
 func writeDemoSkillError(w http.ResponseWriter, err error, dataRoot string) {
