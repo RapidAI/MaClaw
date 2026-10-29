@@ -49,3 +49,25 @@ func TestDistillDemoSkillInstallsKnowledgeSkill(t *testing.T) {
 		t.Fatalf("stored content:\n%s", stored.Content)
 	}
 }
+
+func TestDistillDemoSkillStoresTimelineForRedistill(t *testing.T) {
+	t.Setenv(demoskill.EnvFlag, "1")
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	p := Principal{TenantID: tenant.ID, UserID: user.ID}
+	llm := func(context.Context, string, string) (string, error) {
+		return `{"name":"focus-browser-edit","goal":"只保留浏览器窗口","steps":[{"intent":"最小化其他窗口","check":"只有浏览器"}],"deliverable":"只剩浏览器","evidence":"截图"}`, nil
+	}
+	got, err := svc.DistillDemoSkill(context.Background(), p, llm, demoSkillFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := svc.readDemoTimeline(p, got.Name)
+	if err != nil || stored.ID == "" {
+		t.Fatalf("timeline not stored: %+v err=%v", stored, err)
+	}
+	updated, err := svc.UpdateDemoSkillContent(context.Background(), p, got.Name, DemoSkillUpdateInput{Content: "手工改过的指导\n" + demoskill.SpecMarker + `{"name":"x"}`})
+	if err != nil || !strings.Contains(updated.Content, "手工改过") {
+		t.Fatalf("update: %+v err=%v", updated, err)
+	}
+}

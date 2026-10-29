@@ -3,6 +3,7 @@ package desktopd
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -73,8 +74,31 @@ func (t *demoTable) handle(ctx context.Context, key, op string, request map[stri
 		return t.narrate(key, text)
 	case desktop.CtlDemoEnd:
 		return t.end(ctx, key, deps)
+	case desktop.CtlDemoShot:
+		return t.shot(request)
 	}
 	return nil, fmt.Errorf("%w: unknown demo op %s", ErrInvalid, op)
+}
+
+// shot returns one stored PNG by timeline id and Ref (file name). The
+// files stay under demoShotRoot after end so Hub can caption and the GUI
+// can show thumbnails.
+func (t *demoTable) shot(request map[string]any) (map[string]any, error) {
+	id, _ := request["id"].(string)
+	ref, _ := request["ref"].(string)
+	id = strings.TrimSpace(id)
+	ref = filepath.Base(strings.TrimSpace(ref))
+	if id == "" || !strings.HasPrefix(id, "demo-") || ref == "" || ref != filepath.Base(ref) || !strings.HasSuffix(strings.ToLower(ref), ".png") {
+		return nil, fmt.Errorf("%w: demo shot id/ref is invalid", ErrInvalid)
+	}
+	data, err := os.ReadFile(filepath.Join(demoShotRoot(), id, ref))
+	if err != nil || len(data) == 0 {
+		return nil, fmt.Errorf("%w: demo shot not found", ErrInvalid)
+	}
+	if len(data) > 8<<20 {
+		return nil, fmt.Errorf("%w: demo shot is too large", ErrInvalid)
+	}
+	return map[string]any{"ok": true, "mime": "image/png", "data": base64.StdEncoding.EncodeToString(data)}, nil
 }
 
 func (t *demoTable) begin(ctx context.Context, key, title string, deps demoDeps) (map[string]any, error) {

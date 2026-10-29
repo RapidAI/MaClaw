@@ -56,13 +56,14 @@ const (
 	CtlDemoEnd        = "demo_end"
 	CtlDemoInputBegin = "demo_input_begin"
 	CtlDemoInputEnd   = "demo_input_end"
+	CtlDemoShot       = "demo_shot"
 )
 
 // IsCtlHubOnlyOp reports whether op may be sent only by the Hub, never by a
 // bot through MCP: the view hold ops and the demo recording ops.
 func IsCtlHubOnlyOp(op string) bool {
 	switch op {
-	case CtlViewHold, CtlViewRelease, CtlDemoBegin, CtlDemoNarrate, CtlDemoEnd, CtlDemoInputBegin, CtlDemoInputEnd:
+	case CtlViewHold, CtlViewRelease, CtlDemoBegin, CtlDemoNarrate, CtlDemoEnd, CtlDemoInputBegin, CtlDemoInputEnd, CtlDemoShot:
 		return true
 	}
 	return false
@@ -73,7 +74,7 @@ func IsCtlHubOnlyOp(op string) bool {
 func IsCtlViewOp(op string) bool { return op == CtlViewHold || op == CtlViewRelease }
 
 // CtlBotOps are accepted only for a bot desktop (desktop_mode=isolated).
-var CtlBotOps = []string{CtlBotState, CtlTakeoverBegin, CtlTakeoverEnd, CtlViewHold, CtlViewRelease, CtlDemoBegin, CtlDemoNarrate, CtlDemoEnd, CtlDemoInputBegin, CtlDemoInputEnd}
+var CtlBotOps = []string{CtlBotState, CtlTakeoverBegin, CtlTakeoverEnd, CtlViewHold, CtlViewRelease, CtlDemoBegin, CtlDemoNarrate, CtlDemoEnd, CtlDemoInputBegin, CtlDemoInputEnd, CtlDemoShot}
 
 // IsCtlBotOp reports whether op is one of CtlBotOps.
 func IsCtlBotOp(op string) bool {

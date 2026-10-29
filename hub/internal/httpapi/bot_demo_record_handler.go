@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/demoskill"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 )
 
@@ -108,6 +109,99 @@ func PostBotDemoStopHandler(svc *botmgmt.Service, identity botAuthenticator) htt
 			return
 		}
 		out, err := svc.DemoRecordStop(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// PostBotDemoDistillHandler POST /api/v1/bots/{id}/demo/distill
+// Body: {"timeline":{...},"notes":"..."} — usually the stop response's timeline.
+func PostBotDemoDistillHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		in := struct {
+			Timeline json.RawMessage `json:"timeline"`
+			Notes    string          `json:"notes"`
+		}{}
+		if !demoRecordBody(w, r, demoNarrateBodyLimit, &in) {
+			return
+		}
+		var tl demoskill.Timeline
+		if len(in.Timeline) == 0 || json.Unmarshal(in.Timeline, &tl) != nil || tl.ID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "timeline is required")
+			return
+		}
+		out, err := svc.DemoRecordDistill(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), tl, in.Notes)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusCreated, out)
+	}
+}
+
+// GetBotDemoShotHandler GET /api/v1/bots/{id}/demo/shots/{demoID}/{ref}
+func GetBotDemoShotHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		mime, data, err := svc.DemoRecordShot(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("demoID"), r.PathValue("ref"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"mime": mime, "data": data})
+	}
+}
+
+// PostBotDemoRedistillHandler POST /api/v1/bots/{id}/demo/redistill
+// Body: {"skill_name":"...","notes":"..."}. bot id is only for auth scoping.
+func PostBotDemoRedistillHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		in := struct {
+			SkillName string `json:"skill_name"`
+			Notes     string `json:"notes"`
+		}{}
+		if !demoRecordBody(w, r, botMessageBodyLimit, &in) {
+			return
+		}
+		out, err := svc.DemoSkillRedistill(r.Context(), principal.TenantID, principal.UserID, in.SkillName, in.Notes)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// PutBotDemoSkillHandler PUT /api/v1/bots/{id}/demo/skills/{skillName}
+func PutBotDemoSkillHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		in := struct {
+			Content     string   `json:"content"`
+			Description string   `json:"description"`
+			Triggers    []string `json:"triggers"`
+		}{}
+		if !demoRecordBody(w, r, demoNarrateBodyLimit, &in) {
+			return
+		}
+		out, err := svc.DemoSkillUpdate(r.Context(), principal.TenantID, principal.UserID, r.PathValue("skillName"), in.Content, in.Description, in.Triggers)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return

@@ -2,6 +2,7 @@ package desktopd
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,4 +109,41 @@ func TestDemoOpsAreHubOnly(t *testing.T) {
 			t.Fatalf("%s must be a Hub-only bot op", op)
 		}
 	}
+}
+
+func TestDemoShotFetch(t *testing.T) {
+	t.Setenv(demoskill.EnvFlag, "1")
+	t.Setenv("TMPDIR", t.TempDir())
+	tbl := &demoTable{sessions: map[string]*demoSession{}, now: time.Now}
+	deps := demoDeps{
+		ctl:  func(context.Context, map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil },
+		shot: func(context.Context) ([]byte, error) { return []byte("png-bytes"), nil },
+	}
+	ctx := context.Background()
+	begin, err := tbl.handle(ctx, "k", desktop.CtlDemoBegin, nil, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := begin["id"].(string)
+	time.Sleep(30 * time.Millisecond)
+	end, err := tbl.handle(ctx, "k", desktop.CtlDemoEnd, nil, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = end
+	out, err := tbl.handle(ctx, "k", desktop.CtlDemoShot, map[string]any{"id": id, "ref": "001.png"}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := decodeB64(out["data"].(string))
+	if err != nil || string(raw) != "png-bytes" {
+		t.Fatalf("data=%v err=%v", out["data"], err)
+	}
+	if _, err := tbl.handle(ctx, "k", desktop.CtlDemoShot, map[string]any{"id": id, "ref": "../x.png"}, deps); err == nil {
+		t.Fatal("path escape must fail")
+	}
+}
+
+func decodeB64(s string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(s)
 }

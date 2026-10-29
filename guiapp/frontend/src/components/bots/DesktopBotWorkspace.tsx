@@ -178,6 +178,7 @@ import { BotSaidInline } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
 import { saidForChat } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
+import { DemoSkillPanel } from './DemoSkillPanel';
 
 
 // 150 ms per check: two minutes covers a slow admit before the watch gives up.
@@ -797,6 +798,17 @@ function copy(lang: string) {
             takeComputer: 'Take over the computer',
             takeComputerHint: 'Take the keyboard and finish the login or check on this computer.',
             exitTakeover: 'Release',
+            demoSkill: 'Demo → skill',
+            demoStart: 'Start recording',
+            demoStop: 'Stop recording',
+            demoNarrate: 'Narrate',
+            demoPushToTalk: 'Push to talk',
+            demoDistill: 'Distill skill',
+            demoEdit: 'Save edits',
+            demoRedistill: 'Re-distill',
+            demoTitlePlaceholder: 'Demo title (optional)',
+            demoNarratePlaceholder: 'What this step is doing',
+            demoBusy: 'Working…',
             takeoverHint: 'Fullscreen the desktop and take the keyboard from the bot.',
             takeoverBusyHint: 'This bot is using its desktop. Take over to stop it and take the keyboard.',
             botDrivingNote: 'The bot is using the desktop. Stop it first if you need the computer.',
@@ -992,6 +1004,17 @@ function copy(lang: string) {
             takeComputer: '接管電腦',
             takeComputerHint: '接管這台電腦，用鍵盤和滑鼠完成登入或驗證。',
             exitTakeover: '退出接管',
+            demoSkill: '演示錄成技能',
+            demoStart: '開始錄製',
+            demoStop: '結束錄製',
+            demoNarrate: '旁白',
+            demoPushToTalk: '按住說話',
+            demoDistill: '提煉技能',
+            demoEdit: '保存修改',
+            demoRedistill: '重新提煉',
+            demoTitlePlaceholder: '演示標題（可選）',
+            demoNarratePlaceholder: '說明這一步在做什麼',
+            demoBusy: '處理中…',
             takeoverHint: '全螢幕顯示桌面，並把鍵盤交給你。',
             takeoverBusyHint: '這個 Bot 正在操作桌面。接管會先停下它。',
             botDrivingNote: 'Bot 正在操作桌面，需要的話可以先停止它。',
@@ -1186,6 +1209,17 @@ function copy(lang: string) {
         takeComputer: '接管电脑',
         takeComputerHint: '接管这台电脑，用键盘和鼠标完成登录或验证。',
         exitTakeover: '退出接管',
+        demoSkill: '演示录成技能',
+        demoStart: '开始录制',
+        demoStop: '结束录制',
+        demoNarrate: '旁白',
+        demoPushToTalk: '按住说话',
+        demoDistill: '提炼技能',
+        demoEdit: '保存修改',
+        demoRedistill: '重新提炼',
+        demoTitlePlaceholder: '演示标题（可选）',
+        demoNarratePlaceholder: '说明这一步在做什么',
+        demoBusy: '处理中…',
         takeoverHint: '全屏显示桌面，并把键盘交给你。',
         takeoverBusyHint: '这个 Bot 正在操作桌面。接管会先停下它。',
         botDrivingNote: 'Bot 正在操作桌面，需要的话可以先停止它。',
@@ -6911,6 +6945,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </div>
                             )}
                             <p className="desktop-bot-screen__caption">{text.screenOf(selected.title)}</p>
+                            <DemoSkillPanel
+                                botId={selected.id}
+                                labels={{
+                                    demoSkill: text.demoSkill,
+                                    start: text.demoStart,
+                                    stop: text.demoStop,
+                                    narrate: text.demoNarrate,
+                                    pushToTalk: text.demoPushToTalk,
+                                    distill: text.demoDistill,
+                                    edit: text.demoEdit,
+                                    redistill: text.demoRedistill,
+                                    titlePlaceholder: text.demoTitlePlaceholder,
+                                    narratePlaceholder: text.demoNarratePlaceholder,
+                                    busy: text.demoBusy,
+                                }}
+                            />
                             <div className="desktop-bot-chat__ops" data-testid="desktop-bot-ops" aria-label={text.ops}>
                                 {botDriving ? (
                                     <>

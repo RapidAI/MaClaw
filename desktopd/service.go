@@ -1233,7 +1233,7 @@ func (s *Service) Ctl(ctx context.Context, tenantID, userID, display string, req
 				return viewHolds.hold(key, request["ttl_seconds"]), nil
 			case desktop.CtlViewRelease:
 				return viewHolds.release(key), nil
-			case desktop.CtlDemoBegin, desktop.CtlDemoNarrate, desktop.CtlDemoEnd:
+			case desktop.CtlDemoBegin, desktop.CtlDemoNarrate, desktop.CtlDemoEnd, desktop.CtlDemoShot:
 				deps := demoDeps{
 					ctl: func(c context.Context, req map[string]any) (map[string]any, error) {
 						return s.Ctl(c, tenantID, userID, display, req)

@@ -6315,3 +6315,25 @@ export function BuddySetSoundConfig(arg1) {
 export function BuddyRefreshPet() {
   return window['go']['main']['App']['BuddyRefreshPet']();
 }
+
+export function StartDesktopDemoRecording(arg1, arg2) {
+  return window['go']['main']['App']['StartDesktopDemoRecording'](arg1, arg2);
+}
+export function NarrateDesktopDemoRecording(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['NarrateDesktopDemoRecording'](arg1, arg2, arg3, arg4);
+}
+export function StopDesktopDemoRecording(arg1) {
+  return window['go']['main']['App']['StopDesktopDemoRecording'](arg1);
+}
+export function DistillDesktopDemoRecording(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DistillDesktopDemoRecording'](arg1, arg2, arg3);
+}
+export function GetDesktopDemoShot(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetDesktopDemoShot'](arg1, arg2, arg3);
+}
+export function RedistillDesktopDemoSkill(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RedistillDesktopDemoSkill'](arg1, arg2, arg3);
+}
+export function UpdateDesktopDemoSkill(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateDesktopDemoSkill'](arg1, arg2, arg3, arg4, arg5);
+}

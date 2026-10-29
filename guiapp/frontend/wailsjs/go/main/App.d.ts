@@ -3131,3 +3131,11 @@ export function BuddyGetSoundConfig():Promise<{master:boolean,running:{enabled:b
 export function BuddySetSoundConfig(arg1:{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number}}):Promise<void>;
 
 export function BuddyRefreshPet():Promise<void>;
+
+export function StartDesktopDemoRecording(arg1:string,arg2:string):Promise<Record<string,any>>;
+export function NarrateDesktopDemoRecording(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string,any>>;
+export function StopDesktopDemoRecording(arg1:string):Promise<Record<string,any>>;
+export function DistillDesktopDemoRecording(arg1:string,arg2:Record<string,any>,arg3:string):Promise<Record<string,any>>;
+export function GetDesktopDemoShot(arg1:string,arg2:string,arg3:string):Promise<Record<string,any>>;
+export function RedistillDesktopDemoSkill(arg1:string,arg2:string,arg3:string):Promise<Record<string,any>>;
+export function UpdateDesktopDemoSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<Record<string,any>>;
