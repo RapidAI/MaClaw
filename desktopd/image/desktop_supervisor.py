@@ -4175,7 +4175,11 @@ def request_authorized(head, token):
 
 H264_MAX_STREAMS = 4
 H264_DEFAULT_FPS = 15
-H264_INTERACTIVE_FPS = 30
+# 10-31 papers: a takeover viewer at 30 fps with no frame dropping kept a
+# 1.5-CPU bot container at ~107% while the person only watched, and bot steps
+# timed out at 90-100 s. 20 fps with a light mpdecimate still sends a moving
+# pointer or caret (they change whole 8x8 blocks) but nothing on a still screen.
+H264_INTERACTIVE_FPS = 20
 H264_GOP_SECONDS = 2
 H264_MAX_QUEUED = 3
 H264_MAX_INFLIGHT = 8
@@ -4328,7 +4332,7 @@ def h264_ffmpeg_argv(display, size, fps=H264_DEFAULT_FPS, mse=False, interactive
         "-video_size", size, "-i", ":%d" % display,
         # A person driving the screen needs every frame: mpdecimate drops
         # small changes (a moving pointer, a caret), which reads as lag.
-        "-vf", "format=yuv420p" if interactive else "mpdecimate=hi=768:lo=320:frac=0.33:max=%d,format=yuv420p" % (fps * 2),
+        "-vf", ("mpdecimate=hi=64:lo=32:frac=0.1:max=%d,format=yuv420p" % fps) if interactive else "mpdecimate=hi=768:lo=320:frac=0.33:max=%d,format=yuv420p" % (fps * 2),
         "-fps_mode", "vfr",
         "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
         "-profile:v", "baseline", "-level", "4.1", "-g", str(fps * H264_GOP_SECONDS), "-bf", "0",
@@ -5174,7 +5178,8 @@ class H264Viewer:
         started = time.monotonic()
         self.close_reason = ""
         log_event("h264_open", key=self.key, display=self.display, interactive=self.want_input,
-                  takeover=self.takes_over, input=allowed, mse=self.mse, fps=self.fps)
+                  takeover=self.takes_over, input=allowed, mse=self.mse,
+                  fps=max(self.fps, H264_INTERACTIVE_FPS) if (self.want_input and allowed) else self.fps)
         try:
             heal_browser_window(self.key, self.display, "viewer_open")
         except Exception:
@@ -5321,7 +5326,9 @@ def touch_viewer_takeover(key):
         pass
 
 
-TAKEOVER_IDLE_SECONDS = 300
+# The bot pauses only while the person operates: 90 s after the last input
+# (10-31 Daniel: 300 s left the bot waiting while he only watched).
+TAKEOVER_IDLE_SECONDS = 90
 
 
 def takeover_state(key):

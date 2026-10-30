@@ -479,3 +479,15 @@ print(sup.pick_hung_page(pages, "")["id"], sup.pick_hung_page(pages, "https://zh
 		t.Fatalf("got %q", out)
 	}
 }
+
+// A takeover viewer drops unchanged frames too and runs at 20 fps, not 30:
+// 10-31 one watching viewer held a bot container at ~107% CPU.
+func TestH264InteractiveViewerIsLight(t *testing.T) {
+	out := runSupervisorPython(t, `
+a = sup.h264_ffmpeg_argv(30, "1280x800", sup.H264_INTERACTIVE_FPS, interactive=True)
+print(a[a.index("-framerate") + 1], "mpdecimate" in a[a.index("-vf") + 1], sup.TAKEOVER_IDLE_SECONDS)
+`)
+	if out != "20 True 90" {
+		t.Fatalf("got %s", out)
+	}
+}
