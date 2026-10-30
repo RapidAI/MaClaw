@@ -11,6 +11,11 @@
 #define W 360
 #define H 360
 
+/** Magnification for the standby weather arc: the packed 24px cells are the
+ * largest glyphs on the panel, but the weather reading is the one line the
+ * user scans from a distance, so it is drawn 25% larger. */
+#define WEATHER_TEXT_ZOOM 1.25f
+
 #define COL_BG buddy_color(0x0E, 0x11, 0x16)
 #define COL_PANEL buddy_color(0x18, 0x1E, 0x28)
 #define COL_TEXT buddy_color(0xF8, 0xFA, 0xFC)
@@ -308,15 +313,19 @@ static void draw_pet(uint16_t *fb, int cx, int cy, int64_t now_ms) {
     hline(fb, cx - 6, cx + 6, cy + 24 + bob, COL_BG);
 }
 
-/** Draws a 24x24 1-bit cell rotated around its centre. */
+/** Draws a 24x24 1-bit cell rotated around its centre, magnified by `zoom`.
+ * `zoom` > 1 samples the cell with nearest-neighbour, so the packed 24px tables
+ * can render larger on the arc without shipping a second font. */
 static void draw_glyph_rotated(uint16_t *fb, int cx, int cy, const uint8_t cell[24 * 24],
-                               float angle, uint16_t fg) {
+                               float angle, uint16_t fg, float zoom) {
+    if (!(zoom > 0.0f)) zoom = 1.0f;
     const float ca = cosf(angle);
     const float sa = sinf(angle);
-    for (int dy = -17; dy <= 17; ++dy) {
-        for (int dx = -17; dx <= 17; ++dx) {
-            const float lx = ca * dx + sa * dy;
-            const float ly = -sa * dx + ca * dy;
+    const int reach = (int)(17.0f * zoom) + 1;
+    for (int dy = -reach; dy <= reach; ++dy) {
+        for (int dx = -reach; dx <= reach; ++dx) {
+            const float lx = (ca * dx + sa * dy) / zoom;
+            const float ly = (-sa * dx + ca * dy) / zoom;
             const int ix = (int)(lx + 12.5f);
             const int iy = (int)(ly + 12.5f);
             if (ix < 0 || ix >= 24 || iy < 0 || iy >= 24) continue;
@@ -327,9 +336,11 @@ static void draw_glyph_rotated(uint16_t *fb, int cx, int cy, const uint8_t cell[
 
 /** Curved text along the bottom of the dial. Characters are upright at the
  * bottom centre and rotate with the arc; tops point toward the centre. */
-static void draw_arc_text_bottom(uint16_t *fb, const char *text, int radius, uint16_t fg) {
+static void draw_arc_text_bottom(uint16_t *fb, const char *text, int radius, uint16_t fg,
+                                 float zoom) {
     if (!text || !*text || radius <= 0) return;
-    const int width = buddy_font_arc_width(text);
+    if (!(zoom > 0.0f)) zoom = 1.0f;
+    const int width = (int)lroundf((float)buddy_font_arc_width(text) * zoom);
     if (width <= 0) return;
     const float span = (float)width / (float)radius;
     float angle = 1.5707963f + span * 0.5f;
@@ -340,7 +351,7 @@ static void draw_arc_text_bottom(uint16_t *fb, const char *text, int radius, uin
         const int len = buddy_font_utf8_next(p, &cp);
         if (len <= 0) break;
         p += len;
-        const int adv = buddy_font_arc_advance(cp);
+        const int adv = (int)lroundf((float)buddy_font_arc_advance(cp) * zoom);
         const float center = angle - (float)(pen + adv / 2) / (float)radius;
         uint8_t cell[24 * 24];
         if (!buddy_font_cell(cp, cell)) {
@@ -354,7 +365,7 @@ static void draw_arc_text_bottom(uint16_t *fb, const char *text, int radius, uin
         }
         const int px = W / 2 + (int)lroundf(cosf(center) * (float)radius);
         const int py = H / 2 + (int)lroundf(sinf(center) * (float)radius);
-        draw_glyph_rotated(fb, px, py, cell, center - 1.5707963f, fg);
+        draw_glyph_rotated(fb, px, py, cell, center - 1.5707963f, fg, zoom);
         pen += adv;
     }
 }
@@ -390,7 +401,7 @@ static void draw_arc_text_top(uint16_t *fb, const char *text, int radius, int y_
         }
         const int px = W / 2 + (int)lroundf(cosf(center) * (float)radius);
         const int py = H / 2 + y_offset + (int)lroundf(sinf(center) * (float)radius);
-        draw_glyph_rotated(fb, px, py, cell, center + 1.5707963f, fg);
+        draw_glyph_rotated(fb, px, py, cell, center + 1.5707963f, fg, 1.0f);
         pen += adv;
     }
 }
@@ -526,21 +537,23 @@ static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_m
     }
 
     // Weather and location live on two bottom arcs, leaving the centre free
-    // for the pet.
+    // for the pet. The weather line is the primary reading, so it renders its
+    // 24px cells magnified (1.25x) and sits closer to the rim; the location
+    // arc moves up to keep a clear gap between the two bands.
     if (v->has_weather) {
         char wx[96];
         snprintf(wx, sizeof(wx), "%s%s %d°C", v->weather_stale ? "旧 " : "",
                  v->weather_summary, v->weather_temp);
         char wx_fit[96];
         fit_text_arc(wx_fit, sizeof(wx_fit), wx, 170, true);
-        draw_arc_text_bottom(fb, wx_fit, 142, COL_ACCENT);
+        draw_arc_text_bottom(fb, wx_fit, 133, COL_ACCENT, WEATHER_TEXT_ZOOM);
         if (v->weather_location[0]) {
             char loc[64];
             fit_text_arc(loc, sizeof(loc), v->weather_location, 150, true);
-            draw_arc_text_bottom(fb, loc, 112, COL_MUTED);
+            draw_arc_text_bottom(fb, loc, 97, COL_MUTED, 1.0f);
         }
     } else {
-        draw_arc_text_bottom(fb, "正在获取天气", 142, COL_MUTED);
+        draw_arc_text_bottom(fb, "正在获取天气", 133, COL_MUTED, WEATHER_TEXT_ZOOM);
     }
 }
 

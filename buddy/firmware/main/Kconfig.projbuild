@@ -1,0 +1,34 @@
+choice BUDDY_PANEL
+    prompt "Buddy display panel"
+    default BUDDY_PANEL_ST77916_360
+    help
+        Selects the physical display the buddy firmware drives. The UI keeps
+        its 360x360 logical canvas on both options; a smaller panel receives a
+        downsampled copy of that canvas, so layout code stays panel-agnostic.
+
+    config BUDDY_PANEL_ST77916_360
+        bool "EchoEar-2ST 360x360 round (ST77916 over QSPI)"
+        help
+            The original companion screen. QSPI on SPI2_HOST, GPIO 3/4/5/6/7
+            plus clock 8, reset 9, backlight 41.
+
+    config BUDDY_PANEL_NV3023_240
+        bool "Xingzhi-class 240x240 (NV3023 over SPI)"
+        help
+            The single-key 0.85-inch module (NV3023A, 240x240 visible window at
+            GRAM row 80). SPI on SPI3_HOST, GPIO 9/10/8/14/18 and backlight 13.
+            That wiring collides with the EchoEar audio pins, so this option
+            also moves the speaker to the module's own I2S pins (DOUT 7 /
+            BCLK 15 / WS 16, no MCLK) and skips touch, because GPIO 11/12 are
+            this board's 4G modem UART rather than an I2C touch panel.
+endchoice
+
+config BUDDY_DISPLAY_SPI_CLOCK_MHZ
+    int "Display SPI clock (MHz)"
+    range 10 80
+    default 20 if BUDDY_PANEL_ST77916_360
+    default 40 if BUDDY_PANEL_NV3023_240
+    help
+        QSPI on the round panel is qualified at 20 MHz; the NV3023 module runs
+        at 40 MHz on its short flex. Raising this is the first knob if a build
+        shows tearing but is otherwise correct.

@@ -1,0 +1,7 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf: '>=6.0,<7.0'
+  # NV3023 SPI LCD controller: the 240x240 module on the "无名星智 4G" class
+  # ESP32-S3 board that the buddy display can also drive (see
+  # CONFIG_BUDDY_PANEL_NV3023_240).
+  78/esp_lcd_nv3023: '^1.0.1'

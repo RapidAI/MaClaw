@@ -1,3 +1,9 @@
+set(buddy_panel_requires esp_lcd esp_lcd_st77916)
+# Only the NV3023 build links the controller driver for the 240x240 module.
+if(CONFIG_BUDDY_PANEL_NV3023_240)
+    list(APPEND buddy_panel_requires esp_lcd_nv3023)
+endif()
+
 idf_component_register(
     SRCS "main.c"
          "buddy_state.c"
@@ -11,7 +17,7 @@ idf_component_register(
          "buddy_pet.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_driver_i2c
-             esp_lcd esp_lcd_st77916 esp_driver_usb_serial_jtag esp_driver_i2s
+             ${buddy_panel_requires} esp_driver_usb_serial_jtag esp_driver_i2s
              nvs_flash esp_timer esp_psram cjson mbedtls
 )
 

@@ -20,13 +20,40 @@
 #define SOUND_MUTE_REG 0x31
 #define SOUND_VOLUME_REG 0x32
 #define SOUND_VOLUME_VALUE 0xB3  // ~70%, the board's verified speech level
+
+/* The NV3023 module's SPI display owns GPIO 8/9/10/13/14/18, which overlap the
+ * EchoEar codec pins (MCLK 10, DOUT 14) and its PA gate (18). That board drives
+ * its amplifier straight from I2S and has no ES8311, so this profile moves the
+ * data pins and drops both the codec and the PA gate rather than reusing pins
+ * the panel already drives. BCLK 15 / WS 16 are shared by both boards. */
+#include "sdkconfig.h"
+
+#if CONFIG_BUDDY_PANEL_NV3023_240
+#define SOUND_HAS_CODEC 0
+#define SOUND_MCLK_GPIO I2S_GPIO_UNUSED
+#define SOUND_BCLK_GPIO GPIO_NUM_15
+#define SOUND_WS_GPIO GPIO_NUM_16
+#define SOUND_DOUT_GPIO GPIO_NUM_7
+#else
+#define SOUND_HAS_CODEC 1
 #define SOUND_MCLK_GPIO GPIO_NUM_10
 #define SOUND_BCLK_GPIO GPIO_NUM_15
 #define SOUND_WS_GPIO GPIO_NUM_16
 #define SOUND_DOUT_GPIO GPIO_NUM_14
 #define SOUND_PA_GPIO GPIO_NUM_18
+#endif
 #define SOUND_RATE 16000
 #define SOUND_CHUNK_BYTES 2048
+/* The direct-I2S module has no codec volume register and no mute gate, so the
+ * ESP32 client's compact audio path (iot-agentos, fangtang_4g board: the same
+ * DOUT 7 / BCLK 15 / WS 16 wiring) is the reference for how to drive it:
+ * clock the transmitter only while a clip plays and trim the level in
+ * software. Its default output volume is 70%. */
+#define SOUND_SOFTWARE_VOLUME 70
+/* Wait past the DMA queue before muting the analogue path: 4 x 256 frames of
+ * 16 kHz stereo = 64 ms on the codec board (its verified tail), 8 x 256 frames
+ * = 128 ms on the direct-I2S board, which uses the deeper queue. */
+#define SOUND_DMA_DRAIN_MS (SOUND_HAS_CODEC ? 90 : 150)
 
 extern const uint8_t _binary_sounds_pcm_start[];
 extern const uint8_t _binary_sounds_pcm_end[];
@@ -94,7 +121,10 @@ static void codec_mute(bool muted) {
 
 static esp_err_t init_i2s(void) {
     i2s_chan_config_t channels = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    channels.dma_desc_num = 4;
+    // The direct-I2S board only clocks the transmitter while a clip plays, so it
+    // takes the reference client's deeper queue (8 x 256 frames = 128 ms) to
+    // ride out display and protocol bursts; the codec board keeps the verified 4.
+    channels.dma_desc_num = SOUND_HAS_CODEC ? 4 : 8;
     channels.dma_frame_num = 256;
     channels.auto_clear_after_cb = true;
     esp_err_t err = i2s_new_channel(&channels, &s_tx, NULL);
@@ -116,10 +146,16 @@ static esp_err_t init_i2s(void) {
     tx_config.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
     err = i2s_channel_init_std_mode(s_tx, &tx_config);
     if (err != ESP_OK) return err;
-    // The ES8311 expects a live 4.096 MHz MCLK while it is programmed.
-    return i2s_channel_enable(s_tx);
+    // The EchoEar ES8311 needs a live 4.096 MHz MCLK before it is programmed,
+    // so that profile starts the clocks here. The direct-I2S module has no MCLK
+    // and no mute gate: its amplifier hangs straight off DOUT, so an idle
+    // transmitter clocks the amp with nothing to play and is heard as noise.
+    // That profile therefore leaves the channel disabled until play_effect()
+    // has a clip to send.
+    return SOUND_HAS_CODEC ? i2s_channel_enable(s_tx) : ESP_OK;
 }
 
+#if SOUND_HAS_CODEC
 static esp_err_t init_codec(void) {
     // EchoEar-2ST ES8311 slave-mode table for 16 kHz / 16-bit stereo,
     // external 4.096 MHz MCLK (verified in iot-agentos).
@@ -141,8 +177,13 @@ static esp_err_t init_codec(void) {
     if (!codec_write(SOUND_VOLUME_REG, SOUND_VOLUME_VALUE)) return ESP_ERR_INVALID_STATE;
     return ESP_OK;
 }
+#endif
 
 static esp_err_t init_pa(void) {
+#if !SOUND_HAS_CODEC
+    // This board's amplifier is always enabled; nothing to gate.
+    return ESP_OK;
+#else
     const gpio_config_t config = {
         .pin_bit_mask = 1ULL << SOUND_PA_GPIO,
         .mode = GPIO_MODE_OUTPUT,
@@ -153,7 +194,30 @@ static esp_err_t init_pa(void) {
     esp_err_t err = gpio_config(&config);
     if (err != ESP_OK) return err;
     return gpio_set_level(SOUND_PA_GPIO, 0);
+#endif
 }
+
+static void pa_set(int level) {
+#if SOUND_HAS_CODEC
+    gpio_set_level(SOUND_PA_GPIO, level);
+#else
+    (void)level;
+#endif
+}
+
+#if !SOUND_HAS_CODEC
+/* The direct-I2S amplifier has a fixed gain, so a full-scale clip distorts;
+ * the reference client's compact mixer scales every sample by the output
+ * volume instead (default 70%). One sound plays at a time, so a file-scope
+ * staging buffer keeps the 2 KB off the 4 KB task stack. */
+static int16_t s_scale[SOUND_CHUNK_BYTES / sizeof(int16_t)];
+
+static void scale_chunk(const int16_t *src, size_t samples) {
+    for (size_t i = 0; i < samples; ++i) {
+        s_scale[i] = (int16_t)((int32_t)src[i] * SOUND_SOFTWARE_VOLUME / 100);
+    }
+}
+#endif
 
 static void play_effect(int index) {
     if (index < 0 || index >= BUDDY_SOUND_COUNT) return;
@@ -162,7 +226,12 @@ static void play_effect(int index) {
     const size_t available = (size_t)(_binary_sounds_pcm_end - _binary_sounds_pcm_start);
     if ((size_t)offset + length > available) return;
 
-    gpio_set_level(SOUND_PA_GPIO, 1);
+#if !SOUND_HAS_CODEC
+    // Start the clocks before feeding the clip, exactly like the reference
+    // client's playback_begin(): an idle transmitter is what the amp amplifies.
+    if (i2s_channel_enable(s_tx) != ESP_OK) return;
+#endif
+    pa_set(1);
     codec_mute(false);
     vTaskDelay(pdMS_TO_TICKS(2));
 
@@ -171,17 +240,42 @@ static void play_effect(int index) {
     while (sent < length) {
         size_t chunk = length - sent;
         if (chunk > SOUND_CHUNK_BYTES) chunk = SOUND_CHUNK_BYTES;
+#if !SOUND_HAS_CODEC
+        // Keep whole 4-byte stereo frames so the scaled copy and the write agree.
+        chunk &= ~(size_t)3u;
+        if (chunk == 0) break;
+#endif
+        const void *data = pcm + sent;
+#if !SOUND_HAS_CODEC
+        scale_chunk((const int16_t *)data, chunk / sizeof(int16_t));
+        data = s_scale;
+#endif
         size_t written = 0;
-        if (i2s_channel_write(s_tx, pcm + sent, chunk, &written, 1000) != ESP_OK || written == 0) {
+        if (i2s_channel_write(s_tx, data, chunk, &written, 1000) != ESP_OK || written == 0) {
             break;
         }
         sent += written;
     }
 
-    // Let the 64 ms DMA queue drain before muting the analogue path.
-    vTaskDelay(pdMS_TO_TICKS(90));
+#if !SOUND_HAS_CODEC
+    // 128 frames (8 ms) of silence, then let the DMA queue drain, so the amp
+    // settles on zero before the clocks stop. Without this the last non-zero
+    // sample is held while the transmitter shuts down and is heard as a click.
+    const size_t tail_bytes = 128u * 2u * sizeof(int16_t);
+    memset(s_scale, 0, tail_bytes);
+    size_t tail_written = 0;
+    (void)i2s_channel_write(s_tx, s_scale, tail_bytes, &tail_written, 1000);
+#endif
+
+    // Let the DMA queue drain before muting the analogue path.
+    vTaskDelay(pdMS_TO_TICKS(SOUND_DMA_DRAIN_MS));
     codec_mute(true);
-    gpio_set_level(SOUND_PA_GPIO, 0);
+    pa_set(0);
+#if !SOUND_HAS_CODEC
+    // Stop the clocks last: this profile has no other way to silence the amp.
+    vTaskDelay(pdMS_TO_TICKS(10));
+    (void)i2s_channel_disable(s_tx);
+#endif
 
     char msg[32];
     snprintf(msg, sizeof(msg), "sound %d", index + 1);
@@ -203,6 +297,7 @@ esp_err_t buddy_sound_init(void) {
     if (!s_cfg_lock) return ESP_ERR_NO_MEM;
     load_config();
 
+#if SOUND_HAS_CODEC
     i2c_master_bus_handle_t bus = buddy_i2c_bus();
     if (!bus) return ESP_ERR_INVALID_STATE;
     const i2c_device_config_t dev_cfg = {
@@ -217,6 +312,12 @@ esp_err_t buddy_sound_init(void) {
     if (err != ESP_OK) return err;
     err = init_codec();
     if (err != ESP_OK) return err;
+#else
+    // No ES8311 on this board: the PCM stream reaches the amplifier directly,
+    // so there is nothing to program over I2C.
+    esp_err_t err = init_i2s();
+    if (err != ESP_OK) return err;
+#endif
     err = init_pa();
     if (err != ESP_OK) return err;
 

@@ -1,5 +1,8 @@
 # ESP-IDF build outputs and generated configuration.
 firmware/build/
+# Alternate-panel profile build dir and its generated config (see Kconfig BUDDY_PANEL).
+firmware/build-nv3023/
+firmware/sdkconfig.nv3023
 firmware/build.log
 firmware/sdkconfig
 firmware/sdkconfig.old

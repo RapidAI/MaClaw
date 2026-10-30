@@ -7,6 +7,19 @@
 #include "buddy_display.h"
 #include "buddy_i2c.h"
 
+#include "sdkconfig.h"
+
+#if CONFIG_BUDDY_PANEL_NV3023_240
+/* The 240x240 module has one front key and no I2C touch panel: GPIO 11/12 are
+ * its 4G modem UART (TX 12 / RX 11). Probing 0x15 there would put an I2C master
+ * on another peripheral's pins, so this profile reports "no touch" and leaves
+ * the bus alone. */
+bool buddy_touch_available(void) { return false; }
+
+esp_err_t buddy_touch_init(void) { return ESP_ERR_NOT_SUPPORTED; }
+
+#else
+
 #define TOUCH_ADDR 0x15
 #define TOUCH_REG_STATUS 0x02
 #define TOUCH_REG_POINT 0x03
@@ -60,3 +73,5 @@ esp_err_t buddy_touch_init(void) {
     s_available = true;
     return ESP_OK;
 }
+
+#endif  // CONFIG_BUDDY_PANEL_NV3023_240
