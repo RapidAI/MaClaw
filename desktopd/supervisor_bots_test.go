@@ -240,6 +240,7 @@ sup.start_bot_fcitx = lambda key, display: None
 sup.flush_browser = lambda key: None
 sup.heal_browser_window = lambda *a, **k: None
 os.environ["MACLAW_BOT_TAKEOVER_IDLE_SECONDS"] = "300"
+sup.login_page_state = lambda key: None
 sup.ctl_takeover_begin({"key": bot, "reason": "login"})
 path = sup.ROOT / bot / "takeover.json"
 d = json.loads(path.read_text())
@@ -281,6 +282,44 @@ sup.ctl_takeover_begin({"key": bot, "reason": "login"})
 print(sup.ctl_takeover_end({"key": bot}), calls)
 `, botOwner)
 	want := "{'ok': True, 'takeover': False} ['persist', 'capture']"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// A login/captcha takeover ends by itself once the page shows signed in and
+// the person has stopped typing; a publish takeover never does.
+func TestSupervisorTakeoverEndsWhenSignedIn(t *testing.T) {
+	out := runSupervisorPython(t, `
+import json, os, time
+bot = "ab" * 8 + "33" * 8
+sup.save_registry({"users": {bot: {"display": 22, "token": "bb" * 16, "bot": True}}})
+sup.desktop_running = lambda key: True
+sup.start_bot_fcitx = lambda key, display: None
+sup.heal_browser_window = lambda *a, **k: None
+sup.persist_website_login = lambda *a, **k: None
+sup.capture_page_login = lambda *a, **k: None
+os.environ["MACLAW_BOT_TAKEOVER_IDLE_SECONDS"] = "300"
+page = {"url": "https://passport.example.com/login", "state": "complete", "form": True}
+sup.login_page_state = lambda key: dict(page)
+sup.ctl_takeover_begin({"key": bot, "reason": "需要登录小红书"})
+d = json.loads((sup.ROOT / bot / "takeover.json").read_text())
+t0 = d["since"]
+print(sup.takeover_expire_if_idle(bot, now=t0 + 30))
+page.update(url="https://creator.xiaohongshu.com/new/home", form=False)
+sup.touch_bot_file(bot, "human_input", force=True)
+t = os.path.getmtime(sup.ROOT / bot / "human_input")
+print(sup.takeover_expire_if_idle(bot, now=t + 5))
+print(sup.takeover_expire_if_idle(bot, now=t + 45), sup.takeover_state(bot) is None)
+s = sup.ctl_bot_state({"key": bot})
+print(s["auto_handback"], s["auto_handback_trigger"])
+sup._login_probe_at.clear()
+sup.ctl_takeover_begin({"key": bot, "reason": "拿不到发布按钮，请帮忙点发布"})
+print(sup.takeover_expire_if_idle(bot, now=time.time() + 60), sup.takeover_state(bot) is not None)
+print(sup.page_shows_signed_in({"url": "https://x.com/i/flow/login", "state": "complete", "form": False}),
+      sup.page_shows_signed_in({"url": "https://x.com/home", "state": "loading", "form": False}))
+`, botOwner)
+	want := "False\nFalse\nTrue True\nTrue signed_in\nFalse True\nFalse False"
 	if out != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}

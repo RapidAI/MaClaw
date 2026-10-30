@@ -120,6 +120,11 @@ func desktopNoteAutoHandback(scope agentruntime.Scope, out map[string]any) {
 	if v, ok := out["auto_handback_idle"].(float64); ok {
 		idle = int(v)
 	}
+	if trigger, _ := out["auto_handback_trigger"].(string); trigger == "signed_in" {
+		log.Printf("[desktop] takeover auto hand back: page shows signed in")
+		desktopEmitNote(scope, "takeover_auto_handback", "bot", "页面已显示登录成功，已自动交还给 Bot")
+		return
+	}
 	log.Printf("[desktop] takeover auto hand back after %ds without human input", idle)
 	desktopEmitNote(scope, "takeover_auto_handback", "bot", fmt.Sprintf("人类接管 %d 秒无操作，已自动交还给 Bot", idle))
 }

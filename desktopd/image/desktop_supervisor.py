@@ -6411,6 +6411,7 @@ def ctl_bot_state(request):
         "yield": should_yield,
         "auto_handback": handed is not None,
         "auto_handback_idle": int((handed or {}).get("idle_seconds") or 0),
+        "auto_handback_trigger": str((handed or {}).get("trigger") or "idle"),
     }
 
 
@@ -6454,6 +6455,8 @@ def takeover_expire_if_idle(key, now=None):
         pass
     expires = int(last + limit)
     if now < expires:
+        if takeover_login_done(key, data, now):
+            return True
         if data.get("expires_at") != expires:
             data["expires_at"] = expires
             data["idle_seconds"] = limit
@@ -6471,6 +6474,96 @@ def takeover_expire_if_idle(key, now=None):
     except OSError:
         pass
     return True
+
+
+# A takeover asked for to sign in or pass a captcha ends by itself once the
+# page shows the person is through: the bot need not wait for 交还.
+LOGIN_TAKEOVER_RE = re.compile(r"登录|登陆|扫码|二维码|验证码|人机验证|滑块|captcha|log ?in|sign ?in|verif", re.I)
+PUBLISH_TAKEOVER_RE = re.compile(r"发布|发表|提交|publish|post\b|submit", re.I)
+LOGIN_URL_RE = re.compile(r"login|signin|sign_in|sign-in|passport|/auth|account/|sso\.|captcha|verify|challenge", re.I)
+LOGIN_PROBE_SECONDS = 10
+LOGIN_PAGE_PROBE = (
+    "(() => { const vis = e => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e); "
+    "return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; }; "
+    "const pw = [...document.querySelectorAll('input[type=password]')].some(vis); "
+    "const box = [...document.querySelectorAll('[class*=login i],[class*=captcha i],[id*=login i],[id*=captcha i],iframe[src*=captcha i]')]"
+    ".some(e => vis(e) && e.getBoundingClientRect().width > 200 && e.getBoundingClientRect().height > 150); "
+    "const qr = /扫码登录|二维码登录|验证码登录|安全验证|拖动滑块/.test((document.body && document.body.innerText || '').slice(0, 20000)); "
+    "return {url: location.href, state: document.readyState, form: pw || box || qr}; })()"
+)
+
+
+def login_takeover(reason):
+    reason = str(reason or "")
+    return bool(LOGIN_TAKEOVER_RE.search(reason)) and not PUBLISH_TAKEOVER_RE.search(reason)
+
+
+def login_page_state(key):
+    """{url, state, form} of the frontmost page, or None when unknown."""
+    try:
+        pages = browser_pages(http_json_any("127.0.0.1", chrome_debug_port(key), "/json/list"))
+    except Exception:
+        return None
+    if not pages:
+        return None
+    ws = str(pages[0].get("webSocketDebuggerUrl") or "")
+    try:
+        with cdp_connection(ws) as conn:
+            conn.sock.settimeout(4)
+            result = conn.call("Runtime.evaluate", {"expression": LOGIN_PAGE_PROBE, "returnByValue": True})
+    except (OSError, ValueError, TypeError):
+        return None
+    value = cdp_eval_value(result)
+    return value if isinstance(value, dict) else None
+
+
+def page_shows_signed_in(state):
+    if not isinstance(state, dict) or state.get("state") != "complete":
+        return False
+    url = str(state.get("url") or "")
+    if not url.startswith("http") or LOGIN_URL_RE.search(url.split("?", 1)[0]):
+        return False
+    return not state.get("form")
+
+
+def takeover_login_done(key, data, now):
+    """During a login/captcha takeover, end it once the page shows the person
+    is signed in and they have not touched the display for the yield window
+    (never while they are typing). Probed at most every LOGIN_PROBE_SECONDS."""
+    if not login_takeover(data.get("reason")):
+        return False
+    try:
+        since = float(data.get("since") or 0)
+    except (TypeError, ValueError):
+        since = 0.0
+    last = since
+    try:
+        last = max(last, (ROOT / key / "human_input").stat().st_mtime)
+    except OSError:
+        pass
+    if now - last < BOT_HUMAN_YIELD_SECONDS:
+        return False
+    probed = _login_probe_at.get(key, 0)
+    if now - probed < LOGIN_PROBE_SECONDS:
+        return False
+    _login_probe_at[key] = now
+    state = login_page_state(key)
+    if not page_shows_signed_in(state):
+        return False
+    url = str(state.get("url") or "")[:200]
+    log_event("takeover_auto_handback", key=key, trigger="signed_in", url=url,
+              reason=str(data.get("reason") or "")[:120])
+    ctl_takeover_end({"key": key, "source": "login_detected"})
+    try:
+        (ROOT / key / "auto_handback.json").write_text(json.dumps(
+            {"at": int(now), "trigger": "signed_in", "url": url,
+             "reason": str(data.get("reason") or "")[:120]}), encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
+_login_probe_at = {}
 
 
 def pop_auto_handback(key):
