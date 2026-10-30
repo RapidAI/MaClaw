@@ -491,3 +491,37 @@ print(a[a.index("-framerate") + 1], "mpdecimate" in a[a.index("-vf") + 1], sup.T
 		t.Fatalf("got %s", out)
 	}
 }
+
+// One encoder per display, shared by every Annex B viewer: the first viewer
+// starts it, a later one starts from the cached GOP (keyframe first), and it
+// stops when the last viewer leaves.
+func TestSupervisorH264SharedEncoder(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket, subprocess, time
+spawned = []
+def spawn(self, argv, env):
+    spawned.append(argv)
+    return subprocess.Popen(["sleep", "30"], stdout=subprocess.PIPE)
+sup.H264SharedEncoder.spawn = spawn
+sup.desktop_geometry = lambda: "1280x800x24"
+a = sup.H264Viewer(socket.socketpair()[0], 31, "", True)
+b = sup.H264Viewer(socket.socketpair()[0], 31, "", True)
+e1 = sup.h264_shared_encoder(31, 1280, 800, 15)
+a.shared = e1; e1.subscribe(a)
+time.sleep(0.3)
+e1.fan_out(b"K1", True); e1.fan_out(b"d1", False)
+e2 = sup.h264_shared_encoder(31, 1280, 800, 15)
+b.shared = e2; e2.subscribe(b)
+time.sleep(0.2)
+print(e1 is e2, len(spawned), [f for _, f, _ in a.queue], [f for _, f, _ in b.queue])
+e1.unsubscribe(a)
+print(e1.stopped.is_set(), 31 in sup._h264_encoders)
+e1.unsubscribe(b)
+time.sleep(0.5)
+print(e1.stopped.is_set(), 31 in sup._h264_encoders, e1.proc is None)
+`)
+	want := "True 1 [b'K1', b'd1'] [b'K1', b'd1']\nFalse True\nTrue False True"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}

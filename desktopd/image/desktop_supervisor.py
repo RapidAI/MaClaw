@@ -4883,6 +4883,164 @@ start();
 </script>"""
 
 
+class H264SharedEncoder:
+    """One ffmpeg per display, fanned out to every Annex B viewer of it.
+
+    10-31 papers: each viewer had its own x11grab + libx264 (four viewers of
+    one screen were four encoders), which kept a 1.5-CPU bot container at
+    ~107%. It starts with the first viewer and stops when the last one
+    leaves. A new viewer starts from the cached frames since the latest IDR,
+    so its first frame is a keyframe without restarting the encoder. The
+    encoder runs interactive (more fps) while any viewer drives the screen.
+    The fragmented-MP4 (MSE) fallback keeps its own encoder: each MSE viewer
+    needs its own init segment."""
+
+    GOP_CACHE_MAX = 240
+
+    def __init__(self, display, width, height, fps):
+        self.display = display
+        self.size = "%dx%d" % (width, height)
+        self.fps = fps
+        self.lock = threading.Lock()
+        self.viewers = []
+        self.gop = []
+        self.proc = None
+        self.thread = None
+        self.stopped = threading.Event()
+        self.restart = threading.Event()
+        self.interactive = False
+        self.last_restart = 0.0
+        self.starts = 0
+
+    def _mode(self):
+        return any(v.want_input and v.input_allowed() for v in self.viewers)
+
+    def subscribe(self, viewer):
+        with self.lock:
+            self.viewers.append(viewer)
+            for frame, key in self.gop:
+                viewer.offer(frame, key)
+            mode = self._mode()
+            start = self.thread is None
+            change = not start and mode != self.interactive
+            self.interactive = mode
+            if start:
+                self.stopped.clear()
+                self.thread = threading.Thread(target=self.loop, daemon=True)
+                self.thread.start()
+        if change:
+            self.request_restart(force=True)
+
+    def unsubscribe(self, viewer):
+        with self.lock:
+            if viewer in self.viewers:
+                self.viewers.remove(viewer)
+            last = not self.viewers
+            change = not last and self._mode() != self.interactive
+            if last:
+                self.stopped.set()
+                self.gop = []
+                if _h264_encoders.get(self.display) is self:
+                    _h264_encoders.pop(self.display, None)
+            else:
+                self.interactive = self._mode()
+        if last or change:
+            self.request_restart(force=True)
+
+    def request_restart(self, force=False):
+        now = time.monotonic()
+        if not force and now - self.last_restart < H264_IDR_WAIT_SECONDS:
+            return
+        self.last_restart = now
+        self.restart.set()
+        proc = self.proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def argv(self):
+        fps = max(self.fps, H264_INTERACTIVE_FPS) if self.interactive else self.fps
+        return h264_ffmpeg_argv(self.display, self.size, fps, False, self.interactive)
+
+    def fan_out(self, frame, key):
+        with self.lock:
+            if key:
+                self.gop = []
+            if len(self.gop) < self.GOP_CACHE_MAX:
+                self.gop.append((frame, key))
+            viewers = list(self.viewers)
+        for viewer in viewers:
+            viewer.offer(frame, key)
+
+    def spawn(self, argv, env):
+        return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL, env=env)
+
+    def loop(self):
+        failures = 0
+        env = dict(os.environ, DISPLAY=":%d" % self.display)
+        while not self.stopped.is_set():
+            self.restart.clear()
+            started = time.monotonic()
+            try:
+                proc = self.spawn(self.argv(), env)
+            except OSError:
+                break
+            self.proc = proc
+            self.starts += 1
+            log_event("h264_encoder_start", display=self.display, interactive=self.interactive,
+                      fps=max(self.fps, H264_INTERACTIVE_FPS) if self.interactive else self.fps, viewers=len(self.viewers))
+            with self.lock:
+                self.gop = []
+            splitter = FlvToAnnexB()
+            try:
+                while not self.stopped.is_set():
+                    chunk = proc.stdout.read1(256 * 1024) if hasattr(proc.stdout, "read1") else proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    for frame, key in splitter.feed(chunk):
+                        self.fan_out(frame, key)
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                proc.wait()
+                self.proc = None
+            if self.stopped.is_set():
+                break
+            if self.restart.is_set():
+                continue
+            failures = failures + 1 if time.monotonic() - started < 5 else 1
+            if failures >= 3:
+                break
+            time.sleep(0.5)
+        with self.lock:
+            viewers = list(self.viewers)
+            self.thread = None
+            if _h264_encoders.get(self.display) is self:
+                _h264_encoders.pop(self.display, None)
+        for viewer in viewers:
+            viewer.encoder_finished()
+
+
+_h264_encoders = {}
+_h264_encoders_lock = threading.Lock()
+
+
+def h264_shared_encoder(display, width, height, fps):
+    with _h264_encoders_lock:
+        enc = _h264_encoders.get(display)
+        if enc is None or enc.stopped.is_set():
+            enc = H264SharedEncoder(display, width, height, fps)
+            _h264_encoders[display] = enc
+        return enc
+
+
 class H264Viewer:
     """One /h264 WebSocket: an encoder for this viewer, the video sender,
     the control reader and the lease ticker."""
@@ -4956,7 +5114,17 @@ class H264Viewer:
             self.need_idr = True
             self.need_idr_since = time.monotonic()
 
+    def encoder_finished(self):
+        with self.cond:
+            self.finished = True
+            self.cond.notify_all()
+
     def _restart_encoder(self):
+        shared = getattr(self, "shared", None)
+        if shared is not None:
+            self.need_idr_since = time.monotonic()
+            shared.request_restart()
+            return
         now = time.monotonic()
         if now - self.last_restart < H264_IDR_WAIT_SECONDS:
             return
@@ -5160,6 +5328,9 @@ class H264Viewer:
         self.closed.set()
         with self.cond:
             self.cond.notify_all()
+        shared = getattr(self, "shared", None)
+        if shared is not None:
+            shared.unsubscribe(self)
         proc = self.proc
         if proc is not None:
             try:
@@ -5187,7 +5358,13 @@ class H264Viewer:
         self.send_json({"type": "hello", "proto": "maclaw-h264/1", "width": self.width, "height": self.height,
                         "fps": self.fps, "mode": "fmp4" if self.mse else "annexb", "input": allowed,
                         "clipboard": clipboard_tool() is not None})
-        for target in (self.reader_loop, self.encoder_loop, self.lease_loop):
+        targets = [self.reader_loop, self.lease_loop]
+        if self.mse:
+            targets.append(self.encoder_loop)
+        else:
+            self.shared = h264_shared_encoder(self.display, self.width, self.height, self.fps)
+            self.shared.subscribe(self)
+        for target in targets:
             threading.Thread(target=target, daemon=True).start()
         try:
             self.sender_loop()
