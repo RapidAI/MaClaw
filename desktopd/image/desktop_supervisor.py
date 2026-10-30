@@ -6313,6 +6313,29 @@ def pick_hung_page(pages, url):
     return pages[0] if pages else None
 
 
+PAGE_ALIVE_PROBE = (
+    "(() => { const filled = [...document.querySelectorAll('input:not([type=hidden]):not([type=password]),textarea,[contenteditable=\"true\"],[contenteditable=\"\"]')]"
+    ".some(e => String(e.value || e.innerText || '').trim().length > 0); "
+    "return {state: document.readyState, filled: filled, text: (document.body && document.body.innerText || '').length}; })()"
+)
+
+
+def page_alive(target, timeout=8):
+    """Ask the tab's renderer for its state. None means it did not answer
+    (hung or crashed); otherwise {state, filled, text}."""
+    ws = str((target or {}).get("webSocketDebuggerUrl") or "")
+    if not ws.startswith("ws://"):
+        return None
+    try:
+        with cdp_connection(ws) as conn:
+            conn.sock.settimeout(timeout)
+            result = conn.call("Runtime.evaluate", {"expression": PAGE_ALIVE_PROBE, "returnByValue": True})
+    except (OSError, ValueError, TypeError):
+        return None
+    value = cdp_eval_value(result)
+    return value if isinstance(value, dict) else None
+
+
 def page_unstick(key, url):
     """Close a tab whose renderer stopped answering and open its URL again.
     Seen live 10-22: zhuanlan.zhihu.com/write hung while loading, and every
@@ -6328,6 +6351,15 @@ def page_unstick(key, url):
     target = pick_hung_page(pages, url)
     if target is None:
         return {"done": False, "why": "no page"}
+    # A slow step is usually load, not a dead tab (10-31 papers: three
+    # reopenings of a filled Xiaohongshu editor). Reopen only a renderer that
+    # does not answer; a live page, above all one with entered text, stays.
+    alive = page_alive(target)
+    if alive is not None:
+        why = "alive_with_content" if alive.get("filled") else "alive_slow"
+        log_event("page_unstick_skipped", key=key, url=str(target.get("url") or "")[:200], reason=why,
+                  state=str(alive.get("state") or ""))
+        return {"done": False, "why": why}
     reopen = str(url or "").strip() or str(target.get("url") or "")
     if not reopen.startswith(("http://", "https://")):
         reopen = str(target.get("url") or "")
@@ -6344,7 +6376,8 @@ def page_unstick(key, url):
                 http_devtools(port, "GET", "/json/activate/%s" % quote(new_id, safe=""))
     except OSError as exc:
         return {"done": False, "why": "devtools call failed: %s" % exc}
-    log_event("page_unstick", key=key, closed=str(target.get("url") or "")[:200], reopened=reopen[:200])
+    log_event("page_unstick", key=key, closed=str(target.get("url") or "")[:200], reopened=reopen[:200],
+              reason="renderer_not_answering")
     return {"done": True, "closed": str(target.get("url") or "")[:200], "reopened": reopen[:200]}
 
 

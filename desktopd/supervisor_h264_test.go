@@ -470,11 +470,16 @@ def dev(port, method, path):
     return b"HTTP/1.1 200 OK\r\n\r\n{\"id\":\"C\"}"
 sup.http_devtools = dev
 sup.log_event = lambda *a, **k: None
+sup.page_alive = lambda t, timeout=8: {"state": "complete", "filled": True}
+print(sup.page_unstick("k", "https://zhuanlan.zhihu.com/write"), calls)
+sup.page_alive = lambda t, timeout=8: {"state": "loading", "filled": False}
+print(sup.page_unstick("k", "https://zhuanlan.zhihu.com/write")["why"], calls)
+sup.page_alive = lambda t, timeout=8: None
 r = sup.page_unstick("k", "https://zhuanlan.zhihu.com/write")
 print(r["done"], calls)
 print(sup.pick_hung_page(pages, "")["id"], sup.pick_hung_page(pages, "https://zhuanlan.zhihu.com/p/1")["id"])
 `)
-	want := "True ['GET /json/close/B', 'PUT /json/new?https://zhuanlan.zhihu.com/write', 'GET /json/activate/C']\nA B"
+	want := "{'done': False, 'why': 'alive_with_content'} []\nalive_slow []\nTrue ['GET /json/close/B', 'PUT /json/new?https://zhuanlan.zhihu.com/write', 'GET /json/activate/C']\nA B"
 	if out != want {
 		t.Fatalf("got %q", out)
 	}

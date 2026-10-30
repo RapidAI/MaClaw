@@ -174,7 +174,11 @@ func desktopUnstickAfterTimeout(scope agentruntime.Scope, action string, args ma
 	}
 	res, _ := out["unstick"].(map[string]any)
 	if done, _ := res["done"].(bool); !done {
-		log.Printf("[desktop-step] unstick after %s timeout not done: %v", action, res["why"])
+		why, _ := res["why"].(string)
+		log.Printf("[desktop-step] unstick after %s timeout not done: %v", action, why)
+		if strings.HasPrefix(why, "alive") {
+			return desktopSlowPageNote
+		}
 		return ""
 	}
 	reopened, _ := res["reopened"].(string)
@@ -281,6 +285,9 @@ func desktopUnstickDue(scope agentruntime.Scope) bool {
 	desktopUnstickLast[key] = time.Now()
 	return true
 }
+
+// desktopSlowPageNote: the tab answered, so the step was slow from load.
+const desktopSlowPageNote = "the page is alive but the desktop is slow right now (load), so nothing was closed or reloaded. Wait 5-10 s (action=wait), then probe the current page and continue from its state; do not navigate to it again or re-enter content"
 
 // desktopMenuTriggerRe: typed text that opens a site's topic, mention or
 // autocomplete menu. 10-31 Xiaohongshu: "#话题" in the body left the topic

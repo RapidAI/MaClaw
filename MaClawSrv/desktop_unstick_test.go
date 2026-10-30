@@ -142,3 +142,22 @@ func TestDesktopFillWithHashtagWarnsAboutTheMenu(t *testing.T) {
 		}
 	}
 }
+
+// A slow step on a live tab is load: nothing is reopened, the bot waits.
+func TestDesktopStepTimeoutWaitsOnALiveSlowPage(t *testing.T) {
+	t.Setenv(desktopStepTimeoutEnv, "0.05")
+	oldOp, oldUn := operateDesktopFunc, desktopUnstickFunc
+	defer func() { operateDesktopFunc, desktopUnstickFunc = oldOp, oldUn }()
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		time.Sleep(time.Second)
+		return "", nil
+	}
+	desktopUnstickFunc = func(ctx context.Context, scope agentruntime.Scope, url string) (map[string]any, error) {
+		return map[string]any{"unstick": map[string]any{"done": false, "why": "alive_slow"}}, nil
+	}
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("u1", "bot_live_slow")}
+	_, err := operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "click", "ref": "e3"})
+	if err == nil || !strings.Contains(err.Error(), "alive but the desktop is slow") || strings.Contains(err.Error(), "opened again") {
+		t.Fatalf("err=%v", err)
+	}
+}
