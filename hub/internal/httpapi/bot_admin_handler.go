@@ -96,6 +96,8 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 		status, code, message = http.StatusNotImplemented, "PAUSE_UNSUPPORTED", botmgmt.ErrPauseUnsupported.Error()
 	case errors.Is(err, botmgmt.ErrDesktopBusy):
 		status, code, message = http.StatusConflict, "DESKTOP_BUSY", botmgmt.ErrDesktopBusy.Error()
+	case errors.Is(err, botmgmt.ErrDesktopNotRunning):
+		status, code, message = http.StatusConflict, "DESKTOP_NOT_RUNNING", botmgmt.ErrDesktopNotRunning.Error()
 	case errors.Is(err, botmgmt.ErrNotPrimary):
 		status, code, message = http.StatusForbidden, "NOT_PRIMARY", botmgmt.ErrNotPrimary.Error()
 	case errors.Is(err, botmgmt.ErrNoSuchBot):

@@ -16,6 +16,7 @@ type ctlDesktop struct {
 	mu    sync.Mutex
 	ops   []string
 	users []string
+	err   error
 }
 
 func (d *ctlDesktop) Ctl(_ context.Context, _, userID string, request map[string]any) (map[string]any, error) {
@@ -24,6 +25,9 @@ func (d *ctlDesktop) Ctl(_ context.Context, _, userID string, request map[string
 	op, _ := request["op"].(string)
 	d.ops = append(d.ops, op)
 	d.users = append(d.users, userID)
+	if d.err != nil {
+		return nil, d.err
+	}
 	return map[string]any{"ok": true}, nil
 }
 

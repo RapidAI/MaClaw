@@ -47,3 +47,12 @@ func TestDemoRecordStartNarrateStop(t *testing.T) {
 		t.Fatalf("other user err=%v", err)
 	}
 }
+
+func TestDemoRecordStartOnASleepingDisplaySaysSo(t *testing.T) {
+	t.Setenv(demoskill.EnvFlag, "1")
+	svc, desk := newViewHoldService(t)
+	desk.err = errors.New("desktopd ctl: 400 invalid request: this bot's desktop is not running; open its desktop, then start the recording")
+	if _, err := svc.DemoRecordStart(context.Background(), "tenant-v", "alice", "bot_iso", ""); !errors.Is(err, ErrDesktopNotRunning) || errors.Is(err, ErrSrv) {
+		t.Fatalf("err=%v want ErrDesktopNotRunning", err)
+	}
+}

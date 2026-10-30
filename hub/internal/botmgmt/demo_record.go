@@ -61,6 +61,11 @@ func (s *Service) demoRecordCtl(ctx context.Context, tenantID, userID, botID str
 	}
 	out, err := ctl.Ctl(ctx, tenantID, desktopUserForBot(userID, bot), request)
 	if err != nil {
+		if strings.Contains(err.Error(), "desktop is not running") {
+			// desktopd refuses a recording on a sleeping display; as ErrSrv
+			// the person read "bot service is unavailable" (papers 2026-10-30).
+			return nil, ErrDesktopNotRunning
+		}
 		return nil, fmt.Errorf("%w: %s", ErrSrv, err.Error())
 	}
 	return out, nil

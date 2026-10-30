@@ -36,6 +36,9 @@ var (
 	// user. A second execute is refused. The same client message is not a
 	// second execute: MaClawSrv replays that key.
 	ErrDesktopBusy = errors.New("这台云桌面还有一件在做。")
+	// ErrDesktopNotRunning: the bot's own display is asleep, so a demo
+	// recording would capture nothing.
+	ErrDesktopNotRunning = errors.New("这个 Bot 的桌面现在没有运行，先打开它的桌面，再开始录制。")
 	// ErrNotPrimary is a bot other than this account's primary trying to
 	// notify or hand work to another bot.
 	ErrNotPrimary = errors.New("我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。")
