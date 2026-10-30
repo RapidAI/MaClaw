@@ -66,6 +66,9 @@ func desktopTurnPhase(request agentruntime.TurnRequest) string {
 	content, meta := desktopTurnMessage(request)
 	key := desktopTurnMemKey(request, meta)
 	if key == "" {
+		if phase == "" {
+			return "execute"
+		}
 		return phase
 	}
 	now := time.Now()
@@ -87,7 +90,16 @@ func desktopTurnPhase(request agentruntime.TurnRequest) string {
 		// The person handed the desktop back for a task already under way.
 		return "execute"
 	}
-	return phase
+	if mem.phase == "plan" && now.Sub(mem.phaseAt) < desktopTurnMemoryTTL {
+		// The GUI's plan->execute flow: a reply inside a plan stays in plan
+		// until the GUI sends execute.
+		return "plan"
+	}
+	// No phase and no plan under way (API, Hub wake, replay, a chat with no
+	// GUI): ordinary web and desktop steps just run. Asking "要我继续吗" here
+	// stalled replays on papers 2026-10-30. Publishing still asks first: that
+	// gate is desktopTurnPublishApproved, independent of the phase.
+	return "execute"
 }
 
 // desktopTurnPublishApproved: explicit "publish without asking", or the
