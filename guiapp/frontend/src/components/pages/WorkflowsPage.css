@@ -15,14 +15,6 @@
     flex-shrink: 0;
 }
 
-.workflows-page__title {
-    margin: 0;
-    font-size: 1.1rem;
-    font-weight: 700;
-    color: var(--theme-text-primary);
-    text-align: center;
-}
-
 .workflows-page__subtitle {
     margin: 4px 0 0;
     font-size: 0.78rem;

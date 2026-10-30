@@ -337,6 +337,9 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	if goalContinuationTurn(trimmed, msg.Platform) || sessionRoundTurn(trimmed, msg.Platform) {
 		return "", false
 	}
+	if h.discardStoppedRunQuestion(msg.UserID) {
+		return "", false
+	}
 	// Structured internal commands (button clicks) are never "answers" to pending
 	// questions — they are deterministic routing signals. Consume and discard
 	// any pending reply state to avoid blocking on LLM classification (which uses
@@ -435,6 +438,9 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	if goalContinuationTurn(trimmed, "") || isSessionRoundContinuation(trimmed) {
 		return "", nil, false, false
 	}
+	if h.discardStoppedRunQuestion(userID) {
+		return "", nil, false, false
+	}
 	// Structured internal commands (button clicks such as
 	// __confirm_execution__ / __cancel_execution__) are deterministic routing
 	// signals handled by the confirmation gate in preflight. They must never
@@ -522,6 +528,29 @@ func pendingAskOptionAnswer(pending *pendingAskUserState, text string) string {
 		return text
 	}
 	return choice
+}
+
+// discardStoppedRunQuestion drops a question the stopped run was still
+// waiting on. The next user message is a new instruction in the same task,
+// not that question's answer. The question text stays in the conversation.
+// A host continuation does not call this: the question stays until the user speaks.
+func (h *IMMessageHandler) discardStoppedRunQuestion(userID string) bool {
+	if h == nil || !h.hasCancelledTaskBoundary(userID) {
+		return false
+	}
+	discarded := false
+	if raw, had := h.takePendingAskUser(userID); had {
+		if id := mailboxDraftIDFromPending(raw); id != "" {
+			h.dropMailboxDraft(userID, id)
+		}
+		discarded = true
+		log.Printf("[AskUser] discarded pending question after stopped run user=%s", userID)
+	}
+	if _, had := h.takePendingUserReply(userID); had {
+		discarded = true
+		log.Printf("[PendingUserReply] discarded pending question after stopped run user=%s", userID)
+	}
+	return discarded
 }
 
 func mailboxDraftIDFromPending(raw interface{}) string {

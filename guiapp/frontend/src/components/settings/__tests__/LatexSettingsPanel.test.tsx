@@ -1,3 +1,4 @@
+import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LatexSettingsPanel } from '../LatexSettingsPanel';
@@ -49,6 +50,19 @@ describe('LatexSettingsPanel', () => {
         const box = screen.getByRole('switch') as HTMLInputElement;
         expect(box.checked).toBe(true);
         expect(screen.getByText(/下载源:/)).toBeTruthy();
+    });
+
+    it('clears the initial loading gate under StrictMode double-mount', async () => {
+        // Regression: StrictMode cancels the first tick and the
+        // initialRequestRef guard skipped the second, so setLoading(false)
+        // never ran and the panel stayed on "加载中..." forever.
+        render(
+            <React.StrictMode>
+                <LatexSettingsPanel lang="en" />
+            </React.StrictMode>,
+        );
+        expect(await screen.findByTestId('latex-ready')).toBeTruthy();
+        expect(screen.queryByText('Loading...')).toBeNull();
     });
 
     it('offers a download when scheme-small is missing', async () => {

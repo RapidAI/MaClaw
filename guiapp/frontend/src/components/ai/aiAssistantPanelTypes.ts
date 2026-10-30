@@ -224,6 +224,7 @@ export interface AIAssistantPanelProps {
     /** Opens a task-list row that has no open assistant tab yet. */
     onOpenTask?: (projectPath: string, task?: TaskManagementItem) => void;
     brandId?: string | null;
+    brandDisplayName?: string | null;
     brandDisplayNameCN?: string | null;
 }
 

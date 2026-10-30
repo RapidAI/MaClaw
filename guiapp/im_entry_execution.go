@@ -444,11 +444,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		if rewritten := semanticGovernedEffectPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
 			semanticIntent = rewritten
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			if strings.Contains(rewritten.Reason, "schedule payload planning") {
-				log.Printf("[semantic-routing] schedule payload planning user=%q", msg.UserID)
-			} else {
-				log.Printf("[semantic-routing] mailbox delete planning user=%q", msg.UserID)
-			}
+			logGovernedEffectPlanning(msg.UserID, rewritten.Reason)
 		}
 		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
 		if rewritten := semanticExplicitSkillPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {

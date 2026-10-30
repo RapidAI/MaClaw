@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -23,6 +24,21 @@ func ResponseHasPDF(fileName, localPath, mimeType string) bool {
 // model stops. The sentence must not name send_file: that name is also an
 // external send, and a model call pauses the turn before the host attach.
 const HostPublishedCurrentChannelFileNote = "PDF artifact published. The host attaches it to this chat. This is not a send."
+
+// HostPublishedMailboxAttachmentNote is that same chat note plus the
+// workspace path mailbox_send can attach. The chat card is still not the
+// email. The sentence must not name send_file.
+func HostPublishedMailboxAttachmentNote(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return HostPublishedCurrentChannelFileNote
+	}
+	// The path is the whole last line, with slashes. A period after it was
+	// copied into the attachment argument. A Windows backslash is not a JSON
+	// escape, so a literal copy of C:\Users never reached this send.
+	path = filepath.ToSlash(path)
+	return HostPublishedCurrentChannelFileNote + "\nCall mailbox_send with attachments set to:\n" + path
+}
 
 // HostOwnedGeneratePDFSucceeded recognizes the stable success marker emitted
 // by the trusted PDF adapter.  Error/unknown markers always win, preventing a

@@ -50,7 +50,6 @@ import type { ExpertDefinition } from '../ai/expertTypes';
 import type { CodingTaskLaunch } from '../ai/codingTaskLaunch';
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON } from '../ai/expertTypes';
 import { VirtualRepositoryWorkspace } from './VirtualRepositoryWorkspace';
-import { utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { tailText } from '../../i18n/mnTail'
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
@@ -1018,11 +1017,8 @@ export const UtilitiesPage = ({
     };
 
     const t = useMemo(() => ({
-        title: mode === 'tools'
-            ? (lang === 'zh-Hant' ? '工具' : tailText(lang ?? "", 'Tools', '工具'))
-            : mode === 'experts'
-                ? (lang === 'zh-Hant' ? 'AI 專家' : tailText(lang ?? "", 'AI Experts', 'AI 专家'))
-                : utilitiesPageTitle(lang),
+        // No `title` entry: the top header owns the page name on every mode of
+        // this landing surface (MaClaw 工具 / AI 专家 / 专业功能).
         subtitle: mode === 'tools'
             ? (tailText(lang ?? "", 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)', '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）'))
             : mode === 'experts'
@@ -1922,10 +1918,10 @@ export const UtilitiesPage = ({
         return (
             <div className="utilities-page" data-testid="utilities-page" data-mode={mode}>
                 <div className="utilities-page__header">
-                    <div className={mode === 'experts' ? 'utilities-page__title-row utilities-page__title-row--experts' : undefined}>
-                        <h1 className="utilities-page__title">{t.title}</h1>
-                        {mode === 'experts' ? expertToolbar : null}
-                    </div>
+                    {/* No in-page H1: the top header already names this page
+                        (MaClaw 工具 / MaClaw AI 专家) — a second title read as
+                        duplication. Sub-pages keep their own specific titles. */}
+                    {mode === 'experts' ? <div className="utilities-page__title-row">{expertToolbar}</div> : null}
                     <p className="utilities-page__subtitle">{t.subtitle}</p>
                     {mode === 'experts' ? <p className="utilities-experts__exchange-hint utilities-page__header-exchange-hint">{t.expertExchangeHint}</p> : null}
                     {showToolSurface && acpStatusLine ? (

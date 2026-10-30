@@ -192,6 +192,27 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			Action:  progress.ActionReplace,
 			Reply:   resp.Text,
 		}
+	case imCommandGoal:
+		// /goal is a host command. Merging it replans the live call and the
+		// model stops. Create and resume arm the continuation from the
+		// running turn's post-loop. Pause and cancel stop only the goal's
+		// own continuation; a desktop coding turn keeps running.
+		// ActionStatusQuery means this command was handled here. It does not
+		// replace the live turn. A goal continuation that pause or cancel
+		// stops is cancelled on the loop itself.
+		resp := ih.handler.handleGoalCommand(IMUserMessage{UserID: userID, Platform: "desktop", Text: analysisText}, normalizeImmediateCommandText(analysisText))
+		reply := ""
+		if resp != nil {
+			reply = strings.TrimSpace(resp.Text)
+			if reply == "" {
+				reply = strings.TrimSpace(resp.Error)
+			}
+		}
+		return progress.InterruptResult{
+			Handled: true,
+			Action:  progress.ActionStatusQuery,
+			Reply:   reply,
+		}
 	}
 	if ih.handler.hasCancelledTaskBoundary(userID) || !ih.handler.hasActiveLoopForUser(userID) {
 		return progress.InterruptResult{}

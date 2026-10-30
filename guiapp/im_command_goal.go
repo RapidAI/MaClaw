@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/goal"
@@ -135,6 +136,72 @@ func (h *IMMessageHandler) beginQueuedGoalTurnHold(msg IMUserMessage) func(keep 
 	}
 }
 
+type goalSlashVerb int
+
+const (
+	goalSlashHelp goalSlashVerb = iota
+	goalSlashStatus
+	goalSlashPause
+	goalSlashResume
+	goalSlashCancel
+	goalSlashCreate
+)
+
+// splitGoalCommand separates the slash verb from the objective body.
+// Help and status only produce a reply. The other verbs change the goal row.
+func splitGoalCommand(trimmed string) (verb goalSlashVerb, body string) {
+	body = strings.TrimSpace(trimmed)
+	if len(body) >= 5 && strings.EqualFold(body[:5], "/goal") {
+		body = strings.TrimSpace(body[5:])
+	}
+	switch strings.ToLower(body) {
+	case "":
+		return goalSlashHelp, ""
+	case "status", "get":
+		return goalSlashStatus, body
+	case "pause", "暂停":
+		return goalSlashPause, body
+	case "resume", "继续", "恢复":
+		return goalSlashResume, body
+	case "cancel", "clear", "取消":
+		return goalSlashCancel, body
+	default:
+		return goalSlashCreate, body
+	}
+}
+
+func goalSlashMutates(verb goalSlashVerb) bool {
+	return verb == goalSlashPause || verb == goalSlashResume || verb == goalSlashCancel || verb == goalSlashCreate
+}
+
+// goalSlashSettled reports that the verb changed the row, or wrote a row that
+// a second send would duplicate. A refusal such as "已有活跃目标" is not
+// settled: the caller keeps the command so the person sees that reply.
+func goalSlashSettled(verb goalSlashVerb, before, after *goal.Goal) bool {
+	switch verb {
+	case goalSlashPause:
+		if after == nil || after.Status != goal.StatusPaused {
+			return false
+		}
+		return before == nil || before.Status != goal.StatusPaused || before.GoalID != after.GoalID
+	case goalSlashResume:
+		return after != nil && after.Status == goal.StatusActive &&
+			before != nil && before.Status == goal.StatusPaused && before.GoalID == after.GoalID
+	case goalSlashCancel:
+		return before != nil && after == nil
+	case goalSlashCreate:
+		if after == nil {
+			return false
+		}
+		if before == nil || before.IsTerminal() || before.GoalID != after.GoalID {
+			return true
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // handleGoalCommand processes /goal slash commands.
 //
 // Usage:
@@ -149,27 +216,19 @@ func (h *IMMessageHandler) beginQueuedGoalTurnHold(msg IMUserMessage) func(keep 
 // Session owner is msg.UserID so pure coding project tabs
 // (desktop-user:<projectPath>) keep goals isolated per workbench.
 func (h *IMMessageHandler) handleGoalCommand(msg IMUserMessage, trimmed string) *IMAgentResponse {
-	// Parse sub-command: strip "/goal" prefix (case-insensitive).
-	body := strings.TrimSpace(trimmed)
-	if len(body) >= 5 && strings.EqualFold(body[:5], "/goal") {
-		body = strings.TrimSpace(body[5:])
-	}
+	verb, body := splitGoalCommand(trimmed)
 	userID := strings.TrimSpace(msg.UserID)
 
-	if body == "" {
+	switch verb {
+	case goalSlashHelp:
 		return &IMAgentResponse{Text: goalCommandHelp()}
-	}
-
-	// Sub-commands
-	lower := strings.ToLower(body)
-	switch {
-	case lower == "status" || lower == "get":
+	case goalSlashStatus:
 		return &IMAgentResponse{Text: h.goalGetForUser(userID)}
-	case lower == "pause" || lower == "暂停":
+	case goalSlashPause:
 		return &IMAgentResponse{Text: h.goalPauseForUser(userID)}
-	case lower == "resume" || lower == "继续" || lower == "恢复":
-		before := h.getGoalStore().Get(userID)
-		wasPaused := before != nil && before.Status == goal.StatusPaused
+	case goalSlashResume:
+		before := h.goalAddressFor(userID)
+		wasPaused := before.goal != nil && before.goal.Status == goal.StatusPaused
 		// Refuse before Resume. Leaving the goal active and unscheduled makes
 		// the next /goal resume a no-op, because only a paused goal is armed.
 		// The guard is the same one that refuses to schedule a continuation:
@@ -179,24 +238,22 @@ func (h *IMMessageHandler) handleGoalCommand(msg IMUserMessage, trimmed string) 
 			if text, blocked := h.pauseGoalForUnarmedRemote(userID); blocked {
 				return &IMAgentResponse{Text: "目标仍处于暂停。\n" + text}
 			}
-			h.noteGoalContinuePastUserStop(userID)
+			h.noteGoalContinuePastUserStop(before.id)
 		}
 		respText := h.goalResumeForUser(userID)
 		// Schedule only when this command actually resumed a paused goal.
 		// An already active goal keeps the turn that is already queued.
+		// The timer follows the stored row. The other spelling must not keep one.
 		if wasPaused && h.app != nil && h.app.goalContinuation != nil {
-			g := h.getGoalStore().Get(userID)
-			if g != nil && g.Status == goal.StatusActive {
+			resumed := h.goalAddressFor(userID)
+			if resumed.goal != nil && resumed.goal.Status == goal.StatusActive {
 				h.ensurePureCodingArmedForGoalContinuation(userID)
-				h.app.goalContinuation.scheduleDelayed(userID, g.GoalID)
+				h.app.cancelOtherGoalBarTimers(resumed.id)
+				h.scheduleGoalContinuationUnlessLive(resumed.id, resumed.goal.GoalID)
 			}
 		}
 		return &IMAgentResponse{Text: respText}
-	case lower == "cancel" || lower == "clear" || lower == "取消":
-		// Cancel pending continuation first
-		if h.app != nil && h.app.goalContinuation != nil {
-			h.app.goalContinuation.CancelPending(userID)
-		}
+	case goalSlashCancel:
 		return &IMAgentResponse{Text: h.goalClearForUser(userID)}
 	default:
 		// Treat everything else as the objective for a new goal
@@ -212,17 +269,23 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 		return &IMAgentResponse{Error: "创建目标失败: 会话所有者为空"}
 	}
 
-	// Check for existing non-terminal goal
-	existing := store.Get(userID)
+	// The bar may already show this session under the other slash spelling.
+	addr := h.goalAddressFor(userID)
+	existing := addr.goal
 	if existing != nil && !existing.IsTerminal() {
 		return &IMAgentResponse{
 			Error: fmt.Sprintf("已有活跃目标：%s\n状态：%s\n如需创建新目标，请先取消当前目标：/goal cancel",
 				existing.Objective, existing.Status),
 		}
 	}
+	writeID := userID
+	if existing != nil && addr.store != nil && addr.id != "" {
+		store = addr.store
+		writeID = addr.id
+	}
 
 	// Create the goal
-	g, err := store.Set(userID, objective)
+	g, err := store.Set(writeID, objective)
 	if err != nil {
 		return &IMAgentResponse{Error: fmt.Sprintf("创建目标失败: %v", err)}
 	}
@@ -238,11 +301,11 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 		mem := h.getStickyCodingWorkbenchMemory(userID)
 		if strings.TrimSpace(mem.Kind) == "remote" {
 			reason := "目标失败：远程 SSH 未连接。请先重连远程编程环境，再重新发送 /goal。"
-			store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, reason)
+			store.UpdateStatus(writeID, g.GoalID, goal.StatusFailed, reason)
 			if h.app != nil && h.app.goalContinuation != nil {
-				h.app.goalContinuation.CancelPending(userID)
-				if updated := store.Get(userID); updated != nil {
-					h.app.goalContinuation.emitGoalStateChanged(userID, updated)
+				h.app.cancelGoalBarTimers(writeID)
+				if updated := store.Get(writeID); updated != nil {
+					h.app.goalContinuation.emitGoalStateChanged(writeID, updated)
 				}
 			}
 			return &IMAgentResponse{Error: reason}
@@ -254,13 +317,79 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 	// Continuation re-enters the pure-coding sticky path when armed, so long-running
 	// goals execute in CodingSubAgent / RemoteCodingSubAgent rather than general chat.
 	if h.app != nil && h.app.goalContinuation != nil {
-		h.app.goalContinuation.emitGoalStateChanged(userID, g)
-		h.app.goalContinuation.scheduleDelayed(userID, g.GoalID)
+		h.app.goalContinuation.emitGoalStateChanged(writeID, g)
+		h.scheduleGoalContinuationUnlessLive(writeID, g.GoalID)
 	}
 
 	// Progress, pause, continue, and cancel live on the chat goal bar.
 	// The transcript keeps the goal checklist; this reply is only the ack.
 	return &IMAgentResponse{Text: "目标已开始：" + strings.TrimSpace(g.Objective)}
+}
+
+// goalContinuationMustWait reports that this owner still holds a turn.
+// A published loop is the usual case. The owner window also holds the
+// session before that loop is published and after it is cleared, until
+// the lock is released. A continuation fired into either gap waits on
+// the owner lock until the lock timeout.
+func (h *IMMessageHandler) goalContinuationMustWait(userID string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" || h.hasCancelledTaskBoundary(userID) {
+		return false
+	}
+	if h.ownerTurnBlocksContinuation(userID) {
+		return true
+	}
+	for _, id := range goalBarCandidateIDs(userID) {
+		if id == userID || h.hasCancelledTaskBoundary(id) {
+			continue
+		}
+		if h.ownerTurnBlocksContinuation(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownerTurnBlocksContinuation reports that this exact session id still holds
+// a turn. Pending text is the owner window: it is set when the lock is taken
+// and cleared when the lock is released. A host continuation's own text does
+// not count. Pause cancels that loop, and resume must still arm while the
+// continuation unwinds.
+func (h *IMMessageHandler) ownerTurnBlocksContinuation(userID string) bool {
+	if h == nil {
+		return false
+	}
+	if ctx := h.getSessionLoopCtx(userID); ctx != nil && !ctx.IsCancelled() {
+		return true
+	}
+	if turn := h.inFlightTurnForUser(userID); turn != nil && turn.ctx != nil && !turn.ctx.IsCancelled() {
+		return true
+	}
+	text := strings.TrimSpace(h.pendingForegroundText(userID))
+	return text != "" && !goalContinuationTurn(text, "")
+}
+
+// scheduleGoalContinuationUnlessLive arms the next goal turn only when this
+// owner is not inside a model loop. The owner lock wait is capped, so a
+// continuation fired under a long coding turn times out instead of running.
+// The live turn's post-loop schedule arms the goal when that turn ends.
+func (h *IMMessageHandler) scheduleGoalContinuationUnlessLive(userID, goalID string) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	goalID = strings.TrimSpace(goalID)
+	if userID == "" || goalID == "" {
+		return
+	}
+	if h.goalContinuationMustWait(userID) {
+		log.Printf("[goal] continuation waits for the live turn user=%s goal_id=%s", userID, goalID)
+		return
+	}
+	h.app.goalContinuation.scheduleDelayed(userID, goalID)
 }
 
 func goalCommandHelp() string {

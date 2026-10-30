@@ -4,7 +4,11 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // Delivery must reuse the producer's own workspace write when the bytes are
@@ -32,6 +36,42 @@ func TestFindIdenticalWorkspaceFileReusesProducerWrite(t *testing.T) {
 	}
 	if got := findIdenticalWorkspaceFile(filepath.Join(workspace, "missing"), encoded); got != "" {
 		t.Fatalf("unreadable workspace must not match: %q", got)
+	}
+}
+
+func TestPublishedPDFToolNoteLandsAMailboxAttachment(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte("%PDF-1.4 weather")
+	encoded := base64.StdEncoding.EncodeToString(payload)
+	chat := tool.ToolPlan{}
+	if got := publishedPDFToolNote(chat, dir, "天气.pdf", encoded); got != agentruntime.HostPublishedCurrentChannelFileNote {
+		t.Fatalf("chat note = %q", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("chat turn wrote %d files: %v", len(entries), err)
+	}
+	mailed := tool.ToolPlan{Selections: []tool.PlannedSelection{{
+		FitProof: tool.FitProof{MatchedCapability: tool.CapabilityMessageSendMailbox},
+	}}}
+	got := publishedPDFToolNote(mailed, dir, "天气.pdf", encoded)
+	if !strings.Contains(got, "mailbox_send") || strings.Contains(got, "send_file") || !strings.HasPrefix(got, "PDF artifact published") {
+		t.Fatalf("note = %q", got)
+	}
+	landed := filepath.Join(dir, "天气.pdf")
+	path := filepath.ToSlash(landed)
+	if !strings.Contains(got, path) {
+		t.Fatalf("note missing %s: %q", path, got)
+	}
+	if path != landed && strings.Contains(got, landed) {
+		t.Fatalf("note kept a backslash path: %q", got)
+	}
+	body, err := os.ReadFile(landed)
+	if err != nil || string(body) != string(payload) {
+		t.Fatalf("landed bytes err=%v body=%q", err, body)
+	}
+	if missing := publishedPDFToolNote(mailed, "", "天气.pdf", encoded); !strings.Contains(missing, "No workspace file") || strings.Contains(missing, "send_file") {
+		t.Fatalf("missing workspace note = %q", missing)
 	}
 }
 

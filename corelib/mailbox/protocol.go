@@ -773,6 +773,10 @@ func rfc822(msg OutboundMessage) []byte {
 	if msg.References != "" {
 		writeHeader(&b, "References", msg.References)
 	}
+	if len(msg.Files) > 0 {
+		writeMixedMessage(&b, msg)
+		return []byte(b.String())
+	}
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 	writeTextBody(&b, msg.Text)

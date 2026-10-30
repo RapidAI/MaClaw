@@ -569,6 +569,18 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                     {!loading && error && (
                         <p style={{ color: 'var(--theme-danger, #dc1f25)', fontSize: '0.8rem' }}>{error}</p>
                     )}
+                    {/* A null report (backend returned nothing / binding gap)
+                        must not leave an empty dialog shell behind the title. */}
+                    {!loading && !error && !report && (
+                        <div style={{ padding: '18px 0 10px', textAlign: 'center' }}>
+                            <p style={{ margin: '0 0 12px', color: 'var(--theme-text-secondary)', fontSize: '0.82rem' }}>
+                                {t('systemDoctorUnavailable')}
+                            </p>
+                            <button type="button" className="btn-secondary" onClick={load}>
+                                {t('systemDoctorRefresh')}
+                            </button>
+                        </div>
+                    )}
                     {!loading && report && (
                         <>
                             <div

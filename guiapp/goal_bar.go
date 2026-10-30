@@ -224,7 +224,8 @@ func (a *App) eachSameGoal(hit goalBarHit, fn func(store *goal.Store, userID str
 
 // stopGoalBarLoops stops the turn that is carrying this goal.
 // It does not fence the next chat message. Pause and delete use it so the
-// current model call does not keep running after the bar has changed state.
+// goal's own continuation does not keep running after the bar has changed
+// state. A desktop or chat turn that only shares the session is left running.
 func (a *App) stopGoalBarLoops(userID string) {
 	if a == nil || a.imHandler == nil {
 		return
@@ -232,6 +233,37 @@ func (a *App) stopGoalBarLoops(userID string) {
 	for _, id := range goalBarCandidateIDs(userID) {
 		a.imHandler.stopGoalBarLoop(id)
 	}
+}
+
+// turnCarriesGoal reports that this loop is the goal's own continuation.
+// An untagged loop is that turn: the bar publishes one without a platform.
+// A tagged desktop, weixin, or coding loop is the person's turn unless its
+// text is the host continuation contract.
+func turnCarriesGoal(ctx *LoopContext, taskText string) bool {
+	if ctx == nil {
+		return false
+	}
+	platform := strings.TrimSpace(ctx.Platform)
+	if goalContinuationTurn(taskText, platform) {
+		return true
+	}
+	return platform == ""
+}
+
+// stopThisTurnForGoal reports that pause or delete should stop this turn.
+// A published goal continuation is that turn. So is an unpublished host
+// continuation. A person's own message is not, even when it already holds
+// the session and has not published a loop. Empty text keeps the bar's
+// generation silence: the turn cleared its text, and pause must still quiet
+// that generation.
+func stopThisTurnForGoal(ctx *LoopContext, taskText string) bool {
+	if ctx != nil {
+		return turnCarriesGoal(ctx, taskText)
+	}
+	if strings.TrimSpace(taskText) == "" {
+		return true
+	}
+	return goalContinuationTurn(taskText, "")
 }
 
 func (h *IMMessageHandler) stopGoalBarLoop(userID string) {
@@ -242,8 +274,20 @@ func (h *IMMessageHandler) stopGoalBarLoop(userID string) {
 	if userID == "" {
 		return
 	}
-	h.cancelSessionRoundContinuation(userID)
 	ctx, taskText, _ := h.loopContextForCancel(userID)
+	if !stopThisTurnForGoal(ctx, taskText) {
+		// This is the person's turn. Leave its steer and question in place,
+		// and do not cancel it when it publishes. A question the previous
+		// generation is still classifying must not land after the goal stops.
+		// The continuation may already have passed cooldown. Invalidate that
+		// admit so it does not start beside this turn.
+		h.noteGoalBarNoQuestionBeforeCurrent(userID)
+		if h.app != nil && h.app.goalContinuation != nil {
+			h.app.goalContinuation.revokeContinuationAdmit(userID)
+		}
+		return
+	}
+	h.cancelSessionRoundContinuation(userID)
 	if ctx != nil && !ctx.IsCancelled() {
 		if h.app != nil && h.app.goalContinuation != nil {
 			h.app.goalContinuation.noteGoalBarHold(userID)
@@ -290,7 +334,35 @@ func (h *IMMessageHandler) noteGoalBarNoQuestion(userID string) {
 	if userID == "" || gen == 0 {
 		return
 	}
+	h.noteGoalBarQuestionCeiling(userID, gen)
+}
+
+// noteGoalBarNoQuestionBeforeCurrent silences every generation older than the
+// one holding the session. The current generation is the person's message, so
+// pause does not quiet it. The ceiling never moves backward.
+func (h *IMMessageHandler) noteGoalBarNoQuestionBeforeCurrent(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	gen := h.pendingForegroundGen(userID)
+	if userID == "" || gen <= 1 {
+		return
+	}
+	h.noteGoalBarQuestionCeiling(userID, gen-1)
+}
+
+func (h *IMMessageHandler) noteGoalBarQuestionCeiling(userID string, gen uint64) {
+	if h == nil || userID == "" || gen == 0 {
+		return
+	}
 	h.goalBarQuestionMu.Lock()
+	if raw, ok := h.goalBarNoQuestionGen.Load(userID); ok {
+		if prev, _ := raw.(uint64); prev >= gen {
+			h.goalBarQuestionMu.Unlock()
+			return
+		}
+	}
 	h.goalBarNoQuestionGen.Store(userID, gen)
 	h.goalBarQuestionMu.Unlock()
 }
@@ -692,10 +764,14 @@ func (a *App) ContinueSessionGoal(sessionKey string) map[string]interface{} {
 		other.ReleaseForContinue(id, row.GoalID)
 	})
 	// The other slash spelling can still hold a timer. Drop that one only.
-	// scheduleDelayed replaces the chosen id's timer and keeps a plan
-	// correction that has already been sent.
+	// The schedule replaces this id's timer and keeps a plan correction that
+	// has already been sent. A live coding turn is the same wait as
+	// /goal resume: arming now blocks on the owner lock until it times out.
+	// That turn schedules the goal when it ends.
 	a.cancelOtherGoalBarTimers(userID)
-	if a.goalContinuation != nil {
+	if h := a.imHandler; h != nil {
+		h.scheduleGoalContinuationUnlessLive(userID, g.GoalID)
+	} else if a.goalContinuation != nil {
 		a.goalContinuation.scheduleDelayed(userID, g.GoalID)
 	}
 	updated := store.Get(userID)

@@ -269,7 +269,9 @@ func semanticRenderedReuseCue(id CapabilityID) string {
 		// it. A frozen draft retires the name. The shared "it may reappear"
 		// cue sends the model back to this tool, and then to another tool,
 		// while the user is still confirming.
-		return " While this name is listed, call it with the message. That call freezes a draft for the user to confirm and does not send. Do not pass a confirmation flag, a password, or a new attachment. If the call is rejected for a missing or invalid field, the name stays listed; correct the arguments and call again. After a draft is frozen the name leaves the list; do not call it again, and do not send the message with another tool."
+		// attachments is how a workspace file named by generate_pdf is sent.
+		// Forbidding "a new attachment" made the model drop that path.
+		return " While this name is listed, call it with the message. That call freezes a draft for the user to confirm and does not send. Do not pass a confirmation flag or a password. When an earlier result in this turn ends with a workspace file path, set attachments to that path. Do not invent a path and do not pass file bytes. If the call is rejected for a missing or invalid field, the name stays listed; correct the arguments and call again. After a draft is frozen the name leaves the list; do not call it again, and do not send the message with another tool."
 	default:
 		return semanticListedCallCue
 	}

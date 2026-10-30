@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"log"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
@@ -16,22 +17,31 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 	if sessionRoundTurn(trimmed, msg.Platform) {
 		return askUserContext, false, false
 	}
-	// The bar's continue is the same goal. Consuming the stop fence here would
-	// archive the conversation and start a new task. The fence stays so the
-	// next ordinary message still starts clean.
+	// The bar's continue is the same goal. Leave the fence in place so this
+	// host wave is not the user's next message. That message consumes the
+	// fence and continues the same conversation.
 	if h.goalContinuationAdmittedPastStop(msg) {
 		return askUserContext, false, false
 	}
 	if h.consumeCancelledTaskBoundary(msg.UserID) {
-		if len(entries) >= 2 {
-			h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusInterrupted)
+		// The fence means the run stopped. Only an explicit new-task command
+		// retires the conversation. A fresh-task flag from another gate does
+		// not: the follow-up is still this task. Drop the slot that would
+		// replay the interrupted side effect, and keep the transcript.
+		if decision.StartNewTask {
+			if len(entries) >= 2 {
+				h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusInterrupted)
+			}
+			if h.memory != nil {
+				h.memory.ClearConversationAndDismissSlot(msg.UserID)
+			}
+			h.resetConversationResidue(msg.UserID)
+			log.Printf("[TaskContext] new task for user %s: stopped run, and this message starts a new task", msg.UserID)
+			return "", true, len(entries) > 0
 		}
-		if h.memory != nil {
-			h.memory.ClearConversationAndDismissSlot(msg.UserID)
-		}
-		h.resetConversationResidue(msg.UserID)
-		log.Printf("[TaskContext] new task for user %s: previous task was explicitly cancelled", msg.UserID)
-		return "", true, len(entries) > 0
+		h.closeStoppedRun(msg.UserID, unfinishedSlot)
+		log.Printf("[TaskContext] continue for user %s: previous run was stopped; conversation kept", msg.UserID)
+		return askUserContext, false, false
 	}
 	if confirmedResume || freshTask || decision.ResumeSlotID != "" {
 		return askUserContext, freshTask, false
@@ -93,6 +103,51 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		log.Printf("[TaskContext] continue for user %s: %s", msg.UserID, tcDecision.Reason)
 	}
 	return askUserContext, freshTask, false
+}
+
+// closeStoppedRun ends the interrupted execution without retiring the task.
+// The conversation, the task anchor, and the open authorization stay. The
+// stopped run's question is dropped earlier, so this message is a new
+// instruction in that conversation. Every in-flight slot is dropped, whether
+// it is the visible slot or queued behind a reopen slot. The run's checkpoint
+// marker is cleared in the same step: a reopen slot hides that marker from
+// promotion, and the message after this one would otherwise turn it into a
+// new recovery slot. App-exit and session-exit slots stay, so reopening can resume.
+func (h *IMMessageHandler) closeStoppedRun(userID string, unfinishedSlot **agent.UnfinishedTaskSlot) {
+	if h == nil {
+		return
+	}
+	if h.memory == nil {
+		if unfinishedSlot != nil && *unfinishedSlot != nil &&
+			!(*unfinishedSlot).Source.IsSessionExit() && !(*unfinishedSlot).Source.IsAppExit() {
+			*unfinishedSlot = nil
+		}
+		return
+	}
+	// Clear before the nil-slot return. Recovery promotes a marker only when
+	// the visible slot is empty, so a marker that survived beside a reopen
+	// slot would wait until that slot moved and then own a later message.
+	h.memory.ClearInFlightTask(userID)
+	if unfinishedSlot == nil || *unfinishedSlot == nil {
+		return
+	}
+	for _, queued := range h.memory.UnfinishedSlots() {
+		if queued == nil || queued.UserID != userID {
+			continue
+		}
+		if queued.Source.IsSessionExit() || queued.Source.IsAppExit() {
+			continue
+		}
+		if id := strings.TrimSpace(queued.SlotID); id != "" {
+			h.memory.DismissUnfinishedSlot(userID, id)
+		}
+	}
+	next := h.memory.GetUnfinishedSlot(userID)
+	if next != nil && (next.Source.IsSessionExit() || next.Source.IsAppExit()) {
+		*unfinishedSlot = next
+		return
+	}
+	*unfinishedSlot = nil
 }
 
 func shouldConfirmRecoveredSemanticContinuation(decision agent.TaskContextDecision, unfinishedSlot **agent.UnfinishedTaskSlot) bool {

@@ -148,11 +148,13 @@ describe('UtilitiesPage AI expert section', () => {
 
     it('keeps the dedicated AI experts header free of duplicate section title content', async () => {
         render(<UtilitiesPage lang="en" mode="experts" />);
-        const title = screen.getByRole('heading', { name: 'AI Experts', level: 1 });
-        const market = screen.getByTestId('utilities-expert-market');
-        expect(title.parentElement?.classList.contains('utilities-page__title-row--experts')).toBe(true);
-        expect(title.parentElement?.contains(market)).toBe(true);
+        // The top header owns the page name (MaClaw AI 专家) — the in-page
+        // surface must not repeat it as an H1; the toolbar stands alone.
+        expect(screen.queryByRole('heading', { name: 'AI Experts', level: 1 })).toBeNull();
         expect(screen.queryByRole('heading', { name: 'AI Experts', level: 2 })).toBeNull();
+        const market = screen.getByTestId('utilities-expert-market');
+        expect(market.closest('.utilities-page__title-row')).toBeTruthy();
+        expect(market.querySelector('svg')).toBeTruthy();
         expect(screen.getAllByText('Click a card to chat with an expert, or create your own')).toHaveLength(1);
     });
 

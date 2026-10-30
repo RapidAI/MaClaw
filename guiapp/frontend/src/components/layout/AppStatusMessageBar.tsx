@@ -152,11 +152,11 @@ export const AppStatusMessageBar = ({
                         <span className="asmb-ellipsis">
                             {!maclawLLMOnline
                                 ? (maclawLLMConfigured
-                                    ? (tailText(lang ?? "", 'LLM unreachable, remote commands unavailable', 'LLM unreachable, remote commands unavailable'))
-                                    : (tailText(lang ?? "", 'LLM not configured, remote commands unavailable', 'LLM not configured, remote commands unavailable')))
+                                    ? (tailText(lang ?? "", 'LLM unreachable, remote commands unavailable', '大模型不可达，远程指令不可用'))
+                                    : (tailText(lang ?? "", 'LLM not configured, remote commands unavailable', '未配置大模型，远程指令不可用')))
                                 : !remoteActivated
-                                    ? (tailText(lang ?? "", 'Mobile not registered', 'Mobile not registered'))
-                                        : (tailText(lang ?? "", 'IM not connected', 'IM not connected'))}
+                                    ? (tailText(lang ?? "", 'Mobile not registered', '手机端未注册'))
+                                        : (tailText(lang ?? "", 'IM not connected', 'IM 未连接'))}
                         </span>
                     </span>
                 )}

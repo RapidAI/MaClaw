@@ -7,12 +7,108 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
 func TestStopCommandIsCancelAlias(t *testing.T) {
 	if got := classifyImmediateIMCommand(" /stop "); got != imCommandCancel {
 		t.Fatalf("/stop classification = %v, want cancel", got)
+	}
+}
+
+func TestGoalCommandInterruptsWithoutSteeringOrCancelling(t *testing.T) {
+	const userID = "im:goal-beside"
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	loopCtx := NewLoopContext("long task", 3, nil)
+	h := &IMMessageHandler{
+		app:              &App{goalContinuation: engine},
+		goalStore:        store,
+		interruptHandler: newIMInterruptHandler(nil),
+	}
+	h.interruptHandler.handler = h
+	cleanup := h.beginPureCodingRuntime(loopCtx, userID, "keep working")
+	defer cleanup()
+
+	result := h.interruptHandler.TryInterrupt(userID, "/goal 优化四台设备上的推理性能")
+	if !result.Handled || result.Action != progress.ActionStatusQuery {
+		t.Fatalf("result = %+v", result)
+	}
+	if loopCtx.IsCancelled() || loopCtx.ReplanRevision() != 0 {
+		t.Fatalf("goal interrupt changed the live loop: cancelled=%v revision=%d", loopCtx.IsCancelled(), loopCtx.ReplanRevision())
+	}
+	if _, ok := h.pendingInjection.Load(userID); ok {
+		t.Fatal("goal interrupt was merged into the live loop")
+	}
+	g := store.Get(userID)
+	if g == nil || g.Status != goal.StatusActive || g.Objective != "优化四台设备上的推理性能" {
+		t.Fatalf("goal = %+v", g)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if scheduled {
+		t.Fatal("interrupt must not dispatch a continuation under the live loop")
+	}
+	if !strings.Contains(result.Reply, "目标已开始") {
+		t.Fatalf("reply = %q", result.Reply)
+	}
+}
+
+func TestGoalPauseInterruptLeavesDesktopTurnAndStopsGoalTurn(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	app := &App{goalContinuation: engine}
+	h := &IMMessageHandler{app: app, goalStore: store, interruptHandler: newIMInterruptHandler(nil)}
+	app.imHandler = h
+	h.interruptHandler.handler = h
+
+	desktopID := "im:goal-pause-desktop"
+	t.Cleanup(func() { engine.CancelPending(desktopID) })
+	if _, err := store.Set(desktopID, "先把当前回合做完"); err != nil {
+		t.Fatal(err)
+	}
+	desktopCtx := NewLoopContext("long task", 3, nil)
+	desktopCleanup := h.beginPureCodingRuntime(desktopCtx, desktopID, "keep working")
+	defer desktopCleanup()
+	paused := h.interruptHandler.TryInterrupt(desktopID, "/goal pause")
+	if !paused.Handled || !strings.Contains(paused.Reply, "目标已暂停") {
+		t.Fatalf("pause = %+v", paused)
+	}
+	if desktopCtx.IsCancelled() {
+		t.Fatal("pause interrupt stopped the desktop coding turn")
+	}
+	if got := store.Get(desktopID); got == nil || got.Status != goal.StatusPaused {
+		t.Fatalf("paused goal = %+v", got)
+	}
+
+	status := h.interruptHandler.TryInterrupt(desktopID, "/goal status")
+	if !status.Handled || !strings.Contains(status.Reply, "先把当前回合做完") {
+		t.Fatalf("status = %+v", status)
+	}
+	if desktopCtx.IsCancelled() {
+		t.Fatal("status interrupt stopped the desktop coding turn")
+	}
+
+	goalID := "im:goal-pause-continuation"
+	t.Cleanup(func() { engine.CancelPending(goalID) })
+	if _, err := store.Set(goalID, "先把当前回合做完"); err != nil {
+		t.Fatal(err)
+	}
+	goalCtx := NewLoopContext("goal turn", 3, nil)
+	goalCtx.Platform = "goal-continuation"
+	goalCleanup := h.beginPureCodingRuntime(goalCtx, goalID, "[系统续接][execute] 当前步骤")
+	defer goalCleanup()
+	stopped := h.interruptHandler.TryInterrupt(goalID, "/goal pause")
+	if !stopped.Handled || !strings.Contains(stopped.Reply, "目标已暂停") {
+		t.Fatalf("goal pause = %+v", stopped)
+	}
+	if !goalCtx.IsCancelled() {
+		t.Fatal("pause should stop the goal continuation")
 	}
 }
 
@@ -579,40 +675,333 @@ func TestCancelCurrentSessionClearsPendingInjectionAndMarksBoundary(t *testing.T
 	}
 }
 
-func TestCancelledBoundaryForcesNextMessageToFreshTask(t *testing.T) {
+func TestStoppedRunKeepsTheTaskConversation(t *testing.T) {
 	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 	h := &IMMessageHandler{memory: mem}
 	userID := "desktop-user"
 	entries := []agent.ConversationEntry{
-		{Role: "user", Content: "old task"},
-		{Role: "assistant", Content: "partial answer"},
+		{Role: "user", Content: "向 znsoft@163.com 发送一封带PDF附件的邮件，报告北京天气。"},
+		{Role: "assistant", Content: "邮件还没发出，PDF 已生成。"},
 	}
 	mem.Save(userID, entries)
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-stopped-send",
+		UserID:   userID,
+		LastTask: "向 znsoft@163.com 发邮件",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	mem.UpsertUnfinishedSlot(userID, slot)
 	h.markTaskCancelledByUser(userID)
 
 	askContext, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
-		IMUserMessage{UserID: userID, Text: "old task"},
-		"old task",
+		IMUserMessage{UserID: userID, Text: "生成pdf后再次发送"},
+		"生成pdf后再次发送",
 		explicitTaskSlotDecision{},
 		entries,
-		nil,
-		"stale ask context",
+		&slot,
+		"用户正在回答当前任务里的问题",
 		false,
 		false,
 		false,
 	)
-	if !clearUI {
-		t.Fatal("cancelled boundary should request clearing stale UI context")
+	if freshTask || clearUI {
+		t.Fatalf("a stopped run must stay on the task: fresh=%v clear=%v", freshTask, clearUI)
 	}
-	if !freshTask {
-		t.Fatal("first message after explicit cancel must start a fresh task")
+	if askContext != "用户正在回答当前任务里的问题" {
+		t.Fatalf("ask context = %q, want the answer binding kept", askContext)
 	}
-	if askContext != "" {
-		t.Fatalf("ask context = %q, want cleared", askContext)
+	if slot != nil {
+		t.Fatal("the interrupted slot must not be replayed")
+	}
+	if got := mem.GetUnfinishedSlot(userID); got != nil {
+		t.Fatalf("unfinished slot survived the stop: %+v", got)
+	}
+	kept := mem.Load(userID)
+	text := ""
+	if len(kept) > 0 {
+		text, _ = kept[0].Content.(string)
+	}
+	if len(kept) != 2 || !strings.Contains(text, "znsoft@163.com") {
+		t.Fatalf("conversation = %+v, want the email task kept", kept)
 	}
 	if h.hasCancelledTaskBoundary(userID) {
 		t.Fatal("cancel boundary should be consumed by the next message")
+	}
+}
+
+func TestStoppedRunPromotesQueuedReopenSlot(t *testing.T) {
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem}
+	userID := "desktop-user"
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: "向 znsoft@163.com 发邮件"},
+		{Role: "assistant", Content: "进行中"},
+	}
+	mem.Save(userID, entries)
+	reopen := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-app-exit",
+		UserID:   userID,
+		LastTask: "向 znsoft@163.com 发邮件",
+		Source:   agent.UnfinishedTaskSlotSourceAppExit,
+	}
+	older := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-older-send",
+		UserID:   userID,
+		LastTask: "向 znsoft@163.com 发邮件",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	running := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-stopped-send",
+		UserID:   userID,
+		LastTask: "向 znsoft@163.com 发邮件",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	// older is queued behind the reopen slot, so promoting the current run
+	// never surfaces it. The stop still has to drop it.
+	mem.UpsertUnfinishedSlot(userID, older)
+	mem.UpsertUnfinishedSlot(userID, reopen)
+	mem.UpsertUnfinishedSlot(userID, running)
+	h.markTaskCancelledByUser(userID)
+
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "生成pdf后再次发送"},
+		"生成pdf后再次发送",
+		explicitTaskSlotDecision{},
+		entries,
+		&running,
+		"",
+		false,
+		false,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("promoting the reopen slot changed the task: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	if running == nil || running.SlotID != "slot-app-exit" || !running.Source.IsAppExit() {
+		t.Fatalf("turn slot = %+v, want the queued app-exit slot", running)
+	}
+	got := mem.GetUnfinishedSlot(userID)
+	if got == nil || got.SlotID != "slot-app-exit" {
+		t.Fatalf("memory slot = %+v", got)
+	}
+	for _, queued := range mem.UnfinishedSlots() {
+		if queued == nil || queued.UserID != userID {
+			continue
+		}
+		if queued.Source.IsInFlightRecovery() {
+			t.Fatalf("in-flight slot survived the stop: %+v", queued)
+		}
+	}
+	kept := mem.Load(userID)
+	text := ""
+	if len(kept) > 0 {
+		text, _ = kept[0].Content.(string)
+	}
+	if !strings.Contains(text, "znsoft@163.com") {
+		t.Fatalf("conversation = %+v", kept)
+	}
+}
+
+func TestStoppedRunDropsInFlightQueuedBehindReopenSlot(t *testing.T) {
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem}
+	userID := "desktop-user"
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: "向 znsoft@163.com 发邮件"},
+		{Role: "assistant", Content: "进行中"},
+	}
+	mem.Save(userID, entries)
+	older := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-older-send",
+		UserID:   userID,
+		LastTask: "向 znsoft@163.com 发邮件",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	reopen := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-app-exit",
+		UserID:   userID,
+		LastTask: "向 znsoft@163.com 发邮件",
+		Source:   agent.UnfinishedTaskSlotSourceAppExit,
+	}
+	mem.UpsertUnfinishedSlot(userID, older)
+	mem.UpsertUnfinishedSlot(userID, reopen)
+	h.markTaskCancelledByUser(userID)
+
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "生成pdf后再次发送"},
+		"生成pdf后再次发送",
+		explicitTaskSlotDecision{},
+		entries,
+		&reopen,
+		"",
+		false,
+		false,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("reopen slot must stay on the task: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	if reopen == nil || !reopen.Source.IsAppExit() {
+		t.Fatalf("turn slot = %+v", reopen)
+	}
+	for _, queued := range mem.UnfinishedSlots() {
+		if queued != nil && queued.UserID == userID && queued.Source.IsInFlightRecovery() {
+			t.Fatalf("in-flight slot survived behind the reopen slot: %+v", queued)
+		}
+	}
+	kept := mem.Load(userID)
+	text := ""
+	if len(kept) > 0 {
+		text, _ = kept[0].Content.(string)
+	}
+	if !strings.Contains(text, "znsoft@163.com") {
+		t.Fatalf("conversation = %+v", kept)
+	}
+}
+
+func TestStoppedRunDropsMarkerHiddenByReopenSlot(t *testing.T) {
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem}
+	userID := "desktop-user"
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: "向 znsoft@163.com 发邮件"},
+		{Role: "assistant", Content: "进行中"},
+	}
+	mem.Save(userID, entries)
+	reopen := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-app-exit",
+		UserID:   userID,
+		LastTask: "向 znsoft@163.com 发邮件",
+		Source:   agent.UnfinishedTaskSlotSourceAppExit,
+	}
+	mem.UpsertUnfinishedSlot(userID, reopen)
+	mem.SetInFlightTaskForRun(userID, "向 znsoft@163.com 发邮件", "", "run-stopped")
+	h.markTaskCancelledByUser(userID)
+
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "生成pdf后再次发送"},
+		"生成pdf后再次发送",
+		explicitTaskSlotDecision{},
+		entries,
+		&reopen,
+		"",
+		false,
+		false,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("hidden marker changed the task: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	if reopen == nil || !reopen.Source.IsAppExit() {
+		t.Fatalf("turn slot = %+v, want the reopen slot", reopen)
+	}
+	if got := mem.GetUnfinishedSlot(userID); got == nil || got.SlotID != "slot-app-exit" {
+		t.Fatalf("reopen slot = %+v", got)
+	}
+	if slot := h.recoverInterruptedTaskSlot(userID, entries); slot != nil {
+		t.Fatalf("stopped run marker was promoted behind the reopen slot: %+v", slot)
+	}
+	kept := mem.Load(userID)
+	text := ""
+	if len(kept) > 0 {
+		text, _ = kept[0].Content.(string)
+	}
+	if !strings.Contains(text, "znsoft@163.com") {
+		t.Fatalf("conversation = %+v", kept)
+	}
+}
+
+func TestStoppedRunLeavesReopenSlot(t *testing.T) {
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem}
+	userID := "desktop-user"
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: "向 znsoft@163.com 发邮件"},
+		{Role: "assistant", Content: "进行中"},
+	}
+	mem.Save(userID, entries)
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-app-exit",
+		UserID:   userID,
+		LastTask: "向 znsoft@163.com 发邮件",
+		Source:   agent.UnfinishedTaskSlotSourceAppExit,
+	}
+	mem.UpsertUnfinishedSlot(userID, slot)
+	h.markTaskCancelledByUser(userID)
+
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "生成pdf后再次发送"},
+		"生成pdf后再次发送",
+		explicitTaskSlotDecision{},
+		entries,
+		&slot,
+		"",
+		false,
+		false,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("reopen slot must stay on the task: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	if slot == nil || slot.Source != agent.UnfinishedTaskSlotSourceAppExit {
+		t.Fatalf("app-exit slot pointer = %+v", slot)
+	}
+	got := mem.GetUnfinishedSlot(userID)
+	if got == nil || got.SlotID != "slot-app-exit" || !got.Source.IsAppExit() {
+		t.Fatalf("reopen slot = %+v", got)
+	}
+}
+
+func TestStoppedRunDoesNotBindTheNextMessageAsTheAnswer(t *testing.T) {
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem}
+	userID := "desktop-user"
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: "向 znsoft@163.com 发邮件"},
+		{Role: "assistant", Content: "请确认收件人"},
+	}
+	mem.Save(userID, entries)
+	h.storePendingAskUser(userID, &pendingAskUserState{
+		Question:  "请确认收件人",
+		History:   entries,
+		Timestamp: time.Now(),
+	})
+	h.markTaskCancelledByUser(userID)
+
+	ask, ws, has, _ := h.consumePendingAskUserAnswer(userID, "生成pdf后再次发送", entries)
+	if has || ask != "" || ws != nil {
+		t.Fatalf("stopped question was bound: ask=%q has=%v ws=%v", ask, has, ws)
+	}
+	if h.freshPendingAskUser(userID) {
+		t.Fatal("stopped question is still waiting")
+	}
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "生成pdf后再次发送"},
+		"生成pdf后再次发送",
+		explicitTaskSlotDecision{},
+		entries,
+		nil,
+		"",
+		false,
+		true,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("a fresh-task flag must not retire the stopped task: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	kept := mem.Load(userID)
+	text := ""
+	if len(kept) > 0 {
+		text, _ = kept[0].Content.(string)
+	}
+	if !strings.Contains(text, "znsoft@163.com") {
+		t.Fatalf("conversation = %+v", kept)
 	}
 }
 
@@ -630,7 +1019,7 @@ func TestCancelledBoundaryIsConsumedEvenWhenAlreadyFreshTask(t *testing.T) {
 	askContext, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
 		IMUserMessage{UserID: userID, Text: "brand new task"},
 		"brand new task",
-		explicitTaskSlotDecision{},
+		explicitTaskSlotDecision{StartNewTask: true},
 		entries,
 		nil,
 		"stale ask context",

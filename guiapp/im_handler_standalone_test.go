@@ -310,10 +310,15 @@ func TestNewIMMessageHandlerStandalone_CurrentTimeDirect(t *testing.T) {
 	}
 }
 
-func TestHandleIMMessage_TaskContextSwitchSignalsClearUI(t *testing.T) {
+func TestHandleIMMessage_StoppedRunKeepsTaskConversation(t *testing.T) {
+	var sawOldTask atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "旧任务：推荐一个大模型") {
+			sawOldTask.Store(true)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":` + strconvQuote("新任务已经开始") + `},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":` + strconvQuote("继续原来的任务") + `},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
@@ -324,6 +329,8 @@ func TestHandleIMMessage_TaskContextSwitchSignalsClearUI(t *testing.T) {
 		MaxIterationsFunc: func() int { return 1 },
 	})
 	defer h.memory.Stop()
+	// A classifier that would call this a new task must not get a vote.
+	// Stopping the run is not a conversation boundary.
 	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
 		MaxArchivedTasks:         10,
 		ActiveConversationWindow: -time.Second,
@@ -333,9 +340,6 @@ func TestHandleIMMessage_TaskContextSwitchSignalsClearUI(t *testing.T) {
 		{Role: "user", Content: "旧任务：推荐一个大模型"},
 		{Role: "assistant", Content: "建议部署 Qwen3.5-122B-A10B"},
 	})
-	// Foreground turns no longer consult the LLM classifier for ambiguous
-	// task switches (ResolveFast preserves context); an explicit user
-	// cancellation of the previous task is the supported ClearUI boundary.
 	h.markTaskCancelledByUser("u-clear")
 
 	resp := h.HandleIMMessage(IMUserMessage{
@@ -349,8 +353,22 @@ func TestHandleIMMessage_TaskContextSwitchSignalsClearUI(t *testing.T) {
 	if resp.Error != "" {
 		t.Fatalf("unexpected error: %s", resp.Error)
 	}
-	if !resp.ClearUI {
-		t.Fatalf("expected ClearUI after task context switch, got %+v", resp)
+	if resp.ClearUI {
+		t.Fatalf("stopping a run must not clear the task transcript: %+v", resp)
+	}
+	if !sawOldTask.Load() {
+		t.Fatal("model request did not include the stopped task")
+	}
+	kept := false
+	for _, entry := range h.memory.Load("u-clear") {
+		text, _ := entry.Content.(string)
+		if strings.Contains(text, "旧任务：推荐一个大模型") {
+			kept = true
+			break
+		}
+	}
+	if !kept {
+		t.Fatal("stopped task conversation was dropped from memory")
 	}
 }
 

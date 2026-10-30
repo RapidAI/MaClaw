@@ -5182,23 +5182,30 @@ export const SidebarTaskManagement = ({
         )}
         <div className="mc-task-filter-stack">
             <div className="mc-task-filter-panel__title">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
-            <TaskFilterRow
-                ariaLabel={textForLang(lang, 'Filter tasks by status', '按状态筛选任务', '按狀態篩選任務')}
-                chips={taskFilterChips}
-                value={taskFilter}
-                onChange={setTaskFilter}
-                testIdPrefix="task-filter-"
-                layout="line"
-            />
-            <TaskFilterRow
-                ariaLabel={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')}
-                chips={workspaceFilterChips}
-                value={workspaceFilter}
-                onChange={key => setWorkspaceFilter(key === workspaceFilter ? 'all' : key)}
-                testIdPrefix="task-workspace-filter-"
-                titleFor={chip => `${workspaceSectionLabel(lang)} · ${chip.label}`}
-                layout="line"
-            />
+            {/* Filter rows are noise while the list is empty on the default
+                filters (seven zero-count chips) — same conditional-chip rule
+                as paused/shared above; they return with the first task. */}
+            {(visibleTasks.length > 0 || taskFilter !== 'all' || workspaceFilter !== 'all') && (
+                <>
+                    <TaskFilterRow
+                        ariaLabel={textForLang(lang, 'Filter tasks by status', '按状态筛选任务', '按狀態篩選任務')}
+                        chips={taskFilterChips}
+                        value={taskFilter}
+                        onChange={setTaskFilter}
+                        testIdPrefix="task-filter-"
+                        layout="line"
+                    />
+                    <TaskFilterRow
+                        ariaLabel={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')}
+                        chips={workspaceFilterChips}
+                        value={workspaceFilter}
+                        onChange={key => setWorkspaceFilter(key === workspaceFilter ? 'all' : key)}
+                        testIdPrefix="task-workspace-filter-"
+                        titleFor={chip => `${workspaceSectionLabel(lang)} · ${chip.label}`}
+                        layout="line"
+                    />
+                </>
+            )}
         </div>
         <div ref={taskListRef} className="mc-task-list stsm-task-list" data-testid="sidebar-task-list">
         {showTaskListProgress ? (

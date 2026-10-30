@@ -14,7 +14,7 @@ import (
 func newGoalBarApp(t *testing.T) (*App, *goal.Store, *GoalContinuationEngine) {
 	t.Helper()
 	store := goal.NewStore("")
-	app := &App{}
+	app := &App{testHomeDir: t.TempDir()}
 	engine := NewGoalContinuationEngine(store, app)
 	engine.cooldown = time.Hour
 	app.goalContinuation = engine
@@ -515,7 +515,6 @@ func TestSessionGoalBarPauseStaysOnTheLiveSlashTwin(t *testing.T) {
 	if !store.UpdateStatus(front, stale.GoalID, goal.StatusPaused, "旧的") {
 		t.Fatal("pause stale")
 	}
-	time.Sleep(2 * time.Millisecond)
 	if _, err := store.Set(back, "正在做的小鸟"); err != nil {
 		t.Fatal(err)
 	}
@@ -534,6 +533,452 @@ func TestSessionGoalBarPauseStaysOnTheLiveSlashTwin(t *testing.T) {
 	}
 	if got := store.Get(front); got == nil || got.Objective != "旧的暂停" || got.Status != goal.StatusPaused {
 		t.Fatalf("older twin changed: %+v", got)
+	}
+}
+
+func TestContinueSessionGoalWaitsForTheLiveDesktopTurn(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Pause(back, g.GoalID) {
+		t.Fatal("pause")
+	}
+	ctx := NewLoopContext("coding", 4, nil)
+	cleanup := app.imHandler.beginPureCodingRuntime(ctx, front, "keep working")
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+
+	snap := app.ContinueSessionGoal(front)
+	if snap["status"] != string(goal.StatusActive) || snap["user_id"] != back {
+		t.Fatalf("continue = %#v", snap)
+	}
+	if goalBarPending(engine, front) || goalBarPending(engine, back) {
+		t.Fatal("continue armed a continuation beside the live desktop turn")
+	}
+	cleanup()
+	cleanup = nil
+	app.imHandler.scheduleGoalContinuationUnlessLive(back, g.GoalID)
+	if !goalBarPending(engine, back) || goalBarPending(engine, front) {
+		t.Fatal("continuation should arm on the stored row once the desktop turn is gone")
+	}
+}
+
+func TestContinueSessionGoalArmsWhileContinuationTextHoldsTheWindow(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "先把当前回合做完")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Pause(userID, g.GoalID) {
+		t.Fatal("pause")
+	}
+	app.imHandler.setPendingForegroundText(userID, "[系统续接][execute] 当前步骤")
+
+	snap := app.ContinueSessionGoal(userID)
+	if snap["status"] != string(goal.StatusActive) || !goalBarPending(engine, userID) {
+		t.Fatalf("continue during continuation unwind = %#v pending=%v", snap, goalBarPending(engine, userID))
+	}
+}
+
+func TestContinuePastUserStopCoversTheSlashTwin(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Pause(back, g.GoalID) {
+		t.Fatal("pause")
+	}
+	app.imHandler.markTaskCancelledByUser(front)
+
+	snap := app.ContinueSessionGoal(front)
+	if snap["status"] != string(goal.StatusActive) || snap["user_id"] != back || !goalBarPending(engine, back) || goalBarPending(engine, front) {
+		t.Fatalf("continue = %#v pending back=%v front=%v", snap, goalBarPending(engine, back), goalBarPending(engine, front))
+	}
+	ordinary := IMUserMessage{UserID: front, Platform: "desktop", Text: "hello"}
+	if got := app.imHandler.rejectCancelledTaskTurn(ordinary); got == nil || !strings.Contains(got.Text, "Task cancelled") {
+		t.Fatalf("ordinary message = %+v", got)
+	}
+
+	app.imHandler.maybeScheduleGoalContinuation(front, &IMAgentResponse{Text: "Task cancelled.", userStopped: true}, "desktop")
+	kept := store.Get(back)
+	if kept == nil || kept.GoalID != g.GoalID || kept.Status != goal.StatusActive || !goalBarPending(engine, back) {
+		t.Fatalf("dying turn undid continue: pending=%v goal=%+v", goalBarPending(engine, back), kept)
+	}
+
+	app.imHandler.markTaskCancelledByUser(front)
+	app.imHandler.maybeScheduleGoalContinuation(front, &IMAgentResponse{Text: "stopped", userStopped: true}, "desktop")
+	stopped := store.Get(back)
+	if stopped == nil || stopped.Status != goal.StatusPaused || goalBarPending(engine, back) || goalBarPending(engine, front) {
+		t.Fatalf("a later stop was swallowed: pending back=%v front=%v goal=%+v", goalBarPending(engine, back), goalBarPending(engine, front), stopped)
+	}
+}
+
+func TestCancelSlashTwinStopsTheContinuationLoop(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(back, g.GoalID)
+	ctx := NewLoopContext("coding", 4, nil)
+	ctx.Platform = "goal-continuation"
+	cleanup := app.imHandler.beginPureCodingRuntime(ctx, back, "[系统续接][execute] 当前步骤")
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+
+	text, err := app.imHandler.CancelSessionForUser(front)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "[系统续接][execute] 当前步骤" {
+		t.Fatalf("cancelled text = %q", text)
+	}
+	if !ctx.IsCancelled() || !ctx.UserCancelled() {
+		t.Fatal("continuation loop kept running")
+	}
+	if !app.imHandler.hasCancelledTaskBoundary(back) {
+		t.Fatal("stored spelling was not fenced")
+	}
+	if app.imHandler.hasCancelledTaskBoundary(front) {
+		t.Fatal("composer spelling must not become a new-task fence")
+	}
+	got := store.Get(back)
+	if got == nil || got.Status != goal.StatusPaused || !strings.Contains(got.Summary, "停止") {
+		t.Fatalf("goal = %+v", got)
+	}
+	if goalBarPending(engine, front) || goalBarPending(engine, back) {
+		t.Fatal("continuation timer survived the stop")
+	}
+	cleanup()
+	cleanup = nil
+}
+
+func TestRequestCancelSlashTwinPausesAQueuedContinuation(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(back, g.GoalID)
+	app.imHandler.noteGoalContinuePastUserStop(back)
+
+	text, err := app.imHandler.RequestCancelSessionForUser(front)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "" {
+		t.Fatalf("timer-only stop text = %q", text)
+	}
+	if app.imHandler.hasCancelledTaskBoundary(front) || app.imHandler.hasCancelledTaskBoundary(back) {
+		t.Fatal("a queued continuation is not a chat turn")
+	}
+	got := store.Get(back)
+	if got == nil || got.Status != goal.StatusPaused || !strings.Contains(got.Summary, "停止") {
+		t.Fatalf("continue mark swallowed the stop: %+v", got)
+	}
+	if goalBarPending(engine, front) || goalBarPending(engine, back) {
+		t.Fatal("continuation timer survived the stop")
+	}
+}
+
+func TestRequestCancelKeepsTheGoalForTheLiveTurnToPause(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(back, g.GoalID)
+	ctx := NewLoopContext("coding", 4, nil)
+	cleanup := app.imHandler.beginPureCodingRuntime(ctx, front, "keep working")
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+
+	if _, err := app.imHandler.RequestCancelSessionForUser(front); err != nil {
+		t.Fatal(err)
+	}
+	if !ctx.IsCancelled() || !ctx.UserCancelled() {
+		t.Fatal("desktop turn was not cancelled")
+	}
+	if goalBarPending(engine, front) || goalBarPending(engine, back) {
+		t.Fatal("twin timer kept running after stop")
+	}
+	live := store.Get(back)
+	if live == nil || live.Status != goal.StatusActive {
+		t.Fatalf("stop must leave the pause to the dying turn: %+v", live)
+	}
+	app.imHandler.maybeScheduleGoalContinuation(front, &IMAgentResponse{Text: "Task cancelled.", userStopped: true}, "desktop")
+	stopped := store.Get(back)
+	if stopped == nil || stopped.Status != goal.StatusPaused || !strings.Contains(stopped.Summary, "停止") {
+		t.Fatalf("dying turn did not pause: %+v", stopped)
+	}
+	cleanup()
+	cleanup = nil
+}
+
+func TestIdleCancelWithGoalEngineDoesNotFence(t *testing.T) {
+	app, _, _ := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	_, err := app.imHandler.CancelSessionForUser(front)
+	if err == nil {
+		t.Fatal("idle cancel must fail when no turn and no continuation are running")
+	}
+	if app.imHandler.hasCancelledTaskBoundary(front) || app.imHandler.hasCancelledTaskBoundary(back) {
+		t.Fatal("idle cancel must not fence either spelling")
+	}
+}
+
+func TestCancelSlashTwinDropsAnAdmittedContinuation(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const requestID = "goal-cont-slash-stop"
+	if !engine.admitContinuationIfContinuable(back, g.GoalID, requestID) {
+		t.Fatal("an active goal should admit the continuation")
+	}
+	app.imHandler.noteGoalContinuePastUserStop(back)
+
+	text, err := app.imHandler.CancelSessionForUser(front)
+	if err != nil || text != "" {
+		t.Fatalf("stop = %q err=%v", text, err)
+	}
+	if !engine.continuationAdmitRevoked(requestID) {
+		t.Fatal("stop left the admitted continuation runnable")
+	}
+	if app.imHandler.hasCancelledTaskBoundary(front) || app.imHandler.hasCancelledTaskBoundary(back) {
+		t.Fatal("an admitted continuation is not a chat fence")
+	}
+	got := store.Get(back)
+	if got == nil || got.Status != goal.StatusPaused || !strings.Contains(got.Summary, "停止") {
+		t.Fatalf("continue mark swallowed the stop: %+v", got)
+	}
+	if app.ContinueSessionGoal(front)["status"] != string(goal.StatusActive) {
+		t.Fatal("continue did not re-arm")
+	}
+	if !engine.continuationAdmitRevoked(requestID) {
+		t.Fatal("continue revived the continuation stop already dropped")
+	}
+	const nextID = "goal-cont-slash-next"
+	if !engine.admitContinuationIfContinuable(back, g.GoalID, nextID) || engine.continuationAdmitRevoked(nextID) {
+		t.Fatal("the next fire should admit a new continuation")
+	}
+	engine.runForegroundContinuation(app.imHandler, IMUserMessage{
+		RequestID: requestID,
+		UserID:    back,
+		Platform:  "goal-continuation",
+		Text:      "[系统续接][execute] 当前步骤",
+	})
+	kept := store.Get(back)
+	if kept == nil || kept.Status != goal.StatusActive || kept.GoalID != g.GoalID {
+		t.Fatalf("dropped turn changed the goal: %+v", kept)
+	}
+	if engine.continuationAdmitRevoked(requestID) {
+		t.Fatal("the dropped turn should retire its ticket")
+	}
+}
+
+func TestRequestCancelRevokesTwinAdmitBeforeTheTurnPauses(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const requestID = "goal-cont-live-desktop"
+	if !engine.admitContinuationIfContinuable(back, g.GoalID, requestID) {
+		t.Fatal("an active goal should admit the continuation")
+	}
+	ctx := NewLoopContext("coding", 4, nil)
+	cleanup := app.imHandler.beginPureCodingRuntime(ctx, front, "keep working")
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+
+	if _, err := app.imHandler.RequestCancelSessionForUser(front); err != nil {
+		t.Fatal(err)
+	}
+	if !engine.continuationAdmitRevoked(requestID) {
+		t.Fatal("the dying desktop turn left the admitted continuation runnable")
+	}
+	live := store.Get(back)
+	if live == nil || live.Status != goal.StatusActive {
+		t.Fatalf("stop must leave the pause to the dying turn: %+v", live)
+	}
+	app.imHandler.maybeScheduleGoalContinuation(front, &IMAgentResponse{Text: "Task cancelled.", userStopped: true}, "desktop")
+	stopped := store.Get(back)
+	if stopped == nil || stopped.Status != goal.StatusPaused || !strings.Contains(stopped.Summary, "停止") {
+		t.Fatalf("dying turn did not pause: %+v", stopped)
+	}
+	cleanup()
+	cleanup = nil
+}
+
+func TestCancelRevokesTwinAdmitBeforeTheDesktopTurnExits(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const requestID = "goal-cont-during-wait"
+	if !engine.admitContinuationIfContinuable(back, g.GoalID, requestID) {
+		t.Fatal("an active goal should admit the continuation")
+	}
+	ctx := NewLoopContext("coding", 4, nil)
+	cleanup := app.imHandler.beginPureCodingRuntime(ctx, front, "keep working")
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+	// DoneC stays open until this observes the cancel. That is the window
+	// CancelSessionForUser waits in, up to 30s. The admit has to be dead
+	// before the wait, or the continuation enters while stop is blocked.
+	saw := make(chan struct{})
+	go func() {
+		<-ctx.CancelC
+		if !engine.continuationAdmitRevoked(requestID) {
+			t.Error("admitted continuation can still enter while stop waits for the desktop turn")
+		}
+		if got := store.Get(back); got == nil || got.Status != goal.StatusActive {
+			t.Errorf("stop paused before the dying turn: %+v", got)
+		}
+		ctx.Done()
+		close(saw)
+	}()
+
+	if _, err := app.imHandler.CancelSessionForUser(front); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-saw:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel returned without the desktop turn observing it")
+	}
+	app.imHandler.maybeScheduleGoalContinuation(front, &IMAgentResponse{Text: "Task cancelled.", userStopped: true}, "desktop")
+	stopped := store.Get(back)
+	if stopped == nil || stopped.Status != goal.StatusPaused || !strings.Contains(stopped.Summary, "停止") {
+		t.Fatalf("dying turn did not pause: %+v", stopped)
+	}
+	cleanup()
+	cleanup = nil
+}
+
+func TestUserStopFenceBlocksTheStoredContinuation(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.imHandler.markTaskCancelledByUser(front)
+	if engine.admitContinuationIfContinuable(back, g.GoalID, "goal-cont-fenced") {
+		t.Fatal("composer stop must keep the stored continuation from starting")
+	}
+	app.imHandler.noteGoalContinuePastUserStop(front)
+	const requestID = "goal-cont-continued"
+	if !engine.admitContinuationIfContinuable(back, g.GoalID, requestID) || engine.continuationAdmitRevoked(requestID) {
+		t.Fatal("continue past this stop should admit the next continuation")
+	}
+	app.imHandler.markTaskCancelledByUser(front)
+	if engine.admitContinuationIfContinuable(back, g.GoalID, "goal-cont-stopped-again") {
+		t.Fatal("a later stop must block a new continuation")
+	}
+	engine.runForegroundContinuation(app.imHandler, IMUserMessage{
+		RequestID: requestID,
+		UserID:    back,
+		Platform:  "goal-continuation",
+		Text:      "[系统续接][execute] 当前步骤",
+	})
+	kept := store.Get(back)
+	if kept == nil || kept.Status != goal.StatusActive || kept.GoalID != g.GoalID {
+		t.Fatalf("stopped continuation changed the goal: %+v", kept)
+	}
+}
+
+func TestStopFenceDoesNotFailAnUnplannedGoal(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.consumePlanMiss(back, g.GoalID) {
+		t.Fatal("the first miss records the corrective turn")
+	}
+	app.imHandler.markTaskCancelledByUser(front)
+	engine.dispatchContinuation(back, g.GoalID, goalCorrectionPlan)
+	got := store.Get(back)
+	if got == nil || got.Status != goal.StatusActive || strings.Contains(got.Summary, "未能分解") {
+		t.Fatalf("stop fence failed the unplanned goal: %+v", got)
+	}
+	if engine.consumePlanMiss(back, g.GoalID) {
+		t.Fatal("the blocked correction consumed the plan retry")
 	}
 }
 
@@ -986,7 +1431,7 @@ func TestPauseSessionGoalStopsAnUnpublishedTurnAndReleasesTheQuestion(t *testing
 	if _, err := store.Set(userID, "keep going"); err != nil {
 		t.Fatal(err)
 	}
-	app.imHandler.setPendingForegroundText(userID, "goal turn in flight")
+	app.imHandler.setPendingForegroundText(userID, "[系统续接][execute] 当前步骤")
 	app.imHandler.pendingAskUser.Store(userID, "which file?")
 
 	if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
@@ -1064,6 +1509,113 @@ func TestPauseSessionGoalRejectsAQuestionTheStoppedTurnPublishes(t *testing.T) {
 	}
 }
 
+func TestPauseSessionGoalLeavesADesktopCodingTurnRunning(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "提升20%")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(userID, g.GoalID)
+	ctx := NewLoopContext("coding", 4, nil)
+	cleanup := app.imHandler.beginPureCodingRuntime(ctx, userID, "keep working")
+	defer cleanup()
+	app.imHandler.pendingInjection.Store(userID, "steer stays")
+	app.imHandler.pendingAskUser.Store(userID, "which file?")
+
+	if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
+		t.Fatal("pause did not pause")
+	}
+	if ctx.IsCancelled() {
+		t.Fatal("pausing the goal cancelled the desktop coding turn")
+	}
+	if goalBarPending(engine, userID) {
+		t.Fatal("pause left the continuation timer")
+	}
+	if raw, _ := app.imHandler.pendingInjection.Load(userID); raw != "steer stays" {
+		t.Fatalf("pause dropped the coding steer: %v", raw)
+	}
+	if _, ok := app.imHandler.pendingAskUser.Load(userID); !ok {
+		t.Fatal("pause dropped the coding turn's question")
+	}
+}
+
+func TestPauseSessionGoalLeavesAnInFlightDesktopTurnRunning(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	if _, err := store.Set(userID, "提升20%"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewLoopContext("pre-publish", 4, nil)
+	ctx.Platform = "desktop"
+	app.imHandler.beginInFlightTurn(userID, "keep working", ctx)
+	defer app.imHandler.endInFlightTurn(userID, ctx)
+	if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
+		t.Fatal("pause did not pause")
+	}
+	if ctx.IsCancelled() || app.imHandler.takeGoalBarStop(userID, ctx) {
+		t.Fatal("pause marked the unpublished desktop turn stopped")
+	}
+}
+
+func TestPauseSessionGoalLeavesAPendingUserMessageRunning(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	if _, err := store.Set(userID, "提升20%"); err != nil {
+		t.Fatal(err)
+	}
+	h := app.imHandler
+	h.setPendingForegroundText(userID, "earlier turn")
+	h.setPendingForegroundText(userID, "keep working")
+	h.pendingAskUser.Store(userID, "which file?")
+	h.goalBarSteer.Store(userID, "steer stays")
+	h.pendingInjection.Store(userID, "injection stays")
+	current := h.pendingForegroundGen(userID)
+
+	if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
+		t.Fatal("pause did not pause")
+	}
+	if h.takeGoalBarStop(userID, NewLoopContext("later", 4, nil)) {
+		t.Fatal("pause marked the user's pending message stopped")
+	}
+	if _, ok := h.pendingAskUser.Load(userID); !ok {
+		t.Fatal("pause dropped the user's question")
+	}
+	if raw, _ := h.goalBarSteer.Load(userID); raw != "steer stays" {
+		t.Fatalf("pause dropped the user's steer: %v", raw)
+	}
+	if raw, _ := h.pendingInjection.Load(userID); raw != "injection stays" {
+		t.Fatalf("pause dropped the user's injection: %v", raw)
+	}
+	if h.hasCancelledTaskBoundary(userID) {
+		t.Fatal("pause must not fence the next chat message")
+	}
+	if current <= 1 || !h.goalBarQuestionBlocked(userID, current-1) {
+		t.Fatal("pause let the previous generation publish a question")
+	}
+	if h.goalBarQuestionBlocked(userID, current) {
+		t.Fatal("pause silenced the user's own message")
+	}
+}
+
+func TestPauseSessionGoalStopsTheGoalContinuationTurn(t *testing.T) {
+	app, store, _ := newGoalBarApp(t)
+	const userID = "desktop-user"
+	if _, err := store.Set(userID, "提升20%"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewLoopContext("goal", 4, nil)
+	ctx.Platform = "goal-continuation"
+	cleanup := app.imHandler.beginPureCodingRuntime(ctx, userID, "[系统续接][execute] 当前步骤")
+	defer cleanup()
+	if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
+		t.Fatal("pause did not pause")
+	}
+	if !ctx.IsCancelled() {
+		t.Fatal("pause should stop the goal continuation")
+	}
+}
+
 func TestPauseSessionGoalRejectsAQuestionAfterTheTurnUnlocks(t *testing.T) {
 	app, store, _ := newGoalBarApp(t)
 	const userID = "desktop-user"
@@ -1105,7 +1657,7 @@ func TestPauseSessionGoalDropsAProseQuestionFromTheStoppedTurn(t *testing.T) {
 
 	synctest.Test(t, func(t *testing.T) {
 		h.pendingUserReply.Store(userID, older)
-		h.setPendingForegroundText(userID, "goal turn in flight")
+		h.setPendingForegroundText(userID, "[系统续接][execute] 当前步骤")
 		if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
 			t.Fatal("pause did not pause")
 		}
@@ -1136,7 +1688,7 @@ func TestPauseSessionGoalDropsAProseQuestionFromTheStoppedTurn(t *testing.T) {
 			<-release
 			return false, nil
 		}
-		h.setPendingForegroundText(userID, "classifying turn")
+		h.setPendingForegroundText(userID, "[系统续接][execute] 当前步骤")
 		h.updatePendingUserReplyFromHistory(userID, goalBarPlainHistory("which file?"), &IMAgentResponse{Text: "which file?"})
 		synctest.Wait()
 		if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
@@ -1616,7 +2168,7 @@ func TestPauseDropsACommandHeldForThePendingTurn(t *testing.T) {
 	if _, err := store.Set(userID, "old command"); err != nil {
 		t.Fatal(err)
 	}
-	app.imHandler.setPendingForegroundText(userID, "goal turn in flight")
+	app.imHandler.setPendingForegroundText(userID, "[系统续接][execute] 当前步骤")
 	if app.UpdateSessionGoal(userID, "new command")["objective"] != "new command" {
 		t.Fatal("update did not keep the new command")
 	}

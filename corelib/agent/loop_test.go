@@ -3625,6 +3625,21 @@ type replanCallbacks struct {
 	newRounds       atomic.Int32
 }
 
+// residentBeltSteerCallbacks models the coding compatibility belt: tools stay
+// listed for the whole turn, and only an ambiguous delivery removes them.
+// A host steer after a successful bash must leave bash callable.
+type residentBeltSteerCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	quarantined     atomic.Bool
+	finishes        []ToolSurfaceDeliveryState
+	mu              sync.Mutex
+	cancel          context.CancelFunc
+}
+
 type finalizationRaceCallbacks struct {
 	*mockCallbacks
 	DefaultLoopHooks
@@ -3785,6 +3800,60 @@ func (m *replanCallbacks) TransformConversation(conversation []interface{}) []in
 	}
 	next := append([]interface{}(nil), conversation...)
 	return append(next, map[string]string{"role": "user", "content": "use SQLite instead"})
+}
+
+func (m *residentBeltSteerCallbacks) ContainToolSurfaceAmbiguousDelivery() bool { return true }
+
+func (m *residentBeltSteerCallbacks) OnToolSurfaceAttemptStarted(ToolCallExecutionContext) {}
+
+func (m *residentBeltSteerCallbacks) OnToolSurfaceAttemptFinished(_ ToolCallExecutionContext, delivery ToolSurfaceDeliveryState) {
+	m.finishes = append(m.finishes, delivery)
+	if delivery == ToolSurfaceAmbiguousDelivery {
+		m.quarantined.Store(true)
+	}
+}
+
+func (m *residentBeltSteerCallbacks) BuildTools(string) []map[string]interface{} {
+	if m.quarantined.Load() {
+		return nil
+	}
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *residentBeltSteerCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	revision := m.revision.Load()
+	m.requestRevision.Store(revision)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.cancel = cancel
+	m.mu.Unlock()
+	return ctx, func(error) { cancel() }, nil
+}
+
+// steer matches a guide launch: the revision advances, then the in-flight
+// model request is cancelled. The replacement text is appended on the next
+// TransformConversation.
+func (m *residentBeltSteerCallbacks) steer() {
+	m.steerPending.Store(true)
+	m.revision.Add(1)
+	m.mu.Lock()
+	cancel := m.cancel
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (m *residentBeltSteerCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *residentBeltSteerCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
 }
 
 type stopAfterFirstToolCallbacks struct {
@@ -4074,6 +4143,1279 @@ func TestRunLoop_ReplanReplacesCancelledRequestWithoutSpendingIteration(t *testi
 	}
 	if !sawSteer.Load() {
 		t.Fatal("replacement request did not include live steering")
+	}
+}
+
+func TestRunLoop_HostSteerKeepsResidentToolAfterPriorSuccess(t *testing.T) {
+	var steerSurfaces [][]string
+	var requests atomic.Int32
+	cb := &residentBeltSteerCallbacks{mockCallbacks: mockCallbacks{
+		config:      corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:     3,
+		sysPrompt:   "sys",
+		toolResult:  "command exited with code 0",
+		toolOutcome: ToolExecutionOutcomeOK,
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if requests.Add(1) == 2 {
+			// The guide launch arrives while this model request is in flight.
+			// Raising the replan flag and failing the transport is the delivery
+			// RunLoop classifies. The stream context is detached from the host
+			// cancel until its watcher runs, so the transport returns that cancel
+			// directly.
+			cb.steer()
+			return nil, context.Canceled
+		}
+		if err := r.Context().Err(); err != nil {
+			return nil, err
+		}
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+			Tools    []map[string]interface{} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		sawSteer := false
+		toolResults := 0
+		for _, msg := range req.Messages {
+			if msg["role"] == "tool" {
+				toolResults++
+			}
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				sawSteer = true
+			}
+		}
+		if sawSteer {
+			names := make([]string, 0, len(req.Tools))
+			for _, def := range req.Tools {
+				fn, _ := def["function"].(map[string]interface{})
+				names = append(names, fmt.Sprint(fn["name"]))
+			}
+			steerSurfaces = append(steerSurfaces, names)
+		}
+		if sawSteer && toolResults >= 2 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`)),
+			}, nil
+		}
+		callID := "call_bash_1"
+		if toolResults >= 1 {
+			callID = "call_bash_2"
+		}
+		body := fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":%q,"type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}]},"finish_reason":"tool_calls"}]}`, callID)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want flashed", result)
+	}
+	if !slices.Equal(cb.toolCalls, []string{"bash", "bash"}) {
+		t.Fatalf("executed tools = %#v, want bash before and after the steer", cb.toolCalls)
+	}
+	if cb.quarantined.Load() {
+		t.Fatal("host steer quarantined the resident belt")
+	}
+	if !slices.Equal(cb.finishes, []ToolSurfaceDeliveryState{
+		ToolSurfaceResponseConsumed,
+		ToolSurfaceHostSteered,
+		ToolSurfaceResponseConsumed,
+		ToolSurfaceResponseConsumed,
+	}) {
+		t.Fatalf("attempt deliveries = %#v", cb.finishes)
+	}
+	if len(steerSurfaces) < 2 {
+		t.Fatalf("steer requests = %d, want the replacement bash call and the final answer", len(steerSurfaces))
+	}
+	for i, names := range steerSurfaces {
+		if !slices.Contains(names, "bash") {
+			t.Fatalf("steer request %d tools = %v, want resident bash", i, names)
+		}
+	}
+	for _, entry := range result.HistoryDelta {
+		if strings.Contains(fmt.Sprint(entry.Content), "already ran successfully") {
+			t.Fatalf("history treated resident bash as a consumed grant: %#v", entry)
+		}
+	}
+}
+
+func TestRunLoop_HostSteerDiscardsCompletedResponseAndKeepsResidentTool(t *testing.T) {
+	var steerSurfaces [][]string
+	var requests atomic.Int32
+	cb := &residentBeltSteerCallbacks{mockCallbacks: mockCallbacks{
+		config:      corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:     3,
+		sysPrompt:   "sys",
+		toolResult:  "command exited with code 0",
+		toolOutcome: ToolExecutionOutcomeOK,
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		if err := r.Context().Err(); err != nil {
+			return nil, err
+		}
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+			Tools    []map[string]interface{} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		sawSteer := false
+		toolResults := 0
+		for _, msg := range req.Messages {
+			if msg["role"] == "tool" {
+				toolResults++
+			}
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				sawSteer = true
+			}
+		}
+		if sawSteer {
+			names := make([]string, 0, len(req.Tools))
+			for _, def := range req.Tools {
+				fn, _ := def["function"].(map[string]interface{})
+				names = append(names, fmt.Sprint(fn["name"]))
+			}
+			steerSurfaces = append(steerSurfaces, names)
+		}
+		if sawSteer && toolResults >= 2 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`)),
+			}, nil
+		}
+		// The guide lands as this response is already complete. The tool call in
+		// this body belongs to the discarded attempt and must not run.
+		if n == 2 {
+			cb.steer()
+		}
+		callID := "call_bash_1"
+		if toolResults >= 1 {
+			callID = "call_bash_2"
+		}
+		body := fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":%q,"type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}]},"finish_reason":"tool_calls"}]}`, callID)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want flashed", result)
+	}
+	if requests.Load() != 4 {
+		t.Fatalf("HTTP requests = %d, want the discarded completion plus two later rounds", requests.Load())
+	}
+	if !slices.Equal(cb.toolCalls, []string{"bash", "bash"}) {
+		t.Fatalf("executed tools = %#v, want the discarded response's bash not to run", cb.toolCalls)
+	}
+	if cb.quarantined.Load() {
+		t.Fatal("completed response discarded by a host steer quarantined the resident belt")
+	}
+	if !slices.Equal(cb.finishes, []ToolSurfaceDeliveryState{
+		ToolSurfaceResponseConsumed,
+		ToolSurfaceHostSteered,
+		ToolSurfaceResponseConsumed,
+		ToolSurfaceResponseConsumed,
+	}) {
+		t.Fatalf("attempt deliveries = %#v", cb.finishes)
+	}
+	if len(steerSurfaces) < 2 {
+		t.Fatalf("steer requests = %d, want the replacement bash call and the final answer", len(steerSurfaces))
+	}
+	for i, names := range steerSurfaces {
+		if !slices.Contains(names, "bash") {
+			t.Fatalf("steer request %d tools = %v, want resident bash", i, names)
+		}
+	}
+	for _, entry := range result.HistoryDelta {
+		if strings.Contains(fmt.Sprint(entry.Content), "already ran successfully") {
+			t.Fatalf("history treated resident bash as a consumed grant: %#v", entry)
+		}
+	}
+}
+
+func TestRunLoop_HostSteerDiscardsRetryResponseAndKeepsResidentTool(t *testing.T) {
+	var steerSurfaces [][]string
+	var requests atomic.Int32
+	cb := &residentBeltSteerCallbacks{mockCallbacks: mockCallbacks{
+		config:      corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:     3,
+		sysPrompt:   "sys",
+		toolResult:  "command exited with code 0",
+		toolOutcome: ToolExecutionOutcomeOK,
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		if n == 2 {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("bad gateway")),
+			}, nil
+		}
+		if err := r.Context().Err(); err != nil {
+			return nil, err
+		}
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+			Tools    []map[string]interface{} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		sawSteer := false
+		toolResults := 0
+		for _, msg := range req.Messages {
+			if msg["role"] == "tool" {
+				toolResults++
+			}
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				sawSteer = true
+			}
+		}
+		if sawSteer {
+			names := make([]string, 0, len(req.Tools))
+			for _, def := range req.Tools {
+				fn, _ := def["function"].(map[string]interface{})
+				names = append(names, fmt.Sprint(fn["name"]))
+			}
+			steerSurfaces = append(steerSurfaces, names)
+		}
+		if sawSteer && toolResults >= 2 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`)),
+			}, nil
+		}
+		// The gateway retry completed after the guide was accepted. Its tool
+		// call belongs to the discarded attempt.
+		if n == 3 {
+			cb.steer()
+		}
+		callID := "call_bash_1"
+		if toolResults >= 1 {
+			callID = "call_bash_2"
+		}
+		body := fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":%q,"type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}]},"finish_reason":"tool_calls"}]}`, callID)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want flashed", result)
+	}
+	if requests.Load() != 5 {
+		t.Fatalf("HTTP requests = %d, want the 502, the discarded retry, and two later rounds", requests.Load())
+	}
+	if !slices.Equal(cb.toolCalls, []string{"bash", "bash"}) {
+		t.Fatalf("executed tools = %#v, want the retry response's bash not to run", cb.toolCalls)
+	}
+	if cb.quarantined.Load() {
+		t.Fatal("host steer during a gateway retry quarantined the resident belt")
+	}
+	if !slices.Equal(cb.finishes, []ToolSurfaceDeliveryState{
+		ToolSurfaceResponseConsumed,
+		ToolSurfaceTransportRejected,
+		ToolSurfaceHostSteered,
+		ToolSurfaceResponseConsumed,
+		ToolSurfaceResponseConsumed,
+	}) {
+		t.Fatalf("attempt deliveries = %#v", cb.finishes)
+	}
+	if len(steerSurfaces) < 2 {
+		t.Fatalf("steer requests = %d, want the replacement bash call and the final answer", len(steerSurfaces))
+	}
+	for i, names := range steerSurfaces {
+		if !slices.Contains(names, "bash") {
+			t.Fatalf("steer request %d tools = %v, want resident bash", i, names)
+		}
+	}
+	for _, entry := range result.HistoryDelta {
+		if strings.Contains(fmt.Sprint(entry.Content), "already ran successfully") {
+			t.Fatalf("history treated resident bash as a consumed grant: %#v", entry)
+		}
+	}
+}
+
+// steerMidBatchCallbacks accepts the guide only after the response has been
+// consumed and the tool loop has started. Twelve skipped bash calls are the
+// same-tool hard stop; they must not end the turn.
+type steerMidBatchCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision           atomic.Int64
+	requestRevision    atomic.Int64
+	steerPending       atomic.Bool
+	responseSeen       atomic.Bool
+	postResponseChecks atomic.Int32
+}
+
+func (m *steerMidBatchCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *steerMidBatchCallbacks) LLMReplanRequested() bool {
+	if m.responseSeen.Load() && m.postResponseChecks.Add(1) == 4 {
+		m.steerPending.Store(true)
+		m.revision.Add(1)
+	}
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerMidBatchCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerMidBatchDoesNotHardStopResidentTool(t *testing.T) {
+	const skippedBashCalls = 12
+	cb := &steerMidBatchCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	var calls strings.Builder
+	for i := 0; i < skippedBashCalls; i++ {
+		if i > 0 {
+			calls.WriteString(",")
+		}
+		fmt.Fprintf(&calls, `{"id":"call_bash_%d","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}`, i)
+	}
+	batch := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[` + calls.String() + `]},"finish_reason":"tool_calls"}]}`
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := batch
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				break
+			}
+		}
+		cb.responseSeen.Store(true)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("executed tools = %#v, want the in-flight batch skipped", cb.toolCalls)
+	}
+	if cb.postResponseChecks.Load() < int32(3+skippedBashCalls) {
+		t.Fatalf("post-response replan checks = %d, want every skipped bash evaluated", cb.postResponseChecks.Load())
+	}
+}
+
+// steerDuringNoProgressCallbacks lets four failing iterations accumulate,
+// then accepts the guide only after the fifth batch has already executed
+// one more miss. That miss is the no-progress hard stop. The remaining
+// call in the batch is skipped. The stop must not outrun the guide.
+type steerDuringNoProgressCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	executed        atomic.Int32
+	latched         bool
+}
+
+func (m *steerDuringNoProgressCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *steerDuringNoProgressCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.executed.Add(1)
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	return ToolExecutionResult{Result: "Error: build failed", Outcome: ToolExecutionOutcomeError}
+}
+
+func (m *steerDuringNoProgressCallbacks) LLMReplanRequested() bool {
+	// The fifth execution is the first call of the fifth batch. Latch on the
+	// next check so that call has already counted as a miss and the call
+	// after it is the one the guide skips.
+	if !m.latched && m.executed.Load() >= 5 {
+		m.latched = true
+		m.steerPending.Store(true)
+		m.revision.Add(1)
+	}
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerDuringNoProgressCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerDuringNoProgressBatchStillContinues(t *testing.T) {
+	cb := &steerDuringNoProgressCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   6,
+		sysPrompt: "sys",
+	}}
+	one := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}]},"finish_reason":"tool_calls"}]}`
+	two := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash_a","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}},{"id":"call_bash_b","type":"function","function":{"name":"bash","arguments":"{\"command\":\"flash-buddy.ps1\"}"}}]},"finish_reason":"tool_calls"}]}`
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := one
+		if n == 5 {
+			body = two
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if len(cb.toolCalls) != 5 {
+		t.Fatalf("executed tools = %#v, want four misses plus the fifth batch's first call", cb.toolCalls)
+	}
+	if requests.Load() != 6 {
+		t.Fatalf("model requests = %d, want the five misses and the replacement", requests.Load())
+	}
+}
+
+// steerDuringNoProgressReviewCallbacks accepts the guide inside the desktop
+// review that runs after the no-progress stop has already been decided. That
+// review sits below the earlier steer check. The batch commit sits there too.
+type steerDuringNoProgressReviewCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+}
+
+func (m *steerDuringNoProgressReviewCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *steerDuringNoProgressReviewCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	return ToolExecutionResult{Result: "Error: build failed", Outcome: ToolExecutionOutcomeError}
+}
+
+func (m *steerDuringNoProgressReviewCallbacks) ReviewDesktopOutcome(string, string, []ConversationEntry, *ToolModelImage) DesktopOutcomeDecision {
+	// The prose finish of the replacement calls this review again. Latch once,
+	// while the no-progress stop is still the exit in front of the guide.
+	if m.revision.Load() != 0 {
+		return DesktopOutcomeDecision{}
+	}
+	m.steerPending.Store(true)
+	m.revision.Add(1)
+	return DesktopOutcomeDecision{}
+}
+
+func (m *steerDuringNoProgressReviewCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerDuringNoProgressReviewCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerDuringNoProgressReviewStillContinues(t *testing.T) {
+	cb := &steerDuringNoProgressReviewCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   6,
+		sysPrompt: "sys",
+	}}
+	miss := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}]},"finish_reason":"tool_calls"}]}`
+	var requests atomic.Int32
+	var guided atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := miss
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				if guided.Add(1) == 1 {
+					body = miss
+				} else {
+					body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				}
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if len(cb.toolCalls) != 6 {
+		t.Fatalf("executed tools = %d, want five misses plus one replacement failure", len(cb.toolCalls))
+	}
+	if requests.Load() != 7 {
+		t.Fatalf("model requests = %d, want five misses, one replacement miss, and the finish", requests.Load())
+	}
+}
+
+// steerOnTwelfthFailureCallbacks runs every call in a twelve-bash batch.
+// The guide becomes visible only while the twelfth call is executing, which
+// is the same-tool hard stop. That return is inside the tool loop.
+type steerOnTwelfthFailureCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+}
+
+func (m *steerOnTwelfthFailureCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *steerOnTwelfthFailureCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	if len(m.toolCalls) == 12 {
+		m.steerPending.Store(true)
+		m.revision.Add(1)
+	}
+	return ToolExecutionResult{Result: "Error: build failed", Outcome: ToolExecutionOutcomeError}
+}
+
+func (m *steerOnTwelfthFailureCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerOnTwelfthFailureCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerDuringTwelfthFailureStillContinues(t *testing.T) {
+	const failedBashCalls = 12
+	cb := &steerOnTwelfthFailureCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	var calls strings.Builder
+	for i := 0; i < failedBashCalls; i++ {
+		if i > 0 {
+			calls.WriteString(",")
+		}
+		fmt.Fprintf(&calls, `{"id":"call_bash_%d","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}`, i)
+	}
+	batch := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[` + calls.String() + `]},"finish_reason":"tool_calls"}]}`
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := batch
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if len(cb.toolCalls) != failedBashCalls {
+		t.Fatalf("executed tools = %d, want all %d failures to run before the guide", len(cb.toolCalls), failedBashCalls)
+	}
+}
+
+func TestRunLoop_HostSteerReplacementSurvivesInheritedNoProgressStreak(t *testing.T) {
+	cb := &steerDuringNoProgressCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   6,
+		sysPrompt: "sys",
+	}}
+	one := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}]},"finish_reason":"tool_calls"}]}`
+	two := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash_a","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}},{"id":"call_bash_b","type":"function","function":{"name":"bash","arguments":"{\"command\":\"flash-buddy.ps1\"}"}}]},"finish_reason":"tool_calls"}]}`
+	var requests atomic.Int32
+	var steered atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := one
+		if n == 5 {
+			body = two
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				if steered.Add(1) == 1 {
+					body = one
+				} else {
+					body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				}
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the replacement to survive its own first miss", result)
+	}
+	if len(cb.toolCalls) != 6 {
+		t.Fatalf("executed tools = %d, want the discarded misses plus one replacement failure", len(cb.toolCalls))
+	}
+	if requests.Load() != 7 {
+		t.Fatalf("model requests = %d, want the replacement miss and the answer after it", requests.Load())
+	}
+}
+
+func TestRunLoop_HostSteerReplacementSurvivesInheritedSameToolStreak(t *testing.T) {
+	const failedBashCalls = 12
+	cb := &steerOnTwelfthFailureCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   2,
+		sysPrompt: "sys",
+	}}
+	var calls strings.Builder
+	for i := 0; i < failedBashCalls; i++ {
+		if i > 0 {
+			calls.WriteString(",")
+		}
+		fmt.Fprintf(&calls, `{"id":"call_bash_%d","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}`, i)
+	}
+	batch := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[` + calls.String() + `]},"finish_reason":"tool_calls"}]}`
+	one := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash_next","type":"function","function":{"name":"bash","arguments":"{\"command\":\"flash-buddy.ps1\"}"}}]},"finish_reason":"tool_calls"}]}`
+	var steered atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := batch
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				if steered.Add(1) == 1 {
+					body = one
+				} else {
+					body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				}
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the replacement bash to run past the old streak", result)
+	}
+	if len(cb.toolCalls) != failedBashCalls+1 {
+		t.Fatalf("executed tools = %d, want %d discarded failures plus the replacement", len(cb.toolCalls), failedBashCalls+1)
+	}
+}
+
+// steerBeforeArgumentRecoveryCallbacks accepts the guide on the replan
+// check that sits in front of invalid-argument recovery. That recovery
+// must not tell the replacement to regenerate the discarded call.
+type steerBeforeArgumentRecoveryCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision           atomic.Int64
+	requestRevision    atomic.Int64
+	steerPending       atomic.Bool
+	responseSeen       atomic.Bool
+	postResponseChecks atomic.Int32
+}
+
+func (m *steerBeforeArgumentRecoveryCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *steerBeforeArgumentRecoveryCallbacks) LLMReplanRequested() bool {
+	if m.responseSeen.Load() && m.postResponseChecks.Add(1) == 3 {
+		m.steerPending.Store(true)
+		m.revision.Add(1)
+	}
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerBeforeArgumentRecoveryCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerSkipsInvalidArgumentRecovery(t *testing.T) {
+	cb := &steerBeforeArgumentRecoveryCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	invalid := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"[]"}}]},"finish_reason":"tool_calls"}]}`
+	var sawRecovery atomic.Bool
+	var sawSteer atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := invalid
+		for _, msg := range req.Messages {
+			content := fmt.Sprint(msg["content"])
+			if strings.Contains(content, "incomplete or invalid JSON") {
+				sawRecovery.Store(true)
+			}
+			if strings.Contains(content, "button handling was normal") {
+				sawSteer.Store(true)
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				break
+			}
+		}
+		cb.responseSeen.Store(true)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" || !sawSteer.Load() {
+		t.Fatalf("RunLoop result = %+v sawSteer=%v, want the steered continuation", result, sawSteer.Load())
+	}
+	if sawRecovery.Load() {
+		t.Fatal("replacement request included invalid-argument recovery for the discarded call")
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("executed tools = %#v, want the invalid call discarded", cb.toolCalls)
+	}
+}
+
+// steerUnrenderedGrantCallbacks runs write_file once, then drops it from the
+// next request. The guide arrives while bash is executing, before the model
+// calls write_file again. That call must not be recorded as a consumed grant.
+type steerUnrenderedGrantCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	dropWrite       atomic.Bool
+}
+
+func (m *steerUnrenderedGrantCallbacks) BuildTools(string) []map[string]interface{} {
+	bash := tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})
+	if m.dropWrite.Load() {
+		return []map[string]interface{}{bash}
+	}
+	write := tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})
+	return []map[string]interface{}{bash, write}
+}
+
+func (m *steerUnrenderedGrantCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	if name == "bash" {
+		m.steerPending.Store(true)
+		m.revision.Add(1)
+	}
+	return ToolExecutionResult{Result: "ok", Outcome: ToolExecutionOutcomeOK}
+}
+
+func (m *steerUnrenderedGrantCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerUnrenderedGrantCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerSkipsConsumedGrantDenial(t *testing.T) {
+	cb := &steerUnrenderedGrantCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   2,
+		sysPrompt: "sys",
+	}}
+	first := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_write","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"a.go\",\"content\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}`
+	second := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}},{"id":"call_write_again","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"a.go\",\"content\":\"y\"}"}}]},"finish_reason":"tool_calls"}]}`
+	var requests atomic.Int32
+	var sawConsumed atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := first
+		if n == 1 {
+			// The next request is built after this response is consumed.
+			// write_file stays rendered for the call already in flight.
+			cb.dropWrite.Store(true)
+		} else {
+			body = second
+		}
+		for _, msg := range req.Messages {
+			content := fmt.Sprint(msg["content"])
+			if strings.Contains(content, "already ran successfully") {
+				sawConsumed.Store(true)
+			}
+			if strings.Contains(content, "button handling was normal") {
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if sawConsumed.Load() {
+		t.Fatal("replacement request recorded write_file as a consumed grant")
+	}
+	if len(cb.toolCalls) != 2 || cb.toolCalls[0] != "write_file" || cb.toolCalls[1] != "bash" {
+		t.Fatalf("executed tools = %#v, want write_file then bash", cb.toolCalls)
+	}
+}
+
+// steerDuringInteractivePauseCallbacks models a guide that becomes visible
+// only while ask_user or record_audio is executing. Those results used to
+// pause the turn before the post-batch continuation.
+type steerDuringInteractivePauseCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	toolName        string
+	marker          string
+}
+
+func (m *steerDuringInteractivePauseCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef(m.toolName, "pause for the user", map[string]interface{}{"type": "object"})}
+}
+
+func (m *steerDuringInteractivePauseCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	m.steerPending.Store(true)
+	m.revision.Add(1)
+	return ToolExecutionResult{Result: m.marker, Outcome: ToolExecutionOutcomeOK}
+}
+
+func (m *steerDuringInteractivePauseCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerDuringInteractivePauseCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerDuringAskUserStillContinues(t *testing.T) {
+	runHostSteerDuringInteractivePause(t, "ask_user", `__ASK_USER__{"question":"Choose one","options":["A","B"],"input_type":"choice"}`)
+}
+
+func TestRunLoop_HostSteerDuringRecordAudioStillContinues(t *testing.T) {
+	runHostSteerDuringInteractivePause(t, "record_audio", FormatRecordAudioMarker(&RecordAudioRequest{Title: "flash", Purpose: "verify"}))
+}
+
+func runHostSteerDuringInteractivePause(t *testing.T, toolName, marker string) {
+	t.Helper()
+	cb := &steerDuringInteractivePauseCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+			maxIter:   1,
+			sysPrompt: "sys",
+		},
+		toolName: toolName,
+		marker:   marker,
+	}
+	paused := fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_pause","type":"function","function":{"name":%q,"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, toolName)
+	var sawMarker atomic.Bool
+	var sawSteer atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := paused
+		for _, msg := range req.Messages {
+			content := fmt.Sprint(msg["content"])
+			if strings.Contains(content, "__ASK_USER__") || strings.Contains(content, "__RECORD_AUDIO__") {
+				sawMarker.Store(true)
+			}
+			if strings.Contains(content, "button handling was normal") {
+				sawSteer.Store(true)
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" || result.AskUser != nil || result.RecordAudio != nil {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if !sawSteer.Load() {
+		t.Fatal("replacement request was not sent")
+	}
+	if sawMarker.Load() {
+		t.Fatal("replacement request still carried the interactive pause marker")
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != toolName {
+		t.Fatalf("executed tools = %#v, want one %s call", cb.toolCalls, toolName)
+	}
+}
+
+// steerDuringRequestContextCallbacks models a guide that cancels the operation
+// while the host is still building the LLM request context. Coding does this
+// when a steer arrives during the scheduler lease wait: no attempt has started.
+type steerDuringRequestContextCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	contexts        atomic.Int32
+}
+
+func (m *steerDuringRequestContextCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	n := m.contexts.Add(1)
+	if n == 1 {
+		m.requestRevision.Store(m.revision.Load())
+		m.steerPending.Store(true)
+		m.revision.Add(1)
+		return nil, nil, context.Canceled
+	}
+	m.requestRevision.Store(m.revision.Load())
+	return context.Background(), func(error) {}, nil
+}
+
+func (m *steerDuringRequestContextCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerDuringRequestContextCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerDuringRequestContextStillContinues(t *testing.T) {
+	cb := &steerDuringRequestContextCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	var requests atomic.Int32
+	var sawSteer atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := `{"choices":[{"message":{"role":"assistant","content":"stale"},"finish_reason":"stop"}]}`
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				sawSteer.Store(true)
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if !sawSteer.Load() || requests.Load() != 1 || cb.contexts.Load() != 2 {
+		t.Fatalf("requests=%d contexts=%d sawSteer=%v, want the cancelled setup and one replacement", requests.Load(), cb.contexts.Load(), sawSteer.Load())
+	}
+}
+
+// steerBeforeCleanEarlyStopCallbacks finishes the previous plan during a tool
+// call and accepts a guide in that same call. The next iteration's code-less
+// early stop used to return before the replacement request was sent.
+type steerBeforeCleanEarlyStopCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision         atomic.Int64
+	requestRevision  atomic.Int64
+	steerPending     atomic.Bool
+	deliveryComplete atomic.Bool
+}
+
+func (m *steerBeforeCleanEarlyStopCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *steerBeforeCleanEarlyStopCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	m.deliveryComplete.Store(true)
+	m.steerPending.Store(true)
+	m.revision.Add(1)
+	return ToolExecutionResult{Result: "delivered", Outcome: ToolExecutionOutcomeOK}
+}
+
+func (m *steerBeforeCleanEarlyStopCallbacks) EarlyStop() (bool, string, string) {
+	if m.deliveryComplete.Load() {
+		return true, "", "delivered"
+	}
+	return false, "", ""
+}
+
+func (m *steerBeforeCleanEarlyStopCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerBeforeCleanEarlyStopCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerDuringCleanEarlyStopStillContinues(t *testing.T) {
+	cb := &steerBeforeCleanEarlyStopCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	first := `{"choices":[{"message":{"role":"assistant","content":"deck written","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{\"command\":\"build.cmd\"}"}}]},"finish_reason":"tool_calls"}]}`
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := first
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if requests.Load() != 2 || len(cb.toolCalls) != 1 {
+		t.Fatalf("requests=%d tools=%v, want the delivered call and the replacement", requests.Load(), cb.toolCalls)
+	}
+}
+
+// steerDuringEmptyStopCallbacks accepts the guide inside the desktop review
+// that runs after the empty-response hard exit has already been decided.
+// That review sits below the earlier steer check and above the return.
+type steerDuringEmptyStopCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+}
+
+func (m *steerDuringEmptyStopCallbacks) ReviewDesktopOutcome(string, string, []ConversationEntry, *ToolModelImage) DesktopOutcomeDecision {
+	m.steerPending.Store(true)
+	m.revision.Add(1)
+	return DesktopOutcomeDecision{}
+}
+
+func (m *steerDuringEmptyStopCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *steerDuringEmptyStopCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "button handling was normal"})
+}
+
+func TestRunLoop_HostSteerDuringEmptyStopStillContinues(t *testing.T) {
+	cb := &steerDuringEmptyStopCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   2,
+		sysPrompt: "sys",
+	}}
+	// An empty function name is dropped before execution. The second such
+	// response is the nameless hard exit, and it does not take the empty backoff.
+	nameless := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_blank","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		body := nameless
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "button handling was normal") {
+				body = `{"choices":[{"message":{"role":"assistant","content":"flashed"},"finish_reason":"stop"}]}`
+				break
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "build and flash", nil, client, cb)
+	if result.Error != "" || result.HardExit || result.Text != "flashed" {
+		t.Fatalf("RunLoop result = %+v, want the steered continuation", result)
+	}
+	if requests.Load() != 3 {
+		t.Fatalf("model requests = %d, want two nameless replies and the replacement", requests.Load())
 	}
 }
 

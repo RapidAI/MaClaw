@@ -58,7 +58,10 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
             } catch {
                 if (!cancelled) setStatus((prev) => prev ?? { enabled: true, phase: 'error', error: 'status unavailable' });
             } finally {
-                if (!cancelled) setLoading(false);
+                // Unconditional: a stale (cancelled) run must still clear the
+                // initial load gate. StrictMode cancels run 1 and its ref
+                // guard would otherwise leave the panel on "加载中..." forever.
+                setLoading(false);
             }
         };
         if (!initialRequestRef.current) {

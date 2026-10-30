@@ -42,6 +42,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/doctor"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
@@ -6784,7 +6785,11 @@ func (c *sharedAgentLoopCallbacks) publishGeneratedDocumentArtifact(selection to
 		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], tool.ArtifactPayload{Ref: ref})
 	}
 	c.turnPublishedPDF = true
-	return agentruntime.HostPublishedCurrentChannelFileNote
+	dir := ""
+	if c.handler != nil {
+		dir = c.handler.effectiveWorkingDirForUser(c.userID)
+	}
+	return publishedPDFToolNote(c.semanticSurface.plan, dir, name, obs.File.data)
 }
 
 func (c *sharedAgentLoopCallbacks) executeTrustedLiveDataVisual() string {
@@ -8052,6 +8057,8 @@ func (c *sharedAgentLoopCallbacks) semanticCanonicalArguments(selection tool.Pla
 		argsJSON = semanticFileDeleteInvocationArgs(argsJSON)
 	case tool.CapabilityArtifactAcquireRemote:
 		argsJSON = semanticAcquireRemoteInvocationArgs(argsJSON)
+	case tool.CapabilityMessageSendMailbox:
+		argsJSON = mailbox.NormalizeMailboxSendInvocationArgs(argsJSON)
 	}
 	canonical, err := tool.CanonicalizeAuthorizedInvocationArguments(argsJSON, schema, selection.ParameterAuthorization)
 	if err != nil {

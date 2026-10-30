@@ -2198,6 +2198,43 @@ func TestRestartResumesPersistedActiveGoal(t *testing.T) {
 	}
 }
 
+func TestRestartResumeWaitsForTheLiveDesktopTurn(t *testing.T) {
+	store := goal.NewStore("")
+	const userID = "desktop-user:C:/tasks/restart-live"
+	if _, err := store.Set(userID, "先等这一回合"); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	engine := NewGoalContinuationEngine(store, app)
+	engine.cooldown = time.Hour
+	app.goalContinuation = engine
+	h := &IMMessageHandler{app: app, goalStore: store}
+	app.imHandler = h
+	t.Cleanup(func() { engine.CancelPending(userID) })
+
+	ctx := NewLoopContext("coding", 4, nil)
+	cleanup := h.beginPureCodingRuntime(ctx, userID, "keep working")
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+	snap := app.GetSessionGoalBar(userID)
+	if snap["status"] != string(goal.StatusActive) || goalTimerScheduled(t, engine, userID) {
+		t.Fatalf("restart resume during a live turn = %#v scheduled=%v", snap, goalTimerScheduled(t, engine, userID))
+	}
+	cleanup()
+	cleanup = nil
+	g := store.Get(userID)
+	if g == nil {
+		t.Fatal("missing goal")
+	}
+	h.scheduleGoalContinuationUnlessLive(userID, g.GoalID)
+	if !goalTimerScheduled(t, engine, userID) {
+		t.Fatal("continuation should arm once the desktop turn is gone")
+	}
+}
+
 func TestRestartDoesNotResumeAGoalCreatedAfterStartup(t *testing.T) {
 	store := goal.NewStore("")
 	app := &App{}
@@ -2346,5 +2383,43 @@ func TestNoToolPauseNoticeMentionsResume(t *testing.T) {
 	text, asError := goalTerminalNotice(got)
 	if asError || !strings.Contains(text, "/goal resume") {
 		t.Fatalf("notice = %q asError=%v", text, asError)
+	}
+}
+
+func TestUserTurnErrorDoesNotFailActiveGoal(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	userID := "goal-desktop-turn-error"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	g, err := store.Set(userID, "优化四台设备上的推理性能")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Error: "1 guardrail block(s): raw ssh rejected"}, "desktop")
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || got.GoalID != g.GoalID {
+		t.Fatalf("desktop turn error failed the goal: %+v", got)
+	}
+	if strings.Contains(got.Summary, "guardrail") {
+		t.Fatalf("summary absorbed the coding error: %+v", got)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if !scheduled {
+		t.Fatal("active goal should schedule after a non-continuation turn")
+	}
+
+	contID := "goal-continuation-turn-error"
+	t.Cleanup(func() { engine.CancelPending(contID) })
+	if _, err := store.Set(contID, "优化四台设备上的推理性能"); err != nil {
+		t.Fatal(err)
+	}
+	handler.maybeScheduleGoalContinuation(contID, &IMAgentResponse{Error: "编译失败"}, "goal-continuation")
+	got = store.Get(contID)
+	if got == nil || got.Status != goal.StatusFailed || !strings.Contains(got.Summary, "编译失败") {
+		t.Fatalf("goal-continuation error should still fail the goal: %+v", got)
 	}
 }

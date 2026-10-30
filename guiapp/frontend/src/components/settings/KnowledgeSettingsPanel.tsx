@@ -768,6 +768,12 @@ const knowledgeOptionLabelSets = {
         failed: ['Import failed', '导入失败'],
         disabled: ['Disabled', '已禁用'],
     } as Record<string, KnowledgeOptionLabelEntry>,
+    health_status: {
+        ok: ['Healthy', '健康'],
+        warning: ['Needs attention', '需要注意'],
+        error: ['Has errors', '存在错误'],
+        unknown: ['Unknown', '未知'],
+    } as Record<string, KnowledgeOptionLabelEntry>,
     coverage: {
         all: ['All', '全部'],
         missing_nodes: ['Missing nodes', '缺少节点'],
@@ -3398,10 +3404,8 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         <>
         <section className="knowledge-panel">
             <div className="knowledge-panel-header">
-                <div>
-                    <h2 className="knowledge-panel-title">{t('Knowledge Base', '知识库')}</h2>
-                    <p className="knowledge-panel-subtitle">{t('Ingest, search, inspect, and maintain local knowledge sources.', '导入、检索、查看并维护本地知识来源。')}</p>
-                </div>
+                {/* No in-page title: the top header already shows MaClaw 知识库. */}
+                <p className="knowledge-panel-subtitle">{t('Ingest, search, inspect, and maintain local knowledge sources.', '导入、检索、查看并维护本地知识来源。')}</p>
                 <div className="knowledge-panel-actions">
                     <button type="button" className="knowledge-button knowledge-button--secondary" onClick={refresh} disabled={loading}>
                         {loading ? t('Refreshing...', '刷新中...') : t('Refresh', '刷新')}
@@ -3432,7 +3436,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             {activeTab === 'overview' && (
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-overview" aria-labelledby="knowledge-tab-overview">
                     <div className="knowledge-stats-grid">
-                        <Stat label={t('Status', '状态')} value={summary?.status || 'Unknown'} />
+                        <Stat label={t('Status', '状态')} value={knowledgeOptionDisplayLabel('health_status', summary?.status || 'unknown', t)} />
                         <Stat label={t('Health score', '健康评分')} value={summary?.score ?? 0} />
                         <Stat label={t('Avg. source score', '来源平均分')} value={summary?.qualityAvgScore ?? 0} />
                         <Stat label={t('Pending suggestions', '待处理建议')} value={(summary?.actions || []).length} />

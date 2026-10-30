@@ -119,6 +119,7 @@ interface AssistantConversationBodyProps {
     busyAccessory?: ReactNode;
     theme: Theme;
     brandId?: string | null;
+    brandDisplayName?: string | null;
     brandDisplayNameCN?: string | null;
 }
 
@@ -139,10 +140,12 @@ export function AssistantConversationBody({
     busyAccessory,
     theme: t,
     brandId,
+    brandDisplayName,
     brandDisplayNameCN,
 }: AssistantConversationBodyProps) {
     const brandParts = brandLineParts({
         brandId,
+        displayName: brandDisplayName,
         displayNameCN: brandDisplayNameCN,
         lang,
         localizedDefault: translate("aboutProductName", lang),

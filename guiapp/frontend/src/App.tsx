@@ -5992,6 +5992,7 @@ ${instruction}`;
                             startOnWorkbenchHome
                             lang={lang}
                             brandId={brandInfo?.id}
+                            brandDisplayName={brandInfo?.displayName}
                             brandDisplayNameCN={brandInfo?.displayNameCN}
                             chatFontSize={chatFontSize}
                             chatFontFamily={chatFontFamily}
@@ -6316,6 +6317,7 @@ ${instruction}`;
                             buildNumber={buildNumber}
                             thanksContent={thanksContent}
                             config={config}
+                            lang={lang}
                             t={t}
                             onOpenWebsite={() => safeBrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
                             onCheckUpdate={() => {

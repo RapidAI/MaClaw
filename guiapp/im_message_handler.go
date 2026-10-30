@@ -269,7 +269,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// preflight still holds the turn. The admit generation is what pause
 	// revokes. An empty result closes the round and does not fence chat or
 	// consume a question. The continuation emits that close once.
-	if msg.Platform == "goal-continuation" && h.app != nil && h.app.goalContinuation != nil && h.app.goalContinuation.continuationAdmitRevoked(msg.RequestID) {
+	if msg.Platform == "goal-continuation" && h.app != nil && h.app.goalContinuation != nil && h.app.goalContinuation.continuationTurnBlocked(msg) {
 		log.Printf("[goal-continuation] dropped turn before entry user=%s request_id=%s", msg.UserID, msg.RequestID)
 		return &IMAgentResponse{}
 	}

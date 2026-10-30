@@ -30,8 +30,9 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 }
 
 // resetConversationResidue ends chat-scoped state when a turn is classified
-// as a new conversation (empty history, cancelled previous turn, topic
-// switch). The workbench stays when the visible row is a coding task, or
+// as a new conversation (empty history, an explicit new task, or a topic
+// switch). A stopped run is not one of those: the task conversation stays.
+// The workbench stays when the visible row is a coding task, or
 // when that row is not visible yet and a template or sticky kind is already
 // armed for the project owner. A visible ordinary row does not keep a
 // leftover arm.

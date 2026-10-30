@@ -16,6 +16,8 @@ type OutboundMessage struct {
 	Text       string
 	InReplyTo  string
 	References string
+	// Files are workspace files frozen at confirm time.
+	Files []OutboundFile
 }
 
 // MailSender transmits one frozen draft. The availability probe does not use it.
@@ -232,21 +234,25 @@ func (h *Host) Approve(ctx context.Context, draftID string) (string, string) {
 		h.noteUncertain(draft)
 		return MsgUncertain, "uncertain"
 	}
+	sendStarted := time.Now()
 	if err := h.Sender.Send(ctx, draft.Account, secret, draft.Message); err != nil {
 		class, msg := classifyTransport(err, false)
 		if class == "uncertain" {
 			h.noteUncertain(draft)
 			h.countSend("uncertain")
 			h.audit(draft, "uncertain")
+			h.logResult(draft.Account.ID, SideOutbound, "approve", "uncertain", sendStarted)
 			return MsgUncertain, "uncertain"
 		}
 		if class == "rejected" {
 			h.countSend("rejected")
 			h.audit(draft, "rejected")
+			h.logResult(draft.Account.ID, SideOutbound, "approve", "rejected", sendStarted)
 			return msg, "rejected"
 		}
 		h.countSend(class)
 		h.audit(draft, class)
+		h.logResult(draft.Account.ID, SideOutbound, "approve", class, sendStarted)
 		return msg, class
 	}
 	h.countSend("approved")
@@ -255,6 +261,7 @@ func (h *Host) Approve(ctx context.Context, draftID string) (string, string) {
 	if err := h.finishSend(sent); err != nil {
 		return err.Error(), "error"
 	}
+	h.logResult(draft.Account.ID, SideOutbound, "approve", "approved", sendStarted)
 	return sent, "approved"
 }
 

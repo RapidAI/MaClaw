@@ -123,3 +123,14 @@ func TestPendingUserReplyDeleteClearsAbsentSnapshotState(t *testing.T) {
 		t.Fatal("stale handler consumed a deleted prose reply after snapshot removal")
 	}
 }
+
+func TestPendingReplyStoreSkipsTheUserProfileWhenTheTestHasNoHome(t *testing.T) {
+	h := &IMMessageHandler{app: &App{}}
+	if h.ensurePendingReplyStore() != nil {
+		t.Fatal("a test app without its own profile opened the pending-reply file")
+	}
+	isolated := &IMMessageHandler{app: &App{testHomeDir: t.TempDir()}}
+	if isolated.ensurePendingReplyStore() == nil {
+		t.Fatal("a test app with its own profile has no pending-reply store")
+	}
+}

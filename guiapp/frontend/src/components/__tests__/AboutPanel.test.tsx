@@ -130,6 +130,7 @@ const baseProps = {
         loading: 'Loading',
         cancel: 'Cancel',
         bugReport: 'Problem Feedback',
+        problemReport: 'Problem Report',
         codeRepository: 'Code Repository',
         thanks: 'Thanks',
     }[key] ?? key),
@@ -169,6 +170,15 @@ describe('AboutPanel', () => {
         const { container } = render(<AboutPanel {...baseProps} />);
 
         expect(container.querySelector('.about-page.secondary-page-shell')).toBeTruthy();
+    });
+
+    it('keeps exactly one problem-report entry (hero action, not a grid repeat)', () => {
+        render(<AboutPanel {...baseProps} onOpenProblemReport={vi.fn()} />);
+
+        // The hero actions own 问题反馈; the quick-action grid must not repeat
+        // it next to the near-synonymous bugReport (Problem Feedback) tile.
+        expect(screen.getAllByText('Problem Report')).toHaveLength(1);
+        expect(screen.getByText('Problem Feedback')).toBeTruthy();
     });
 
     it('opens markdown links through BrowserOpenURL', () => {
@@ -314,6 +324,7 @@ describe('AboutPanel', () => {
         render(
             <AboutPanel
                 {...baseProps}
+                lang="zh-Hans"
                 brandInfo={{
                     id: 'qianxin',
                     displayName: 'QAgent',
@@ -334,10 +345,74 @@ describe('AboutPanel', () => {
         expect(screen.getByText('AI Native 组织操作系统')).toBeTruthy();
     });
 
+    it('replaces the Chinese brand slogan and contact in Mongolian', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                lang="mn"
+                t={(key) => {
+                    if (key === 'slogan') return 'AI Native байгууллагын үйлдлийн систем';
+                    if (key === 'author') return 'Зохиогч';
+                    if (key === 'businessCooperation') return 'Холбоо барих: WeChat znsoft';
+                    if (key === 'aboutProductName') return 'MaClaw 8';
+                    return baseProps.t(key);
+                }}
+                brandInfo={{
+                    id: 'maclaw',
+                    displayName: 'MaClaw',
+                    displayNameCN: '码卡龙',
+                    slogan: 'AI Native 组织操作系统',
+                    author: 'Dr. Daniel',
+                    businessContact: '联系信息：微信 znsoft',
+                    websiteURL: 'https://maclaw.top',
+                    githubURL: 'https://github.com/nicedoc/maclaw',
+                    iconPath: 'build/appicon.png',
+                }}
+            />,
+        );
+
+        expect(screen.getByText('AI Native байгууллагын үйлдлийн систем')).toBeTruthy();
+        expect(screen.getByText('Холбоо барих: WeChat znsoft')).toBeTruthy();
+        expect(screen.getByText('Зохиогч: Dr. Daniel')).toBeTruthy();
+        expect(screen.getByLabelText('8').classList.contains('brand-version-mark')).toBe(true);
+        expect(screen.getByRole('heading', { name: 'MaClaw 8' })).toBeTruthy();
+        expect(screen.queryByText('AI Native 组织操作系统')).toBeNull();
+        expect(screen.queryByText('联系信息：微信 znsoft')).toBeNull();
+        expect(screen.queryByText('企缘')).toBeNull();
+    });
+
+    it('uses the Latin OEM name and translates a non-default contact in Mongolian', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                lang="mn"
+                t={(key) => key === 'businessCooperation' ? 'Холбоо барих: WeChat znsoft' : baseProps.t(key)}
+                brandInfo={{
+                    id: 'qianxin',
+                    displayName: 'TigerClaw',
+                    displayNameCN: '虎爪',
+                    slogan: 'AI Native 组织操作系统',
+                    author: 'Dr. Daniel',
+                    businessContact: '联系信息：QianXin',
+                    websiteURL: 'https://www.qianxin.com',
+                    githubURL: '',
+                    iconPath: 'assets/qianxin.png',
+                }}
+            />,
+        );
+
+        expect(screen.getByRole('heading', { name: 'TigerClaw 8' })).toBeTruthy();
+        expect(screen.getByText('Холбоо барих: QianXin')).toBeTruthy();
+        expect(screen.queryByText('虎爪')).toBeNull();
+        expect(screen.queryByText('企缘')).toBeNull();
+        expect(screen.queryByText('联系信息：QianXin')).toBeNull();
+    });
+
     it('renders the MetaStaff product name with the version 8 display treatment', () => {
         render(
             <AboutPanel
                 {...baseProps}
+                lang="zh-Hans"
                 brandInfo={{
                     id: 'metastaff',
                     displayName: 'MetaStaff',

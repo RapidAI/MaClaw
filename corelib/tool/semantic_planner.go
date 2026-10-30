@@ -689,6 +689,7 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 	attachLookupGenerateDependencies(&plan, needs)
 	attachScheduleDispatchDependencies(&plan)
 	attachGenerateCurrentDeliverDependencies(&plan)
+	attachGenerateMailboxSendDependencies(&plan)
 	attachRenderCurrentVoiceDeliverDependencies(&plan)
 	attachCaptureCurrentImageDeliverDependencies(&plan)
 	attachLiveDataVisualDependencies(&plan, needs)
@@ -886,6 +887,22 @@ func attachGenerateCurrentDeliverDependencies(plan *ToolPlan) {
 	}
 	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
 		return isCurrentChannelFileDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings)
+	}, familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
+		return IsDocumentGenerateFile(selection.FitProof.MatchedCapability)
+	}))
+}
+
+// attachGenerateMailboxSendDependencies records the same kind of after edge
+// for a mailbox send that shares the turn with a new PDF. The send tool can
+// attach only a workspace file, and that file is named in the generate
+// result. Listing both tools together lets the model send before the file
+// exists. A send with no generate selection stays immediately ready.
+func attachGenerateMailboxSendDependencies(plan *ToolPlan) {
+	if plan == nil {
+		return
+	}
+	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
+		return selection.FitProof.MatchedCapability == CapabilityMessageSendMailbox
 	}, familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
 		return IsDocumentGenerateFile(selection.FitProof.MatchedCapability)
 	}))

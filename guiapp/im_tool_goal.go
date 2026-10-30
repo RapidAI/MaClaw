@@ -75,19 +75,53 @@ func (h *IMMessageHandler) resolveGoalUserID(userID string) string {
 	return ""
 }
 
+// goalAddress is the goal row a chat command must read or change.
+// The bar resolves slash and drive spellings to one row. Slash commands
+// and the goal tool use that same row. A session with no row keeps the
+// chat id so a create still writes on the session that asked.
+type goalAddress struct {
+	id    string
+	store *goal.Store
+	goal  *goal.Goal
+}
+
+func (h *IMMessageHandler) goalAddressFor(userID string) goalAddress {
+	userID = h.resolveGoalUserID(userID)
+	if h != nil && h.app != nil {
+		hit := h.app.goalBarHit(userID)
+		if hit.goal != nil && hit.store != nil && strings.TrimSpace(hit.id) != "" {
+			return goalAddress{id: hit.id, store: hit.store, goal: hit.goal}
+		}
+	}
+	if h == nil {
+		return goalAddress{id: userID}
+	}
+	store := h.getGoalStore()
+	if store == nil {
+		return goalAddress{id: userID}
+	}
+	return goalAddress{id: userID, store: store, goal: store.Get(userID)}
+}
+
 func (h *IMMessageHandler) goalCreate(args map[string]interface{}) string {
 	return h.goalCreateForUser(h.lastUserID, args)
 }
 
 func (h *IMMessageHandler) goalCreateForUser(userID string, args map[string]interface{}) string {
 	userID = h.resolveGoalUserID(userID)
+	chatID := userID
 	store := h.getGoalStore()
+	addr := h.goalAddressFor(userID)
 
-	// Check for existing active goal
-	existing := store.Get(userID)
+	// The bar may already show this session under the other slash spelling.
+	existing := addr.goal
 	if existing != nil && !existing.IsTerminal() {
 		return fmt.Sprintf("已有活跃目标（%s）：%s\n如需替换请先取消当前目标（goal action=cancel），或等待当前目标完成。",
 			existing.Status, existing.Objective)
+	}
+	if existing != nil && addr.store != nil && addr.id != "" {
+		store = addr.store
+		userID = addr.id
 	}
 
 	objective, _ := args["objective"].(string)
@@ -117,7 +151,7 @@ func (h *IMMessageHandler) goalCreateForUser(userID string, args map[string]inte
 
 	// Pure coding workbench: mirror objective into durable session plan so the
 	// multi-turn coding banner stays aligned with /goal.
-	h.syncCodingWorkbenchSessionPlanFromGoal(userID, objective)
+	h.syncCodingWorkbenchSessionPlanFromGoal(chatID, objective)
 
 	// Schedule first continuation turn
 	if h.app != nil && h.app.goalContinuation != nil {
@@ -338,9 +372,7 @@ func (h *IMMessageHandler) goalGet() string {
 }
 
 func (h *IMMessageHandler) goalGetForUser(userID string) string {
-	userID = h.resolveGoalUserID(userID)
-	store := h.getGoalStore()
-	g := store.Get(userID)
+	g := h.goalAddressFor(userID).goal
 	if g == nil {
 		return "当前没有目标。使用 goal(action=\"create\", objective=\"...\") 创建目标。"
 	}
@@ -400,32 +432,33 @@ func (h *IMMessageHandler) goalPause() string {
 
 func (h *IMMessageHandler) goalPauseForUser(userID string) string {
 	userID = h.resolveGoalUserID(userID)
-	store := h.getGoalStore()
-	g := store.Get(userID)
+	addr := h.goalAddressFor(userID)
+	g := addr.goal
 	if g == nil {
 		return "当前没有活跃目标。"
 	}
 	if g.Status != goal.StatusActive {
 		return fmt.Sprintf("目标不在活跃状态（当前: %s），无法暂停。", g.Status)
 	}
-	if h.app != nil && h.app.goalContinuation != nil {
-		h.app.goalContinuation.clearContinueRearmed(userID)
-	}
-	store.Pause(userID, g.GoalID)
-	// The queued continuation must stop with the goal. Cancel after the
-	// status flip so a callback that already claimed the timer sees paused
-	// and does not dispatch. CancelPending also refunds an unsent plan
-	// correction and retires the timer generation. The live turn stops too,
-	// without fencing the next chat message.
-	if h.app != nil && h.app.goalContinuation != nil {
-		h.app.goalContinuation.CancelPending(userID)
-		updated := store.Get(userID)
-		if updated != nil {
-			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
-		}
-	}
+	// Same row and timers as the goal bar. A composer id and a Windows
+	// store key differ by slash; cancelling only the chat id leaves the
+	// live continuation armed.
 	if h.app != nil {
-		h.app.stopGoalBarLoops(userID)
+		hit := h.app.goalBarHit(userID)
+		if hit.goal != nil && hit.goal.GoalID == g.GoalID && hit.goal.Status == goal.StatusActive {
+			h.app.PauseSessionGoal(userID)
+		} else if addr.store != nil {
+			addr.store.Pause(addr.id, g.GoalID)
+			h.app.cancelGoalBarTimers(addr.id)
+			h.app.stopGoalBarLoops(userID)
+			if h.app.goalContinuation != nil {
+				if updated := addr.store.Get(addr.id); updated != nil {
+					h.app.goalContinuation.emitGoalStateChanged(addr.id, updated)
+				}
+			}
+		}
+	} else if addr.store != nil {
+		addr.store.Pause(addr.id, g.GoalID)
 	}
 	return fmt.Sprintf("目标已暂停: %s\n使用 goal(action=\"resume\") 或发送 /goal resume 恢复。", g.Objective)
 }
@@ -436,20 +469,34 @@ func (h *IMMessageHandler) goalResume() string {
 
 func (h *IMMessageHandler) goalResumeForUser(userID string) string {
 	userID = h.resolveGoalUserID(userID)
-	store := h.getGoalStore()
-	g := store.Get(userID)
+	addr := h.goalAddressFor(userID)
+	g := addr.goal
 	if g == nil {
 		return "当前没有目标。"
 	}
 	if g.Status != goal.StatusPaused {
 		return fmt.Sprintf("目标不在暂停状态（当前: %s），无法恢复。", g.Status)
 	}
-	store.Resume(userID, g.GoalID)
-	// Notify frontend
-	if h.app != nil && h.app.goalContinuation != nil {
-		updated := store.Get(userID)
-		if updated != nil {
-			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
+	resumed := false
+	if h.app != nil {
+		hit := h.app.goalBarHit(userID)
+		if hit.goal != nil && hit.goal.GoalID == g.GoalID {
+			h.app.eachSameGoal(hit, func(store *goal.Store, id string, row *goal.Goal) {
+				if row.Status == goal.StatusPaused && store.Resume(id, row.GoalID) {
+					resumed = true
+				}
+			})
+		}
+	}
+	if !resumed && addr.store != nil {
+		resumed = addr.store.Resume(addr.id, g.GoalID)
+	}
+	if !resumed {
+		return fmt.Sprintf("目标不在暂停状态（当前: %s），无法恢复。", g.Status)
+	}
+	if h.app != nil && h.app.goalContinuation != nil && addr.store != nil {
+		if updated := addr.store.Get(addr.id); updated != nil {
+			h.app.goalContinuation.emitGoalStateChanged(addr.id, updated)
 		}
 	}
 	return fmt.Sprintf("目标已恢复: %s\n系统将继续自动推进。", g.Objective)
@@ -461,41 +508,25 @@ func (h *IMMessageHandler) goalClear() string {
 
 func (h *IMMessageHandler) goalClearForUser(userID string) string {
 	userID = h.resolveGoalUserID(userID)
-	// Stop the live turn before the row disappears, then drop the timer.
-	// A leftover timer keeps the run window open and can still claim a
-	// generation after clear.
+	addr := h.goalAddressFor(userID)
+	// The bar drops every slash spelling. Clearing only the chat id leaves
+	// the live row and its timer, and the next fire starts the goal again.
 	if h.app != nil {
-		h.app.stopGoalBarLoops(userID)
+		h.app.CancelSessionGoal(userID)
 	}
-	if h.app != nil && h.app.goalContinuation != nil {
-		h.app.goalContinuation.CancelPending(userID)
-	}
-	store := h.getGoalStore()
-	// Only a running goal still owns live work. A paused, failed, or completed
-	// row is history; clearing it must not retire a plan the user started after
-	// that goal stopped. A second store may hold the live row, so both are read.
-	activeRow := false
-	if g := store.Get(userID); g != nil && g.Status == goal.StatusActive {
-		activeRow = true
-	}
-	cleared := store.Clear(userID)
-	if h.app != nil && h.app.goalContinuation != nil && h.app.goalContinuation.store != nil && h.app.goalContinuation.store != store {
-		if g := h.app.goalContinuation.store.Get(userID); g != nil && g.Status == goal.StatusActive {
-			activeRow = true
-		}
-		if h.app.goalContinuation.store.Clear(userID) {
-			cleared = true
-		}
-	}
-	if h.app != nil && h.app.goalContinuation != nil {
-		h.app.goalContinuation.emitGoalCleared(userID)
-	}
-	if cleared {
-		if activeRow {
-			// A goal that was still running is gone; its checklist has nothing
-			// left to describe.
+	if addr.store != nil && addr.store.Get(addr.id) != nil {
+		if addr.goal != nil && addr.goal.Status == goal.StatusActive {
 			h.clearGoalFinishedCodingChecklist(userID)
 		}
+		addr.store.Clear(addr.id)
+		if h.app != nil {
+			h.app.cancelGoalBarTimers(addr.id)
+			if h.app.goalContinuation != nil {
+				h.app.goalContinuation.emitGoalCleared(addr.id)
+			}
+		}
+	}
+	if addr.goal != nil {
 		return "目标已清除。"
 	}
 	return "当前没有目标。"
@@ -544,7 +575,7 @@ func (h *IMMessageHandler) cancelGoalContinuation(userID string) {
 	if h == nil || h.app == nil || h.app.goalContinuation == nil {
 		return
 	}
-	h.app.goalContinuation.CancelPending(userID)
+	h.app.cancelGoalBarTimers(userID)
 }
 
 // goalToolCallFailed is the outcome the model should see. Handler success

@@ -134,6 +134,64 @@ func TestQueryUsesDefaultAndNamedAccounts(t *testing.T) {
 	}
 }
 
+func TestNormalizeMailboxSendInvocationArgsLiftsACopiedPath(t *testing.T) {
+	schema := SendInvocationSchema()
+	raw := `{"action":"send","to":["a@ex.com"],"subject":"天气","text":"见附件","attachments":"C:\\task\\workspace\\天气.pdf"}`
+	_, err := tool.CanonicalizeInvocationArguments(raw, schema)
+	shape, _ := err.(*tool.ParameterError)
+	if shape == nil || shape.Path != "attachments" || shape.Hint != "expected array" {
+		t.Fatalf("a copied path string must fail the send schema before it is lifted: %v", err)
+	}
+	lifted := NormalizeMailboxSendInvocationArgs(raw)
+	req, err := tool.CanonicalizeInvocationArguments(lifted, schema)
+	if err != nil {
+		t.Fatalf("lifted attachment: %v json=%s", err, lifted)
+	}
+	got := stringList(req.Values["attachments"])
+	if len(got) != 1 || got[0] != `C:\task\workspace\天气.pdf` {
+		t.Fatalf("attachments=%#v", req.Values["attachments"])
+	}
+	array := `{"action":"send","attachments":["C:\\task\\workspace\\天气.pdf"]}`
+	if NormalizeMailboxSendInvocationArgs(array) != array {
+		t.Fatal("an attachments array must stay unchanged")
+	}
+	blank := NormalizeMailboxSendInvocationArgs(`{"action":"send","attachments":"  "}`)
+	if strings.Contains(blank, "attachments") {
+		t.Fatalf("blank attachment stayed: %s", blank)
+	}
+	if _, err := tool.CanonicalizeInvocationArguments(blank, schema); err != nil {
+		t.Fatalf("blank drop: %v json=%s", err, blank)
+	}
+	commaName := `{"action":"send","to":["a@ex.com"],"subject":"天气","text":"见附件","attachments":"C:\\task\\workspace\\天气, 10月30日.pdf"}`
+	lifted = NormalizeMailboxSendInvocationArgs(commaName)
+	req, err = tool.CanonicalizeInvocationArguments(lifted, schema)
+	if err != nil {
+		t.Fatalf("comma in the file name: %v json=%s", err, lifted)
+	}
+	got = stringList(req.Values["attachments"])
+	if len(got) != 1 || got[0] != `C:\task\workspace\天气, 10月30日.pdf` {
+		t.Fatalf("one path was split on a comma: %#v", req.Values["attachments"])
+	}
+	const uid = "1793358442913681100"
+	withUID := `{"action":"reply","uid":` + uid + `,"attachments":"a.pdf, b.pdf"}`
+	rewritten := NormalizeMailboxSendInvocationArgs(withUID)
+	if !strings.Contains(rewritten, uid) {
+		t.Fatalf("uid digits changed: %s", rewritten)
+	}
+	req, err = tool.CanonicalizeInvocationArguments(rewritten, schema)
+	if err != nil {
+		t.Fatalf("uid rewrite: %v json=%s", err, rewritten)
+	}
+	got = stringList(req.Values["attachments"])
+	if len(got) != 1 || got[0] != "a.pdf, b.pdf" {
+		t.Fatalf("comma list attachments=%#v", req.Values["attachments"])
+	}
+	trailing := `{"action":"send","attachments":"a.pdf"}{"x":1}`
+	if NormalizeMailboxSendInvocationArgs(trailing) != trailing {
+		t.Fatal("a second JSON value was rewritten")
+	}
+}
+
 func TestExpiredDraftDoesNotBlockTheNextSend(t *testing.T) {
 	accounts := twoAccounts(t)
 	sender := &recordingSender{}

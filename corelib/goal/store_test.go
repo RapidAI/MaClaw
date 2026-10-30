@@ -1029,3 +1029,66 @@ func TestComposerClockStopsWhenTheGoalEnds(t *testing.T) {
 		t.Fatalf("legacy stop = %s, want %s", legacy.StoppedAt, legacyUpdate)
 	}
 }
+
+func TestWriteStampAdvancesWhenTheClockRepeats(t *testing.T) {
+	frozen := time.Unix(1_700_000_000, 0)
+	s := NewStore("")
+	s.clock = func() time.Time { return frozen }
+	if _, err := s.Set("front", "旧的暂停"); err != nil {
+		t.Fatal(err)
+	}
+	front := s.Get("front")
+	if !s.UpdateStatus("front", front.GoalID, StatusPaused, "旧的") {
+		t.Fatal("pause front")
+	}
+	pausedFront := s.Get("front")
+	if _, err := s.Set("back", "正在做的小鸟"); err != nil {
+		t.Fatal(err)
+	}
+	back := s.Get("back")
+	if !back.UpdatedAt.After(pausedFront.UpdatedAt) {
+		t.Fatalf("create stamp = %s, older pause = %s", back.UpdatedAt, pausedFront.UpdatedAt)
+	}
+	if !s.UpdateStatus("back", back.GoalID, StatusPaused, "用户已暂停") {
+		t.Fatal("pause back")
+	}
+	pausedBack := s.Get("back")
+	if !pausedBack.UpdatedAt.After(s.Get("front").UpdatedAt) {
+		t.Fatalf("live pause = %s, older twin = %s", pausedBack.UpdatedAt, s.Get("front").UpdatedAt)
+	}
+}
+
+func TestWriteStampOrderSurvivesReload(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	// One reading, monotonic clock included. Every write observes it again.
+	frozen := time.Now()
+	s.clock = func() time.Time { return frozen }
+	if _, err := s.Set("front", "旧的暂停"); err != nil {
+		t.Fatal(err)
+	}
+	front := s.Get("front")
+	if !s.Pause("front", front.GoalID) {
+		t.Fatal("pause front")
+	}
+	if _, err := s.Set("back", "正在做的小鸟"); err != nil {
+		t.Fatal(err)
+	}
+	back := s.Get("back")
+	if !s.Pause("back", back.GoalID) {
+		t.Fatal("pause back")
+	}
+	pausedBack := s.Get("back")
+	if pausedBack.UpdatedAt != pausedBack.UpdatedAt.Round(0) {
+		t.Fatal("stamp kept a monotonic reading")
+	}
+	if !pausedBack.UpdatedAt.After(s.Get("front").UpdatedAt) {
+		t.Fatalf("memory order back %s front %s", pausedBack.UpdatedAt, s.Get("front").UpdatedAt)
+	}
+
+	loaded := NewStore(dir)
+	gotBack, gotFront := loaded.Get("back"), loaded.Get("front")
+	if gotBack == nil || gotFront == nil || !gotBack.UpdatedAt.After(gotFront.UpdatedAt) {
+		t.Fatalf("reloaded back %+v front %+v", gotBack, gotFront)
+	}
+}

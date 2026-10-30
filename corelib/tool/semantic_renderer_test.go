@@ -6,6 +6,19 @@ import (
 	"time"
 )
 
+func TestMailboxSendReuseCuePassesTheNamedWorkspacePath(t *testing.T) {
+	cue := semanticRenderedReuseCue(CapabilityMessageSendMailbox)
+	if strings.Contains(cue, "new attachment") {
+		t.Fatalf("listed mailbox_send must accept the workspace path: %q", cue)
+	}
+	if !strings.Contains(cue, "freezes a draft") || !strings.Contains(cue, "stays listed") || strings.Contains(cue, "reappear") {
+		t.Fatalf("cue = %q", cue)
+	}
+	if !strings.Contains(cue, "set attachments to that path") || !strings.Contains(cue, "Do not invent a path") || !strings.Contains(cue, "do not pass file bytes") {
+		t.Fatalf("cue = %q", cue)
+	}
+}
+
 func TestInstalledMCPReuseCueDoesNotForceCall(t *testing.T) {
 	cue := semanticRenderedReuseCue("x:mcp:tengyun:work_log_query")
 	if strings.Contains(cue, "whenever it is listed") {

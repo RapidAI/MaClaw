@@ -666,10 +666,11 @@ type IMMessageHandler struct {
 	// "userID\x00launchID", value is *guideLaunchAcceptance.
 	acceptedGuideLaunchIDs sync.Map
 
-	// cancelledTaskBoundary records that a user explicitly cancelled the
-	// current task. The next normal user message must start a new task instead
-	// of being merged into or classified as a continuation of the cancelled
-	// task's history.
+	// cancelledTaskBoundary records that the user stopped the running turn.
+	// The fence keeps that turn from accepting another steer, and it keeps
+	// the next message from being merged into the dying loop. It does not
+	// retire the task: the conversation stays, and the next message continues
+	// it. An explicit new task is a separate decision.
 	// Keyed by userID, value is cancelledTaskFence.
 	cancelledTaskBoundary sync.Map
 	// cancelFenceSeq gives each user stop its own identity. An explicit goal

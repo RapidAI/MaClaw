@@ -4,12 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // saveScreenshotToFile saves base64-encoded PNG data to a local file and
@@ -108,6 +111,44 @@ func findIdenticalWorkspaceFile(workspace, base64Data string) string {
 		}
 	}
 	return ""
+}
+
+// publishedPDFToolNote is what generate_pdf returns. mailbox_send can attach
+// only a file already inside the task workspace, so a plan that also selects
+// it writes that copy now and names the path. A turn that is only a chat PDF
+// keeps the original note and does not write.
+func publishedPDFToolNote(plan tool.ToolPlan, dir, name, base64Data string) string {
+	if !planSelectsMailboxSend(plan) {
+		return agentruntime.HostPublishedCurrentChannelFileNote
+	}
+	path, err := landMailboxPDF(dir, name, base64Data)
+	if err != nil || path == "" {
+		if err != nil {
+			log.Printf("[semantic] mailbox pdf land failed dir=%q name=%q err=%v", dir, name, err)
+		}
+		return agentruntime.HostPublishedCurrentChannelFileNote + " No workspace file was saved. Do not invent an attachment path for mailbox_send."
+	}
+	return agentruntime.HostPublishedMailboxAttachmentNote(path)
+}
+
+func planSelectsMailboxSend(plan tool.ToolPlan) bool {
+	for _, selection := range plan.Selections {
+		if selection.FitProof.MatchedCapability == tool.CapabilityMessageSendMailbox {
+			return true
+		}
+	}
+	return false
+}
+
+func landMailboxPDF(dir, name, base64Data string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return "", fmt.Errorf("workspace unavailable")
+	}
+	if strings.TrimSpace(base64Data) == "" {
+		return "", fmt.Errorf("empty pdf")
+	}
+	return saveBase64FileToDir(dir, name, base64Data)
 }
 
 func saveBase64FileToDir(dir, name, base64Data string) (string, error) {

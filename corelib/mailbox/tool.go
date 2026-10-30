@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 	"sync"
@@ -219,6 +220,13 @@ func (h *Host) send(ctx context.Context, args map[string]interface{}, accountID 
 }
 
 func (h *Host) freeze(ctx context.Context, account Account, secret, action string, args map[string]interface{}) (OutboundMessage, error) {
+	// Reply and forward quote a message that is already on the server. An
+	// attachment on those actions used to be accepted by the schema and then
+	// dropped, so the card looked like a send of the file. Refuse before the
+	// send budget and before any IMAP read.
+	if action != "send" && len(stringList(args["attachments"])) > 0 {
+		return OutboundMessage{}, classErr("invalid", "只有发送新邮件可以带附件")
+	}
 	from := account.Address
 	if account.Outbound != nil && account.Outbound.FromAddress != "" {
 		from = account.Outbound.FromAddress
@@ -248,7 +256,11 @@ func (h *Host) freeze(ctx context.Context, account Account, secret, action strin
 		if subject == "" || strings.TrimSpace(text) == "" {
 			return OutboundMessage{}, classErr("invalid", "需要主题和正文")
 		}
-		return OutboundMessage{From: from, To: to, Cc: cc, Bcc: bcc, Subject: subject, Text: text}, nil
+		files, err := h.loadOutboundFiles(stringList(args["attachments"]))
+		if err != nil {
+			return OutboundMessage{}, err
+		}
+		return OutboundMessage{From: from, To: to, Cc: cc, Bcc: bcc, Subject: subject, Text: text, Files: files}, nil
 	case "reply":
 		uid, ok := uintArg(args, "uid")
 		if !ok {
@@ -458,7 +470,15 @@ func confirmationCard(account Account, msg OutboundMessage) string {
 	if len(msg.Bcc) > 0 {
 		fmt.Fprintf(&b, "密送：%s\n", strings.Join(msg.Bcc, ", "))
 	}
-	fmt.Fprintf(&b, "主题：%s\n正文：\n%s", oneLine(msg.Subject), string(body))
+	fmt.Fprintf(&b, "主题：%s\n", oneLine(msg.Subject))
+	if len(msg.Files) > 0 {
+		names := make([]string, len(msg.Files))
+		for i, file := range msg.Files {
+			names[i] = oneLine(file.Name)
+		}
+		fmt.Fprintf(&b, "附件：%s\n", strings.Join(names, ", "))
+	}
+	fmt.Fprintf(&b, "正文：\n%s", string(body))
 	return b.String()
 }
 
@@ -524,7 +544,7 @@ var queryArgs = map[string]bool{
 
 var sendArgs = map[string]bool{
 	"action": true, "account": true, "box": true, "to": true, "cc": true, "bcc": true,
-	"subject": true, "text": true, "uid": true, "reply_all": true,
+	"subject": true, "text": true, "uid": true, "reply_all": true, "attachments": true,
 }
 
 // SendShapeReason reports a call that cannot freeze a draft. It does not open
@@ -690,6 +710,46 @@ func boxArg(account Account, args map[string]interface{}) string {
 	return "INBOX"
 }
 
+// NormalizeMailboxSendInvocationArgs lifts a copied attachments string into
+// the one-element array the send schema requires. generate_pdf names one
+// workspace path as the last line of its result, and the model sets
+// attachments to that path. The semantic canonicalizer rejects a string for
+// an array field before this host can read it. That text is one path: a
+// comma is legal in the file name, so this does not split the way an address
+// list does. Numbers stay JSON numbers so a large uid keeps its digits when
+// the object is written back.
+func NormalizeMailboxSendInvocationArgs(argsJSON string) string {
+	dec := json.NewDecoder(strings.NewReader(argsJSON))
+	dec.UseNumber()
+	var parsed map[string]any
+	if err := dec.Decode(&parsed); err != nil || parsed == nil {
+		return argsJSON
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return argsJSON
+	}
+	raw, ok := parsed["attachments"]
+	if !ok || raw == nil {
+		return argsJSON
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return argsJSON
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		delete(parsed, "attachments")
+	} else {
+		parsed["attachments"] = []string{text}
+	}
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		return argsJSON
+	}
+	return string(body)
+}
+
 func stringList(raw interface{}) []string {
 	switch v := raw.(type) {
 	case []string:
@@ -769,16 +829,17 @@ func sendSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"action":    map[string]interface{}{"type": "string", "enum": []string{"send", "reply", "forward"}},
-			"account":   map[string]interface{}{"type": "string", "description": "邮箱名字。不填则使用默认邮箱。"},
-			"box":       map[string]interface{}{"type": "string", "description": "回复或转发时的 IMAP 文件夹，须与读取那封邮件时一致。不填则用帐号上的收件箱。"},
-			"to":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-			"cc":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-			"bcc":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-			"subject":   map[string]interface{}{"type": "string"},
-			"text":      map[string]interface{}{"type": "string"},
-			"uid":       map[string]interface{}{"type": "integer"},
-			"reply_all": map[string]interface{}{"type": "boolean"},
+			"action":      map[string]interface{}{"type": "string", "enum": []string{"send", "reply", "forward"}},
+			"account":     map[string]interface{}{"type": "string", "description": "邮箱名字。不填则使用默认邮箱。"},
+			"box":         map[string]interface{}{"type": "string", "description": "回复或转发时的 IMAP 文件夹，须与读取那封邮件时一致。不填则用帐号上的收件箱。"},
+			"to":          map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+			"cc":          map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+			"bcc":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+			"subject":     map[string]interface{}{"type": "string"},
+			"text":        map[string]interface{}{"type": "string"},
+			"uid":         map[string]interface{}{"type": "integer"},
+			"reply_all":   map[string]interface{}{"type": "boolean"},
+			"attachments": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "仅 action=send。本任务工作区里已经存在的文件路径。确认后作为附件发出。不要传文件内容。回复和转发不能带这个参数。"},
 		},
 		"required":             []string{"action"},
 		"additionalProperties": false,
@@ -790,5 +851,5 @@ func ToolDescriptionQuery() string {
 }
 
 func ToolDescriptionSend() string {
-	return "通过已配置的邮箱发送、回复或转发。action：send、reply、forward。不填 account 就用默认邮箱的发件设置。第一次调用只生成确认，不会连接 SMTP。用户确认后才发送。不能在参数里提供确认标记、密码或新附件。转发不包含原附件。"
+	return "通过已配置的邮箱发送、回复或转发。action：send、reply、forward。不填 account 就用默认邮箱的发件设置。第一次调用只生成确认，不会连接 SMTP。用户确认后才发送。不能在参数里提供确认标记、密码或文件内容。attachments 只能出现在 send 上，并且只能是本任务工作区里已经存在的文件路径。回复和转发不能带附件，转发也不包含原附件。"
 }

@@ -430,6 +430,12 @@ const (
 	// the host, so this is not NotSent, but nothing was generated, so the
 	// executable surface stays usable for the exponential-backoff retry.
 	ToolSurfaceTransportRejected ToolSurfaceDeliveryState = "transport_rejected"
+	// ToolSurfaceHostSteered means the host cancelled this attempt because
+	// live user steering replaced it. The response is discarded on purpose.
+	// It is not an unconsumed provider payload, so a resident compatibility
+	// belt stays listed for the successor request. A call from the discarded
+	// attempt still fails that request's epoch fence.
+	ToolSurfaceHostSteered ToolSurfaceDeliveryState = "host_steered"
 )
 
 // ToolSurfaceAttemptObserver observes host-side request attempts. Its input is
@@ -1428,7 +1434,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
 		}
 		// Non-cancel hard stops (budget, host policy) — after prior-round usage recorded.
-		if stopped := checkEarlyStop(iteration); stopped != nil {
+		// A code-less stop means the previous plan is already delivered, so the
+		// host skips another model round. A guide that is already visible still
+		// needs that round. A budget or policy error still ends the turn.
+		if stopped := checkEarlyStop(iteration); stopped != nil && !(stopped.Error == "" && llmReplanAlreadyRequested(cb)) {
 			return finish(*stopped)
 		}
 
@@ -1447,6 +1456,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// revision inside that hook, so a later splice check would miss it.
 		if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
 			ClearLiveAndOpen(workingState)
+			// This iteration is the replacement. The same-tool, no-progress,
+			// empty-response, and drift streaks belong to the attempt the
+			// guide discarded, so the successor starts them again.
+			consecutiveSameToolFailures = 0
+			lastFailedTool = ""
+			sameToolFailureGuidanceInjected = false
+			consecutiveNoProgressIterations = 0
+			consecutiveEmpty = 0
+			consecutiveSame = 0
+			recentCalls = nil
 		}
 		// Mid-loop conversation transformation (e.g., compaction).
 		if transformed := h.TransformConversation(conversation); transformed != nil {
@@ -1476,6 +1495,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		llmRequestAttempts++
 		ctx, finishLLMRequest, ctxErr := llmRequestContextForLoop(cb, iteration)
 		if ctxErr != nil {
+			// Coding installs the operation cancel before it waits for a
+			// scheduler lease. A guide during that wait cancels the context
+			// and the host returns the error before any attempt starts.
+			// There is no delivery to classify. Continuing sends the
+			// replacement; aborting here ends the turn as an integrity failure.
+			if llmReplanAlreadyRequested(cb) {
+				freeReplans++
+				if freeReplans <= maxFreeReplansPerLoop {
+					iteration--
+				}
+				continue
+			}
 			// The host declined to create the request context before any policy,
 			// channel, manifest, or transport exists. Keep this failure visible as
 			// one redacted pre-manifest lifecycle, without inventing a surface or
@@ -2026,11 +2057,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// The streaming attempt has begun but did not produce a consumable
 				// response. A compatibility host must quarantine its static belt before
 				// a fallback could render a same-named successor surface.
-				finishAttempt(ToolSurfaceAmbiguousDelivery)
-				// The stream request was an owner-visible attempt with its own
-				// receipt. Retire its telemetry before constructing the fallback
-				// surface; the fallback gets a new manifest, receipt, and terminal.
-				disposeSurface(ToolSurfaceTransportFailure)
+				// finishAttempt and disposeSurface each run once. A steer that is
+				// already visible is host_steered, so the resident belt stays listed
+				// and this attempt's only terminal is the steer, not a transport failure.
+				delivery := ToolSurfaceAmbiguousDelivery
+				terminal := ToolSurfaceTransportFailure
+				if llmReplanAlreadyRequested(cb) {
+					delivery = ToolSurfaceHostSteered
+					terminal = ToolSurfaceSteered
+				}
+				finishAttempt(delivery)
+				disposeSurface(terminal)
 				if containAmbiguousDelivery {
 					return toolSurfaceFallbackPreparation{}, errToolSurfaceFallbackSuppressed
 				}
@@ -2082,13 +2119,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}, nil
 			})
 		}
-		if err != nil {
-			finishAttempt(failedLLMAttemptDelivery(containAmbiguousDelivery, resp, err))
-		}
 		// A host may cancel just this request because new live user steering
-		// arrived. Finish the operation before continuing; the next iteration's
-		// TransformConversation call will append the steering message.
-		if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+		// arrived. Finish the attempt before continuing. This covers a response
+		// that won the race and came back with err == nil: the error arm below
+		// has not recorded a delivery, and leaving the started attempt unfinished
+		// is the case a later ambiguous classification would quarantine.
+		// TransformConversation on the next iteration appends the steering message.
+		if llmReplanAlreadyRequested(cb) {
+			finishAttempt(ToolSurfaceHostSteered)
 			disposeSurface(ToolSurfaceSteered)
 			finishRequest(err)
 			// Steering replaces this interrupted model attempt; it must not spend
@@ -2098,6 +2136,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				iteration--
 			}
 			continue
+		}
+		if err != nil {
+			finishAttempt(llmAttemptDeliveryForError(cb, containAmbiguousDelivery, resp, err))
 		}
 		// Desktop finishes the replannable operation by cancelling its context.
 		// That happens below, before an empty reply is recovered, so a later
@@ -2342,17 +2383,27 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					resp, err = doLLMRequestWithTools(requestCtx, aggCFG, reqConversation, tools, invocationPolicy, receiptClient)
 				}
 				if err != nil {
-					finishAttempt(failedLLMAttemptDelivery(containAmbiguousDelivery, resp, err))
+					finishAttempt(llmAttemptDeliveryForError(cb, containAmbiguousDelivery, resp, err))
 					// This send owns a manifest. Retire it before the next attempt
 					// clears the projection. The post-loop dispose only runs when
 					// the whole retry sequence fails, so a later success would
 					// otherwise leave the failed send without a terminal. A pre-send
 					// failure already marked this slot terminal, and this call is then
-					// a no-op.
-					disposeSurface(ToolSurfaceTransportFailure)
+					// a no-op. A steer already discarded the send: its one terminal
+					// is the steer. Recording transport failure here would consume
+					// that slot, and the later steered dispose would not run.
+					if llmReplanAlreadyRequested(cb) {
+						disposeSurface(ToolSurfaceSteered)
+					} else {
+						disposeSurface(ToolSurfaceTransportFailure)
+					}
 				}
 			}
-			if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+			// A retry can also return a completed response after the steer flag is
+			// set. finishAttempt is once-only: the error arm above already
+			// closed a failed send, and this closes the 200 that replaced it.
+			if llmReplanAlreadyRequested(cb) {
+				finishAttempt(ToolSurfaceHostSteered)
 				disposeSurface(ToolSurfaceSteered)
 				finishRequest(err)
 				freeReplans++
@@ -2394,8 +2445,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			finishRequest(nil)
 		}
 		// Cover steering that landed after the HTTP request completed but before
-		// its response was committed as the visible answer.
-		if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+		// its response was committed as the visible answer. Close the started
+		// attempt as host_steered. An unfinished attempt is the case a later
+		// ambiguous classification would quarantine, and the tool calls in this
+		// response stay on the discarded epoch.
+		if llmReplanAlreadyRequested(cb) {
+			finishAttempt(ToolSurfaceHostSteered)
 			disposeSurface(ToolSurfaceSteered)
 			freeReplans++
 			if freeReplans <= maxFreeReplansPerLoop {
@@ -2510,6 +2565,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 		}
 
+		// A guide can land while this response is still being classified.
+		// Truncation repair and invalid-argument recovery both replay the
+		// discarded call: the repair writes a partial file, and both tell the
+		// model to regenerate it. Drop the response before either runs.
+		if llmReplanAlreadyRequested(cb) {
+			disposeSurface(ToolSurfaceSteered)
+			freeReplans++
+			if freeReplans <= maxFreeReplansPerLoop {
+				iteration--
+			}
+			continue
+		}
+
 		if len(choice.TruncatedToolNames) > 0 {
 			disposeSurface(ToolSurfaceResponseAbandoned)
 			truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
@@ -2600,21 +2668,6 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			continue
 		}
 
-		// The model may have completed a tool decision just as live steering
-		// arrived. Re-check before committing that assistant/tool-call turn or
-		// executing any side effect; the user's newer direction must get a chance
-		// to replace stale tool arguments.
-		if len(choice.Message.ToolCalls) > 0 {
-			if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
-				disposeSurface(ToolSurfaceSteered)
-				freeReplans++
-				if freeReplans <= maxFreeReplansPerLoop {
-					iteration--
-				}
-				continue
-			}
-		}
-
 		// Track consecutive empty responses for hard exit.
 		if strings.TrimSpace(content) == "" && len(choice.Message.ToolCalls) == 0 {
 			// A nameless tool call is not a tool batch. Text the bubble already
@@ -2663,6 +2716,20 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					consecutiveEmpty, iteration, lastToolName, lastToolOutcome.kind, snippetLen)
 				if consecutiveEmpty >= maxConsecutiveEmpty || (blankBecauseNameless && consecutiveEmpty >= 2) {
 					log.Printf("[agent-loop] hard exit: %d consecutive empty responses nameless=%t", consecutiveEmpty, blankBecauseNameless)
+					// This stop has not sealed replans. Deliverable settlement
+					// and the desktop review both run before the return, and
+					// either can block. A guide that becomes visible there
+					// still owns the next request.
+					yieldEmptyStop := func() bool {
+						if !llmReplanAlreadyRequested(cb) {
+							return false
+						}
+						freeReplans++
+						if freeReplans <= maxFreeReplansPerLoop {
+							iteration--
+						}
+						return true
+					}
 					// Return the last non-empty content as a fallback. A repeated
 					// nameless tool call is not an empty generation: one plain-text
 					// retry is enough, and a blank bubble would hide the stop.
@@ -2701,6 +2768,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 								if strings.TrimSpace(kept) == "" {
 									kept = text
 								}
+								if yieldEmptyStop() {
+									continue
+								}
 								return finish(LoopResult{
 									Text:       kept,
 									Error:      ErrDeliverableUnassigned,
@@ -2730,6 +2800,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 							if unsettled {
 								if strings.TrimSpace(kept) == "" {
 									kept = text
+								}
+								if yieldEmptyStop() {
+									continue
 								}
 								return finish(LoopResult{
 									Text:       kept,
@@ -2779,6 +2852,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						continue
 					}
 					text = next
+					if yieldEmptyStop() {
+						continue
+					}
 					return finish(LoopResult{
 						Text:       text,
 						Iterations: iteration + 1,
@@ -3225,133 +3301,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 			totalToolCalls++
 			argsJSON := normalizeLoopToolArguments(tc.Function.Arguments)
-			// A function name returned by the provider is model-controlled data. It
-			// may be dispatched only when it exactly matches one of the definitions
-			// frozen for this concrete outbound request. Host authorizers are an
-			// additional policy boundary, not a substitute for request-surface
-			// ownership: authorizing a registry name must not revive an omitted,
-			// predecessor-only, or hallucinated function through a name dispatcher.
-			//
-			// Keep this check in RunLoop rather than relying on individual callback
-			// implementations. S0.5 hosts, generic callbacks, and future hosts then
-			// share the same exact rendered-name admission rule before any executor
-			// (including the epoch-less compatibility fallback) can run.
-			if !toolCallNameWasRendered(tools, tc.Function.Name) {
-				tool.RecordUnrenderedToolCallDenial()
-				denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
-				hostDirective := false
-				// surfaceGrant is a host publication of a name that was not
-				// executed. The first one is the next step. A repeat of a
-				// name that still has not run did not change the surface.
-				surfaceGrant := false
-				if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
-					// A budgeted repeat family can publish one more invocation
-					// when the model asks again. One-shot tools stay on the
-					// consumed-grant denial. The grant opened here is on the
-					// next request; this call still does not execute.
-					if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(tc.Function.Name) {
-						denial = repeatWaveContinuedMessage(tc.Function.Name)
-						repeatWaveName = strings.TrimSpace(tc.Function.Name)
-						hostDirective = true
-						surfaceGrant = true
-					} else {
-						tool.RecordConsumedGrantDenial()
-						denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
-					}
-				} else if petitioner, ok := cb.(ToolCallPetitioner); ok {
-					// A governed host may rescue a call that names a real cataloged
-					// tool the planner failed to render, or explain why a planned
-					// name stays off this request. The call still does not execute,
-					// so the outcome stays an error. granted widens the surface for
-					// the next iteration. A non-empty message replaces the generic
-					// absence denial either way, so a successor that is waiting on
-					// a predecessor is not described as a tool that does not exist.
-					granted, message := petitioner.PetitionToolCall(tc.Function.Name)
-					if source, ok := cb.(petitionSystemPromptSource); ok {
-						if prompt := strings.TrimSpace(source.PetitionSystemPrompt()); prompt != "" {
-							replaceConversationSystemPrompt(conversation, prompt)
-						}
-					}
-					if text := strings.TrimSpace(message); text != "" {
-						if granted {
-							tool.RecordPetitionGrant()
-							surfaceGrant = true
-						}
-						denial = text
-						// The call did not run. A non-empty host message is the
-						// next step (re-issue this name, or run the predecessor
-						// it names). Empty-response recovery must follow that
-						// text instead of treating it as a failed execution.
-						// Only a grant publishes a surface. An explanation that
-						// leaves the name off the list is still a miss.
-						hostDirective = true
-					}
-				}
-				execResult := ToolExecutionResult{
-					Result:  denial,
-					Outcome: ToolExecutionOutcomeError,
-				}
-				result := execResult.Result
-				lastToolName = tc.Function.Name
-				lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
-				lastToolOutcome.directive = hostDirective
-				record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
-				recentCalls = append(recentCalls, record)
-				if len(recentCalls) > driftWindow*2 {
-					recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
-				}
-				conversation = append(conversation, map[string]interface{}{
-					"role":         "tool",
-					"tool_call_id": tc.ID,
-					"content":      result,
-				})
-				historyDelta = append(historyDelta, ConversationEntry{
-					Role:        "tool",
-					Content:     result,
-					ToolCallID:  tc.ID,
-					ToolName:    tc.Function.Name,
-					ToolOutcome: string(execResult.Outcome),
-				})
-				grantName := strings.TrimSpace(tc.Function.Name)
-				if surfaceGrant && grantName != "" {
-					if _, seen := surfaceGrantWithoutExecution[grantName]; seen {
-						batchProgressMiss = true
-					} else {
-						surfaceGrantWithoutExecution[grantName] = struct{}{}
-					}
-				} else {
-					batchProgressMiss = true
-				}
-				continue
-			}
-			// Hard-stop on oversized tool arguments (parity with GUI stream/exec gates).
-			// Without this, complete non-stream LLM responses can deliver huge args that
-			// never hit the streaming accumulator limit and thrash the loop until maxIter.
-			if argSize := len(argsJSON); argSize > llm.MaxToolArgumentsBytes {
-				toolName := strings.TrimSpace(tc.Function.Name)
-				if toolName == "" {
-					toolName = "unknown"
-				}
-				log.Printf("[agent-loop] rejected oversized tool arguments tool=%q args_len=%d limit=%d", toolName, argSize, llm.MaxToolArgumentsBytes)
-				_ = wsBatch.apply(workingState)
-				if abandoner, ok := h.(ToolBatchAbandoner); ok {
-					abandoner.OnToolBatchAbandoned(batchMeta)
-				}
-				disposeSurface(ToolSurfaceResponseAbandoned)
-				return finish(LoopResult{
-					Error:      fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, llm.MaxToolArgumentsBytes),
-					Iterations: iteration + 1,
-					ToolCalls:  totalToolCalls,
-					HardExit:   true,
-				})
-			}
-			execResult, syntheticFailure := validateLoopToolArguments(tc.Function.Name, argsJSON)
-			toolExecuted := false
+			execResult := ToolExecutionResult{}
+			syntheticFailure := false
 			replanSkip := false
+			toolExecuted := false
 			policyRejected := false
-			// Once live steering has invalidated this assistant tool batch, preserve
-			// protocol pairing for every remaining tool_call but do not execute its
-			// stale side effect. The next outer iteration injects the new user turn.
+			// A steer that arrives after this batch has started still owns every
+			// remaining call. Checked first so a name missing from this request
+			// is not recorded as a consumed grant, and an oversized payload does
+			// not end the turn before the replacement request is sent.
 			if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
 				execResult = ToolExecutionResult{
 					Result:  "Tool call skipped because newer user guidance arrived before execution.",
@@ -3360,23 +3318,146 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				syntheticFailure = true
 				replanSkip = true
 			}
-			if !syntheticFailure {
-				execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
-				// Light misroute recovery only changes this request's prompt profile;
-				// it must not make an unrendered provider function executable. The
-				// rendered-name fence above runs first, so a profile upgrade can never
-				// reinterpret an omitted/hallucinated call as part of this surface.
-				if policyRejected && !lightUpgraded && isLightToolDenyResult(execResult) {
-					if tryLightProfileToolRetry(cb, userText, isFirstTurn, tc.Function.Name, &tools, conversation) {
-						lightUpgraded = true
-						execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+			if !replanSkip {
+				// A function name returned by the provider is model-controlled data. It
+				// may be dispatched only when it exactly matches one of the definitions
+				// frozen for this concrete outbound request. Host authorizers are an
+				// additional policy boundary, not a substitute for request-surface
+				// ownership: authorizing a registry name must not revive an omitted,
+				// predecessor-only, or hallucinated function through a name dispatcher.
+				//
+				// Keep this check in RunLoop rather than relying on individual callback
+				// implementations. S0.5 hosts, generic callbacks, and future hosts then
+				// share the same exact rendered-name admission rule before any executor
+				// (including the epoch-less compatibility fallback) can run.
+				if !toolCallNameWasRendered(tools, tc.Function.Name) {
+					tool.RecordUnrenderedToolCallDenial()
+					denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
+					hostDirective := false
+					// surfaceGrant is a host publication of a name that was not
+					// executed. The first one is the next step. A repeat of a
+					// name that still has not run did not change the surface.
+					surfaceGrant := false
+					if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
+						// A budgeted repeat family can publish one more invocation
+						// when the model asks again. One-shot tools stay on the
+						// consumed-grant denial. The grant opened here is on the
+						// next request; this call still does not execute.
+						if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(tc.Function.Name) {
+							denial = repeatWaveContinuedMessage(tc.Function.Name)
+							repeatWaveName = strings.TrimSpace(tc.Function.Name)
+							hostDirective = true
+							surfaceGrant = true
+						} else {
+							tool.RecordConsumedGrantDenial()
+							denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
+						}
+					} else if petitioner, ok := cb.(ToolCallPetitioner); ok {
+						// A governed host may rescue a call that names a real cataloged
+						// tool the planner failed to render, or explain why a planned
+						// name stays off this request. The call still does not execute,
+						// so the outcome stays an error. granted widens the surface for
+						// the next iteration. A non-empty message replaces the generic
+						// absence denial either way, so a successor that is waiting on
+						// a predecessor is not described as a tool that does not exist.
+						granted, message := petitioner.PetitionToolCall(tc.Function.Name)
+						if source, ok := cb.(petitionSystemPromptSource); ok {
+							if prompt := strings.TrimSpace(source.PetitionSystemPrompt()); prompt != "" {
+								replaceConversationSystemPrompt(conversation, prompt)
+							}
+						}
+						if text := strings.TrimSpace(message); text != "" {
+							if granted {
+								tool.RecordPetitionGrant()
+								surfaceGrant = true
+							}
+							denial = text
+							// The call did not run. A non-empty host message is the
+							// next step (re-issue this name, or run the predecessor
+							// it names). Empty-response recovery must follow that
+							// text instead of treating it as a failed execution.
+							// Only a grant publishes a surface. An explanation that
+							// leaves the name off the list is still a miss.
+							hostDirective = true
+						}
 					}
+					execResult := ToolExecutionResult{
+						Result:  denial,
+						Outcome: ToolExecutionOutcomeError,
+					}
+					result := execResult.Result
+					lastToolName = tc.Function.Name
+					lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
+					lastToolOutcome.directive = hostDirective
+					record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
+					recentCalls = append(recentCalls, record)
+					if len(recentCalls) > driftWindow*2 {
+						recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
+					}
+					conversation = append(conversation, map[string]interface{}{
+						"role":         "tool",
+						"tool_call_id": tc.ID,
+						"content":      result,
+					})
+					historyDelta = append(historyDelta, ConversationEntry{
+						Role:        "tool",
+						Content:     result,
+						ToolCallID:  tc.ID,
+						ToolName:    tc.Function.Name,
+						ToolOutcome: string(execResult.Outcome),
+					})
+					grantName := strings.TrimSpace(tc.Function.Name)
+					if surfaceGrant && grantName != "" {
+						if _, seen := surfaceGrantWithoutExecution[grantName]; seen {
+							batchProgressMiss = true
+						} else {
+							surfaceGrantWithoutExecution[grantName] = struct{}{}
+						}
+					} else {
+						batchProgressMiss = true
+					}
+					continue
 				}
-				if !policyRejected {
-					cb.OnToolCall(tc.Function.Name)
-					execResult = executeAuthorizedLoopToolCallWithContext(cb, tc.Function.Name, argsJSON, tc.ID, executionContext)
-					cb.OnToolResult(tc.Function.Name)
-					toolExecuted = true
+				// Hard-stop on oversized tool arguments (parity with GUI stream/exec gates).
+				// Without this, complete non-stream LLM responses can deliver huge args that
+				// never hit the streaming accumulator limit and thrash the loop until maxIter.
+				if argSize := len(argsJSON); argSize > llm.MaxToolArgumentsBytes {
+					toolName := strings.TrimSpace(tc.Function.Name)
+					if toolName == "" {
+						toolName = "unknown"
+					}
+					log.Printf("[agent-loop] rejected oversized tool arguments tool=%q args_len=%d limit=%d", toolName, argSize, llm.MaxToolArgumentsBytes)
+					_ = wsBatch.apply(workingState)
+					if abandoner, ok := h.(ToolBatchAbandoner); ok {
+						abandoner.OnToolBatchAbandoned(batchMeta)
+					}
+					disposeSurface(ToolSurfaceResponseAbandoned)
+					return finish(LoopResult{
+						Error:      fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, llm.MaxToolArgumentsBytes),
+						Iterations: iteration + 1,
+						ToolCalls:  totalToolCalls,
+						HardExit:   true,
+					})
+				}
+				execResult, syntheticFailure = validateLoopToolArguments(tc.Function.Name, argsJSON)
+				if !syntheticFailure {
+					execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+					// Light misroute recovery only changes this request's prompt profile;
+					// it must not make an unrendered provider function executable. The
+					// rendered-name fence above runs first, so a profile upgrade can never
+					// reinterpret an omitted/hallucinated call as part of this surface.
+					if policyRejected && !lightUpgraded && isLightToolDenyResult(execResult) {
+						if tryLightProfileToolRetry(cb, userText, isFirstTurn, tc.Function.Name, &tools, conversation) {
+							lightUpgraded = true
+							execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+						}
+					}
+					if !policyRejected {
+						cb.OnToolCall(tc.Function.Name)
+						execResult = executeAuthorizedLoopToolCallWithContext(cb, tc.Function.Name, argsJSON, tc.ID, executionContext)
+						cb.OnToolResult(tc.Function.Name)
+						toolExecuted = true
+					}
 				}
 			}
 			executedName := strings.TrimSpace(tc.Function.Name)
@@ -3411,41 +3492,59 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 			}
 			if askReq, ok := ParseAskUserResult(result); ok {
-				workingState = applyThenSeekUser(workingState, &wsBatch, userText, executedTools, loopProjectedGoal(cb))
-				if abandoner, ok := h.(ToolBatchAbandoner); ok {
-					abandoner.OnToolBatchAbandoned(batchMeta)
+				// These returns sit above the post-batch continuation. A guide
+				// that became visible while this call was running has already
+				// replaced the question. Pausing would block the turn on it
+				// (coding reports waiting_for_user) and leave the marker as a
+				// pending ask for later trimming.
+				if llmReplanAlreadyRequested(cb) {
+					replacePausedToolResult(&execResult, &result)
+					lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
+				} else {
+					workingState = applyThenSeekUser(workingState, &wsBatch, userText, executedTools, loopProjectedGoal(cb))
+					if abandoner, ok := h.(ToolBatchAbandoner); ok {
+						abandoner.OnToolBatchAbandoned(batchMeta)
+					}
+					disposeSurface(ToolSurfaceResponseAbandoned)
+					return finish(LoopResult{
+						Text:            FormatAskUserForDisplay(askReq),
+						AskUser:         askReq,
+						PauseToolCallID: tc.ID,
+						Iterations:      iteration + 1,
+						ToolCalls:       totalToolCalls,
+					})
 				}
-				disposeSurface(ToolSurfaceResponseAbandoned)
-				return finish(LoopResult{
-					Text:            FormatAskUserForDisplay(askReq),
-					AskUser:         askReq,
-					PauseToolCallID: tc.ID,
-					Iterations:      iteration + 1,
-					ToolCalls:       totalToolCalls,
-				})
 			}
 			// Interactive long-form recording: pause for host UI (same shape as ask_user).
 			// Hosts that reject (non-desktop IM) should rewrite the tool result before
 			// returning the marker so the model can continue with guidance text.
 			if recReq, ok := ParseRecordAudioResult(result); ok {
-				workingState = applyThenSeekUser(workingState, &wsBatch, userText, executedTools, loopProjectedGoal(cb))
-				if abandoner, ok := h.(ToolBatchAbandoner); ok {
-					abandoner.OnToolBatchAbandoned(batchMeta)
+				if llmReplanAlreadyRequested(cb) {
+					replacePausedToolResult(&execResult, &result)
+					lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
+				} else {
+					workingState = applyThenSeekUser(workingState, &wsBatch, userText, executedTools, loopProjectedGoal(cb))
+					if abandoner, ok := h.(ToolBatchAbandoner); ok {
+						abandoner.OnToolBatchAbandoned(batchMeta)
+					}
+					disposeSurface(ToolSurfaceResponseAbandoned)
+					return finish(LoopResult{
+						Text:            FormatRecordAudioForDisplay(recReq),
+						RecordAudio:     recReq,
+						PauseToolCallID: tc.ID,
+						Iterations:      iteration + 1,
+						ToolCalls:       totalToolCalls,
+					})
 				}
-				disposeSurface(ToolSurfaceResponseAbandoned)
-				return finish(LoopResult{
-					Text:            FormatRecordAudioForDisplay(recReq),
-					RecordAudio:     recReq,
-					PauseToolCallID: tc.ID,
-					Iterations:      iteration + 1,
-					ToolCalls:       totalToolCalls,
-				})
 			}
 
 			// Determine success for outcome tracking.
 			toolSuccess := lastToolOutcome.kind == toolOutcomeOK
 			batchHadSuccess = batchHadSuccess || toolSuccess
-			if !toolSuccess {
+			// A steer skipped this call before it ran. It is not a failed
+			// attempt: counting it would burn the no-progress budget and could
+			// hard-stop the turn before the replacement request is sent.
+			if !toolSuccess && !replanSkip {
 				batchProgressMiss = true
 			}
 			// Record policy denies and invalid args once a workspace exists.
@@ -3499,8 +3598,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 			}
 
-			// Consecutive same-tool failure tracking.
-			if !toolSuccess {
+			// Consecutive same-tool failure tracking. A steer skip is neither
+			// a failure nor a success, so it leaves the streak unchanged.
+			// Counting it, or clearing it, would mis-state the discarded batch.
+			// The stop returns inside this loop, before the post-batch
+			// continuation. A guide that became visible while the failing
+			// call was running must not take that return.
+			if !replanSkip && !toolSuccess {
 				if tc.Function.Name == lastFailedTool || lastFailedTool == "" {
 					lastFailedTool = tc.Function.Name
 					consecutiveSameToolFailures++
@@ -3509,7 +3613,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// (e.g. an intermittent write_file permission error between
 				// bash failures). Only the dominant failing tool matters.
 
-				if consecutiveSameToolFailures >= hardStopSameToolFailures {
+				if consecutiveSameToolFailures >= hardStopSameToolFailures && !llmReplanAlreadyRequested(cb) {
 					// Hard stop: LLM ignored the guidance and keeps failing.
 					log.Printf("[agent-loop] hard stop: tool=%q failed %d consecutive times, force-exiting loop", lastFailedTool, consecutiveSameToolFailures)
 					_ = wsBatch.apply(workingState)
@@ -3524,13 +3628,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						HardExit:   true,
 					})
 				}
-			} else {
+			} else if !replanSkip && toolSuccess && tc.Function.Name == lastFailedTool {
 				// Success of the previously-failing tool resets the counter.
-				if tc.Function.Name == lastFailedTool {
-					consecutiveSameToolFailures = 0
-					lastFailedTool = ""
-					sameToolFailureGuidanceInjected = false
-				}
+				consecutiveSameToolFailures = 0
+				lastFailedTool = ""
+				sameToolFailureGuidanceInjected = false
 			}
 
 			// Drift detection deliberately tracks the raw result. Projection is a
@@ -3591,8 +3693,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			consecutiveNoProgressIterations++
 			if consecutiveNoProgressIterations >= hardStopNoProgressIterations {
 				noProgressHardStop = true
-				log.Printf("[agent-loop] hard stop: no successful tool call in %d consecutive iterations, force-exiting loop", consecutiveNoProgressIterations)
 			}
+		}
+		// This return sits above the steer continuation. A guide that arrived
+		// during the batch has to win, or the replacement request is never sent.
+		if noProgressHardStop && llmReplanAlreadyRequested(cb) {
+			noProgressHardStop = false
 		}
 
 		// Commit only after the entire parallel tool batch is fully paired in
@@ -3619,6 +3725,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if noProgressHardStop {
 			// The paired batch is already committed. Abandoned is the
 			// disposition of a batch that was not paired. This response settled.
+			log.Printf("[agent-loop] hard stop: no successful tool call in %d consecutive iterations, force-exiting loop", consecutiveNoProgressIterations)
 			disposeSurface(ToolSurfaceToolBatchSettled)
 			text := strings.TrimSpace(StripThinkingTags(lastNonEmptyContent))
 			if text == "" {
@@ -3633,6 +3740,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					"content": nudge,
 				})
 				historyDelta = append(historyDelta, HostUserEntry(nudge))
+				continue
+			}
+			// The stop was decided before the batch commit and this review.
+			// The commit writes the recovery checkpoint, and the review can
+			// block. Replans are still open. A guide that becomes visible
+			// there still owns the next request. The batch is already settled,
+			// so this continue does not classify the delivery again.
+			if llmReplanAlreadyRequested(cb) {
+				freeReplans++
+				if freeReplans <= maxFreeReplansPerLoop {
+					iteration--
+				}
 				continue
 			}
 			if checked {
@@ -5476,6 +5595,34 @@ func failedLLMAttemptDelivery(containAmbiguous bool, resp *llm.Response, err err
 		return ToolSurfaceTransportRejected
 	}
 	return ToolSurfaceAmbiguousDelivery
+}
+
+// llmReplanAlreadyRequested reports that live user steering has replaced the
+// attempt currently in flight. The discarded attempt is host_steered at every
+// finish site, including a completed response and a missing dispatch.
+func llmReplanAlreadyRequested(cb LoopCallbacks) bool {
+	replanner, ok := cb.(LLMReplanAware)
+	return ok && replanner.LLMReplanRequested()
+}
+
+// replacePausedToolResult drops an ask_user or record_audio control marker
+// once a steer already owns the turn. The call did run; the pause did not.
+func replacePausedToolResult(execResult *ToolExecutionResult, result *string) {
+	note := "Tool call finished after newer user guidance arrived, so the turn was not paused."
+	execResult.Result = note
+	*result = note
+}
+
+// llmAttemptDeliveryForError classifies a failed model attempt. A live steer
+// has already discarded that attempt, so the delivery is host_steered and a
+// resident compatibility belt stays listed for the successor request. The
+// provider error itself does not change: without a steer it remains a gateway
+// rejection or ambiguous delivery.
+func llmAttemptDeliveryForError(cb LoopCallbacks, containAmbiguous bool, resp *llm.Response, err error) ToolSurfaceDeliveryState {
+	if llmReplanAlreadyRequested(cb) {
+		return ToolSurfaceHostSteered
+	}
+	return failedLLMAttemptDelivery(containAmbiguous, resp, err)
 }
 
 // streamFailureBelongsToOuterRetry reports that a failed stream stays with

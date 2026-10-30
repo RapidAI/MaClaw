@@ -9,8 +9,8 @@ import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { MemoryHealthDialog } from './MemoryHealthDialog';
 import { SystemDoctorDialog } from './SystemDoctorDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
-import { IconAlert, IconBolt, IconBranch, IconClipboard, IconCross, IconDocument, IconLightbulb, IconLock, IconMessage, IconRankBadge, IconRocket, IconUsers } from './ai/WorkbenchIcons';
-import { brandLineParts, formatBrandLine } from '../utils/brandProductLine';
+import { IconBolt, IconBranch, IconClipboard, IconCross, IconDocument, IconLightbulb, IconLock, IconMessage, IconRankBadge, IconRocket, IconUsers } from './ai/WorkbenchIcons';
+import { brandLineParts, formatBrandLine, localizedBrandContact, localizedBrandSlogan } from '../utils/brandProductLine';
 
 type BrandInfo = {
     id: string;
@@ -43,6 +43,7 @@ type AboutPanelProps = {
     buildNumber: string;
     thanksContent: string;
     config?: Partial<corelib.AppConfig> | null;
+    lang?: string;
     t: (key: string) => string;
     onOpenWebsite: () => void;
     onCheckUpdate: () => void;
@@ -171,6 +172,7 @@ export function AboutPanel({
     buildNumber,
     thanksContent,
     config,
+    lang,
     t,
     onOpenWebsite,
     onCheckUpdate,
@@ -182,9 +184,9 @@ export function AboutPanel({
     onClearRegistration,
     onRegistrationContactUpdated,
 }: AboutPanelProps) {
-    const slogan = brandInfo?.slogan || t("slogan");
+    const slogan = localizedBrandSlogan(brandInfo?.slogan, lang, t("slogan"));
     const author = brandInfo?.author || 'Dr. Daniel';
-    const businessContact = brandInfo?.businessContact || t("businessCooperation");
+    const businessContact = localizedBrandContact(brandInfo?.businessContact, lang, t("businessCooperation"));
     const showGithubActions = Boolean(brandInfo?.githubURL) || brandInfo?.id !== 'qianxin';
     const emptyValue = t("aboutUnsetValue");
     const [remoteTenant, setRemoteTenant] = useState<{ id?: string; name?: string }>({
@@ -387,7 +389,9 @@ export function AboutPanel({
 
     const productParts = brandLineParts({
         brandId: brandInfo?.id,
+        displayName: brandInfo?.displayName,
         displayNameCN: brandInfo?.displayNameCN,
+        lang,
         localizedDefault: t("aboutProductName"),
     });
     const productName = formatBrandLine(productParts);
@@ -745,12 +749,10 @@ export function AboutPanel({
                             <span className="about-tile__icon"><IconDocument size={18} /></span>
                             {t("installLog")}
                         </button>
-                        {onOpenProblemReport && (
-                            <button type="button" className="about-tile" onClick={onOpenProblemReport}>
-                                <span className="about-tile__icon"><IconAlert size={18} /></span>
-                                {t("problemReport")}
-                            </button>
-                        )}
+                        {/* problemReport stays in the hero actions only — the
+                            grid repeated it next to the near-synonymous
+                            bugReport tile ("Problem Report" / "Problem
+                            Feedback" read as duplicates). */}
                         <button type="button" className="about-tile" onClick={() => setShowHealthDialog(true)}>
                             <span className="about-tile__icon"><IconLightbulb size={18} /></span>
                             {t("memoryHealth")}

@@ -268,7 +268,10 @@ describe('KnowledgeSettingsPanel component', () => {
     it('renders the restored operational panel instead of the old placeholder', async () => {
         render(<KnowledgeSettingsPanel lang="en" />);
 
-        expect(screen.getByRole('heading', { name: 'Knowledge Base' })).toBeTruthy();
+        // The top header owns the page name (MaClaw 知识库) — the panel must
+        // not repeat it as a heading; the subtitle carries the description.
+        expect(screen.queryByRole('heading', { name: 'Knowledge Base' })).toBeNull();
+        expect(screen.getByText('Ingest, search, inspect, and maintain local knowledge sources.')).toBeTruthy();
         expect(screen.queryByText(/available after the panel source is restored/i)).toBeNull();
         expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: 'Ingest' })).toBeTruthy();

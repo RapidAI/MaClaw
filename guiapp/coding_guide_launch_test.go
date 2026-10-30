@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
 func TestAppendPendingSteerInjections_GuideLaunchAsUserRole(t *testing.T) {
@@ -399,5 +401,504 @@ func TestClearNonGuidePendingInjection_PreservesEveryGuideBoundary(t *testing.T)
 	}
 	if strings.Contains(text, "ordinary supplement") {
 		t.Fatalf("cleanup retained ordinary supplement: %q", text)
+	}
+}
+
+func TestInjectGuideReference_GoalCommandDoesNotSteerLiveLoop(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	userID := "desktop-user:C:/tasks/goal-beside"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	h := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	ctx := NewLoopContext("chat", 10, nil)
+	cleanup := h.beginPureCodingRuntime(ctx, userID, "keep working")
+	defer cleanup()
+
+	if !h.InjectGuideReferenceWithID(userID, "/goal 优化四台设备上的推理性能", "launch-goal") {
+		t.Fatal("live /goal must be accepted as a host command")
+	}
+	if _, ok := h.pendingInjection.Load(userID); ok {
+		t.Fatal("/goal must not be stored as a steer")
+	}
+	if _, ok := h.pendingPreLoopGuide.Load(userID); ok {
+		t.Fatal("/goal must not be stored as a pre-loop guide")
+	}
+	if ctx.IsCancelled() || ctx.ReplanRevision() != 0 {
+		t.Fatalf("live /goal replanned the loop: cancelled=%v revision=%d", ctx.IsCancelled(), ctx.ReplanRevision())
+	}
+	g := store.Get(userID)
+	if g == nil || g.Status != goal.StatusActive || g.Objective != "优化四台设备上的推理性能" {
+		t.Fatalf("goal = %+v", g)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if scheduled {
+		t.Fatal("goal continuation must wait until the live coding turn ends")
+	}
+	if !h.InjectGuideReferenceWithID(userID, "/goal 优化四台设备上的推理性能", "launch-goal") {
+		t.Fatal("same launch id should stay accepted")
+	}
+	if again := store.Get(userID); again == nil || again.GoalID != g.GoalID {
+		t.Fatalf("retry created another goal: %+v", again)
+	}
+
+	fullID := "desktop-user:C:/tasks/goal-fullwidth"
+	t.Cleanup(func() { engine.CancelPending(fullID) })
+	fullCtx := NewLoopContext("chat", 10, nil)
+	fullCleanup := h.beginPureCodingRuntime(fullCtx, fullID, "keep working")
+	defer fullCleanup()
+	if !h.InjectGuideReference(fullID, "／goal\u3000优化四台设备上的推理性能") {
+		t.Fatal("fullwidth /goal must be accepted")
+	}
+	fg := store.Get(fullID)
+	if fg == nil || fg.Objective != "优化四台设备上的推理性能" || fg.Status != goal.StatusActive {
+		t.Fatalf("fullwidth goal = %+v", fg)
+	}
+	if _, ok := h.pendingInjection.Load(fullID); ok {
+		t.Fatal("fullwidth /goal was steered")
+	}
+
+	if h.InjectGuideReference("desktop-user:C:/tasks/goal-idle", "/goal 优化四台设备上的推理性能") {
+		t.Fatal("idle session must leave /goal for the next real turn")
+	}
+	if store.Get("desktop-user:C:/tasks/goal-idle") != nil {
+		t.Fatal("idle /goal must not create a goal before the GUI sends it")
+	}
+
+	sealedID := "desktop-user:C:/tasks/goal-sealed"
+	sealedCtx := NewLoopContext("chat", 10, nil)
+	sealedCleanup := h.beginPureCodingRuntime(sealedCtx, sealedID, "finishing")
+	defer sealedCleanup()
+	if !sealedCtx.TrySealReplans(sealedCtx.ReplanRevision()) {
+		t.Fatal("seal failed")
+	}
+	if h.InjectGuideReference(sealedID, "/goal 优化四台设备上的推理性能") {
+		t.Fatal("sealed loop must not run /goal; the GUI sends it next")
+	}
+	if store.Get(sealedID) != nil {
+		t.Fatal("sealed /goal created a goal")
+	}
+
+	if h.InjectGuideReference(userID, "/help") {
+		t.Fatal("a host command other than a live /goal must stay queued for the next turn")
+	}
+	if _, ok := h.pendingInjection.Load(userID); ok {
+		t.Fatal("/help was steered into the live loop")
+	}
+
+	if !h.InjectGuideReference(userID, "继续检查当前实现") {
+		t.Fatal("ordinary steer should still enter the live loop")
+	}
+	raw, ok := h.pendingInjection.Load(userID)
+	steered, _ := raw.(string)
+	if !ok || !strings.Contains(steered, "继续检查当前实现") || strings.Contains(steered, "/goal") {
+		t.Fatalf("ordinary steer = %q", steered)
+	}
+	if ctx.ReplanRevision() == 0 {
+		t.Fatal("ordinary steer should request a replan")
+	}
+
+	resumeID := "desktop-user:C:/tasks/goal-resume"
+	t.Cleanup(func() { engine.CancelPending(resumeID) })
+	created, err := store.Set(resumeID, "先把当前回合做完")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Pause(resumeID, created.GoalID) {
+		t.Fatal("pause failed")
+	}
+	resumeCtx := NewLoopContext("chat", 10, nil)
+	resumeCleanup := h.beginPureCodingRuntime(resumeCtx, resumeID, "still working")
+	defer resumeCleanup()
+	if !h.InjectGuideReference(resumeID, "/goal resume") {
+		t.Fatal("resume beside the live loop should be accepted")
+	}
+	resumed := store.Get(resumeID)
+	if resumed == nil || resumed.Status != goal.StatusActive || resumed.GoalID != created.GoalID {
+		t.Fatalf("resumed = %+v", resumed)
+	}
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[resumeID]
+	engine.mu.Unlock()
+	if scheduled {
+		t.Fatal("resume must not schedule while the coding turn is live")
+	}
+	if _, ok := h.pendingInjection.Load(resumeID); ok {
+		t.Fatal("resume was steered")
+	}
+}
+
+func TestGoalPauseAndCancelBesideDesktopTurnDoNotStopIt(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	app := &App{goalContinuation: engine}
+	h := &IMMessageHandler{app: app, goalStore: store}
+	app.imHandler = h
+
+	pauseID := "desktop-user:C:/tasks/goal-pause"
+	t.Cleanup(func() { engine.CancelPending(pauseID) })
+	created, err := store.Set(pauseID, "先把当前回合做完")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(pauseID, created.GoalID)
+	pauseCtx := NewLoopContext("chat", 10, nil)
+	pauseCleanup := h.beginPureCodingRuntime(pauseCtx, pauseID, "keep working")
+	defer pauseCleanup()
+	h.pendingInjection.Store(pauseID, "steer stays")
+	h.pendingAskUser.Store(pauseID, "which file?")
+	if !h.InjectGuideReference(pauseID, "/goal pause") {
+		t.Fatal("pause beside the live coding turn should be accepted")
+	}
+	if pauseCtx.IsCancelled() || pauseCtx.ReplanRevision() != 0 {
+		t.Fatalf("pause stopped the coding turn: cancelled=%v revision=%d", pauseCtx.IsCancelled(), pauseCtx.ReplanRevision())
+	}
+	paused := store.Get(pauseID)
+	if paused == nil || paused.Status != goal.StatusPaused || paused.GoalID != created.GoalID {
+		t.Fatalf("paused = %+v", paused)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[pauseID]
+	engine.mu.Unlock()
+	if scheduled {
+		t.Fatal("pause left the continuation timer")
+	}
+	if raw, _ := h.pendingInjection.Load(pauseID); raw != "steer stays" {
+		t.Fatalf("pause dropped the coding steer: %v", raw)
+	}
+	if _, ok := h.pendingAskUser.Load(pauseID); !ok {
+		t.Fatal("pause dropped the coding turn's question")
+	}
+
+	cancelID := "desktop-user:C:/tasks/goal-cancel"
+	t.Cleanup(func() { engine.CancelPending(cancelID) })
+	if _, err := store.Set(cancelID, "先把当前回合做完"); err != nil {
+		t.Fatal(err)
+	}
+	cancelCtx := NewLoopContext("chat", 10, nil)
+	cancelCleanup := h.beginPureCodingRuntime(cancelCtx, cancelID, "keep working")
+	defer cancelCleanup()
+	if !h.InjectGuideReference(cancelID, "/goal cancel") {
+		t.Fatal("cancel beside the live coding turn should be accepted")
+	}
+	if cancelCtx.IsCancelled() {
+		t.Fatal("cancel stopped the coding turn")
+	}
+	if store.Get(cancelID) != nil {
+		t.Fatal("cancel left the goal")
+	}
+
+	statusID := "desktop-user:C:/tasks/goal-status"
+	t.Cleanup(func() { engine.CancelPending(statusID) })
+	if _, err := store.Set(statusID, "先把当前回合做完"); err != nil {
+		t.Fatal(err)
+	}
+	statusCtx := NewLoopContext("chat", 10, nil)
+	statusCleanup := h.beginPureCodingRuntime(statusCtx, statusID, "keep working")
+	defer statusCleanup()
+	if h.InjectGuideReference(statusID, "/goal status") {
+		t.Fatal("status must stay queued so the next turn can show it")
+	}
+	if h.InjectGuideReference(statusID, "/goal") {
+		t.Fatal("help must stay queued so the next turn can show it")
+	}
+	if _, ok := h.pendingInjection.Load(statusID); ok {
+		t.Fatal("status was steered")
+	}
+	if got := store.Get(statusID); got == nil || got.Status != goal.StatusActive {
+		t.Fatalf("status changed the goal: %+v", got)
+	}
+
+	dupID := "desktop-user:C:/tasks/goal-dup"
+	t.Cleanup(func() { engine.CancelPending(dupID) })
+	existing, err := store.Set(dupID, "先把当前回合做完")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dupCtx := NewLoopContext("chat", 10, nil)
+	dupCleanup := h.beginPureCodingRuntime(dupCtx, dupID, "keep working")
+	defer dupCleanup()
+	if h.InjectGuideReference(dupID, "/goal 另一件工作") {
+		t.Fatal("a refused create must stay queued so the person sees the refusal")
+	}
+	if got := store.Get(dupID); got == nil || got.GoalID != existing.GoalID || got.Objective != existing.Objective {
+		t.Fatalf("refused create changed the goal: %+v", got)
+	}
+	if _, ok := h.pendingInjection.Load(dupID); ok {
+		t.Fatal("refused create was steered")
+	}
+}
+
+func TestGoalPauseBesideItsContinuationStopsThatTurn(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	app := &App{goalContinuation: engine}
+	h := &IMMessageHandler{app: app, goalStore: store}
+	app.imHandler = h
+	userID := "desktop-user:C:/tasks/goal-own-turn"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	if _, err := store.Set(userID, "先把当前回合做完"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewLoopContext("goal", 4, nil)
+	ctx.Platform = "goal-continuation"
+	cleanup := h.beginPureCodingRuntime(ctx, userID, "[系统续接][execute] 当前步骤")
+	defer cleanup()
+	if !h.InjectGuideReference(userID, "/goal pause") {
+		t.Fatal("pause of the goal's own turn should be accepted")
+	}
+	if !ctx.IsCancelled() {
+		t.Fatal("pause should stop the goal continuation")
+	}
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusPaused {
+		t.Fatalf("paused = %+v", got)
+	}
+}
+
+func TestGoalSlashSettledKeepsAFailedCreateAndARefusal(t *testing.T) {
+	before := &goal.Goal{GoalID: "old", Status: goal.StatusActive}
+	failed := &goal.Goal{GoalID: "new", Status: goal.StatusFailed}
+	if !goalSlashSettled(goalSlashCreate, nil, failed) {
+		t.Fatal("a failed create wrote a row and must not be sent again")
+	}
+	if goalSlashSettled(goalSlashCreate, before, before) {
+		t.Fatal("a refusal must stay queued")
+	}
+	if goalSlashSettled(goalSlashCreate, nil, nil) {
+		t.Fatal("a store miss must stay queued")
+	}
+	paused := &goal.Goal{GoalID: "old", Status: goal.StatusPaused}
+	if !goalSlashSettled(goalSlashPause, before, paused) {
+		t.Fatal("pause should count as settled")
+	}
+	if goalSlashSettled(goalSlashPause, paused, paused) {
+		t.Fatal("pause of an already paused goal must stay queued")
+	}
+	if goalSlashSettled(goalSlashStatus, before, before) || goalSlashSettled(goalSlashHelp, nil, nil) {
+		t.Fatal("status and help must stay queued")
+	}
+}
+
+func TestGoalCreateWaitsForUnpublishedTurn(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	userID := "desktop-user:C:/tasks/goal-inflight"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	h := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	ctx := NewLoopContext("chat", 4, nil)
+	h.beginInFlightTurn(userID, "still starting", ctx)
+	resp := h.handleGoalCommand(IMUserMessage{UserID: userID, Platform: "desktop", Text: "/goal 先等这一回合"}, "/goal 先等这一回合")
+	if resp == nil || !strings.Contains(resp.Text, "目标已开始") {
+		t.Fatalf("create = %+v", resp)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if scheduled {
+		t.Fatal("continuation must wait for the unpublished turn")
+	}
+	h.endInFlightTurn(userID, ctx)
+	g := store.Get(userID)
+	if g == nil {
+		t.Fatal("missing goal")
+	}
+	h.scheduleGoalContinuationUnlessLive(userID, g.GoalID)
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if !scheduled {
+		t.Fatal("continuation should arm once the turn is gone")
+	}
+}
+
+func TestGoalCreateWaitsForSealedTurn(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	userID := "desktop-user:C:/tasks/goal-sealed"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	h := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	ctx := NewLoopContext("coding", 4, nil)
+	cleanup := h.beginPureCodingRuntime(ctx, userID, "keep working")
+	if !ctx.TrySealReplans(ctx.ReplanRevision()) {
+		t.Fatal("seal failed")
+	}
+	if h.hasActiveLoopForUser(userID) {
+		t.Fatal("a sealed loop accepts steering")
+	}
+	resp := h.handleGoalCommand(IMUserMessage{UserID: userID, Platform: "desktop", Text: "/goal 先等封板这一回合"}, "/goal 先等封板这一回合")
+	if resp == nil || !strings.Contains(resp.Text, "目标已开始") {
+		t.Fatalf("create = %+v", resp)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if scheduled {
+		t.Fatal("continuation must wait while the sealed turn still holds the session")
+	}
+	cleanup()
+	g := store.Get(userID)
+	if g == nil {
+		t.Fatal("missing goal")
+	}
+	h.scheduleGoalContinuationUnlessLive(userID, g.GoalID)
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if !scheduled {
+		t.Fatal("continuation should arm once the sealed turn is gone")
+	}
+}
+
+func TestGoalCreateWaitsForTheOwnerWindow(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	userID := "desktop-user:C:/tasks/goal-window"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	h := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	h.setPendingForegroundText(userID, "keep working")
+	resp := h.handleGoalCommand(IMUserMessage{UserID: userID, Platform: "desktop", Text: "/goal 先等这一窗口"}, "/goal 先等这一窗口")
+	if resp == nil || !strings.Contains(resp.Text, "目标已开始") {
+		t.Fatalf("create = %+v", resp)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if scheduled {
+		t.Fatal("continuation must wait while the owner window holds the session")
+	}
+	h.setPendingForegroundText(userID, "")
+	g := store.Get(userID)
+	if g == nil {
+		t.Fatal("missing goal")
+	}
+	h.scheduleGoalContinuationUnlessLive(userID, g.GoalID)
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if !scheduled {
+		t.Fatal("continuation should arm once the owner window releases")
+	}
+}
+
+func TestGoalResumeArmsWhileContinuationTextHoldsTheWindow(t *testing.T) {
+	store := goal.NewStore("")
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	userID := "desktop-user:C:/tasks/goal-resume-window"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	h := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	g, err := store.Set(userID, "先把当前回合做完")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Pause(userID, g.GoalID) {
+		t.Fatal("pause")
+	}
+	h.setPendingForegroundText(userID, "[系统续接][execute] 当前步骤")
+	resp := h.handleGoalCommand(IMUserMessage{UserID: userID, Platform: "desktop", Text: "/goal resume"}, "/goal resume")
+	if resp == nil || !strings.Contains(resp.Text, "目标已恢复") {
+		t.Fatalf("resume = %+v", resp)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if !scheduled {
+		t.Fatal("resume must arm while a cancelled continuation still holds its text")
+	}
+}
+
+func TestGoalPauseStopsTheLiveSlashTwin(t *testing.T) {
+	store := goal.NewStore("")
+	app := &App{testHomeDir: t.TempDir()}
+	engine := NewGoalContinuationEngine(store, app)
+	engine.cooldown = time.Hour
+	app.goalContinuation = engine
+	h := &IMMessageHandler{app: app, goalStore: store}
+	app.imHandler = h
+	const front = `desktop-user:F:/bird2`
+	const back = `desktop-user:F:\bird2`
+	t.Cleanup(func() {
+		engine.CancelPending(front)
+		engine.CancelPending(back)
+	})
+	stale, err := store.Set(front, "旧的暂停")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(front, stale.GoalID, goal.StatusPaused, "旧的") {
+		t.Fatal("pause stale")
+	}
+	g, err := store.Set(back, "正在做的小鸟")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(back, g.GoalID)
+	refused := h.handleGoalCommand(IMUserMessage{UserID: front, Platform: "desktop", Text: "/goal 另一件工作"}, "/goal 另一件工作")
+	if refused == nil || !strings.Contains(refused.Error, "已有活跃目标") {
+		t.Fatalf("create = %+v", refused)
+	}
+	if got := store.Get(front); got == nil || got.GoalID != stale.GoalID || got.Status != goal.StatusPaused {
+		t.Fatalf("create wrote over the other spelling: %+v", got)
+	}
+
+	ctx := NewLoopContext("coding", 4, nil)
+	cleanup := h.beginPureCodingRuntime(ctx, front, "keep working")
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+	if !h.InjectGuideReference(front, "/goal pause") {
+		t.Fatal("pause of the live slash twin should be accepted")
+	}
+	if ctx.IsCancelled() {
+		t.Fatal("pause cancelled the desktop turn")
+	}
+	if got := store.Get(back); got == nil || got.Status != goal.StatusPaused || got.Objective != "正在做的小鸟" {
+		t.Fatalf("live row = %+v", got)
+	}
+	if got := store.Get(front); got == nil || got.GoalID != stale.GoalID || got.Objective != "旧的暂停" {
+		t.Fatalf("older twin changed: %+v", got)
+	}
+	engine.mu.Lock()
+	_, backTimer := engine.scheduledTimers[back]
+	engine.mu.Unlock()
+	if backTimer {
+		t.Fatal("pause left the live row's timer")
+	}
+
+	resumed := h.handleGoalCommand(IMUserMessage{UserID: front, Platform: "desktop", Text: "/goal resume"}, "/goal resume")
+	if resumed == nil || !strings.Contains(resumed.Text, "目标已恢复") {
+		t.Fatalf("resume = %+v", resumed)
+	}
+	if got := store.Get(back); got == nil || got.Status != goal.StatusActive {
+		t.Fatalf("resumed row = %+v", got)
+	}
+	engine.mu.Lock()
+	_, backTimer = engine.scheduledTimers[back]
+	engine.mu.Unlock()
+	if backTimer {
+		t.Fatal("resume armed a continuation beside the live desktop turn")
+	}
+	cleanup()
+	cleanup = nil
+	kept := store.Get(back)
+	if kept == nil {
+		t.Fatal("missing goal")
+	}
+	h.scheduleGoalContinuationUnlessLive(kept.UserID, kept.GoalID)
+	engine.mu.Lock()
+	_, backTimer = engine.scheduledTimers[back]
+	engine.mu.Unlock()
+	if !backTimer {
+		t.Fatal("continuation should arm once the desktop turn is gone")
 	}
 }

@@ -1532,13 +1532,6 @@ body:has(
     flex-wrap: wrap;
 }
 
-.knowledge-panel-title {
-    margin: 0;
-    color: var(--theme-text-primary);
-    font-size: 1rem;
-    font-weight: 700;
-}
-
 .knowledge-panel-subtitle {
     margin: 4px 0 0;
     color: var(--theme-text-secondary);

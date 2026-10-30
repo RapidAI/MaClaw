@@ -48,6 +48,27 @@ describe('AssistantConversationBody brand splash', () => {
         expect(screen.getByText('智员')).toBeTruthy();
     });
 
+    it('uses MaClaw without the Chinese generation mark in English', () => {
+        renderSplash({ lang: 'en' });
+        expect(screen.getByTestId('assistant-brand-splash').getAttribute('aria-label')).toBe('MaClaw 8');
+        expect(screen.queryByText('码卡龙')).toBeNull();
+        expect(screen.queryByText('企缘')).toBeNull();
+    });
+
+    it('uses MaClaw without the Chinese generation mark in Mongolian', () => {
+        renderSplash({ lang: 'mn' });
+        expect(screen.getByTestId('assistant-brand-splash').getAttribute('aria-label')).toBe('MaClaw 8');
+        expect(screen.queryByText('码卡龙')).toBeNull();
+        expect(screen.queryByText('企缘')).toBeNull();
+    });
+
+    it('uses the Latin OEM name on the Mongolian init splash', () => {
+        renderSplash({ lang: 'mn', brandId: 'qianxin', brandDisplayName: 'TigerClaw', brandDisplayNameCN: '虎爪' });
+        expect(screen.getByTestId('assistant-brand-splash').getAttribute('aria-label')).toBe('TigerClaw 8');
+        expect(screen.queryByText('虎爪')).toBeNull();
+        expect(screen.queryByText('企缘')).toBeNull();
+    });
+
     it('uses traditional generation for OEM names in zh-Hant', () => {
         renderSplash({ lang: 'zh-Hant', brandId: 'qianxin', brandDisplayNameCN: '虎爪' });
         expect(screen.getByTestId('assistant-brand-splash').getAttribute('aria-label')).toBe('虎爪 8 企緣');

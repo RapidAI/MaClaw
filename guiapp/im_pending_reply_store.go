@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -52,8 +53,25 @@ func sharedPendingReplyDiskStore(path string) *pendingReplyDiskStore {
 	return store
 }
 
+// pendingReplyProfileIsolated reports that this app named its own profile.
+// A test process otherwise uses the interactive profile and can replace a
+// person's pending reply with a fixture.
+func pendingReplyProfileIsolated(app *App) bool {
+	if app == nil {
+		return false
+	}
+	if strings.TrimSpace(app.testHomeDir) != "" {
+		return true
+	}
+	base, _ := app.effectiveBaseDir.Load().(string)
+	return strings.TrimSpace(base) != ""
+}
+
 func (h *IMMessageHandler) ensurePendingReplyStore() *pendingReplyDiskStore {
 	if h == nil || h.app == nil {
+		return nil
+	}
+	if testing.Testing() && !pendingReplyProfileIsolated(h.app) {
 		return nil
 	}
 	h.pendingReplyStoreOnce.Do(func() {

@@ -764,6 +764,27 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByText('Done task')).toBeTruthy();
     });
 
+    it('hides the zero-count filter rows only while the list is empty on default filters', () => {
+        const { rerenderWith } = renderTaskManagement({ tasks: [] });
+
+        // Empty list on defaults: seven zero-count chips are noise.
+        expect(screen.getByText('Recent tasks')).toBeTruthy();
+        expect(screen.queryByTestId('task-filter-all')).toBeNull();
+        expect(screen.queryByTestId('task-workspace-filter-local')).toBeNull();
+
+        // First task brings the rows back.
+        rerenderWith({ tasks: [baseProject] });
+        expect(screen.getByTestId('task-filter-all')).toBeTruthy();
+        expect(screen.getByTestId('task-workspace-filter-local')).toBeTruthy();
+
+        // An active filter never strands the user: rows stay while the
+        // filtered view is empty, so the chip can be deselected.
+        fireEvent.click(screen.getByTestId('task-filter-completed'));
+        rerenderWith({ tasks: [] });
+        expect(screen.getByTestId('task-filter-all')).toBeTruthy();
+        expect(screen.getByTestId('task-workspace-filter-local')).toBeTruthy();
+    });
+
     it('scrolls overflowing task rows inside the list and keeps filters pinned', () => {
         const tasks = Array.from({ length: 12 }, (_, i) => ({
             ...baseProject,

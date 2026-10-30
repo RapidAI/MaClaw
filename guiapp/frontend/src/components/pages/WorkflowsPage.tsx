@@ -17,7 +17,6 @@ export const WorkflowsPage = ({ lang, onStartWorkflow }: { lang?: string; onStar
     const [startError, setStartError] = useState<string | null>(null);
     const startingTypeRef = useRef<string | null>(null);
 
-    const title = chromeText(lang, 'Workflows', '工作流');
     const subtitle = chromeText(lang, 'Select a workflow template to continue in the AI assistant', '选择一个工作流模板，点击后在 AI 助手中继续');
     const searchPlaceholder = chromeText(lang, 'Search workflows...', '搜索工作流...');
 
@@ -68,10 +67,8 @@ export const WorkflowsPage = ({ lang, onStartWorkflow }: { lang?: string; onStar
     return (
         <div className="workflows-page">
             <div className="workflows-page__header">
-                <div>
-                    <h1 className="workflows-page__title">{title}</h1>
-                    <p className="workflows-page__subtitle">{subtitle}</p>
-                </div>
+                {/* No in-page H1: the top header already shows MaClaw 工作流. */}
+                <p className="workflows-page__subtitle">{subtitle}</p>
                 <div className="workflows-page__search-wrap">
                     <input
                         className="workflows-page__search"

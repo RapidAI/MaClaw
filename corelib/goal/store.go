@@ -15,10 +15,12 @@ import (
 // Each user has at most one active goal. Persistence uses atomic file writes
 // (temp file + rename) to prevent corruption on crash.
 type Store struct {
-	mu      sync.RWMutex
-	goals   map[string]*Goal // userID → current goal
-	dataDir string           // directory for the goal database and legacy JSON files
-	db      *sql.DB
+	mu          sync.RWMutex
+	goals       map[string]*Goal // userID → current goal
+	dataDir     string           // directory for the goal database and legacy JSON files
+	db          *sql.DB
+	latestStamp time.Time        // newest write stamp issued or loaded; guarded by mu
+	clock       func() time.Time // test clock; production leaves this nil
 }
 
 // NewStore creates a goal store. If dataDir is non-empty, goals are persisted
@@ -77,7 +79,6 @@ func (s *Store) Set(userID string, objective string, opts ...SetOption) (*Goal, 
 		o(cfg)
 	}
 
-	now := time.Now()
 	g := &Goal{
 		GoalID:             NewGoalID(),
 		UserID:             userID,
@@ -88,11 +89,12 @@ func (s *Store) Set(userID string, objective string, opts ...SetOption) (*Goal, 
 		AcceptanceCriteria: cfg.acceptanceCriteria,
 		ProjectPath:        cfg.projectPath,
 		Phase:              PhasePlan,
-		CreatedAt:          now,
-		UpdatedAt:          now,
 	}
 
 	s.mu.Lock()
+	now := s.nextWriteStamp()
+	g.CreatedAt = now
+	g.UpdatedAt = now
 	if prev := s.goals[userID]; prev != nil {
 		g.StateRev = prev.StateRev
 		g.TextRev = prev.TextRev
@@ -153,6 +155,41 @@ func touchGoalClock(g *Goal, now time.Time) {
 	g.UpdatedAt = now
 }
 
+// nextWriteStamp is the time of this write. The caller holds s.mu.
+// The goal bar ranks two paused slash twins by UpdatedAt and keeps the
+// first row when the times are equal. That first row is the older spelling.
+// The stamp is wall time only. A monotonic reading orders two writes inside
+// one tick until the process exits, then the database has identical times
+// and the bar selects the older row again. A repeated or earlier wall time
+// moves one nanosecond past the previous stamp.
+func (s *Store) nextWriteStamp() time.Time {
+	now := time.Now()
+	if s.clock != nil {
+		now = s.clock()
+	}
+	now = now.Round(0)
+	if !s.latestStamp.IsZero() && !now.After(s.latestStamp) {
+		now = s.latestStamp.Add(time.Nanosecond)
+	}
+	s.latestStamp = now
+	return now
+}
+
+func (s *Store) seedWriteStamp() {
+	for _, g := range s.goals {
+		if g == nil {
+			continue
+		}
+		stamp := g.UpdatedAt.Round(0)
+		if stamp.IsZero() {
+			continue
+		}
+		if s.latestStamp.IsZero() || stamp.After(s.latestStamp) {
+			s.latestStamp = stamp
+		}
+	}
+}
+
 // UpdateStatus transitions the goal's status. The caller must pass the expected
 // goalID — if it doesn't match the current goal, the update is silently ignored
 // (stale update protection). Returns true if the update was applied.
@@ -163,7 +200,7 @@ func (s *Store) UpdateStatus(userID, goalID string, status Status, summary strin
 		s.mu.Unlock()
 		return false
 	}
-	now := time.Now()
+	now := s.nextWriteStamp()
 	pinComposerClock(g, g.Status, status, now)
 	g.Status = status
 	if summary != "" {
@@ -200,7 +237,7 @@ func (s *Store) AccountUsage(userID, goalID string, deltaTokens, deltaSeconds in
 		g.Status = StatusBudgetLimit
 		g.Summary = fmt.Sprintf("Turn limit reached: %d of %d turns", g.TurnsUsed, g.MaxTurns)
 	}
-	now := time.Now()
+	now := s.nextWriteStamp()
 	pinComposerClock(g, prev, g.Status, now)
 	g.UpdatedAt = now
 	bumpGoalState(g)
@@ -224,7 +261,7 @@ func (s *Store) RecordNoToolTurn(userID, goalID string) bool {
 		g.Status = StatusPaused
 		g.Summary = "Auto-paused: agent produced no tool calls for 2 consecutive turns"
 	}
-	now := time.Now()
+	now := s.nextWriteStamp()
 	pinComposerClock(g, prev, g.Status, now)
 	g.UpdatedAt = now
 	bumpGoalState(g)
@@ -246,7 +283,7 @@ func (s *Store) ResetNoToolCounter(userID, goalID string) bool {
 		return true
 	}
 	g.ConsecutiveNoToolTurns = 0
-	touchGoalClock(g, time.Now())
+	touchGoalClock(g, s.nextWriteStamp())
 	bumpGoalState(g)
 	s.releaseAndPersistState(userID, g)
 	return true
@@ -268,7 +305,7 @@ func (s *Store) Resume(userID, goalID string) bool {
 	prev := g.Status
 	g.Status = StatusActive
 	g.ConsecutiveNoToolTurns = 0 // reset on resume
-	now := time.Now()
+	now := s.nextWriteStamp()
 	pinComposerClock(g, prev, g.Status, now)
 	g.UpdatedAt = now
 	bumpGoalState(g)
@@ -294,7 +331,7 @@ func (s *Store) UpdateObjective(userID, goalID, objective string) bool {
 		return true
 	}
 	g.Objective = objective
-	touchGoalClock(g, time.Now())
+	touchGoalClock(g, s.nextWriteStamp())
 	bumpGoalText(g)
 	bumpGoalState(g)
 	s.releaseAndPersist(userID, g)
@@ -326,7 +363,7 @@ func (s *Store) ReleaseForContinue(userID, goalID string) bool {
 		}
 		g.TokenBudget = g.TokensUsed + g.TokenWindow
 	}
-	now := time.Now()
+	now := s.nextWriteStamp()
 	pinComposerClock(g, prev, g.Status, now)
 	g.UpdatedAt = now
 	bumpGoalState(g)
@@ -364,7 +401,7 @@ func (s *Store) SavePlan(userID, goalID, understanding string, steps []Step, cri
 	g.Steps = steps
 	g.AcceptanceCriteria = append([]string(nil), criteria...)
 	g.Phase = PhaseExecute
-	touchGoalClock(g, time.Now())
+	touchGoalClock(g, s.nextWriteStamp())
 	bumpGoalText(g)
 	bumpGoalState(g)
 	s.releaseAndPersist(userID, g)
@@ -410,7 +447,7 @@ func (s *Store) UpdateStep(userID, goalID string, index int, status StepStatus, 
 		s.mu.Unlock()
 		return fmt.Errorf("step not found")
 	}
-	touchGoalClock(g, time.Now())
+	touchGoalClock(g, s.nextWriteStamp())
 	bumpGoalText(g)
 	bumpGoalState(g)
 	s.releaseAndPersist(userID, g)
@@ -458,7 +495,7 @@ func (s *Store) AppendStepNote(userID, goalID string, index int, note string) (b
 		s.mu.Unlock()
 		return false, fmt.Errorf("step not found")
 	}
-	touchGoalClock(g, time.Now())
+	touchGoalClock(g, s.nextWriteStamp())
 	bumpGoalText(g)
 	bumpGoalState(g)
 	s.releaseAndPersist(userID, g)
@@ -662,6 +699,7 @@ func (s *Store) loadAll() {
 			}
 		}
 	}
+	s.seedWriteStamp()
 }
 
 // loadLegacyJSONFiles reads {user}.json files into memory.

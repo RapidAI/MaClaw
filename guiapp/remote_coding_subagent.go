@@ -2824,6 +2824,8 @@ func (c *remoteCodingCallbacks) ProjectToolResult(name string, result agent.Tool
 func (c *remoteCodingCallbacks) OnToolSurfaceAttemptStarted(agent.ToolCallExecutionContext) {}
 
 func (c *remoteCodingCallbacks) OnToolSurfaceAttemptFinished(_ agent.ToolCallExecutionContext, delivery agent.ToolSurfaceDeliveryState) {
+	// Same rule as the local belt: only an unconsumed provider response
+	// quarantines the surface. A host steer keeps ssh_bash and the rest listed.
 	if delivery == agent.ToolSurfaceAmbiguousDelivery {
 		c.quarantineStaticCompatibilitySurface()
 	}

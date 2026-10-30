@@ -426,6 +426,35 @@ func TestCodingStaticCompatibilityKeepsSurfaceAfterTransportRejection(t *testing
 	}
 }
 
+func TestCodingStaticCompatibilityKeepsSurfaceAfterHostSteer(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir(), correlatedLocalExecution: true},
+		task:     &TaskItem{Title: "flash", Description: "build and flash", RequestKind: codingRequestOperational},
+	}
+	epochA := cb.BeginToolSurfaceEpoch(0)
+	before := codingSubAgentToolDefinitionNamesForTest(cb.BuildToolsForModelRequest("flash", 0))
+	if !containsStringForTest(before, "bash") || !containsStringForTest(before, "read_file") {
+		t.Fatalf("operational surface = %v, want resident bash and read_file", before)
+	}
+	cb.OnToolSurfaceAttemptFinished(agent.ToolCallExecutionContext{SurfaceEpoch: epochA}, agent.ToolSurfaceHostSteered)
+	epochB := cb.BeginToolSurfaceEpoch(1)
+	if epochB == "" || epochA == epochB {
+		t.Fatalf("host steer epochs A=%q B=%q", epochA, epochB)
+	}
+	after := codingSubAgentToolDefinitionNamesForTest(cb.BuildToolsForModelRequest("continue", 1))
+	if !containsStringForTest(after, "bash") || !containsStringForTest(after, "read_file") {
+		t.Fatalf("host steer dropped the resident surface: %v", after)
+	}
+	stale := cb.ExecuteToolCallWithContext("read_file", `{"path":"missing"}`, "stale-call", agent.ToolCallExecutionContext{SurfaceEpoch: epochA})
+	if stale.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(stale.Result, "static_surface_unavailable") {
+		t.Fatalf("discarded steer attempt reached dispatcher: %#v", stale)
+	}
+	current := cb.ExecuteToolCallWithContext("read_file", `{"path":"missing"}`, "current-call", agent.ToolCallExecutionContext{SurfaceEpoch: epochB})
+	if strings.Contains(current.Result, "static_surface_unavailable") {
+		t.Fatalf("successor request was rejected after a host steer: %#v", current)
+	}
+}
+
 func TestRemoteCodingStaticCompatibilityRequestSurfaceRejectsStaleAndInventedTools(t *testing.T) {
 	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
 	_ = cb.BuildToolsForModelRequest("implement", 0)
@@ -567,6 +596,32 @@ func TestRemoteCodingStaticCompatibilityQuarantinesAmbiguousDelivery(t *testing.
 	result := cb.ExecuteToolCallWithContext("ssh_read_file", `{"path":"missing"}`, "late-call", agent.ToolCallExecutionContext{})
 	if result.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(result.Result, "static_surface_unavailable") {
 		t.Fatalf("quarantined remote late call result=%#v", result)
+	}
+}
+
+func TestRemoteCodingStaticCompatibilityKeepsSurfaceAfterHostSteer(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{operationalRequest: true, correlatedRemoteExecution: true}}
+	epochA := cb.BeginToolSurfaceEpoch(0)
+	before := codingSubAgentToolDefinitionNamesForTest(cb.BuildToolsForModelRequest("flash", 0))
+	if !containsStringForTest(before, "ssh_bash") || !containsStringForTest(before, "ssh_read_file") {
+		t.Fatalf("operational remote surface = %v, want resident ssh_bash and ssh_read_file", before)
+	}
+	cb.OnToolSurfaceAttemptFinished(agent.ToolCallExecutionContext{SurfaceEpoch: epochA}, agent.ToolSurfaceHostSteered)
+	epochB := cb.BeginToolSurfaceEpoch(1)
+	if epochB == "" || epochA == epochB {
+		t.Fatalf("host steer epochs A=%q B=%q", epochA, epochB)
+	}
+	after := codingSubAgentToolDefinitionNamesForTest(cb.BuildToolsForModelRequest("continue", 1))
+	if !containsStringForTest(after, "ssh_bash") || !containsStringForTest(after, "ssh_read_file") {
+		t.Fatalf("host steer dropped the resident remote surface: %v", after)
+	}
+	stale := cb.ExecuteToolCallWithContext("ssh_read_file", `{"path":"missing"}`, "stale-call", agent.ToolCallExecutionContext{SurfaceEpoch: epochA})
+	if stale.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(stale.Result, "static_surface_unavailable") {
+		t.Fatalf("discarded remote steer attempt reached dispatcher: %#v", stale)
+	}
+	current := cb.ExecuteToolCallWithContext("ssh_read_file", `{"path":"missing"}`, "current-call", agent.ToolCallExecutionContext{SurfaceEpoch: epochB})
+	if strings.Contains(current.Result, "static_surface_unavailable") {
+		t.Fatalf("successor remote request was rejected after a host steer: %#v", current)
 	}
 }
 

@@ -505,19 +505,28 @@ func (h *IMMessageHandler) releaseStoppedGoalForUserContinue(msg IMUserMessage, 
 // noteGoalContinuePastUserStop records that the bar or /goal resume is
 // re-arming this same goal. The stop fence stays, so the next ordinary
 // message still starts a new task. Only a host continuation of this fence
-// is allowed to enter.
+// is allowed to enter. The composer and the stored row spell one session
+// with different slashes. The dying turn looks the mark up under its own id,
+// so every spelling has to carry it or that turn pauses the goal again.
 func (h *IMMessageHandler) noteGoalContinuePastUserStop(userID string) {
 	if h == nil || h.app == nil || h.app.goalContinuation == nil {
 		return
 	}
-	// Record the continue before ReleaseForContinue makes the goal active.
-	// The dying turn and this mark share the engine lock.
-	h.app.goalContinuation.noteContinueRearmed(userID)
-	fence, ok := h.currentCancelledTaskFence(userID)
-	if !ok {
+	ids := goalBarCandidateIDs(userID)
+	if len(ids) == 0 {
 		return
 	}
-	h.app.goalContinuation.noteStopSuperseded(userID, fence)
+	fences := make(map[string]cancelledTaskFence, len(ids))
+	for _, id := range ids {
+		fence, ok := h.currentCancelledTaskFence(id)
+		if !ok {
+			continue
+		}
+		fences[id] = fence
+	}
+	// Record the continue before ReleaseForContinue makes the goal active.
+	// The dying turn and this mark share the engine lock.
+	h.app.goalContinuation.noteContinuePastSessionStop(ids, fences)
 }
 
 // noteContinueRearmed records that continue is re-arming this session.
@@ -526,8 +535,14 @@ func (e *GoalContinuationEngine) noteContinueRearmed(userID string) {
 	if e == nil {
 		return
 	}
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
+	e.noteContinuePastSessionStop([]string{userID}, nil)
+}
+
+// noteContinuePastSessionStop records one continue on every spelling of the
+// session. fences is the cancel fence already stored under that spelling.
+// Caller must invoke it before the goal status becomes active.
+func (e *GoalContinuationEngine) noteContinuePastSessionStop(ids []string, fences map[string]cancelledTaskFence) {
+	if e == nil {
 		return
 	}
 	e.mu.Lock()
@@ -535,7 +550,21 @@ func (e *GoalContinuationEngine) noteContinueRearmed(userID string) {
 	if e.continueRearmed == nil {
 		e.continueRearmed = map[string]struct{}{}
 	}
-	e.continueRearmed[userID] = struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		e.continueRearmed[id] = struct{}{}
+		fence, ok := fences[id]
+		if !ok {
+			continue
+		}
+		if e.stopSuperseded == nil {
+			e.stopSuperseded = map[string]cancelledTaskFence{}
+		}
+		e.stopSuperseded[id] = fence
+	}
 }
 
 // continueRearmedLocked reports a continue that has not been superseded by
@@ -549,14 +578,22 @@ func (e *GoalContinuationEngine) continueRearmedLocked(userID string) bool {
 }
 
 // clearContinueRearmed drops the mark so the next explicit stop can pause.
+// Every slash spelling is one session. Clearing only the row that was paused
+// leaves the composer's mark, and the next stop then leaves the goal active.
 func (e *GoalContinuationEngine) clearContinueRearmed(userID string) {
 	if e == nil {
 		return
 	}
-	userID = strings.TrimSpace(userID)
+	ids := goalBarCandidateIDs(userID)
 	e.mu.Lock()
-	delete(e.continueRearmed, userID)
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	if len(ids) == 0 {
+		delete(e.continueRearmed, strings.TrimSpace(userID))
+		return
+	}
+	for _, id := range ids {
+		delete(e.continueRearmed, id)
+	}
 }
 
 // noteGoalBarHold records that this session's live turn was stopped from the
@@ -593,18 +630,6 @@ func (e *GoalContinuationEngine) consumeGoalBarHold(userID string) bool {
 	}
 	delete(e.barHold, userID)
 	return true
-}
-
-func (e *GoalContinuationEngine) noteStopSuperseded(userID string, fence cancelledTaskFence) {
-	if e == nil || strings.TrimSpace(userID) == "" {
-		return
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.stopSuperseded == nil {
-		e.stopSuperseded = map[string]cancelledTaskFence{}
-	}
-	e.stopSuperseded[userID] = fence
 }
 
 func (e *GoalContinuationEngine) stopSupersededLocked(userID string, fence cancelledTaskFence) bool {
@@ -979,7 +1004,7 @@ func (e *GoalContinuationEngine) continuationHandler() *IMMessageHandler {
 // showing. Startup itself does not arm: the coding tab binds its directory
 // as the window opens, and a timer started before that runs in the wrong
 // place. The bar read is the moment that session is on screen. Pause and
-// continue work without this because continue calls scheduleDelayed itself.
+// continue work without this because continue uses the same live-turn wait.
 // A missing handler leaves the session unclaimed so a later read can resume.
 func (a *App) resumeVisibleGoalAfterRestart(sessionKey string) {
 	if a == nil || a.goalContinuation == nil || a.goalContinuation.continuationHandler() == nil {
@@ -1041,6 +1066,12 @@ func (e *GoalContinuationEngine) resumePersistedGoal(userID, goalID string) {
 			log.Printf("[goal-continuation] restart left goal paused; remote coding session is down user=%s goal_id=%s", userID, goalID)
 			return
 		}
+		// Same rule as /goal resume. The bar can paint while a coding turn
+		// still holds the session, and that wait is capped at 60s.
+		// The live turn schedules this goal when it ends.
+		log.Printf("[goal-continuation] resuming goal after restart user=%s goal_id=%s", userID, goalID)
+		handler.scheduleGoalContinuationUnlessLive(userID, goalID)
+		return
 	}
 	log.Printf("[goal-continuation] resuming goal after restart user=%s goal_id=%s", userID, goalID)
 	e.scheduleDelayed(userID, goalID)
@@ -1213,23 +1244,47 @@ type continuationAdmitTicket struct {
 	gen    uint64
 }
 
+// continuationAdmitDecision is why a fire may or may not enter.
+type continuationAdmitDecision int
+
+const (
+	continuationAdmitYes continuationAdmitDecision = iota
+	continuationAdmitIdle
+	continuationAdmitStopped
+)
+
 // admitContinuationIfContinuable records one continuation that may enter.
 // The continuable check and the mint share the engine lock, so a pause that
 // bumps the generation cannot land between them. A false result means this
 // fire must not start a turn.
 func (e *GoalContinuationEngine) admitContinuationIfContinuable(userID, goalID, requestID string) bool {
+	return e.decideContinuationAdmit(userID, goalID, requestID) == continuationAdmitYes
+}
+
+// decideContinuationAdmit distinguishes a goal that can no longer run from a
+// user stop that still leaves the goal active. The stop waits for one
+// spelling's turn to exit. Failing an unplanned goal in that window turns a
+// stop into "未能分解任务".
+func (e *GoalContinuationEngine) decideContinuationAdmit(userID, goalID, requestID string) continuationAdmitDecision {
 	if e == nil {
-		return false
+		return continuationAdmitIdle
 	}
 	userID = strings.TrimSpace(userID)
 	requestID = strings.TrimSpace(requestID)
 	if userID == "" || requestID == "" {
-		return false
+		return continuationAdmitIdle
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.goalStillContinuable(userID, goalID) {
-		return false
+		return continuationAdmitIdle
+	}
+	// The stop button fences one spelling and then waits for that turn to
+	// exit. The continuation is dispatched on the stored spelling, which has
+	// its own lock, so the fence has to block the mint here. Continue records
+	// the fence it already passed; a later stop has a new fence and blocks.
+	if e.sessionStopBlocksContinuationLocked(userID) {
+		return continuationAdmitStopped
 	}
 	if e.continuationAdmit == nil {
 		e.continuationAdmit = map[string]uint64{}
@@ -1242,7 +1297,76 @@ func (e *GoalContinuationEngine) admitContinuationIfContinuable(userID, goalID, 
 		userID: userID,
 		gen:    e.continuationAdmit[userID],
 	}
-	return true
+	return continuationAdmitYes
+}
+
+// sessionStopBlocksContinuation reports that a user stop still owns this
+// session. The fence may sit on the other slash spelling. A continue that
+// already recorded that fence is not blocked.
+func (e *GoalContinuationEngine) sessionStopBlocksContinuation(userID string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sessionStopBlocksContinuationLocked(userID)
+}
+
+// sessionStopBlocksContinuationLocked is sessionStopBlocksContinuation.
+// Caller holds e.mu.
+func (e *GoalContinuationEngine) sessionStopBlocksContinuationLocked(userID string) bool {
+	if e == nil || e.app == nil || e.app.imHandler == nil {
+		return false
+	}
+	h := e.app.imHandler
+	for _, id := range goalBarCandidateIDs(userID) {
+		fence, ok := h.currentCancelledTaskFence(id)
+		if !ok {
+			continue
+		}
+		if !e.stopSupersededLocked(id, fence) {
+			return true
+		}
+	}
+	return false
+}
+
+// continuationTurnBlocked reports that this dispatched continuation must not
+// enter. The admit ticket and a user-stop fence on either slash spelling
+// are the same stop. An unknown request with no fence is left alone.
+func (e *GoalContinuationEngine) continuationTurnBlocked(msg IMUserMessage) bool {
+	if e == nil || msg.Platform != "goal-continuation" {
+		return false
+	}
+	if e.continuationAdmitRevoked(msg.RequestID) {
+		return true
+	}
+	return e.sessionStopBlocksContinuation(msg.UserID)
+}
+
+// continuationAdmitLive reports a fire that has already been admitted and
+// has not entered or finished. Pause and stop both have to see it: the
+// timer is already gone, and the loop is not published yet.
+func (e *GoalContinuationEngine) continuationAdmitLive(userID string) bool {
+	if e == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current := e.continuationAdmit[userID]
+	if current == 0 || e.continuationTicket == nil {
+		return false
+	}
+	for _, ticket := range e.continuationTicket {
+		if ticket.userID == userID && ticket.gen == current {
+			return true
+		}
+	}
+	return false
 }
 
 // revokeContinuationAdmit invalidates every continuation already admitted for
@@ -1333,7 +1457,16 @@ func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, kin
 		idPrefix = idPrefix[:8]
 	}
 	requestID := fmt.Sprintf("goal-cont-%s-%d-%d", idPrefix, time.Now().UnixMilli(), goalContinuationRequestSeq.Add(1))
-	if !e.admitContinuationIfContinuable(userID, goalID, requestID) {
+	switch e.decideContinuationAdmit(userID, goalID, requestID) {
+	case continuationAdmitStopped:
+		// The goal is still active. The dying turn pauses it. This fire did
+		// not run, so a plan correction keeps its one retry.
+		if kind == goalCorrectionPlan {
+			e.clearPlanMiss(userID, goalID)
+		}
+		log.Printf("[goal-continuation] skipping fire: user stop owns the session user=%s", userID)
+		return
+	case continuationAdmitIdle:
 		g := e.store.Get(userID)
 		if kind == goalCorrectionPlan {
 			e.abandonUnsentPlanCorrection(userID, goalID, g)
@@ -1426,7 +1559,7 @@ func (e *GoalContinuationEngine) runForegroundContinuation(handler *IMMessageHan
 	// Pause may have landed after dispatch admitted this turn. Do not enter
 	// the session. An empty final response closes the round the dispatch
 	// already opened and does not fail the goal or fence chat.
-	if e.continuationAdmitRevoked(msg.RequestID) {
+	if e.continuationTurnBlocked(msg) {
 		log.Printf("[goal-continuation] dropped dispatched turn after the goal stopped user=%s request_id=%s", msg.UserID, msg.RequestID)
 		emitFinalResponse(&IMAgentResponse{})
 		return
@@ -2228,12 +2361,15 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		return
 	}
 
-	// A failed turn closes the goal only when this phase's contract is still
-	// open. A plan or step already stored is the host record; a later audit
-	// error must not erase it. A continuation with no such record still fails
-	// with the turn error. ownedExpect is the note captured when this turn
-	// ended. The map may already hold the next step, and that open note is
-	// not a reason to fail this turn.
+	// A failed goal-continuation turn closes the goal only when this phase's
+	// contract is still open. A plan or step already stored is the host
+	// record; a later audit error must not erase it. A continuation with no
+	// such record still fails with the turn error. A desktop or coding turn
+	// is not that continuation: its error belongs to that turn, and the goal
+	// stays active so the post-loop path below can arm the next one.
+	// ownedExpect is the note captured when this turn ended. The map may
+	// already hold the next step, and that open note is not a reason to fail
+	// this turn.
 	contractExpect := engine.peekContinuationExpect(userID)
 	if haveOwnedExpect {
 		contractExpect = ownedExpect
@@ -2247,7 +2383,7 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 	if codingLoopIterationExhausted(turnErr) {
 		turnErr = ""
 	}
-	if turnErr != "" && !goalContinuationContractMet(contractExpect, g) {
+	if strings.TrimSpace(platform) == "goal-continuation" && turnErr != "" && !goalContinuationContractMet(contractExpect, g) {
 		if goalTurnErrorIsRetryable(turnErr) && g.ShouldContinue() && engine.retryTransientGoalTurn(goalKey, g.GoalID, ownedExpect, haveOwnedExpect) {
 			h.app.cancelOtherGoalBarTimers(goalKey)
 			return

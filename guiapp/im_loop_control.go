@@ -41,6 +41,164 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 }
 
 func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
+	return h.finishUserSessionCancel(userID, true)
+}
+
+// RequestCancelSessionForUser starts cancellation without waiting for the
+// current goroutine to unwind. IM control commands use this path so a user can
+// always stop a tool or model call that is holding the session mutex. The loop
+// context's cancellation hooks still revoke any durable coding-runtime work.
+func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, error) {
+	return h.finishUserSessionCancel(userID, false)
+}
+
+// finishUserSessionCancel stops this session, including a goal continuation
+// published, queued, or already admitted under either slash spelling.
+// The continuation timer is dropped before a published loop is waited on,
+// so it cannot start during that wait. An admitted fire is revoked before
+// that wait too: the stop button waits for this spelling's turn to exit,
+// and the other spelling's continuation would otherwise enter in that gap.
+// A stop that only finds the other spelling pauses the goal first and then
+// revokes, matching the goal bar. A stop that finds this spelling leaves
+// the pause to that turn.
+func (h *IMMessageHandler) finishUserSessionCancel(userID string, wait bool) (string, error) {
+	if h == nil {
+		return "", fmt.Errorf("missing userID")
+	}
+	userID = strings.TrimSpace(userID)
+	twinText, loopStopped, timerStopped := h.signalSlashTwinGoalSession(userID)
+	// A fire can already have left the timer and not yet published a loop.
+	// Pause revokes that admit. Stop has to see it too, on every spelling.
+	admitted := h.liveContinuationAdmitted(userID)
+	ownsPause := !h.sessionCancelTouchesATurn(userID) && (loopStopped || timerStopped || admitted)
+	dropTimers := ownsPause || h.sessionCancelTouchesATurn(userID)
+	if ownsPause {
+		// Status first, then the admit generation. A fire that mints during
+		// this stop either loses the goal or loses the ticket. This spelling
+		// has no dying turn, so the pause cannot wait for one-id.
+		h.pauseSlashTwinGoalNow(userID, loopStopped)
+		h.revokeSessionContinuationAdmit(userID)
+	} else if dropTimers {
+		h.revokeSessionContinuationAdmit(userID)
+	}
+	if dropTimers && h.app != nil {
+		h.app.cancelGoalBarTimers(userID)
+	}
+	var text string
+	var err error
+	if wait {
+		text, err = h.cancelSessionForUserOne(userID)
+	} else {
+		text, err = h.requestCancelSessionForUserOne(userID)
+	}
+	if err != nil && ownsPause {
+		log.Printf("[CancelSessionForUser] stopped slash-twin continuation user=%s twin_loop=%v twin_timer=%v admitted=%v", userID, loopStopped, timerStopped, admitted)
+		return twinText, nil
+	}
+	if err == nil && !dropTimers {
+		// Horizon and session-round stops have no loop to see ahead of time.
+		h.revokeSessionContinuationAdmit(userID)
+	}
+	return text, err
+}
+
+// signalSlashTwinGoalSession cancels a turn that belongs to this session but
+// was published under the other slash spelling. It does not wait and it does
+// not call CancelSessionForUser: that waits on DoneC, and LoopContext.Cancel
+// does not close DoneC. A queued timer is only reported; the caller drops it.
+func (h *IMMessageHandler) signalSlashTwinGoalSession(asked string) (taskText string, loopStopped, timerStopped bool) {
+	if h == nil {
+		return "", false, false
+	}
+	asked = strings.TrimSpace(asked)
+	if asked == "" {
+		return "", false, false
+	}
+	for _, id := range goalBarCandidateIDs(asked) {
+		if id == asked {
+			continue
+		}
+		ctx, text, _ := h.loopContextForCancel(id)
+		if ctx == nil && strings.TrimSpace(text) == "" {
+			continue
+		}
+		if ctx != nil && !ctx.IsCancelled() {
+			ctx.MarkUserCancel()
+			ctx.Cancel()
+		}
+		h.markTaskCancelledByUser(id)
+		if taskText == "" {
+			taskText = strings.TrimSpace(text)
+		}
+		loopStopped = true
+	}
+	if h.app == nil || h.app.goalContinuation == nil {
+		return taskText, loopStopped, false
+	}
+	for _, id := range goalBarCandidateIDs(asked) {
+		if id == asked {
+			continue
+		}
+		if h.app.goalContinuation.continuationAlreadyQueued(id) {
+			return taskText, loopStopped, true
+		}
+	}
+	return taskText, loopStopped, false
+}
+
+// sessionCancelTouchesATurn reports that this exact id already has a turn the
+// one-id cancel will stop. Horizon and session-round stops are not visible
+// here; they return without waiting.
+func (h *IMMessageHandler) sessionCancelTouchesATurn(userID string) bool {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return false
+	}
+	ctx, text, _ := h.loopContextForCancel(userID)
+	return ctx != nil || strings.TrimSpace(text) != ""
+}
+
+// liveContinuationAdmitted reports a host continuation that any spelling of
+// this session has already admitted.
+func (h *IMMessageHandler) liveContinuationAdmitted(userID string) bool {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return false
+	}
+	for _, id := range goalBarCandidateIDs(userID) {
+		if h.app.goalContinuation.continuationAdmitLive(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// revokeSessionContinuationAdmit drops every continuation this session has
+// already admitted. The caller pauses first when this stop owns the goal, so
+// a fire that arrives during the bump finds the goal stopped.
+func (h *IMMessageHandler) revokeSessionContinuationAdmit(userID string) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return
+	}
+	for _, id := range goalBarCandidateIDs(userID) {
+		h.app.goalContinuation.revokeContinuationAdmit(id)
+	}
+}
+
+// pauseSlashTwinGoalNow stamps the goal after a stop that never started a
+// turn on the asked spelling. A previous continue mark would swallow that
+// pause. A twin loop already cleared the mark when it was fenced. A timer
+// or an admitted fire alone must not fence the chat: the next message is
+// not a new task.
+func (h *IMMessageHandler) pauseSlashTwinGoalNow(userID string, loopStopped bool) {
+	if h == nil {
+		return
+	}
+	if !loopStopped && h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.clearContinueRearmed(userID)
+	}
+	h.pauseStillActiveUserStop(userID)
+}
+
+func (h *IMMessageHandler) cancelSessionForUserOne(userID string) (string, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return "", fmt.Errorf("missing userID")
@@ -96,11 +254,7 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	return taskText, nil
 }
 
-// RequestCancelSessionForUser starts cancellation without waiting for the
-// current goroutine to unwind. IM control commands use this path so a user can
-// always stop a tool or model call that is holding the session mutex. The loop
-// context's cancellation hooks still revoke any durable coding-runtime work.
-func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, error) {
+func (h *IMMessageHandler) requestCancelSessionForUserOne(userID string) (string, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return "", fmt.Errorf("missing userID")
@@ -355,8 +509,8 @@ func (h *IMMessageHandler) consumeCancelledTaskBoundary(userID string) bool {
 // InjectSupplementary stores a supplementary message for the running agent
 // loop to consume at the start of its next iteration. Returns true if a loop
 // is currently active (injection accepted), false otherwise.
-// A user-stop fence refuses the supplement: the next ordinary message starts
-// a new task, and this text must not ride into it.
+// A user-stop fence refuses the supplement. The text must not ride into the
+// dying loop. The user's next message continues the same conversation.
 func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" || h.hasCancelledTaskBoundary(userID) {
@@ -535,6 +689,17 @@ func (h *IMMessageHandler) InjectGuideReferenceWithID(userID, text, launchID str
 			h.acceptedGuideLaunchIDs.CompareAndDelete(launchKey, launchAcceptance)
 		}
 	}
+	// Host commands are classified before any steer. Wrapping one as a guide
+	// replans the live call, and the model treats the command as a cue to stop.
+	if refuseSteer, executed := h.hostCommandInsteadOfSteer(userID, text); refuseSteer {
+		finishLaunch(executed)
+		if executed {
+			log.Printf("[inject-guide-reference] user=%s text_len=%d mode=goal-command", userID, len([]rune(text)))
+			return true
+		}
+		log.Printf("[inject-guide-reference] user=%s text_len=%d mode=host-command-deferred", userID, len([]rune(text)))
+		return false
+	}
 	injection := buildGuideLaunchInjection(text)
 	if injection == "" {
 		finishLaunch(false)
@@ -564,6 +729,37 @@ const pendingInjectionSeparator = "\n\x1eMACLAW_PENDING_INJECTION\x1e\n"
 const guideLaunchReferenceInstructionPrefix = "The following text was fired by the user from the pre-input buffer via the guide-launch button."
 
 const guideLaunchReferenceInstruction = "The following text was fired by the user from the pre-input buffer via the guide-launch button. Treat it as live user steering for the next agent loop: re-evaluate the current plan, tool choice, and answer direction under this guidance before continuing. If it conflicts with stale reasoning or an in-flight tool decision, the fired guidance wins for the next step. Let the next visible assistant response naturally demonstrate that the user's point affected the work, responding to its substance when useful. Do not emit a canned receipt, mechanically announce that it was received or attached, or force a quotation or acknowledgement when that would sound unnatural. Do not treat it as an independent new chat turn, and do not finalize solely because this directive arrived. \u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\u3002"
+
+// hostCommandInsteadOfSteer reports whether text is an immediate host command.
+// refuseSteer means the caller must not wrap it as model steering. executed
+// means a mutating /goal changed the row now, beside the live loop. Help,
+// status, and a refusal that did not change the row stay in the GUI queue
+// and are sent as the next real turn, so the person sees the reply. Every
+// other host command stays in that queue too.
+func (h *IMMessageHandler) hostCommandInsteadOfSteer(userID, text string) (refuseSteer, executed bool) {
+	userID = strings.TrimSpace(userID)
+	text = normalizeImmediateCommandText(text)
+	if h == nil || userID == "" || text == "" {
+		return false, false
+	}
+	kind := classifyImmediateIMCommand(text)
+	if kind == imCommandUnknown {
+		return false, false
+	}
+	if kind != imCommandGoal || !h.hasActiveLoopForUser(userID) {
+		return true, false
+	}
+	verb, _ := splitGoalCommand(text)
+	if !goalSlashMutates(verb) {
+		return true, false
+	}
+	before := h.goalAddressFor(userID).goal
+	resp := h.handleGoalCommand(IMUserMessage{UserID: userID, Platform: "desktop", Text: text}, text)
+	if resp != nil && strings.TrimSpace(resp.Error) != "" {
+		log.Printf("[inject-guide-reference] goal command beside live turn user=%s err=%s", userID, truncateForLog(resp.Error, 120))
+	}
+	return true, goalSlashSettled(verb, before, h.goalAddressFor(userID).goal)
+}
 
 func buildGuideLaunchInjection(text string) string {
 	text = strings.TrimSpace(text)
@@ -1102,6 +1298,13 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	} else if ctx != nil && ctx.Kind == LoopKindBackground {
 		log.Printf("[agent-qos] foreground_skip_background owner=%q request_id=%q loop=%q slot=%s", userID, requestID, loopID, ctx.SlotKind.String())
 	}
+	// Tag the loop before it is visible. A pause that lands in this window
+	// would otherwise read an empty platform and treat a desktop turn as the
+	// goal's own continuation.
+	if ctx != nil {
+		ctx.Platform = platform
+		ctx.UserID = userID
+	}
 	// Write to per-session state (primary, race-free).
 	state := h.getSessionLoop(userID)
 	state.stateMu.Lock()
@@ -1127,8 +1330,6 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	h.lastUserID = userID
 	h.globalLoopMu.Unlock()
 
-	ctx.Platform = platform
-	ctx.UserID = userID
 	if h.traceService != nil && ctx.RunID != "" {
 		h.traceService.SetRunLoopID(ctx.RunID, ctx.ID)
 		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", h.runtimeTraceSummary(ctx, userText), "", "")

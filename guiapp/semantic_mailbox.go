@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -346,7 +347,21 @@ func semanticGovernedEffectPlanningRewrite(current *intent.ClassificationResult,
 	if lifted := semanticSchedulePayloadPlanningRewrite(current, userText); lifted != nil {
 		return lifted
 	}
-	return semanticMailboxDeletePlanningRewrite(current, userText)
+	if lifted := semanticMailboxDeletePlanningRewrite(current, userText); lifted != nil {
+		return lifted
+	}
+	return semanticMailboxSendPlanningRewrite(current, userText)
+}
+
+func logGovernedEffectPlanning(userID, reason string) {
+	switch {
+	case strings.Contains(reason, "schedule payload planning"):
+		log.Printf("[semantic-routing] schedule payload planning user=%q", userID)
+	case strings.Contains(reason, "mailbox send planning"):
+		log.Printf("[semantic-routing] mailbox send planning user=%q", userID)
+	default:
+		log.Printf("[semantic-routing] mailbox delete planning user=%q", userID)
+	}
 }
 
 // semanticSchedulePayloadPlanningRewrite projects a mail delete that is only
@@ -447,6 +462,92 @@ func semanticMailboxDeletePlanningClassification(result intent.ClassificationRes
 			out.Reason += "; "
 		}
 		out.Reason += "mailbox delete planning"
+	}
+	return out
+}
+
+// semanticMailboxSendPlanningRewrite lifts an email send off document
+// delivery and off a PDF-skill turn. document_delivery plans an IM file
+// handoff, which desktop policy denies, so a sentence that names a mailbox
+// never reaches SMTP. A request to generate a PDF and then send it keeps
+// document_generate as a companion and does not become a skill-market task:
+// the primary is mailbox_send, whose native tools are generate_pdf and
+// mailbox_send. Attaching a PDF that already exists does not regenerate it.
+func semanticMailboxSendPlanningRewrite(current *intent.ClassificationResult, userText string) *intent.ClassificationResult {
+	if current == nil {
+		return nil
+	}
+	query := acpInnerUserRequest(userText)
+	if tool.QueryWantsLocalFileDelete(query) || !mailbox.QueryWantsMessageSend(query) {
+		return nil
+	}
+	if mailboxSendPlanningSettled(*current, query) {
+		return nil
+	}
+	out := semanticMailboxSendPlanningClassification(*current, query)
+	return &out
+}
+
+func mailboxSendPlanningSettled(result intent.ClassificationResult, query string) bool {
+	if result.Primary != intent.LabelMailboxSend || result.Degraded || result.Confidence < imSemanticMinimumConfidence {
+		return false
+	}
+	if result.HasLabel(intent.LabelDocumentDelivery) || result.HasLabel(intent.LabelAttachmentDelivery) {
+		return false
+	}
+	return result.HasLabel(intent.LabelDocumentGenerate) == mailbox.QueryWantsNewPDF(query)
+}
+
+func semanticMailboxSendPlanningClassification(result intent.ClassificationResult, query string) intent.ClassificationResult {
+	out := semanticLookupClassificationForPlanning(result)
+	// The displaced primary is a companion. Dropping it would lose a lookup
+	// the sentence still needs, such as live_data beside a mailed report.
+	displaced := out.Primary
+	out.Primary = intent.LabelMailboxSend
+	out.ToolNames = nil
+	wantsPDF := mailbox.QueryWantsNewPDF(query)
+	incoming := make([]intent.IntentLabel, 0, len(out.Secondary)+1)
+	if displaced != "" {
+		incoming = append(incoming, displaced)
+	}
+	incoming = append(incoming, out.Secondary...)
+	kept := make([]intent.IntentLabel, 0, len(incoming)+1)
+	seen := map[intent.IntentLabel]struct{}{intent.LabelMailboxSend: {}}
+	seenGenerate := false
+	for _, label := range incoming {
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		switch label {
+		case intent.LabelDocumentDelivery, intent.LabelAttachmentDelivery:
+			continue
+		case intent.LabelDocumentGenerate:
+			if !wantsPDF {
+				continue
+			}
+			seenGenerate = true
+		}
+		// An unmapped companion such as workflow_task has no capability
+		// rule. Coverage then treats the whole send as managed and unmapped,
+		// and the turn is rejected before mailbox_send is granted.
+		if !label.IsNonCapabilityLabel() && len(imSemanticIntentRuleSet[label]) == 0 {
+			continue
+		}
+		seen[label] = struct{}{}
+		kept = append(kept, label)
+	}
+	if wantsPDF && !seenGenerate {
+		kept = append(kept, intent.LabelDocumentGenerate)
+	}
+	out.Secondary = kept
+	if out.Layer != 23 && out.Layer < 3 {
+		out.Layer = 3
+	}
+	if !strings.Contains(out.Reason, "mailbox send planning") {
+		if strings.TrimSpace(out.Reason) != "" {
+			out.Reason += "; "
+		}
+		out.Reason += "mailbox send planning"
 	}
 	return out
 }

@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,6 +34,21 @@ func TestHostOwnedGeneratePDFSucceeded(t *testing.T) {
 	}
 	if !HostOwnedGeneratePDFSucceeded(HostPublishedCurrentChannelFileNote) {
 		t.Fatal("host attach note was not recognized")
+	}
+	const pdfPath = `C:\task\workspace\天气.pdf`
+	slashPath := filepath.ToSlash(pdfPath)
+	mailed := HostPublishedMailboxAttachmentNote(pdfPath)
+	if !HostOwnedGeneratePDFSucceeded(mailed) || !strings.HasSuffix(mailed, "\n"+slashPath) || !strings.Contains(mailed, "mailbox_send") || !strings.Contains(mailed, "This is not a send.") {
+		t.Fatalf("mailbox note = %q", mailed)
+	}
+	if slashPath != pdfPath && strings.Contains(mailed, pdfPath) {
+		t.Fatalf("backslash path is not a JSON string: %q", mailed)
+	}
+	if strings.Contains(mailed, "send_file") || strings.Contains(mailed, "deliver it through") {
+		t.Fatalf("mailbox note names the chat send tool: %q", mailed)
+	}
+	if HostPublishedMailboxAttachmentNote("  ") != HostPublishedCurrentChannelFileNote {
+		t.Fatal("blank mailbox path changed the chat note")
 	}
 	if !HostOwnedGeneratePDFSucceeded("PDF artifact published; deliver it through the current-channel file adapter.") {
 		t.Fatal("success marker was not recognized")

@@ -910,6 +910,75 @@ func TestToolPlannerLookupGenerateAfterAndExplainTrace(t *testing.T) {
 	}
 }
 
+func TestToolPlannerMailboxSendWaitsForTheGeneratedPDF(t *testing.T) {
+	registry := NewCapabilityRegistry("v1")
+	for _, descriptor := range []CapabilityDescriptor{
+		{ID: "document.generate.file", Version: "v1", Qualifiers: map[string]QualifierConstraint{"format": {Values: []string{"pdf"}, Required: true}}, Effects: []EffectClass{EffectLocalMutation}},
+		{ID: "artifact.deliver.current_channel", Version: "v1", Qualifiers: map[string]QualifierConstraint{"format": {Values: []string{"file"}, Required: true}}, Effects: []EffectClass{EffectExternalEffect}},
+		{ID: CapabilityMessageSendMailbox, Version: "v1", Effects: []EffectClass{EffectExternalEffect}},
+	} {
+		if err := registry.Register(descriptor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	generate := semanticProvider("generate_adapter", "document.generate.file", map[string]string{"format": "pdf"}, EffectLocalMutation)
+	generate.Produces = []ArtifactContract{{Kind: "document", MIMEType: "application/pdf", Required: true}}
+	deliver := semanticProvider("deliver_adapter", "artifact.deliver.current_channel", map[string]string{"format": "file"}, EffectExternalEffect)
+	deliver.Consumes = []ArtifactContract{{Kind: "document", MIMEType: "application/pdf", Required: true}}
+	send := semanticProvider("mailbox_send", CapabilityMessageSendMailbox, nil, EffectExternalEffect)
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "task-1", TurnID: "turn-1", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{generate, deliver, send}),
+		Needs: []CapabilityNeed{
+			{ID: "generate", Capability: "document.generate.file", Qualifiers: map[string]string{"format": "pdf"}, Required: true},
+			{ID: "deliver", Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "file"}, Required: true},
+			{ID: "send", Capability: CapabilityMessageSendMailbox, Required: true},
+		},
+	})
+	if err != nil || len(plan.Unmet) != 0 || len(plan.Selections) != 3 {
+		t.Fatalf("plan unmet=%#v selections=%d err=%v", plan.Unmet, len(plan.Selections), err)
+	}
+	var sendSel PlannedSelection
+	for _, selection := range plan.Selections {
+		if selection.NeedID == "send" {
+			sendSel = selection
+		}
+	}
+	if !requirementListed(sendSel.Requires, "selection:generate") || requirementListed(sendSel.Requires, "selection:deliver") {
+		t.Fatalf("send Requires=%#v", sendSel.Requires)
+	}
+	for _, selection := range plan.ReadySelections(nil) {
+		if selection.NeedID == "send" {
+			t.Fatal("mailbox send was listed before the PDF existed")
+		}
+	}
+	ready := plan.ReadySelections(map[string]bool{"selection:generate": true})
+	found := false
+	for _, selection := range ready {
+		if selection.NeedID == "send" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("mailbox send stayed blocked after generate completed")
+	}
+	alone, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "task-1", TurnID: "turn-2", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{send}),
+		Needs:      []CapabilityNeed{{ID: "send", Capability: CapabilityMessageSendMailbox, Required: true}},
+	})
+	if err != nil || len(alone.Selections) != 1 || len(alone.Selections[0].Requires) != 0 {
+		t.Fatalf("send without a PDF must stay ready: %#v err=%v", alone.Selections, err)
+	}
+}
+
+func requirementListed(requirements []string, want string) bool {
+	for _, requirement := range requirements {
+		if requirement == want {
+			return true
+		}
+	}
+	return false
+}
+
 // A required lookup family with a declared MaxInvocations budget must not
 // hold generate_pdf hostage to unused refinements. Production 2026-08-29:
 // search+PDF planned five required information.search.web siblings and

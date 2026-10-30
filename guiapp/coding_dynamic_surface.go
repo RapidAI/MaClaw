@@ -377,6 +377,8 @@ func (c *codingSubAgentCallbacks) OnToolSurfaceAttemptStarted(agent.ToolCallExec
 // OnToolSurfaceAttemptFinished quarantines a model-visible legacy static
 // surface when a request may have left the host without a safely consumed
 // response. It must not be used to infer provider correlation or replay.
+// A host-owned steer is not that case: the resident belt stays listed, and
+// the discarded attempt's calls still fail the epoch fence.
 func (c *codingSubAgentCallbacks) OnToolSurfaceAttemptFinished(_ agent.ToolCallExecutionContext, delivery agent.ToolSurfaceDeliveryState) {
 	if delivery == agent.ToolSurfaceAmbiguousDelivery {
 		c.quarantineStaticCompatibilitySurface()

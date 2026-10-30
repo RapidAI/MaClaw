@@ -835,7 +835,6 @@
   padding-bottom: 14px;
   border-bottom: 1px solid var(--theme-border-subtle);
 }
-.workflows-page__title,
 .workflows-page__subtitle { text-align: left; }
 .workflows-page__search-wrap { width: min(360px, 100%); }
 .workflows-page__tile { border-radius: var(--radius-md); box-shadow: var(--shadow-sm); }
