@@ -296,6 +296,11 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 	sess, run, msg, err := s.svc.SendMessage(shotCtx, p, shotID, in)
 	imageCount := 0
 	fileCount := 0
+	if err == nil && msg != nil && run != nil {
+		// Hub bot messages arrive here: a turn that delegated replies with
+		// one sentence naming who has the task (desktop_delegate_reply.go).
+		msg.Content = desktopReplyAfterDelegation(shotID, run.ID, run.SessionID, msg.Content)
+	}
 	if err == nil {
 		imageCount = attachDesktopShot(msg, shot)
 		fileCount = attachDesktopFile(msg, shot)
