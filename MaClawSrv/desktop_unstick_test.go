@@ -117,3 +117,28 @@ func TestDesktopStepTimeoutKeepsFilledPage(t *testing.T) {
 		t.Fatalf("after navigate a hung tab is reopened again: asked=%d err=%v", asked, err)
 	}
 }
+
+// 10-31: "#话题" typed into the Xiaohongshu body left the topic dropdown
+// over 发布. A fill with # or @ tells the bot to close that menu first.
+func TestDesktopFillWithHashtagWarnsAboutTheMenu(t *testing.T) {
+	oldOp := operateDesktopFunc
+	defer func() { operateDesktopFunc = oldOp }()
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		return "has=yes", nil
+	}
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u1"}
+	out, _ := operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "rich_fill", "text": "秋天喝茶 #乌龙茶 #日常"})
+	if !strings.Contains(out, "Escape") {
+		t.Fatalf("no menu note: %q", out)
+	}
+	out, _ = operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "batch", "plan": []any{map[string]any{"action": "rich_fill", "text": "hi @小明"}}})
+	if !strings.Contains(out, "Escape") {
+		t.Fatalf("batch: %q", out)
+	}
+	for _, text := range []string{"第1步 C# 语言", "mail a@b.com", "普通正文"} {
+		out, _ = operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "rich_fill", "text": text})
+		if strings.Contains(out, "Escape") {
+			t.Fatalf("%q: false note", text)
+		}
+	}
+}

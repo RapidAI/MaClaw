@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -98,6 +99,9 @@ func operateDesktopWithTimeout(ctx context.Context, scope agentruntime.Scope, ar
 				}
 				return r.out + "\n" + note, nil
 			}
+		}
+		if r.err == nil {
+			r.out += desktopMenuAfterTypingNote(action, args)
 		}
 		return r.out, r.err
 	case <-stepCtx.Done():
@@ -276,4 +280,26 @@ func desktopUnstickDue(scope agentruntime.Scope) bool {
 	}
 	desktopUnstickLast[key] = time.Now()
 	return true
+}
+
+// desktopMenuTriggerRe: typed text that opens a site's topic, mention or
+// autocomplete menu. 10-31 Xiaohongshu: "#话题" in the body left the topic
+// dropdown open over 发布; the bot could not find the button and asked the
+// person to take over.
+var desktopMenuTriggerRe = regexp.MustCompile(`(^|[\s，。,.!?！？])[#＃@][^\s#＃@]`)
+
+func desktopMenuAfterTypingNote(action string, args map[string]any) string {
+	if action != "rich_fill" && action != "type" && action != "batch" {
+		return ""
+	}
+	text := desktopArg(args, "text")
+	if action == "batch" {
+		if b, err := json.Marshal(args["plan"]); err == nil {
+			text = string(b)
+		}
+	}
+	if !desktopMenuTriggerRe.MatchString(text) {
+		return ""
+	}
+	return "\nnote: the text has # or @, which opens a topic/mention dropdown on many sites (Xiaohongshu, Weibo, Douyin). Before looking for the next button: pick the topic from that menu or press Escape / click a blank area of the page to close it, then probe again; an open dropdown hides buttons such as 发布."
 }

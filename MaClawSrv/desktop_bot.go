@@ -36,7 +36,7 @@ var desktopPublishOnlyTakeoverRe = regexp.MustCompile(`(?i)(亲自|手动|帮忙
 // button. Missing elements are not a login wall.
 var desktopElementMissingRe = regexp.MustCompile(`(?i)找不到|拿不到|定位不到|没找到|未找到|看不到|被(遮挡|挡住|覆盖)|弹窗|浮层|not found|can(no|')t find|could not find|no element|covered|overlay|popup`)
 
-const desktopElementMissingRefusal = "refused: takeover_for_missing_element — a control you cannot find is not a login wall. A site popup or overlay (tips, 效率工具/标签 guide, cookie banner, dialog) often covers it: press Escape, click its 关闭/×/我知道了/跳过, scroll, then probe the CURRENT page again without a filter. Do not navigate or reload; the filled content stays. Ask for a takeover only with positive evidence on the page of a login form, QR code, captcha or verification."
+const desktopElementMissingRefusal = "refused: takeover_for_missing_element — a control you cannot find is not a login wall. A site popup or overlay (tips, 效率工具/标签 guide, cookie banner, dialog) often covers it: press Escape, click its 关闭/×/我知道了/跳过 (a #topic or @mention dropdown opened by typing closes with Escape or a click on a blank area), scroll, then probe the CURRENT page again without a filter. Do not navigate or reload; the filled content stays. Ask for a takeover only with positive evidence on the page of a login form, QR code, captcha or verification."
 
 var desktopPublishLoginRe = regexp.MustCompile(`(?i)登录|验证码|扫码|验证|captcha|log ?in|sign ?in|2fa`)
 
