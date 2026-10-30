@@ -120,7 +120,7 @@ func TestDesktopDelegatePostsToHub(t *testing.T) {
 	inst := agentservice.Instance{ID: "inst_main", Metadata: map[string]string{"hub_user_id": "alice", "hub_tenant_id": "tenant-a"}}
 	req := agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: "run_m"}, Input: agentservice.ExecuteRequest{Instance: inst}}
 	out, err := desktopDelegate(context.Background(), req, map[string]any{"target": "发布员", "message": "导出本月订单"})
-	if err != nil || !strings.Contains(out, "note_d") {
+	if err != nil || strings.Contains(out, "note_d") || !strings.Contains(out, "发布员") {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 	if got["target"] != "发布员" || got["text"] != "导出本月订单" || got["instance_id"] != "inst_main" || got["key"] == "" {

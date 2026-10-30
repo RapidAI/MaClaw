@@ -323,7 +323,10 @@ func desktopDelegate(ctx context.Context, request agentruntime.TurnRequest, args
 	// A fact, not instructions: models quoted the old imperative English
 	// receipt to the person verbatim ("工具原样返回: ... Do not wait in this
 	// turn"). How to reply after a handoff lives in the prompt.
-	return fmt.Sprintf("DELEGATED to=%s order=%v result=arrives_in_mailbox_and_feed", target, out["id"]), nil
+	// No order id and no key=value text: papers 2026-10-30 the main bot still
+	// quoted "DELEGATED to=... order=note_..." as 工具原样返回. The id lives in
+	// the mailbox and the feed; this turn only needs who took the task.
+	return fmt.Sprintf("%s has the task. Its result reaches the person by itself.", target), nil
 }
 
 const (
