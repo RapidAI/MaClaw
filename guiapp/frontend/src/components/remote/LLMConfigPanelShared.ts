@@ -120,6 +120,10 @@ export function quickFillModelCatalog(previous: { name?: string; models?: string
 
 export const KNOWN_OPENAI_ENDPOINTS: KnownOpenAIEndpoint[] = [
     { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-5.4", context_length: 128000 },
+    // AI Studio API key. This is pay-as-you-go, not a Google AI Pro subscription login.
+    { name: "Google AI Studio", url: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-3.8-flash", models: ["gemini-3.8-flash", "gemini-4-argon"], context_length: 1000000, protocol: "openai" },
+    // Native generateContent. API key, pay-as-you-go, not a Google AI Pro subscription.
+    { name: "Google Gemini", url: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-3.8-flash", models: ["gemini-3.8-flash", "gemini-4-argon"], context_length: 1000000, protocol: "google" },
 	{ name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
 	{ name: "Qwen", url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.8-flash", context_length: 400000 },
     { name: "\u667a\u8c31\u9f99\u867e", url: "https://open.bigmodel.cn/api/coding/paas/v4", model: "glm-5.1", context_length: 180000 },

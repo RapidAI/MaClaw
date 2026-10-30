@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -47,7 +50,11 @@ import (
 // craft_tool closed for the turn.
 //
 // Lookups (weather, search, mail, a single file delete) are not complex
-// tasks, so they neither bind a skill nor search the market.
+// tasks, so they neither bind a skill nor search the market. A trigger
+// match on a host procedure is still the execution plan on a full
+// non-operational surface: the markdown is the procedure, so the turn
+// publishes the host file tools instead of binding the runner step or
+// opening the market.
 
 const (
 	skillAdmissionMinScore = 10
@@ -98,6 +105,14 @@ func (h *IMMessageHandler) skillAdmissionForTurn(ctx *LoopContext, userText stri
 		return skillAdmissionDecision{}
 	}
 	if !complexSkillTask(ctx, text) {
+		// The label is not a skill task. A trigger-matched host procedure
+		// is still this turn's plan: the vision fallthrough that injected
+		// its SKILL.md is one of these turns, and binding nothing there
+		// left the model with a lookup tool and no executor.
+		if guided := h.admitGuidedProcedureIdentity(ctx, text); len(guided) > 0 {
+			log.Printf("[skill-admission] mode=guided task=%q skill=%s", truncateLogText(text, 60), guided[0].Name)
+			return skillAdmissionDecision{Mode: skillAdmissionGuided, Guided: guided}
+		}
 		return skillAdmissionDecision{}
 	}
 	exec := h.getSkillExecutor()
@@ -440,6 +455,14 @@ func skillCompleteForAdmission(entry corelib.NLSkillEntry) (guided, runnable boo
 	default:
 		return false, false
 	}
+	// The markdown is the procedure. Classify that before the shell-browser
+	// rejection. That rejection answers whether a bound runner step may
+	// launch its own browser. A multi-script procedure is not that step,
+	// even when one of its scripts imports a browser library. The runner
+	// still refuses to execute the skill as a bound step.
+	if skillHostProcedure(entry) {
+		return true, false
+	}
 	if isShellBrowserAutomationSkillEntry(entry) {
 		return false, false
 	}
@@ -451,11 +474,135 @@ func skillCompleteForAdmission(entry corelib.NLSkillEntry) (guided, runnable boo
 	if learnedSkillMissingParameterContract(entry.Source, entry.Steps) {
 		return false, false
 	}
-	if skill.IsKnowledgeSkillType(entry.Type) || skill.IsInstructionOnlySkillType(entry.Type) {
+	if skill.IsKnowledgeSkillType(entry.Type) {
+		return false, false
+	}
+	if skill.IsInstructionOnlySkillType(entry.Type) {
 		return false, false
 	}
 	report := skill.AssessRunnerCompatibility(&entry, skill.RunnerBackendGUI)
 	return false, report.Runnable && !report.AgentGuidedOnly
+}
+
+// admitGuidedProcedureIdentity is the execution plan for a full turn whose
+// label did not open skill admission. It keeps only a guided match. A
+// runnable recipe and the skill market stay closed: this path exists so a
+// trigger-matched procedure is executed, not so a general turn grows a
+// second program.
+func (h *IMMessageHandler) admitGuidedProcedureIdentity(ctx *LoopContext, userText string) []NLSkillDefinition {
+	if h == nil {
+		return nil
+	}
+	text := skillAdmissionTaskText(userText)
+	if text == "" {
+		return nil
+	}
+	profile := executionProfileFromLoop(ctx)
+	if !executionSurfaceIsFull(profile) || operationalExecutionProfile(profile) {
+		return nil
+	}
+	exec := h.getSkillExecutor()
+	if exec == nil {
+		return nil
+	}
+	owner := ""
+	if ctx != nil {
+		owner = ctx.UserID
+	}
+	_, guided := admitLocalSkills(exec, text, h.skillExperienceDomainForOwner(owner))
+	return guided
+}
+
+// skillHostProcedure reports that the installed markdown, not the runner
+// program, is how this skill runs. At most one runner step cannot be a
+// multi-script workflow. Two bash or sh fences in SKILL.md or README are
+// that workflow. Learned traces and knowledge entries are not author
+// procedures. This is not IsAgentGuidedWorkflowSkill: that heuristic is the
+// imported multi-agent craft_tool adapter and must stay narrow.
+//
+// A browser library inside the skill's own scripts does not change this
+// answer. The shell-browser rejection stays on the runner and on every
+// surface that would bind the single step.
+func skillHostProcedure(entry corelib.NLSkillEntry) bool {
+	if len(entry.Steps) > 1 || learnedSkillSource(entry.Source) || skill.IsKnowledgeSkillType(entry.Type) {
+		return false
+	}
+	// The installed markdown is the procedure. Cache the fence scan by the
+	// file's size and mtime so a prompt and every later tool publish do not
+	// read it again. A rewrite changes one of those and is read again.
+	// An empty or missing file falls through to the entry body, which is
+	// what an in-memory skill carries instead of a directory.
+	if guided, ok := cachedSkillMarkdownHostProcedure(entry.SkillDir); ok {
+		return guided
+	}
+	return skillMarkdownHostProcedure(strings.TrimSpace(entry.Content))
+}
+
+type skillMarkdownProcedureCacheEntry struct {
+	path    string
+	size    int64
+	modNano int64
+	guided  bool
+}
+
+var skillMarkdownProcedureCache sync.Map
+
+func cachedSkillMarkdownHostProcedure(skillDir string) (guided bool, ok bool) {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return false, false
+	}
+	key := filepath.Clean(skillDir)
+	if raw, hit := skillMarkdownProcedureCache.Load(key); hit {
+		ent := raw.(skillMarkdownProcedureCacheEntry)
+		info, err := os.Stat(ent.path)
+		if err == nil && !info.IsDir() && info.Size() == ent.size && info.ModTime().UnixNano() == ent.modNano {
+			return ent.guided, true
+		}
+	}
+	path := findSkillMarkdownDocPath(skillDir)
+	if path == "" {
+		return false, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false, false
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return false, false
+	}
+	guided = skillMarkdownHostProcedure(content)
+	skillMarkdownProcedureCache.Store(key, skillMarkdownProcedureCacheEntry{
+		path: path, size: info.Size(), modNano: info.ModTime().UnixNano(), guided: guided,
+	})
+	return guided, true
+}
+
+func skillMarkdownHostProcedure(content string) bool {
+	fences := 0
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if !strings.HasPrefix(trimmed, "```") {
+			continue
+		}
+		lang := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "```")))
+		if i := strings.IndexAny(lang, " \t"); i >= 0 {
+			lang = lang[:i]
+		}
+		if lang != "bash" && lang != "sh" {
+			continue
+		}
+		fences++
+		if fences >= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 func skillAdmissionAlias(entry corelib.NLSkillEntry, used map[string]bool) string {
@@ -541,12 +688,12 @@ func (h *IMMessageHandler) appendAdmittedAgentGuidedSkillDocs(b *strings.Builder
 	}
 	matched := make([]matchedKnowledgeSkill, 0, len(decision.Guided))
 	for _, def := range decision.Guided {
-		content := skillDocContentForInjection(def)
+		content, docPath := skillDocFileForInjection(def)
 		if content == "" {
 			continue
 		}
 		matched = append(matched, matchedKnowledgeSkill{
-			Name: def.Name, Content: content, ParamSchema: buildParamSchemaForSkill(def), Score: 1, AgentGuided: true,
+			Name: def.Name, Content: content, DocPath: docPath, ParamSchema: buildParamSchemaForSkill(def), Score: 1, AgentGuided: true,
 		})
 	}
 	writeMatchedSkillDocs(b, matched, defaultKnowledgeSkillTokenBudget)
@@ -559,6 +706,7 @@ func (c *sharedAgentLoopCallbacks) clearSkillAdmission() {
 	c.admittedSkillBindings = nil
 	c.skillRemoteSearchOffered = false
 	c.agentGuidedHostTools = false
+	c.hostProcedureDir = ""
 }
 
 func (c *sharedAgentLoopCallbacks) publishAdmittedSkillTools(userText string) {
@@ -580,6 +728,9 @@ func (c *sharedAgentLoopCallbacks) publishAdmittedSkillTools(userText string) {
 		}
 	case skillAdmissionGuided:
 		c.agentGuidedHostTools = true
+		if len(decision.Guided) > 0 {
+			c.hostProcedureDir = c.handler.hostProcedureDirectory(decision.Guided[0].Name)
+		}
 		defs = append(defs, c.handler.agentGuidedHostToolDefinitions()...)
 	case skillAdmissionRemote:
 		c.skillRemoteSearchOffered = true
@@ -588,6 +739,65 @@ func (c *sharedAgentLoopCallbacks) publishAdmittedSkillTools(userText string) {
 		return
 	}
 	c.appendDiscoveredMCPDefs(defs)
+}
+
+// publishHostProcedureTools is the non-semantic request surface. The name
+// router can be closed while the prompt still injected a matched procedure,
+// and this surface must not grow bound skill_* aliases or a market search.
+// A guided identity match publishes the host file tools that run that
+// procedure. A full non-operational turn whose phase already selected an
+// agent-guided procedure does too: a short continuation no longer contains
+// the trigger, and a vision fallthrough has no name router to put the tools
+// back. A light surface and an operational continuation keep their own list.
+// Anything else clears admission, which is the previous contract.
+func (c *sharedAgentLoopCallbacks) publishHostProcedureTools(userText string) {
+	c.clearSkillAdmission()
+	if c == nil || c.handler == nil || c.foregroundHandoffOnly() {
+		return
+	}
+	profile := executionProfileFromLoop(c.loopCtx)
+	if !executionSurfaceIsFull(profile) || operationalExecutionProfile(profile) {
+		return
+	}
+	if len(c.handler.admitGuidedProcedureIdentity(c.loopCtx, userText)) == 0 && c.phase.SkillMode != skillPreferenceAgentGuided {
+		return
+	}
+	c.agentGuidedHostTools = true
+	c.hostProcedureDir = c.handler.hostProcedureDirectory(c.phase.PreferredSkillName)
+	if c.hostProcedureDir == "" {
+		if guided := c.handler.admitGuidedProcedureIdentity(c.loopCtx, userText); len(guided) > 0 {
+			c.hostProcedureDir = c.handler.hostProcedureDirectory(guided[0].Name)
+		}
+	}
+	c.appendDiscoveredMCPDefs(c.handler.agentGuidedHostToolDefinitions())
+}
+
+// hostProcedureDirectory is the absolute install directory of a host procedure.
+// An imported workflow, a learned trace, and a missing directory are empty:
+// those turns must not rewrite bash.
+func (h *IMMessageHandler) hostProcedureDirectory(name string) string {
+	name = strings.TrimSpace(name)
+	if h == nil || name == "" {
+		return ""
+	}
+	exec := h.getSkillExecutor()
+	if exec == nil {
+		return ""
+	}
+	for _, entry := range exec.loadSkills() {
+		if strings.TrimSpace(entry.Name) != name {
+			continue
+		}
+		if !skillHostProcedure(entry) {
+			return ""
+		}
+		dir := strings.TrimSpace(entry.SkillDir)
+		if dir == "" || !filepath.IsAbs(dir) {
+			return ""
+		}
+		return filepath.Clean(dir)
+	}
+	return ""
 }
 
 func (h *IMMessageHandler) agentGuidedHostToolDefinitions() []map[string]interface{} {
@@ -804,8 +1014,16 @@ func (c *sharedAgentLoopCallbacks) noteGuidedSkillUseResult(name, text string) {
 }
 
 func (c *sharedAgentLoopCallbacks) skillSurfaceAdmitted() bool {
-	return c != nil && c.semanticSurface != nil &&
-		(len(c.admittedSkillBindings) > 0 || c.agentGuidedHostTools || c.skillRemoteSearchOffered)
+	if c == nil {
+		return false
+	}
+	// Host file tools are the admitted procedure on a vision fallthrough,
+	// which has no semantic surface. Bound aliases and market search are
+	// not published there, so they still require the managed surface.
+	if c.agentGuidedHostTools {
+		return true
+	}
+	return c.semanticSurface != nil && (len(c.admittedSkillBindings) > 0 || c.skillRemoteSearchOffered)
 }
 
 func (c *sharedAgentLoopCallbacks) skillAdmissionIsGuided() bool {

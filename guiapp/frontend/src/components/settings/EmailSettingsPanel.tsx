@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
+import { localizeMailboxServerText } from '../../i18n/mailboxServerText';
 import { useDialog } from '../CustomDialog';
 import { IconMail } from '../ai/WorkbenchIcons';
 import { MailboxManageDialog } from './MailboxManageDialog';
@@ -200,7 +201,7 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
     };
     const report = (text: string, tone: 'ok' | 'err') => {
         setNoticeTone(tone);
-        setNotice(text);
+        setNotice(localizeMailboxServerText(lang, text));
         requestAnimationFrame(() => requestAnimationFrame(bringNoticeIntoView));
     };
 
@@ -238,9 +239,9 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
     useEffect(() => {
         void reload().catch(err => {
             setNoticeTone('err');
-            setNotice(String(err?.message || err));
+            setNotice(localizeMailboxServerText(lang, String(err?.message || err)));
         });
-    }, [reload]);
+    }, [reload, lang]);
 
     const resetAccount = () => {
         editingIdRef.current = '';
@@ -441,9 +442,9 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                     from_address: side === 'outbound' ? draft.from_address.trim() : '',
                     use_saved_secret: editingId !== '' && !draft.password.trim(),
                 }, side);
-                setDraftTests(prev => ({ ...prev, [side]: { sig, tone: 'ok', text } }));
+                setDraftTests(prev => ({ ...prev, [side]: { sig, tone: 'ok', text: localizeMailboxServerText(lang, text) } }));
             } catch (err: any) {
-                setDraftTests(prev => ({ ...prev, [side]: { sig, tone: 'err', text: String(err?.message || err) } }));
+                setDraftTests(prev => ({ ...prev, [side]: { sig, tone: 'err', text: localizeMailboxServerText(lang, String(err?.message || err)) } }));
             }
         });
     };

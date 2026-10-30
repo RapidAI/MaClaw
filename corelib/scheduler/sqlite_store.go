@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -67,21 +65,9 @@ func (s *sqliteTaskStore) conn() (*sql.DB, error) {
 	} else {
 		db.SetMaxIdleConns(1)
 	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS scheduled_tasks (
-		id TEXT PRIMARY KEY,
-		position INTEGER NOT NULL,
-		task_json BLOB NOT NULL,
-		updated_at TEXT NOT NULL
-	)`); err != nil {
+	if err := ensureScheduledTaskSchema(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("scheduler: task database schema: %w", err)
-	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schedule_meta (
-		key TEXT PRIMARY KEY,
-		value TEXT NOT NULL
-	)`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("scheduler: task database schema: %w", err)
+		return nil, err
 	}
 	s.db = db
 	return db, nil
@@ -99,7 +85,8 @@ func (s *sqliteTaskStore) close() {
 	}
 }
 
-func (s *sqliteTaskStore) legacyImportDone() (bool, error) {
+// LegacyTaskImportDone reports whether scheduled_tasks.json was already copied.
+func (s *sqliteTaskStore) LegacyTaskImportDone() (bool, error) {
 	if s == nil {
 		return false, fmt.Errorf("scheduler: task store is required")
 	}
@@ -109,18 +96,11 @@ func (s *sqliteTaskStore) legacyImportDone() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var value string
-	err = db.QueryRow(`SELECT value FROM schedule_meta WHERE key = 'legacy_json_imported'`).Scan(&value)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("scheduler: read import marker: %w", err)
-	}
-	return value == "1", nil
+	return TaskLegacyImportDone(db)
 }
 
-func (s *sqliteTaskStore) markLegacyImportDone() error {
+// MarkLegacyTaskImportDone records that the pre-migration file has been read.
+func (s *sqliteTaskStore) MarkLegacyTaskImportDone() error {
 	if s == nil {
 		return fmt.Errorf("scheduler: task store is required")
 	}
@@ -130,6 +110,24 @@ func (s *sqliteTaskStore) markLegacyImportDone() error {
 	if err != nil {
 		return err
 	}
+	return MarkTaskLegacyImportDone(db)
+}
+
+// TaskLegacyImportDone reads the shared schedule_meta marker.
+func TaskLegacyImportDone(db *sql.DB) (bool, error) {
+	var value string
+	err := db.QueryRow(`SELECT value FROM schedule_meta WHERE key = 'legacy_json_imported'`).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("scheduler: read import marker: %w", err)
+	}
+	return value == "1", nil
+}
+
+// MarkTaskLegacyImportDone writes the shared schedule_meta marker.
+func MarkTaskLegacyImportDone(db *sql.DB) error {
 	if _, err := db.Exec(`INSERT INTO schedule_meta(key, value) VALUES('legacy_json_imported', '1') ON CONFLICT(key) DO NOTHING`); err != nil {
 		return fmt.Errorf("scheduler: mark import: %w", err)
 	}
@@ -147,24 +145,7 @@ func (s *sqliteTaskStore) LoadScheduledTasks() ([]ScheduledTask, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT task_json FROM scheduled_tasks ORDER BY position ASC, id ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []ScheduledTask{}
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var task ScheduledTask
-		if err := json.Unmarshal(raw, &task); err != nil {
-			return nil, err
-		}
-		out = append(out, task)
-	}
-	return out, rows.Err()
+	return loadScheduledTaskRows(db, true)
 }
 
 // SaveScheduledTasks replaces the task rows.
@@ -174,58 +155,9 @@ func (s *sqliteTaskStore) SaveScheduledTasks(tasks []ScheduledTask) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	encoded := make([][]byte, len(tasks))
-	for i, task := range tasks {
-		raw, err := json.Marshal(task)
-		if err != nil {
-			return err
-		}
-		encoded[i] = raw
-	}
 	db, err := s.conn()
 	if err != nil {
 		return err
 	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM scheduled_tasks`); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := insertScheduledTasks(tx, tasks, encoded, now); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	return tx.Commit()
-}
-
-func insertScheduledTasks(tx *sql.Tx, tasks []ScheduledTask, encoded [][]byte, now string) error {
-	const maxRows = 200
-	for start := 0; start < len(tasks); start += maxRows {
-		end := start + maxRows
-		if end > len(tasks) {
-			end = len(tasks)
-		}
-		var query strings.Builder
-		query.WriteString(`INSERT INTO scheduled_tasks(id, position, task_json, updated_at) VALUES `)
-		args := make([]any, 0, (end-start)*4)
-		for i := start; i < end; i++ {
-			if i > start {
-				query.WriteByte(',')
-			}
-			query.WriteString(`(?,?,?,?)`)
-			key := tasks[i].ID
-			if key == "" {
-				key = fmt.Sprintf("~%d", i)
-			}
-			args = append(args, key, i, encoded[i], now)
-		}
-		if _, err := tx.Exec(query.String(), args...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return saveScheduledTaskRows(db, tasks, true)
 }

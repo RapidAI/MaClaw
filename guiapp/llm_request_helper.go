@@ -568,6 +568,27 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	if len(requestOpts) > 0 {
 		opts = requestOpts[0]
 	}
+	if cfg.IsGoogleProtocol() {
+		parsed, err := llm.DoGoogleRequestWithOptions(ctx, cfg, messages, client, llm.GoogleGenerateRequestOptions{
+			ResponseFormat: opts.ResponseFormat,
+		})
+		if err != nil {
+			var httpErr *llm.HTTPStatusError
+			if errors.As(err, &httpErr) && httpErr != nil && len(httpErr.Body) > 0 {
+				body := strings.TrimSpace(string(httpErr.Body))
+				if len(body) > 512 {
+					body = body[:512]
+				}
+				return nil, fmt.Errorf("%w %s", err, body)
+			}
+			return nil, err
+		}
+		if parsed == nil || len(parsed.Choices) == 0 {
+			return nil, fmt.Errorf("no response from model")
+		}
+		msg := parsed.Choices[0].Message
+		return finishSimpleLLMText(msg.Content, msg.ReasoningContent, parsed.Choices[0].FinishReason), nil
+	}
 	// Preserve the mature simple-request path for ordinary callers.  Only the
 	// control-plane caller below opts into a response contract, so this change
 	// cannot silently alter compatibility retries for summaries, OCR, etc.

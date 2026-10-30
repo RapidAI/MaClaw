@@ -378,7 +378,8 @@ func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
 	if _, err := store.StartAttempt(remote.TaskID, "worker", leaseStillOpen(now), PolicySnapshot{ProjectRoot: "/home/testprj-2", Mode: "remote"}, now); err != nil {
 		t.Fatal(err)
 	}
-	// Terminal local run on F:\test-prog must not surface.
+	// A finished local run stays visible as completed, so a later list merge
+	// can replace a stale failure instead of treating the row as untouched.
 	done, err := store.CreateTask(Task{TaskID: "done-run", ProjectRef: `F:\test-prog`, Mode: "local"})
 	if err != nil {
 		t.Fatal(err)
@@ -434,8 +435,8 @@ func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
 	if got := active["/home/prj8"]; got != string(TaskCompleted) {
 		t.Fatalf("untracked content edit status=%q, want completed", got)
 	}
-	if _, ok := active[`F:\test-prog`]; ok {
-		t.Fatalf("completed ref surfaced: %v", active)
+	if got := active[`F:\test-prog`]; got != string(TaskCompleted) {
+		t.Fatalf("completed ref status=%q, want completed", got)
 	}
 
 	// A failed turn is not a completed write. The task list has no other
@@ -533,8 +534,8 @@ func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := active[`F:\goaltest`]; ok {
-		t.Fatalf("later success or failed child surfaced: %v", active)
+	if got := active[`F:\goaltest`]; got != string(TaskCompleted) {
+		t.Fatalf("later success status=%q, want completed; a failed child must not put it back", got)
 	}
 }
 
@@ -846,11 +847,25 @@ func TestSQLiteStoreListActiveTaskStatusesSuppressesStaleInterrupted(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := active["/home/recovered"]; ok {
-		t.Fatalf("stale interrupted ref surfaced after a later completed run: %v", active)
+	if got := active["/home/recovered"]; got != string(TaskCompleted) {
+		t.Fatalf("later completed run status=%q, want completed over the stale interrupt", got)
 	}
 	if got := active["/home/latest-broke"]; got != string(TaskInterrupted) {
 		t.Fatalf("newest interrupted run status=%q, want interrupted", got)
+	}
+
+	// The sidebar compares these instants with an unfinished slot. The time
+	// has to be the row that won, not the older sibling on the same directory.
+	listed, updated, _, err := store.ReadTaskListUpdated(newer.Add(2 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed["/home/recovered"] != string(TaskCompleted) || !updated["/home/recovered"].Equal(newer) {
+		t.Fatalf("completed row status=%q time=%s, want completed at %s", listed["/home/recovered"], updated["/home/recovered"], newer)
+	}
+	leaseEnd := newer.Add(time.Minute)
+	if listed["/home/latest-broke"] != string(TaskInterrupted) || !updated["/home/latest-broke"].Equal(leaseEnd) {
+		t.Fatalf("interrupt row status=%q time=%s, want interrupted at %s", listed["/home/latest-broke"], updated["/home/latest-broke"], leaseEnd)
 	}
 }
 

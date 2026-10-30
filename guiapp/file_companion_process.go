@@ -133,6 +133,11 @@ type fileCompanionRuntime struct {
 	// appearanceWatch is set once the companion process is watching the shared
 	// UI appearance file. The main process writes that file; this process does not.
 	appearanceWatch bool
+	// languageWatch is set once the companion process is watching ui-language.json.
+	// The main process writes that file from SetLanguage. languageWatcher is
+	// closed by stopFileCompanionLanguageWatcher; the read loop does not close it.
+	languageWatch   bool
+	languageWatcher *fsnotify.Watcher
 }
 
 type recordedCompanionEvent struct {
@@ -778,6 +783,7 @@ func (a *App) fileCompanionStartup(ctx context.Context) {
 	}
 	a.startFileCompanionConfigWatcher()
 	a.startFileCompanionAppearanceWatcher()
+	a.startFileCompanionLanguageWatcher()
 	a.prepareFileCompanionHub()
 	// A host may have only the companion window open (Open with). The window
 	// still answers reader notes on its own shares; the Hub claim link keeps

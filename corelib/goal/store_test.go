@@ -1,6 +1,9 @@
 package goal
 
 import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,6 +391,172 @@ func TestPersistence_SaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestPersistence_StateUpdateRewritesMissingRow(t *testing.T) {
+	dir := t.TempDir()
+	s1 := NewStore(dir)
+	g, err := s1.Set("user1", "keep the plan", WithTokenBudget(5000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s1.db.Exec(`DELETE FROM goals WHERE user_id=?`, "user1"); err != nil {
+		t.Fatal(err)
+	}
+	if !s1.UpdateStatus("user1", g.GoalID, StatusPaused, "paused for review") {
+		t.Fatal("status update")
+	}
+	s2 := NewStore(dir)
+	got := s2.Get("user1")
+	if got == nil || got.Status != StatusPaused || got.Summary != "paused for review" || got.Objective != "keep the plan" {
+		t.Fatalf("reloaded = %+v", got)
+	}
+}
+
+func TestPersistence_OlderUsageDoesNotReplaceNewerCounters(t *testing.T) {
+	dir := t.TempDir()
+	s1 := NewStore(dir)
+	g, err := s1.Set("user1", "count the work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s1.AccountUsage("user1", g.GoalID, 100, 1) {
+		t.Fatal("first usage")
+	}
+	s1.mu.Lock()
+	older := cloneGoal(s1.goals["user1"])
+	s1.mu.Unlock()
+	if !s1.AccountUsage("user1", g.GoalID, 50, 1) {
+		t.Fatal("second usage")
+	}
+	if _, err := s1.updateGoalState(older); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewStore(dir)
+	got := s2.Get("user1")
+	if got == nil || got.TokensUsed != 150 || got.TurnsUsed != 2 {
+		t.Fatalf("reloaded = %+v", got)
+	}
+}
+
+func TestPersistence_ReplacedGoalKeepsItsOwnRow(t *testing.T) {
+	dir := t.TempDir()
+	s1 := NewStore(dir)
+	first, err := s1.Set("user1", "first objective")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1.mu.Lock()
+	stale := cloneGoal(s1.goals["user1"])
+	s1.mu.Unlock()
+	second, err := s1.Set("user1", "second objective")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.TokensUsed = 999
+	if _, err := s1.updateGoalState(stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.insertGoalIfAbsent(stale); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewStore(dir)
+	got := s2.Get("user1")
+	if got == nil || got.GoalID != second.GoalID || got.Objective != "second objective" || got.TokensUsed != 0 || got.GoalID == first.GoalID {
+		t.Fatalf("reloaded = %+v", got)
+	}
+}
+
+func TestPersistence_ClearWinsOverStaleUsage(t *testing.T) {
+	dir := t.TempDir()
+	s1 := NewStore(dir)
+	g, err := s1.Set("user1", "to clear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s1.AccountUsage("user1", g.GoalID, 40, 1) {
+		t.Fatal("usage")
+	}
+	s1.mu.Lock()
+	stale := cloneGoal(s1.goals["user1"])
+	s1.mu.Unlock()
+	if !s1.Clear("user1") {
+		t.Fatal("clear")
+	}
+	if _, err := s1.updateGoalState(stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.insertGoalIfAbsent(stale); err != nil {
+		t.Fatal(err)
+	}
+	if got := s1.Get("user1"); got != nil {
+		t.Fatalf("memory goal returned after clear: %+v", got)
+	}
+	s2 := NewStore(dir)
+	if got := s2.Get("user1"); got != nil {
+		t.Fatalf("cleared goal returned: %+v", got)
+	}
+}
+
+func TestPersistence_ClearWinsOverStaleUpsert(t *testing.T) {
+	dir := t.TempDir()
+	s1 := NewStore(dir)
+	if _, err := s1.Set("user1", "to clear"); err != nil {
+		t.Fatal(err)
+	}
+	s1.mu.Lock()
+	stale := cloneGoal(s1.goals["user1"])
+	s1.mu.Unlock()
+	if !s1.Clear("user1") {
+		t.Fatal("clear")
+	}
+	if err := s1.upsertGoal(stale); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewStore(dir)
+	if got := s2.Get("user1"); got != nil {
+		t.Fatalf("cleared goal returned: %+v", got)
+	}
+}
+
+func TestPersistence_PlanRewritesMissingRow(t *testing.T) {
+	dir := t.TempDir()
+	s1 := NewStore(dir)
+	g, err := s1.Set("user1", "keep the plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s1.db.Exec(`DELETE FROM goals WHERE user_id=?`, "user1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.SavePlan("user1", g.GoalID, "先完成登录", []Step{{
+		Index: 1, Title: "补齐兰州天气步骤", Status: StepPending,
+	}}, []string{"页面能打开"}); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewStore(dir)
+	got := s2.Get("user1")
+	if got == nil || got.Understanding != "先完成登录" || got.Objective != "keep the plan" || len(got.Steps) != 1 {
+		t.Fatalf("reloaded = %+v", got)
+	}
+}
+
+func TestSearchIncludesPlanText(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	g, err := s.Set("user1", "ship the release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePlan("user1", g.GoalID, "先完成登录", []Step{{
+		Index: 1, Title: "补齐兰州天气步骤", Status: StepPending,
+	}}, []string{"页面能打开"}); err != nil {
+		t.Fatal(err)
+	}
+	found := s.Search("兰州天气步骤")
+	if len(found) != 1 || found[0].GoalID != g.GoalID {
+		t.Fatalf("search = %+v", found)
+	}
+}
+
 func TestPersistence_AutomaticTurnCapsBecomeUnlimited(t *testing.T) {
 	dir := t.TempDir()
 	s1 := NewStore(dir)
@@ -425,24 +594,159 @@ func TestPersistence_AutomaticTurnCapsBecomeUnlimited(t *testing.T) {
 		t.Fatalf("explicit cap = %+v, want 3", gotExplicit)
 	}
 	gotStopped := s2.Get("user4")
-	if gotStopped == nil || gotStopped.GoalID != stopped.GoalID || gotStopped.MaxTurns != 0 || gotStopped.Status != StatusBudgetLimit {
+	if gotStopped == nil || gotStopped.GoalID != stopped.GoalID || gotStopped.MaxTurns != 0 || gotStopped.Status != StatusBudgetLimit || gotStopped.Summary != "Turn limit reached" {
 		t.Fatalf("stopped cap = %+v, want unlimited but still budget_limited", gotStopped)
 	}
-	for _, name := range []string{"user1", "user2", "user4"} {
-		raw, err := os.ReadFile(filepath.Join(dir, name+".json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(raw), `"max_turns"`) {
-			t.Fatalf("%s still stores a turn cap: %s", name, raw)
-		}
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, "user3.json"))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "goals.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"max_turns": 3`) {
-		t.Fatalf("explicit cap was rewritten: %s", raw)
+	defer db.Close()
+	for _, name := range []string{"user1", "user2", "user4"} {
+		var turns int
+		if err := db.QueryRow(`SELECT max_turns FROM goals WHERE user_id=?`, name).Scan(&turns); err != nil {
+			t.Fatal(err)
+		}
+		if turns != 0 {
+			t.Fatalf("%s still stores a turn cap: %d", name, turns)
+		}
+	}
+	var explicitTurns int
+	if err := db.QueryRow(`SELECT max_turns FROM goals WHERE user_id=?`, "user3").Scan(&explicitTurns); err != nil {
+		t.Fatal(err)
+	}
+	if explicitTurns != 3 {
+		t.Fatalf("explicit cap was rewritten: %d", explicitTurns)
+	}
+}
+
+func TestPersistence_ImportsLegacyJSONAndSearchesObjective(t *testing.T) {
+	dir := t.TempDir()
+	legacy := Goal{
+		GoalID: "g-legacy", UserID: "user1", Objective: "整理兰州天气简报",
+		Status: StatusActive, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user1.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(dir)
+	got := s.Get("user1")
+	if got == nil || got.GoalID != "g-legacy" {
+		t.Fatalf("legacy goal = %+v", got)
+	}
+	found := s.Search("兰州天气")
+	if len(found) != 1 || found[0].UserID != "user1" {
+		t.Fatalf("search = %+v", found)
+	}
+	reopened := NewStore(dir)
+	if again := reopened.Get("user1"); again == nil || again.Objective != legacy.Objective {
+		t.Fatalf("reopen = %+v", again)
+	}
+}
+
+func TestPersistence_BrokenLegacyFileRetriesOnNextOpen(t *testing.T) {
+	dir := t.TempDir()
+	legacy := Goal{
+		GoalID: "g-ok", UserID: "user1", Objective: "整理兰州天气简报",
+		Status: StatusActive, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user1.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user2.json"), []byte("not-json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(dir)
+	got := s.Get("user1")
+	if got == nil || got.GoalID != "g-ok" || got.Objective != legacy.Objective {
+		t.Fatalf("valid legacy goal = %+v", got)
+	}
+	if s.Get("user2") != nil {
+		t.Fatal("corrupt file became a goal")
+	}
+	if sealed := goalMetaForTest(t, dir, "goals_legacy_import"); sealed == "1" {
+		t.Fatalf("import sealed while user2.json does not parse: %q", sealed)
+	}
+
+	repaired := Goal{
+		GoalID: "g-two", UserID: "user2", Objective: "补上第二份目标",
+		Status: StatusActive, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	raw2, err := json.Marshal(repaired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user2.json"), raw2, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewStore(dir)
+	if again := s2.Get("user1"); again == nil || again.GoalID != "g-ok" || again.Objective != legacy.Objective {
+		t.Fatalf("user1 after retry = %+v", again)
+	}
+	if second := s2.Get("user2"); second == nil || second.GoalID != "g-two" || second.Objective != repaired.Objective {
+		t.Fatalf("user2 after retry = %+v", second)
+	}
+	if sealed := goalMetaForTest(t, dir, "goals_legacy_import"); sealed != "1" {
+		t.Fatalf("import sealed after repair = %q", sealed)
+	}
+}
+
+func goalMetaForTest(t *testing.T, dir, key string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "goals.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var value string
+	err = db.QueryRow(`SELECT value FROM goal_meta WHERE key=?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func TestSearchWideIncludesStatusOnlyGoal(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	for i := 0; i < 32; i++ {
+		if _, err := s.Set(fmt.Sprintf("user%02d", i), "paused migration notes"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	quiet, err := s.Set("quiet", "silent objective")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.UpdateStatus("quiet", quiet.GoalID, StatusPaused, "") {
+		t.Fatal("pause")
+	}
+	found := s.Search("paused")
+	var sawQuiet, sawText bool
+	for _, g := range found {
+		switch g.UserID {
+		case "quiet":
+			if g.Status != StatusPaused {
+				t.Fatalf("quiet status = %s", g.Status)
+			}
+			sawQuiet = true
+		default:
+			sawText = true
+		}
+	}
+	if !sawQuiet || !sawText {
+		t.Fatalf("wide search missed status or text hits: quiet=%v text=%v count=%d", sawQuiet, sawText, len(found))
 	}
 }
 

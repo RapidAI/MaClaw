@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, GetCurrentLanguage, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -609,7 +609,7 @@ function App() {
     // Solo settings hide the category rail only for the tab that asked: knowledge, IM, or email.
     const [settingsNavSoloTab, setSettingsNavSoloTab] = useState<SoloSettingsTab | ''>('');
     const [memoryTraceFocus, setMemoryTraceFocus] = useState<{ value: string; seq: number }>({ value: "", seq: 0 });
-    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'slack' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
+    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'slack' | 'messenger' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
@@ -619,6 +619,7 @@ function App() {
     const [thirdPartyGatewayStatus, setThirdPartyGatewayStatus] = useState<string>('disconnected');
     const [thirdPartyGatewayLocalMode, setThirdPartyGatewayLocalModeState] = useState<boolean>(true);
     const [lansengerStatus, setLansengerStatus] = useState<string>('disconnected');
+    const [messengerStatus, setMessengerStatus] = useState<string>('disconnected');
     const [lansengerLocalMode, setLansengerLocalModeState] = useState<boolean>(true);
     const [imAuditPlatform, setIMAuditPlatform] = useState<string | null>(null);
     const [weixinQRCode, setWeixinQRCode] = useState<string>('');
@@ -2166,16 +2167,25 @@ function App() {
         }
     }, [envLogs]);
 
+    // Bumped when the user picks a language. A startup read that resolves later
+    // must not publish the previous tag: that write is what the companion follows.
+    const languageChoiceGen = useRef(0);
+    // Set once the saved config language has been applied, so the fast startup
+    // read cannot paint over it.
+    const languageHydrated = useRef(false);
     useEffect(() => {
         // OS UI language (or a saved config.language) comes from Go.
         // WebView2 navigator.language is often en-US even on a Chinese desktop,
         // so it must not choose the shell language. Do not write config here.
+        // This read only paints. applyInitialLanguage already published, and a
+        // late SetLanguage from here would put that tag back over a choice.
+        const seenLanguageChoice = languageChoiceGen.current;
         const languageReady = callBackend(() => GetCurrentLanguage())
             .then((detected) => normalizeLang(detected))
             .catch(() => "en");
         void languageReady.then((initialLang) => {
+            if (languageChoiceGen.current !== seenLanguageChoice || languageHydrated.current) return;
             setLang(initialLang);
-            void callBackend(() => SetLanguage(initialLang));
         });
 
         // Load brand info from backend
@@ -2518,7 +2528,8 @@ function App() {
             });
             applyStartupAssistantFonts(cfg);
 
-            if (cfg && cfg.language) {
+            if (cfg && cfg.language && languageChoiceGen.current === seenLanguageChoice) {
+                languageHydrated.current = true;
                 const savedLang = normalizeLang(cfg.language);
                 setLang(savedLang);
                 void callBackend(() => SetLanguage(savedLang));
@@ -2575,7 +2586,8 @@ function App() {
                         });
                     });
                     applyStartupAssistantFonts(cfg);
-                    if (cfg && cfg.language) {
+                    if (cfg && cfg.language && languageChoiceGen.current === seenLanguageChoice) {
+                        languageHydrated.current = true;
                         const savedLang = normalizeLang(cfg.language);
                         setLang(savedLang);
                         void callBackend(() => SetLanguage(savedLang));
@@ -2713,6 +2725,11 @@ function App() {
         callBackend(() => GetTelegramStatus()).then(setTelegramStatus).catch(() => {});
         callBackend(() => GetTelegramLocalMode()).then(setTelegramLocalModeState).catch(() => {});
 
+        safeEventsOn("messenger-status-changed", (status: string) => {
+            setMessengerStatus(status);
+        });
+        callBackend(() => GetMessengerStatus()).then(setMessengerStatus).catch(() => {});
+
         // WeChat status listener
         safeEventsOn("weixin-status-changed", (status: string) => {
             setWeixinStatus(status);
@@ -2752,6 +2769,7 @@ function App() {
             safeEventsOff("config-updated");
             safeEventsOff("qqbot-status-changed");
             safeEventsOff("telegram-status-changed");
+            safeEventsOff("messenger-status-changed");
             safeEventsOff("weixin-status-changed");
             safeEventsOff("thirdparty-gateway-status-changed");
             safeEventsOff("hub-security-policy-changed");
@@ -2826,6 +2844,8 @@ function App() {
     }, [config, maclawLLMOnline, requestOnboarding]);
 
     const applyLanguage = useCallback((newLang: string) => {
+        languageChoiceGen.current += 1;
+        languageHydrated.current = true;
         const normalized = normalizeLang(newLang);
         setLang(normalized);
         void callBackend(() => SetLanguage(normalized));
@@ -5776,6 +5796,7 @@ ${instruction}`;
         telegramStatus,
         weixinStatus,
         lansengerStatus,
+        messengerStatus,
         maclawLLMOnline,
         maclawLLMConfigured,
         remoteActivated: !!remoteActivationStatus?.activated,
@@ -5857,6 +5878,7 @@ ${instruction}`;
                 telegramStatus={telegramStatus}
                 weixinStatus={weixinStatus}
                 lansengerStatus={lansengerStatus}
+                messengerStatus={messengerStatus}
                 backgroundTaskCount={backgroundTaskCount}
                 workbenchTaskCounts={workbenchTaskCounts}
                 onOpenBackgroundTasks={openBackgroundTaskMonitor}

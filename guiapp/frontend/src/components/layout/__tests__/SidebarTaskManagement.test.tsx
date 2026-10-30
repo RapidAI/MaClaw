@@ -858,6 +858,9 @@ describe('SidebarTaskManagement', () => {
         expect(taskStatusBucketFor({ active_workflow: { status: 'paused', phase: 'execute' } })).toBe('paused');
         expect(taskListStatusKind({ bucket: 'paused', tone: 'success' })).toBe('completed');
         expect(taskStatusBucketFor({ active_workflow: { status: 'failed', phase: 'execute' }, has_output: true })).toBe('other');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'active', phase: 'execution', pending_review: true } })).toBe('pending');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'active', phase: 'review' } })).toBe('running');
+        expect(taskStatusBucketFor({ active_workflow: { status: 'completed', pending_review: true } })).toBe('completed');
         expect(taskStatusBucketFor({ has_output: true })).toBe('completed');
         expect(taskListStatusKind({ bucket: 'pending', tone: 'success' })).toBe('completed');
 

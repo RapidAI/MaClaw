@@ -14,15 +14,15 @@ type StoreMode string
 
 const (
 	// StoreModeJSON uses JSON file persistence (legacy, no cross-instance sync).
-	// Default for GUI/TUI single-instance deployments.
+	// Kept for tests and for MACLAW_MEMORY_BACKEND=json. New hosts should not
+	// select it: rows belong in SQLite with indexed fields.
 	StoreModeJSON StoreMode = "json"
 
 	// StoreModeSQLite uses SQLite WAL persistence with cross-instance sync.
-	// Default for maclawsrv multi-instance deployments.
 	StoreModeSQLite StoreMode = "sqlite"
 
-	// StoreModeAuto selects SQLite if the environment variable MACLAW_MEMORY_BACKEND
-	// is set to "sqlite", otherwise falls back to JSON.
+	// StoreModeAuto stores rows in SQLite. Set MACLAW_MEMORY_BACKEND=json to
+	// keep the legacy single-file store.
 	StoreModeAuto StoreMode = ""
 )
 
@@ -102,10 +102,9 @@ func copyFileIfExists(src, dst string) error {
 //   - dir: the directory for memory data (e.g. ~/.maclaw/memory/)
 //   - mode: StoreModeJSON, StoreModeSQLite, or StoreModeAuto
 //
-// When mode is StoreModeAuto, it checks:
-//  1. If memory.db already exists → use SQLite
-//  2. If MACLAW_MEMORY_BACKEND=sqlite → use SQLite
-//  3. Otherwise → use JSON
+// When mode is StoreModeAuto, SQLite is selected. MACLAW_MEMORY_BACKEND=json
+// keeps the legacy file. An existing memory.db is always the live store when
+// SQLite is selected; memories.json and partition files are imported once.
 func NewStoreWithMode(dir string, mode StoreMode) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("memory: mkdir %s: %w", dir, err)
@@ -172,19 +171,14 @@ func seedCanonicalJSONFromLegacy(dir string, legacyJSONPaths ...string) error {
 	return nil
 }
 
-func resolveMode(dir string, mode StoreMode) StoreMode {
+func resolveMode(_ string, mode StoreMode) StoreMode {
 	if mode == StoreModeSQLite || mode == StoreModeJSON {
 		return mode
 	}
-	// Auto-detect.
-	dbPath := filepath.Join(dir, "memory.db")
-	if _, err := os.Stat(dbPath); err == nil {
-		return StoreModeSQLite // DB already exists, use it.
+	if os.Getenv("MACLAW_MEMORY_BACKEND") == "json" {
+		return StoreModeJSON
 	}
-	if os.Getenv("MACLAW_MEMORY_BACKEND") == "sqlite" {
-		return StoreModeSQLite
-	}
-	return StoreModeJSON
+	return StoreModeSQLite
 }
 
 func newSQLiteStore(dir string) (*Store, error) {

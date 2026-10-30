@@ -1194,6 +1194,10 @@ export function GetSlackStatus():Promise<string>;
 
 export function GetSlackConnectionError():Promise<string>;
 
+export function GetMessengerStatus():Promise<string>;
+
+export function GetMessengerConnectionError():Promise<string>;
+
 export function GetTelegramStatus():Promise<string>;
 
 export function GetTempDir():Promise<string>;
@@ -2305,6 +2309,8 @@ export function RestartLansengerBot(arg1:string):Promise<string>;
 export function RestartQQBot():Promise<string>;
 
 export function RestartTelegram():Promise<string>;
+
+export function RestartMessenger():Promise<string>;
 
 export function StartSlackLogin():Promise<string>;
 

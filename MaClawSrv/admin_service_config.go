@@ -157,8 +157,7 @@ func (s *HTTPServer) handleClearAdminServiceConfigDraft(w http.ResponseWriter, r
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
-	path := adminServiceConfigDraftPath(s.svc.DataRoot())
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := clearAdminServiceConfigDraftStore(s.svc.DataRoot()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
@@ -380,23 +379,6 @@ func maskSensitivePlanValue(field adminServiceConfigSchemaField, value any) any 
 
 func adminServiceConfigDraftPath(dataRoot string) string {
 	return filepath.Join(adminStateDir(dataRoot), "admin_service_config_draft.json")
-}
-func loadAdminServiceConfigDraft(dataRoot string) (adminServiceConfigDraft, error) {
-	var draft adminServiceConfigDraft
-	if err := readAdminJSON(dataRoot, "admin_service_config_draft.json", &draft); err != nil {
-		if os.IsNotExist(err) {
-			return adminServiceConfigDraft{Values: map[string]any{}}, nil
-		}
-		return adminServiceConfigDraft{}, err
-	}
-	if draft.Values == nil {
-		draft.Values = map[string]any{}
-	}
-	return draft, nil
-}
-
-func saveAdminServiceConfigDraft(dataRoot string, draft adminServiceConfigDraft) error {
-	return writeAdminJSON(dataRoot, "admin_service_config_draft.json", draft)
 }
 
 func sortedAnyKeys(values map[string]any) []string {

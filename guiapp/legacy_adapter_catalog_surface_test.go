@@ -157,6 +157,35 @@ func TestClosedLegacyReplacementRebuildsClientBindingAfterHostPlan(t *testing.T)
 	}
 }
 
+func TestChatTaskControlReachesItsHandlerAheadOfTheLegacyCatalog(t *testing.T) {
+	h := &IMMessageHandler{}
+	surface := newLegacyToolSurface([]map[string]interface{}{legacyReviewedDefinition("dispatch_background_task")})
+	stale := surface.beginEpoch()
+	surface.beginEpoch()
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: "desktop-user", legacySurface: surface}
+	result := cb.ExecuteToolCallWithContext("dispatch_background_task", `{"request":"locate this photo"}`, "call-1", agent.ToolCallExecutionContext{SurfaceEpoch: stale})
+	if strings.Contains(result.Result, "catalog_incomplete") || strings.Contains(result.Result, "stale_surface") || strings.Contains(result.Result, "parameter_contract_denied") {
+		t.Fatalf("legacy catalog answered for a chat control: %s", result.Result)
+	}
+	if !strings.Contains(result.Result, "this turn cannot hand work to a background chat task") {
+		t.Fatalf("result = %q", result.Result)
+	}
+
+	direct := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: "desktop-user", LegacySurface: surface,
+		ToolCall: llm.ToolCall{ID: "call-2", Function: llm.ToolCallFunction{Name: "dispatch_background_task", Arguments: `{"request":"locate this photo"}`}},
+	})
+	if strings.Contains(direct.Text, "catalog_incomplete") || !strings.Contains(direct.Text, "this turn cannot hand work to a background chat task") {
+		t.Fatalf("direct call = %q", direct.Text)
+	}
+
+	huge := `{"request":"` + strings.Repeat("x", guiMaxToolArgumentsBytes) + `"}`
+	limited := cb.ExecuteToolCallWithContext("dispatch_background_task", huge, "call-big", agent.ToolCallExecutionContext{SurfaceEpoch: stale})
+	if strings.Contains(limited.Result, "catalog_incomplete") || strings.Contains(limited.Result, "stale_surface") || !strings.Contains(limited.Result, "too large") {
+		t.Fatalf("size limit = %s", limited.Result)
+	}
+}
+
 func TestAllowsLiveProvisionDeniesUnprovisionedHostToolOnCompatibilitySurface(t *testing.T) {
 	surface := newLegacyToolSurface([]map[string]interface{}{
 		legacyReviewedDefinition("read_file"),

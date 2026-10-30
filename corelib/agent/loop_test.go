@@ -2783,11 +2783,125 @@ func (r *prefixThenErrReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+func TestRunLoopUpstreamStreamIdleUsesOuterRetry(t *testing.T) {
+	useLLMRetryBackoff(t, 200*time.Millisecond)
+	transport := &upstreamIdleTransport{}
+	cb := &unexpectedEOFRetryCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://api.example.test/v1", Model: "qax-codegen/Auto"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "test", nil, &http.Client{Transport: transport})
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	transport.mu.Lock()
+	n := len(transport.arrivals)
+	gap := time.Duration(0)
+	if n >= 2 {
+		gap = transport.arrivals[1].Sub(transport.arrivals[0])
+	}
+	transport.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("requests=%d, want the idle error frame plus one outer retry", n)
+	}
+	if gap < 150*time.Millisecond {
+		t.Fatalf("retry gap %s, want the outer backoff rather than an immediate fallback", gap)
+	}
+}
+
+func TestRunLoopCodeGenChatStaysOnBufferedCompletion(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []map[string]any
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("Accept"); strings.Contains(got, "text/event-stream") {
+			t.Errorf("Accept = %q, CodeGen chat must not open an SSE read", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		mu.Lock()
+		bodies = append(bodies, body)
+		mu.Unlock()
+		const success = `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Status:        "200 OK",
+			Proto:         "HTTP/1.1",
+			Header:        header,
+			Body:          io.NopCloser(strings.NewReader(success)),
+			ContentLength: int64(len(success)),
+			Request:       req,
+		}, nil
+	})}
+	cb := &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto", ProviderName: "CodeGen"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}
+	result := RunLoop(cb, "test", nil, client)
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("requests=%d, want one buffered completion", len(bodies))
+	}
+	if got := bodies[0]["stream"]; got != false {
+		t.Fatalf("stream = %#v, want false", got)
+	}
+}
+
+// upstreamIdleTransport answers the first stream with the gateway's empty
+// idle stall, then a normal completion. Coding hosts contain ambiguous
+// delivery, so this frame has to be a definitive empty rejection or the
+// turn ends on the first request.
+type upstreamIdleTransport struct {
+	mu       sync.Mutex
+	arrivals []time.Time
+}
+
+func (s *upstreamIdleTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	s.arrivals = append(s.arrivals, time.Now())
+	n := len(s.arrivals)
+	s.mu.Unlock()
+	header := make(http.Header)
+	header.Set("Content-Type", "text/event-stream")
+	if n == 1 {
+		const frame = "data: {\"error\":{\"message\":\"upstream stream idle timeout after 2m0s\",\"type\":\"upstream_error\"}}\n\ndata: [DONE]\n\n"
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Status:        "200 OK",
+			Proto:         "HTTP/1.1",
+			Header:        header,
+			Body:          io.NopCloser(strings.NewReader(frame)),
+			ContentLength: int64(len(frame)),
+			Request:       req,
+		}, nil
+	}
+	const success = `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`
+	header.Set("Content-Type", "application/json")
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        "200 OK",
+		Proto:         "HTTP/1.1",
+		Header:        header,
+		Body:          io.NopCloser(strings.NewReader(success)),
+		ContentLength: int64(len(success)),
+		Request:       req,
+	}, nil
+}
+
 func TestRunLoopUnexpectedEOFUsesOuterRetry(t *testing.T) {
 	useLLMRetryBackoff(t, 200*time.Millisecond)
 	transport := &unexpectedEOFTransport{}
 	cb := &unexpectedEOFRetryCallbacks{mockCallbacks: mockCallbacks{
-		config:    corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"},
+		config:    corelib.MaclawLLMConfig{URL: "https://api.example.test/v1", Model: "qax-codegen/Auto"},
 		maxIter:   1,
 		sysPrompt: "sys",
 	}}
@@ -2810,7 +2924,7 @@ func TestRunLoopPartialUnexpectedEOFDoesNotRetry(t *testing.T) {
 	useLLMRetryBackoff(t, time.Millisecond)
 	transport := &unexpectedEOFTransport{partial: true}
 	cb := &unexpectedEOFRetryCallbacks{mockCallbacks: mockCallbacks{
-		config:    corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"},
+		config:    corelib.MaclawLLMConfig{URL: "https://api.example.test/v1", Model: "qax-codegen/Auto"},
 		maxIter:   1,
 		sysPrompt: "sys",
 	}}
@@ -3116,14 +3230,14 @@ func TestRunLoopRequestOwnerDisablesHiddenOpenAICompatibilityRetries(t *testing.
 	if result.Error == "" {
 		t.Fatalf("result=%+v, want compat failure", result)
 	}
-	// The loop did not opt into the legacy static containment interface, so it
-	// performs its one request-level non-stream fallback. Crucially, the SDK
-	// does not add tool-less/compact successor requests inside either call.
-	if got := requests.Load(); got != 2 {
-		t.Fatalf("requests=%d, want stream plus RunLoop-owned fallback only", got)
+	// CodeGen's first request is already the buffered completion. A rejected
+	// body does not grow a same-wire successor, and the SDK does not add a
+	// tool-less or compact request inside that call.
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests=%d, want the one buffered completion", got)
 	}
-	if got := len(cb.breakdown); got != 2 {
-		t.Fatalf("breakdowns=%d, want one record for each owned request", got)
+	if got := len(cb.breakdown); got != 1 {
+		t.Fatalf("breakdowns=%d, want one record for the owned request", got)
 	}
 }
 

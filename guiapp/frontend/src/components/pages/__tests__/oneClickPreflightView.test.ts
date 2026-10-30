@@ -42,10 +42,10 @@ function oneClickPreflightNeedsRerun(preflight: Record<string, unknown> | null |
 
 function formatOneClickPreflightCheck(id: string, message: string): string {
     if (id === 'package_ready' && /missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(message)) {
-        return '缺少一次成功运行证据。请点击“去修复”，完整运行应用一次后返回此处发布。';
+        return 'A successful run is missing. Use Fix, run the app once, then return here to publish.';
     }
     if (id === 'package_ready' && /governance\.testevidence\.(?:definitionhash|testprotocolfingerprint|workspacelayoutfingerprint)|run evidence (?:definition hash|test protocol fingerprint|workspace layout fingerprint).*(?:does not match|missing)|run evidence is not linked to a test protocol fingerprint/i.test(message)) {
-        return '运行证据与当前应用定义不一致。请点击“去修复”，重新运行当前版本后返回此处发布。';
+        return 'Run evidence does not match the current app definition. Use Fix, run this version again, then return here to publish.';
     }
     return message;
 }
@@ -230,7 +230,7 @@ describe('summarizeOneClickPreflightView', () => {
                 message: raw,
             }],
         })).toBe(true);
-        expect(formatOneClickPreflightCheck('package_ready', raw)).toContain('重新运行当前版本');
+        expect(formatOneClickPreflightCheck('package_ready', raw)).toContain('run this version again');
     });
 
     it('treats skill-only gap as warn (may-partial affordance)', () => {

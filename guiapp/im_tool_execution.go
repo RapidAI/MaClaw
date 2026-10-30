@@ -101,7 +101,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		name := strings.TrimSpace(tc.Function.Name)
 		return toolExecutionResult{Text: "文稿先留在本机。先问用户发给聊天，还是放进移动文稿库。", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
-	if opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.Allows(tc.Function.Name) {
+	// Conversation controls are not reviewed adapters. The snapshot, the live
+	// provision, and the argument contract must not answer for them. Cancel,
+	// ACP, progress, and the argument checks below still run, and
+	// executeChatTaskToolIfAny decides whether this turn may hand work off.
+	if legacyCatalogOwnsTool(tc.Function.Name) && opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.Allows(tc.Function.Name) {
 		name := strings.TrimSpace(tc.Function.Name)
 		text := legacyToolSurfaceDeniedText(name)
 		return toolExecutionResult{Text: text, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
@@ -117,12 +121,12 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		name := strings.TrimSpace(tc.Function.Name)
 		return toolExecutionResult{Text: legacyModelManageSkillGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
-	if opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.AllowsLiveProvision(tc.Function.Name) {
+	if legacyCatalogOwnsTool(tc.Function.Name) && opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.AllowsLiveProvision(tc.Function.Name) {
 		name := strings.TrimSpace(tc.Function.Name)
 		text := legacyAdapterCatalogDeniedText(name)
 		return toolExecutionResult{Text: text, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
-	if opts.LegacySurface.HasSnapshot() {
+	if legacyCatalogOwnsTool(tc.Function.Name) && opts.LegacySurface.HasSnapshot() {
 		if err := opts.LegacySurface.AllowsArguments(tc.Function.Name, tc.Function.Arguments); err != nil {
 			name := strings.TrimSpace(tc.Function.Name)
 			return toolExecutionResult{Text: legacyToolArgumentDeniedText(name, err), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
@@ -148,14 +152,18 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if skipWorkflowGate && h.hasActiveWorkflowForPolicy(policyUserID) {
 		skipWorkflowGate = false
 	}
+	// A workflow filter and an expert allow-list name work tools. Dispatch,
+	// steer, stop, and request-input stay conversation controls. The handler
+	// is their authority, including while a workflow phase is active.
+	workAllowlist := !chatTaskControlName(tc.Function.Name)
 
-	if !skipWorkflowGate && !h.isWorkflowToolAllowedForOwner(policyUserID, tc.Function.Name) {
+	if workAllowlist && !skipWorkflowGate && !h.isWorkflowToolAllowedForOwner(policyUserID, tc.Function.Name) {
 		text := workflowPolicyToolRejectedText(tc.Function.Name)
 		result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		h.appendToolPolicyTrace(opts.Context, policyUserID, tc.Function.Name, "v2.tool", text)
 		log.Printf("[agent-loop] rejected execution of workflow-blocked tool %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
 	}
-	if result.Text == "" && !skipWorkflowGate {
+	if result.Text == "" && workAllowlist && !skipWorkflowGate {
 		allowed, reason := h.isWorkflowToolCallAllowedForOwner(policyUserID, tc.Function.Name, tc.Function.Arguments)
 		if !allowed {
 			text := fmt.Sprintf("[system rejected] %s", reason)
@@ -166,7 +174,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	}
 	// Expert allow-list gate (execution layer): the prompt-layer tool filter only
 	// hides tools from the LLM; a call emitted by name must still be stopped here.
-	if result.Text == "" {
+	if result.Text == "" && workAllowlist {
 		if text := h.expertToolExecutionRejection(opts.UserID, tc.Function.Name, tc.Function.Arguments); text != "" {
 			result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 			h.appendToolPolicyTrace(opts.Context, opts.UserID, tc.Function.Name, "expert.allowlist", text)
@@ -979,6 +987,9 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 	// model-supplied values even for tools that do not receive a loop snapshot;
 	// otherwise a direct legacy invocation can forge an identity anchor.
 	delete(args, "_task_identity_anchor")
+	// The host procedure directory arrives on the execution context. A copy in
+	// the model JSON must not choose which skill scripts bash runs.
+	delete(args, hostProcedureDirArg)
 	if taskAnchor != nil {
 		args["_task_identity_anchor"] = *taskAnchor
 	}

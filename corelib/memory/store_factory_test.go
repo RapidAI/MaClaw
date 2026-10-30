@@ -170,6 +170,52 @@ func TestOpenDataDirStoreCopiesLegacyRootSQLite(t *testing.T) {
 	}
 }
 
+func TestNewStoreWithMode_Auto_UsesSQLiteAndMigratesLegacyJSON(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	entries := []Entry{{
+		ID: "auto-legacy", Content: "auto migrated fact", Category: CategoryUserFact,
+		CreatedAt: now, UpdatedAt: now, Strength: 1, AccessCount: 1,
+	}}
+	data, _ := json.Marshal(entries)
+	jsonPath := filepath.Join(dir, "memories.json")
+	if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewStoreWithMode(dir, StoreModeAuto)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	defer store.Stop()
+	if store.backend == nil || !store.backend.SupportsSync() {
+		t.Fatal("auto mode should select SQLite")
+	}
+	got := store.List(CategoryUserFact, "auto migrated")
+	if len(got) != 1 || got[0].ID != "auto-legacy" {
+		t.Fatalf("migrated entries = %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "memory.db")); err != nil {
+		t.Fatalf("memory.db: %v", err)
+	}
+}
+
+func TestNewStoreWithMode_Auto_HonorsJSONBackendEnv(t *testing.T) {
+	t.Setenv("MACLAW_MEMORY_BACKEND", "json")
+	dir := t.TempDir()
+	store, err := NewStoreWithMode(dir, StoreModeAuto)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	defer store.Stop()
+	if store.backend != nil {
+		t.Fatal("MACLAW_MEMORY_BACKEND=json should keep the legacy file store")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "memory.db")); err == nil {
+		t.Fatal("memory.db should not be created when JSON mode is requested")
+	}
+}
+
 func TestNewStoreWithMode_Auto_DetectsExistingDB(t *testing.T) {
 	dir := t.TempDir()
 

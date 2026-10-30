@@ -1036,6 +1036,10 @@ func TestOpenAIChatCompletionsEndpointNormalizesBaseURL(t *testing.T) {
 		{"full", "https://api.example.com/v1/chat/completions", "https://api.example.com/v1/chat/completions"},
 		{"qwen compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"},
 		{"tencent tokenplan", "https://tokenhub.tencentmaas.com/plan/v3", "https://tokenhub.tencentmaas.com/plan/v3/chat/completions"},
+		{"google ai studio", "https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		{"google ai studio trailing slash", "https://generativelanguage.googleapis.com/v1beta/openai/", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		{"google ai studio extra v1", "https://generativelanguage.googleapis.com/v1beta/openai/v1", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		{"google ai studio stable", "https://generativelanguage.googleapis.com/v1/openai", "https://generativelanguage.googleapis.com/v1/openai/chat/completions"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1104,6 +1108,16 @@ func TestBuildOpenAIModelsEndpointCandidates(t *testing.T) {
 			name: "tencent tokenplan",
 			url:  "https://tokenhub.tencentmaas.com/plan/v3",
 			want: []string{"https://tokenhub.tencentmaas.com/plan/v3/models"},
+		},
+		{
+			name: "google ai studio",
+			url:  "https://generativelanguage.googleapis.com/v1beta/openai",
+			want: []string{"https://generativelanguage.googleapis.com/v1beta/openai/models"},
+		},
+		{
+			name: "google ai studio chat completions",
+			url:  "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+			want: []string{"https://generativelanguage.googleapis.com/v1beta/openai/models"},
 		},
 	}
 	for _, tt := range tests {

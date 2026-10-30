@@ -278,6 +278,21 @@ type AppConfig struct {
 	SlackTeamID       string `json:"slack_team_id,omitempty"`
 	SlackTeamName     string `json:"slack_team_name,omitempty"`
 	SlackBotUserID    string `json:"slack_bot_user_id,omitempty"`
+	// Facebook Messenger is a desktop webhook channel. Meta calls the local
+	// listener (through a public HTTPS tunnel) and replies use the Graph Send API.
+	MessengerEnabled         bool     `json:"messenger_enabled,omitempty"`
+	MessengerPageID          string   `json:"messenger_page_id,omitempty"`
+	MessengerPageAccessToken string   `json:"messenger_page_access_token,omitempty"`
+	MessengerVerifyToken     string   `json:"messenger_verify_token,omitempty"`
+	MessengerAppSecret       string   `json:"messenger_app_secret,omitempty"`
+	MessengerGraphAPIVersion string   `json:"messenger_graph_api_version,omitempty"`
+	MessengerWebhookPath     string   `json:"messenger_webhook_path,omitempty"`
+	MessengerListenHost      string   `json:"messenger_listen_host,omitempty"`
+	MessengerListenPort      int      `json:"messenger_listen_port,omitempty"`
+	MessengerAllowFrom       []string `json:"messenger_allow_from,omitempty"`
+	MessengerDMPolicy        string   `json:"messenger_dm_policy,omitempty"`
+	MessengerDefaultPSID     string   `json:"messenger_default_psid,omitempty"`
+	MessengerPublicBaseURL   string   `json:"messenger_public_base_url,omitempty"`
 	// IM 闂?per-user WeChat (client-side gateway via iLink API)
 	WeixinEnabled   bool   `json:"weixin_enabled,omitempty"`
 	WeixinToken     string `json:"weixin_token,omitempty"`

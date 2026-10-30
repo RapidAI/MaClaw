@@ -347,9 +347,29 @@ func (e *GoalContinuationEngine) finishContinuationTurn(userID, goalID string, t
 	e.scheduleDelayed(userID, goalID)
 }
 
+// continuationGoalKey is the continuation-store row this chat addresses.
+// The composer asks with desktop-user:F:/bird2 while Windows stores
+// desktop-user:F:\bird2. The bar and ReleaseForContinue already use that
+// row. Sticky coding, ask-user, cancel fences, and continuation notes stay
+// on the chat id. A miss keeps the chat id so a session with no row still
+// addresses its own timer.
+func (h *IMMessageHandler) continuationGoalKey(chatUserID string) (string, *goal.Goal) {
+	chatUserID = strings.TrimSpace(chatUserID)
+	if h == nil || h.app == nil || h.app.goalContinuation == nil || h.app.goalContinuation.store == nil {
+		return chatUserID, nil
+	}
+	engine := h.app.goalContinuation
+	hit := h.app.goalBarHit(chatUserID)
+	if hit.store == engine.store && hit.goal != nil && strings.TrimSpace(hit.id) != "" {
+		return hit.id, hit.goal
+	}
+	return chatUserID, engine.store.Get(chatUserID)
+}
+
 // pauseGoalForUnarmedRemote records that this goal cannot run on the desktop.
 // The session's machine is a remote host and its SSH engine is down. The goal
 // stays paused with the reconnect text so the bar can offer continue.
+// The session check uses the chat id. The row may be the slash-flipped twin.
 // A connected or local session returns false and is left unchanged.
 func (h *IMMessageHandler) pauseGoalForUnarmedRemote(userID string) (string, bool) {
 	if h == nil {
@@ -363,14 +383,15 @@ func (h *IMMessageHandler) pauseGoalForUnarmedRemote(userID string) (string, boo
 		return text, true
 	}
 	engine := h.app.goalContinuation
-	g := engine.store.Get(userID)
+	goalKey, g := h.continuationGoalKey(userID)
 	if g == nil || g.Status == goal.StatusComplete {
 		return text, true
 	}
-	engine.store.UpdateStatus(userID, g.GoalID, goal.StatusPaused, text)
-	engine.CancelPending(userID)
-	if updated := engine.store.Get(userID); updated != nil {
-		engine.emitGoalStateChanged(userID, updated)
+	engine.store.UpdateStatus(goalKey, g.GoalID, goal.StatusPaused, text)
+	// Drop a timer armed under either spelling. The bar reads this row.
+	h.app.cancelGoalBarTimers(goalKey)
+	if updated := engine.store.Get(goalKey); updated != nil {
+		engine.emitGoalStateChanged(goalKey, updated)
 	}
 	return text, true
 }
@@ -378,6 +399,108 @@ func (h *IMMessageHandler) pauseGoalForUnarmedRemote(userID string) (string, boo
 // goalUserStopSummary is the bar reason after the user stops the current turn.
 // It must not look like a dead SSH session or a no-tool stall.
 const goalUserStopSummary = "用户已停止当前回合。"
+
+// stoppedGoalUserTurn is what this user turn is already doing. The goal bar
+// follows that, not the wording. Chinese, English, and Mongolian therefore
+// take the same path.
+type stoppedGoalUserTurn struct {
+	// DocPhase is a workflow document confirmation. That phase is not the
+	// goal's work, even when the button label is a continue word.
+	DocPhase bool
+	// FreshTask means the task boundary already classified this message as a
+	// new task. The stopped goal stays stopped.
+	FreshTask bool
+}
+
+// userTurnExecutesSessionGoal reports that this turn is about to run the work
+// the session goal belongs to. A coding workbench and a workflow
+// implementation phase are that work. A shared chat reply is not: the agent
+// loop also answers ordinary messages, and those must not wake a paused goal.
+// A document confirmation is not that work either.
+func (h *IMMessageHandler) userTurnExecutesSessionGoal(userID string, workflowAgentLoop, workflowDocPhase bool) bool {
+	if h == nil || workflowDocPhase {
+		return false
+	}
+	if workflowAgentLoop {
+		return true
+	}
+	return h.isPureCodingWorkbenchSession(userID)
+}
+
+// releaseStoppedGoalForUserContinue puts a paused, failed, or budget-stopped
+// goal back to active when this user turn is about to run that session's work.
+// Callers are the behavior: the coding workbench or a workflow implementation
+// has already been chosen. No user phrase list is consulted, so an unlisted
+// wording still re-arms. Reopening the app does not resume those rows, and
+// the coding turn still runs, so the bar would keep the old stop while the
+// agent is already working. This message is the turn: do not schedule a
+// second one beside it. The post-loop arm runs after this turn, once the
+// goal is active again. A completed goal stays finished.
+//
+// A new task leaves the stopped goal alone. A workflow document confirmation
+// is not this goal's work. Host platforms, and the session-round and
+// goal-continuation markers, are not the person resuming.
+//
+// A dead remote SSH session is left on its current status. This path must
+// not pause the row: the caller is about to run, and pauseGoalForUnarmedRemote
+// would rewrite a failure into an SSH pause while that work still starts.
+// The unarmed check reads the pending SSH engine, so callers have to release
+// before they consume those flags. The ingress that refuses the turn
+// (finishUnarmedRemoteCodingTurn, ContinueSessionGoal) still pauses.
+func (h *IMMessageHandler) releaseStoppedGoalForUserContinue(msg IMUserMessage, turn stoppedGoalUserTurn) {
+	if turn.DocPhase || turn.FreshTask || h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return
+	}
+	switch strings.TrimSpace(msg.Platform) {
+	case "goal-continuation", unattendedWorkflowPlatform, sessionRoundContinuationPlatform:
+		return
+	}
+	if isSessionRoundContinuation(msg.Text) || isGoalSystemContinuation(msg.Text) {
+		return
+	}
+	hit := h.app.goalBarHit(msg.UserID)
+	if hit.store == nil || hit.goal == nil || strings.TrimSpace(hit.id) == "" {
+		return
+	}
+	switch hit.goal.Status {
+	case goal.StatusPaused, goal.StatusFailed, goal.StatusBudgetLimit:
+	default:
+		return
+	}
+	// Pending flags and the cancel fence live on the chat owner. The goal row
+	// may be the slash-flipped twin.
+	owner := strings.TrimSpace(msg.UserID)
+	if owner == "" {
+		owner = hit.id
+	}
+	h.ensurePureCodingArmedForGoalContinuation(owner)
+	if _, blocked := h.unarmedRemoteCodingDesktopTurn(owner); blocked {
+		return
+	}
+	// Record the continue before the status flip. A dying stop from the
+	// previous process lifetime must not pause this turn again.
+	h.noteGoalContinuePastUserStop(owner)
+	goalID := hit.goal.GoalID
+	from := hit.goal.Status
+	if !hit.store.ReleaseForContinue(hit.id, goalID) {
+		h.app.goalContinuation.clearContinueRearmed(owner)
+		return
+	}
+	h.app.eachSameGoal(hit, func(other *goal.Store, id string, row *goal.Goal) {
+		if other == hit.store && id == hit.id {
+			return
+		}
+		if row.Status == goal.StatusComplete {
+			return
+		}
+		other.ReleaseForContinue(id, row.GoalID)
+	})
+	updated := hit.store.Get(hit.id)
+	if updated != nil {
+		h.app.goalContinuation.emitGoalStateChanged(hit.id, updated)
+	}
+	log.Printf("[goal-continuation] user continue re-armed stopped goal user=%s goal_id=%s from=%s", hit.id, goalID, from)
+}
 
 // noteGoalContinuePastUserStop records that the bar or /goal resume is
 // re-arming this same goal. The stop fence stays, so the next ordinary
@@ -532,6 +655,9 @@ func (h *IMMessageHandler) closeGoalTurnForUserStop(userID string, resp *IMAgent
 		return false
 	}
 	engine := h.app.goalContinuation
+	// Resolve the row before taking the engine lock. The fence check below
+	// stays on the chat id.
+	goalKey := h.queuedGoalTimerKey(userID)
 	engine.mu.Lock()
 	if engine.stopSupersededLocked(userID, fence) {
 		engine.mu.Unlock()
@@ -541,14 +667,17 @@ func (h *IMMessageHandler) closeGoalTurnForUserStop(userID string, resp *IMAgent
 		}
 		return false
 	}
-	paused := engine.pauseForUserStopLocked(userID)
+	paused := engine.pauseForUserStopLocked(goalKey)
+	if goalKey != userID {
+		engine.cancelPendingLocked(userID)
+	}
 	var updated *goal.Goal
 	if paused && engine.store != nil {
-		updated = engine.store.Get(userID)
+		updated = engine.store.Get(goalKey)
 	}
 	engine.mu.Unlock()
 	if updated != nil {
-		engine.emitGoalStateChanged(userID, updated)
+		engine.emitGoalStateChanged(goalKey, updated)
 	}
 	if paused {
 		log.Printf("[goal-continuation] paused: user stopped the turn user=%s", userID)
@@ -602,6 +731,7 @@ func (h *IMMessageHandler) pauseStillActiveUserStop(userID string) {
 		return
 	}
 	engine := h.app.goalContinuation
+	goalKey, _ := h.continuationGoalKey(userID)
 	engine.mu.Lock()
 	if engine.continueRearmedLocked(userID) {
 		engine.mu.Unlock()
@@ -611,19 +741,22 @@ func (h *IMMessageHandler) pauseStillActiveUserStop(userID string) {
 		engine.mu.Unlock()
 		return
 	}
-	g := engine.store.Get(userID)
+	g := engine.store.Get(goalKey)
 	if g == nil || g.Status != goal.StatusActive {
 		engine.mu.Unlock()
 		return
 	}
-	paused := engine.pauseForUserStopLocked(userID)
+	paused := engine.pauseForUserStopLocked(goalKey)
+	if goalKey != userID {
+		engine.cancelPendingLocked(userID)
+	}
 	var updated *goal.Goal
 	if paused {
-		updated = engine.store.Get(userID)
+		updated = engine.store.Get(goalKey)
 	}
 	engine.mu.Unlock()
 	if updated != nil {
-		engine.emitGoalStateChanged(userID, updated)
+		engine.emitGoalStateChanged(goalKey, updated)
 	}
 	if paused {
 		log.Printf("[goal-continuation] paused: user stopped the turn user=%s", userID)
@@ -764,14 +897,30 @@ func (e *GoalContinuationEngine) blocksRunWindowCompletion(userID string) bool {
 	if e == nil || strings.TrimSpace(userID) == "" {
 		return false
 	}
+	ids := goalBarCandidateIDs(userID)
+	if len(ids) == 0 {
+		ids = []string{userID}
+	}
 	e.mu.Lock()
-	_, pending := e.scheduledTimers[userID]
+	pending := false
+	for _, id := range ids {
+		if _, ok := e.scheduledTimers[id]; ok {
+			pending = true
+			break
+		}
+	}
 	e.mu.Unlock()
 	if pending {
 		return true
 	}
 	if e.store == nil {
 		return false
+	}
+	if e.app != nil {
+		hit := e.app.goalBarHit(userID)
+		if hit.store == e.store && hit.goal != nil {
+			return hit.goal.ShouldContinue()
+		}
 	}
 	g := e.store.Get(userID)
 	return g != nil && g.ShouldContinue()
@@ -2041,7 +2190,15 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		return
 	}
 	engine := h.app.goalContinuation
-	g := engine.store.Get(userID)
+	// The chat id owns session maps. The goal row and its timer follow the
+	// store key the bar already drives, including the slash-flipped twin.
+	goalKey, g := h.continuationGoalKey(userID)
+	clearRetry := func() {
+		engine.clearTransientGoalRetry(userID)
+		if goalKey != userID {
+			engine.clearTransientGoalRetry(goalKey)
+		}
+	}
 	// A bar pause or delete stopped this turn. Continue may already have made
 	// the goal active again. Leave that timer alone, and do not fail the row.
 	if resp != nil && resp.userStopped && engine.consumeGoalBarHold(userID) {
@@ -2066,7 +2223,7 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		return
 	}
 	if resp != nil && resp.runWindowPaused {
-		engine.CancelPending(userID)
+		h.app.cancelGoalBarTimers(goalKey)
 		log.Printf("[goal-continuation] skipping: run window paused user=%s", userID)
 		return
 	}
@@ -2091,19 +2248,25 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		turnErr = ""
 	}
 	if turnErr != "" && !goalContinuationContractMet(contractExpect, g) {
-		if goalTurnErrorIsRetryable(turnErr) && g.ShouldContinue() && engine.retryTransientGoalTurn(userID, g.GoalID, ownedExpect, haveOwnedExpect) {
+		if goalTurnErrorIsRetryable(turnErr) && g.ShouldContinue() && engine.retryTransientGoalTurn(goalKey, g.GoalID, ownedExpect, haveOwnedExpect) {
+			h.app.cancelOtherGoalBarTimers(goalKey)
 			return
 		}
 		log.Printf("[goal-continuation] failing goal after turn error user=%s", userID)
-		engine.clearTransientGoalRetry(userID)
+		clearRetry()
 		// The bar status alone does not say why the turn stopped. The notice
 		// is the error row the user sees after a failed goal turn.
-		engine.failGoal(userID, g.GoalID, turnErr, true)
+		engine.failGoal(goalKey, g.GoalID, turnErr, true)
+		if goalKey != userID {
+			engine.clearContinuationExpect(userID)
+		}
+		h.app.cancelOtherGoalBarTimers(goalKey)
 		return
 	}
-	engine.clearTransientGoalRetry(userID)
+	clearRetry()
 
 	// Keep pure-coding sticky routing armed across multi-turn /goal loops.
+	// Sticky state lives on the chat id, not the store key.
 	h.ensurePureCodingArmedForGoalContinuation(userID)
 	// Dead SSH must not leave the goal looking active. The bar stays up with
 	// the reconnect reason, and continue retries this same goal later.
@@ -2124,8 +2287,8 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		if platform == "goal-continuation" {
 			tokens, seconds := goalContinuationTurnCost(resp)
 			if engine.store != nil {
-				engine.store.AccountUsage(userID, g.GoalID, tokens, seconds)
-				engine.store.ResetNoToolCounter(userID, g.GoalID)
+				engine.store.AccountUsage(goalKey, g.GoalID, tokens, seconds)
+				engine.store.ResetNoToolCounter(goalKey, g.GoalID)
 			}
 			if haveOwnedExpect {
 				engine.takeContinuationExpectIfCurrent(userID, ownedExpect)
@@ -2133,14 +2296,16 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 				engine.takeContinuationExpect(userID)
 			}
 		}
-		if updated := engine.store.Get(userID); updated != nil {
-			engine.emitGoalStateChanged(userID, updated)
+		if updated := engine.store.Get(goalKey); updated != nil {
+			engine.emitGoalStateChanged(goalKey, updated)
 		}
 		return
 	}
 
 	if platform == "goal-continuation" {
-		// Goal-continuation turn: account usage and schedule next
+		// Goal-continuation turn: account usage and schedule next.
+		// The note stays on the chat id. Accounting and the next timer use
+		// the store key, matching ContinueSessionGoal.
 		turnTokens, turnSeconds := goalContinuationTurnCost(resp)
 		hadToolCalls := resp != nil && resp.TraceEventCount > 0
 		// Defense-in-depth: pure coding reports often carry activity only via
@@ -2149,14 +2314,31 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		if !hadToolCalls && resp != nil && strings.TrimSpace(resp.Text) != "" && h.isPureCodingWorkbenchSession(userID) {
 			hadToolCalls = true
 		}
-
-		engine.finishContinuationTurn(userID, g.GoalID, turnTokens, turnSeconds, hadToolCalls, ownedExpect, haveOwnedExpect)
+		owned := ownedExpect
+		haveOwned := haveOwnedExpect
+		if goalKey != userID {
+			if !haveOwned {
+				owned = engine.takeContinuationExpect(userID)
+				haveOwned = true
+			} else {
+				engine.takeContinuationExpectIfCurrent(userID, ownedExpect)
+			}
+		}
+		engine.finishContinuationTurn(goalKey, g.GoalID, turnTokens, turnSeconds, hadToolCalls, owned, haveOwned)
+		h.app.cancelOtherGoalBarTimers(goalKey)
 	} else {
 		// User-initiated turn with active goal: don't account usage (this wasn't
 		// a goal turn), but schedule continuation since goal is still active and
-		// the user's turn is now complete.
+		// the user's turn is now complete. The other slash spelling must not
+		// keep a second timer.
 		if g.ShouldContinue() {
-			engine.scheduleDelayed(userID, g.GoalID)
+			h.app.cancelOtherGoalBarTimers(goalKey)
+			engine.scheduleDelayed(goalKey, g.GoalID)
+		} else {
+			// An active row can still be out of turns or budget. Drop a timer
+			// armed under either spelling. scheduleDelayed used to do this for
+			// the chat id on the way out.
+			h.app.cancelGoalBarTimers(goalKey)
 		}
 	}
 }

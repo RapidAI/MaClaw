@@ -11,7 +11,7 @@ import (
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
-func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient *http.Client, loopCtx *LoopContext, history []agent.ConversationEntry, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, []agent.ConversationEntry, bool) {
+func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient *http.Client, loopCtx *LoopContext, history []agent.ConversationEntry, onProgress tool.ProgressCallback, onToken llm.TokenCallback, turn stoppedGoalUserTurn) (*IMAgentResponse, []agent.ConversationEntry, bool) {
 	ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
 	if h.horizonActive(msg.UserID) || h.horizonActive(ownerID) {
 		return nil, history, false
@@ -36,6 +36,9 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 
 		runner := NewSubAgentTaskRunner(h, cfg, httpClient, taskOrch, loopCtx)
 		runner.codeSessionID = codeSessionID
+		// This runner is the session's work. A stopped goal follows it.
+		// A document confirmation and a new task stay stopped.
+		h.releaseStoppedGoalForUserContinue(msg, turn)
 		report := runner.RunAllTasks(onToken, func(text string) {
 			if onProgress != nil {
 				onProgress(text)

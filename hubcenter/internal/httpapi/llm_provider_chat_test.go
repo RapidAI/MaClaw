@@ -160,6 +160,62 @@ func TestLLMProviderTestRequestOmitsKimiLockedSampling(t *testing.T) {
 	}
 }
 
+func TestLLMProviderTestRequestUsesGoogleGenerateContent(t *testing.T) {
+	req, err := newLLMProviderTestRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:      "https://generativelanguage.googleapis.com/v1beta",
+		Key:      "test-key",
+		Model:    "gemini-3.8-flash",
+		Protocol: "google",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("newLLMProviderTestRequest() error = %v", err)
+	}
+	if !strings.Contains(req.URL.Path, ":generateContent") {
+		t.Fatalf("path = %s", req.URL.String())
+	}
+	if req.Header.Get("x-goog-api-key") != "test-key" {
+		t.Fatalf("api key header = %q", req.Header.Get("x-goog-api-key"))
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Fatalf("google probe sent Authorization")
+	}
+	var body map[string]any
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		t.Fatalf("decode test request: %v", err)
+	}
+	if _, exists := body["messages"]; exists {
+		t.Fatalf("google probe sent messages: %#v", body["messages"])
+	}
+	if _, exists := body["max_tokens"]; exists {
+		t.Fatalf("google probe sent max_tokens")
+	}
+	if _, exists := body["temperature"]; exists {
+		t.Fatalf("google probe invented temperature")
+	}
+	generation, _ := body["generationConfig"].(map[string]any)
+	if generation["maxOutputTokens"] != float64(64) {
+		t.Fatalf("maxOutputTokens = %#v", generation["maxOutputTokens"])
+	}
+	thinking, _ := generation["thinkingConfig"].(map[string]any)
+	if thinking["includeThoughts"] != true {
+		t.Fatalf("auto probe thinkingConfig = %#v", thinking)
+	}
+	if _, exists := thinking["thinkingLevel"]; exists {
+		t.Fatalf("auto probe named a thinking level: %#v", thinking)
+	}
+	reply, err := llmProviderTestReply([]byte(`{"candidates":[{"content":{"parts":[{"text":"pong"},{"functionCall":{"name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`), "google", "")
+	if err != nil {
+		t.Fatalf("parse reply: %v", err)
+	}
+	if reply != "pong" {
+		t.Fatalf("reply = %q", reply)
+	}
+	calls := llmservice.ParseProviderTestToolCalls([]byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"q":"x"}}}]}}]}`))
+	if len(calls) != 1 || calls[0].Name != "lookup" || !strings.Contains(calls[0].Arguments, "q") {
+		t.Fatalf("calls = %#v", calls)
+	}
+}
+
 func TestLLMProviderTestRequestOmitsThinkingForAMDDeepSeek(t *testing.T) {
 	for _, model := range []string{"DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "DeepSeek-V4-Pro", "deepseek-reasoner"} {
 		t.Run(model, func(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -127,4 +128,29 @@ func (e *idleTimeoutError) Unwrap() error { return e.cause }
 func IsSSEIdleTimeoutError(err error) bool {
 	var ite *idleTimeoutError
 	return errors.As(err, &ite)
+}
+
+// streamIdleTimeoutMarker is the shared phrase of a stream that accepted the
+// request and then produced no payload. The local idle reader says
+// "SSE stream idle timeout". A gateway can report the same stall inside an
+// HTTP 200 error frame as "upstream stream idle timeout after 2m0s".
+const streamIdleTimeoutMarker = "stream idle timeout"
+
+// IsStreamIdleTimeoutText reports that s describes a stream idle stall.
+// A copied error string no longer has the idle reader's type.
+func IsStreamIdleTimeoutText(s string) bool {
+	return strings.Contains(s, streamIdleTimeoutMarker)
+}
+
+// IsStreamIdleStall reports a stream that went idle before any payload,
+// whether this process's idle reader aborted it or the gateway named that
+// stall in an upstream error frame.
+func IsStreamIdleStall(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsSSEIdleTimeoutError(err) {
+		return true
+	}
+	return IsStreamIdleTimeoutText(err.Error())
 }

@@ -4,6 +4,7 @@ import { localizeText } from "./aiAssistantI18n";
 import { normalizeProjectSessionPath } from "./assistantSessionPath";
 import { chatTaskTerminal } from "./chatTaskModel";
 import { codingStepIsDone } from "./codingStepStatus";
+import { leadingSnapshotStatusCompleted, snapshotRawReportsProgress } from "./taskExecutionSnapshot";
 
 export type TaskExecutionStatusTone = "failed" | "pending" | "cancelled" | "running" | "completed";
 
@@ -47,6 +48,9 @@ export function resolveTaskExecutionStatus(input: {
 }): TaskExecutionStatus {
     const raw = input.raw || "";
     const lang = input.lang;
+    // The task list buckets on the leading workflow status. Once that word is
+    // a finished success, a later step or phase token must not reopen it.
+    const settledComplete = durableExecutionStatusCompleted(raw);
     // Live foreground work is the current outcome. A failed, cancelled, or
     // interrupted token left in the snapshot (or a recovery card from an
     // earlier turn) describes the previous attempt; while the turn is still
@@ -54,8 +58,9 @@ export function resolveTaskExecutionStatus(input: {
     // reasoning trail that is still streaming.
     const liveWork = input.busy === true;
     // Failure still beats pause and an in-flight stop. A live worker wins, so
-    // a failed token left in the snapshot does not hide it.
-    if (!input.openChatWork && !liveWork && /(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
+    // a failed token left in the snapshot does not hide it. A leading
+    // completed status is the list's outcome; a later failed step is not.
+    if (!settledComplete && !input.openChatWork && !liveWork && /(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
         return { label: localizeText(lang, "Failed", "失败", "失敗"), tone: "failed" };
     }
     if (input.cancelPending) {
@@ -81,13 +86,25 @@ export function resolveTaskExecutionStatus(input: {
     if (/^(paused|pause|已暂停|暂停)(?=$|[\s_])/.test(raw)) {
         return { label: localizeText(lang, "Paused", "已暂停", "已暫停"), tone: "pending" };
     }
-    if (/(cancel|canceled|cancelled|stopped|已取消|已停止)/.test(raw)) {
+    if (!settledComplete && /(cancel|canceled|cancelled|stopped|已取消|已停止)/.test(raw)) {
         return { label: localizeText(lang, "Cancelled", "已取消", "已取消"), tone: "cancelled" };
     }
     // An interrupt can be resumed. It is not a review request, and passed
-    // coding steps do not make the run completed.
-    if (/(^|[\s_])interrupted(?=$|[\s_])/.test(raw) || input.pendingUnfinishedStatus === "interrupted") {
+    // coding steps do not make the run completed. A durable completed status
+    // is the later outcome: a recovery card left in the transcript belongs
+    // to the attempt that already finished.
+    if (!settledComplete && /(^|[\s_])interrupted(?=$|[\s_])/.test(raw)) {
         return { label: localizeText(lang, "Interrupted", "已中断", "已中斷"), tone: "pending" };
+    }
+    // The list files active / execute / execution as in progress before it
+    // looks at a phase named review. A real approval is the pending_review
+    // flag: the status word stays "active" while the user still has to
+    // confirm, and that flag wins over the progress word.
+    if (!settledComplete && (input.pendingReview || input.awaitingUserReview)) {
+        return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" };
+    }
+    if (!settledComplete && (input.busy || snapshotRawReportsProgress(raw))) {
+        return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
     }
     // Finished coding steps are the task outcome. A phase name that merely
     // contains "review" must not keep the badge pending. A live approval flag
@@ -98,13 +115,13 @@ export function resolveTaskExecutionStatus(input: {
         }
         return { label: localizeText(lang, "Completed", "已完成", "已完成"), tone: "completed" };
     }
-    if (input.pendingReview || /(waiting[_ ]?confirm|review|approval|pending|待确认|待处理|审核|审批)/.test(raw)) {
+    // The leading status is the same word the task list buckets on. A review
+    // flag or a later "pending" token belongs to an earlier phase once that
+    // status is already a finished success.
+    if (!settledComplete && (input.pendingReview || /(waiting[_ ]?confirm|review|approval|pending|待确认|待处理|审核|审批)/.test(raw))) {
         return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" };
     }
-    if (input.busy || /\b(running|execut|processing|in_progress|started|进行|执行|运行)\b/.test(raw)) {
-        return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
-    }
-    if (input.pendingUnfinishedStatus) {
+    if (!settledComplete && input.pendingUnfinishedStatus) {
         if (input.pendingUnfinishedStatus === "interrupted") {
             return { label: localizeText(lang, "Interrupted", "已中断", "已中斷"), tone: "pending" };
         }
@@ -112,19 +129,26 @@ export function resolveTaskExecutionStatus(input: {
     }
     // A hard exit still leaves the model's sentence in the transcript. That
     // sentence is not a checked finish, so an idle chat must not say completed.
-    if (input.turnIncomplete) {
+    // A durable completed status is the later outcome and stays completed.
+    if (!settledComplete && input.turnIncomplete) {
         return { label: localizeText(lang, "Unfinished", "未完成", "未完成"), tone: "pending" };
     }
     // A restored plan phase or an in-flight tab prepare is not a run. It may
     // answer "in progress" only after every explicit outcome above: those are
     // what the sidebar row shows, and the two surfaces must agree.
-    if (input.backgroundPhaseActive) {
+    if (!settledComplete && input.backgroundPhaseActive) {
         return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
     }
     if (/(complete|completed|finish|success|succeed|done|passed|已完成|完成|成功)/.test(raw) || input.hasOutput || (input.hasMessages && !input.workflowActive && input.codingStepCount === 0)) {
         return { label: localizeText(lang, "Completed", "已完成", "已完成"), tone: "completed" };
     }
     return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" };
+}
+
+/** The leading workflow status is a finished success. Step words such as
+ * "passed" are not that status: they follow the workflow token. */
+function durableExecutionStatusCompleted(raw: string): boolean {
+    return leadingSnapshotStatusCompleted(raw);
 }
 
 // foldChatSessionKey makes a backend session key and a tab session key comparable.

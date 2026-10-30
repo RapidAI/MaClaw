@@ -104,6 +104,79 @@ func TestOpenAICompatReceiptAcceptsProviderReducedToolSchema(t *testing.T) {
 	}
 }
 
+func TestGoogleGenerateContentReceiptAcceptsFunctionDeclarations(t *testing.T) {
+	rendered := hubCompatReceiptToolDefinition()
+	cfg := corelib.MaclawLLMConfig{
+		URL:      "https://generativelanguage.googleapis.com/v1beta",
+		Model:    "gemini-3.8-flash",
+		Protocol: "google",
+		Key:      "test-key",
+	}
+	// The receipt must freeze the same schema reduction generateContent applies.
+	// PrepareOpenAIChatToolsForWire leaves additionalProperties on this host.
+	prepared := prepareToolsForToolSurfaceReceipt(cfg, rendered)
+	called := false
+	client, err := NewToolSurfaceReceiptHTTPClientWithInvocationPolicy(
+		&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			called = true
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(nil))}, nil
+		})},
+		prepared,
+		DefaultToolSurfaceInvocationPolicy(ToolSurfaceEnvelopeOpenAIChat),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create receipt client: %v", err)
+	}
+	_, body, err := llm.BuildGoogleGenerateContentRequestData(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	}, llm.GoogleGenerateRequestOptions{Tools: prepared, ExplicitToolReplacement: true})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.test/v1beta/models/gemini-3.8-flash:generateContent", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("generateContent tool surface was rejected: %v", err)
+	}
+	_ = response.Body.Close()
+	if !called {
+		t.Fatal("transport was not reached")
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode wire body: %v", err)
+	}
+	tools := payload["tools"].([]interface{})
+	decl := tools[0].(map[string]interface{})["functionDeclarations"].([]interface{})[0].(map[string]interface{})
+	params := decl["parameters"].(map[string]interface{})
+	if _, exists := params["additionalProperties"]; exists {
+		t.Fatalf("google wire reintroduced additionalProperties: %#v", params)
+	}
+	if _, exists := payload["tool_choice"]; exists || payload["parallel_tool_calls"] != nil {
+		t.Fatalf("google wire used an OpenAI invocation field: %#v", payload)
+	}
+
+	_, chosen, err := llm.BuildGoogleGenerateContentRequestData(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	}, llm.GoogleGenerateRequestOptions{Tools: prepared, ExplicitToolReplacement: true, ToolChoice: "auto"})
+	if err != nil {
+		t.Fatalf("build chosen request: %v", err)
+	}
+	var chosenPayload map[string]interface{}
+	if err := json.Unmarshal(chosen, &chosenPayload); err != nil {
+		t.Fatalf("decode chosen body: %v", err)
+	}
+	policy := DefaultToolSurfaceInvocationPolicy(ToolSurfaceEnvelopeOpenAIChat)
+	policy.ToolChoice = ToolSurfaceToolChoice{Mode: ToolSurfaceToolChoiceAuto}
+	if _, err := VerifyToolSurfaceRequestPayload(prepared, chosenPayload, policy); err != nil {
+		t.Fatalf("AUTO toolConfig was not the explicit auto policy: %v", err)
+	}
+}
+
 func TestRunLoopOpenAICompatReceiptSurvivesStreamFallback(t *testing.T) {
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

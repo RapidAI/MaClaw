@@ -1,9 +1,6 @@
 package guiapp
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -129,70 +126,26 @@ func (s *aiConfirmationStore) clearExpired(now time.Time) {
 func (s *aiConfirmationStore) stop() {}
 
 func (s *aiConfirmationStore) saveToDisk() error {
-	if s == nil || s.storePath == "" {
+	if s == nil || strings.TrimSpace(s.storePath) == "" {
 		return nil
 	}
 	s.mu.RLock()
-	snapshot := confirmationSnapshot{Items: make(map[string]*pendingConfirmation, len(s.items))}
-	for userID, item := range s.items {
-		if item == nil {
-			continue
-		}
-		clone := *item
-		clone.Status = normalizeConfirmationStatus(clone.Status.String())
-		clone.TargetPaths = append([]string(nil), item.TargetPaths...)
-		clone.PlannedActions = append([]string(nil), item.PlannedActions...)
-		clone.RiskFlags = append([]string(nil), item.RiskFlags...)
-		clone.RevisionHints = append([]string(nil), item.RevisionHints...)
-		clone.WorkflowGoals = append([]string(nil), item.WorkflowGoals...)
-		clone.WorkflowConstraints = append([]string(nil), item.WorkflowConstraints...)
-		snapshot.Items[userID] = &clone
-	}
+	items := cloneConfirmations(s.items)
 	s.mu.RUnlock()
-	if err := os.MkdirAll(filepath.Dir(s.storePath), 0o755); err != nil {
-		return err
-	}
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		return err
-	}
-	tmp := s.storePath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.storePath)
+	return saveConfirmations(s.storePath, items)
 }
 
 func (s *aiConfirmationStore) loadFromDisk() error {
-	if s == nil || s.storePath == "" {
+	if s == nil || strings.TrimSpace(s.storePath) == "" {
 		return nil
 	}
-	data, err := os.ReadFile(s.storePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	items, err := loadConfirmations(s.storePath)
+	if len(items) > 0 {
+		s.mu.Lock()
+		for userID, item := range items {
+			s.items[userID] = item
 		}
-		return err
+		s.mu.Unlock()
 	}
-	var snapshot confirmationSnapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for userID, item := range snapshot.Items {
-		if item == nil {
-			continue
-		}
-		clone := *item
-		clone.Status = normalizeConfirmationStatus(clone.Status.String())
-		clone.TargetPaths = append([]string(nil), item.TargetPaths...)
-		clone.PlannedActions = append([]string(nil), item.PlannedActions...)
-		clone.RiskFlags = append([]string(nil), item.RiskFlags...)
-		clone.RevisionHints = append([]string(nil), item.RevisionHints...)
-		clone.WorkflowGoals = append([]string(nil), item.WorkflowGoals...)
-		clone.WorkflowConstraints = append([]string(nil), item.WorkflowConstraints...)
-		s.items[userID] = &clone
-	}
-	return nil
+	return err
 }

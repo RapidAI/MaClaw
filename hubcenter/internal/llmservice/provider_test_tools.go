@@ -39,6 +39,16 @@ func ParseProviderTestToolCalls(body []byte) []ProviderToolCall {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
 		} `json:"output"`
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					FunctionCall struct {
+						Name string          `json:"name"`
+						Args json.RawMessage `json:"args"`
+					} `json:"functionCall"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil
@@ -72,6 +82,15 @@ func ParseProviderTestToolCalls(body []byte) []ProviderToolCall {
 			continue
 		}
 		out = append(out, ProviderToolCall{Name: name, Arguments: toolCallArguments(item.Arguments)})
+	}
+	for _, candidate := range envelope.Candidates {
+		for _, part := range candidate.Content.Parts {
+			name := strings.TrimSpace(part.FunctionCall.Name)
+			if name == "" {
+				continue
+			}
+			out = append(out, ProviderToolCall{Name: name, Arguments: toolCallArguments(part.FunctionCall.Args)})
+		}
 	}
 	return out
 }

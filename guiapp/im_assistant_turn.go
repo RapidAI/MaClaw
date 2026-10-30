@@ -187,12 +187,16 @@ func (h *IMMessageHandler) buildAgentLoopAssistantTurn(ctx *LoopContext, choice 
 	if len(choice.Message.ToolCalls) > 0 {
 		assistantMsg["tool_calls"] = choice.Message.ToolCalls
 	}
+	if sig := strings.TrimSpace(choice.Message.ThoughtSignature); sig != "" {
+		assistantMsg["thought_signature"] = sig
+	}
 
 	hasToolCalls := len(choice.Message.ToolCalls) > 0
 	historyEntry := agent.ConversationEntry{
 		Role:             "assistant",
 		Content:          msgContent,
 		ReasoningContent: msgReasoning,
+		ThoughtSignature: strings.TrimSpace(choice.Message.ThoughtSignature),
 		FinishReason:     agent.ResolveAssistantFinishReason(choice.FinishReason, hasToolCalls),
 	}
 	if hasToolCalls {

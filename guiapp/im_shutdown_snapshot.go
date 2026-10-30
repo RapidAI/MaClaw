@@ -150,8 +150,9 @@ func (h *IMMessageHandler) waitForInterruptedSessionsForShutdown() {
 		items = append(items, waitItem{userID: userID, done: turn.done})
 		return true
 	})
-	pending := make(chan string, len(items))
 	var wg sync.WaitGroup
+	var timeoutMu sync.Mutex
+	var timedOut []string
 	for _, item := range items {
 		if item.done == nil {
 			continue
@@ -161,25 +162,27 @@ func (h *IMMessageHandler) waitForInterruptedSessionsForShutdown() {
 			defer wg.Done()
 			select {
 			case <-item.done:
-			case <-time.After(30 * time.Second):
-				pending <- item.userID
+			case <-time.After(shutdownLoopCleanupWait):
+				timeoutMu.Lock()
+				timedOut = append(timedOut, item.userID)
+				timeoutMu.Unlock()
 			}
 		}(item)
 	}
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		close(pending)
-		for userID := range pending {
-			log.Printf("[ShutdownSnapshot] timed out waiting for saved loop cleanup user=%q", userID)
-		}
+	// Wait for every waiter. Closing a channel from a parallel timeout races
+	// the send and panics on quit.
+	wg.Wait()
+	timeoutMu.Lock()
+	defer timeoutMu.Unlock()
+	for _, userID := range timedOut {
+		log.Printf("[ShutdownSnapshot] timed out waiting for saved loop cleanup user=%q", userID)
 	}
 }
+
+// shutdownLoopCleanupWait bounds how long quit waits for a cancelled agent
+// loop to write its last progress. The resume slot is already saved; a longer
+// wait is what made the tray Quit feel stuck.
+const shutdownLoopCleanupWait = 500 * time.Millisecond
 
 func shutdownRecoverySlotID(now time.Time) string {
 	return fmt.Sprintf("shutdown-%d-%d", now.UnixMilli(), time.Now().UnixNano())

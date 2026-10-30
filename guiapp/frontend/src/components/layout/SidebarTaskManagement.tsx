@@ -820,8 +820,12 @@ export function taskStatusBucketFor(task: Pick<TaskManagementItem, 'active_workf
     if (status === 'interrupted') return 'pending';
     if (/(fail|error|blocked|失败|错误|阻塞)/.test(status)) return 'other';
     if (workflowLooksPaused(task.active_workflow)) return 'paused';
+    // The confirm gate is the row even when the status word is still active
+    // or the phase id contains "execute". Those keywords are the run, not a
+    // reason to count a waiting user as in progress.
+    if (task.active_workflow?.pending_review) return 'pending';
     if (/(running|execut|active|processing)/.test(raw)) return 'running';
-    if (task.active_workflow?.pending_review || /(review|confirm|approval|pending|待)/.test(raw)) return 'pending';
+    if (/(review|confirm|approval|pending|待)/.test(raw)) return 'pending';
     // A fatal gate or runtime failure is not a finished success, even when an
     // earlier turn already produced output.
     if (/(fail|error|blocked|失败|错误|阻塞)/.test(raw)) return 'other';

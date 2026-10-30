@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -121,10 +122,24 @@ type chatTaskRegistry struct {
 	persistMu sync.Mutex
 	tasks     map[string]*chatTaskRecord
 	nextID    uint64
+
+	dbOnce sync.Once
+	db     *sql.DB
+	dbErr  error
+
+	// taskSig is the last committed row signature. The first persist reads the
+	// table once; later persists write only rows whose signature changed.
+	// The map is replaced after the transaction commits.
+	taskSigReady bool
+	taskSig      map[string]chatTaskSig
+	// tasksLoaded is set only after a complete read. An unread registry must
+	// not persist, because an empty list would delete every stored row.
+	tasksLoaded bool
 }
 
 type chatTaskDisk struct {
-	Tasks []AIAssistantChatTask `json:"tasks"`
+	Tasks      []AIAssistantChatTask `json:"tasks"`
+	Generation int64                 `json:"generation,omitempty"`
 }
 
 func chatTaskMemoryOwner(sessionKey, taskID string) string {
@@ -960,52 +975,292 @@ func (r *chatTaskRegistry) emit(snap AIAssistantChatTask) {
 	r.handler.app.emitEvent(chatTaskEventName, string(payload))
 }
 
-func (r *chatTaskRegistry) persist() {
+// persist writes the task list. SQLite is the durable store. The JSON file is
+// written only when the database cannot be opened or the transaction fails.
+// The bool reports whether the SQLite write committed.
+func (r *chatTaskRegistry) persist() bool {
 	if r == nil || r.storePath == "" {
-		return
+		return false
 	}
 	// Serialize the snapshot and the rename. Otherwise two persists can list
 	// in order A, B and write in order B, A, dropping the newer snapshot.
 	r.persistMu.Lock()
 	defer r.persistMu.Unlock()
-	blob, err := json.MarshalIndent(chatTaskDisk{Tasks: r.List("")}, "", "  ")
+	if !r.tasksLoaded {
+		log.Printf("[chat-task] persist skipped: task list was not loaded")
+		return false
+	}
+	tasks := r.List("")
+	stored, genErr := r.chatSnapshotGen()
+	if genErr != nil {
+		log.Printf("[chat-task] snapshot gen: %v", genErr)
+	}
+	nextGen := int64(0)
+	if genErr == nil {
+		// The commit and the fallback file share one counter. A leftover file
+		// from before this commit stays at or below the stored generation.
+		nextGen = nextChatTaskGeneration(stored, r.chatTaskFileGenerations()...)
+	}
+	if err := r.persistSQLite(tasks, nextGen); err == nil {
+		for _, path := range r.chatTaskSnapshotPaths() {
+			_ = os.Remove(path)
+		}
+		return true
+	} else if r.db != nil {
+		log.Printf("[chat-task] sqlite persist: %v", err)
+	}
+	if genErr != nil {
+		return false
+	}
+	blob, err := json.MarshalIndent(chatTaskDisk{Tasks: tasks, Generation: nextGen}, "", "  ")
 	if err != nil {
 		log.Printf("[chat-task] persist marshal: %v", err)
-		return
+		return false
 	}
 	if err := os.MkdirAll(filepath.Dir(r.storePath), 0o755); err != nil {
 		log.Printf("[chat-task] persist mkdir: %v", err)
-		return
+		return false
 	}
-	tmp := r.storePath + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0o644); err != nil {
+	// Publish the snapshot by renaming one complete file. A crash after that
+	// rename still leaves a document the next open imports, including when the
+	// import flag is still set and chat-tasks.json was not replaced yet.
+	if err := publishChatTaskFallback(r.storePath, blob); err != nil {
+		log.Printf("[chat-task] fallback snapshot: %v", err)
+	}
+	if err := publishAtomicFile(r.storePath, blob); err != nil {
 		log.Printf("[chat-task] persist write: %v", err)
-		return
+		return false
 	}
-	if err := os.Rename(tmp, r.storePath); err != nil {
-		log.Printf("[chat-task] persist rename: %v", err)
+	if r.db != nil {
+		_, _ = r.db.Exec(`DELETE FROM chat_task_meta WHERE key=?`, chatTaskLegacyMetaKey)
 	}
+	return false
+}
+
+// publishChatTaskFallback makes jsonPath+".fallback" the durable snapshot.
+// The bytes are the task document. Load also accepts a complete temp file
+// and chat-tasks.json, and keeps the highest generation.
+func publishChatTaskFallback(jsonPath string, blob []byte) error {
+	return publishAtomicFile(chatTaskFallbackMarker(jsonPath), blob)
+}
+
+// publishAtomicFile replaces dest with a complete document. The new bytes go
+// to dest+".writing" first. A previous complete ".writing" file is moved to
+// ".writing.prior" before that write, so the earlier snapshot stays readable
+// until the new file is complete. Load reads both names, plus a leftover
+// dest+".tmp" from an older process.
+func publishAtomicFile(dest string, blob []byte) error {
+	staged := dest + ".writing"
+	if err := parkValidSnapshot(staged); err != nil {
+		return err
+	}
+	if err := os.WriteFile(staged, blob, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(staged, dest); err == nil {
+		return nil
+	}
+	// Windows refuses to rename onto an existing file. staged is already a
+	// complete snapshot, so removing dest cannot lose the new bytes.
+	if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(staged, dest)
+}
+
+func parkValidSnapshot(path string) error {
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	_, pathGen, ok := chatTaskSnapshotBytes(blob)
+	if !ok {
+		return nil
+	}
+	park := path + ".prior"
+	if parkBlob, readErr := os.ReadFile(park); readErr == nil {
+		if _, parkGen, pok := chatTaskSnapshotBytes(parkBlob); pok && parkGen >= pathGen {
+			return nil
+		}
+		if err := os.Remove(park); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return os.Rename(path, park)
+}
+
+func nextChatTaskGeneration(stored int64, fileGens ...int64) int64 {
+	next := stored + 1
+	for _, gen := range fileGens {
+		if gen+1 > next {
+			next = gen + 1
+		}
+	}
+	if next < 1 {
+		return 1
+	}
+	return next
+}
+
+func chatTaskFallbackMarker(jsonPath string) string {
+	return jsonPath + ".fallback"
 }
 
 func (r *chatTaskRegistry) load() {
 	if r == nil || r.storePath == "" {
 		return
 	}
-	blob, err := os.ReadFile(r.storePath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("[chat-task] load: %v", err)
+	if err := r.openChatTaskDB(); err != nil {
+		log.Printf("[chat-task] sqlite open: %v", err)
+		if snaps, _, ok := r.newestChatTaskSnapshot(); ok {
+			r.tasksLoaded = true
+			r.installChatTaskSnapshots(snaps, false)
 		}
 		return
 	}
-	var disk chatTaskDisk
-	if err := json.Unmarshal(blob, &disk); err != nil {
-		log.Printf("[chat-task] load parse: %v", err)
+	if r.consumeChatTaskFallback() {
 		return
 	}
+	// A missing or unreadable legacy file is not an empty task list. Loading
+	// it as empty would delete the rows already stored in SQLite.
+	r.loadSQLiteTasks()
+	if !r.chatTaskJSONExists() && r.tasksLoaded {
+		if err := r.setChatTaskMeta(chatTaskLegacyMetaKey, "1"); err != nil {
+			log.Printf("[chat-task] legacy import mark: %v", err)
+		}
+	}
+}
+
+// consumeChatTaskFallback imports the newest on-disk snapshot when its
+// generation is ahead of the committed snapshot_gen. chat-tasks.json,
+// the fallback file, and a leftover fallback temp file are one pool.
+func (r *chatTaskRegistry) consumeChatTaskFallback() bool {
+	snaps, gen, ok := r.newestChatTaskSnapshot()
+	if !ok {
+		return false
+	}
+	stored, err := r.chatSnapshotGen()
+	if err != nil {
+		log.Printf("[chat-task] snapshot gen: %v", err)
+		return false
+	}
+	if !chatTaskFallbackIsNewer(gen, stored, r.chatTaskLegacyImported(), r.chatTasksPresent()) {
+		return false
+	}
+	r.tasksLoaded = true
+	r.installChatTaskSnapshots(snaps, true)
+	if r.chatTaskLegacyImported() {
+		_ = os.Remove(chatTaskFallbackMarker(r.storePath))
+		_ = os.Remove(chatTaskFallbackMarker(r.storePath) + ".tmp")
+	}
+	return true
+}
+
+// chatTaskFallbackIsNewer reports whether a snapshot file should replace the
+// SQLite rows. A positive generation wins when it is greater than snapshot_gen.
+// Generation 0 is a pre-counter document. It is the first import when SQLite
+// has no snapshot_gen, the import flag is unset, and the task table is empty.
+func chatTaskFallbackIsNewer(fileGen, storedGen int64, legacyImported, rowsPresent bool) bool {
+	if fileGen > storedGen {
+		return true
+	}
+	return fileGen == 0 && storedGen == 0 && !legacyImported && !rowsPresent
+}
+
+func (r *chatTaskRegistry) newestChatTaskSnapshot() ([]AIAssistantChatTask, int64, bool) {
+	var best []AIAssistantChatTask
+	var bestGen int64
+	found := false
+	for _, path := range r.chatTaskSnapshotPaths() {
+		blob, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		snaps, gen, ok := chatTaskSnapshotBytes(blob)
+		if !ok {
+			continue
+		}
+		if found && gen <= bestGen {
+			continue
+		}
+		best = snaps
+		bestGen = gen
+		found = true
+	}
+	return best, bestGen, found
+}
+
+func (r *chatTaskRegistry) chatTaskSnapshotPaths() []string {
+	var paths []string
+	for _, base := range []string{chatTaskFallbackMarker(r.storePath), r.storePath} {
+		paths = append(paths, base, base+".tmp", base+".writing", base+".writing.prior")
+	}
+	return paths
+}
+
+func (r *chatTaskRegistry) chatTaskFileGenerations() []int64 {
+	var gens []int64
+	for _, path := range r.chatTaskSnapshotPaths() {
+		blob, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		_, gen, ok := chatTaskSnapshotBytes(blob)
+		if !ok {
+			continue
+		}
+		gens = append(gens, gen)
+	}
+	return gens
+}
+
+func (r *chatTaskRegistry) chatTaskJSONExists() bool {
+	if r == nil || r.storePath == "" {
+		return false
+	}
+	_, err := os.Stat(r.storePath)
+	return err == nil
+}
+
+func chatTaskSnapshotBytes(blob []byte) ([]AIAssistantChatTask, int64, bool) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &raw); err != nil {
+		return nil, 0, false
+	}
+	tasksRaw, ok := raw["tasks"]
+	if !ok || string(tasksRaw) == "null" {
+		return nil, 0, false
+	}
+	var tasks []AIAssistantChatTask
+	if err := json.Unmarshal(tasksRaw, &tasks); err != nil {
+		return nil, 0, false
+	}
+	if tasks == nil {
+		tasks = []AIAssistantChatTask{}
+	}
+	var gen int64
+	if g, ok := raw["generation"]; ok && string(g) != "null" {
+		if err := json.Unmarshal(g, &gen); err != nil {
+			return nil, 0, false
+		}
+	}
+	return tasks, gen, true
+}
+
+func (r *chatTaskRegistry) loadSQLiteTasks() {
+	snaps, err := r.selectChatTasks()
+	if err != nil {
+		log.Printf("[chat-task] sqlite load: %v", err)
+		return
+	}
+	r.tasksLoaded = true
+	r.installChatTaskSnapshots(snaps, false)
+}
+
+func (r *chatTaskRegistry) installChatTaskSnapshots(snaps []AIAssistantChatTask, markImported bool) {
 	changed := false
 	r.mu.Lock()
-	for _, snap := range disk.Tasks {
+	for _, snap := range snaps {
 		rec := recordFromSnapshot(snap)
 		if !rec.Status.terminal() {
 			rec.Status = chatTaskInterrupted
@@ -1029,8 +1284,13 @@ func (r *chatTaskRegistry) load() {
 		r.tasks[rec.ID] = rec
 	}
 	r.mu.Unlock()
-	if changed {
-		r.persist()
+	if !changed && !markImported {
+		return
+	}
+	if r.persist() && markImported {
+		if err := r.setChatTaskMeta(chatTaskLegacyMetaKey, "1"); err != nil {
+			log.Printf("[chat-task] legacy import mark: %v", err)
+		}
 	}
 }
 
@@ -1170,6 +1430,23 @@ func (h *IMMessageHandler) tryChatTaskStatusReply(msg IMUserMessage) (*IMAgentRe
 		SessionKey:     sessionKey,
 		ResponseSource: "chat_task_status",
 	}, true
+}
+
+func chatTaskControlName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case chatTaskToolDispatch, chatTaskToolSteer, chatTaskToolStop, chatTaskToolRequestInput:
+		return true
+	default:
+		return false
+	}
+}
+
+// legacyCatalogOwnsTool reports whether the reviewed legacy snapshot may
+// accept or reject this name. Host conversation controls are not adapter
+// provisions. The handler decides, after the same execution pipeline as any
+// other host tool: cancel, argument size, ACP, and progress.
+func legacyCatalogOwnsTool(name string) bool {
+	return !chatTaskControlName(name)
 }
 
 func (h *IMMessageHandler) executeChatTaskToolIfAny(policyUserID, name string, args map[string]interface{}) (toolExecutionResult, bool) {

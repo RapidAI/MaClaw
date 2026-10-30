@@ -302,7 +302,15 @@ describe("useConversationViewArchive", () => {
         banner.focus();
         fireEvent.click(banner);
         const dialog = await screen.findByTestId("conversation-archive-dialog");
+        expect(dialog.hasAttribute("data-scroll-intent-boundary")).toBe(true);
+        expect(dialog.hasAttribute("data-nested-scroll")).toBe(false);
         await waitFor(() => expect(document.activeElement).toBe(dialog));
+        const frameWheel = new WheelEvent("wheel", { deltaY: -30, bubbles: true, cancelable: true });
+        dialog.dispatchEvent(frameWheel);
+        expect(frameWheel.defaultPrevented).toBe(true);
+        const listWheel = new WheelEvent("wheel", { deltaY: -30, bubbles: true, cancelable: true });
+        screen.getByTestId("conversation-archive-scroller").dispatchEvent(listWheel);
+        expect(listWheel.defaultPrevented).toBe(false);
         fireEvent.keyDown(window, { key: "Escape" });
         await waitFor(() => expect(screen.queryByTestId("conversation-archive-dialog")).toBeNull());
         expect(document.activeElement).toBe(banner);

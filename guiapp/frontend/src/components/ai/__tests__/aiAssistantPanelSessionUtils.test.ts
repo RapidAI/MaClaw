@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -503,6 +503,21 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(messageAfterSessionFloor({ timestamp: 10 }, 20)).toBe(false);
         expect(messageAfterSessionFloor({ timestamp: 20 }, 20)).toBe(true);
         expect(messageAfterSessionFloor({ timestamp: 10 }, 0)).toBe(true);
+    });
+});
+
+describe("fileTerminalResponseWithoutRound", () => {
+    const taskKey = "desktop-user:C:/Users/me/.maclaw/data/tasks/indra";
+
+    it("files a renderable payload onto the task that owns it", () => {
+        expect(fileTerminalResponseWithoutRound({ hasRound: false, sessionKey: taskKey, renderable: true })).toBe(true);
+    });
+
+    it("leaves a settled round and a session-less payload alone", () => {
+        expect(fileTerminalResponseWithoutRound({ hasRound: true, sessionKey: taskKey, renderable: true })).toBe(false);
+        expect(fileTerminalResponseWithoutRound({ hasRound: false, sessionKey: taskKey, renderable: false })).toBe(false);
+        expect(fileTerminalResponseWithoutRound({ hasRound: false, sessionKey: "desktop-user", renderable: true })).toBe(false);
+        expect(fileTerminalResponseWithoutRound({ hasRound: false, sessionKey: "", renderable: true })).toBe(false);
     });
 });
 

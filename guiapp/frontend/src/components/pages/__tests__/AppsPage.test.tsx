@@ -2687,7 +2687,10 @@ describe('AppsPage', () => {
                 status: 'review_failed',
                 reviewer: 'market-reviewer',
                 message: '请补充运行证',
-                reviewIssues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缺少运行证据', suggestion: '先运行一次应用' }],
+                reviewIssues: [
+                    { path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缺少运行证据', suggestion: '先运行一次应用' },
+                    { path: 'apps[0].app.governance.resultContract', severity: 'error', message: 'missing result contract', suggestion: 'declare the app output contract before submitting to the capability market' },
+                ],
             },
         }));
 
@@ -2711,6 +2714,7 @@ describe('AppsPage', () => {
         expect(screen.getByText('apps[0].app.governance.testEvidence')).not.toBeNull();
         expect(screen.getByText('缺少运行证据')).not.toBeNull();
         expect(screen.getByText('先运行一次应用')).not.toBeNull();
+        expect(screen.getByText('missing result contract')).not.toBeNull();
         await waitFor(() => expect(screen.getByText(/"status": "review_failed"/)).not.toBeNull());
 
         await waitFor(() => expect(screen.getByText('一键发布')).not.toBeNull());
@@ -4774,6 +4778,79 @@ describe('AppsPage', () => {
         await waitFor(() => expect(within(card).getByText('Definition changed; run evidence is stale — rerun the app to refresh it')).not.toBeNull());
         await waitFor(() => expect((within(card).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true));
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
+    });
+
+    it('shows the authoritative review sentence in Mongolian on the publish checklist', async () => {
+        const app = {
+            id: 'datasrv-installed-stale-layout-mn-app',
+            name: 'Installed Stale Layout App',
+            description: 'Imported evidence should expire when UI layout changes',
+            category: 'Finance',
+            kind: 'tool_app',
+            icon: 'sheet',
+            accent: '#4b6572',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            importedRunEvidence: {
+                runID: 'run-imported-layout-mn',
+                appID: 'datasrv-installed-stale-layout-mn-app',
+                status: 'done',
+                outputMode: 'content',
+                inputSummary: 'Imported DataSrv test evidence',
+                message: 'Imported DataSrv test evidence',
+                outputs: [{ kind: 'content', title: 'Imported content', text: 'ready', status: 'ready' }],
+                resultPayload: { text: 'ready' },
+                at: '2026-06-21T11:00:00Z',
+            },
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'tool_app',
+                launchMode: 'fixed_skill_ui',
+                appSkill: { id: 'imported-tool-skill', version: '1.0.0', source: 'hub' },
+                skill: { id: 'imported-tool-skill', inputMode: 'form', outputModes: ['text'], fields: [] },
+                dependencies: { skills: [{ id: 'imported-tool-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub' }] },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    entry: 'tool_workspace',
+                    layouts: {
+                        tool_workspace: {
+                            template: 'classic_split',
+                            density: 'compact',
+                            primaryRegion: 'left',
+                            outputRegion: 'right',
+                            regions: [{ id: 'input', role: 'input', placement: 'left' }, { id: 'output', role: 'output', placement: 'right' }],
+                            studio: { savedInManifest: true },
+                        },
+                    },
+                },
+                resultContract: { schema: 'maclaw.app.result.v1', primary: 'content', types: ['content'], delivery: { inlineContent: true, artifacts: false, businessRecord: false, notifications: false } },
+                testProtocol: { schema: 'maclaw.app.test_protocol.v1', requiredRuns: 1, cases: [{ id: 'smoke', name: 'Smoke', required: true, expectedOutputs: ['content'] }] },
+            },
+        };
+        (app.importedRunEvidence as any).definitionHash = testAppDefinitionFingerprint(app);
+        (app.manifest.ui.layouts.tool_workspace as any).density = 'comfortable';
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        planMaclawAppInstallMock.mockResolvedValue({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{ id: 'imported-tool-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+            has_governance_review_issue: false,
+        });
+        reviewMaclawAppPackageMock.mockResolvedValue({ review_issues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: 'Definition changed; run evidence is stale — rerun the app to refresh it' }] });
+
+        render(<AppsPage lang="mn" />);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Апп үүсгэх' }));
+        fireEvent.click(screen.getByText('Хянах / нийтлэх'));
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Installed Stale Layout App')) as HTMLElement;
+        expect(card).toBeTruthy();
+        await waitFor(() => expect(within(card).getByText('Тодорхойлолт өөрчлөгдсөн; гүйлтийн нотолгоо хуучирсан. Шинэчлэхийн тулд аппыг дахин ажиллуулна уу')).not.toBeNull());
+        await waitFor(() => expect((within(card).getByText('Нэг товчоор нийтлэх') as HTMLButtonElement).disabled).toBe(true));
     });
 
     it.each([

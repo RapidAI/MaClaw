@@ -46,6 +46,23 @@ type preparedIMEntryExecutionOptions struct {
 	queuedGoalTurnHold *bool
 }
 
+// applyDerivedWorkflowPhase is the document-confirmation fact for this turn.
+// A route that already named a phase keeps that decision. The confirmation
+// gate names no phase and only turns the agent loop on. The active phase's
+// NeedsConfirm is then the document, in every language. An execution phase
+// that already carried its id stays an execution phase.
+func applyDerivedWorkflowPhase(routedDoc bool, routedPhaseID, activePhaseID string, activeNeedsConfirm bool) (bool, string) {
+	routedPhaseID = strings.TrimSpace(routedPhaseID)
+	if routedPhaseID != "" {
+		return routedDoc, routedPhaseID
+	}
+	activePhaseID = strings.TrimSpace(activePhaseID)
+	if activePhaseID == "" {
+		return routedDoc, ""
+	}
+	return activeNeedsConfirm, activePhaseID
+}
+
 func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionOptions) *IMAgentResponse {
 	msg := opts.Message
 	execStart := time.Now()
@@ -214,9 +231,10 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 					loopCtx.WorkflowType = strings.TrimSpace(state.Type)
 				}
 				if phase := state.ActivePhase(); phase != nil {
-					if loopCtx.WorkflowPhaseID == "" {
-						loopCtx.WorkflowPhaseID = phase.ID
-						loopCtx.WorkflowDocPhase = phase.NeedsConfirm
+					doc, phaseID := applyDerivedWorkflowPhase(loopCtx.WorkflowDocPhase, loopCtx.WorkflowPhaseID, phase.ID, phase.NeedsConfirm)
+					loopCtx.WorkflowDocPhase = doc
+					if phaseID != "" {
+						loopCtx.WorkflowPhaseID = phaseID
 					}
 					if loopCtx.WorkflowPhaseKind == "" && phase.Kind != "" {
 						loopCtx.WorkflowPhaseKind = string(phase.Kind)
@@ -224,6 +242,13 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				}
 			}
 		}
+	}
+	// Consume, the remote guard, and the goal bar read the options. The
+	// confirmation gate left those flags empty; the phase derived above is
+	// the one this turn is actually in.
+	opts.WorkflowDocPhase = loopCtx.WorkflowDocPhase
+	if strings.TrimSpace(opts.WorkflowPhaseID) == "" {
+		opts.WorkflowPhaseID = loopCtx.WorkflowPhaseID
 	}
 	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
 
@@ -251,7 +276,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		h.ensurePureCodingArmedForIncomingMessage(msg.UserID)
 	}
 	if !opts.WorkflowDocPhase && h.hasPendingTemplateSubAgentExecution(msg.UserID) {
-		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
+		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken, opts.FreshTask); handled {
 			history, historyElapsed = drainHistory()
 			historyDrained = true
 			// Already consumed (and re-armed). Do not fall through to UIC /
@@ -515,14 +540,18 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	promptElapsed := time.Since(promptStart)
 
 	if !shareDiscussion && !unarmedRemote && (!codingWorkbench || opts.WorkflowAgentLoop) {
-		if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
+		if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken, stoppedGoalUserTurn{DocPhase: opts.WorkflowDocPhase, FreshTask: opts.FreshTask}); handled {
 			if updatedHistory != nil {
 				history = updatedHistory
 			}
 			if abort := abortIfCancelled(); abort != nil {
 				return abort
 			}
-			return resp
+			// The runner already re-armed a stopped goal. This return is the
+			// end of that turn, so the next goal turn has to be queued here.
+			// The report is the orchestrator's, not a workflow phase document.
+			loopCtx.SkipWorkflowDocCapture = true
+			return h.finalizeIMAgentLoopResponse(msg, loopCtx, resp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 		} else {
 			history = updatedHistory
 		}
@@ -542,7 +571,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// V2 SubAgent execution: check the dedicated marker (not stashedPhasePrompt)
 	// which gets consumed by system prompt builder via LoadAndDelete).
 	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase {
-		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
+		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken, opts.FreshTask); handled {
 			if execResp != nil {
 				loopCtx.SkipWorkflowDocCapture = true
 				if abort := abortIfCancelled(); abort != nil {
@@ -552,7 +581,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			}
 			log.Printf("[workflow-v2] template SubAgent execution returned nil, falling back to workflow execution")
 		}
-		if _, pending := h.pendingV2SubAgentExecution.LoadAndDelete(msg.UserID); pending {
+		if _, pending := h.pendingV2SubAgentExecution.Load(msg.UserID); pending {
 			// Workflow SubAgent (implementation phase with parsed tasks).
 			// Always invoke the handler: a queued 重试失败 / 继续 with no
 			// active phase must return its own message, not fall into the
@@ -562,14 +591,20 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 				state = wf.machine.GetActive(msg.UserID)
 			}
-			execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken, loopCtx)
-			if execResp != nil {
-				if abort := abortIfCancelled(); abort != nil {
-					return abort
+			// Release before dropping the pending engine. The unarmed check
+			// reads that flag; a dead SSH session then stays on its stop
+			// instead of being rewritten while this handler still answers.
+			h.releaseStoppedGoalForUserContinue(msg, stoppedGoalUserTurn{FreshTask: opts.FreshTask})
+			if _, still := h.pendingV2SubAgentExecution.LoadAndDelete(msg.UserID); still {
+				execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken, loopCtx)
+				if execResp != nil {
+					if abort := abortIfCancelled(); abort != nil {
+						return abort
+					}
+					return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 				}
-				return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+				log.Printf("[workflow-v2] SubAgent execution returned nil, falling back to agent loop")
 			}
-			log.Printf("[workflow-v2] SubAgent execution returned nil, falling back to agent loop")
 		}
 	}
 
@@ -581,6 +616,17 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		}
 	}
 
+	// A paused or failed goal stays on the bar across a restart. When this
+	// turn is the coding workbench or a workflow implementation, that work
+	// is already chosen, so the bar leaves the stop before the loop. A
+	// shared chat reply is not that work, and a document confirmation is
+	// not either. The wording is not the signal.
+	if h.userTurnExecutesSessionGoal(msg.UserID, opts.WorkflowAgentLoop, opts.WorkflowDocPhase) {
+		h.releaseStoppedGoalForUserContinue(msg, stoppedGoalUserTurn{
+			DocPhase:  opts.WorkflowDocPhase,
+			FreshTask: opts.FreshTask,
+		})
+	}
 	resp := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, agentLoopUserText, msg.Attachments, opts.OnProgress, opts.OnToken, opts.OnNewRound, opts.OnStreamDone, msg.MinIterations, msg.Platform)
 
 	// V2 workflow doc phase: append confirmation hint to response text.
@@ -613,7 +659,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	return h.finalizeIMAgentLoopResponse(msg, loopCtx, resp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 }
 
-func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMessage, agentLoopUserText string, loopCtx *LoopContext, requestID string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, bool) {
+func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMessage, agentLoopUserText string, loopCtx *LoopContext, requestID string, onProgress tool.ProgressCallback, onToken llm.TokenCallback, freshTask bool) (*IMAgentResponse, bool) {
 	if h == nil {
 		return nil, false
 	}
@@ -632,7 +678,15 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 			return nil, false
 		}
 	}
-	if remoteRaw, isRemoteCodingTemplate := h.pendingTemplateRemoteCoding.LoadAndDelete(msg.UserID); isRemoteCodingTemplate {
+	if _, isRemoteCodingTemplate := h.pendingTemplateRemoteCoding.Load(msg.UserID); isRemoteCodingTemplate {
+		// The pending SSH engine is what tells a continue from a dead session.
+		// Consume it only after the goal bar has re-armed, or the bar stays
+		// on the old stop while RemoteCodingSubAgent is already running.
+		h.releaseStoppedGoalForUserContinue(msg, stoppedGoalUserTurn{FreshTask: freshTask})
+		remoteRaw, ok := h.pendingTemplateRemoteCoding.LoadAndDelete(msg.UserID)
+		if !ok {
+			return nil, false
+		}
 		h.pendingV2SubAgentExecution.Delete(msg.UserID)
 		remoteCtx, _ := remoteRaw.(remoteCodingTemplateContext)
 		// Request intent normally belongs to this message, not to the sticky SSH
@@ -668,19 +722,30 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 		h.rearmStickyRemoteCodingEnvironment(msg.UserID, remoteCtx)
 		return resp, true
 	}
-	if projectPathRaw, isCodingTemplate := h.pendingTemplateCodingProjectPath.LoadAndDelete(msg.UserID); isCodingTemplate {
-		h.pendingV2SubAgentExecution.Delete(msg.UserID)
+	if projectPathRaw, isCodingTemplate := h.pendingTemplateCodingProjectPath.Load(msg.UserID); isCodingTemplate {
 		if h.codingSessionIsRemote(msg.UserID, h.getStickyCodingWorkbenchMemory(msg.UserID)) {
 			// A remote-tagged task must never execute against the local cwd,
 			// even if a leftover local pending path leaked into this owner.
+			h.pendingTemplateCodingProjectPath.Delete(msg.UserID)
+			h.pendingV2SubAgentExecution.Delete(msg.UserID)
 			return nil, false
 		}
 		stored, _ := projectPathRaw.(string)
 		projectPath := h.liveLocalCodingExecDir(msg.UserID, stored)
 		if projectPath == "" {
 			log.Printf("[workflow-v2] pure coding skipped: empty work root user=%s", msg.UserID)
+			h.pendingTemplateCodingProjectPath.Delete(msg.UserID)
+			h.pendingV2SubAgentExecution.Delete(msg.UserID)
 			return nil, false
 		}
+		// Release while the local engine flag is still stored. Dropping it
+		// first makes ensure rebuild the flag and warm the index before this
+		// subagent has started.
+		h.releaseStoppedGoalForUserContinue(msg, stoppedGoalUserTurn{FreshTask: freshTask})
+		if _, ok := h.pendingTemplateCodingProjectPath.LoadAndDelete(msg.UserID); !ok {
+			return nil, false
+		}
+		h.pendingV2SubAgentExecution.Delete(msg.UserID)
 		if loopCtx != nil && len(msg.Attachments) > 0 {
 			loopCtx.CodingAttachments = append([]MessageAttachment(nil), msg.Attachments...)
 		}

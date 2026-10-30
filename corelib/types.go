@@ -1165,6 +1165,19 @@ func (c MaclawLLMConfig) IsResponsesWebSocket() bool {
 	return strings.EqualFold(strings.TrimSpace(c.WireAPI), "responses-ws")
 }
 
+// IsGoogleProtocol reports the native Gemini generateContent wire.
+// "google" and "gemini" are that protocol. The OpenAI-compatible AI Studio
+// route stays protocol "openai" on the /openai base and is not this wire.
+// This is an API key, not a Google AI Pro subscription login.
+func (c MaclawLLMConfig) IsGoogleProtocol() bool {
+	switch strings.ToLower(strings.TrimSpace(c.Protocol)) {
+	case "google", "gemini":
+		return true
+	default:
+		return false
+	}
+}
+
 // EffectiveMaxOutputTokens returns the max output token limit for this config.
 // Priority: user-configured value > model-aware default.
 //

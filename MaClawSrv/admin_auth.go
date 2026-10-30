@@ -446,48 +446,6 @@ func adminBootstrapInitialized(dataRoot string) bool {
 	return false
 }
 
-func loadAdminBootstrapState(dataRoot string) (adminBootstrapState, error) {
-	var state adminBootstrapState
-	if err := readAdminJSON(dataRoot, "admin_bootstrap.json", &state); err != nil {
-		return adminBootstrapState{}, err
-	}
-	return state, nil
-}
-
-func saveAdminBootstrapState(dataRoot string, state adminBootstrapState) error {
-	return writeAdminJSON(dataRoot, "admin_bootstrap.json", state)
-}
-
-func loadAdminUsers(dataRoot string) ([]adminUserRecord, error) {
-	var users []adminUserRecord
-	if err := readAdminJSON(dataRoot, "admin_users.json", &users); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []adminUserRecord{}, nil
-		}
-		return nil, err
-	}
-	return users, nil
-}
-
-func saveAdminUsers(dataRoot string, users []adminUserRecord) error {
-	return writeAdminJSON(dataRoot, "admin_users.json", users)
-}
-
-func loadAdminSessions(dataRoot string) ([]adminSessionRecord, error) {
-	var sessions []adminSessionRecord
-	if err := readAdminJSON(dataRoot, "admin_sessions.json", &sessions); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []adminSessionRecord{}, nil
-		}
-		return nil, err
-	}
-	return sessions, nil
-}
-
-func saveAdminSessions(dataRoot string, sessions []adminSessionRecord) error {
-	return writeAdminJSON(dataRoot, "admin_sessions.json", sessions)
-}
-
 func findAdminUserByUsername(dataRoot, username string) (*adminUserRecord, []adminUserRecord, error) {
 	users, err := loadAdminUsers(dataRoot)
 	if err != nil {

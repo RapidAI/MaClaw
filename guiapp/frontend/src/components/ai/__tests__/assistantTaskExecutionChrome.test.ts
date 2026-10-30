@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { chatTaskInSession, codingStepsAllPassed, executionSecondaryChromeStyle, handleTaskExecutionHeaderDoubleClick, isTaskExecutionHeaderInteractiveTarget, openChatWorkForSession, resolveTaskExecutionStatus } from "../assistantTaskExecutionChrome";
+import { executionSnapshotRawIsRunning } from "../taskExecutionSnapshot";
 
 describe("executionSecondaryChromeStyle", () => {
     it("clips leftover title-bar chrome out of hit-testing", () => {
@@ -381,6 +382,104 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
             pendingUnfinishedStatus: "",
         });
         expect(status).toEqual({ label: "已暂停", tone: "pending" });
+    });
+
+    it("keeps a completed durable status ahead of a leftover recovery card", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "completed",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "interrupted",
+            turnIncomplete: true,
+        });
+        expect(status).toEqual({ label: "已完成", tone: "completed" });
+    });
+
+    it("keeps a completed durable status ahead of a stale review and a tab restore", () => {
+        const base = {
+            lang: "zh-Hans",
+            raw: "completed pending_review waiting_confirm",
+            pendingReview: true,
+            cancelPending: false,
+            busy: false,
+            backgroundPhaseActive: true,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: true,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "interrupted",
+            turnIncomplete: true,
+        };
+        expect(resolveTaskExecutionStatus(base)).toEqual({ label: "已完成", tone: "completed" });
+        expect(resolveTaskExecutionStatus({ ...base, raw: "waiting_review", backgroundPhaseActive: false, pendingUnfinishedStatus: "", turnIncomplete: false })).toEqual({ label: "待处理", tone: "pending" });
+    });
+
+    it("keeps a completed durable status ahead of a later failure, cancel, or running token", () => {
+        const base = {
+            lang: "zh-Hans",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: false,
+            pendingUnfinishedStatus: "",
+        };
+        for (const raw of ["completed failed", "completed verify_failed", "completed cancelled", "completed running", "completed processing"]) {
+            expect(resolveTaskExecutionStatus({ ...base, raw })).toEqual({ label: "已完成", tone: "completed" });
+        }
+        expect(resolveTaskExecutionStatus({ ...base, raw: "paused failed" })).toEqual({ label: "失败", tone: "failed" });
+        expect(resolveTaskExecutionStatus({ ...base, raw: "failed" })).toEqual({ label: "失败", tone: "failed" });
+        expect(resolveTaskExecutionStatus({ ...base, raw: "cancelled" })).toEqual({ label: "已取消", tone: "cancelled" });
+        expect(resolveTaskExecutionStatus({ ...base, raw: "running" })).toEqual({ label: "进行中", tone: "running" });
+    });
+
+    it("keeps an active or execute phase in progress when the run already has output", () => {
+        const base = {
+            lang: "zh-Hans",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: true,
+            codingStepCount: 1,
+            codingStepsAllPassed: false,
+            pendingUnfinishedStatus: "",
+        };
+        for (const raw of ["active", "active review", "execute", "execution", "pending execution"]) {
+            expect(resolveTaskExecutionStatus({ ...base, raw })).toEqual({ label: "进行中", tone: "running" });
+            expect(executionSnapshotRawIsRunning(raw)).toBe(true);
+        }
+        expect(resolveTaskExecutionStatus({ ...base, raw: "active", pendingUnfinishedStatus: "interrupted", turnIncomplete: true })).toEqual({ label: "进行中", tone: "running" });
+        expect(resolveTaskExecutionStatus({
+            ...base,
+            raw: "waiting_review running",
+            pendingReview: true,
+            awaitingUserReview: true,
+            codingStepsAllPassed: false,
+        })).toEqual({ label: "待处理", tone: "pending" });
+        expect(resolveTaskExecutionStatus({
+            ...base,
+            raw: "active execution pending_review",
+            pendingReview: true,
+        })).toEqual({ label: "待处理", tone: "pending" });
+        expect(executionSnapshotRawIsRunning("waiting_review running")).toBe(false);
+        expect(executionSnapshotRawIsRunning("active pending_review")).toBe(false);
+        expect(executionSnapshotRawIsRunning("active review")).toBe(true);
+        expect(resolveTaskExecutionStatus({ ...base, raw: "waiting_review" })).toEqual({ label: "待处理", tone: "pending" });
+        expect(executionSnapshotRawIsRunning("waiting_review")).toBe(false);
+        expect(executionSnapshotRawIsRunning("completed execution")).toBe(false);
+        expect(executionSnapshotRawIsRunning("interrupted execution")).toBe(false);
+        expect(executionSnapshotRawIsRunning("interactive")).toBe(false);
     });
 
     it("does not treat a later pause phase as a paused run", () => {

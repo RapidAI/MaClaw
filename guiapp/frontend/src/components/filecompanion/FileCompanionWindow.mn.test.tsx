@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { setCompanionUiLang } from "../../i18n/mnCompanion";
 import { DialogProvider } from "../CustomDialog";
 import { ToastProvider } from "../Toast";
+import { GetCurrentLanguage } from "../../../wailsjs/go/main/App";
+import FileCompanionWindow, { COMPANION_UI_LANGUAGE_EVENT } from "./FileCompanionWindow";
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     GetCurrentLanguage: vi.fn(async () => "mn"),
@@ -51,11 +53,24 @@ vi.mock("../ai/CompanionPdfReader", () => ({
     CompanionPdfReader: () => null,
 }));
 
-import FileCompanionWindow from "./FileCompanionWindow";
+type EventCb = (payload: unknown) => void;
+
+function installRuntime() {
+    const events = new Map<string, EventCb>();
+    (window as unknown as { runtime?: unknown }).runtime = {
+        EventsOn: (name: string, cb: EventCb) => { events.set(name, cb); },
+        EventsOff: (name: string) => { events.delete(name); },
+    };
+    return {
+        emit: (name: string, payload: unknown) => events.get(name)?.(payload),
+    };
+}
 
 afterEach(() => {
     cleanup();
     setCompanionUiLang("zh-Hans");
+    vi.mocked(GetCurrentLanguage).mockResolvedValue("mn");
+    delete (window as unknown as { runtime?: unknown }).runtime;
 });
 
 describe("file companion Mongolian chrome", () => {
@@ -79,5 +94,64 @@ describe("file companion Mongolian chrome", () => {
         expect(star.getAttribute("aria-label")).toBe("Од");
         expect(star.getAttribute("title")).toBe("Од");
         expect(screen.getByTestId("file-companion-group-icon-cg_0123456789abcdef0123456789abcdef-book").getAttribute("aria-label")).toBe("Ном");
+    });
+
+    it("returns to Chinese when the main window switches the language back", async () => {
+        const runtime = installRuntime();
+        render(
+            <ToastProvider>
+                <DialogProvider>
+                    <FileCompanionWindow askOnOpen={false} />
+                </DialogProvider>
+            </ToastProvider>,
+        );
+        await waitFor(() => expect(screen.getByTestId("file-companion-choose").textContent).toBe("Нээх"));
+        expect(screen.getByTestId("file-companion-brand").textContent).toBe("MaClaw дагалдан унших");
+        act(() => {
+            runtime.emit(COMPANION_UI_LANGUAGE_EVENT, "zh-Hans");
+        });
+        expect(screen.getByTestId("file-companion-choose").textContent).toBe("打开");
+        expect(screen.getByTestId("file-companion-brand").textContent).toBe("MaClaw伴读");
+    });
+
+    it("applies a language event delivered as a one-element array", async () => {
+        const runtime = installRuntime();
+        render(
+            <ToastProvider>
+                <DialogProvider>
+                    <FileCompanionWindow askOnOpen={false} />
+                </DialogProvider>
+            </ToastProvider>,
+        );
+        await waitFor(() => expect(screen.getByTestId("file-companion-choose").textContent).toBe("Нээх"));
+        act(() => {
+            runtime.emit(COMPANION_UI_LANGUAGE_EVENT, ["zh-Hans"]);
+        });
+        expect(screen.getByTestId("file-companion-choose").textContent).toBe("打开");
+        expect(screen.getByTestId("file-companion-brand").textContent).toBe("MaClaw伴读");
+    });
+
+    it("keeps the live language when the startup read finishes later", async () => {
+        let resolveLang: (value: string) => void = () => undefined;
+        vi.mocked(GetCurrentLanguage).mockImplementation(() => new Promise((resolve) => {
+            resolveLang = resolve;
+        }));
+        const runtime = installRuntime();
+        render(
+            <ToastProvider>
+                <DialogProvider>
+                    <FileCompanionWindow askOnOpen={false} />
+                </DialogProvider>
+            </ToastProvider>,
+        );
+        await waitFor(() => {
+            runtime.emit(COMPANION_UI_LANGUAGE_EVENT, "zh-Hans");
+            expect(screen.getByTestId("file-companion-choose").textContent).toBe("打开");
+        });
+        await act(async () => {
+            resolveLang("mn");
+        });
+        expect(screen.getByTestId("file-companion-choose").textContent).toBe("打开");
+        expect(screen.getByTestId("file-companion-brand").textContent).toBe("MaClaw伴读");
     });
 });

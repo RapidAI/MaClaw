@@ -423,6 +423,20 @@ func TestShouldRetrySimpleLLMError_ForbiddenBackoff(t *testing.T) {
 	}
 }
 
+func TestShouldRetrySimpleLLMError_UpstreamStreamIdle(t *testing.T) {
+	stalled := &llm.UpstreamModelError{Message: "upstream stream idle timeout after 2m0s"}
+	if !shouldRetrySimpleLLMError(stalled) {
+		t.Fatal("an upstream stream idle stall should wait on the outer backoff")
+	}
+	if !gatewayRejectedLLMFailure(nil, stalled) {
+		t.Fatal("a coding host must retry an empty upstream idle stall")
+	}
+	rejected := &llm.UpstreamModelError{Message: "content policy violation"}
+	if shouldRetrySimpleLLMError(rejected) || gatewayRejectedLLMFailure(nil, rejected) {
+		t.Fatal("a named model rejection must not be retried")
+	}
+}
+
 func TestShouldRetrySimpleLLMError_UnexpectedEOF(t *testing.T) {
 	dropped := fmt.Errorf("[https://codegen.qianxin-inc.cn/api/v1/chat/completions] SSE stream read: %w", io.ErrUnexpectedEOF)
 	if !shouldRetrySimpleLLMError(dropped) {

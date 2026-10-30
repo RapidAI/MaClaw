@@ -13,14 +13,14 @@ const title: UtilitiesLabelPack = {
     en: 'Experts & Tools',
     zhHans: '专家&工具',
     zhHant: '專家&工具',
-    mn: 'Мэргэжилтэн ба багаж',
+    mn: 'Эксперт ба багаж',
 };
 
 const short: UtilitiesLabelPack = {
     en: 'Experts',
     zhHans: title.zhHans,
     zhHant: title.zhHant,
-    mn: 'Мэргэжилтэн',
+    mn: 'Эксперт',
 };
 
 export const utilitiesLabels = {
@@ -83,7 +83,7 @@ const expertsTitle: UtilitiesLabelPack = {
     en: 'AI Experts',
     zhHans: 'AI 专家',
     zhHant: 'AI 專家',
-    mn: 'AI мэргэжилтэн',
+    mn: 'AI эксперт',
 };
 
 export function toolsNavLabel(lang?: string | null): string {

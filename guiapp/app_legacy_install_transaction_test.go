@@ -199,7 +199,7 @@ func TestInstallSkillDoesNotRewriteExistingSkillScanCache(t *testing.T) {
 	if string(gotExistingCache) != string(existingCache) {
 		t.Fatalf("existing Skill scan cache was rewritten: got %q want %q", gotExistingCache, existingCache)
 	}
-	if _, err := os.Stat(skillScanCachePath(filepath.Join(tempHome, ".codex", "skills", "new-skill"), "new-skill")); err != nil {
+	if _, err := os.Stat(skillScanCacheDBPath(filepath.Join(tempHome, ".codex", "skills", "new-skill"), "new-skill")); err != nil {
 		t.Fatalf("new Skill scan cache missing: %v", err)
 	}
 }

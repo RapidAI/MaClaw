@@ -64,7 +64,7 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 		// The JSON file is the pre-migration copy. Rows live in the service
 		// database this worker already opened. One manager, not one per user.
 		store := svc.ScheduledTaskStore()
-		if n, impErr := scheduler.ImportLegacyTasks(schPath, store); impErr != nil {
+		if n, impErr := scheduler.ImportLegacyTasksOnce(schPath, store); impErr != nil {
 			log.Printf("[MaClawSrv] WARNING: scheduler import failed: %v", impErr)
 		} else if n > 0 {
 			log.Printf("[MaClawSrv] scheduler imported %d task(s); scheduled_tasks.json stays as the pre-migration file", n)

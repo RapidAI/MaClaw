@@ -1,6 +1,7 @@
 package goal
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,11 +17,13 @@ import (
 type Store struct {
 	mu      sync.RWMutex
 	goals   map[string]*Goal // userID → current goal
-	dataDir string           // directory for goal JSON files
+	dataDir string           // directory for the goal database and legacy JSON files
+	db      *sql.DB
 }
 
 // NewStore creates a goal store. If dataDir is non-empty, goals are persisted
-// to {dataDir}/{userID}.json. If empty, the store is memory-only (for tests).
+// to {dataDir}/goals.db with one row per user. {userID}.json files are imported
+// once. If dataDir is empty, the store is memory-only (for tests).
 func NewStore(dataDir string) *Store {
 	s := &Store{
 		goals:   make(map[string]*Goal),
@@ -28,6 +31,9 @@ func NewStore(dataDir string) *Store {
 	}
 	if dataDir != "" {
 		_ = os.MkdirAll(dataDir, 0o755)
+		if err := s.openDB(); err != nil {
+			fmt.Printf("[goal] sqlite open failed, keeping legacy JSON files: %v\n", err)
+		}
 		s.loadAll()
 	}
 	return s
@@ -87,10 +93,17 @@ func (s *Store) Set(userID string, objective string, opts ...SetOption) (*Goal, 
 	}
 
 	s.mu.Lock()
+	if prev := s.goals[userID]; prev != nil {
+		g.StateRev = prev.StateRev
+		g.TextRev = prev.TextRev
+	}
+	bumpGoalState(g)
+	bumpGoalText(g)
 	s.goals[userID] = g
+	snap := cloneGoal(g)
 	s.mu.Unlock()
 
-	if err := s.persist(userID, g); err != nil {
+	if err := s.persist(userID, snap); err != nil {
 		return g, fmt.Errorf("goal created but persist failed: %w", err)
 	}
 	return g, nil
@@ -157,10 +170,8 @@ func (s *Store) UpdateStatus(userID, goalID string, status Status, summary strin
 		g.Summary = summary
 	}
 	g.UpdatedAt = now
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalState(g)
+	s.releaseAndPersistState(userID, g)
 	return true
 }
 
@@ -192,10 +203,8 @@ func (s *Store) AccountUsage(userID, goalID string, deltaTokens, deltaSeconds in
 	now := time.Now()
 	pinComposerClock(g, prev, g.Status, now)
 	g.UpdatedAt = now
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalState(g)
+	s.releaseAndPersistState(userID, g)
 	return true
 }
 
@@ -218,10 +227,8 @@ func (s *Store) RecordNoToolTurn(userID, goalID string) bool {
 	now := time.Now()
 	pinComposerClock(g, prev, g.Status, now)
 	g.UpdatedAt = now
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalState(g)
+	s.releaseAndPersistState(userID, g)
 	return true
 }
 
@@ -240,10 +247,8 @@ func (s *Store) ResetNoToolCounter(userID, goalID string) bool {
 	}
 	g.ConsecutiveNoToolTurns = 0
 	touchGoalClock(g, time.Now())
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalState(g)
+	s.releaseAndPersistState(userID, g)
 	return true
 }
 
@@ -266,10 +271,8 @@ func (s *Store) Resume(userID, goalID string) bool {
 	now := time.Now()
 	pinComposerClock(g, prev, g.Status, now)
 	g.UpdatedAt = now
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalState(g)
+	s.releaseAndPersistState(userID, g)
 	return true
 }
 
@@ -292,10 +295,9 @@ func (s *Store) UpdateObjective(userID, goalID, objective string) bool {
 	}
 	g.Objective = objective
 	touchGoalClock(g, time.Now())
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalText(g)
+	bumpGoalState(g)
+	s.releaseAndPersist(userID, g)
 	return true
 }
 
@@ -327,10 +329,8 @@ func (s *Store) ReleaseForContinue(userID, goalID string) bool {
 	now := time.Now()
 	pinComposerClock(g, prev, g.Status, now)
 	g.UpdatedAt = now
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalState(g)
+	s.releaseAndPersistState(userID, g)
 	return true
 }
 
@@ -365,10 +365,9 @@ func (s *Store) SavePlan(userID, goalID, understanding string, steps []Step, cri
 	g.AcceptanceCriteria = append([]string(nil), criteria...)
 	g.Phase = PhaseExecute
 	touchGoalClock(g, time.Now())
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalText(g)
+	bumpGoalState(g)
+	s.releaseAndPersist(userID, g)
 	return nil
 }
 
@@ -412,10 +411,9 @@ func (s *Store) UpdateStep(userID, goalID string, index int, status StepStatus, 
 		return fmt.Errorf("step not found")
 	}
 	touchGoalClock(g, time.Now())
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalText(g)
+	bumpGoalState(g)
+	s.releaseAndPersist(userID, g)
 	return nil
 }
 
@@ -461,10 +459,9 @@ func (s *Store) AppendStepNote(userID, goalID string, index int, note string) (b
 		return false, fmt.Errorf("step not found")
 	}
 	touchGoalClock(g, time.Now())
-	data := s.marshalLocked(g)
-	s.mu.Unlock()
-
-	s.persistBytes(userID, data)
+	bumpGoalText(g)
+	bumpGoalState(g)
+	s.releaseAndPersist(userID, g)
 	return true, nil
 }
 
@@ -524,6 +521,9 @@ func (s *Store) Clear(userID string) bool {
 	s.mu.Unlock()
 
 	if existed && s.dataDir != "" {
+		if s.db != nil {
+			_ = s.deleteGoal(userID)
+		}
 		_ = os.Remove(s.filePath(userID))
 	}
 	return existed
@@ -543,10 +543,69 @@ func (s *Store) marshalLocked(g *Goal) []byte {
 	return data
 }
 
+// releaseAndPersistState writes status, phase, summary, counters, and times.
+// Objective, understanding, acceptance, and steps stay on releaseAndPersist.
+// The JSON fallback still uses that full write. The caller holds mu.
+func bumpGoalState(g *Goal) {
+	if g != nil {
+		g.StateRev++
+	}
+}
+
+func bumpGoalText(g *Goal) {
+	if g != nil {
+		g.TextRev++
+	}
+}
+
+func (s *Store) releaseAndPersistState(userID string, g *Goal) {
+	if s.db == nil {
+		s.releaseAndPersist(userID, g)
+		return
+	}
+	snap := cloneGoal(g)
+	s.mu.Unlock()
+	if snap != nil && strings.TrimSpace(snap.UserID) == "" {
+		snap.UserID = userID
+	}
+	wrote, err := s.updateGoalState(snap)
+	if err != nil || !wrote {
+		_ = s.insertGoalIfAbsent(snap)
+	}
+}
+
+// releaseAndPersist clones g while mu is held, unlocks, then writes the clone.
+// SQLite stores the columns directly. JSON remains the fallback encoding.
+func (s *Store) releaseAndPersist(userID string, g *Goal) {
+	if s.db != nil {
+		snap := cloneGoal(g)
+		s.mu.Unlock()
+		if snap != nil && strings.TrimSpace(snap.UserID) == "" {
+			snap.UserID = userID
+		}
+		_ = s.persistGoalSnapshot(snap)
+		return
+	}
+	data := s.marshalLocked(g)
+	s.mu.Unlock()
+	s.persistBytes(userID, data)
+}
+
 // persistBytes writes pre-serialized JSON data to disk atomically.
 // Safe to call without holding mu (file I/O only, no shared state access).
 func (s *Store) persistBytes(userID string, data []byte) {
 	if s.dataDir == "" || len(data) == 0 {
+		return
+	}
+	if s.db != nil {
+		var g Goal
+		if err := json.Unmarshal(data, &g); err != nil {
+			return
+		}
+		if strings.TrimSpace(g.UserID) == "" {
+			g.UserID = userID
+		}
+		_ = s.upsertGoal(&g)
 		return
 	}
 	tmp := s.filePath(userID) + ".tmp"
@@ -562,6 +621,12 @@ func (s *Store) persist(userID string, g *Goal) error {
 	if s.dataDir == "" {
 		return nil
 	}
+	if s.db != nil {
+		if g != nil && strings.TrimSpace(g.UserID) == "" {
+			g.UserID = userID
+		}
+		return s.upsertGoal(g)
+	}
 	data, err := json.MarshalIndent(g, "", "  ")
 	if err != nil {
 		return err
@@ -575,37 +640,71 @@ func (s *Store) persist(userID string, g *Goal) error {
 }
 
 func (s *Store) loadAll() {
-	entries, err := os.ReadDir(s.dataDir)
-	if err != nil {
-		return
+	if s.db != nil {
+		s.loadFromDB()
+		s.importLegacyJSON()
+	} else {
+		_ = s.loadLegacyJSONFiles(true)
 	}
 	upgraded := make([]string, 0)
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(s.dataDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var g Goal
-		if err := json.Unmarshal(data, &g); err != nil {
-			continue
-		}
-		if g.UserID != "" {
-			if automaticTurnCap(g.MaxTurns) {
-				g.MaxTurns = 0
-				upgraded = append(upgraded, g.UserID)
-			}
-			s.goals[g.UserID] = &g
+	for userID, g := range s.goals {
+		if g != nil && automaticTurnCap(g.MaxTurns) {
+			g.MaxTurns = 0
+			upgraded = append(upgraded, userID)
 		}
 	}
 	for _, userID := range upgraded {
 		g := s.goals[userID]
 		if g != nil && g.MaxTurns == 0 {
-			_ = s.persist(userID, g)
+			g.StateRev++
+			if wrote, err := s.updateGoalState(g); err != nil || !wrote {
+				_ = s.persist(userID, g)
+			}
 		}
 	}
+}
+
+// loadLegacyJSONFiles reads {user}.json files into memory.
+// overwrite replaces a user already loaded from SQLite. The one-shot import
+// passes false, so a stale file leaves the SQLite row in place.
+// The bool is true when the directory listing and every JSON file were read
+// and parsed. A read or parse error is false, and importLegacyJSON then leaves
+// goals_legacy_import unset so the next open reads the files again.
+func (s *Store) loadLegacyJSONFiles(overwrite bool) bool {
+	entries, err := os.ReadDir(s.dataDir)
+	if err != nil {
+		fmt.Printf("[goal] legacy dir %s: %v\n", s.dataDir, err)
+		return false
+	}
+	clean := true
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(s.dataDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Printf("[goal] legacy file %s: %v\n", e.Name(), err)
+			clean = false
+			continue
+		}
+		var g Goal
+		if err := json.Unmarshal(data, &g); err != nil {
+			fmt.Printf("[goal] legacy file %s: %v\n", e.Name(), err)
+			clean = false
+			continue
+		}
+		if g.UserID == "" {
+			continue
+		}
+		if !overwrite {
+			if _, exists := s.goals[g.UserID]; exists {
+				continue
+			}
+		}
+		s.goals[g.UserID] = &g
+	}
+	return clean
 }
 
 // automaticTurnCap reports a max_turns value create used to write when the

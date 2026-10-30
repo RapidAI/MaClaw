@@ -574,8 +574,10 @@ func (a *App) dropRevokedGroupCopies(previous map[string]FileCompanionLibraryIte
 // transcript, figures, results, and generated notes must be dropped once the
 // final library no longer uses the path. A host's own revoked share keeps its
 // source file and reading data; only the cloud row goes away. live is the
-// merged library without the revoked rows; when another row still uses the
-// path, the file and its reader data must stay.
+// merged library without the revoked rows. A path outside this share's
+// download directory stays when another row still uses it. The downloaded
+// copy itself is the participant's open document: opening it also writes a
+// local row, and that row must not keep the tab after the host deletes the share.
 func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, revoked map[string]bool, dropped map[string]bool, epochs map[string]uint64) (removed []string, purgePaths []string, removedHosts map[string]string) {
 	seen := map[string]bool{}
 	for _, item := range remote {
@@ -605,10 +607,13 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 			fileCompanionLibraryMu.Unlock()
 			continue
 		}
-		// Another row (a local copy the reader opened, or a second share of
-		// the same file) still reads this path. Withdraw the cloud row, but
-		// leave the file and its reader state alone.
-		if fileCompanionLibraryUsesPath(live, prev.Path) {
+		// A file outside the download directory can be the host's paper or
+		// another document that shares the path. Leave that file and its tab.
+		// The copy under library-files/<token> is this share. The local row
+		// created by opening it is the participant's tab, and it closes with
+		// the share.
+		installed := companionFigureInsideDir(dir, prev.Path)
+		if !installed && fileCompanionLibraryUsesPath(live, prev.Path) {
 			if !groupGone {
 				_, _ = a.dismissFileCompanionShareLocked(token)
 				a.forgetFileCompanionShareGrantLocked(token)
@@ -621,7 +626,7 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 		}
 		// Only the downloaded copy lives in this directory. The owner's paper
 		// is a different path, so losing the share must not close that tab.
-		closeTab := companionFigureInsideDir(dir, prev.Path)
+		closeTab := installed
 		if !groupGone {
 			// A deleted token is dead. Remember that before the next list, so a
 			// stale response cannot re-import the copy this drop just removed.
@@ -629,6 +634,9 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 			// same token visible again.
 			_, _ = a.dismissFileCompanionShareLocked(token)
 			a.forgetFileCompanionShareGrantLocked(token)
+		}
+		if closeTab {
+			a.forgetFileCompanionSharePathLocked(token)
 		}
 		_ = os.RemoveAll(dir)
 		fileCompanionLibraryMu.Unlock()
@@ -650,6 +658,183 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 		}
 	}
 	return removed, purgePaths, removedHosts
+}
+
+// finishProbeDismissedInstalledCopies closes a download that an earlier
+// refresh dismissed but left on disk. Opening the copy writes a local row on
+// the same path, and that used to keep the tab. The Hub list no longer names
+// the token, and a fresh probe still says the link is gone. A share the
+// reader removed in 文档管理 is left as they left it. A plain 404 is not
+// proof: an older Hub uses that for a route it does not have.
+func (a *App) finishProbeDismissedInstalledCopies(hub, viewer string, remote []FileCompanionLibraryItem, dropped map[string]bool) (removed, purgePaths []string) {
+	if a == nil {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	for _, item := range remote {
+		if item.Token != "" {
+			seen[item.Token] = true
+		}
+	}
+	type shareFinishCandidate struct {
+		token string
+		path  string
+		grant string
+	}
+	fileCompanionLibraryMu.Lock()
+	dismissed, user := a.readDismissedSharesLocked()
+	items, _ := a.readFileCompanionLibraryLocked()
+	grants := a.readFileCompanionShareGrantsLocked()
+	root := filepath.Join(a.GetDataDir(), "file-companion", "library-files")
+	candidates := make([]shareFinishCandidate, 0)
+	for token := range dismissed {
+		if user[token] || seen[token] || dropped[token] || !fileCompanionShareTokenMatch.MatchString(token) {
+			continue
+		}
+		if len(candidates) >= fileCompanionShareProbeCap {
+			break
+		}
+		dir := filepath.Join(root, token)
+		path := ""
+		for _, item := range items {
+			if companionFigureInsideDir(dir, item.Path) {
+				path = strings.TrimSpace(item.Path)
+				break
+			}
+		}
+		if path == "" {
+			path = fileCompanionOneInstalledShareFile(dir)
+		}
+		if path == "" {
+			continue
+		}
+		candidates = append(candidates, shareFinishCandidate{token: token, path: path, grant: grants[token]})
+	}
+	fileCompanionLibraryMu.Unlock()
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	client := fileCompanionDirectClient(fileCompanionShareProbeTimeout)
+	now := time.Now()
+	for _, candidate := range candidates {
+		if fileCompanionShareProbeRecentlyChecked(candidate.token, now) {
+			continue
+		}
+		deleted, _, err := probeFileCompanionShareDeleted(client, hub, viewer, candidate.grant, candidate.token)
+		fileCompanionShareProbeMark(candidate.token)
+		if err != nil || !deleted {
+			continue
+		}
+		dir := filepath.Join(root, candidate.token)
+		fileCompanionLibraryMu.Lock()
+		still, stillUser := a.readDismissedSharesLocked()
+		if stillUser[candidate.token] || !still[candidate.token] || dropped[candidate.token] || !companionFigureInsideDir(dir, candidate.path) || !fileCompanionLibraryFileExists(candidate.path) {
+			fileCompanionLibraryMu.Unlock()
+			continue
+		}
+		if dropped != nil {
+			dropped[candidate.token] = true
+		}
+		a.forgetFileCompanionSharePathLocked(candidate.token)
+		_ = os.RemoveAll(dir)
+		fileCompanionLibraryMu.Unlock()
+		removed = append(removed, candidate.path)
+		purgePaths = append(purgePaths, candidate.path)
+	}
+	return removed, purgePaths
+}
+
+// finishAbandonedShareCopies removes a downloaded copy that no longer belongs
+// to a library row or to this Hub list. Group leave drops the cloud row and
+// does not dismiss the token, so a file that was locked open survives that
+// pass and would otherwise stay on screen. A reader delete and a probe
+// dismissal are recorded on purpose and are left for their own paths.
+func (a *App) finishAbandonedShareCopies(remote []FileCompanionLibraryItem, dropped map[string]bool) (removed, purgePaths []string) {
+	if a == nil {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	for _, item := range remote {
+		if item.Token != "" {
+			seen[item.Token] = true
+		}
+	}
+	fileCompanionLibraryMu.Lock()
+	dismissed, _ := a.readDismissedSharesLocked()
+	items, _ := a.readFileCompanionLibraryLocked()
+	cloud := map[string]bool{}
+	for _, item := range items {
+		if item.Source == "cloud" && fileCompanionShareTokenMatch.MatchString(item.Token) {
+			cloud[item.Token] = true
+		}
+	}
+	root := filepath.Join(a.GetDataDir(), "file-companion", "library-files")
+	fileCompanionLibraryMu.Unlock()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, nil
+	}
+	type abandonedShare struct {
+		token string
+		path  string
+	}
+	candidates := make([]abandonedShare, 0)
+	for _, entry := range entries {
+		if len(candidates) >= fileCompanionShareProbeCap {
+			break
+		}
+		token := entry.Name()
+		if !entry.IsDir() || !fileCompanionShareTokenMatch.MatchString(token) {
+			continue
+		}
+		if seen[token] || dismissed[token] || cloud[token] || dropped[token] {
+			continue
+		}
+		dir := filepath.Join(root, token)
+		path := ""
+		for _, item := range items {
+			if companionFigureInsideDir(dir, item.Path) {
+				path = strings.TrimSpace(item.Path)
+				break
+			}
+		}
+		if path == "" {
+			path = fileCompanionOneInstalledShareFile(dir)
+		}
+		if path == "" {
+			continue
+		}
+		candidates = append(candidates, abandonedShare{token: token, path: path})
+	}
+	for _, candidate := range candidates {
+		dir := filepath.Join(root, candidate.token)
+		fileCompanionLibraryMu.Lock()
+		still, _ := a.readDismissedSharesLocked()
+		fresh, _ := a.readFileCompanionLibraryLocked()
+		claimed := still[candidate.token] || dropped[candidate.token] || seen[candidate.token]
+		if !claimed {
+			for _, item := range fresh {
+				if item.Source == "cloud" && item.Token == candidate.token {
+					claimed = true
+					break
+				}
+			}
+		}
+		if claimed || !companionFigureInsideDir(dir, candidate.path) || !fileCompanionLibraryFileExists(candidate.path) {
+			fileCompanionLibraryMu.Unlock()
+			continue
+		}
+		// This token had no cloud row when the refresh started, so it is not in
+		// the epoch map. Marking it dropped would look like an import raced us
+		// whenever this process had already bumped the counter, and the open
+		// tab would stay on the file this removal just deleted.
+		a.forgetFileCompanionSharePathLocked(candidate.token)
+		_ = os.RemoveAll(dir)
+		fileCompanionLibraryMu.Unlock()
+		removed = append(removed, candidate.path)
+		purgePaths = append(purgePaths, candidate.path)
+	}
+	return removed, purgePaths
 }
 
 // fileCompanionShareHostName is whom a withdrawn share tells the reader to

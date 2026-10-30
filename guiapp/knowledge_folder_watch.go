@@ -470,7 +470,13 @@ func (a *App) stopKnowledgeFolderWatch() {
 	if watcher != nil {
 		_ = watcher.Close()
 	}
-	st.importMu.Lock()
+	// An in-flight import holds this lock for the whole read. Waiting it out
+	// stalls every later shutdown step until the quit deadline kills the
+	// process. The import dies with the process.
+	if !st.importMu.TryLock() {
+		log.Printf("[knowledge-folder-watch] shutdown left an import running")
+		return
+	}
 	st.importMu.Unlock()
 }
 

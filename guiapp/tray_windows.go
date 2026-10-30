@@ -70,9 +70,15 @@ func startSystray(app *App) {
 			systray.SetAppUserModelID(id + ".Desktop")
 
 			systray.Run(func() {
-				// Let finishDesktopExit stop the tray loop so the notification
-				// icon is removed before the process terminates.
-				appExit.setTrayQuit(systray.Quit)
+				// Shell_NotifyIcon(NIM_DELETE) runs on the exit goroutine, in the
+				// same step as process termination. systray.Quit only posts
+				// WM_CLOSE; the window procedure would drop the icon and
+				// return while the process kept running.
+				appExit.setTrayQuit(systray.RemoveIcon)
+				systray.OnSessionEnd = func() {
+					log.Printf("[exit-lifecycle] Windows session ending; terminating")
+					appExit.exitNow()
+				}
 
 				systray.SetIcon(icon)
 				systray.SetTitle(brand.Current().DisplayName)
@@ -239,12 +245,9 @@ func startSystray(app *App) {
 
 				mQuit.Click(func() {
 					log.Printf("[exit-lifecycle] tray quit menu item selected")
-					// Run the quit off the tray message-loop thread: the pre-startup
-					// fallback waits briefly for the icon removal message, which
-					// this thread must stay free to dispatch. Do not call
-					// systray.Quit here: a second, timed exit path racing the
-					// Wails/main-thread teardown is what previously left the
-					// process running after the window was gone.
+					// Stay off the tray message-loop thread. The icon is removed
+					// in the same step that terminates the process, after
+					// shutdown or the short deadline — not from this click.
 					go requestAppQuit(app.ctx)
 				})
 
@@ -260,10 +263,12 @@ func startSystray(app *App) {
 				log.Printf("[exit-lifecycle] tray ready pid=%d", os.Getpid())
 			}, func() {
 				log.Printf("[exit-lifecycle] tray event loop stopped")
-				// Shutdown already completed (finishDesktopExit requested this) or
-				// Windows is ending the session; terminate without going through
-				// ExitProcess so an injected hook cannot block DLL detach.
-				hardExitProcess(0)
+				// The icon is already gone. Do not terminate on this stack:
+				// the callback runs inside the tray window procedure, and
+				// TerminateProcess/ExitProcess from there returns without
+				// killing the process while holding the single-exit gate.
+				// finishDesktopExit and the quit watchdog terminate from a
+				// normal goroutine. Logoff uses OnSessionEnd instead.
 			})
 		}()
 	})

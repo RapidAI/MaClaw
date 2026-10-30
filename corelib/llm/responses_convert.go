@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 )
 
 // ResponsesConvertedInput holds the result of converting OpenAI Chat Completions
@@ -267,6 +268,7 @@ func extractToolCalls(mm map[string]interface{}) []ToolCall {
 			tc.Function.Name = stringField(fn, "name")
 			tc.Function.Arguments = normalizeOpenAIToolArgumentsString(fn["arguments"])
 		}
+		tc.ThoughtSignature = thoughtSignatureFromToolCallMap(im)
 		if tc.Type == "" {
 			tc.Type = "function"
 		}
@@ -276,6 +278,23 @@ func extractToolCalls(mm map[string]interface{}) []ToolCall {
 		out = append(out, tc)
 	}
 	return out
+}
+
+// thoughtSignatureFromToolCallMap reads a Gemini signature stored on the
+// tool call itself or under the OpenAI-compat extra_content.google field.
+func thoughtSignatureFromToolCallMap(call map[string]interface{}) string {
+	if call == nil {
+		return ""
+	}
+	if sig := strings.TrimSpace(stringField(call, "thought_signature")); sig != "" {
+		return sig
+	}
+	extra := toStringInterfaceMap(call["extra_content"])
+	if extra == nil {
+		return ""
+	}
+	google := toStringInterfaceMap(extra["google"])
+	return strings.TrimSpace(stringField(google, "thought_signature"))
 }
 
 func toInterfaceSlice(raw interface{}) []interface{} {

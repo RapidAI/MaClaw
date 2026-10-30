@@ -9,6 +9,7 @@ type AppStatusMessageBarProps = {
     telegramStatus: string;
     weixinStatus: string;
     lansengerStatus: string;
+    messengerStatus?: string;
     maclawLLMOnline: boolean;
     maclawLLMConfigured: boolean;
     remoteActivated: boolean;
@@ -35,6 +36,7 @@ export const AppStatusMessageBar = ({
     telegramStatus,
     weixinStatus,
     lansengerStatus,
+    messengerStatus = '',
     maclawLLMOnline,
     maclawLLMConfigured,
     remoteActivated,
@@ -50,8 +52,8 @@ export const AppStatusMessageBar = ({
 }: AppStatusMessageBarProps) => {
     const lansengerConnected = showLansenger && lansengerStatus === 'connected';
     const lansengerConfigured = showLansenger && !!config?.lansenger_enabled;
-    const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerConnected;
-    const anyImConfigured = !!config?.qqbot_enabled || !!config?.telegram_enabled || !!config?.weixin_enabled || lansengerConfigured;
+    const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerConnected || messengerStatus === 'connected';
+    const anyImConfigured = !!config?.qqbot_enabled || !!config?.telegram_enabled || !!config?.weixin_enabled || !!config?.messenger_enabled || lansengerConfigured;
     const showImWarning = anyImConfigured && !imConnected;
     const showWarning = (!maclawLLMOnline || !remoteActivated || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm');
     const isImIssue = maclawLLMOnline && remoteActivated && showImWarning;

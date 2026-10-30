@@ -124,6 +124,49 @@ describe('useAssistantOutputScroll', () => {
         expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
     });
 
+    it('keeps following when an earlier-messages overlay reports its own overflow', () => {
+        const user = makeMsg({ role: 'user', content: 'Ningbo weather' });
+        const first = makeMsg({ id: 'a1', role: 'assistant', content: 'answer', reasoning: 'Task received' });
+        function Harness({ messages }: { messages: ChatMessage[] }) {
+            const { outputContainerRef, outputEndRef } = useAssistantOutputScroll({
+                hasConversation: true,
+                messages,
+                ready: true,
+            });
+            return (
+                <div ref={outputContainerRef} data-testid="scroll-box" style={{ height: 120, overflow: 'auto' }}>
+                    <div data-scroll-intent-boundary="" data-testid="archive-overlay" />
+                    <div>{messages.map((message) => message.content || message.reasoning || '')}</div>
+                    <div
+                        ref={(node) => {
+                            outputEndRef.current = node;
+                            if (node) node.scrollIntoView = scrollIntoViewMock;
+                        }}
+                    />
+                </div>
+            );
+        }
+        const { getByTestId, rerender } = render(<Harness messages={[user, first]} />);
+        Object.defineProperties(getByTestId('archive-overlay'), {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 4000 },
+        });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <Harness messages={[user, { ...first, reasoning: 'Task received\nPreparing the execution path' }]} />,
+        );
+        expect(scrollIntoViewMock).toHaveBeenCalled();
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <Harness
+                messages={[user, { ...first, reasoning: 'Task received\nPreparing the execution path\nStill thinking' }]}
+            />,
+        );
+        expect(scrollIntoViewMock).toHaveBeenCalled();
+    });
+
     it('does not follow while the transcript is covered and pins once it is shown', () => {
         const user = makeMsg({ role: 'user', content: 'Ningbo weather' });
         const first = makeMsg({ id: 'a1', role: 'assistant', content: 'Ning' });
@@ -139,6 +182,7 @@ describe('useAssistantOutputScroll', () => {
             return (
                 <div ref={outputContainerRef} data-testid="scroll-box" hidden={suspended || undefined}>
                     <div>{messages.map((message) => message.content)}</div>
+                    <div data-scroll-intent-boundary="" data-testid="archive-overlay" />
                     <div data-nested-scroll="" data-testid="nested-scroll" />
                     <div
                         ref={(node) => {
@@ -152,13 +196,16 @@ describe('useAssistantOutputScroll', () => {
         const grown = [user, { ...first, content: 'Ningbo weather looks' }];
         const { getByTestId, rerender } = render(<Harness suspended messages={[user, first]} />);
         const nested = getByTestId('nested-scroll');
+        const overlay = getByTestId('archive-overlay');
         Object.defineProperty(nested, 'scrollHeight', { configurable: true, value: 640 });
+        Object.defineProperty(overlay, 'scrollHeight', { configurable: true, value: 900 });
         scrollIntoViewMock.mockClear();
         rerender(<Harness suspended messages={grown} />);
         expect(scrollIntoViewMock).not.toHaveBeenCalled();
         rerender(<Harness suspended={false} messages={grown} />);
         expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
         expect(nested.scrollTop).toBe(640);
+        expect(overlay.scrollTop).toBe(0);
     });
 
     it('does not unpin follow when a delayed scroll arrives without user intent', () => {

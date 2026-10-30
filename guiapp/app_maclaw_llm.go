@@ -7098,6 +7098,41 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 		return items, nil
 	}
 
+	if strings.EqualFold(strings.TrimSpace(protocol), "google") || strings.EqualFold(strings.TrimSpace(protocol), "gemini") {
+		log.Printf("[FetchProviderModels] using Google generateContent model listing")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		models, err := llm.ListGoogleModels(ctx, corelib.MaclawLLMConfig{
+			URL:       baseURL,
+			Key:       apiKey,
+			Protocol:  "google",
+			AgentType: userAgent,
+		}, client)
+		if err != nil {
+			log.Printf("[FetchProviderModels] Google model list error: %v", err)
+			return nil, fmt.Errorf("获取模型列表失败: %w", err)
+		}
+		items := make([]ProviderModelItem, 0, len(models))
+		for _, model := range models {
+			name := model.DisplayName
+			if name == "" {
+				name = model.ID
+			}
+			items = append(items, ProviderModelItem{ID: model.ID, Name: name})
+		}
+		if len(items) == 0 {
+			log.Printf("[FetchProviderModels] Google model list was empty")
+			return nil, fmt.Errorf("google model list returned empty")
+		}
+		if sortModels {
+			sort.Slice(items, func(i, j int) bool {
+				return items[i].ID < items[j].ID
+			})
+		}
+		log.Printf("[FetchProviderModels] success via Google model list: %d models", len(items))
+		return items, nil
+	}
+
 	candidates := openAIModelsEndpointCandidates(normalizeOpenAIProbeBaseURL(baseURL, userAgent), protocol)
 	log.Printf("[FetchProviderModels] using OpenAI protocol, endpoint candidates: %v", candidates)
 

@@ -1292,6 +1292,10 @@ func toolSurfaceInvocationPolicyFromPayload(payload map[string]interface{}, enve
 			return ToolSurfaceInvocationPolicy{}, err
 		}
 		policy.ToolChoice = choice
+	} else if choice, ok, err := googleToolConfigPolicy(payload); err != nil {
+		return ToolSurfaceInvocationPolicy{}, err
+	} else if ok {
+		policy.ToolChoice = choice
 	}
 	if raw, found := payload["parallel_tool_calls"]; found {
 		value, ok := raw.(bool)
@@ -1349,9 +1353,120 @@ func toolSurfaceWireDefinitions(payload map[string]interface{}) ([]map[string]in
 		if !ok {
 			return nil, true, fmt.Errorf("outbound tool %d is not an object", index)
 		}
+		flat, googleShaped, err := googleFunctionDeclarationDefinitions(definition, index)
+		if err != nil {
+			return nil, true, err
+		}
+		if googleShaped {
+			definitions = append(definitions, flat...)
+			continue
+		}
 		definitions = append(definitions, definition)
 	}
 	return definitions, true, nil
+}
+
+// googleFunctionDeclarationDefinitions flattens a generateContent tools entry
+// into the name/description/parameters shape the receipt already compares.
+// The JSON body stays in Google's functionDeclarations form. Schema fields are
+// copied through unchanged so the digest still matches the prepared tools.
+func googleFunctionDeclarationDefinitions(definition map[string]interface{}, index int) ([]map[string]interface{}, bool, error) {
+	raw, ok := definition["functionDeclarations"]
+	if !ok {
+		return nil, false, nil
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, true, fmt.Errorf("outbound tool %d functionDeclarations must be an array", index)
+	}
+	out := make([]map[string]interface{}, 0, len(items))
+	for declIndex, item := range items {
+		decl, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, true, fmt.Errorf("outbound tool %d function declaration %d is not an object", index, declIndex)
+		}
+		flat := map[string]interface{}{}
+		if name, exists := decl["name"]; exists {
+			flat["name"] = name
+		}
+		if description, exists := decl["description"]; exists {
+			flat["description"] = description
+		}
+		if parameters, exists := decl["parameters"]; exists {
+			flat["parameters"] = parameters
+		} else if schema, exists := decl["input_schema"]; exists {
+			flat["parameters"] = schema
+		}
+		out = append(out, flat)
+	}
+	return out, true, nil
+}
+
+func googleToolConfigPolicy(payload map[string]interface{}) (ToolSurfaceToolChoice, bool, error) {
+	raw, found := payload["toolConfig"]
+	if !found || raw == nil {
+		return ToolSurfaceToolChoice{}, false, nil
+	}
+	config := asStringInterfaceMap(raw)
+	if config == nil {
+		return ToolSurfaceToolChoice{}, false, fmt.Errorf("toolConfig must be an object")
+	}
+	calling := asStringInterfaceMap(config["functionCallingConfig"])
+	if calling == nil {
+		return ToolSurfaceToolChoice{}, false, fmt.Errorf("toolConfig.functionCallingConfig is required")
+	}
+	mode := strings.ToUpper(strings.TrimSpace(toolSurfaceStringValue(calling["mode"])))
+	names := toolSurfaceStringList(calling["allowedFunctionNames"])
+	switch mode {
+	case "AUTO":
+		if len(names) > 0 {
+			return ToolSurfaceToolChoice{}, false, fmt.Errorf("AUTO toolConfig cannot name functions")
+		}
+		return ToolSurfaceToolChoice{Mode: ToolSurfaceToolChoiceAuto}, true, nil
+	case "NONE":
+		if len(names) > 0 {
+			return ToolSurfaceToolChoice{}, false, fmt.Errorf("NONE toolConfig cannot name functions")
+		}
+		return ToolSurfaceToolChoice{Mode: ToolSurfaceToolChoiceNone}, true, nil
+	case "ANY":
+		switch len(names) {
+		case 0:
+			return ToolSurfaceToolChoice{Mode: ToolSurfaceToolChoiceRequired}, true, nil
+		case 1:
+			return ToolSurfaceToolChoice{Mode: ToolSurfaceToolChoiceSpecific, Name: names[0]}, true, nil
+		default:
+			return ToolSurfaceToolChoice{}, false, fmt.Errorf("toolConfig allowedFunctionNames must name one function")
+		}
+	default:
+		return ToolSurfaceToolChoice{}, false, fmt.Errorf("unsupported toolConfig mode %q", mode)
+	}
+}
+
+func toolSurfaceStringList(value interface{}) []string {
+	switch typed := value.(type) {
+	case []string:
+		return compactToolSurfaceNames(typed)
+	case []interface{}:
+		names := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, _ := item.(string)
+			names = append(names, text)
+		}
+		return compactToolSurfaceNames(names)
+	default:
+		return nil
+	}
+}
+
+func compactToolSurfaceNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (transport *toolSurfaceReceiptRoundTripper) reject(failure string, wireToolCount int, wireDigest string) error {

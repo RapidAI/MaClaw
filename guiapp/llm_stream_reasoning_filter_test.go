@@ -30,17 +30,22 @@ func TestOpenAIStreamCodeGenRequestStripsUnsupportedStreamOptions(t *testing.T) 
 		if got := body["model"]; got != corelib.CodeGenDefaultModelID {
 			t.Fatalf("model = %#v, want %q", got, corelib.CodeGenDefaultModelID)
 		}
-		if got := body["stream"]; got != true {
-			t.Fatalf("stream = %#v, want true", got)
+		if got := body["stream"]; got != false {
+			t.Fatalf("stream = %#v, want false", got)
 		}
 		if _, ok := body["stream_options"]; ok {
-			t.Fatalf("stream_options leaked into CodeGen GUI stream request: %#v", body)
+			t.Fatalf("stream_options leaked into CodeGen GUI chat request: %#v", body)
 		}
+		if got := req.Header.Get("Accept"); strings.Contains(got, "text/event-stream") {
+			t.Fatalf("Accept = %q, CodeGen chat must not open an SSE read", got)
+		}
+		const success = `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`
 		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-			Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n")),
-			Request:    req,
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"application/json"}},
+			Body:          io.NopCloser(strings.NewReader(success)),
+			ContentLength: int64(len(success)),
+			Request:       req,
 		}, nil
 	})}
 

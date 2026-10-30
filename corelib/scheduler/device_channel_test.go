@@ -36,6 +36,14 @@ func TestCanonicalDeliveryChannelRecognizesDevice(t *testing.T) {
 	}
 }
 
+func TestCanonicalDeliveryChannelRecognizesMessenger(t *testing.T) {
+	for _, input := range []string{"messenger", "Messenger", "messenger_local", "facebook-messenger", "facebook_messenger", "脸书", "Facebook"} {
+		if got := CanonicalDeliveryChannel(input); got != DeliveryChannelMessenger {
+			t.Fatalf("CanonicalDeliveryChannel(%q)=%q", input, got)
+		}
+	}
+}
+
 func TestCanonicalDeliveryChannelRecognizesSlack(t *testing.T) {
 	for _, input := range []string{"slack", "Slack", "slack_local", "slack-local"} {
 		if got := CanonicalDeliveryChannel(input); got != DeliveryChannelSlack {

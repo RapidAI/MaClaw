@@ -170,6 +170,13 @@ func (a *App) startBuddyService() {
 }
 
 func (a *App) stopBuddyService() {
+	// Restart reopens the port, so wait until the runner releases it.
+	a.stopBuddyServiceWithin(2 * time.Second)
+}
+
+// stopBuddyServiceWithin cancels the runner and waits up to limit for the
+// port to close. limit <= 0 returns as soon as cancel is signaled.
+func (a *App) stopBuddyServiceWithin(limit time.Duration) {
 	a.buddyMu.Lock()
 	cancel := a.buddyCancel
 	done := a.buddyDone
@@ -180,14 +187,15 @@ func (a *App) stopBuddyService() {
 	if cancel != nil {
 		cancel()
 	}
-	// Wait for the runner to close the port before a restart reopens it. The
-	// cap keeps shutdown bounded if a dial is stuck in the OS.
-	if done != nil {
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			log.Printf("[buddy] runner did not stop within 2s")
-		}
+	if done == nil || limit <= 0 {
+		return
+	}
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		log.Printf("[buddy] runner did not stop within %s", limit)
 	}
 }
 

@@ -500,6 +500,132 @@ func TestMaybeScheduleGoalContinuationSkipsUnarmedRemoteEvenWithLocalPending(t *
 	}
 }
 
+func TestMaybeScheduleGoalContinuationArmsTheStoredSlashKey(t *testing.T) {
+	const asked = `desktop-user:F:/bird2`
+	const stored = `desktop-user:F:\bird2`
+	app, store, engine := newGoalBarApp(t)
+	t.Cleanup(func() {
+		engine.CancelPending(asked)
+		engine.CancelPending(stored)
+	})
+	g, err := store.Set(stored, "图形版本愤怒的小鸟，c++语言")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(stored, g.GoalID, goal.StatusFailed, "Billing daily count exceeded") {
+		t.Fatal("failed to mark the goal failed")
+	}
+	handler := app.imHandler
+	// Keep the sticky lookup off disk. This id is only a slash spelling.
+	handler.stickyCodingWorkbenchMemory.Store(asked, stickyCodingMemoryMiss{})
+	// The user turn re-arms the stored row and must not queue a second turn.
+	// Post-loop then calls maybeSchedule with the composer id.
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: asked, Platform: "desktop", Text: "继续这个任务"}, stoppedGoalUserTurn{})
+	if goalBarPending(engine, stored) || goalBarPending(engine, asked) {
+		t.Fatal("the user turn must not schedule beside itself")
+	}
+	released := store.Get(stored)
+	if released == nil || released.Status != goal.StatusActive || released.Summary != "" || released.ComposerClockStopped() {
+		t.Fatalf("release left the stored goal stopped: %+v", released)
+	}
+	engine.mu.Lock()
+	engine.scheduledTimers[asked] = time.AfterFunc(time.Hour, func() {})
+	engine.mu.Unlock()
+
+	handler.maybeScheduleGoalContinuation(asked, &IMAgentResponse{Text: "本轮做完了"}, "desktop")
+
+	if !goalBarPending(engine, stored) {
+		t.Fatal("next turn must be armed on the stored key")
+	}
+	if goalBarPending(engine, asked) {
+		t.Fatal("asked spelling must not keep a second timer")
+	}
+	got := store.Get(stored)
+	if got == nil || got.GoalID != g.GoalID || got.Status != goal.StatusActive {
+		t.Fatalf("stored goal = %+v", got)
+	}
+}
+
+func TestMaybeScheduleGoalContinuationPausesTheStoredSlashTwin(t *testing.T) {
+	const asked = `desktop-user:F:/bird2`
+	const stored = `desktop-user:F:\bird2`
+	app, store, engine := newGoalBarApp(t)
+	t.Cleanup(func() {
+		engine.CancelPending(asked)
+		engine.CancelPending(stored)
+	})
+	if _, err := store.Set(stored, "图形版本愤怒的小鸟，c++语言"); err != nil {
+		t.Fatal(err)
+	}
+	engine.mu.Lock()
+	engine.scheduledTimers[asked] = time.AfterFunc(time.Hour, func() {})
+	engine.scheduledTimers[stored] = time.AfterFunc(time.Hour, func() {})
+	engine.mu.Unlock()
+	handler := app.imHandler
+	// In memory only. storeStickyCodingWorkbenchMemory would write this
+	// session's sticky file under the real data directory.
+	handler.stickyCodingWorkbenchMemory.Store(asked, stickyCodingWorkbenchMemory{
+		Kind:          "remote",
+		RemoteHost:    "home.rapidaltech",
+		RemoteWorkDir: "/home/ra/bird",
+	})
+	handler.pendingV2SubAgentExecution.Store(asked, true)
+	handler.pendingTemplateCodingProjectPath.Store(asked, `E:\bird-test2`)
+
+	handler.maybeScheduleGoalContinuation(asked, &IMAgentResponse{Text: "partial"}, "desktop")
+
+	if goalBarPending(engine, asked) || goalBarPending(engine, stored) {
+		t.Fatal("unarmed remote must not leave a timer on either spelling")
+	}
+	got := store.Get(stored)
+	if got == nil || got.Status != goal.StatusPaused || !strings.Contains(got.Summary, "SSH") {
+		t.Fatalf("stored slash twin was not paused: %+v", got)
+	}
+	if other := store.Get(asked); other != nil {
+		t.Fatalf("asked spelling grew its own goal: %+v", other)
+	}
+}
+
+func TestQueuedGoalTurnHoldParksTheStoredSlashKey(t *testing.T) {
+	const asked = `desktop-user:F:/bird2`
+	const stored = `desktop-user:F:\bird2`
+	app, store, engine := newGoalBarApp(t)
+	t.Cleanup(func() {
+		engine.CancelPending(asked)
+		engine.CancelPending(stored)
+	})
+	g, err := store.Set(stored, "图形版本愤怒的小鸟，c++语言")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(stored, g.GoalID)
+	if !engine.blocksRunWindowCompletion(asked) {
+		t.Fatal("composer session treated the queued goal as finished")
+	}
+	engine.mu.Lock()
+	engine.scheduledTimers[asked] = time.AfterFunc(time.Hour, func() {})
+	engine.queuedTurn[asked] = queuedGoalTurn{goalID: "stale-twin"}
+	engine.mu.Unlock()
+
+	msg := IMUserMessage{UserID: asked, Platform: "desktop", Text: "继续这个任务"}
+	end := app.imHandler.beginQueuedGoalTurnHold(msg)
+	if goalBarPending(engine, stored) || goalBarPending(engine, asked) {
+		t.Fatal("hold left a slash timer live")
+	}
+	end(false)
+	if !goalBarPending(engine, stored) {
+		t.Fatal("early return did not restore the stored timer")
+	}
+	if goalBarPending(engine, asked) {
+		t.Fatal("stale asked timer came back")
+	}
+	end = app.imHandler.beginQueuedGoalTurnHold(msg)
+	end(true)
+	if goalBarPending(engine, stored) || goalBarPending(engine, asked) {
+		t.Fatal("a turn that schedules the next goal restored the parked timer")
+	}
+}
+
 func TestGoalStepProgressKeepsTheFollowingTurnOnTheSameStep(t *testing.T) {
 	h := &IMMessageHandler{goalStore: goal.NewStore("")}
 	userID := "desktop-user:D:/goal-progress"
@@ -970,6 +1096,15 @@ func TestGoalContinuationRetriesTransientTurnError(t *testing.T) {
 	}
 	if !goalTurnErrorIsRetryable("SSE stream idle timeout") || !goalTurnErrorIsRetryable("context deadline exceeded") || !goalTurnErrorIsRetryable("dial tcp 10.0.0.1:443: i/o timeout") {
 		t.Fatal("idle timeout, a route deadline, and a dial timeout should be retried")
+	}
+	// The gateway reports this stall inside HTTP 200. The type is gone by the
+	// time the goal sees the text, and failing the goal here is what left the
+	// task list on 失败 after the stream produced nothing.
+	if !goalTurnErrorIsRetryable("upstream stream idle timeout after 2m0s") || !goalTurnErrorIsRetryable("LLM call failed: upstream stream idle timeout after 2m0s") {
+		t.Fatal("an upstream stream idle stall should be retried")
+	}
+	if goalTurnErrorIsRetryable("upstream model error: content policy") {
+		t.Fatal("a named model rejection must not be retried")
 	}
 }
 

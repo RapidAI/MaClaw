@@ -9,8 +9,9 @@ import { mnTailPackB } from './mnTailPackB';
 import { mnTailPackC } from './mnTailPackC';
 import { mnTailPackD } from './mnTailPackD';
 import { mnTailPackE } from './mnTailPackE';
+import { mnTailPackF } from './mnTailPackF';
 
-const mnPacks: Array<Record<string, string>> = [mnTailPackA, mnTailPackB, mnTailPackC, mnTailPackD, mnTailPackE];
+const mnPacks: Array<Record<string, string>> = [mnTailPackA, mnTailPackB, mnTailPackC, mnTailPackD, mnTailPackE, mnTailPackF];
 
 type MnTemplate = {
     re: RegExp;
@@ -84,6 +85,13 @@ function packExact(en: string): string | undefined {
         if (hit) return hit;
     }
     return undefined;
+}
+
+/** Exact Mongolian catalog hit. ${} templates are not applied. */
+export function mnExactSentence(en: string): string | undefined {
+    const key = en.trim();
+    if (!key) return undefined;
+    return mnInline[key] || packExact(key);
 }
 
 function mnFromInline(en: string): string {

@@ -2,7 +2,6 @@ package guiapp
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"os"
 	"os/exec"
@@ -238,7 +237,8 @@ func (c *ToolVersionCache) detectVersion(ctx context.Context, path string) strin
 	return version
 }
 
-// cacheFilePath returns the path to the JSON persistence file.
+// cacheFilePath returns the pre-migration JSON file. The live store is the
+// sibling tool_version_cache.db.
 func (c *ToolVersionCache) cacheFilePath() string {
 	return filepath.Join(corelib.MaclawDataDir(), "tool_version_cache.json")
 }
@@ -248,69 +248,13 @@ type persistedCache struct {
 	Tools map[string]*cachedVersion `json:"tools"`
 }
 
-// loadFromDisk loads cached version data from the JSON file.
+// loadFromDisk loads cached version data from SQLite, importing a legacy JSON
+// file once when it is still present.
 func (c *ToolVersionCache) loadFromDisk() {
-	path := c.cacheFilePath()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		// File doesn't exist or can't be read — start with empty cache.
-		return
-	}
-
-	var pc persistedCache
-	if err := json.Unmarshal(data, &pc); err != nil {
-		log.Printf("[ToolVersionCache] failed to parse cache file %s: %v", path, err)
-		return
-	}
-
-	for name, entry := range pc.Tools {
-		if entry != nil {
-			c.versions.Store(name, entry)
-		}
-	}
+	c.loadFromPath(c.cacheFilePath())
 }
 
-// saveToDisk persists the current cache to the JSON file.
+// saveToDisk persists the current cache in one SQLite transaction.
 func (c *ToolVersionCache) saveToDisk() {
-	pc := persistedCache{
-		Tools: make(map[string]*cachedVersion),
-	}
-
-	c.versions.Range(func(key, value any) bool {
-		name, _ := key.(string)
-		entry, _ := value.(*cachedVersion)
-		if name != "" && entry != nil {
-			pc.Tools[name] = entry
-		}
-		return true
-	})
-
-	data, err := json.MarshalIndent(pc, "", "  ")
-	if err != nil {
-		log.Printf("[ToolVersionCache] failed to marshal cache: %v", err)
-		return
-	}
-
-	path := c.cacheFilePath()
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("[ToolVersionCache] failed to create cache directory %s: %v", dir, err)
-		return
-	}
-
-	// Write to temp file then rename for atomicity.
-	// On Windows, os.Rename fails if the destination exists, so remove it first.
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		log.Printf("[ToolVersionCache] failed to write cache file %s: %v", tmpPath, err)
-		return
-	}
-
-	// Remove destination before rename (required on Windows).
-	_ = os.Remove(path)
-	if err := os.Rename(tmpPath, path); err != nil {
-		log.Printf("[ToolVersionCache] failed to rename cache file: %v", err)
-		// Clean up temp file on failure.
-		_ = os.Remove(tmpPath)
-	}
+	c.saveToPath(c.cacheFilePath())
 }

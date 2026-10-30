@@ -172,12 +172,22 @@ func TestListFileCompanionLibraryDropsAGroupShareTheHubNoLongerLists(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
+	fileCompanionLibraryMu.Lock()
+	items, _ := app.readFileCompanionLibraryLocked()
+	items = append(items, FileCompanionLibraryItem{
+		ID: "local:shared", Name: "shared.pdf", Path: downloaded, Source: "local",
+	})
+	err := app.writeFileCompanionLibraryLocked(items)
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
 	listed, err := app.ListFileCompanionLibrary()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range listed.Items {
-		if item.Token == token {
+		if item.Token == token || (item.Source == "local" && strings.EqualFold(item.Path, downloaded)) {
 			t.Fatalf("the deleted group share is still listed: %+v", item)
 		}
 	}
@@ -198,7 +208,7 @@ func TestListFileCompanionLibraryDropsAGroupShareTheHubNoLongerLists(t *testing.
 	}
 }
 
-func TestListFileCompanionLibraryKeepsAPathStillUsedByALocalRow(t *testing.T) {
+func TestListFileCompanionLibraryClosesAnOpenReceivedCopyWhenTheHostDeletesIt(t *testing.T) {
 	resetFileCompanionShareProbeCache()
 	const token = "cd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,8 +231,9 @@ func TestListFileCompanionLibraryKeepsAPathStillUsedByALocalRow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The reader also opened that downloaded file as a local document. The
-	// revoked share must not take the local row's file or its reader data.
+	// Opening the received copy writes a local row on the same file. That row
+	// is the participant's open tab. The host deleting the share closes it
+	// and removes the downloaded copy.
 	fileCompanionLibraryMu.Lock()
 	items, _ := app.readFileCompanionLibraryLocked()
 	items = append(items, FileCompanionLibraryItem{
@@ -237,26 +248,166 @@ func TestListFileCompanionLibraryKeepsAPathStillUsedByALocalRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, item := range listed.Items {
+		if item.Token == token || (item.Source == "local" && strings.EqualFold(item.Path, downloaded)) {
+			t.Fatalf("the open share stayed in the library: %+v", item)
+		}
+	}
+	if len(listed.Removed) != 1 || !strings.EqualFold(listed.Removed[0], downloaded) {
+		t.Fatalf("removed = %v, want the open copy", listed.Removed)
+	}
+	if _, err := os.Stat(downloaded); !os.IsNotExist(err) {
+		t.Fatalf("the downloaded copy is still present: %v", err)
+	}
+	if _, err := os.Stat(sessionFile); !os.IsNotExist(err) {
+		t.Fatalf("the revoked transcript is still present: %v", err)
+	}
+}
+
+func TestListFileCompanionLibraryClosesADismissedOpenCopyOnTheNextList(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc"
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/mobile/documents/shares" {
+			_, _ = w.Write([]byte(`{"notes_reply":true,"mine":[],"received":[]}`))
+			return
+		}
+		if r.URL.Path == "/api/mobile/documents/shares/"+token {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"SHARE_NOT_FOUND","message":"分享链接不存在"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	downloaded, sessionFile := seedReceivedShareCopy(t, app, token)
+	fileCompanionLibraryMu.Lock()
+	if _, err := app.dismissFileCompanionShareLocked(token); err != nil {
+		fileCompanionLibraryMu.Unlock()
+		t.Fatal(err)
+	}
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: "local:shared", Name: "shared.pdf", Path: downloaded, Source: "local",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed.Items {
+		if strings.EqualFold(item.Path, downloaded) {
+			t.Fatalf("the open copy stayed listed: %+v", item)
+		}
+	}
+	if len(listed.Removed) != 1 || !strings.EqualFold(listed.Removed[0], downloaded) {
+		t.Fatalf("removed = %v, want the open copy", listed.Removed)
+	}
+	if _, err := os.Stat(downloaded); !os.IsNotExist(err) {
+		t.Fatalf("the downloaded copy is still present: %v", err)
+	}
+	if _, err := os.Stat(sessionFile); !os.IsNotExist(err) {
+		t.Fatalf("the revoked transcript is still present: %v", err)
+	}
+}
+
+func TestListFileCompanionLibraryClosesAGroupCopyLeftWithoutACloudRow(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_dededededededededededededededede"
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/mobile/documents/shares" {
+			_, _ = w.Write([]byte(`{"notes_reply":true,"mine":[],"received":[]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	downloaded, sessionFile := seedReceivedShareCopy(t, app, token)
+	// A previous import in this process moves the counter. The leftover copy
+	// was not part of this refresh's cloud snapshot, so that must not cancel
+	// the close.
+	app.bumpFileCompanionShareEpoch(token)
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: "local:shared", Name: "shared.pdf", Path: downloaded, Source: "local",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed.Items {
+		if strings.EqualFold(item.Path, downloaded) {
+			t.Fatalf("the open group copy stayed listed: %+v", item)
+		}
+	}
+	if len(listed.Removed) != 1 || !strings.EqualFold(listed.Removed[0], downloaded) {
+		t.Fatalf("removed = %v, want the open copy", listed.Removed)
+	}
+	if _, err := os.Stat(downloaded); !os.IsNotExist(err) {
+		t.Fatalf("the downloaded group copy is still present: %v", err)
+	}
+	if _, err := os.Stat(sessionFile); !os.IsNotExist(err) {
+		t.Fatalf("the group transcript is still present: %v", err)
+	}
+	fileCompanionLibraryMu.Lock()
+	dismissed := app.readDismissedShareTokensLocked()[token]
+	fileCompanionLibraryMu.Unlock()
+	if dismissed {
+		t.Fatal("a group token must stay available for a future re-invite")
+	}
+}
+
+func TestListFileCompanionLibraryKeepsADismissedCopyWhenTheProbeIsUnsupported(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/mobile/documents/shares" {
+			_, _ = w.Write([]byte(`{"notes_reply":true,"mine":[],"received":[]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	downloaded, sessionFile := seedReceivedShareCopy(t, app, token)
+	fileCompanionLibraryMu.Lock()
+	if _, err := app.dismissFileCompanionShareLocked(token); err != nil {
+		fileCompanionLibraryMu.Unlock()
+		t.Fatal(err)
+	}
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: "local:shared", Name: "shared.pdf", Path: downloaded, Source: "local",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Removed) != 0 {
+		t.Fatalf("an unsupported probe closed the tab: %v", listed.Removed)
+	}
 	foundLocal := false
 	for _, item := range listed.Items {
-		if item.Token == token {
-			t.Fatalf("the revoked cloud row is still listed: %+v", item)
-		}
 		if item.Source == "local" && strings.EqualFold(item.Path, downloaded) {
 			foundLocal = true
 		}
 	}
 	if !foundLocal {
-		t.Fatalf("the local row was dropped with the share: %+v", listed.Items)
-	}
-	if len(listed.Removed) != 0 {
-		t.Fatalf("the shared path was closed while a local row still uses it: %v", listed.Removed)
+		t.Fatalf("the open copy left the library: %+v", listed.Items)
 	}
 	if _, err := os.Stat(downloaded); err != nil {
-		t.Fatalf("the local row's file was removed: %v", err)
+		t.Fatalf("the downloaded copy was removed: %v", err)
 	}
 	if _, err := os.Stat(sessionFile); err != nil {
-		t.Fatalf("the local row's transcript was purged: %v", err)
+		t.Fatalf("the transcript was purged: %v", err)
 	}
 }
 
@@ -345,14 +496,31 @@ func TestListFileCompanionLibraryDropsAHostRowWithoutPurgingTheSource(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
+	fileCompanionLibraryMu.Lock()
+	items, _ := app.readFileCompanionLibraryLocked()
+	items = append(items, FileCompanionLibraryItem{
+		ID: "local:paper", Name: "paper.pdf", Path: source, Source: "local",
+	})
+	err = app.writeFileCompanionLibraryLocked(items)
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
 	listed, err := app.ListFileCompanionLibrary()
 	if err != nil {
 		t.Fatal(err)
 	}
+	foundLocal := false
 	for _, item := range listed.Items {
 		if item.Token == token {
 			t.Fatalf("the host's revoked row is still listed: %+v", item)
 		}
+		if item.Source == "local" && strings.EqualFold(item.Path, source) {
+			foundLocal = true
+		}
+	}
+	if !foundLocal {
+		t.Fatalf("the host's own file left the library: %+v", listed.Items)
 	}
 	if len(listed.Removed) != 0 {
 		t.Fatalf("the host's own tab was closed: %v", listed.Removed)
@@ -400,5 +568,121 @@ func TestListFileCompanionLibraryKeepsARowWhenTheProbeIsUnsupported(t *testing.T
 	}
 	if _, err := os.Stat(sessionFile); err != nil {
 		t.Fatalf("the transcript was purged on an unsupported probe: %v", err)
+	}
+}
+
+func shareListHandler(token string, mine bool) http.HandlerFunc {
+	body := `{"notes_reply":true,"mine":[],"received":[{"token":"` + token + `","name":"shared.pdf","visibility":"public","permanent":true,"revision":1,"owner":"host@example.com","host":false,"created_at":"2026-10-25T00:00:00Z"}]}`
+	if mine {
+		body = `{"notes_reply":true,"mine":[{"token":"` + token + `","name":"paper.pdf","visibility":"public","permanent":true,"revision":1,"owner":"me@example.com","host":true,"created_at":"2026-10-25T00:00:00Z"}],"received":[]}`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares" {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		http.NotFound(w, r)
+	}
+}
+
+func listedSharePath(t *testing.T, items []FileCompanionLibraryItem, token string) string {
+	t.Helper()
+	for _, item := range items {
+		if item.Source == "cloud" && item.Token == token {
+			return item.Path
+		}
+	}
+	t.Fatalf("share %s was not listed: %+v", token, items)
+	return ""
+}
+
+func TestListFileCompanionLibraryReattachesAnInstalledShareAfterTheCloudRowIsGone(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_12121212121212121212121212121212"
+	app := newShareRevokeTestApp(t, shareListHandler(token, false))
+	downloaded, _ := seedReceivedShareCopy(t, app, token)
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: "local:shared", Name: "shared.pdf", Path: downloaded, Source: "local",
+		OpenedAt: "2026-10-30T00:00:00Z",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := listedSharePath(t, listed.Items, token)
+	if fileCompanionDedupeKey(got) != fileCompanionDedupeKey(downloaded) {
+		t.Fatalf("path = %s, want %s", got, downloaded)
+	}
+}
+
+func TestListFileCompanionLibraryRestoresAProbeDismissedShareThatIsStillLive(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_34343434343434343434343434343434"
+	app := newShareRevokeTestApp(t, shareListHandler(token, false))
+	downloaded, _ := seedReceivedShareCopy(t, app, token)
+	fileCompanionLibraryMu.Lock()
+	if _, err := app.dismissFileCompanionShareLocked(token); err != nil {
+		fileCompanionLibraryMu.Unlock()
+		t.Fatal(err)
+	}
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: "local:shared", Name: "shared.pdf", Path: downloaded, Source: "local",
+		OpenedAt: "2026-10-30T00:00:00Z",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := listedSharePath(t, listed.Items, token)
+	if fileCompanionDedupeKey(got) != fileCompanionDedupeKey(downloaded) {
+		t.Fatalf("path = %s, want %s", got, downloaded)
+	}
+	fileCompanionLibraryMu.Lock()
+	dismissed := app.readDismissedShareTokensLocked()[token]
+	fileCompanionLibraryMu.Unlock()
+	if dismissed {
+		t.Fatal("a live share stayed dismissed after the hub listed it again")
+	}
+}
+
+func TestListFileCompanionLibraryReattachesARememberedHostFile(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_56565656565656565656565656565656"
+	app := newShareRevokeTestApp(t, shareListHandler(token, true))
+	source := filepath.Join(t.TempDir(), "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileCompanionLibraryMu.Lock()
+	app.rememberFileCompanionSharePathLocked(token, source)
+	if _, err := app.dismissFileCompanionShareLocked(token); err != nil {
+		fileCompanionLibraryMu.Unlock()
+		t.Fatal(err)
+	}
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: "local:paper", Name: "paper.pdf", Path: source, Source: "local",
+		OpenedAt: "2026-10-30T00:00:00Z",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := listedSharePath(t, listed.Items, token)
+	if fileCompanionDedupeKey(got) != fileCompanionDedupeKey(source) {
+		t.Fatalf("path = %s, want %s", got, source)
 	}
 }

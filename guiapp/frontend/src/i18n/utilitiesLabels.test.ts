@@ -39,8 +39,8 @@ describe('utilitiesLabels', () => {
         expect(utilitiesNavLabel()).toBe('Experts');
         expect(utilitiesNavLabel('zh')).toBe('专家&工具');
         expect(utilitiesPageTitle()).toBe('Experts & Tools');
-        expect(utilitiesNavLabel('mn')).toBe('Мэргэжилтэн');
-        expect(utilitiesPageTitle('mn')).toBe('Мэргэжилтэн ба багаж');
+        expect(utilitiesNavLabel('mn')).toBe('Эксперт');
+        expect(utilitiesPageTitle('mn')).toBe('Эксперт ба багаж');
     });
 
     it('keeps split tools and AI expert copy separate from the legacy combined labels', () => {
@@ -49,6 +49,6 @@ describe('utilitiesLabels', () => {
         expect(toolsBackHintLabel('en')).toBe('Return to the Tools page');
         expect(expertsEntryLabel('zh-Hans')).toBe('AI 专家入口');
         expect(toolsEntryLabel('mn')).toBe('Багаж орох цэг');
-        expect(expertsEntryLabel('mn')).toBe('AI мэргэжилтэн орох цэг');
+        expect(expertsEntryLabel('mn')).toBe('AI эксперт орох цэг');
     });
 });

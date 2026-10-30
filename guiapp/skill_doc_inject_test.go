@@ -59,6 +59,7 @@ func TestSkillDocInject_ExecutableWithSKILLMD(t *testing.T) {
 
 	assertContains(t, result, "### Skill: drawio-skill")
 	assertContains(t, result, "Generate XML first")
+	assertContains(t, result, filepath.Join(skillDir, "SKILL.md"))
 }
 
 // TestSkillDocInject_ExecutableNoSKILLMD verifies that executable skills
@@ -154,10 +155,49 @@ func TestSkillDocInject_TokenBudgetTruncation(t *testing.T) {
 	result := runInjection(t, skills, "test long skill", 100) // 100 token budget ≈ 300 runes
 
 	assertContains(t, result, "### Skill: long-skill")
+	assertNotContains(t, result, "流程文件：")
 	// The injected content should be much shorter than the original.
 	if len([]rune(result)) > 600 {
 		t.Errorf("content should be truncated to ~300 runes, got %d runes total", len([]rune(result)))
 	}
+}
+
+// TestSkillDocInject_TruncatedProcedureKeepsTheFilePath verifies that a body
+// cut before its commands still names the markdown file and the skill directory.
+func TestSkillDocInject_TruncatedProcedureKeepsTheFilePath(t *testing.T) {
+	dir := t.TempDir()
+	var body strings.Builder
+	body.WriteString("# Procedure\n")
+	body.WriteString(strings.Repeat("前置说明。", 800))
+	body.WriteString("\n```bash\nuv run ${CLAUDE_SKILL_DIR}/scripts/intake.py --late-only\n```\n")
+	body.WriteString("\n```bash\nuv run ${CLAUDE_SKILL_DIR}/scripts/board.py\n```\n")
+	docPath := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(docPath, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skills := []NLSkillDefinition{{
+		Name:     "photo-locate",
+		Type:     "executable",
+		Status:   "active",
+		Triggers: []string{"这是哪"},
+		SkillDir: dir,
+		Steps:    []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "python scripts/doctor.py"}}},
+	}}
+
+	result := runInjection(t, skills, "这是哪？", 100)
+	assertContains(t, result, docPath)
+	assertContains(t, result, dir)
+	assertContains(t, result, "[truncated]")
+	assertNotContains(t, result, "--late-only")
+
+	sticky := mergeStickyAgentGuidedDocs(collectMatchedSkillDocs(skills, "继续"), skills, "photo-locate")
+	if len(sticky) != 1 || sticky[0].DocPath != docPath {
+		t.Fatalf("sticky doc = %#v", sticky)
+	}
+	var continued strings.Builder
+	writeMatchedSkillDocs(&continued, sticky, 100)
+	assertContains(t, continued.String(), docPath)
+	assertNotContains(t, continued.String(), "--late-only")
 }
 
 func TestSkillDocInject_BookPDFAgentGuidedWorkflowFromInstructions(t *testing.T) {

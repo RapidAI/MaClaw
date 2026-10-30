@@ -594,7 +594,7 @@ func TestConsumePendingTemplateYieldsToCodingExecRetry(t *testing.T) {
 
 	resp, handled := h.consumePendingTemplateSubAgentExecution(
 		IMUserMessage{UserID: userID, Text: "重试失败"},
-		"重试失败", nil, "req-1", nil, nil,
+		"重试失败", nil, "req-1", nil, nil, false,
 	)
 	if handled || resp != nil {
 		t.Fatalf("checkpoint retry must win over pure sticky remote, got handled=%v resp=%v", handled, resp)

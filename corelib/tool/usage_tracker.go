@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -30,6 +31,9 @@ type UsageRecord struct {
 	FinalOutcome string            `json:"final_outcome,omitempty"`
 	TokensUsed   int               `json:"tokens_used,omitempty"`
 	RunArgs      map[string]string `json:"run_args,omitempty"` // skill run arguments for RepairGate replay
+	// persistID and seq are SQLite bookkeeping. They are not part of the legacy file.
+	persistID int64  `json:"-"`
+	seq       uint64 `json:"-"`
 }
 
 // ToolExperience is the richer input form used by the experience learning
@@ -66,15 +70,20 @@ type UsageTracker struct {
 	// indexLen is the record count the indexes were built from. A mismatch
 	// means the records were mutated outside the tracker's own paths (tests do
 	// this), and the readers fall back to a full scan rather than trust it.
-	indexLen  int
-	path      string
-	maxItems  int
-	eventSink lifecycle.EventSink
+	indexLen int
+	path     string
+	db       *sql.DB
+	seq      uint64
+	// dropped lists row ids removed from the ring buffer and not yet deleted.
+	dropped []int64
+	// savedInvalidations is the last invalidation snapshot written to SQLite.
+	savedInvalidations []byte
+	maxItems           int
+	eventSink          lifecycle.EventSink
 
-	// Recording a tool outcome rewrites the whole history file, which at the
-	// 2000-record cap cost ~2.2 ms and 825 KB per call. Writes are coalesced by
-	// saveTimer (guarded by timerMu) to at most one per usageSaveDebounce;
-	// saveMu serializes the snapshot+write itself. Save() writes synchronously.
+	// Recording appends one SQLite row. saveTimer (guarded by timerMu) coalesces
+	// those inserts to at most one transaction per usageSaveDebounce. saveMu
+	// serializes the snapshot and the write. Save() writes synchronously.
 	saveTimer *time.Timer
 	timerMu   sync.Mutex
 
@@ -170,9 +179,16 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 	// Check fingerprint before recording — detects config changes and generates
 	// InvalidationEvent if the fingerprint has changed since last recording.
 	t.checkFingerprint(r.ToolName)
+	t.seq++
+	r.seq = t.seq
 	t.records = append(t.records, r)
 	if len(t.records) > t.maxItems {
 		excess := len(t.records) - t.maxItems
+		for i := 0; i < excess; i++ {
+			if id := t.records[i].persistID; id > 0 {
+				t.dropped = append(t.dropped, id)
+			}
+		}
 		t.records = t.records[excess:]
 		// Shift the index in place; rebuilding it on every write at the cap cost
 		// ~187us and 447KB of allocations on the routing write path.
@@ -710,53 +726,69 @@ func (t *UsageTracker) load() error {
 	if t.path == "" {
 		return nil
 	}
+	if err := t.openDB(); err != nil {
+		log.Printf("[usage-tracker] sqlite open failed, reading legacy JSON: %v", err)
+		return t.loadLegacyJSON()
+	}
+	imported, err := t.usageMeta("legacy_import")
+	if err != nil {
+		return err
+	}
+	if imported == "1" {
+		return t.loadFromDB()
+	}
+	err = t.loadLegacyJSON()
+	if os.IsNotExist(err) {
+		if err := t.loadFromDB(); err != nil {
+			return err
+		}
+		return t.setUsageMeta("legacy_import", "1")
+	}
+	if err != nil {
+		log.Printf("[usage-tracker] warning: cannot parse %s, keeping the sqlite history", t.path)
+		return t.loadFromDB()
+	}
+	if err := t.writeDBSnapshotMode(true); err != nil {
+		return err
+	}
+	// The snapshot is in SQLite. Leaving the file would replace those rows if
+	// the import flag were lost.
+	_ = os.Remove(t.path)
+	return nil
+}
+
+func (t *UsageTracker) loadLegacyJSON() error {
 	data, err := os.ReadFile(t.path)
 	if err != nil {
 		return err
 	}
-
-	// Try new format first (UsageData wrapper with records + invalidations).
-	var ud UsageData
-	if err := json.Unmarshal(data, &ud); err == nil && ud.Records != nil {
-		for i := range ud.Records {
-			ud.Records[i].ToolName = normalizeUsageToolName(ud.Records[i].ToolName)
-			ud.Records[i].RecoveryTool = normalizeUsageToolName(ud.Records[i].RecoveryTool)
-			ud.Records[i].ToolSequence = normalizeUsageToolSequence(ud.Records[i].ToolSequence, 8)
+	apply := func(records []UsageRecord, invalidations map[string]ToolInvalidationState) {
+		for i := range records {
+			records[i].ToolName = normalizeUsageToolName(records[i].ToolName)
+			records[i].RecoveryTool = normalizeUsageToolName(records[i].RecoveryTool)
+			records[i].ToolSequence = normalizeUsageToolSequence(records[i].ToolSequence, 8)
+			t.seq++
+			records[i].seq = t.seq
 		}
 		t.mu.Lock()
-		t.records = ud.Records
-		t.invalidations = ud.Invalidations
+		t.records = records
+		t.invalidations = invalidations
 		if t.invalidations == nil {
 			t.invalidations = make(map[string]ToolInvalidationState)
 		}
 		t.rebuildToolIndexLocked()
 		t.mu.Unlock()
+	}
+	var ud UsageData
+	if err := json.Unmarshal(data, &ud); err == nil && ud.Records != nil {
+		apply(ud.Records, ud.Invalidations)
 		return nil
 	}
-
-	// Fall back to legacy flat array ([]UsageRecord).
 	var records []UsageRecord
-	if err := json.Unmarshal(data, &records); err == nil {
-		for i := range records {
-			records[i].ToolName = normalizeUsageToolName(records[i].ToolName)
-			records[i].RecoveryTool = normalizeUsageToolName(records[i].RecoveryTool)
-			records[i].ToolSequence = normalizeUsageToolSequence(records[i].ToolSequence, 8)
-		}
-		t.mu.Lock()
-		t.records = records
-		t.invalidations = make(map[string]ToolInvalidationState)
-		t.rebuildToolIndexLocked()
-		t.mu.Unlock()
-		return nil
+	if err := json.Unmarshal(data, &records); err != nil {
+		return err
 	}
-
-	// Unparseable: start fresh, log warning.
-	log.Printf("[usage-tracker] warning: cannot parse %s, starting with empty state", t.path)
-	t.mu.Lock()
-	t.records = make([]UsageRecord, 0)
-	t.invalidations = make(map[string]ToolInvalidationState)
-	t.rebuildToolIndexLocked()
-	t.mu.Unlock()
+	apply(records, nil)
 	return nil
 }
 
@@ -807,13 +839,19 @@ func (t *UsageTracker) flushPending() {
 	_ = t.writeSnapshotLocked()
 }
 
-// writeSnapshotLocked marshals and atomically replaces the history file. The
-// caller holds saveMu and this takes the state snapshot itself, so writes land
-// in the order their snapshots were taken.
+// writeSnapshotLocked appends new outcome rows and drops trimmed ones. The
+// caller holds saveMu. A recording no longer rewrites the whole history file.
 func (t *UsageTracker) writeSnapshotLocked() error {
 	if t.path == "" {
 		return nil
 	}
+	if t.db == nil {
+		return t.writeLegacyJSONSnapshot()
+	}
+	return t.writeDBSnapshot()
+}
+
+func (t *UsageTracker) writeLegacyJSONSnapshot() error {
 	t.mu.RLock()
 	records := make([]UsageRecord, len(t.records))
 	copy(records, t.records)
@@ -830,8 +868,6 @@ func (t *UsageTracker) writeSnapshotLocked() error {
 	}
 	// No MkdirAll here: if the store directory is gone, the write fails instead
 	// of recreating it (see NewUsageTracker).
-
-	// Atomic write: temp file + rename.
 	tmp := t.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -123,6 +124,9 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 	if len(choice.Message.ToolCalls) > 0 {
 		assistantMsg["tool_calls"] = choice.Message.ToolCalls
 	}
+	if sig := strings.TrimSpace(choice.Message.ThoughtSignature); sig != "" {
+		assistantMsg["thought_signature"] = sig
+	}
 	conversation = append(conversation, assistantMsg)
 	finishReason := agent.ResolveAssistantFinishReason(choice.FinishReason, len(choice.Message.ToolCalls) > 0)
 	if opts.Recorder != nil {
@@ -139,6 +143,7 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		Content:          content,
 		ReasoningContent: reasoning,
 		ToolCalls:        choice.Message.ToolCalls,
+		ThoughtSignature: strings.TrimSpace(choice.Message.ThoughtSignature),
 		FinishReason:     finishReason,
 	})
 

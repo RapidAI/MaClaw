@@ -182,6 +182,20 @@ describe('SidebarNavRail system popup', () => {
         expect(screen.queryByTestId('sidebar-brand-mark')).toBeNull();
     });
 
+    it('labels the primary rail in Mongolian instead of Chinese', () => {
+        renderRail({ lang: 'mn', showAppEntry: true });
+
+        expect(screen.getByText('Ажлын талбар')).toBeTruthy();
+        expect(screen.getByTestId('sidebar-settings-nav').textContent).toContain('Тохиргоо');
+        expect(screen.getByTestId('sidebar-digital-employees-nav').textContent).toContain('Тоон ажилтан');
+        expect(screen.getByTestId('sidebar-apps-nav').textContent).toContain('MiniAPP');
+        expect(screen.getByTestId('sidebar-files-nav').textContent).toContain('Сан');
+        expect(screen.queryByText('工作台')).toBeNull();
+        expect(screen.queryByText('设置')).toBeNull();
+        expect(screen.queryByText('数字员工')).toBeNull();
+        expect(screen.queryByText('资料库')).toBeNull();
+    });
+
     it('opens the task monitor from the tasks rail', () => {
         const props = renderRail();
 

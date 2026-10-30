@@ -30,6 +30,7 @@ const localizeProviderDescription = (
         'Official Claude API': ['Claude 官方 API', 'Claude 官方 API'],
         'Tencent Cloud Claude-compatible endpoint': ['腾讯云 Claude 兼容端点', '騰訊雲 Claude 相容端點'],
         'Official OpenAI API': ['OpenAI 官方 API', 'OpenAI 官方 API'],
+        'Google AI Studio API key': ['Google AI Studio API Key，按量计费', 'Google AI Studio API Key，按量計費'],
         'xAI Grok Build API': ['xAI Grok Build API', 'xAI Grok Build API'],
         'Tencent Cloud OpenAI-compatible endpoint': ['腾讯云 OpenAI 兼容端点', '騰訊雲 OpenAI 相容端點'],
         'Tencent Token Plan OpenAI-compatible endpoint': ['腾讯 Token Plan OpenAI 兼容端点', '騰訊 Token Plan OpenAI 相容端點'],

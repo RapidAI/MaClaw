@@ -231,6 +231,9 @@ func skillContentHash(skill *corelib.NLSkillEntry) (string, error) {
 		}
 		base := filepath.Base(path)
 		if info.IsDir() {
+			if path != root && base == ".state" {
+				return filepath.SkipDir
+			}
 			if path != root && !includeRuntimeArtifacts && isSkillRuntimePackageDir(base) {
 				return filepath.SkipDir
 			}
@@ -240,7 +243,7 @@ func skillContentHash(skill *corelib.NLSkillEntry) (string, error) {
 		if err != nil {
 			return err
 		}
-		if base == skillScanCacheFileName || (!includeRuntimeArtifacts && isSkillRuntimePackageFile(base)) {
+		if isSkillScanStoreFile(base) || (!includeRuntimeArtifacts && isSkillRuntimePackageFile(base)) {
 			return nil
 		}
 		files = append(files, rel)
@@ -336,27 +339,33 @@ func textReferencesRuntimeArtifacts(text string) bool {
 }
 
 func readSkillScanCache(skillDir, skillName string) (skillScanCacheRecord, error) {
-	cachePath := skillScanCachePath(skillDir, skillName)
-	if err := validateSkillScanCachePathForRead(cachePath); err != nil {
+	jsonPath := skillScanCachePath(skillDir, skillName)
+	dbPath := skillScanCacheDBPath(skillDir, skillName)
+	if err := rejectExistingSkillScanCachePath(jsonPath); err != nil {
 		return skillScanCacheRecord{}, err
 	}
-	data, err := os.ReadFile(cachePath)
-	if err != nil {
+	if err := rejectExistingSkillScanCachePath(dbPath); err != nil {
 		return skillScanCacheRecord{}, err
 	}
-	var rec skillScanCacheRecord
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return skillScanCacheRecord{}, err
+	if !fileExists(jsonPath) && !fileExists(dbPath) {
+		if _, err := os.Lstat(jsonPath); err != nil {
+			return skillScanCacheRecord{}, err
+		}
+		return skillScanCacheRecord{}, os.ErrNotExist
 	}
-	return rec, nil
+	return readSkillScanCacheDB(dbPath, jsonPath)
 }
 
 func writeSkillScanCache(skillDir, skillName string, rec skillScanCacheRecord) error {
-	cachePath := skillScanCachePath(skillDir, skillName)
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+	jsonPath := skillScanCachePath(skillDir, skillName)
+	dbPath := skillScanCacheDBPath(skillDir, skillName)
+	if err := os.MkdirAll(filepath.Dir(jsonPath), 0o755); err != nil {
 		return err
 	}
-	if err := validateSkillScanCachePathForWrite(cachePath); err != nil {
+	if err := validateSkillScanCachePathForWrite(jsonPath); err != nil {
+		return err
+	}
+	if err := validateSkillScanCachePathForWrite(dbPath); err != nil {
 		return err
 	}
 	signature, err := signSkillScanCacheRecord(rec)
@@ -364,11 +373,26 @@ func writeSkillScanCache(skillDir, skillName string, rec skillScanCacheRecord) e
 		return err
 	}
 	rec.Signature = signature
-	data, err := json.MarshalIndent(rec, "", "  ")
-	if err != nil {
+	if err := writeSkillScanCacheDB(dbPath, rec); err != nil {
 		return err
 	}
-	return fileutil.AtomicWriteFile(cachePath, data, 0o600)
+	if info, statErr := os.Lstat(jsonPath); statErr == nil && info.Mode()&os.ModeSymlink == 0 && !info.IsDir() {
+		_ = os.Remove(jsonPath)
+	}
+	return nil
+}
+
+func rejectExistingSkillScanCachePath(path string) error {
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return validateSkillScanCachePathForRead(path)
+}
+
+func isSkillScanStoreFile(base string) bool {
+	return base == skillScanCacheFileName || base == ".maclaw_scan_status.db" || strings.HasPrefix(base, ".maclaw_scan_status.db-")
 }
 
 func validateSkillScanCachePathForRead(cachePath string) error {
@@ -406,15 +430,23 @@ func skillScanCachePath(skillDir, skillName string) string {
 	return filepath.Join(skillDir, skillScanCacheFileName)
 }
 
+func skillScanCacheDBPath(skillDir, skillName string) string {
+	return filepath.Join(skillDir, ".maclaw_scan_status.db")
+}
+
 // removeSkillScanCacheFile deletes the on-disk scan cache for a skill,
 // forcing the next ensureSkillSecurityScanned call to perform a fresh scan.
 // Used after hub updates to ensure new steps are re-scanned before execution.
 func removeSkillScanCacheFile(skillDir, skillName string) error {
-	cachePath := skillScanCachePath(skillDir, skillName)
-	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
-		return err
+	jsonPath := skillScanCachePath(skillDir, skillName)
+	dbPath := skillScanCacheDBPath(skillDir, skillName)
+	var first error
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm", jsonPath} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) && first == nil {
+			first = err
+		}
 	}
-	return nil
+	return first
 }
 
 func signSkillScanCacheRecord(rec skillScanCacheRecord) (string, error) {

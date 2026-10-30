@@ -278,6 +278,16 @@ describe('composerWorkspaceKindLabel', () => {
     it('names the kind without a path', () => {
         expect(composerWorkspaceKindLabel('D:/work/app', 'zh')).toBe('本地');
         expect(composerWorkspaceKindLabel('D:/work/app', 'en')).toBe('Local');
+        expect(composerWorkspaceKindLabel('D:/work/app', 'mn')).toBe('Локал');
+        expect(composerWorkspaceKindLabel(
+            'C:\\Users\\me\\.maclaw\\data\\你好呀-1\\workspace',
+            'mn',
+            { host: 'www.driverdevelopment.com', workDir: '/srv/app' },
+        )).toBe('Алсын');
+        expect(composerWorkspaceKindLabel(
+            'C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc',
+            'mn',
+        )).toBe('Үүлэн ажлын талбар');
         expect(composerWorkspaceKindLabel(
             'C:\\Users\\me\\.maclaw\\data\\你好呀-1\\workspace',
             'zh',

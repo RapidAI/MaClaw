@@ -44,7 +44,10 @@ export function shouldIgnoreNestedScrollIntent(event?: AssistantScrollIntentEven
 
 export function shouldIgnoreUserScrollIntent(event?: AssistantScrollIntentEvent): boolean {
     const target = event?.target;
-    if (target instanceof Element && target.closest("[data-nested-scroll]")) return true;
+    // data-nested-scroll is the live capped thought pane (growth absorption
+    // and cover-lift). The earlier-messages dialog is only a gesture
+    // boundary; marking it as a thought pane would swallow live follow.
+    if (target instanceof Element && target.closest("[data-nested-scroll], [data-scroll-intent-boundary]")) return true;
     return shouldIgnoreNestedScrollIntent(event);
 }
 

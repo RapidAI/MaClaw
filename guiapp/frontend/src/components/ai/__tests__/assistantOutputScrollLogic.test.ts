@@ -3,6 +3,7 @@ import {
     pinAssistantOutputToBottom,
     pinNestedScrollToBottom,
     shouldIgnoreNestedScrollIntent,
+    shouldIgnoreUserScrollIntent,
     tryPinNestedScroll,
 } from "../assistantOutputScrollLogic";
 
@@ -12,6 +13,16 @@ describe("shouldIgnoreNestedScrollIntent", () => {
         const child = {} as EventTarget;
         expect(shouldIgnoreNestedScrollIntent({ type: "wheel", deltaY: 40 })).toBe(true);
         expect(shouldIgnoreNestedScrollIntent({ type: "pointerdown", currentTarget: scroller, target: child })).toBe(true);
+    });
+
+    it("ignores an upward wheel inside an earlier-messages dialog", () => {
+        const dialog = document.createElement("div");
+        dialog.setAttribute("data-scroll-intent-boundary", "");
+        const row = document.createElement("div");
+        dialog.appendChild(row);
+        document.body.appendChild(dialog);
+        expect(shouldIgnoreUserScrollIntent({ type: "wheel", deltaY: -40, target: row })).toBe(true);
+        dialog.remove();
     });
 
     it("treats upward wheels and scrollbar pointerdowns as leave-intent", () => {

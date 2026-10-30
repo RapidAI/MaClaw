@@ -81,6 +81,14 @@ type TaskStore interface {
 	SaveScheduledTasks([]ScheduledTask) error
 }
 
+// TaskImportMarker records that the pre-migration JSON file has been copied.
+// An empty task table is not that record. The file stays on disk, so a later
+// restart would otherwise fill the table again after the user cleared it.
+type TaskImportMarker interface {
+	LegacyTaskImportDone() (bool, error)
+	MarkLegacyTaskImportDone() error
+}
+
 // Manager manages scheduled tasks and a background ticker that fires due tasks.
 // store is the SQLite database. path is the pre-migration JSON file, kept so a
 // later import can still find it. NewManager always sets store.
@@ -112,20 +120,13 @@ func NewManager(path string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	done, err := store.legacyImportDone()
-	if err != nil {
+	if _, err := ImportLegacyTasksOnce(absPath, store); err != nil {
+		store.close()
 		return nil, err
-	}
-	if !done {
-		if _, err := ImportLegacyTasks(absPath, store); err != nil {
-			return nil, err
-		}
-		if err := store.markLegacyImportDone(); err != nil {
-			return nil, err
-		}
 	}
 	m, err := NewManagerFromStore(store)
 	if err != nil {
+		store.close()
 		return nil, err
 	}
 	m.path = absPath
@@ -169,8 +170,31 @@ func (m *Manager) finishNew() {
 	m.pendingCatchUps = m.detectMissedRuns(now)
 }
 
-// ImportLegacyTasks copies scheduled_tasks.json into the service database
-// once, when that database has no rows yet. The file stays where it is.
+// ImportLegacyTasksOnce copies scheduled_tasks.json a single time when the
+// store can remember that copy. A later empty table stays empty. A store
+// without that memory still imports only while it has no rows.
+func ImportLegacyTasksOnce(path string, store TaskStore) (int, error) {
+	marker, ok := store.(TaskImportMarker)
+	if !ok {
+		return ImportLegacyTasks(path, store)
+	}
+	done, err := marker.LegacyTaskImportDone()
+	if err != nil || done {
+		return 0, err
+	}
+	n, err := ImportLegacyTasks(path, store)
+	if err != nil {
+		return 0, err
+	}
+	if err := marker.MarkLegacyTaskImportDone(); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// ImportLegacyTasks copies scheduled_tasks.json when the store has no rows.
+// The file stays where it is. Callers that can restart after a clear use
+// ImportLegacyTasksOnce.
 func ImportLegacyTasks(path string, store TaskStore) (int, error) {
 	if store == nil {
 		return 0, fmt.Errorf("scheduler: task store is required")

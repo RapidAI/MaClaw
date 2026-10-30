@@ -3,8 +3,6 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/hex"
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,7 +15,8 @@ import (
 // many notify_main messages each run already sent (the per-run cap), and
 // which Hub mailbox ids this server already put in a prompt (consumer-side
 // dedupe, so an ack lost on the way to Hub does not show a message twice).
-// It is one small JSON file; entries older than two days are dropped.
+// It is stored in multibot-state.db. multibot-state.json is only the
+// pre-migration file. Entries older than two days are dropped.
 
 const multibotStateKeep = 48 * time.Hour
 
@@ -37,10 +36,7 @@ var (
 )
 
 func loadMultibotState() multibotState {
-	st := multibotState{Runs: map[string]multibotRunCount{}, Seen: map[string]string{}}
-	if raw, err := os.ReadFile(multibotStatePath()); err == nil {
-		_ = json.Unmarshal(raw, &st)
-	}
+	st := readMultibotState()
 	if st.Runs == nil {
 		st.Runs = map[string]multibotRunCount{}
 	}
@@ -62,16 +58,7 @@ func loadMultibotState() multibotState {
 }
 
 func saveMultibotState(st multibotState) {
-	path := multibotStatePath()
-	raw, err := json.Marshal(st)
-	if err != nil {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(path), 0o700)
-	tmp := path + ".tmp"
-	if os.WriteFile(tmp, raw, 0o600) == nil {
-		_ = os.Rename(tmp, path)
-	}
+	_ = writeMultibotState(st)
 }
 
 // desktopNotifyTake counts one message for runKey; false when the run

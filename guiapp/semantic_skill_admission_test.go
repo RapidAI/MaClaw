@@ -1,8 +1,14 @@
 package guiapp
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -48,6 +54,517 @@ func fullDocumentLoop(primary intent.IntentLabel) *LoopContext {
 			},
 			SemanticIntent: &intent.ClassificationResult{Primary: primary, Confidence: 0.98},
 		},
+	}
+}
+
+func hostProcedureSkillDoc(t *testing.T, fences int) string {
+	t.Helper()
+	dir := t.TempDir()
+	var b strings.Builder
+	b.WriteString("# Procedure\n")
+	for i := 0; i < fences; i++ {
+		b.WriteString("\n```bash\necho step\n```\n")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func photoLocateTestSkill(t *testing.T) corelib.NLSkillEntry {
+	t.Helper()
+	return corelib.NLSkillEntry{
+		Name:        "photo-locate",
+		Status:      "active",
+		Source:      "file",
+		Description: "Locate one photo by running the scripts in this skill.",
+		Triggers:    []string{"这是哪"},
+		SkillDir:    hostProcedureSkillDoc(t, 2),
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "python scripts/doctor.py"}}},
+	}
+}
+
+func generalFullLoop() *LoopContext {
+	loop := fullDocumentLoop(intent.LabelUnknown)
+	loop.Runtime.Execution.Reason = "structural execution signal"
+	return loop
+}
+
+func TestHostProcedureIdentityIsTheExecutionPlanOnAGeneralTurn(t *testing.T) {
+	locate := photoLocateTestSkill(t)
+	rival := paperTranslatorTestSkill()
+	rival.Name = "where-script"
+	rival.Triggers = []string{"这是哪"}
+	rival.Steps = []corelib.NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{"command": "echo one"}},
+		{Action: "bash", Params: map[string]interface{}{"command": "echo two"}},
+	}
+	app, exec := newSkillExecutorWithEntries(t, locate, rival, paperTranslatorTestSkill())
+	h := &IMMessageHandler{app: app, registry: NewToolRegistry()}
+	for _, name := range agentGuidedHostToolNames {
+		if err := h.registry.Register(RegisteredTool{
+			Name: name, Category: ToolCategoryBuiltin, Status: RegToolAvailable,
+			Handler: func(map[string]interface{}) string { return "ok" },
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loop := generalFullLoop()
+	decision := h.skillAdmissionForTurn(loop, "这是哪？")
+	if decision.Mode != skillAdmissionGuided || len(decision.Bound) != 0 || len(decision.Guided) != 1 || decision.Guided[0].Name != locate.Name {
+		t.Fatalf("general turn decision=%#v", decision)
+	}
+	onDocument := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "这是哪？")
+	if onDocument.Mode != skillAdmissionGuided || len(onDocument.Bound) != 0 {
+		t.Fatalf("document label bound the runner step: %#v", onDocument)
+	}
+	if unmatched := h.skillAdmissionForTurn(loop, "今天天气怎么样"); unmatched.Mode != skillAdmissionNone {
+		t.Fatalf("unmatched general turn mode=%v", unmatched.Mode)
+	}
+	light := lightLookupLoop(intent.LabelUnknown)
+	if lightDecision := h.skillAdmissionForTurn(light, "这是哪？"); lightDecision.Mode != skillAdmissionNone {
+		t.Fatalf("light turn mode=%v", lightDecision.Mode)
+	}
+	carried := generalFullLoop()
+	carried.Runtime.Execution = fullExecutionProfile(shortContinuationReason)
+	if carriedDecision := h.skillAdmissionForTurn(carried, "这是哪？"); carriedDecision.Mode != skillAdmissionNone {
+		t.Fatalf("operational carry mode=%v", carriedDecision.Mode)
+	}
+
+	phase := h.initialAgentLoopPhase("这是哪？", loop)
+	if phase.SkillMode != skillPreferenceAgentGuided || phase.PreferredSkillName != locate.Name {
+		t.Fatalf("phase=%+v", phase)
+	}
+	matched := collectMatchedSkillDocs(exec.List(), "这是哪？")
+	if len(matched) == 0 || !matched[0].AgentGuided || matched[0].Name != locate.Name {
+		t.Fatalf("injected docs=%#v", matched)
+	}
+
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: "user-1", loopCtx: loop}
+	cb.publishHostProcedureTools("这是哪？")
+	if !cb.agentGuidedHostTools || cb.semanticSurface != nil || len(cb.admittedSkillBindings) != 0 || cb.skillRemoteSearchOffered {
+		t.Fatalf("surface guided=%v semantic=%v bindings=%d remote=%v", cb.agentGuidedHostTools, cb.semanticSurface != nil, len(cb.admittedSkillBindings), cb.skillRemoteSearchOffered)
+	}
+	names := map[string]bool{}
+	for _, def := range cb.tools {
+		names[extractToolName(def)] = true
+	}
+	for _, name := range agentGuidedHostToolNames {
+		if !names[name] {
+			t.Fatalf("missing %s in %v", name, names)
+		}
+	}
+	if names["search_and_install_skill"] {
+		t.Fatal("host procedure published a market search")
+	}
+	for name := range names {
+		if strings.HasPrefix(name, "skill_") {
+			t.Fatalf("host procedure published %s", name)
+		}
+	}
+	if ok, reason := cb.IsToolCallAllowed("web_search", `{"query":"where"}`); ok || !strings.Contains(reason, "bash") {
+		t.Fatalf("web_search allowed=%v reason=%q", ok, reason)
+	}
+	if ok, reason := cb.IsToolCallAllowed("bash", `{"command":"echo"}`); !ok {
+		t.Fatalf("bash blocked: %s", reason)
+	}
+	cb.noteGuidedSkillUse("bash")
+	if ok, reason := cb.IsToolCallAllowed("web_search", `{"query":"where"}`); !ok {
+		t.Fatalf("web_search stayed closed after the procedure started: %s", reason)
+	}
+	plain := &sharedAgentLoopCallbacks{handler: h, loopCtx: loop}
+	if ok, reason := plain.IsToolCallAllowed("web_search", `{"query":"where"}`); !ok {
+		t.Fatalf("web_search closed with no admitted procedure: %s", reason)
+	}
+
+	single := locate
+	single.Name = "single-script"
+	single.Triggers = []string{"单脚本"}
+	single.SkillDir = hostProcedureSkillDoc(t, 1)
+	singleApp, _ := newSkillExecutorWithEntries(t, single)
+	singleHandler := &IMMessageHandler{app: singleApp}
+	bound := singleHandler.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "单脚本")
+	if bound.Mode != skillAdmissionBound || len(bound.Bound) != 1 || bound.Bound[0].Name != single.Name {
+		t.Fatalf("one fence decision=%#v", bound)
+	}
+}
+
+func writePlaywrightLibraryScript(t *testing.T, skillDir string) {
+	t.Helper()
+	dir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const body = "from playwright.async_api import async_playwright\n\nasync def open_page():\n    pw = await async_playwright().start()\n    browser = await pw.chromium.launch()\n    page = await browser.new_page()\n"
+	if err := os.WriteFile(filepath.Join(dir, "doctor.py"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func registerHostProcedureTools(t *testing.T, h *IMMessageHandler) {
+	t.Helper()
+	if h.registry == nil {
+		h.registry = NewToolRegistry()
+	}
+	for _, name := range agentGuidedHostToolNames {
+		if err := h.registry.Register(RegisteredTool{
+			Name: name, Category: ToolCategoryBuiltin, Status: RegToolAvailable,
+			Handler: func(map[string]interface{}) string { return "ok" },
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestHostProcedureAdmitsASkillWhoseScriptsImportABrowserLibrary(t *testing.T) {
+	dir := hostProcedureSkillDoc(t, 2)
+	writePlaywrightLibraryScript(t, dir)
+	entry := corelib.NLSkillEntry{
+		Name:        "photo-locate",
+		Status:      "active",
+		Source:      "file",
+		Description: "Locate one photo by running the scripts in this skill.",
+		Triggers:    []string{"这是哪"},
+		SkillDir:    dir,
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "python scripts/doctor.py"}}},
+	}
+	if !isShellBrowserAutomationSkillEntry(entry) {
+		t.Fatal("the script import must still count as a browser-automation marker")
+	}
+	if !skillHostProcedure(entry) {
+		t.Fatal("two fences are the procedure when a script imports a browser library")
+	}
+	guided, runnable := skillCompleteForAdmission(entry)
+	if !guided || runnable {
+		t.Fatalf("admission guided=%v runnable=%v", guided, runnable)
+	}
+	if semanticSkillIsRunnable(entry) {
+		t.Fatal("a host procedure is not a closed runner program")
+	}
+
+	declared := entry
+	declared.Name = "declared-browser-procedure"
+	declared.SkillDir = hostProcedureSkillDoc(t, 2)
+	declared.RequiresToolsets = []string{"browser"}
+	if !isShellBrowserAutomationSkillEntry(declared) || !skillHostProcedure(declared) {
+		t.Fatal("a declared browser surface with two fences is still a host procedure")
+	}
+	if g, r := skillCompleteForAdmission(declared); !g || r {
+		t.Fatalf("declared browser procedure guided=%v runnable=%v", g, r)
+	}
+
+	one := entry
+	one.Name = "one-fence-browser"
+	one.Triggers = []string{"单脚本"}
+	one.SkillDir = hostProcedureSkillDoc(t, 1)
+	writePlaywrightLibraryScript(t, one.SkillDir)
+	if skillHostProcedure(one) {
+		t.Fatal("one fence stays a runner program")
+	}
+	if g, r := skillCompleteForAdmission(one); g || r {
+		t.Fatalf("one-fence browser skill admitted guided=%v runnable=%v", g, r)
+	}
+	session := corelib.NLSkillEntry{
+		Name: "browser-session", Status: "active", RequiresGUI: true,
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "python post.py --screenshot"}}},
+	}
+	if g, r := skillCompleteForAdmission(session); g || r {
+		t.Fatalf("browser session command admitted guided=%v runnable=%v", g, r)
+	}
+
+	app, exec := newSkillExecutorWithEntries(t, entry)
+	h := &IMMessageHandler{app: app}
+	registerHostProcedureTools(t, h)
+	decision := h.skillAdmissionForTurn(generalFullLoop(), "这是哪？")
+	if decision.Mode != skillAdmissionGuided || len(decision.Bound) != 0 || len(decision.Guided) != 1 || decision.Guided[0].Name != entry.Name {
+		t.Fatalf("general turn decision=%#v", decision)
+	}
+	onDocument := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "这是哪？")
+	if onDocument.Mode != skillAdmissionGuided || len(onDocument.Bound) != 0 {
+		t.Fatalf("document label bound the runner step: %#v", onDocument)
+	}
+	matched := collectMatchedSkillDocs(exec.List(), "这是哪？")
+	if len(matched) == 0 || !matched[0].AgentGuided || matched[0].Name != entry.Name {
+		t.Fatalf("injected docs=%#v", matched)
+	}
+	if !strings.HasSuffix(matched[0].DocPath, "SKILL.md") {
+		t.Fatalf("doc path = %q", matched[0].DocPath)
+	}
+	var injected strings.Builder
+	writeMatchedSkillDocs(&injected, matched, 100)
+	if !strings.Contains(injected.String(), matched[0].DocPath) {
+		t.Fatalf("small budget dropped the procedure file:\n%s", injected.String())
+	}
+	sticky := mergeStickyAgentGuidedDocs(nil, exec.List(), entry.Name)
+	if len(sticky) != 1 || sticky[0].DocPath != matched[0].DocPath {
+		t.Fatalf("sticky doc = %#v", sticky)
+	}
+	var admitted strings.Builder
+	h.appendAdmittedAgentGuidedSkillDocs(&admitted, "这是哪？", generalFullLoop())
+	if !strings.Contains(admitted.String(), matched[0].DocPath) {
+		t.Fatalf("admitted docs dropped the procedure file:\n%s", admitted.String())
+	}
+	var catalog strings.Builder
+	writeRegisteredSkillsSection(&catalog, exec.List())
+	catalogText := catalog.String()
+	if !strings.Contains(catalogText, "### Agent 工作流 Skill（已安装）") || !strings.Contains(catalogText, entry.Name) {
+		t.Fatalf("catalog hid the procedure:\n%s", catalogText)
+	}
+	if strings.Contains(catalogText, "调用方式：manage_skill") {
+		t.Fatalf("catalog told the model to manage_skill run the procedure:\n%s", catalogText)
+	}
+	if indexed := promptSkillIndexEntries(exec.List(), 10); len(indexed) != 0 {
+		t.Fatalf("runnable prompt index listed the procedure: %+v", indexed)
+	}
+	for _, summary := range (&skillExecutorProvider{executor: exec}).ListActiveSkills() {
+		if summary.Name == entry.Name {
+			t.Fatalf("runnable routing listed the procedure: %+v", summary)
+		}
+	}
+
+	loop := generalFullLoop()
+	if phase := h.initialAgentLoopPhase("这是哪？", loop); phase.SkillMode != skillPreferenceAgentGuided {
+		t.Fatalf("phase=%+v", phase)
+	}
+	continued := &sharedAgentLoopCallbacks{handler: h, userID: loop.UserID, loopCtx: loop}
+	continued.phase = h.initialAgentLoopPhase("继续", loop)
+	if continued.phase.SkillMode != skillPreferenceAgentGuided || continued.phase.PreferredSkillName != entry.Name {
+		t.Fatalf("continuation phase=%+v", continued.phase)
+	}
+	continued.publishHostProcedureTools("继续")
+	if !continued.agentGuidedHostTools {
+		t.Fatal("a guided continuation on a full surface dropped the host file tools")
+	}
+	if continued.hostProcedureDir != filepath.Clean(entry.SkillDir) {
+		t.Fatalf("continuation procedure dir = %q", continued.hostProcedureDir)
+	}
+	identified := &sharedAgentLoopCallbacks{handler: h, loopCtx: generalFullLoop()}
+	identified.publishHostProcedureTools("这是哪？")
+	if identified.hostProcedureDir != filepath.Clean(entry.SkillDir) {
+		t.Fatalf("identity procedure dir = %q", identified.hostProcedureDir)
+	}
+	if ok, reason := continued.IsToolCallAllowed("bash", `{"command":"echo"}`); !ok {
+		t.Fatalf("bash blocked on the continuation: %s", reason)
+	}
+
+	light := &sharedAgentLoopCallbacks{handler: h, loopCtx: lightLookupLoop(intent.LabelUnknown)}
+	light.phase = agentLoopPhase{SkillMode: skillPreferenceAgentGuided, PreferredSkillName: entry.Name}
+	light.publishHostProcedureTools("这是哪？")
+	if light.agentGuidedHostTools {
+		t.Fatal("a light surface published host procedure tools")
+	}
+	carried := generalFullLoop()
+	carried.Runtime.Execution = fullExecutionProfile(shortContinuationReason)
+	operational := &sharedAgentLoopCallbacks{handler: h, loopCtx: carried}
+	operational.phase = agentLoopPhase{SkillMode: skillPreferenceAgentGuided, PreferredSkillName: entry.Name}
+	operational.publishHostProcedureTools("继续")
+	if operational.agentGuidedHostTools {
+		t.Fatal("an operational continuation published host procedure tools")
+	}
+}
+
+func TestHostProcedureShellBindsTheSkillDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "skill dir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shell := hostShellForBashTool()
+	got := substituteHostProcedureSkillDir(`uv run ${CLAUDE_SKILL_DIR}/scripts/intake.py photo.jpg`, dir, shell)
+	want := quoteHostShellArg(filepath.Join(dir, "scripts", "intake.py"), shell)
+	if !strings.Contains(got, want) || strings.Contains(got, "${CLAUDE_SKILL_DIR}") {
+		t.Fatalf("substituted = %q", got)
+	}
+	braced := substituteHostProcedureSkillDir(`python "{baseDir}/scripts/doctor.py"`, dir, shell)
+	if !strings.Contains(braced, filepath.Join(dir, "scripts", "doctor.py")) || strings.Contains(braced, "{baseDir}") {
+		t.Fatalf("baseDir = %q", braced)
+	}
+	untouched := substituteHostProcedureSkillDir(`echo $CLAUDE_SKILL_DIR_EXTRA`, dir, shell)
+	if untouched != `echo $CLAUDE_SKILL_DIR_EXTRA` {
+		t.Fatalf("extra variable = %q", untouched)
+	}
+	plain := bindHostProcedureShellCommand("echo ok", dir, shell)
+	if !strings.Contains(plain, dir) || !strings.Contains(plain, "echo ok") {
+		t.Fatalf("prefix = %q", plain)
+	}
+	cmdBound := bindHostProcedureShellCommand(`uv run ${CLAUDE_SKILL_DIR}/scripts/intake.py photo.jpg`, dir, hostShellCmd)
+	cmdPath := `"` + filepath.Join(dir, "scripts", "intake.py") + `"`
+	if !strings.HasPrefix(cmdBound, `set "CLAUDE_SKILL_DIR=`) || !strings.Contains(cmdBound, cmdPath) || strings.Contains(cmdBound, "$env:") || strings.Contains(cmdBound, "${CLAUDE_SKILL_DIR}") {
+		t.Fatalf("cmd bind = %q", cmdBound)
+	}
+	if runtime.GOOS == "windows" {
+		echoBound := bindHostProcedureShellCommand(`echo ${CLAUDE_SKILL_DIR}/scripts/intake.py`, dir, hostShellCmd)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cmd := tool.NewWindowsShellCommand(ctx, echoBound, t.TempDir())
+		cmdOut, cmdErr := cmd.CombinedOutput()
+		cmdText := string(cmdOut)
+		if cmdErr != nil || !strings.Contains(cmdText, filepath.Join(dir, "scripts", "intake.py")) {
+			t.Fatalf("cmd output = %q err=%v line=%s", cmdText, cmdErr, echoBound)
+		}
+	}
+
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	if err := h.registry.Register(RegisteredTool{
+		Name: "bash", Category: ToolCategoryBuiltin, Status: RegToolAvailable,
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}, _ tool.ProgressCallback) string {
+			return h.toolBash(ctx, args, nil)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, hostProcedureDir: dir}
+	command := "printf '%s\\n' ${CLAUDE_SKILL_DIR}/scripts/intake.py; printenv CLAUDE_SKILL_DIR"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output ${CLAUDE_SKILL_DIR}/scripts/intake.py; Write-Output $env:CLAUDE_SKILL_DIR"
+	}
+	raw, err := json.Marshal(map[string]interface{}{
+		"command":           command,
+		hostProcedureDirArg: `C:\evil`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := cb.executeToolWithoutSemanticSurface("bash", string(raw))
+	joined := filepath.Join(dir, "scripts", "intake.py")
+	if !strings.Contains(out, joined) || !strings.Contains(out, dir) || strings.Contains(out, "evil") {
+		t.Fatalf("bash output = %q", out)
+	}
+	// A model-supplied directory is not a host procedure. The same tokens stay
+	// unsubstituted, including when the forged value is the real skill directory.
+	forged := h.toolBash(context.Background(), map[string]interface{}{
+		"command":           command,
+		hostProcedureDirArg: dir,
+	}, nil)
+	if strings.Contains(forged, joined) {
+		t.Fatalf("model directory was trusted: %q", forged)
+	}
+	empty := &sharedAgentLoopCallbacks{handler: h}
+	emptyOut := empty.executeToolWithoutSemanticSurface("bash", string(raw))
+	if strings.Contains(emptyOut, "evil") || strings.Contains(emptyOut, joined) {
+		t.Fatalf("empty turn honored a model directory: %q", emptyOut)
+	}
+	extraCommand := `printf '%s\n' "KEEP=$CLAUDE_SKILL_DIR_EXTRA"`
+	if runtime.GOOS == "windows" {
+		extraCommand = `Write-Output "KEEP=$CLAUDE_SKILL_DIR_EXTRA"`
+	}
+	extraRaw, err := json.Marshal(map[string]interface{}{"command": extraCommand})
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := cb.executeToolWithoutSemanticSurface("bash", string(extraRaw))
+	if strings.Contains(extra, dir) || !strings.Contains(extra, "KEEP=") {
+		t.Fatalf("extra output = %q", extra)
+	}
+
+	var seen string
+	called := false
+	h.semanticTrustedShell = func(_, got string, _ time.Duration) (string, error) {
+		seen = got
+		called = true
+		return "bound", nil
+	}
+	semantic := &sharedAgentLoopCallbacks{handler: h, userID: "owner", hostProcedureDir: dir}
+	rejected := semantic.executeTrustedShell(tool.PlannedSelection{}, tool.CanonicalRequest{
+		CanonicalJSON: []byte(`{"command":"echo hi","_host_procedure_dir":"C:\\evil"}`),
+	})
+	if called || !strings.Contains(rejected, "trusted_shell_arguments_rejected") {
+		t.Fatalf("forged semantic arg called=%v result=%q", called, rejected)
+	}
+	bound := semantic.executeTrustedShell(tool.PlannedSelection{}, tool.CanonicalRequest{
+		CanonicalJSON: []byte(`{"command":"uv run ${CLAUDE_SKILL_DIR}/scripts/intake.py photo.jpg"}`),
+	})
+	if bound != "bound" || !strings.Contains(seen, joined) || strings.Contains(seen, "${CLAUDE_SKILL_DIR}") || strings.Contains(seen, "evil") {
+		t.Fatalf("semantic shell command = %q result=%q", seen, bound)
+	}
+	if hostShellForTrustedShell() == hostShellCmd {
+		if !strings.HasPrefix(seen, `set "CLAUDE_SKILL_DIR=`) || strings.Contains(seen, "$env:") {
+			t.Fatalf("semantic shell used PowerShell syntax: %q", seen)
+		}
+	}
+}
+
+func TestHostProcedureReadReachesTheSkillTree(t *testing.T) {
+	skill := filepath.Join(t.TempDir(), "skill dir")
+	if err := os.MkdirAll(filepath.Join(skill, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const marker = "uv run intake.py --late-only"
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte(marker+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret-body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillFile := filepath.Join(skill, "SKILL.md")
+	if !hostProcedureTreeContains(skill, skillFile) {
+		t.Fatal("skill file was not inside the procedure")
+	}
+	if hostProcedureTreeContains(skill, filepath.Join(outside, "secret.txt")) || hostProcedureTreeContains(skill, "SKILL.md") {
+		t.Fatal("procedure read accepted a path outside the skill tree")
+	}
+	escaped := filepath.Join(skill, "..", filepath.Base(outside), "secret.txt")
+	if hostProcedureTreeContains(skill, escaped) {
+		t.Fatal("procedure read followed a path out of the skill tree")
+	}
+
+	h := &IMMessageHandler{}
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: "owner", hostProcedureDir: skill}
+	read := func(path string) string {
+		t.Helper()
+		raw, err := json.Marshal(map[string]string{"path": path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cb.executeTrustedFileRead(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: raw})
+	}
+	got := read(skillFile)
+	if !strings.Contains(got, marker) || strings.Contains(got, "[system rejected]") {
+		t.Fatalf("procedure read = %q", got)
+	}
+	denied := read(filepath.Join(outside, "secret.txt"))
+	if strings.Contains(denied, "secret-body") || !strings.Contains(denied, "[system rejected]") {
+		t.Fatalf("outside read = %q", denied)
+	}
+	empty := &sharedAgentLoopCallbacks{handler: h, userID: "owner"}
+	cb = empty
+	if missed := read(skillFile); strings.Contains(missed, marker) {
+		t.Fatalf("read without a procedure = %q", missed)
+	}
+}
+
+func TestHostProcedureCacheFollowsTheMarkdownFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	write := func(fences int) {
+		t.Helper()
+		var b strings.Builder
+		b.WriteString("# Procedure\n")
+		for i := 0; i < fences; i++ {
+			b.WriteString("\n```bash\necho step\n```\n")
+		}
+		if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entry := corelib.NLSkillEntry{
+		Name: "photo-locate", Status: "active", Source: "file", SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{Action: "bash"}},
+	}
+	write(2)
+	if !skillHostProcedure(entry) {
+		t.Fatal("two fences")
+	}
+	if !skillHostProcedure(entry) {
+		t.Fatal("cached two fences")
+	}
+	write(1)
+	if skillHostProcedure(entry) {
+		t.Fatal("cache kept a rewritten one-fence file as the procedure")
+	}
+	write(2)
+	if !skillHostProcedure(entry) {
+		t.Fatal("cache kept a rewritten two-fence file as a runner program")
 	}
 }
 

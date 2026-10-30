@@ -7,8 +7,10 @@ package skill
 // and reads it at the start of the next run. The LLM doesn't need to
 // remember "where we left off" — it reads the baton file.
 //
-// State is stored in {skillDir}/.state/state.json. Each skill has its own
+// State is stored in {skillDir}/.state/state.db. Each skill has its own
 // independent state — no cross-skill shared state (pipeline uses vars).
+// state.json is only the pre-migration file: the first successful read
+// copies it once and then removes it.
 //
 // Lifecycle:
 //   - LoadState: called before skill execution, returns empty state if none
@@ -20,7 +22,6 @@ package skill
 // it persists across days/weeks of user interaction with the same skill.
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,53 +60,25 @@ type StateHistoryEntry struct {
 const (
 	stateDir      = ".state"
 	stateFile     = "state.json"
+	stateDBFile   = "state.db"
 	maxHistoryLen = 10
 )
 
-// LoadState loads the skill's persistent state from {skillDir}/.state/state.json.
-// Returns an empty SkillState (not nil) if the file doesn't exist or is corrupted.
-// Corrupted state (e.g. from a process kill during SaveState) is logged and
-// treated as empty — the skill starts fresh rather than failing to execute.
+// LoadState loads the skill's persistent state from {skillDir}/.state/state.db.
+// Returns an empty SkillState (not nil) if nothing is stored. A corrupt
+// legacy state.json does not replace rows already in the database.
 func LoadState(skillDir string) (*SkillState, error) {
-	path := filepath.Join(skillDir, stateDir, stateFile)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &SkillState{}, nil
-		}
-		return nil, err
-	}
-	var state SkillState
-	if err := json.Unmarshal(data, &state); err != nil {
-		// Corrupted JSON — likely from a process kill during SaveState.
-		// Degrade to empty state rather than blocking skill execution.
-		// The .tmp file from atomic write may still exist; clean it up.
-		os.Remove(path + ".tmp")
-		return &SkillState{}, nil
-	}
-	return &state, nil
+	return loadSkillState(skillDir)
 }
 
-// SaveState persists the skill's state to {skillDir}/.state/state.json.
+// SaveState persists the skill's state to {skillDir}/.state/state.db.
 // Creates the .state directory if it doesn't exist.
-// Uses atomic write (temp file + rename) to prevent corruption if the
-// process is killed mid-write (same pattern as ConversationMemory.FlushNow).
 func SaveState(skillDir string, state *SkillState) error {
-	dir := filepath.Join(skillDir, stateDir)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
+	if state == nil {
+		state = &SkillState{}
 	}
 	state.UpdatedAt = time.Now().Format(time.RFC3339)
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	target := filepath.Join(dir, stateFile)
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, target)
+	return saveSkillState(skillDir, state)
 }
 
 // ClearState removes the skill's persistent state directory.

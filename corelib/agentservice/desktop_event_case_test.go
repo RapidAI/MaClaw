@@ -2,6 +2,8 @@ package agentservice
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -86,6 +88,45 @@ func TestDesktopBotEventCases(t *testing.T) {
 			t.Fatal("the worker database has no schedule rows")
 		}
 	})
+}
+
+func TestServiceScheduleImportOnceLeavesClearedTasks(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "scheduled_tasks.json")
+	raw, err := json.Marshal([]scheduler.ScheduledTask{{
+		ID: "legacy-1", Name: "morning", Action: "read memory",
+		Hour: 8, Minute: 0, DayOfWeek: -1, DayOfMonth: -1, Status: "active",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jsonPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSQLiteStore(filepath.Join(dir, "state", "service.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	n, err := scheduler.ImportLegacyTasksOnce(jsonPath, store)
+	if err != nil || n != 1 {
+		t.Fatalf("import n=%d err=%v", n, err)
+	}
+	if err := store.SaveScheduledTasks(nil); err != nil {
+		t.Fatal(err)
+	}
+	again, err := scheduler.ImportLegacyTasksOnce(jsonPath, store)
+	if err != nil || again != 0 {
+		t.Fatalf("second import n=%d err=%v", again, err)
+	}
+	loaded, err := store.LoadScheduledTasks()
+	if err != nil || len(loaded) != 0 {
+		t.Fatalf("cleared tasks came back: %+v err=%v", loaded, err)
+	}
+	kept, err := os.ReadFile(jsonPath)
+	if err != nil || string(kept) != string(raw) {
+		t.Fatal("scheduled_tasks.json was rewritten or removed")
+	}
 }
 
 func historyHas(messages []Message, content string) bool {

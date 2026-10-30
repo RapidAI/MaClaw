@@ -149,7 +149,7 @@ func TestChatTaskRestartDoesNotResume(t *testing.T) {
 	if called != 0 {
 		t.Fatalf("restart resumed the task %d times", called)
 	}
-	if _, err := os.Stat(filepath.Join(dir, chatTaskStoreFile)); err != nil {
+	if _, err := os.Stat(chatTaskDBPath(filepath.Join(dir, chatTaskStoreFile))); err != nil {
 		t.Fatal(err)
 	}
 }
