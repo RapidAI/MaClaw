@@ -119,7 +119,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"navigate to another site keeps the current tab and opens the target in its own tab (or switches to a tab already on that site); do not retry a navigate that was refused, and do not detour through redirect links. " +
 			desktopAXFirstPrompt() +
 			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
-			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back. " +
+			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back. Ask for a takeover only when the current page itself shows a login form, QR code, captcha or verification; a control you cannot find is usually under a site popup or overlay, so press Escape or click its close/我知道了 and probe again. After a hand back or a slow step, never navigate to or reload the page you were filling: probe the current page and continue from what is already there. " +
 			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge. action=check_inbox reads new messages other bots left for you on Hub (answers to your question, new instructions); messages that arrived before this turn are already in the instructions. action=delegate with target (a teammate bot's name) and message hands a task to that bot (main bot only); Hub starts it and its result comes back to your mailbox." + desktopAssignmentToolHint(),
 		Parameters: map[string]any{
 			"type": "object",
@@ -221,6 +221,8 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	if err != nil {
 		return "", err
 	}
+	// The person's "done" in the chat is the hand-back (desktop_handback_turn.go).
+	desktopHandBackOnDoneTurn(ctx, request, scope)
 	if a := strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))); a == "notify_main" || a == "report" {
 		return desktopNotifyMain(ctx, request, args)
 	}

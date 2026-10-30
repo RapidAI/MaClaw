@@ -6300,13 +6300,17 @@ def ctl_takeover_end(request):
     except OSError:
         pass
     touch_bot_file(key, "activity", force=True)
-    # Login handoff ended. The same flush stop and sleep use writes cookies
-    # into the working copy, then back to the master. A browser still on the
-    # master is quit into the master and is not overwritten from a copy.
-    try:
-        flush_browser(key)
-    except OSError:
-        pass
+    # Login handoff ended. The browser keeps running: quitting it here (the
+    # old flush_browser) restarted Chromium, the tabs came back by URL and a
+    # filled editor was empty (papers 10-31 05:53 / 05:58, Xiaohongshu
+    # publish page: takeover_end -> display_start -> page_login_restore).
+    # The login is saved live instead; loginsync carries the cookies to the
+    # other screens and the next stop writes them back to the master.
+    for save in (persist_website_login, capture_page_login):
+        try:
+            save(key)
+        except Exception:
+            pass
     return {"ok": True, "takeover": False}
 
 

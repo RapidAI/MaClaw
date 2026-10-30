@@ -82,3 +82,38 @@ func TestDesktopCdpTimeoutUnsticksOncePerMinute(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// A slow step on a page the bot filled must not close the tab: 10-31 the
+// Xiaohongshu editor with title, body and images reopened empty.
+func TestDesktopStepTimeoutKeepsFilledPage(t *testing.T) {
+	t.Setenv(desktopStepTimeoutEnv, "0.05")
+	oldOp, oldUn := operateDesktopFunc, desktopUnstickFunc
+	defer func() { operateDesktopFunc, desktopUnstickFunc = oldOp, oldUn }()
+	slow := false
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		if slow {
+			time.Sleep(time.Second)
+		}
+		return "ok", nil
+	}
+	asked := 0
+	desktopUnstickFunc = func(ctx context.Context, scope agentruntime.Scope, url string) (map[string]any, error) {
+		asked++
+		return map[string]any{"unstick": map[string]any{"done": true, "closed": "x", "reopened": "x"}}, nil
+	}
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("u9", "bot_625eda1bbe86a157"), RunID: "run_form"}
+	if _, err := operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "rich_fill"}); err != nil {
+		t.Fatal(err)
+	}
+	slow = true
+	_, err := operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "screenshot"})
+	if asked != 0 || err == nil || !strings.Contains(err.Error(), "NOT closed or reloaded") {
+		t.Fatalf("filled page was reopened: asked=%d err=%v", asked, err)
+	}
+	slow = false
+	operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "navigate", "url": "https://a.test/"})
+	slow = true
+	if _, err := operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "screenshot"}); asked != 1 {
+		t.Fatalf("after navigate a hung tab is reopened again: asked=%d err=%v", asked, err)
+	}
+}

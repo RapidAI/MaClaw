@@ -261,3 +261,27 @@ print(sup.takeover_expire_if_idle(bot, now=time.time() + 99999))
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// Hand back keeps the browser running: quitting it restarted Chromium and
+// a filled editor came back empty (10-31 Xiaohongshu publish page). The login
+// is saved over CDP instead.
+func TestSupervisorHandBackKeepsTheBrowser(t *testing.T) {
+	out := runSupervisorPython(t, `
+bot = "ab" * 8 + "33" * 8
+sup.save_registry({"users": {bot: {"display": 21, "token": "bb" * 16, "bot": True}}})
+sup.desktop_running = lambda key: True
+sup.start_bot_fcitx = lambda key, display: None
+sup.heal_browser_window = lambda *a, **k: None
+calls = []
+sup.flush_browser = lambda key: calls.append("flush")
+sup.quit_browser = lambda *a, **k: calls.append("quit")
+sup.persist_website_login = lambda key: calls.append("persist")
+sup.capture_page_login = lambda key: calls.append("capture")
+sup.ctl_takeover_begin({"key": bot, "reason": "login"})
+print(sup.ctl_takeover_end({"key": bot}), calls)
+`, botOwner)
+	want := "{'ok': True, 'takeover': False} ['persist', 'capture']"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}

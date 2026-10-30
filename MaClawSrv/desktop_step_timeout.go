@@ -73,6 +73,7 @@ type desktopStepOutcome struct {
 func operateDesktopWithTimeout(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	limit := desktopStepTimeout(action)
+	desktopNoteFormInput(scope, action)
 	if limit <= 0 {
 		return operateDesktopFunc(ctx, scope, args)
 	}
@@ -149,6 +150,13 @@ func desktopUnstickAfterTimeout(scope agentruntime.Scope, action string, args ma
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_DESKTOP_UNSTICK"))); v == "off" || v == "0" || v == "false" {
 		return ""
 	}
+	if action != "navigate" && desktopFormDirty(scope) {
+		// Closing the tab would throw away what the bot (or the person)
+		// typed and uploaded: papers 10-31 05:50 / 05:57 a slow screenshot on
+		// the filled Xiaohongshu editor reopened an empty publish page.
+		log.Printf("[desktop-step] unstick after %s timeout skipped: the page holds entered content", action)
+		return "the page was slow to answer but holds content you entered, so it was NOT closed or reloaded. Wait a few seconds, then probe or screenshot the current page and continue from what is already filled; do not navigate to the page again or re-enter the content"
+	}
 	url := ""
 	if action == "navigate" {
 		url = strings.TrimSpace(desktopArg(args, "url"))
@@ -217,6 +225,47 @@ var (
 	desktopUnstickMu   sync.Mutex
 	desktopUnstickLast = map[string]time.Time{}
 )
+
+// desktopFormInputActions put content into the page that a reload loses.
+var desktopFormInputActions = map[string]bool{"rich_fill": true, "type": true, "upload": true, "batch": true, "computer": true, "clipboard_set": true}
+
+var (
+	desktopFormMu    sync.Mutex
+	desktopFormInput = map[string]time.Time{}
+)
+
+const desktopFormDirtyFor = 20 * time.Minute
+
+func desktopFormKey(scope agentruntime.Scope) string {
+	return scope.TenantID + "/" + scope.UserID + "/" + scope.RunID
+}
+
+// desktopNoteFormInput: called before an input action and on a takeover;
+// navigate starts a new page and clears it.
+func desktopNoteFormInput(scope agentruntime.Scope, action string) {
+	desktopFormMu.Lock()
+	defer desktopFormMu.Unlock()
+	key := desktopFormKey(scope)
+	if action == "navigate" {
+		delete(desktopFormInput, key)
+		return
+	}
+	if desktopFormInputActions[action] || action == "request_takeover" {
+		desktopFormInput[key] = time.Now()
+	}
+	for k, at := range desktopFormInput {
+		if time.Since(at) > desktopFormDirtyFor {
+			delete(desktopFormInput, k)
+		}
+	}
+}
+
+func desktopFormDirty(scope agentruntime.Scope) bool {
+	desktopFormMu.Lock()
+	defer desktopFormMu.Unlock()
+	at, ok := desktopFormInput[desktopFormKey(scope)]
+	return ok && time.Since(at) < desktopFormDirtyFor
+}
 
 func desktopUnstickDue(scope agentruntime.Scope) bool {
 	key := scope.TenantID + "/" + scope.UserID

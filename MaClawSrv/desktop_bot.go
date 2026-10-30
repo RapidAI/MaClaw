@@ -28,7 +28,16 @@ func desktopBotUser(owner string, metadata map[string]string) string {
 
 // A takeover only so the person clicks 发布 is not needed once publishing is
 // approved for this task: the bot finishes with action=publish itself.
-var desktopPublishOnlyTakeoverRe = regexp.MustCompile(`(?i)(亲自|手动|帮忙|自行)?\s*点(击)?\s*[「“"']?(发布|发表|发送)|click (the )?(publish|post|submit)`)
+var desktopPublishOnlyTakeoverRe = regexp.MustCompile(`(?i)(亲自|手动|帮忙|自行)?\s*[点按](击|下)?[^。，,.]{0,16}?[「“"']?(发布|发表|发送)|click (the )?(publish|post|submit)`)
+
+// desktopElementMissingRe: a takeover asked because the bot could not find a
+// control. 10-31 05:55 Xiaohongshu: 「页面里我拿不到"发布"按钮的元素」 then a
+// takeover the person saw as a login prompt, while a site overlay covered the
+// button. Missing elements are not a login wall.
+var desktopElementMissingRe = regexp.MustCompile(`(?i)找不到|拿不到|定位不到|没找到|未找到|看不到|被(遮挡|挡住|覆盖)|弹窗|浮层|not found|can(no|')t find|could not find|no element|covered|overlay|popup`)
+
+const desktopElementMissingRefusal = "refused: takeover_for_missing_element — a control you cannot find is not a login wall. A site popup or overlay (tips, 效率工具/标签 guide, cookie banner, dialog) often covers it: press Escape, click its 关闭/×/我知道了/跳过, scroll, then probe the CURRENT page again without a filter. Do not navigate or reload; the filled content stays. Ask for a takeover only with positive evidence on the page of a login form, QR code, captcha or verification."
+
 var desktopPublishLoginRe = regexp.MustCompile(`(?i)登录|验证码|扫码|验证|captcha|log ?in|sign ?in|2fa`)
 
 const desktopPublishTakeoverRefusal = "refused: takeover_for_publish — publishing is approved for this task, so do not ask the person to click 发布. The editor is open: finish with ONE call action=publish (title, body, and upload/verify params as needed); it fills, clicks publish, confirms and reads the post back. Only ask for a takeover for a login, captcha or verification."
@@ -49,6 +58,9 @@ func requestDesktopTakeover(ctx context.Context, scope agentruntime.Scope, reaso
 	}
 	if desktopPublishOnlyTakeoverRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) && desktopPublishAllowed(ctx) {
 		return "", fmt.Errorf("%s", desktopPublishTakeoverRefusal)
+	}
+	if desktopElementMissingRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) {
+		return "", fmt.Errorf("%s", desktopElementMissingRefusal)
 	}
 	if len([]rune(reason)) > 300 {
 		reason = string([]rune(reason)[:300])
