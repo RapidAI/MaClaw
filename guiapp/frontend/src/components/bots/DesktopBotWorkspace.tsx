@@ -290,6 +290,18 @@ function desktopFrameSrc(url: string, interactive: boolean): string {
 }
 
 const RETURN_COMMAND = BOT_RETURN_TASK;
+
+// What a takeover is for, read from its reason. 10-31: a takeover only to
+// press 发布 was shown as 「请…完成登录」 with 「登录完成，继续」, so Daniel
+// was asked to log in while the site was logged in.
+export type HandoffKind = 'login' | 'captcha' | 'publish' | 'other';
+export function handoffKind(reason: string | undefined | null): HandoffKind {
+    const r = String(reason || '').trim();
+    if (!r || r === 'login' || /登录|登入|扫码|二维码|log ?in|sign ?in|qr/i.test(r)) return 'login';
+    if (/验证码|驗證碼|人机|滑块|captcha|verif|验证|驗證|2fa/i.test(r)) return 'captcha';
+    if (/发布|發布|发表|發表|publish|post\b|submit/i.test(r)) return 'publish';
+    return 'other';
+}
 const CONFIRM_COMMAND = BOT_CONFIRM_TASK;
 
 // Composer text starts as a plan. A clear request is then sent as execute.
@@ -860,6 +872,11 @@ function copy(lang: string) {
             stillThere: 'The website login is still in this browser. Send another message and this bot continues there.',
             userControl: 'Finish the login or verification in this browser. The login stays here for the bot.',
             returnControl: 'Login done, continue',
+            returnControlPublish: 'Published, continue',
+            returnControlCaptcha: 'Verified, continue',
+            returnControlOther: 'Done, continue',
+            userControlPublish: 'The bot asked you to press Publish on this page. Press it, then continue.',
+            userControlOther: 'The bot asked you to do one step on this desktop (see its message). When done, continue.',
             returnCommand: RETURN_COMMAND,
             unavailable: 'The backend agent is unavailable.',
             orderMissing: 'That message did not become an order, so it was not sent.',
@@ -1067,6 +1084,11 @@ function copy(lang: string) {
             stillThere: '網站登入還在這個瀏覽器裡。再發一條訊息，這個 bot 會接著操作。',
             userControl: '請在這個桌面的瀏覽器裡完成登入或驗證。登入會留在這個瀏覽器裡，完成後交還。',
             returnControl: '登入完成，繼續',
+            returnControlPublish: '已發布，繼續',
+            returnControlCaptcha: '驗證完成，繼續',
+            returnControlOther: '完成，繼續',
+            userControlPublish: 'Bot 請你在這個頁面按「發布」，按完後繼續。',
+            userControlOther: 'Bot 請你在這個桌面完成一步操作（見它的訊息），完成後繼續。',
             returnCommand: RETURN_COMMAND,
             unavailable: '後台 agent 不可用。',
             orderMissing: '這句沒整理成可執行的安排，沒有發出。',
@@ -1272,6 +1294,11 @@ function copy(lang: string) {
         stillThere: '网站登录还在这个浏览器里。再发一条消息，这个 bot 会接着操作。',
         userControl: '请在这个桌面的浏览器里完成登录或验证。登录会留在这个浏览器里，完成后交还。',
         returnControl: '登录完成，继续',
+        returnControlPublish: '已发布，继续',
+        returnControlCaptcha: '验证完成，继续',
+        returnControlOther: '完成，继续',
+        userControlPublish: 'Bot 请你在这个页面点「发布」，点完后继续。',
+        userControlOther: 'Bot 请你在这个桌面完成一步操作（见它的消息），完成后继续。',
         returnCommand: RETURN_COMMAND,
         unavailable: '后台 agent 不可用。',
             orderMissing: '这句没整理成可执行的安排，没有发出。',
@@ -2189,6 +2216,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const live = selected ? liveDesktop[selected.id] : undefined;
     const liveControl = live?.userControl === true;
     const liveReason = live?.attentionReason || '';
+    const handoff = handoffKind(liveReason || handoffMessage?.attentionReason || '');
+    const handoffReturnLabel = handoff === 'publish' ? text.returnControlPublish : handoff === 'captcha' ? text.returnControlCaptcha : handoff === 'other' ? text.returnControlOther : text.returnControl;
+    const handoffUserText = handoff === 'publish' ? text.userControlPublish : handoff === 'other' ? text.userControlOther : text.userControl;
     // Hub's desktop read is the truth for an older handoff: once it reports
     // nobody is asked to log in or take over and no turn of this bot is
     // pending, a 登录完成，继续 left in the transcript is stale.
@@ -6042,7 +6072,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         : takeover && !liveControl && liveReason === ''
             ? text.takeoverActive
             : personAtKeyboard
-                ? text.userControl
+                ? handoffUserText
                 // Only a bot that is really driving the desktop (a desktop
                 // step running, a run lease on this bot) is "operating"; a
                 // turn still pending in the transcript (e.g. a run that died
@@ -6584,7 +6614,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             })}
                             {handoffMessage && !agentOperating && !handoffSettled ? (
                                 <p className="desktop-bot-chat__entry">
-                                    <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-return-control" onClick={() => resumeFromScreenHandoff(selected.id)}>{text.returnControl}</button>
+                                    <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-return-control" onClick={() => resumeFromScreenHandoff(selected.id)}>{handoffReturnLabel}</button>
                                 </p>
                             ) : null}
                             {collab.features.say ? (
