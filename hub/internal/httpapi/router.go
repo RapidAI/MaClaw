@@ -448,7 +448,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/bash", PostDesktopBashHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/http", PostDesktopHTTPHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/screenshot", PostDesktopScreenshotHandler(desktopPool))
-	mux.HandleFunc("POST /api/v1/desktop-services/ctl", PostDesktopCtlHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/ctl", PostDesktopCtlHandler(desktopPool, botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/tool", PostDesktopToolHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/proxy-mode", PostDesktopProxyModeHandler(desktopPool))
 	mux.HandleFunc("GET /api/admin/desktop-services/proxy-mode", requireTenantAdmin(GetDesktopProxyModeAdminHandler(desktopPool)))

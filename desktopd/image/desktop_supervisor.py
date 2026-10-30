@@ -6386,6 +6386,13 @@ def ctl_bot_state(request):
     note_srv_ids(key, request)
     if "unstick" in request:
         return {"ok": True, "unstick": page_unstick(key, str(request.get("unstick") or ""))}
+    if request.get("watch"):
+        # Hub's takeover watcher: read-only, never counts as activity (the
+        # display may still idle-stop), and hands out each automatic hand
+        # back's resume exactly once.
+        state = takeover_state(key)
+        return {"ok": True, "takeover": state is not None,
+                "since": int((state or {}).get("since") or 0), "resume": pop_bot_json(key, "handback_resume.json")}
     wait_restore_done(key)
     touch_bot_file(key, "activity")
     takeover_expire_if_idle(key)
@@ -6468,6 +6475,7 @@ def takeover_expire_if_idle(key, now=None):
     log_event("takeover_auto_handback", key=key, idle_seconds=limit,
               reason=str(data.get("reason") or "")[:120], expired_at=expires)
     ctl_takeover_end({"key": key, "source": "auto_handback"})
+    note_handback_resume(key, data, "idle", now, idle_seconds=limit)
     try:
         (ROOT / key / "auto_handback.json").write_text(json.dumps(
             {"at": int(now), "idle_seconds": limit, "reason": str(data.get("reason") or "")[:120]}), encoding="utf-8")
@@ -6554,6 +6562,7 @@ def takeover_login_done(key, data, now):
     log_event("takeover_auto_handback", key=key, trigger="signed_in", url=url,
               reason=str(data.get("reason") or "")[:120])
     ctl_takeover_end({"key": key, "source": "login_detected"})
+    note_handback_resume(key, data, "signed_in", now, url=url)
     try:
         (ROOT / key / "auto_handback.json").write_text(json.dumps(
             {"at": int(now), "trigger": "signed_in", "url": url,
@@ -6564,6 +6573,28 @@ def takeover_login_done(key, data, now):
 
 
 _login_probe_at = {}
+
+
+def pop_bot_json(key, name):
+    path = ROOT / key / name
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        path.unlink()
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def note_handback_resume(key, data, trigger, now, **extra):
+    """An automatic hand back resumes the run: Hub's watcher picks this up
+    (bot_state watch) and admits the continuation once per takeover."""
+    marker = {"since": int(float(data.get("since") or 0)), "trigger": trigger, "at": int(now),
+              "reason": str(data.get("reason") or "")[:120]}
+    marker.update(extra)
+    try:
+        (ROOT / key / "handback_resume.json").write_text(json.dumps(marker, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def pop_auto_handback(key):
@@ -6587,6 +6618,7 @@ def ctl_takeover_begin(request):
     path.write_text(json.dumps({"reason": reason, "since": now, "idle_seconds": limit,
                                 "expires_at": now + limit if limit > 0 else 0}), encoding="utf-8")
     log_event("takeover_begin", key=key, reason=reason[:120], source="bot")
+    pop_bot_json(key, "handback_resume.json")
     entry = (load_registry().get("users", {}) or {}).get(key) or {}
     try:
         display = int(entry.get("display") or 0)

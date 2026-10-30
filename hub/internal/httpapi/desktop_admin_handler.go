@@ -869,7 +869,7 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 // PostDesktopCtlHandler runs one desktop control request (clipboard,
 // windows, screen info, wait, status, accessibility tree) for MaClawSrv's
 // desktop tool and the desktop MCP server. Same desktop API token as /app.
-func PostDesktopCtlHandler(pool *desktoppool.Pool) http.HandlerFunc {
+func PostDesktopCtlHandler(pool *desktoppool.Pool, bots ...*botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pool == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
@@ -892,6 +892,9 @@ func PostDesktopCtlHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		if err != nil {
 			writeDesktopError(w, err)
 			return
+		}
+		for _, b := range bots {
+			b.NoteDesktopCtl(in.TenantID, in.UserID, in.Request)
 		}
 		writeJSON(w, http.StatusOK, out)
 	}

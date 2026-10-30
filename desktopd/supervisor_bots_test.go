@@ -311,6 +311,11 @@ sup.touch_bot_file(bot, "human_input", force=True)
 t = os.path.getmtime(sup.ROOT / bot / "human_input")
 print(sup.takeover_expire_if_idle(bot, now=t + 5))
 print(sup.takeover_expire_if_idle(bot, now=t + 45), sup.takeover_state(bot) is None)
+act = sup.ROOT / bot / "activity"
+before = act.stat().st_mtime if act.exists() else None
+w = sup.ctl_bot_state({"key": bot, "watch": True})
+print(w["takeover"], w["resume"]["trigger"], w["resume"]["since"] == int(t0), sup.ctl_bot_state({"key": bot, "watch": True})["resume"],
+      (act.stat().st_mtime if act.exists() else None) == before)
 s = sup.ctl_bot_state({"key": bot})
 print(s["auto_handback"], s["auto_handback_trigger"])
 sup._login_probe_at.clear()
@@ -319,7 +324,7 @@ print(sup.takeover_expire_if_idle(bot, now=time.time() + 60), sup.takeover_state
 print(sup.page_shows_signed_in({"url": "https://x.com/i/flow/login", "state": "complete", "form": False}),
       sup.page_shows_signed_in({"url": "https://x.com/home", "state": "loading", "form": False}))
 `, botOwner)
-	want := "False\nFalse\nTrue True\nTrue signed_in\nFalse True\nFalse False"
+	want := "False\nFalse\nTrue True\nFalse signed_in True None True\nTrue signed_in\nFalse True\nFalse False"
 	if out != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
