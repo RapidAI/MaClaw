@@ -176,7 +176,7 @@ import { useBotCollab } from './collab/useBotCollab';
 import { BotCollabStatus } from './collab/BotCollabStatus';
 import { BotSaidInline } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
-import { saidForChat } from './collab/botCollab';
+import { saidForChat, saidSince } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
 import { DemoSkillPanel } from './DemoSkillPanel';
 import { isChineseLang, isTraditionalLang, localizeText, normalizeLang } from '../../i18n';
@@ -6618,7 +6618,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </p>
                             ) : null}
                             {collab.features.say ? (
-                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary)} bots={bots} lookOf={lookOf} lang={lang} />
+                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary, saidSince(messages.map(m => m.id)))} bots={bots} lookOf={lookOf} lang={lang} />
                             ) : null}
                             </div>
                         </div>

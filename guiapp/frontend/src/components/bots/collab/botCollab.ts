@@ -147,8 +147,24 @@ export function humanPrompt(a: Assignment, bots: BotRef[], lang = 'zh-Hans'): { 
 }
 
 /** Messages to show in one bot's chat: its own direct messages; the main bot's chat shows every bot's. */
-export function saidForChat(items: SaidItem[], botId: string, isPrimary: boolean): SaidItem[] {
-    return items.filter(i => i.kind === 'say' && i.target === 'human' && (isPrimary || i.from === botId));
+export function saidForChat(items: SaidItem[], botId: string, isPrimary: boolean, sinceMs = 0): SaidItem[] {
+    // The inline block renders below the transcript, so only what was said
+    // after the chat's latest message belongs there. 10-31: a 10-28 15:26
+    // 「今天适合喝乌龙茶…」 say stayed pinned under every newer reply.
+    return items.filter(i => i.kind === 'say' && i.target === 'human' && (isPrimary || i.from === botId)
+        && (!sinceMs || Date.parse(String(i.created_at || '')) > sinceMs));
+}
+
+/** Time a GUI message id (m-<base36 ms>-…) was made, or 0. */
+export function messageIdTime(id: string | undefined): number {
+    const m = /^m-([0-9a-z]+)-/.exec(String(id || ''));
+    const t = m ? parseInt(m[1], 36) : 0;
+    return Number.isFinite(t) && t > 1e12 && t < 1e13 ? t : 0;
+}
+
+/** Lower bound for inline says: the latest message, and never older than 12 h. */
+export function saidSince(messageIds: string[], now = Date.now()): number {
+    return Math.max(now - 12 * 3600 * 1000, ...messageIds.map(messageIdTime));
 }
 
 /** Bots that spoke in a room after the person's last message. */

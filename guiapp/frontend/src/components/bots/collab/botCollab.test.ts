@@ -40,3 +40,17 @@ describe('botCollab helpers', () => {
         expect(attentionOf({ ...room, attention: { a: 'off' } }, bots[1])).toBe('off');
     });
 });
+
+describe('inline says only after the latest message', () => {
+    it('drops an old say that would sit pinned under newer replies', async () => {
+        const { saidForChat, saidSince, messageIdTime } = await import('./botCollab');
+        const now = Date.parse('2026-10-31T05:56:00+08:00');
+        const old = { id: 'n1', kind: 'say', target: 'human', from: 'b', text: '今天适合喝乌龙茶', created_at: '2026-10-28T07:26:02Z' } as unknown as SaidItem;
+        const fresh = { id: 'n2', kind: 'say', target: 'human', from: 'b', text: 'new', created_at: '2026-10-30T21:55:30Z' } as unknown as SaidItem;
+        const msg = `m-${(now - 60000).toString(36)}-abc`;
+        expect(messageIdTime(msg)).toBe(now - 60000);
+        const since = saidSince([msg, 'x'], now);
+        expect(saidForChat([old, fresh], 'b', false, since).map(i => i.id)).toEqual(['n2']);
+        expect(saidForChat([old, fresh], 'b', false).map(i => i.id)).toEqual(['n1', 'n2']);
+    });
+});
