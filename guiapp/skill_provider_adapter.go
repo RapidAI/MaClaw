@@ -3,7 +3,6 @@ package guiapp
 import (
 	"strings"
 
-	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -30,16 +29,17 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 		default:
 			continue
 		}
-		if isShellBrowserAutomationSkill(s) {
+		// A host procedure and an imported agent-guided workflow are executed
+		// with host file tools. This index routes a runnable skill. A shell
+		// browser skill that is not that procedure stays out because its
+		// command would open a separate browser.
+		if skillDefinitionGuidesAgent(s) || isShellBrowserAutomationSkill(s) {
 			continue
 		}
 		// MaClaw App-only packages are installable containers, not directly
 		// runnable skills. Keeping them out of this index prevents the agent from
 		// selecting a container that the runner must correctly reject.
 		if skill.IsKnowledgeSkillType(s.Type) || skill.IsInstructionOnlySkillType(s.Type) {
-			continue
-		}
-		if skill.IsAgentGuidedWorkflowSkill(&corelib.NLSkillEntry{Source: s.Source, Steps: s.Steps, SkillDir: s.SkillDir}) {
 			continue
 		}
 		if strings.TrimSpace(s.Description) == "" && len(s.Triggers) == 0 {

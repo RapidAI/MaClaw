@@ -192,6 +192,21 @@ describe('GeneralSettingsPanel', () => {
         expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ gossip_auto_publish: false });
     });
 
+    it('shows the general page in Mongolian', () => {
+        renderPanel({}, 'mn');
+
+        expect(screen.getByRole('heading', { name: 'Office баримт задлах' })).toBeTruthy();
+        expect(screen.getByText('Агентын даалгаврын анхдагч хавтас. Хоосон бол ~/.maclaw/workspace ашиглана.')).toBeTruthy();
+        expect(screen.getByText('Шилжилтийн үед асаалттай үлдээнэ. OfficeRead амжилтгүй бол одоогийн уншигчийг ашиглана.')).toBeTruthy();
+        expect(screen.getByLabelText('Даалгавар дууссаны мэдэгдэл')).toBeTruthy();
+        expect(screen.getByText('Чадварын өөрийн хувьсал')).toBeTruthy();
+        expect(screen.getByText(/Ур чадвар → Тохиргоо → Хувьсал/)).toBeTruthy();
+        expect(screen.getByText('Hub чансаа харуулах')).toBeTruthy();
+        expect(screen.getByText('Системийн цэсэнд чансаа харуулж, Hub-ийн жагсаалтыг нээнэ.')).toBeTruthy();
+        expect(screen.queryByText('Office document extraction')).toBeNull();
+        expect(screen.queryByText('Task completion notice')).toBeNull();
+    });
+
     it('shows the OfficeRead rollout controls and persists their policy', () => {
         renderPanel({
             office_read_engine: 'dual',

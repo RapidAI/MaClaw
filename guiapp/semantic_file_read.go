@@ -144,6 +144,40 @@ func (h *IMMessageHandler) readTrustedFile(principalID, path, query, filePattern
 	if err != nil {
 		return "", err
 	}
+	return readResolvedTrustedFile(workspace, absPath, path, query, filePattern, startLine)
+}
+
+// hostProcedureTreeContains reports whether path is an absolute file inside
+// the installed procedure directory. A relative path stays in the task
+// workspace, so a workspace file is not hidden by a same-named skill file.
+func hostProcedureTreeContains(root, path string) bool {
+	root = strings.TrimSpace(root)
+	path = strings.TrimSpace(path)
+	if root == "" || path == "" {
+		return false
+	}
+	if !filepath.IsAbs(path) && !strings.HasPrefix(path, "~") {
+		return false
+	}
+	_, _, kind := resolvePathInsideWorkspace(root, path)
+	return kind == trustedPathOK
+}
+
+// readHostProcedureTree reads one path inside the installed procedure.
+// The semantic workspace jail still rejects every other absolute path, and
+// this does not open writes into the skill directory.
+func readHostProcedureTree(root, path, query, filePattern string, startLine int) (string, error) {
+	if startLine < 0 || (startLine > 0 && (query != "" || filePattern != "")) {
+		return "", fmt.Errorf("trusted_file_read_conflicting_fields")
+	}
+	absPath, err := trustedFileReadResolvePath(root, path)
+	if err != nil {
+		return "", err
+	}
+	return readResolvedTrustedFile(root, absPath, path, query, filePattern, startLine)
+}
+
+func readResolvedTrustedFile(workspace, absPath, path, query, filePattern string, startLine int) (string, error) {
 	ctx, cancel := trustedFileReadContext(query, filePattern)
 	defer cancel()
 	if query != "" {

@@ -2545,11 +2545,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				} else {
 					assistantMsg["reasoning_content"] = ""
 				}
+				if sig := strings.TrimSpace(choice.Message.ThoughtSignature); sig != "" {
+					assistantMsg["thought_signature"] = sig
+				}
 				conversation = append(conversation, assistantMsg)
 				historyDelta = append(historyDelta, ConversationEntry{
 					Role:             "assistant",
 					Content:          content,
 					ReasoningContent: reasoningContent,
+					ThoughtSignature: strings.TrimSpace(choice.Message.ThoughtSignature),
 					FinishReason:     ResolveAssistantFinishReason(choice.FinishReason, false),
 				})
 			}
@@ -2576,11 +2580,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				} else {
 					assistantMsg["reasoning_content"] = ""
 				}
+				if sig := strings.TrimSpace(choice.Message.ThoughtSignature); sig != "" {
+					assistantMsg["thought_signature"] = sig
+				}
 				conversation = append(conversation, assistantMsg)
 				historyDelta = append(historyDelta, ConversationEntry{
 					Role:             "assistant",
 					Content:          content,
 					ReasoningContent: reasoningContent,
+					ThoughtSignature: strings.TrimSpace(choice.Message.ThoughtSignature),
 					FinishReason:     ResolveAssistantFinishReason(choice.FinishReason, false),
 				})
 			}
@@ -2928,12 +2936,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if len(choice.Message.ToolCalls) > 0 {
 			assistantMsg["tool_calls"] = choice.Message.ToolCalls
 		}
+		if sig := strings.TrimSpace(choice.Message.ThoughtSignature); sig != "" {
+			assistantMsg["thought_signature"] = sig
+		}
 		conversation = append(conversation, assistantMsg)
 		historyDelta = append(historyDelta, ConversationEntry{
 			Role:             "assistant",
 			Content:          content,
 			ReasoningContent: reasoningContent,
 			ToolCalls:        choice.Message.ToolCalls,
+			ThoughtSignature: strings.TrimSpace(choice.Message.ThoughtSignature),
 			FinishReason:     ResolveAssistantFinishReason(choice.FinishReason, hasToolCalls),
 		})
 
@@ -4543,7 +4555,15 @@ func prepareToolsForToolSurfaceReceipt(cfg corelib.MaclawLLMConfig, tools []map[
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
 		return tools
 	}
-	return llm.PrepareOpenCodeZenAgentTools(cfg, llm.PrepareOpenAIChatToolsForWire(cfg, tools))
+	prepared := llm.PrepareOpenCodeZenAgentTools(cfg, llm.PrepareOpenAIChatToolsForWire(cfg, tools))
+	if cfg.IsGoogleProtocol() {
+		// generateContent rejects additionalProperties and the same schema
+		// keywords the conservative OpenAI projection already removes. Freeze
+		// that reduction before the receipt, and the request builder applies it
+		// again so a caller that skipped this helper still matches.
+		prepared = corelib.SanitizeCodeGenOpenAIChatTools(prepared)
+	}
+	return prepared
 }
 
 func executeAuthorizedLoopToolCallWithContext(cb LoopCallbacks, name, argsJSON, callID string, execution ToolCallExecutionContext) ToolExecutionResult {
@@ -5606,6 +5626,11 @@ func doLLMRequestWithToolsStreamWithBeforeFallback(ctx context.Context, cfg core
 	flushRolePrefixFilter()
 	if err != nil {
 		if streamFailureBelongsToOuterRetry(ctx, resp, err) {
+			return resp, err
+		}
+		// CodeGen's call above is already the buffered completion. Another
+		// request would repeat that same wire.
+		if corelib.IsCodeGenURL(cfg.URL) {
 			return resp, err
 		}
 		log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)

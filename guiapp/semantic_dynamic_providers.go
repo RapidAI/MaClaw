@@ -373,7 +373,10 @@ func semanticSkillIsRunnable(entry corelib.NLSkillEntry) bool {
 	default:
 		return false
 	}
-	if isShellBrowserAutomationSkillEntry(entry) || skill.IsKnowledgeSkillType(entry.Type) || skill.IsInstructionOnlySkillType(entry.Type) || skill.IsAgentGuidedWorkflowSkill(&entry) {
+	// A host procedure is the markdown plus host file tools, so it is not a
+	// closed skill_* program. A shell browser skill that is not that
+	// procedure is not a program either.
+	if skillHostProcedure(entry) || isShellBrowserAutomationSkillEntry(entry) || skill.IsKnowledgeSkillType(entry.Type) || skill.IsInstructionOnlySkillType(entry.Type) || skill.IsAgentGuidedWorkflowSkill(&entry) {
 		return false
 	}
 	return strings.TrimSpace(entry.Name) != ""

@@ -46,18 +46,28 @@ type Choice struct {
 	TruncatedToolArgs map[string]string `json:"-"`
 }
 
-type Message struct {
-	Role             string      `json:"role"`
-	Content          string      `json:"content"`
-	ReasoningContent string      `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
-	RawContent       interface{} `json:"-"`
-}
-
 type ToolCall struct {
 	ID       string           `json:"id"`
 	Type     string           `json:"type"`
 	Function ToolCallFunction `json:"function"`
+	// ThoughtSignature is the Gemini thought signature that must be replayed
+	// on this function call. Gemini 3+ rejects the next turn when it is dropped.
+	ThoughtSignature string `json:"thought_signature,omitempty"`
+	// GoogleFunctionCallID is generateContent functionCall.id when the model
+	// sent one. The next functionResponse must echo it. Empty means the model
+	// did not send an id; the local tool-call id is not a substitute.
+	GoogleFunctionCallID string `json:"google_function_call_id,omitempty"`
+}
+
+type Message struct {
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	// ThoughtSignature is a Gemini signature that belongs to the visible text
+	// part rather than a function call. Tool-call signatures stay on ToolCall.
+	ThoughtSignature string      `json:"thought_signature,omitempty"`
+	RawContent       interface{} `json:"-"`
 }
 
 type ToolCallFunction struct {

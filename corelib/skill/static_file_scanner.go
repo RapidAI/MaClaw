@@ -369,13 +369,24 @@ func addFinding(findings *[]ScanFinding, seen map[string]bool, finding ScanFindi
 	*findings = append(*findings, finding)
 }
 
+// isInternalSkillStoreFile reports skill-local SQLite files and their
+// journals. They are runtime state, not package content.
+func isInternalSkillStoreFile(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	base := filepath.Base(rel)
+	if base == ".maclaw_scan_status.db" || strings.HasPrefix(base, ".maclaw_scan_status.db-") {
+		return true
+	}
+	return rel == ".state" || strings.HasPrefix(rel, ".state/")
+}
+
 func structuralFileFinding(file StagedFile, typ string) *ScanFinding {
 	base := filepath.Base(file.RelPath)
 	lower := strings.ToLower(base)
 	switch {
 	case file.IsSymlink:
 		return &ScanFinding{Severity: "critical", Category: "symlink", Description: "Symbolic link included in skill package", Location: file.RelPath}
-	case base == ".gitkeep" || base == ".maclaw_scan_status.json":
+	case base == ".gitkeep" || base == ".maclaw_scan_status.json" || isInternalSkillStoreFile(file.RelPath):
 		return nil
 	case strings.HasPrefix(base, "."):
 		return &ScanFinding{Severity: "medium", Category: "hidden_file", Description: "Hidden file included in skill package", Location: file.RelPath}

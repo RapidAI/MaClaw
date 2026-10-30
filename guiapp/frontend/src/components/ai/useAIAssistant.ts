@@ -6,7 +6,7 @@ import type { AgentView } from "./agentViewTypes";
 import { appendPromptHistory, normalizePromptHistory, promptHistoryFromPersisted, PROMPT_HISTORY_LIMIT, type PromptHistoryAttachment, type PromptHistoryEntry } from "./promptHistory";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
-import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
+import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, fileTerminalResponseWithoutRound, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay, type RolePrefixStreamCursor } from "./rolePrefixDisplay";
 import { isHistoryResetCommandText } from "./composeAction";
@@ -5889,17 +5889,52 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 ? currentRound
                 : inFlightRoundsByRequestRef.current.get(responseRequestId);
             const eventSessionKey = normalizeRuntimeSessionKey(normalized.session_key || '');
+            const renderableTerminal = hasRenderableTerminalPayload(normalized);
             if (!round || round.phase === 'idle') {
+                // The live placeholder is gone. The payload is still this
+                // session's turn record, and this request has ended.
+                if (!round && fileTerminalResponseWithoutRound({
+                    hasRound: false,
+                    sessionKey: eventSessionKey,
+                    renderable: renderableTerminal,
+                })) {
+                    const assistantMessageId = nextId();
+                    setMessages(prev => {
+                        if (responseRequestId && hasRoundMessage(prev, '', responseRequestId)) {
+                            return resolveSendResult(prev, null, responseRequestId, normalized, preferences);
+                        }
+                        return resolveSendResult(
+                            appendAssistantPlaceholder(prev, assistantMessageId, responseRequestId, eventSessionKey),
+                            assistantMessageId,
+                            responseRequestId,
+                            normalized,
+                            preferences,
+                        );
+                    });
+                    if (responseRequestId) {
+                        clearPendingTaskForRequest(responseRequestId);
+                        stopResponseTimeout(responseRequestId);
+                        resetStreamTokenBuffer(responseRequestId);
+                    }
+                    clearTransientProgress(eventSessionKey);
+                    logAIAssistantDiagnostic({
+                        event: 'response_filed_without_round',
+                        requestId: responseRequestId || '',
+                        sessionKey: eventSessionKey,
+                        hasRenderablePayload: true,
+                    });
+                    return;
+                }
                 console.info('[useAIAssistant] response ignored without active round', {
                     requestId: responseRequestId || undefined,
                     sessionKey: normalized.session_key || undefined,
-                    hasRenderablePayload: hasRenderableTerminalPayload(normalized),
+                    hasRenderablePayload: renderableTerminal,
                 });
                 logAIAssistantDiagnostic({
                     event: 'response_ignored_no_round',
                     requestId: responseRequestId || '',
                     sessionKey: normalized.session_key || '',
-                    hasRenderablePayload: hasRenderableTerminalPayload(normalized),
+                    hasRenderablePayload: renderableTerminal,
                 });
                 return;
             }

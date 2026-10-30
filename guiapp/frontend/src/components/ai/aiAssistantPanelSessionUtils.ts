@@ -558,6 +558,21 @@ export function visibleProjectTranscript(input: {
     return mergeProjectRoundHistory(saved, saved, accepted, undefined, !!input.trustMissingTimeline);
 }
 
+/**
+ * A terminal response whose live round is already gone still belongs to its
+ * session. Filing it there is how that task shows its own outcome. An idle
+ * round already settled, and the bare desktop-user key is not a task owner.
+ */
+export function fileTerminalResponseWithoutRound(input: {
+    hasRound: boolean;
+    sessionKey?: string | null;
+    renderable: boolean;
+}): boolean {
+    if (input.hasRound || !input.renderable) return false;
+    const owner = normalizeAssistantSessionKey(input.sessionKey);
+    return !!owner && owner !== "desktop-user";
+}
+
 /** Drop transcript turns that belong to a conversation cleared at floorMs. */
 export function messageAfterSessionFloor(message: { timestamp?: number } | null | undefined, floorMs?: number | null): boolean {
     const floor = Number(floorMs || 0);

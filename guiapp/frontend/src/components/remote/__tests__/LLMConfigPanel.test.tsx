@@ -93,13 +93,21 @@ vi.mock('../providerLogos', async () => {
 });
 vi.mock('../UsageDisplay', () => ({ UsageDisplay: () => <div>OpenAI Usage</div> }));
 vi.mock('../TokenUsagePanel', () => ({ TokenUsagePanel: () => null }));
+const { showConfirmMock } = vi.hoisted(() => ({
+    showConfirmMock: vi.fn(async (..._args: any[]): Promise<boolean> => false),
+}));
 vi.mock('../LLMProfileAssignments', () => ({
-    LLMProfileAssignments: ({ descriptionAction }: { descriptionAction?: unknown }) => descriptionAction ?? null,
+    LLMProfileAssignments: ({ descriptionAction, agentProviderSwitch }: { descriptionAction?: unknown; agentProviderSwitch?: { providerName?: string; model?: string } | null }) => (
+        <>
+            {descriptionAction ?? null}
+            {agentProviderSwitch?.providerName ? <div data-testid="agent-provider-switch">{agentProviderSwitch.providerName}{agentProviderSwitch.model ? `:${agentProviderSwitch.model}` : ""}</div> : null}
+        </>
+    ),
 }));
 vi.mock('../../CustomDialog', () => ({
     useDialog: () => ({
         showAlert: vi.fn(),
-        showConfirm: vi.fn(),
+        showConfirm: showConfirmMock,
         showPrompt: vi.fn(),
     }),
 }));
@@ -110,6 +118,7 @@ import { canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProvide
 describe('LLMConfigPanel test-and-save flow', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        showConfirmMock.mockResolvedValue(false);
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
                 { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
@@ -155,6 +164,13 @@ describe('LLMConfigPanel test-and-save flow', () => {
             message: 'hello',
             supports_vision: true,
         });
+        GetMaclawLLMProfilePanelStateMock.mockResolvedValue({
+            providers: [{ id: 'custom1', name: 'Custom1', model: 'gpt-test', models: ['gpt-test'], supports_vision: true }],
+            profiles: { version: 1, assistant: { provider_id: 'custom1', model: 'gpt-test' }, coding: { inherit_assistant: true } },
+            assistant: { profile: 'assistant', provider_id: 'custom1', provider_name: 'Custom1', model: 'gpt-test', health: 'configured' },
+            coding: { profile: 'coding', provider_id: 'custom1', provider_name: 'Custom1', model: 'gpt-test', inherit_assistant: true, health: 'configured' },
+            revision: 'test-revision',
+        });
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
@@ -191,6 +207,75 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
 
         expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
+        expect(showConfirmMock).not.toHaveBeenCalled();
+    });
+
+    it('offers to switch the agent after a different provider is tested and saved', async () => {
+        GetMaclawLLMProfilePanelStateMock.mockResolvedValue({
+            providers: [
+                { id: 'custom1', name: 'Custom1', model: 'gpt-test' },
+                { id: 'openai', name: 'OpenAI', model: 'gpt-4o' },
+            ],
+            profiles: { version: 1, assistant: { provider_id: 'openai', model: 'gpt-4o' }, coding: { inherit_assistant: true } },
+            assistant: { provider_id: 'openai', provider_name: 'OpenAI', model: 'gpt-4o' },
+            revision: 'test-revision',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'gpt-test' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => expect(showConfirmMock).toHaveBeenCalledTimes(1));
+        const [message, title, options] = showConfirmMock.mock.calls[0];
+        expect(title).toBe('Switch provider');
+        expect(message).toContain('Switch the agent provider to "Custom1"?');
+        expect(message).toContain('Choose a model and save the assignment for it to take effect.');
+        expect(options).toEqual({ confirmText: 'Switch', cancelText: 'Not now' });
+        expect(screen.getByRole('dialog')).toBeTruthy();
+        expect(screen.queryByTestId('agent-provider-switch')).toBeNull();
+    });
+
+    it('closes provider management and hands the saved provider to model assignment when the user agrees', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        GetMaclawLLMProfilePanelStateMock.mockResolvedValue({
+            providers: [{ id: 'openai', name: 'OpenAI', model: 'gpt-4o' }],
+            profiles: { version: 1, assistant: { provider_id: 'openai', model: 'gpt-4o' }, coding: { inherit_assistant: true } },
+            assistant: { provider_id: 'openai', provider_name: 'OpenAI', model: 'gpt-4o' },
+            revision: 'test-revision',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'gpt-test' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        expect(await screen.findByTestId('agent-provider-switch')).toHaveProperty('textContent', 'Custom1:gpt-test');
+        expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('focuses the model without asking when the assistant already uses that provider', async () => {
+        GetMaclawLLMProfilePanelStateMock.mockResolvedValue({
+            providers: [{ id: 'custom1', name: 'Custom1', model: 'old-model' }],
+            profiles: { version: 1, assistant: { provider_id: 'custom1', model: 'old-model' }, coding: { inherit_assistant: true } },
+            assistant: { provider_id: 'custom1', provider_name: 'Custom1', model: 'old-model' },
+            revision: 'test-revision',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'gpt-test' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        expect(await screen.findByTestId('agent-provider-switch')).toHaveProperty('textContent', 'Custom1:gpt-test');
+        expect(showConfirmMock).not.toHaveBeenCalled();
+        expect(screen.queryByRole('dialog')).toBeNull();
     });
 
     it('offers both saved Xingchen models before fetching', async () => {
@@ -361,6 +446,13 @@ describe('LLMConfigPanel test-and-save flow', () => {
                 { name: 'Custom1', url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test', protocol: 'openai', is_custom: true, supports_vision: true },
             ],
             current: 'Custom1',
+        });
+        GetMaclawLLMProfilePanelStateMock.mockResolvedValue({
+            providers: [{ id: 'custom1', name: 'Custom1', model: 'gpt-test', models: ['gpt-test'], supports_vision: true }],
+            profiles: { version: 1, assistant: { provider_id: 'custom1', model: 'gpt-test' }, coding: { inherit_assistant: true } },
+            assistant: { profile: 'assistant', provider_id: 'custom1', provider_name: 'Custom1', model: 'gpt-test', health: 'configured' },
+            coding: { profile: 'coding', provider_id: 'custom1', provider_name: 'Custom1', model: 'gpt-test', inherit_assistant: true, health: 'configured' },
+            revision: 'test-revision',
         });
         TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({
             message: 'hello',

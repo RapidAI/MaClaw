@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -121,6 +122,156 @@ func archiveToolJSON(result archiveutil.Result) string {
 	return string(data)
 }
 
+// hostProcedureDirArg is not a model parameter. A value in the tool JSON is
+// dropped. The directory of this turn's host procedure travels on the
+// execution context, which only the host can set.
+const hostProcedureDirArg = "_host_procedure_dir"
+
+type hostProcedureDirContextKey struct{}
+
+func withHostProcedureDir(ctx context.Context, dir string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if dir == "" || !filepath.IsAbs(dir) {
+		return ctx
+	}
+	return context.WithValue(ctx, hostProcedureDirContextKey{}, dir)
+}
+
+func hostProcedureDirFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	dir, _ := ctx.Value(hostProcedureDirContextKey{}).(string)
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if dir == "" || !filepath.IsAbs(dir) {
+		return ""
+	}
+	return dir
+}
+
+// A procedure command writes ${CLAUDE_SKILL_DIR}/scripts/... or {baseDir}.
+// The optional suffix is the rest of that one path. Word boundary keeps
+// $CLAUDE_SKILL_DIR_EXTRA intact.
+var hostProcedureSkillDirPattern = regexp.MustCompile(`(?:\$\{CLAUDE_SKILL_DIR\}|\$CLAUDE_SKILL_DIR\b|\{baseDir\})([\\/][^\s"'|&;<>]+)?`)
+
+// hostShellKind is the shell that will parse the bound command. toolBash on
+// Windows is PowerShell. The semantic local shell is cmd.exe. A PowerShell
+// assignment is a syntax error in cmd, and cmd treats a single-quoted path as
+// literal quote characters.
+type hostShellKind int
+
+const (
+	hostShellPOSIX hostShellKind = iota
+	hostShellPowerShell
+	hostShellCmd
+)
+
+func hostShellForBashTool() hostShellKind {
+	if runtime.GOOS == "windows" {
+		return hostShellPowerShell
+	}
+	return hostShellPOSIX
+}
+
+func hostShellForTrustedShell() hostShellKind {
+	if runtime.GOOS == "windows" {
+		return hostShellCmd
+	}
+	return hostShellPOSIX
+}
+
+// bindHostProcedureShellCommand substitutes the procedure's directory tokens
+// and sets CLAUDE_SKILL_DIR in the shell that parses this command.
+// ${CLAUDE_SKILL_DIR}/scripts is not an expansion in PowerShell or in cmd.
+func bindHostProcedureShellCommand(command, skillDir string, shell hostShellKind) string {
+	skillDir = filepath.Clean(strings.TrimSpace(skillDir))
+	if command == "" || skillDir == "" || !filepath.IsAbs(skillDir) {
+		return command
+	}
+	command = substituteHostProcedureSkillDir(command, skillDir, shell)
+	switch shell {
+	case hostShellPowerShell:
+		return "$env:CLAUDE_SKILL_DIR = " + quotePowerShellArg(skillDir) + "; " + command
+	case hostShellCmd:
+		// set takes effect for the child started after &. Percent expansion of
+		// the same line happens first, which is why the tokens are already
+		// replaced with the path above.
+		return `set "CLAUDE_SKILL_DIR=` + cmdSetValue(skillDir) + `" & ` + command
+	default:
+		return "export CLAUDE_SKILL_DIR=" + quotePOSIXArg(skillDir) + "; " + command
+	}
+}
+
+func substituteHostProcedureSkillDir(command, skillDir string, shell hostShellKind) string {
+	locs := hostProcedureSkillDirPattern.FindAllStringSubmatchIndex(command, -1)
+	if len(locs) == 0 {
+		return command
+	}
+	var b strings.Builder
+	prev := 0
+	for _, m := range locs {
+		start, end := m[0], m[1]
+		b.WriteString(command[prev:start])
+		suffix := ""
+		if len(m) >= 4 && m[2] >= 0 && m[3] >= 0 {
+			suffix = command[m[2]:m[3]]
+		}
+		full := skillDir
+		if rel := strings.TrimLeft(suffix, `/\`); rel != "" {
+			full = filepath.Join(skillDir, filepath.FromSlash(rel))
+		}
+		alreadyQuoted := start > 0 && (command[start-1] == '"' || command[start-1] == '\'')
+		if alreadyQuoted {
+			b.WriteString(full)
+		} else {
+			b.WriteString(quoteHostShellArg(full, shell))
+		}
+		prev = end
+	}
+	b.WriteString(command[prev:])
+	return b.String()
+}
+
+func quoteHostShellArg(s string, shell hostShellKind) string {
+	switch shell {
+	case hostShellPowerShell:
+		return quotePowerShellArg(s)
+	case hostShellCmd:
+		return quoteCmdArg(s)
+	default:
+		return quotePOSIXArg(s)
+	}
+}
+
+func quotePowerShellArg(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\"'$`!&|;<>()[]{}") && !strings.Contains(s, "\n") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func quotePOSIXArg(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\"'$`!&|;<>()[]{}") && !strings.Contains(s, "\n") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func quoteCmdArg(s string) string {
+	s = strings.ReplaceAll(s, "%", "%%")
+	if s != "" && !strings.ContainsAny(s, " \t\"&|<>^!") && !strings.Contains(s, "\n") {
+		return s
+	}
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+func cmdSetValue(dir string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(dir, "%", "%%"), `"`, `""`)
+}
+
 func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) string {
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
 	if hasRuntimeOwner && ownerID == "" {
@@ -129,6 +280,13 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 	command, _ := args["command"].(string)
 	if command == "" {
 		return "缺少 command 参数"
+	}
+	// The JSON field is never the directory. A caller that did not put the
+	// host procedure on the context runs the command unchanged.
+	delete(args, hostProcedureDirArg)
+	skillDir := hostProcedureDirFromContext(execCtx)
+	if skillDir != "" {
+		command = bindHostProcedureShellCommand(command, skillDir, hostShellForBashTool())
 	}
 	background, _ := args["background"].(bool)
 
@@ -214,6 +372,9 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
 	// GBK/CP936 mojibake when commands output non-ASCII text.
 	cmd.Env = coretool.AppendNoWindowEnv(coretool.AppendUTF8Env(os.Environ()))
+	if skillDir != "" {
+		cmd.Env = append(cmd.Env, "CLAUDE_SKILL_DIR="+skillDir)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

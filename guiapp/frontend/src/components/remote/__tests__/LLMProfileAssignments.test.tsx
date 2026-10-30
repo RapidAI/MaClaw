@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
@@ -22,6 +23,7 @@ vi.mock("../../../../wailsjs/runtime", () => ({
 }));
 
 import { LLMProfileAssignments, captionModelMissingVision, modelVisionStatus } from "../LLMProfileAssignments";
+import type { AgentProviderSwitchTarget } from "../agentProviderSwitchOffer";
 
 const state = {
     providers: [
@@ -46,6 +48,12 @@ const followingState = {
     },
     coding: { ...state.assistant, profile: "coding", inherit_assistant: true },
 };
+
+function footerSaveButton(): HTMLButtonElement {
+    const button = document.querySelector<HTMLButtonElement>(".llm-profile-footer .llm-config-btn--primary");
+    if (!button) throw new Error("assignment save button missing");
+    return button;
+}
 
 describe("LLMProfileAssignments", () => {
     beforeEach(() => {
@@ -115,6 +123,208 @@ describe("LLMProfileAssignments", () => {
         await waitFor(() => expect(optionValues("assistant-profile-models")).toEqual(expect.arrayContaining(["gpt-5", "gpt-5-mini", "gpt-5-nano"])));
         openList("coding-profile-models");
         await waitFor(() => expect(optionValues("coding-profile-models")).toEqual(expect.arrayContaining(["deepseek-coder", "deepseek-chat"])));
+    });
+
+    it("switches the assistant to the saved provider, focuses the model, and saves that draft", async () => {
+        const scrollIntoView = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
+        getState.mockResolvedValue(state);
+        saveProfiles.mockResolvedValue(undefined);
+        const request: AgentProviderSwitchTarget = { providerName: "DeepSeek", token: 1 };
+        try {
+            render(<LLMProfileAssignments lang="en" agentProviderSwitch={request} />);
+
+            const provider = await screen.findByLabelText("Assistant provider") as HTMLSelectElement;
+            await waitFor(() => expect(provider.value).toBe("coding"));
+            const model = screen.getByLabelText("Assistant model") as HTMLInputElement;
+            expect(model.value).toBe("deepseek-coder");
+            expect(screen.getByTestId("assistant-provider-switch-hint").textContent).toContain("DeepSeek");
+            expect(screen.getByTestId("assistant-provider-switch-hint").textContent).toContain("Choose a model and save");
+            await waitFor(() => expect(document.activeElement).toBe(model));
+            expect(scrollIntoView.mock.instances).toContain(model);
+            expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+            expect(scrollIntoView.mock.instances.some(node => node instanceof HTMLElement && node.id === "llm-assistant-provider-switch")).toBe(false);
+        } finally {
+            scrollIntoView.mockRestore();
+        }
+
+        fireEvent.click(footerSaveButton());
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.objectContaining({
+            assistant: expect.objectContaining({ provider_id: "coding", model: "deepseek-coder" }),
+        }), "rev-1"));
+        await waitFor(() => expect(screen.queryByTestId("assistant-provider-switch-hint")).toBeNull());
+    });
+
+    it("focuses the model again after StrictMode clears the first timer", async () => {
+        getState.mockResolvedValue(state);
+        render(
+            <StrictMode>
+                <LLMProfileAssignments lang="en" agentProviderSwitch={{ providerName: "DeepSeek", model: "deepseek-v4-flash", token: 3 }} />
+            </StrictMode>,
+        );
+
+        const model = await screen.findByLabelText("Assistant model") as HTMLInputElement;
+        await waitFor(() => expect(model.value).toBe("deepseek-v4-flash"));
+        await waitFor(() => expect(document.activeElement).toBe(model));
+        expect((screen.getByLabelText("Assistant provider") as HTMLSelectElement).value).toBe("coding");
+    });
+
+    it("does not pull focus back to the model when a later directory refresh arrives", async () => {
+        getState.mockResolvedValueOnce(state).mockResolvedValueOnce({
+            ...state,
+            providers: [...state.providers, { id: "extra", name: "Extra", model: "x", models: ["x"], connection_test_passed: true }],
+        });
+        const request: AgentProviderSwitchTarget = { providerName: "DeepSeek", model: "deepseek-v4-flash", token: 8 };
+        const view = render(<LLMProfileAssignments lang="en" providerListRevision={0} agentProviderSwitch={request} />);
+        const model = await screen.findByLabelText("Assistant model") as HTMLInputElement;
+        await waitFor(() => expect(document.activeElement).toBe(model));
+        const save = footerSaveButton();
+        await act(async () => { save.focus(); });
+        expect(document.activeElement).toBe(save);
+
+        view.rerender(<LLMProfileAssignments lang="en" providerListRevision={1} agentProviderSwitch={request} />);
+        await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)); });
+        expect(document.activeElement).toBe(save);
+        expect(model.value).toBe("deepseek-v4-flash");
+    });
+
+    it("applies the model that just passed Test and Save instead of the stale directory model", async () => {
+        getState.mockResolvedValue(state);
+        saveProfiles.mockResolvedValue(undefined);
+        const request: AgentProviderSwitchTarget = { providerName: "DeepSeek", model: "deepseek-v4-flash", token: 7 };
+        render(<LLMProfileAssignments lang="en" agentProviderSwitch={request} />);
+
+        const provider = await screen.findByLabelText("Assistant provider") as HTMLSelectElement;
+        await waitFor(() => expect(provider.value).toBe("coding"));
+        const model = screen.getByLabelText("Assistant model") as HTMLInputElement;
+        expect(model.value).toBe("deepseek-v4-flash");
+        expect((screen.getByLabelText("Coding model") as HTMLInputElement).value).toBe("deepseek-coder");
+        const toggle = document.querySelector<HTMLButtonElement>('button[aria-controls="assistant-profile-models"]');
+        if (toggle?.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle!);
+        const optionValues = () => Array.from(document.getElementById("assistant-profile-models")?.querySelectorAll("[data-value]") || []).map(node => node.getAttribute("data-value"));
+        await waitFor(() => expect(optionValues()[0]).toBe("deepseek-v4-flash"));
+        expect(optionValues()).toEqual(expect.arrayContaining(["deepseek-v4-flash", "deepseek-coder"]));
+
+        fireEvent.click(footerSaveButton());
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.objectContaining({
+            assistant: expect.objectContaining({ provider_id: "coding", model: "deepseek-v4-flash" }),
+            coding: expect.objectContaining({ provider_id: "coding", model: "deepseek-coder" }),
+        }), "rev-1"));
+    });
+
+    it("follows the model the user picks and saves from the hint next to that field", async () => {
+        getState.mockResolvedValue(state);
+        saveProfiles.mockResolvedValue(undefined);
+        render(<LLMProfileAssignments lang="en" agentProviderSwitch={{ providerName: "DeepSeek", model: "deepseek-v4-flash", token: 12 }} />);
+
+        const hint = await screen.findByTestId("assistant-provider-switch-hint");
+        await waitFor(() => expect(hint.textContent).toContain("deepseek-v4-flash"));
+        const statusText = () => hint.querySelector("[role='status']")?.textContent || "";
+        const announced = statusText();
+        expect(announced).toContain("not saved yet");
+        expect(announced).not.toContain("deepseek-v4-flash");
+        fireEvent.change(screen.getByLabelText("Assistant model"), { target: { value: "deepseek-coder" } });
+        expect(statusText()).toBe(announced);
+        expect(hint.textContent).toContain("deepseek-coder");
+        expect(hint.textContent).not.toContain("deepseek-v4-flash");
+
+        const hintSave = hint.querySelector("button");
+        expect(hintSave?.textContent).toBe("Save changes");
+        fireEvent.click(hintSave!);
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.objectContaining({
+            assistant: expect.objectContaining({ provider_id: "coding", model: "deepseek-coder" }),
+        }), "rev-1"));
+    });
+
+    it("hides the switch hint after the assistant draft matches the saved assignment again", async () => {
+        getState.mockResolvedValue(state);
+        render(<LLMProfileAssignments lang="en" agentProviderSwitch={{ providerName: "DeepSeek", model: "deepseek-v4-flash", token: 14 }} />);
+        await screen.findByTestId("assistant-provider-switch-hint");
+
+        fireEvent.change(screen.getByLabelText("Assistant provider"), { target: { value: "assistant" } });
+        expect(screen.queryByTestId("assistant-provider-switch-hint")).toBeNull();
+
+        fireEvent.change(screen.getByLabelText("Caption provider"), { target: { value: "coding" } });
+        expect(screen.queryByTestId("assistant-provider-switch-hint")).toBeNull();
+        expect(footerSaveButton().disabled).toBe(false);
+    });
+
+    it("previews the foreground follow from the unsaved assistant draft", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            foreground: { model: "gpt-5", inherit_hub: true, provider_id: "assistant", provider_name: "OpenAI", configured: true },
+        });
+        render(<LLMProfileAssignments lang="en" agentProviderSwitch={{ providerName: "DeepSeek", model: "deepseek-v4-flash", token: 15 }} />);
+
+        await waitFor(() => expect((screen.getByLabelText("Assistant model") as HTMLInputElement).value).toBe("deepseek-v4-flash"));
+        expect(screen.getByText("Effective after save: DeepSeek · deepseek-v4-flash")).toBeTruthy();
+        expect(screen.queryByText("Effective now: OpenAI · gpt-5")).toBeNull();
+    });
+
+    it("lets a later directory refresh replace a handoff that did not change the draft", async () => {
+        const already = {
+            ...state,
+            profiles: {
+                ...state.profiles,
+                assistant: { provider_id: "coding", model: "deepseek-coder" },
+            },
+            assistant: { profile: "assistant", provider_id: "coding", provider_name: "DeepSeek", model: "deepseek-coder", health: "configured" },
+        };
+        const refreshed = {
+            ...already,
+            profiles: {
+                ...already.profiles,
+                assistant: { provider_id: "coding", model: "deepseek-chat" },
+            },
+            assistant: { ...already.assistant, model: "deepseek-chat" },
+        };
+        getState.mockResolvedValueOnce(already).mockResolvedValue(refreshed);
+        const view = render(<LLMProfileAssignments lang="en" providerListRevision={0} agentProviderSwitch={{ providerName: "DeepSeek", model: "deepseek-coder", token: 9 }} />);
+
+        await waitFor(() => expect((screen.getByLabelText("Assistant model") as HTMLInputElement).value).toBe("deepseek-coder"));
+        expect(screen.queryByTestId("assistant-provider-switch-hint")).toBeNull();
+        expect(footerSaveButton().disabled).toBe(true);
+
+        view.rerender(<LLMProfileAssignments lang="en" providerListRevision={1} agentProviderSwitch={{ providerName: "DeepSeek", model: "deepseek-coder", token: 9 }} />);
+        await waitFor(() => expect((screen.getByLabelText("Assistant model") as HTMLInputElement).value).toBe("deepseek-chat"));
+    });
+
+    it("keeps the handoff draft when a profile reload started before the switch returns", async () => {
+        let resolveReload: (value: unknown) => void = () => {};
+        getState.mockResolvedValueOnce(state).mockImplementationOnce(() => new Promise(resolve => {
+            resolveReload = resolve;
+        }));
+        let onProfiles: ((payload?: { changed?: string }) => void) | undefined;
+        eventsOn.mockImplementation((name: string, handler: (payload?: { changed?: string }) => void) => {
+            if (name === "llm-profiles-changed") onProfiles = handler;
+            return () => {};
+        });
+        const view = render(<LLMProfileAssignments lang="en" />);
+        await screen.findByLabelText("Assistant provider");
+
+        act(() => { onProfiles?.({ changed: "profiles" }); });
+        expect(await screen.findByText("Loading model assignments…")).toBeTruthy();
+        view.rerender(<LLMProfileAssignments lang="en" agentProviderSwitch={{ providerName: "DeepSeek", model: "deepseek-v4-flash", token: 11 }} />);
+        await act(async () => { resolveReload(state); });
+
+        const model = await screen.findByLabelText("Assistant model") as HTMLInputElement;
+        await waitFor(() => expect(model.value).toBe("deepseek-v4-flash"));
+        expect((screen.getByLabelText("Assistant provider") as HTMLSelectElement).value).toBe("coding");
+    });
+
+    it("waits until the saved provider is in the assignment list before switching", async () => {
+        getState
+            .mockResolvedValueOnce({ ...state, providers: [state.providers[0]] })
+            .mockResolvedValueOnce(state);
+        const view = render(<LLMProfileAssignments lang="en" providerListRevision={0} agentProviderSwitch={{ providerName: "DeepSeek", token: 4 }} />);
+
+        const provider = await screen.findByLabelText("Assistant provider") as HTMLSelectElement;
+        expect(provider.value).toBe("assistant");
+        expect(screen.queryByTestId("assistant-provider-switch-hint")).toBeNull();
+
+        view.rerender(<LLMProfileAssignments lang="en" providerListRevision={1} agentProviderSwitch={{ providerName: "DeepSeek", token: 4 }} />);
+        await waitFor(() => expect(provider.value).toBe("coding"));
+        expect(screen.getByTestId("assistant-provider-switch-hint").textContent).toContain("DeepSeek");
     });
 
     it("keeps the provider's saved model when its live catalog starts with default-model", async () => {

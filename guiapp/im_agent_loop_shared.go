@@ -1614,6 +1614,11 @@ type sharedAgentLoopCallbacks struct {
 	// agentGuidedHostTools keeps bash and the file tools for a matched
 	// agent-guided workflow when the managed plan did not grant them.
 	agentGuidedHostTools bool
+	// hostProcedureDir is the installed directory of the host procedure this
+	// turn is running. Both local shell executors bind CLAUDE_SKILL_DIR to
+	// it. It is host state, not a tool argument. Empty for every other turn,
+	// including an imported workflow that is not a host procedure.
+	hostProcedureDir string
 	// admittedSkillSettled is this turn, not this model request. Publishing
 	// the next request clears the bindings and selects again; it must not
 	// clear this, or a skill the model already called is demanded again.
@@ -2365,10 +2370,21 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 	if c != nil && c.chatTaskHostTool(name) {
 		return true, ""
 	}
+	// A host procedure admitted on a vision fallthrough has no semantic
+	// surface. Lookup substitutes still have to stay closed until that
+	// procedure runs; the nil-surface allow-all used to skip this check.
+	resolved := strings.TrimSpace(name)
+	if c != nil && c.semanticSurface != nil {
+		resolved = c.semanticSurface.resolveFunctionName(name)
+	}
+	if c != nil {
+		if blocked, reason := c.skillSubstituteBlocked(resolved); blocked {
+			return false, reason
+		}
+	}
 	if c == nil || c.semanticSurface == nil {
 		return true, ""
 	}
-	resolved := c.semanticSurface.resolveFunctionName(name)
 	if resolved == semanticToolsSearchName || c.chatTaskHostTool(resolved) {
 		return true, ""
 	}
@@ -2377,9 +2393,6 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 	// the model fell through to generate_pdf or bash and the skill never ran.
 	if c.admittedSkillHostCall(resolved) {
 		return true, ""
-	}
-	if blocked, reason := c.skillSubstituteBlocked(resolved); blocked {
-		return false, reason
 	}
 	if c.legacyPetitionAllows(resolved) {
 		return true, ""
@@ -3087,6 +3100,13 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	// reflected in this replacement without manufacturing an intermediate
 	// callback-local tool inventory.
 	c.phase = c.handler.initialAgentLoopPhase(c.userText, c.loopCtx)
+	// The phase just classified the stored turn. The loop argument is that
+	// same sentence in production. Scoring the argument when it differs
+	// would publish another skill's tools under this phase.
+	procedureText := c.userText
+	if strings.TrimSpace(procedureText) == "" {
+		procedureText = userText
+	}
 	routingText := computerUseRoutingTextForLocalFileWork(c.userText, c.hasLocalFileWork)
 	toolSet := c.handler.prepareAgentLoopTools(c.userID, routingText, c.loopCtx, c.phase)
 	// Re-apply petition overlays (e.g. the legacy ssh rescue granted on a
@@ -3101,10 +3121,12 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	if !c.foregroundHandoffOnly() {
 		c.publishReadyInstalledMCPTools()
 	}
-	// This surface already has its own skill preference. Publishing the
-	// managed admission here appended a second search tool and could run a
-	// stale skill_* alias. Drop that state instead.
-	c.clearSkillAdmission()
+	// The name router is closed on a vision fallthrough, so this list can
+	// omit the file tools while the prompt still injected a matched
+	// procedure. Publish that procedure's host file tools. Bound aliases
+	// and market search stay off: this surface already has its own skill
+	// preference, and those would be a second program.
+	c.publishHostProcedureTools(procedureText)
 	c.legacySurface = c.legacySurface.replaceDefinitions(c.tools, toolSet.ClientToolNames)
 	return c.tools
 }
@@ -4311,7 +4333,7 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c.discoveredMCPGrantNamed(name) {
 		return c.executeDiscoveredMCPGrant(name, argsJSON, "", "")
 	}
-	if c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
+	if legacyCatalogOwnsTool(name) && c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
 		return legacyToolSurfaceDeniedText(name)
 	}
 	// Absolute gateway policy rejects legacy-model MCP/skill selection before
@@ -4324,10 +4346,10 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
 		return legacyModelManageSkillGatewayDeniedText()
 	}
-	if c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
+	if legacyCatalogOwnsTool(name) && c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
 		return legacyAdapterCatalogDeniedText(name)
 	}
-	if c.legacySurface.HasSnapshot() {
+	if legacyCatalogOwnsTool(name) && c.legacySurface.HasSnapshot() {
 		if err := c.legacySurface.AllowsArguments(name, argsJSON); err != nil {
 			return legacyToolArgumentDeniedText(name, err)
 		}
@@ -4393,15 +4415,15 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 	} else if c != nil && c.discoveredMCPGrantNamed(name) {
 		result = semanticAgentToolExecutionResult(c.executeDiscoveredMCPGrant(name, argsJSON, callID, execution.SurfaceEpoch))
 	} else {
-		if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
+		if c != nil && legacyCatalogOwnsTool(name) && c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
 			result = agent.ToolExecutionResult{Result: legacyToolSurfaceDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
 		} else if c != nil && isLegacyModelMCPGateway(name) {
 			result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
 		} else if c != nil && legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
 			result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
-		} else if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
+		} else if c != nil && legacyCatalogOwnsTool(name) && c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
 			result = agent.ToolExecutionResult{Result: legacyAdapterCatalogDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
-		} else if c != nil && c.legacySurface.HasSnapshot() {
+		} else if c != nil && legacyCatalogOwnsTool(name) && c.legacySurface.HasSnapshot() {
 			if err := c.legacySurface.AllowsArguments(name, argsJSON); err != nil {
 				result = agent.ToolExecutionResult{Result: legacyToolArgumentDeniedText(name, err), Outcome: agent.ToolExecutionOutcomeError}
 			} else if c.legacySurface.IsClientTool(name) {
@@ -4894,11 +4916,14 @@ func (c *sharedAgentLoopCallbacks) ExecuteToolCallWithContext(name, argsJSON, ca
 			return spent
 		}
 		if c.semanticSurface != nil && !c.semanticSurface.epochIsCurrent(execution.SurfaceEpoch) {
-			if name != semanticToolsSearchName && !c.chatTaskHostTool(name) && !c.legacyPetitionAllows(name) && !c.semanticSurface.staleEpochSameFamilyContinuation(execution.SurfaceEpoch, name) && !c.installedMCPSidecarEpochAdmits(execution.SurfaceEpoch, name) {
+			if name != semanticToolsSearchName && !c.chatTaskHostTool(name) && !chatTaskControlName(name) && !c.legacyPetitionAllows(name) && !c.semanticSurface.staleEpochSameFamilyContinuation(execution.SurfaceEpoch, name) && !c.installedMCPSidecarEpochAdmits(execution.SurfaceEpoch, name) {
 				return semanticAgentToolExecutionResult(semanticGrantRejectMessage("stale_surface"))
 			}
 		}
-		if c.semanticSurface == nil && c.legacySurface.HasSnapshot() && !c.legacySurface.epochIsCurrent(execution.SurfaceEpoch) {
+		// Chat controls are host conversation tools. A batch that changed the
+		// legacy list must not reject them as a stale legacy surface; the
+		// handler owns whether this turn may hand work off.
+		if c.semanticSurface == nil && c.legacySurface.HasSnapshot() && !c.legacySurface.epochIsCurrent(execution.SurfaceEpoch) && !chatTaskControlName(name) {
 			return agent.ToolExecutionResult{Result: semanticGrantRejectMessage("stale_surface"), Outcome: agent.ToolExecutionOutcomeError}
 		}
 	}
@@ -4942,6 +4967,13 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 		if end != nil {
 			defer end()
 		}
+	}
+	// The procedure directory is host state for this call. It is not written
+	// into the model JSON: a hidden argument would be forgeable on every bash
+	// path that does not stamp, and the semantic shell adapter rejects extra
+	// keys before it ever reaches toolBash.
+	if strings.TrimSpace(name) == "bash" {
+		execCtx = withHostProcedureDir(execCtx, c.hostProcedureDir)
 	}
 	// Close the check/start race in core RunLoop: steering may have landed after
 	// its last batch check but before this operation was installed. In that case
@@ -7169,7 +7201,14 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileRead(_ tool.PlannedSelectio
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
-	result, err := c.handler.readTrustedFile(c.semanticPrincipalID(), path, query, filePattern, startLine)
+	// The procedure file is named by an absolute path outside the task
+	// workspace. The workspace jail still applies to every other path.
+	var result string
+	if hostProcedureTreeContains(c.hostProcedureDir, path) {
+		result, err = readHostProcedureTree(c.hostProcedureDir, path, query, filePattern, startLine)
+	} else {
+		result, err = c.handler.readTrustedFile(c.semanticPrincipalID(), path, query, filePattern, startLine)
+	}
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
@@ -7633,6 +7672,12 @@ func (c *sharedAgentLoopCallbacks) executeTrustedShell(_ tool.PlannedSelection, 
 	command, timeout, err := semanticTrustedShellArgsAllowed(args)
 	if err != nil {
 		return "[system rejected] " + err.Error()
+	}
+	// This adapter runs the command itself. It does not call toolBash, and on
+	// Windows the process is cmd.exe, not the PowerShell toolBash starts.
+	// The binding has to be cmd syntax or the substituted path never runs.
+	if dir := strings.TrimSpace(c.hostProcedureDir); dir != "" {
+		command = bindHostProcedureShellCommand(command, dir, hostShellForTrustedShell())
 	}
 	text, err := c.handler.executeTrustedShell(c.semanticPrincipalID(), command, timeout)
 	if err != nil {

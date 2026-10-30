@@ -47,6 +47,16 @@ describe('getSettingsTabOptions', () => {
         const zhGeneral = getSettingsTabOptions('zh-Hans').find((tab) => tab.id === 'general');
         expect(zhGeneral?.groupLabel).toBe('基础设置');
 
+        const mn = getSettingsTabOptions('mn');
+        expect(mn.find((tab) => tab.id === 'general')).toMatchObject({ label: 'Ерөнхий', groupLabel: 'Үндсэн' });
+        expect(mn.find((tab) => tab.id === 'misData')?.label).toBe('MIS өгөгдөл');
+        expect(mn.find((tab) => tab.id === 'llm')?.label).toBe('LLM тохиргоо');
+        expect(mn.find((tab) => tab.id === 'programmingTools')?.label).toBe('Програмчлал');
+        expect(mn.find((tab) => tab.id === 'migration')?.label).toBe('Гаргах ба оруулах');
+        expect(mn.find((tab) => tab.id === 'virtualEmployee')?.label).toBe('Тоон ажилтнууд');
+        expect(mn.find((tab) => tab.id === 'system')?.desc).toBe('Heartbeat, дэлгэц бүдгэрүүлэх болон бусад системийн тохиргоо');
+        expect(mn.every((tab) => !/[\u4e00-\u9fff]/.test(`${tab.label}\n${tab.desc}\n${tab.groupLabel}`))).toBe(true);
+
         const zhSystem = getSettingsTabOptions('zh-Hant').find((tab) => tab.id === 'system');
         expect(zhSystem?.group).toBe('system');
         expect(zhSystem?.groupLabel).toBe('系統');

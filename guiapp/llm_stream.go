@@ -926,6 +926,8 @@ func (h *IMMessageHandler) doLLMRequestStream(
 			resp, err = h.doResponsesAPILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 		} else if cfg.Protocol == "anthropic" {
 			resp, err = h.doAnthropicLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		} else if cfg.IsGoogleProtocol() {
+			resp, err = h.doGoogleLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 		} else {
 			resp, err = h.doOpenAILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 		}
@@ -1011,8 +1013,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	metrics *llmStreamMetrics,
 ) (*llm.Response, error) {
 	requestBuildStartedAt := time.Now()
+	// CodeGen chat is buffered. The preview body is only for the error log;
+	// it has to describe the JSON call, or a failure looks like stream:true.
 	endpoint, reqBody, err := llm.BuildOpenAIChatRequestData(cfg, messages, llm.OpenAIChatRequestOptions{
-		Stream: true,
+		Stream: !corelib.IsCodeGenURL(cfg.URL),
 		Tools:  tools,
 	})
 	if err != nil {
@@ -1152,6 +1156,72 @@ func parseNonStreamOpenAIResponse(resp *http.Response) (*llm.Response, error) {
 // ---------------------------------------------------------------------------
 // Anthropic SSE streaming
 // ---------------------------------------------------------------------------
+
+func (h *IMMessageHandler) doGoogleLLMRequestStream(
+	reqCtx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	httpClient *http.Client,
+	onToken llm.TokenCallback,
+	metrics *llmStreamMetrics,
+) (*llm.Response, error) {
+	requestBuildStartedAt := time.Now()
+	endpoint, _, err := llm.BuildGoogleGenerateContentRequestData(cfg, messages, llm.GoogleGenerateRequestOptions{
+		Stream: true, Tools: tools, ExplicitToolReplacement: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if metrics != nil {
+		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
+	}
+	log.Printf("[LLM Stream] POST %s model=%s configured_model=%s protocol=google %s", endpoint, cfg.UpstreamModel(), cfg.Model, llm.RequestTraceLogFields(reqCtx))
+
+	var filteredBuf strings.Builder
+	filteredOnToken := func(delta string) {
+		filteredBuf.WriteString(delta)
+		if onToken != nil {
+			onToken(delta)
+		}
+	}
+	rpf := newRolePrefixStreamFilter(filteredOnToken)
+	repf := newRepetitionFilter(rpf.Write)
+	streamCtx, cancelStream := context.WithCancel(reqCtx)
+	defer cancelStream()
+	reasoningDisplay := newReasoningDisplayStream(onToken, cancelStream)
+
+	httpDoStartedAt := time.Now()
+	resp, err := llm.DoGoogleRequestStreamWithReasoning(streamCtx, cfg, messages, tools, httpClient, repf.Write, reasoningDisplay.Write)
+	if metrics != nil {
+		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+		if metrics.FirstSSEWaitNanos == 0 {
+			metrics.FirstSSEWaitNanos = metrics.HTTPDoNanos
+		}
+	}
+	reasoningDisplay.Flush()
+	repf.Flush()
+	rpf.Flush()
+	if recovered, ok := recoverReasoningStutter(resp, reqCtx.Err(), reasoningDisplay.Halted()); ok {
+		resp, err = recovered, nil
+		log.Printf("[LLM Stream] google reasoning stutter halted the completion")
+	}
+	if repf.Halted() {
+		log.Printf("[LLM Stream] google repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
+	}
+	if rpf.Halted() {
+		log.Printf("[LLM Stream] google role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
+	}
+	if resp != nil && len(resp.Choices) > 0 {
+		msg := resp.Choices[0].Message
+		if filtered := filteredBuf.String(); filtered != "" && (msg.Content == "" || len(filtered) <= len(msg.Content)) {
+			msg.Content = filtered
+		}
+		msg.ReasoningContent = stripRolePrefixReasoningForDisplay(msg.ReasoningContent)
+		resp.Choices[0].Message = msg
+	}
+	return resp, err
+}
 
 func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	reqCtx context.Context,

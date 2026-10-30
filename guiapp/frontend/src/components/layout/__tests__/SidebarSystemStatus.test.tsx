@@ -29,10 +29,12 @@ function renderStatus(credits: SidebarHubCredits, options: {
     telegramStatus?: string;
     weixinStatus?: string;
     lansengerStatus?: string;
+    messengerStatus?: string;
     qqBotEnabled?: boolean;
     telegramEnabled?: boolean;
     weixinEnabled?: boolean;
     lansengerEnabled?: boolean;
+    messengerEnabled?: boolean;
     showLansenger?: boolean;
     openIMSettingsPage?: () => void;
 } = {}) {
@@ -51,10 +53,12 @@ function renderStatus(credits: SidebarHubCredits, options: {
             telegramStatus={options.telegramStatus ?? ''}
             weixinStatus={options.weixinStatus ?? ''}
             lansengerStatus={options.lansengerStatus ?? ''}
+            messengerStatus={options.messengerStatus ?? ''}
             qqBotEnabled={options.qqBotEnabled}
             telegramEnabled={options.telegramEnabled}
             weixinEnabled={options.weixinEnabled}
             lansengerEnabled={options.lansengerEnabled}
+            messengerEnabled={options.messengerEnabled}
             backgroundTaskCount={3}
             workbenchTaskCounts={options.workbenchTaskCounts ?? { background: 3, scheduled: 1, passthrough: 4 }}
             botTaskCount={options.botTaskCount}
@@ -1255,6 +1259,32 @@ describe('SidebarSystemStatus IM status', () => {
         expect(row.textContent).not.toContain('QQ');
         expect(row.getAttribute('title')).toContain('QQ: 未连接');
         expect(row.getAttribute('title')).not.toContain('QQ: 已连接');
+        expect(row.getAttribute('title')).toContain('微信: 已连接');
+    });
+
+    it('lists Messenger while it is connected and drops it when the switch is off', () => {
+        const { unmount } = renderStatus(baseCredits, {
+            weixinStatus: 'connected',
+            weixinEnabled: true,
+            messengerStatus: 'connected',
+            messengerEnabled: true,
+        });
+        const online = screen.getByTestId('workbench-im-status');
+        expect(online.textContent).toContain('微信');
+        expect(online.textContent).toContain('Messenger');
+        expect(online.getAttribute('title')).toContain('Messenger: 已连接');
+        unmount();
+
+        renderStatus(baseCredits, {
+            weixinStatus: 'connected',
+            weixinEnabled: true,
+            messengerStatus: 'connected',
+            messengerEnabled: false,
+        });
+        const row = screen.getByTestId('workbench-im-status');
+        expect(row.textContent).toContain('微信');
+        expect(row.textContent).not.toContain('Messenger');
+        expect(row.getAttribute('title')).toContain('Messenger: 未连接');
         expect(row.getAttribute('title')).toContain('微信: 已连接');
     });
 

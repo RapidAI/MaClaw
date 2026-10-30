@@ -117,4 +117,56 @@ describe('AppStatusMessageBar', () => {
         expect(container.firstChild).toBeNull();
         expect(screen.queryByTestId('app-status-coding-agent')).toBeNull();
     });
+
+    it('warns when Messenger is enabled but the webhook is not connected', () => {
+        render(
+            <AppStatusMessageBar
+                status=""
+                lang="en"
+                config={{ messenger_enabled: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                messengerStatus="disconnected"
+                maclawLLMOnline
+                maclawLLMConfigured
+                remoteActivated
+                navTab="ai"
+                settingsTab="general"
+                backgroundInstallStatus=""
+                lobsterOffline="/offline.png"
+                lobsterHalf="/half.png"
+                onOpenIMSettings={noop}
+                onOpenLLMSettings={noop}
+            />,
+        );
+        expect(screen.getByTestId('app-status-message-bar').textContent).toContain('IM not connected');
+    });
+
+    it('stays quiet when the Messenger webhook is connected', () => {
+        const { container } = render(
+            <AppStatusMessageBar
+                status=""
+                lang="en"
+                config={{ messenger_enabled: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                messengerStatus="connected"
+                maclawLLMOnline
+                maclawLLMConfigured
+                remoteActivated
+                navTab="ai"
+                settingsTab="general"
+                backgroundInstallStatus=""
+                lobsterOffline="/offline.png"
+                lobsterHalf="/half.png"
+                onOpenIMSettings={noop}
+                onOpenLLMSettings={noop}
+            />,
+        );
+        expect(container.firstChild).toBeNull();
+    });
 });

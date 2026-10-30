@@ -2389,6 +2389,14 @@ export function GetSlackConnectionError() {
   return window['go']['main']['App']['GetSlackConnectionError']();
 }
 
+export function GetMessengerStatus() {
+  return window['go']['main']['App']['GetMessengerStatus']();
+}
+
+export function GetMessengerConnectionError() {
+  return window['go']['main']['App']['GetMessengerConnectionError']();
+}
+
 export function GetTelegramStatus() {
   return window['go']['main']['App']['GetTelegramStatus']();
 }
@@ -4618,6 +4626,10 @@ export function RestartQQBot() {
 
 export function RestartTelegram() {
   return window['go']['main']['App']['RestartTelegram']();
+}
+
+export function RestartMessenger() {
+  return window['go']['main']['App']['RestartMessenger']();
 }
 
 export function StartSlackLogin() {

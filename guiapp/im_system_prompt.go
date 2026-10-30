@@ -1107,6 +1107,7 @@ const defaultKnowledgeSkillTokenBudget = 2000
 type matchedKnowledgeSkill struct {
 	Name        string
 	Content     string
+	DocPath     string // markdown file Content was loaded from; empty for inline knowledge
 	ParamSchema string // formatted parameter schema for LLM context
 	Score       int    // number of triggers that matched
 	AgentGuided bool
@@ -1163,6 +1164,20 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 
 const agentGuidedSkillDocsLeadIn = "以下是已安装且匹配当前请求的 agent 工作流。它不是工具名：不要 discover_tool / search_and_install_skill 寻找同名工具，不要用 generate_pdf 替代，不要 manage_skill。按文档用 bash、read_file、write_file、edit_file 执行各阶段。\n"
 
+// skillProcedureRootLine names the file the injected body was loaded from.
+// The body is cut to the knowledge-skill token budget, which can end before
+// the procedure's commands. The path is charged to that same budget and is
+// not itself truncated: read_file still has an operand, and ${CLAUDE_SKILL_DIR}
+// and {baseDir} both name this skill directory.
+func skillProcedureRootLine(docPath string) string {
+	docPath = strings.TrimSpace(docPath)
+	if docPath == "" {
+		return ""
+	}
+	dir := filepath.Dir(docPath)
+	return "流程文件：" + docPath + "\n技能目录：" + dir + "\n${CLAUDE_SKILL_DIR} 与 {baseDir} 都是这个技能目录。bash 执行时主机会替换这两个标记并设置 CLAUDE_SKILL_DIR。被截断的部分在流程文件里。\n"
+}
+
 func writeMatchedSkillDocs(b *strings.Builder, matched []matchedKnowledgeSkill, tokenBudget int) {
 	if b == nil || len(matched) == 0 {
 		return
@@ -1180,19 +1195,26 @@ func writeMatchedSkillDocs(b *strings.Builder, matched []matchedKnowledgeSkill, 
 			log.Printf("[skill_doc_inject] token budget exhausted (%d/%d), skipping skill %q", totalTokensUsed, tokenBudget, m.Name)
 			break
 		}
+		remaining := tokenBudget - totalTokensUsed
+		root := skillProcedureRootLine(m.DocPath)
+		rootTokens := estimateTokens(root)
+		contentBudget := remaining - rootTokens
+		if contentBudget < 0 {
+			contentBudget = 0
+		}
 		content := m.Content
 		contentTokens := estimateTokens(content)
-		remaining := tokenBudget - totalTokensUsed
-		if contentTokens > remaining {
-			content = agentruntime.TruncateToTokenBudget(content, remaining)
+		if contentTokens > contentBudget {
+			content = agentruntime.TruncateToTokenBudget(content, contentBudget)
 			contentTokens = estimateTokens(content)
-			log.Printf("[skill_doc_inject] truncated skill %q to fit budget (remaining=%d tokens)", m.Name, remaining)
+			log.Printf("[skill_doc_inject] truncated skill %q to fit budget (remaining=%d tokens)", m.Name, contentBudget)
 		}
-		totalTokensUsed += contentTokens
+		totalTokensUsed += rootTokens + contentTokens
 		b.WriteString(fmt.Sprintf("\n### Skill: %s\n", m.Name))
 		if m.ParamSchema != "" {
 			b.WriteString(m.ParamSchema)
 		}
+		b.WriteString(root)
 		b.WriteString(content)
 		if !strings.HasSuffix(content, "\n") {
 			b.WriteString("\n")
@@ -1218,13 +1240,14 @@ func mergeStickyAgentGuidedDocs(matched []matchedKnowledgeSkill, skills []NLSkil
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive && normalizeSkillEntryStatus(s.Status) != skillEntryStatusUnknown {
 			return matched
 		}
-		content := skillDocContentForInjection(s)
+		content, docPath := skillDocFileForInjection(s)
 		if content == "" {
 			return matched
 		}
 		extra := matchedKnowledgeSkill{
 			Name:        s.Name,
 			Content:     content,
+			DocPath:     docPath,
 			ParamSchema: buildParamSchemaForSkill(s),
 			Score:       1,
 			AgentGuided: true,
@@ -1250,13 +1273,19 @@ func collectMatchedSkillDocs(skills []NLSkillDefinition, userMessage string) []m
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
-		if cskill.IsInstructionOnlySkillType(s.Type) {
+		guided := skillDefinitionGuidesAgent(s)
+		// A shell browser skill has no host procedure to inject. A procedure
+		// whose scripts import a browser library still has to be injected
+		// with the host file tools that execute it.
+		if !guided && isShellBrowserAutomationSkill(s) {
 			continue
 		}
-		if isShellBrowserAutomationSkill(s) {
+		// An instruction-only container with no host procedure has nothing
+		// to run. One whose markdown is the procedure still has to be injected
+		// with the host file tools that execute it.
+		if cskill.IsInstructionOnlySkillType(s.Type) && !guided {
 			continue
 		}
-		guided := nlSkillIsAgentGuided(s)
 		if len(s.Triggers) == 0 && !guided {
 			continue
 		}
@@ -1264,13 +1293,14 @@ func collectMatchedSkillDocs(skills []NLSkillDefinition, userMessage string) []m
 		if score == 0 {
 			continue
 		}
-		content := skillDocContentForInjection(s)
+		content, docPath := skillDocFileForInjection(s)
 		if content == "" {
 			continue
 		}
 		matched = append(matched, matchedKnowledgeSkill{
 			Name:        s.Name,
 			Content:     content,
+			DocPath:     docPath,
 			ParamSchema: buildParamSchemaForSkill(s),
 			Score:       score,
 			AgentGuided: guided,
@@ -1329,18 +1359,26 @@ func agentGuidedSkillDocsMatch(skills []NLSkillDefinition, userMessage string) b
 	return false
 }
 
-func skillDocContentForInjection(s NLSkillDefinition) string {
+// skillDocFileForInjection returns the documentation body and, when that body
+// was read from the skill directory, the markdown path. Inline knowledge
+// content and imported workflow instructions have no path.
+func skillDocFileForInjection(s NLSkillDefinition) (content, path string) {
 	skillKind := normalizeSkillTypeKind(s.Type)
 	if skillKind.IsKnowledge() && strings.TrimSpace(s.Content) != "" {
-		return s.Content
+		return s.Content, ""
 	}
 	if !skillKind.IsKnowledge() && strings.TrimSpace(s.SkillDir) != "" {
 		if content := loadSkillDocContent(s.SkillDir); content != "" {
-			return content
+			return content, findSkillMarkdownDocPath(s.SkillDir)
 		}
 	}
 	// Imported agent-guided workflows store SKILL.md in the craft_tool step.
-	return cskill.AgentGuidedWorkflowInstructions(skillDefinitionAsEntry(s))
+	return cskill.AgentGuidedWorkflowInstructions(skillDefinitionAsEntry(s)), ""
+}
+
+func skillDocContentForInjection(s NLSkillDefinition) string {
+	content, _ := skillDocFileForInjection(s)
+	return content
 }
 
 func skillDefinitionAsEntry(s NLSkillDefinition) *corelib.NLSkillEntry {

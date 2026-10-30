@@ -59,9 +59,13 @@ type ConversationEntry struct {
 	Content          interface{} `json:"content"`
 	ReasoningContent string      `json:"reasoning_content,omitempty"`
 	ToolCalls        interface{} `json:"tool_calls,omitempty"`
-	ToolCallID       string      `json:"tool_call_id,omitempty"`
-	ToolName         string      `json:"tool_name,omitempty"`
-	ToolOutcome      string      `json:"tool_outcome,omitempty"`
+	// ThoughtSignature is a Gemini text-part signature. Tool-call signatures
+	// stay on the tool call objects. ToMessage copies this so the next
+	// generateContent turn can replay it.
+	ThoughtSignature string `json:"thought_signature,omitempty"`
+	ToolCallID       string `json:"tool_call_id,omitempty"`
+	ToolName         string `json:"tool_name,omitempty"`
+	ToolOutcome      string `json:"tool_outcome,omitempty"`
 	// FinishReason is host/trajectory metadata only (not sent to the LLM API).
 	// Typical values: stop, tool_calls, length.
 	FinishReason string `json:"finish_reason,omitempty"`
@@ -120,6 +124,9 @@ func (e ConversationEntry) ToMessage() interface{} {
 	}
 	if e.ToolCalls != nil {
 		m["tool_calls"] = e.ToolCalls
+	}
+	if sig := strings.TrimSpace(e.ThoughtSignature); sig != "" {
+		m["thought_signature"] = sig
 	}
 	if e.ToolCallID != "" {
 		m["tool_call_id"] = e.ToolCallID

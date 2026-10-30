@@ -91,8 +91,13 @@ func languageFromLANGID(id uint16) string {
 // Config wins; otherwise the OS UI language (not WebView2 navigator.language,
 // which is often en-US on Chinese Windows).
 func (a *App) GetCurrentLanguage() string {
-	if a != nil && strings.TrimSpace(a.CurrentLanguage) != "" {
-		return string(normalizeAppLanguageKind(a.CurrentLanguage))
+	if a != nil {
+		a.uiLanguageStateMu.Lock()
+		current := a.CurrentLanguage
+		a.uiLanguageStateMu.Unlock()
+		if strings.TrimSpace(current) != "" {
+			return string(normalizeAppLanguageKind(current))
+		}
 	}
 	return detectOSAppLanguage()
 }

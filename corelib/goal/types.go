@@ -136,6 +136,12 @@ type Goal struct {
 
 	// Completion/failure metadata
 	Summary string `json:"summary,omitempty"` // set on complete/fail
+
+	// StateRev orders counter, status, and summary writes. TextRev orders the
+	// objective and the plan. The lock bumps the revision before the snapshot
+	// is written, so a slower older write cannot replace a newer row.
+	StateRev int64 `json:"state_rev,omitempty"`
+	TextRev  int64 `json:"text_rev,omitempty"`
 }
 
 // statusIsTerminal reports a final state. Pause is not final: the bar can

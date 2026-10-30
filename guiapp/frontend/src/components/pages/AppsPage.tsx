@@ -11,7 +11,7 @@ import {
     setWorkspaceLaunchIssue,
 } from './appsWorkspaceLaunch';
 import { localizeText, normalizeLang } from '../../i18n';
-import { appsLocalized, appsMn } from '../../i18n/mnAppsLabels';
+import { appsLocalized, appsMn, appsOneClickErrorText, appsPreflightCheckText, appsPublishQueueChannelLabel, appsPublishQueueEventStatusLabel, appsPublishQueueMessage, appsPublishQueueStatusLabel, appsReviewIssueText } from '../../i18n/mnAppsLabels';
 import { miniAppLabels, pickMiniAppLabel } from '../../i18n/maclawMiniAppLabels';
 import './AppsPage.css';
 import { tailText } from '../../i18n/mnTail'
@@ -1239,6 +1239,9 @@ const labels = asStringLabels({
         workflowSkill: '\u81ea\u52a8\u5ba1\u6279\u6d41\u7a0b',
         dataSrvRecord: '\u4e1a\u52a1\u8bb0\u5f55',
         approvalObjectRoleLabel: '\u4e1a\u52a1\u5bf9\u8c61',
+        reviewMetaEvent: '\u4e8b\u4ef6',
+        reviewMetaStatus: '\u72b6\u6001',
+        reviewMetaHealth: '\u5065\u5eb7',
         remoteApprovalLabel: '\u8fdc\u7aef\u5ba1\u6279',
         businessStatusLabel: '\u4e1a\u52a1\u72b6\u6001',
         resultStatusLabel: '\u7ed3\u679c\u72b6\u6001',
@@ -1677,6 +1680,9 @@ const labels = asStringLabels({
         workflowSkill: 'Approval workflow',
         dataSrvRecord: 'Business record',
         approvalObjectRoleLabel: 'Business object',
+        reviewMetaEvent: 'Event',
+        reviewMetaStatus: 'Status',
+        reviewMetaHealth: 'Health',
         remoteApprovalLabel: 'Remote approval',
         businessStatusLabel: 'Business status',
         resultStatusLabel: 'Result status',
@@ -2062,6 +2068,9 @@ const labels = asStringLabels({
         supplementFieldsLabel: '\u7f3a\u5931\u9805',
         supplementRunning: '\u6b63\u5728\u7e7c\u7e8c\u6d41\u8f49',
         workflowSkill: '\u81ea\u52d5\u5be9\u6279\u6d41\u7a0b',
+        reviewMetaEvent: '\u4e8b\u4ef6',
+        reviewMetaStatus: '\u72c0\u614b',
+        reviewMetaHealth: '\u5065\u5eb7',
         dataSrvRecord: '\u696d\u52d9\u8a18\u9304',
         approvalObjectRoleLabel: '\u696d\u52d9\u7269\u4ef6',
         remoteApprovalLabel: '\u9060\u7aef\u5be9\u6279',
@@ -6330,29 +6339,29 @@ async function preflightMaclawAppSubmissionOneClick(submissionID: string): Promi
     }
 }
 
-function formatOneClickPreflightCheck(id: string, message: string): string {
+function formatOneClickPreflightCheck(id: string, message: string, lang?: string): string {
     if (id === 'package_ready' && /missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(message)) {
-        return '缺少一次成功运行证据。请点击“去修复”，完整运行应用一次后返回此处发布。';
+        return appsPreflightCheckText(lang, 'missing_run_evidence');
     }
     if (id === 'package_ready' && isOneClickPreflightRerunMessage(message)) {
-        return '运行证据与当前应用定义不一致。请点击“去修复”，重新运行当前版本后返回此处发布。';
+        return appsPreflightCheckText(lang, 'rerun_evidence');
     }
     if (id === 'dependencies' && /not bundled\/published/i.test(message)) {
-        return '有必需 Skill 尚未发布或打包，Enterprise Hub 发布可能失败。请先处理依赖。';
+        return appsPreflightCheckText(lang, 'unpublished_dependency');
     }
     if (id === 'enterprise_hub_tls') {
-        return 'Enterprise Hub 的 TLS 证书不可用。请更新证书或校正服务器时间后重试。';
+        return appsPreflightCheckText(lang, 'hub_tls');
     }
-    return message;
+    return appsPublishQueueMessage(lang, message);
 }
 
-function normalizeOneClickPreflightMessage(message: string): string {
+function normalizeOneClickPreflightMessage(message: string, lang?: string): string {
     const raw = String(message || '').trim();
-    if (/missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(raw)) return formatOneClickPreflightCheck('package_ready', raw);
-    if (isOneClickPreflightRerunMessage(raw)) return formatOneClickPreflightCheck('package_ready', raw);
-    if (/not bundled\/published/i.test(raw)) return formatOneClickPreflightCheck('dependencies', raw);
-    if (/x509:|certificate has expired|certificate is not yet valid|tls: failed to verify certificate/i.test(raw)) return formatOneClickPreflightCheck('enterprise_hub_tls', raw);
-    return raw;
+    if (/missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(raw)) return formatOneClickPreflightCheck('package_ready', raw, lang);
+    if (isOneClickPreflightRerunMessage(raw)) return formatOneClickPreflightCheck('package_ready', raw, lang);
+    if (/not bundled\/published/i.test(raw)) return formatOneClickPreflightCheck('dependencies', raw, lang);
+    if (/x509:|certificate has expired|certificate is not yet valid|tls: failed to verify certificate/i.test(raw)) return formatOneClickPreflightCheck('enterprise_hub_tls', raw, lang);
+    return appsPublishQueueMessage(lang, raw);
 }
 
 function isOneClickPreflightRerunMessage(value: unknown): boolean {
@@ -6412,15 +6421,15 @@ function oneClickPreflightDependencyIDs(row: Record<string, unknown>): string[] 
 }
 
 /** Check message plus the dependency IDs the backend flagged, when present. */
-function formatOneClickPreflightRowMessage(row: Record<string, unknown>): string {
+function formatOneClickPreflightRowMessage(row: Record<string, unknown>, lang?: string): string {
     const id = String(row.id || '').trim();
-    const message = formatOneClickPreflightCheck(id, String(row.message || id));
+    const message = formatOneClickPreflightCheck(id, String(row.message || id), lang);
     const depIDs = oneClickPreflightDependencyIDs(row);
     return depIDs.length > 0 ? `${message} (${depIDs.join(', ')})` : message;
 }
 
 /** Short user-facing line from a preflight report (blocking first, then warnings). */
-function formatOneClickPreflightHint(preflight: Record<string, unknown> | null | undefined): string {
+function formatOneClickPreflightHint(preflight: Record<string, unknown> | null | undefined, lang?: string): string {
     if (!preflight) return '';
     const checks = Array.isArray(preflight.checks) ? preflight.checks : [];
     for (const raw of checks) {
@@ -6429,17 +6438,17 @@ function formatOneClickPreflightHint(preflight: Record<string, unknown> | null |
         if (row.ok === true) continue;
         const id = String(row.id || '').trim();
         const message = String(row.message || '').trim();
-        if (id && message) return formatOneClickPreflightRowMessage(row);
+        if (id && message) return formatOneClickPreflightRowMessage(row, lang);
     }
     const blocking = Array.isArray(preflight.blocking) ? preflight.blocking.map(String).filter(Boolean) : [];
     if (blocking.length > 0) {
-        return blocking.slice(0, 2).map(normalizeOneClickPreflightMessage).join(' · ');
+        return blocking.slice(0, 2).map((item) => normalizeOneClickPreflightMessage(item, lang)).join(' · ');
     }
     const warnings = Array.isArray(preflight.warnings) ? preflight.warnings.map(String).filter(Boolean) : [];
     if (warnings.length > 0) {
-        return warnings.slice(0, 2).map(normalizeOneClickPreflightMessage).join(' · ');
+        return warnings.slice(0, 2).map((item) => normalizeOneClickPreflightMessage(item, lang)).join(' · ');
     }
-    return normalizeOneClickPreflightMessage(String(preflight.message || '').trim());
+    return normalizeOneClickPreflightMessage(String(preflight.message || '').trim(), lang);
 }
 
 type OneClickPublishErrorDetail = {
@@ -6452,7 +6461,19 @@ type OneClickPublishErrorDetail = {
     raw: string;
 };
 
-function oneClickPublishErrorDetails(result: Record<string, unknown> | null | undefined, text: typeof labels.zh): OneClickPublishErrorDetail[] {
+function oneClickPublishFallbackMessage(code: string, lang?: string): string {
+    if (code === 'dep_not_published') return appsOneClickErrorText(lang, 'dep_not_ready');
+    if (code === 'hub_tls_certificate_invalid') return appsOneClickErrorText(lang, 'hub_tls_rejected');
+    return appsOneClickErrorText(lang, 'remote_publish_failed');
+}
+
+function oneClickPublishFallbackSuggestion(code: string, lang?: string): string {
+    if (code === 'dep_not_published') return appsOneClickErrorText(lang, 'dep_retry');
+    if (code === 'hub_tls_certificate_invalid') return appsOneClickErrorText(lang, 'hub_tls_retry');
+    return appsOneClickErrorText(lang, 'review_and_retry');
+}
+
+function oneClickPublishErrorDetails(result: Record<string, unknown> | null | undefined, text: typeof labels.zh, lang?: string): OneClickPublishErrorDetail[] {
     const targets = result?.targets;
     if (!targets || typeof targets !== 'object') return [];
     const targetLabels: Record<string, string> = {
@@ -6469,21 +6490,31 @@ function oneClickPublishErrorDetails(result: Record<string, unknown> | null | un
             : {};
         const issues = Array.isArray(nested.issues) ? nested.issues : [];
         const issue = issues.find((candidate) => candidate && typeof candidate === 'object') as Record<string, unknown> | undefined;
-        const code = String(nested.code || value.error_code || 'TARGET_FAILED').trim();
+        const uiCode = String(value.error_code || '').trim();
+        const hubCode = String(nested.code || '').trim();
+        const code = hubCode || uiCode || 'TARGET_FAILED';
+        const fallbackCode = uiCode || hubCode;
         const raw = String(value.error || '').trim();
         const path = String(issue?.path || '').trim();
-        const message = String(issue?.message || nested.message || '').trim()
-            || (code === 'dep_not_published'
-                ? 'Required Skill dependency is not ready for Enterprise Hub submission.'
-                : code === 'hub_tls_certificate_invalid'
-                    ? 'Enterprise Hub rejected the connection because its TLS certificate is expired or not yet valid.'
-                : 'Remote publish failed.');
-        const suggestion = String(issue?.suggestion || '').trim()
-            || (code === 'dep_not_published'
-                ? 'Publish the dependency Skill, refresh dependency verification, then retry.'
-                : code === 'hub_tls_certificate_invalid'
-                    ? 'Renew the Enterprise Hub TLS certificate or correct the Hub server clock, then retry.'
-                : 'Review the technical details and retry after resolving the issue.');
+        const issueMessage = String(issue?.message || '').trim();
+        const nestedMessage = String(nested.message || '').trim();
+        const genericMessage = !issueMessage && (
+            !nestedMessage
+            || nestedMessage === 'package not ready'
+            || nestedMessage === 'Remote publish rejected the package'
+            || nestedMessage.startsWith('maclaw app package is not ready for Hub approval')
+        );
+        const message = issueMessage
+            ? appsReviewIssueText(lang, issueMessage)
+            : genericMessage && (fallbackCode === 'dep_not_published' || fallbackCode === 'hub_tls_certificate_invalid')
+                ? oneClickPublishFallbackMessage(fallbackCode, lang)
+                : nestedMessage
+                    ? appsReviewIssueText(lang, nestedMessage)
+                    : oneClickPublishFallbackMessage(fallbackCode, lang);
+        const serverSuggestion = String(issue?.suggestion || '').trim();
+        const suggestion = serverSuggestion
+            ? appsReviewIssueText(lang, serverSuggestion)
+            : oneClickPublishFallbackSuggestion(fallbackCode, lang);
         details.push({
             target,
             code,
@@ -6497,8 +6528,8 @@ function oneClickPublishErrorDetails(result: Record<string, unknown> | null | un
     return details;
 }
 
-function OneClickPublishErrorPanel({ result, text }: { result?: Record<string, unknown> | null; text: typeof labels.zh }) {
-    const details = oneClickPublishErrorDetails(result, text);
+function OneClickPublishErrorPanel({ result, text, lang }: { result?: Record<string, unknown> | null; text: typeof labels.zh; lang?: string }) {
+    const details = oneClickPublishErrorDetails(result, text, lang);
     if (details.length === 0) return null;
     return (
         <section className="apps-one-click-errors" aria-label={text.queueOneClickPartial}>
@@ -6509,11 +6540,11 @@ function OneClickPublishErrorPanel({ result, text }: { result?: Record<string, u
                         <code>{detail.code}</code>
                     </header>
                     <p>{detail.message}</p>
-                    {detail.path && <small><b>位置</b>{detail.path}</small>}
-                    <small><b>下一步</b>{detail.suggestion}</small>
+                    {detail.path && <small><b>{appsOneClickErrorText(lang, 'location')}</b>{detail.path}</small>}
+                    <small><b>{appsOneClickErrorText(lang, 'next_step')}</b>{detail.suggestion}</small>
                     {detail.raw && (
                         <details>
-                            <summary>技术详情</summary>
+                            <summary>{appsOneClickErrorText(lang, 'technical_details')}</summary>
                             <pre>{detail.raw}</pre>
                         </details>
                     )}
@@ -6539,7 +6570,7 @@ function formatQueuedOneClickMessage(message: string | undefined, lang: string):
     if (tlsCertificateInvalid) {
         return tailText(lang, 'Enterprise Hub TLS certificate is expired or not yet valid; renew it or correct the Hub server clock, then retry.', '企业 Hub TLS 证书已过期或尚未生效；请更新证书或校正服务器时间后重试。');
     }
-    return raw;
+    return appsPublishQueueMessage(lang, raw);
 }
 
 type OneClickPreflightTone = 'ready' | 'warn' | 'blocked' | 'loading' | 'unknown';
@@ -6564,7 +6595,7 @@ function summarizeOneClickPreflightView(
         oneClickRemoteLoading: string;
         oneClickRemoteUnavailable: string;
     },
-    options?: { loading?: boolean },
+    options?: { loading?: boolean; lang?: string },
 ): OneClickPreflightView {
     if (options?.loading) {
         return {
@@ -6606,7 +6637,7 @@ function summarizeOneClickPreflightView(
                 id,
                 ok: row.ok === true,
                 severity: String(row.severity || (row.ok === true ? 'info' : 'warn')),
-                message: formatOneClickPreflightRowMessage(row),
+                message: formatOneClickPreflightRowMessage(row, options?.lang),
             });
         }
     }
@@ -6619,7 +6650,7 @@ function summarizeOneClickPreflightView(
         tone = 'warn';
         title = text.oneClickRemoteWarn;
     }
-    const detail = formatOneClickPreflightHint(preflight) || String(preflight.message || '').trim();
+    const detail = formatOneClickPreflightHint(preflight, options?.lang) || appsPublishQueueMessage(options?.lang, String(preflight.message || '').trim());
     // Failure reasons deserve the panel; healthy infrastructure checks merely
     // add noise when a release is blocked.
     const actionableLines = lines.filter((line) => !line.ok);
@@ -6675,7 +6706,7 @@ function OneClickPreflightBar({
     testId?: string;
     compact?: boolean;
 }) {
-    const view = summarizeOneClickPreflightView(preflight, text, { loading: !!loading && preflight == null });
+    const view = summarizeOneClickPreflightView(preflight, text, { loading: !!loading && preflight == null, lang });
     const heading = view.tone === 'blocked'
         ? localizeText(lang, 'Publishing is blocked', '发布前检查：已阻断', '發佈前檢查：已阻斷')
         : view.tone === 'warn'
@@ -6807,7 +6838,7 @@ function shouldRetryExistingPublishSubmission(submission?: AppPublishSubmission 
     return isOneClickPartialFailureMessage(submission.message);
 }
 
-function parseOneClickPublishSubmission(app: AppEntry, response: unknown): AppPublishSubmission {
+function parseOneClickPublishSubmission(app: AppEntry, response: unknown, lang?: string): AppPublishSubmission {
     const root = response && typeof response === 'object' ? response as Record<string, unknown> : {};
     const local = root.local_submission && typeof root.local_submission === 'object'
         ? root.local_submission as Record<string, unknown>
@@ -6816,7 +6847,7 @@ function parseOneClickPublishSubmission(app: AppEntry, response: unknown): AppPu
     message = enhanceOneClickMessageFromTargets(message, root.targets);
     // Surface preflight warnings on partial success so the card explains remaining gaps.
     if (root.partial === true && root.preflight && typeof root.preflight === 'object') {
-        const pfHint = formatOneClickPreflightHint(root.preflight as Record<string, unknown>);
+        const pfHint = formatOneClickPreflightHint(root.preflight as Record<string, unknown>, lang);
         if (pfHint && !message.toLowerCase().includes(pfHint.toLowerCase().slice(0, 16))) {
             message = message ? `${message} · ${pfHint}` : pfHint;
         }
@@ -6843,7 +6874,7 @@ function isMissingPublishSubmissionError(error: unknown): boolean {
 async function submitAppPackageToEnterpriseMarket(
     app: AppEntry,
     packageManifest: Record<string, unknown>,
-    options?: { existingSubmissionID?: string },
+    options?: { existingSubmissionID?: string; lang?: string },
 ): Promise<AppPublishSubmission | null> {
     const existingID = String(options?.existingSubmissionID || '').trim();
     // Partial / review_failed retry: re-drive the durable queue row (no duplicate submit).
@@ -6852,12 +6883,12 @@ async function submitAppPackageToEnterpriseMarket(
             // Preflight on existing row: block only when package is not ready for local queue.
             const pf = await preflightMaclawAppSubmissionOneClick(existingID);
             if (pf && pf.ready_for_local === false) {
-                const hint = formatOneClickPreflightHint(pf) || String(pf.message || 'package not ready');
+                const hint = formatOneClickPreflightHint(pf, options?.lang) || String(pf.message || 'package not ready');
                 throw new Error(hint);
             }
             const bridge = (globalThis as any).window.go.main.App.PublishMaclawAppSubmissionOneClick;
             const response = await bridge(existingID);
-            return parseOneClickPublishSubmission(app, response);
+            return parseOneClickPublishSubmission(app, response, options?.lang);
         } catch (error) {
             // Stale card id after hub rename / queue prune → fall through to a fresh one-click.
             if (!isMissingPublishSubmissionError(error)) throw error;
@@ -6868,12 +6899,12 @@ async function submitAppPackageToEnterpriseMarket(
         const packageJSON = JSON.stringify(packageManifest);
         const pf = await preflightMaclawAppOneClickPublish(packageJSON);
         if (pf && pf.ready_for_local === false) {
-            const hint = formatOneClickPreflightHint(pf) || String(pf.message || 'package not ready');
+            const hint = formatOneClickPreflightHint(pf, options?.lang) || String(pf.message || 'package not ready');
             throw new Error(hint);
         }
         const bridge = (globalThis as any).window.go.main.App.PublishMaclawAppOneClick;
         const response = await bridge(packageJSON);
-        return parseOneClickPublishSubmission(app, response);
+        return parseOneClickPublishSubmission(app, response, options?.lang);
     }
     const bridge = (globalThis as any)?.window?.go?.main?.App?.SubmitMaclawAppPackage;
     if (typeof bridge !== 'function') return null;
@@ -7017,8 +7048,8 @@ function parseReviewIssues(value: unknown): AppReviewIssue[] {
     }).filter((issue) => issue.message);
 }
 
-function reviewIssueSummary(issue: AppReviewIssue) {
-    return [issue.severity, issue.path, issue.message, issue.suggestion]
+function reviewIssueSummary(issue: AppReviewIssue, lang?: string) {
+    return [issue.severity, issue.path, appsReviewIssueText(lang, issue.message), appsReviewIssueText(lang, issue.suggestion)]
         .map((value) => String(value || '').trim())
         .filter(Boolean)
         .join(' \u00b7 ');
@@ -7039,18 +7070,17 @@ function workflowContractIssueDetails(issue: AppReviewIssue, text: typeof labels
     const installedStatus = reviewIssueMetadataText(issue, 'installed_status');
     const health = reviewIssueMetadataText(issue, 'health');
     const version = [installedVersion && `v${installedVersion}`, requiredVersion && `v${requiredVersion}`].filter(Boolean).join(' -> ');
-    const zh = text === labels.zh;
     return [
         workflowID ? { label: text.workflowSkill, value: workflowID } : null,
         version ? { label: text.appVersion, value: version } : null,
-        event ? { label: 'Event', value: event } : null,
+        event ? { label: text.reviewMetaEvent, value: event } : null,
         objectRole ? { label: text.approvalObjectRoleLabel, value: objectRole } : null,
-        installedStatus ? { label: 'Status', value: installedStatus } : null,
-        health ? { label: 'Health', value: health } : null,
+        installedStatus ? { label: text.reviewMetaStatus, value: installedStatus } : null,
+        health ? { label: text.reviewMetaHealth, value: health } : null,
     ].filter((item): item is { label: string; value: string } => !!item);
 }
-function reviewIssuesSummary(issues: AppReviewIssue[], text: typeof labels.zh) {
-    const visible = issues.slice(0, 3).map(reviewIssueSummary).filter(Boolean);
+function reviewIssuesSummary(issues: AppReviewIssue[], text: typeof labels.zh, lang?: string) {
+    const visible = issues.slice(0, 3).map((issue) => reviewIssueSummary(issue, lang)).filter(Boolean);
     const remaining = issues.length - visible.length;
     return [
         ...visible,
@@ -7069,7 +7099,7 @@ function reviewIssueSeverity(issue: AppReviewIssue) {
 function reviewIssuesIncludeDependency(issues?: AppReviewIssue[]) {
     return (issues || []).some((issue) => /dependency|skill/i.test([issue.path, issue.message, issue.suggestion].filter(Boolean).join(' ')));
 }
-const ReviewIssuesPanel = ({ issues, text, compact = false }: { issues?: AppReviewIssue[]; text: typeof labels.zh; compact?: boolean }) => {
+const ReviewIssuesPanel = ({ issues, text, lang, compact = false }: { issues?: AppReviewIssue[]; text: typeof labels.zh; lang?: string; compact?: boolean }) => {
     const visible = (issues || []).filter((issue) => issue.message).slice(0, 4);
     const remaining = Math.max(0, (issues || []).length - visible.length);
     if (visible.length === 0) return null;
@@ -7079,8 +7109,8 @@ const ReviewIssuesPanel = ({ issues, text, compact = false }: { issues?: AppRevi
                 <div className="apps-review-issues__item" data-severity={reviewIssueSeverity(issue)} role="listitem" key={`${issue.path || 'issue'}-${issue.message}-${index}`}>
                     <strong>{String(issue.severity || 'notice').trim() || 'notice'}</strong>
                     {issue.path && <span>{issue.path}</span>}
-                    <em>{issue.message}</em>
-                    {issue.suggestion && <small>{issue.suggestion}</small>}
+                    <em>{appsReviewIssueText(lang, issue.message)}</em>
+                    {issue.suggestion && <small>{appsReviewIssueText(lang, issue.suggestion)}</small>}
                 </div>
             ))}
             {remaining > 0 && <div className="apps-review-issues__more" role="listitem">{text.reviewIssuesMore} {remaining} {text.reviewIssuesMoreUnit}</div>}
@@ -7131,12 +7161,17 @@ function packageWorkspaceLayoutSummariesFromRecord(record: Record<string, unknow
     }).filter(Boolean);
 }
 
-function eventSummariesFromRecord(record: Record<string, unknown> | null): string[] {
+function eventSummariesFromRecord(record: Record<string, unknown> | null, lang?: string): string[] {
     const events = record?.events || record?.Events;
     if (!Array.isArray(events)) return [];
     return events.slice(0, 3).map((item) => {
         const event = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-        return [event.at, event.status, event.channel, event.submission_id || event.submissionID]
+        return [
+            event.at,
+            appsPublishQueueEventStatusLabel(lang, String(event.status || '')),
+            appsPublishQueueChannelLabel(lang, String(event.channel || '')),
+            event.submission_id || event.submissionID,
+        ]
             .map((value) => String(value || '').trim())
             .filter(Boolean)
             .join(' \u00b7 ');
@@ -8039,15 +8074,15 @@ function governanceReviewIssueForApp(plan: BackendAppInstallPlan | null | undefi
     return governanceReviewIssuesForAppIDs(plan, appDependencyVerificationAppIDs(app))[0];
 }
 
-function governanceReviewIssueMessageForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[], text: typeof labels.zh): string {
+function governanceReviewIssueMessageForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[], text: typeof labels.zh, lang?: string): string {
     const issue = governanceReviewIssuesForAppIDs(plan, appIDs)[0];
-    if (issue?.message) return `${text.reviewIssues}: ${issue.message}`;
+    if (issue?.message) return `${text.reviewIssues}: ${appsReviewIssueText(lang, issue.message)}`;
     return text.reviewIssues;
 }
 
-function workflowContractIssueMessageForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[], text: typeof labels.zh): string {
+function workflowContractIssueMessageForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[], text: typeof labels.zh, lang?: string): string {
     const issue = workflowContractIssuesForAppIDs(plan, appIDs)[0];
-    if (issue?.message) return `${text.workflowContractBlocked}: ${issue.message}`;
+    if (issue?.message) return `${text.workflowContractBlocked}: ${appsReviewIssueText(lang, issue.message)}`;
     return text.workflowContractBlocked;
 }
 
@@ -8088,7 +8123,7 @@ function runtimeInstallPlanBlocked(plan: BackendAppInstallPlan | null | undefine
 
 function runtimeInstallPlanBlockMessage(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, text: typeof labels.zh, lang?: string): string {
     const issue = workflowContractIssueForApp(plan, app);
-    if (issue?.message) return `${text.workflowContractBlocked}: ${issue.message}`;
+    if (issue?.message) return `${text.workflowContractBlocked}: ${appsReviewIssueText(lang, issue.message)}`;
     if (workflowContractHasIssue(plan, app)) return text.workflowContractBlocked;
     return backendDependencyUnavailableMessage(app, plan, text, lang);
 }
@@ -8105,14 +8140,14 @@ function workflowContractSummaryItems(contract: AppWorkflowContract | undefined,
     return items.filter((item) => item.value);
 }
 
-const WorkflowContractSummary = ({ contract, state, issue, text }: { contract?: AppWorkflowContract; state: 'ready' | 'blocked' | 'missing'; issue?: AppReviewIssue; text: typeof labels.zh }) => {
+const WorkflowContractSummary = ({ contract, state, issue, text, lang }: { contract?: AppWorkflowContract; state: 'ready' | 'blocked' | 'missing'; issue?: AppReviewIssue; text: typeof labels.zh; lang?: string }) => {
     const items = workflowContractSummaryItems(contract, text);
     const stateLabel = state === 'blocked' ? text.workflowContractBlocked : state === 'ready' ? text.workflowContractReady : text.workflowContractMissing;
     if (items.length === 0 && state === 'missing') return null;
     return (
         <div className="apps-workflow-contract-summary" data-state={state} role={state === 'blocked' ? 'alert' : 'group'} aria-label={text.workflowContract}>
             <span className="apps-workflow-contract-summary__state">{stateLabel}</span>
-            {issue?.message && <span className="apps-workflow-contract-summary__issue">{issue.message}</span>}
+            {issue?.message && <span className="apps-workflow-contract-summary__issue">{appsReviewIssueText(lang, issue.message)}</span>}
             {items.map((item, index) => (
                 <span key={item.label + ':' + item.value + ':' + index}>
                     <strong>{item.label}</strong>
@@ -12400,7 +12435,7 @@ const AppPreview = memo(({ app, lang, onUse, onOpenApprovalManager, onActiveRunC
                     <h2 className="apps-detail__title">{app.name}</h2>
                     <p className="apps-detail__subtitle">{app.description}</p>
                     <InstallVersionSnapshot snapshot={app.versionSnapshot} text={text} />
-                    {isApproval && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
+                    {isApproval && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} lang={lang} />}
                     {app.installEvidence && <InstallRecordEvidenceSnapshot record={app.installEvidence} text={text} />}
                 </div>
                 <div className="apps-detail__header-actions">
@@ -12555,6 +12590,7 @@ const AppPreview = memo(({ app, lang, onUse, onOpenApprovalManager, onActiveRunC
                                 isTool={isTool}
                                 skillRunStatus={skillRunStatus}
                                 text={text}
+                                lang={lang}
                             />
                         </section>}
                         {showInputRegion && <div className="apps-actions apps-runtime-actions" data-region={inputRegion} style={{ order: runtimeOrder.actions }}>
@@ -14432,7 +14468,7 @@ const InstallRecordEvidenceSnapshot = ({ record, text }: { record: BackendAppIns
 		);
 };
 
-const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessage, runtimeBusinessError, runtimeDependencyBlocked, showRuntimeDependencyDetails, visibleRuntimeDependencyDetails, canInstallRuntimeDependencies, dependencyRepairState, installRuntimeDependenciesAndRun, isApproval, runtimeWorkflowContractState, runtimeWorkflowContract, runtimeWorkflowContractIssue, app, runtimeVisibleDependencyPlan, runtimeDependencyPanelState, runtimeAppID, isTool, skillRunStatus, text }: {
+const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessage, runtimeBusinessError, runtimeDependencyBlocked, showRuntimeDependencyDetails, visibleRuntimeDependencyDetails, canInstallRuntimeDependencies, dependencyRepairState, installRuntimeDependenciesAndRun, isApproval, runtimeWorkflowContractState, runtimeWorkflowContract, runtimeWorkflowContractIssue, app, runtimeVisibleDependencyPlan, runtimeDependencyPanelState, runtimeAppID, isTool, skillRunStatus, text, lang }: {
     runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled';
     runtimeStatusState: string;
     runtimeStatusMessage: string;
@@ -14454,6 +14490,7 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
     isTool: boolean;
     skillRunStatus: SkillRunStatusView | null;
     text: typeof labels.zh;
+    lang?: string;
 }) => {
     // Auto-expand only when there are real blocking issues that require user attention.
     // Ready/healthy states keep details collapsed to reduce visual noise.
@@ -14501,7 +14538,7 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
                     </div>
                 )}
                 {runtimeBusinessError && <StructuredBusinessErrorDetails error={runtimeBusinessError} text={text} />}
-                {isApproval && runtimeWorkflowContractState === 'blocked' && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
+                {isApproval && runtimeWorkflowContractState === 'blocked' && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} lang={lang} />}
                 {showRuntimeDependencyDetails && isPreRun && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
                 {canInstallRuntimeDependencies && isPreRun && (
                     <button className="apps-secondary-button apps-result-panel__action" type="button" disabled={dependencyRepairState === 'installing'} onClick={() => void installRuntimeDependenciesAndRun()}>
@@ -14514,7 +14551,7 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
                     {hasReadyDependencyDetails && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
                     <RuntimeInstallGovernancePanel record={app.installEvidence} text={text} />
                     {runtimeVisibleDependencyPlan && (
-                        <DependencyVerificationPanel plan={runtimeVisibleDependencyPlan} state={runtimeDependencyPanelState} selectedAppIDs={[runtimeAppID]} text={text} defaultOpen={false} />
+                        <DependencyVerificationPanel plan={runtimeVisibleDependencyPlan} state={runtimeDependencyPanelState} selectedAppIDs={[runtimeAppID]} text={text} lang={lang} defaultOpen={false} />
                     )}
                 </>
             )}
@@ -14785,7 +14822,7 @@ function MarketInstallFeedbackMessage({ feedback, text }: { feedback: { state: s
     );
 }
 
-const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text, defaultOpen = true }: { plan?: BackendAppInstallPlan | null; state: 'idle' | 'loading' | 'repairing' | 'ready' | 'error'; error?: string; selectedAppIDs?: string[]; text: typeof labels.zh; defaultOpen?: boolean }) => {
+const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text, lang, defaultOpen = true }: { plan?: BackendAppInstallPlan | null; state: 'idle' | 'loading' | 'repairing' | 'ready' | 'error'; error?: string; selectedAppIDs?: string[]; text: typeof labels.zh; lang?: string; defaultOpen?: boolean }) => {
     const [detailOpen, setDetailOpen] = useState(defaultOpen);
     if (state === 'idle' && !plan) return null;
     const appIDs = selectedAppIDs || [];
@@ -14828,7 +14865,7 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text,
                                 const details = workflowContractIssueDetails(issue, text);
                                 return (
                                     <div className="apps-dependency-verification__issue" role="listitem" key={`${issue.path || 'workflow'}-${index}`}>
-                                        <span>{reviewIssueSummary(issue)}</span>
+                                        <span>{reviewIssueSummary(issue, lang)}</span>
                                         {details.length > 0 && (
                                             <small className="apps-dependency-verification__issue-details">
                                                 {details.map((item) => <em key={item.label + item.value}><strong>{item.label}</strong>{item.value}</em>)}
@@ -14847,7 +14884,7 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text,
                     {governanceIssues.length > 0 && (
                         <div className="apps-dependency-verification__issues" role="list" aria-label={text.reviewIssues}>
                             {governanceIssues.map((issue, index) => (
-                                <span role="listitem" key={`${issue.path || 'governance'}-${index}`}>{reviewIssueSummary(issue)}</span>
+                                <span role="listitem" key={`${issue.path || 'governance'}-${index}`}>{reviewIssueSummary(issue, lang)}</span>
                             ))}
                         </div>
                     )}
@@ -16902,7 +16939,7 @@ function applyAuthoritativeReviewChecks(checks: PublishCheck[], issues: AppRevie
             return {
                 ...check,
                 ok: false,
-                detail: [matching.message, matching.suggestion].filter(Boolean).join(' · '),
+                detail: [appsReviewIssueText(lang, matching.message), appsReviewIssueText(lang, matching.suggestion)].filter(Boolean).join(' · '),
             };
         }
         // A returned review has verified the complete run-evidence chain
@@ -17611,13 +17648,13 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                 ? backendDependencyPlan
                 : dependencyPlan || backendDependencyPlan;
             if (workflowContractHasIssueForAppIDs(dependencyPlan, appIDs)) {
-                throw new Error(workflowContractIssueMessageForAppIDs(dependencyPlan, appIDs, text));
+                throw new Error(workflowContractIssueMessageForAppIDs(dependencyPlan, appIDs, text, lang));
             }
             if (hasMissingRequiredBackendDependency(dependencyPlan, appIDs)) {
                 throw new Error(runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang));
             }
             if (governanceReviewHasIssueForAppIDs(dependencyPlan, appIDs)) {
-                throw new Error(governanceReviewIssueMessageForAppIDs(dependencyPlan, appIDs, text));
+                throw new Error(governanceReviewIssueMessageForAppIDs(dependencyPlan, appIDs, text, lang));
             }
             const dependencyCheck = appDependencyVerificationPublishCheckForPlan(app, dependencyPlan, lang);
             if (!dependencyCheck.ok) {
@@ -17641,7 +17678,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             submission = await submitAppPackageToEnterpriseMarket(
                 app,
                 appsToPackManifest([app], {}, publishDependencyPlan ? { [app.id]: { dependencyVerification: publishDependencyPlan } } : {}),
-                retryExistingID ? { existingSubmissionID: retryExistingID } : undefined,
+                { existingSubmissionID: retryExistingID || undefined, lang },
             );
         } catch (error) {
             // Hard failure (package gate / bridge error): do not invent a fake queue id.
@@ -17735,7 +17772,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
         try {
             const pf = await preflightMaclawAppSubmissionOneClick(submissionID);
             if (pf && pf.ready_for_local === false) {
-                const hint = formatOneClickPreflightHint(pf) || String(pf.message || text.queueOneClickPartial);
+                const hint = formatOneClickPreflightHint(pf, lang) || String(pf.message || text.queueOneClickPartial);
                 setQueueSyncErrorId(submissionID);
                 setQueueOneClickMessage((current) => ({ ...current, [submissionID]: hint }));
                 return;
@@ -17938,7 +17975,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                         const remoteView = summarizeOneClickPreflightView(
                             remotePf?.preflight,
                             text,
-                            { loading: remotePf === undefined || (!!remotePf?.loading && !remotePf?.preflight) },
+                            { loading: remotePf === undefined || (!!remotePf?.loading && !remotePf?.preflight), lang },
                         );
                         const mayPartialRemote = remoteView.tone === 'warn' && ready;
                         const remoteBlocked = remoteView.tone === 'blocked';
@@ -17970,11 +18007,11 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                         {submission.riskLevel && <span>{text.riskLevel}: {submission.riskLevel}</span>}
                                         {submission.approvedScopes && submission.approvedScopes.length > 0 && <span>{text.approvedScopes}: {submission.approvedScopes.join(', ')}</span>}
                                         {submission.modifiedAt && <span>{text.localModifiedAt}: {submission.modifiedAt}</span>}
-                                        {submission.message && <span>{submission.message}</span>}
+                                        {submission.message && <span>{formatQueuedOneClickMessage(submission.message, lang || 'en')}</span>}
                                         {submission.reviewIssues && submission.reviewIssues.length > 0 && (
-                                            <span>{text.reviewIssues}: {reviewIssuesSummary(submission.reviewIssues, text)}</span>
+                                            <span>{text.reviewIssues}: {reviewIssuesSummary(submission.reviewIssues, text, lang)}</span>
                                         )}
-                                        <ReviewIssuesPanel issues={submission.reviewIssues} text={text} compact />
+                                        <ReviewIssuesPanel issues={submission.reviewIssues} text={text} lang={lang} compact />
                                     </div>
                                 )}
                                 {submitError && (
@@ -18121,7 +18158,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                 const detailRecord = queueDetailRecords[item.submissionID] || null;
                                 const detailPackageApps = packageAppNamesFromRecord(detailRecord);
                                 const detailWorkspaceLayouts = packageWorkspaceLayoutSummariesFromRecord(detailRecord);
-                                const detailEvents = eventSummariesFromRecord(detailRecord);
+                                const detailEvents = eventSummariesFromRecord(detailRecord, lang);
                                 const detailOpen = queueDetailOpenId === item.submissionID;
                                 const dependencyCount = item.dependencies.length;
                                 const missingDependencyCount = item.dependencies.filter(isBlockingBackendDependency).length;
@@ -18143,6 +18180,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                         loading: canOneClickItem && (
                                             queueRemote === undefined || (!!queueRemote?.loading && !queueRemote?.preflight)
                                         ),
+                                        lang,
                                     },
                                 );
                                 const queueMayPartial = canOneClickItem && queueRemoteView.tone === 'warn';
@@ -18153,7 +18191,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                     <div className="apps-publish-queue__row" key={item.submissionID} data-remote-tone={queueRemoteView.tone}>
                                         <div className="apps-publish-queue__body">
                                             <strong>{item.submissionID}</strong>
-                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} &middot; {item.channel || 'local'} &middot; {item.status || 'submitted'}</span>
+                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} &middot; {appsPublishQueueChannelLabel(lang, item.channel || 'local')} &middot; {appsPublishQueueStatusLabel(lang, item.status || 'submitted', item.channel || 'local')}</span>
                                             <small>
                                                 {item.submittedAt}
                                                 {item.packageSHA ? ` \u00b7 sha256:${item.packageSHA.slice(0, 12)}` : ''}
@@ -18186,16 +18224,16 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                             {queuePackageErrorId === item.submissionID && <small>{text.queuePackageUnavailable}</small>}
                                             {queueSyncErrorId === item.submissionID && !hasStructuredPublishError && (
                                                 <small>
-                                                    {queueOneClickMessage[item.submissionID] || text.queueHubSyncFailed}
+                                                    {formatQueuedOneClickMessage(queueOneClickMessage[item.submissionID], lang || 'en') || text.queueHubSyncFailed}
                                                 </small>
                                             )}
                                             {queueSyncErrorId !== item.submissionID && queueOneClickMessage[item.submissionID] && !hasStructuredPublishError && (
-                                                <small>{queueOneClickMessage[item.submissionID]}</small>
+                                                <small>{formatQueuedOneClickMessage(queueOneClickMessage[item.submissionID], lang || 'en')}</small>
                                             )}
-                                            <OneClickPublishErrorPanel result={queuePublishResult} text={text} />
+                                            <OneClickPublishErrorPanel result={queuePublishResult} text={text} lang={lang} />
                                             {queueInstalledId === item.submissionID && <small>{text.approvedHubAppInstalled}</small>}
                                             {queueInstallErrorId === item.submissionID && <small>{queueInstallErrorMessages[item.submissionID] || text.approvedHubAppInstallFailed}</small>}
-                                            {queueInstallResult?.plan && <DependencyVerificationPanel plan={queueInstallResult.plan} state="ready" selectedAppIDs={queueInstallResult.appIDs} text={text} />}
+                                            {queueInstallResult?.plan && <DependencyVerificationPanel plan={queueInstallResult.plan} state="ready" selectedAppIDs={queueInstallResult.appIDs} text={text} lang={lang} />}
                                             <InstallVersionSnapshot snapshot={queueInstallResult?.versionSnapshot} text={text} />
                                             {queueInstallResult?.installEvidence && <InstallRecordEvidenceSnapshot record={queueInstallResult.installEvidence} text={text} />}
                                             {!queueInstallResult?.installEvidence && item.submissionEvidence && <InstallRecordEvidenceSnapshot record={item.submissionEvidence} text={text} />}
@@ -18305,8 +18343,8 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                                 {item.riskLevel && <span>{text.riskLevel}: {item.riskLevel}</span>}
                                                 {detailPackageApps.length > 0 && <span>{text.queueDetailPackageApps}: {detailPackageApps.join(', ')}</span>}
                                                 {detailWorkspaceLayouts.length > 0 && <span>{text.workspaceLayout}: {detailWorkspaceLayouts.join(' | ')}</span>}
-                                                {item.reviewIssues.length > 0 && <span>{text.reviewIssues}: {reviewIssuesSummary(item.reviewIssues, text)}</span>}
-                                                <ReviewIssuesPanel issues={item.reviewIssues} text={text} compact />
+                                                {item.reviewIssues.length > 0 && <span>{text.reviewIssues}: {reviewIssuesSummary(item.reviewIssues, text, lang)}</span>}
+                                                <ReviewIssuesPanel issues={item.reviewIssues} text={text} lang={lang} compact />
                                                 {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join(' \u00b7  ')}</span>}
                                             </div>
                                         )}
@@ -19461,7 +19499,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 setMarketInstallFeedback({
                     appId: app.id,
                     state: 'error',
-                    message: governanceReviewIssueMessageForAppIDs(dependencyInstallPlan, installAppIDs, text),
+                    message: governanceReviewIssueMessageForAppIDs(dependencyInstallPlan, installAppIDs, text, lang),
                     plan: dependencyInstallPlan || null,
                     appIDs: installAppIDs,
                     dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
@@ -19472,7 +19510,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 setMarketInstallFeedback({
                     appId: app.id,
                     state: 'error',
-                    message: workflowContractIssueMessageForAppIDs(dependencyInstallPlan, installAppIDs, text),
+                    message: workflowContractIssueMessageForAppIDs(dependencyInstallPlan, installAppIDs, text, lang),
                     plan: dependencyInstallPlan || null,
                     appIDs: installAppIDs,
                     dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
@@ -19554,10 +19592,10 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                     setBackendInstallPlanState('ready');
                 }
                 if (governanceReviewHasIssueForAppIDs(dependencyPlanForResult, selectedAppIDs)) {
-                    throw new Error(governanceReviewIssueMessageForAppIDs(dependencyPlanForResult, selectedAppIDs, text));
+                    throw new Error(governanceReviewIssueMessageForAppIDs(dependencyPlanForResult, selectedAppIDs, text, lang));
                 }
                 if (workflowContractHasIssueForAppIDs(dependencyPlanForResult, selectedAppIDs)) {
-                    throw new Error(workflowContractIssueMessageForAppIDs(dependencyPlanForResult, selectedAppIDs, text));
+                    throw new Error(workflowContractIssueMessageForAppIDs(dependencyPlanForResult, selectedAppIDs, text, lang));
                 }
             }
             if (shouldUseBackendInstallGate && selectedInstallManifestText && hasMissingRequiredBackendDependency(dependencyPlanForResult, selectedAppIDs)) {
@@ -19566,10 +19604,10 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 setBackendInstallPlan(dependencyInstallPlan || null);
                 setBackendInstallPlanState('ready');
                 if (governanceReviewHasIssueForAppIDs(dependencyInstallPlan, selectedAppIDs)) {
-                    throw new Error(governanceReviewIssueMessageForAppIDs(dependencyInstallPlan, selectedAppIDs, text));
+                    throw new Error(governanceReviewIssueMessageForAppIDs(dependencyInstallPlan, selectedAppIDs, text, lang));
                 }
                 if (workflowContractHasIssueForAppIDs(dependencyInstallPlan, selectedAppIDs)) {
-                    throw new Error(workflowContractIssueMessageForAppIDs(dependencyInstallPlan, selectedAppIDs, text));
+                    throw new Error(workflowContractIssueMessageForAppIDs(dependencyInstallPlan, selectedAppIDs, text, lang));
                 }
                 if (hasMissingRequiredBackendDependency(dependencyInstallPlan, selectedAppIDs)) {
                     throw new Error(text.missingRequiredDependency);
@@ -19746,6 +19784,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
 	                                                state={feedback.state === 'running' ? 'loading' : feedback.state === 'error' ? 'ready' : 'ready'}
 	                                                selectedAppIDs={feedback.appIDs || [app.id]}
 	                                                text={text}
+	                                                lang={lang}
 	                                                defaultOpen={false}
 	                                            />
 	                                        ) : feedback.dependencies?.length ? <InstallRecordDependencies dependencies={feedback.dependencies} text={text} /> : null}
@@ -19793,7 +19832,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                         <InstallVersionSnapshot snapshot={record.version_snapshot} text={text} />
                                         <InstallRecordEvidenceSnapshot record={record} text={text} />
                                         <InstallRecordDependencies dependencies={dependencies} text={text} />
-                                        {check && checkPanelState && <DependencyVerificationPanel plan={check.plan || null} state={checkPanelState} error={check.error} selectedAppIDs={selectedRecordAppIDs} text={text} />}
+                                        {check && checkPanelState && <DependencyVerificationPanel plan={check.plan || null} state={checkPanelState} error={check.error} selectedAppIDs={selectedRecordAppIDs} text={text} lang={lang} />}
                                     </div>
                                     <div className="apps-install-record__actions">
                                         <button className="apps-secondary-button" type="button" disabled={check?.state === 'loading' || check?.state === 'repairing' || !record.package} onClick={() => void checkInstallRecordDependencies(record, index)}>
@@ -19852,10 +19891,10 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                             {confirmHighRiskInstall && <div className="apps-install-preview__warning" role="alert">{text.highRiskInstallWarning}</div>}
                             {backendInstallPlanState === 'loading' && <div className="apps-install-preview__warning">{text.dependencyPlanLoading}</div>}
                             {backendInstallPlanState === 'error' && <div className="apps-install-preview__warning" role="alert">{`${text.dependencyPlanError}: ${backendInstallPlanError}`}</div>}
-                            {selectedHasGovernanceReviewIssue && <div className="apps-install-preview__warning" role="alert">{governanceReviewIssueMessageForAppIDs(backendInstallPlan, selectedInstallAppIDs, text)}</div>}
-                            {selectedHasWorkflowContractIssue && <div className="apps-install-preview__warning" role="alert">{workflowContractIssueMessageForAppIDs(backendInstallPlan, selectedInstallAppIDs, text)}</div>}
+                            {selectedHasGovernanceReviewIssue && <div className="apps-install-preview__warning" role="alert">{governanceReviewIssueMessageForAppIDs(backendInstallPlan, selectedInstallAppIDs, text, lang)}</div>}
+                            {selectedHasWorkflowContractIssue && <div className="apps-install-preview__warning" role="alert">{workflowContractIssueMessageForAppIDs(backendInstallPlan, selectedInstallAppIDs, text, lang)}</div>}
                             {selectedHasMissingRequiredDependency && <div className="apps-install-preview__warning" role="alert">{text.missingRequiredDependency}</div>}
-                            <DependencyVerificationPanel plan={backendInstallPlan} state={backendInstallPlanState} error={backendInstallPlanError} selectedAppIDs={selectedInstallAppIDs} text={text} />
+                            <DependencyVerificationPanel plan={backendInstallPlan} state={backendInstallPlanState} error={backendInstallPlanError} selectedAppIDs={selectedInstallAppIDs} text={text} lang={lang} />
                             <div className="apps-preview-title-row">
                                 <div className="apps-definition__title">{text.installPreview}</div>
                                 <div className="apps-install-preview__tools">
@@ -19905,8 +19944,8 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                             <strong>{item.app.name}</strong>
                                             <span>{item.app.category} &middot; {appKindLabel(item.app.kind, lang)}</span>
                                             {dependencyText && <small>{text.skillDependencies}: {dependencyText}</small>}
-                                            {governanceIssue && <small>{text.reviewIssues}: {reviewIssueSummary(governanceIssue)}</small>}
-                                            {workflowIssue && <small>{text.workflowContract}: {reviewIssueSummary(workflowIssue)}</small>}
+                                            {governanceIssue && <small>{text.reviewIssues}: {reviewIssueSummary(governanceIssue, lang)}</small>}
+                                            {workflowIssue && <small>{text.workflowContract}: {reviewIssueSummary(workflowIssue, lang)}</small>}
                                             {item.action === 'upgrade' && item.addedScopes.length > 0 && (
                                                 <small>
                                                     {text.permissionChanges}: +{item.addedScopes.join(', ')}
@@ -19948,7 +19987,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 </div>
                             )}
                             {installState === 'installed' && installResultDependencyPlan && (
-                                <DependencyVerificationPanel plan={installResultDependencyPlan} state="ready" selectedAppIDs={installResultAppIDs} text={text} />
+                                <DependencyVerificationPanel plan={installResultDependencyPlan} state="ready" selectedAppIDs={installResultAppIDs} text={text} lang={lang} />
                             )}
                         </div>
                     )}

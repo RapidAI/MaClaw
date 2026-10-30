@@ -12,6 +12,36 @@ import { KNOWN_OPENAI_ENDPOINTS, nextProviderModelChoices, probeProviderModelFor
 import { PROVIDER_LOGOS } from '../providerLogos';
 
 describe('Maclaw provider quick-fill catalog', () => {
+    it('lists Google AI Studio on the OpenAI-compatible API key base', () => {
+        const google = KNOWN_OPENAI_ENDPOINTS.find(provider => provider.name === 'Google AI Studio');
+
+        expect(google).toMatchObject({
+            url: 'https://generativelanguage.googleapis.com/v1beta/openai',
+            model: 'gemini-3.8-flash',
+            protocol: 'openai',
+            context_length: 1000000,
+            models: ['gemini-3.8-flash', 'gemini-4-argon'],
+        });
+        expect(google?.auth_type ?? '').toBe('');
+        expect(google?.wire_api ?? '').toBe('');
+        expect(PROVIDER_LOGOS['Google AI Studio']).toBeTruthy();
+    });
+
+    it('lists Google Gemini on the native generateContent base', () => {
+        const gemini = KNOWN_OPENAI_ENDPOINTS.find(provider => provider.name === 'Google Gemini');
+
+        expect(gemini).toMatchObject({
+            url: 'https://generativelanguage.googleapis.com/v1beta',
+            model: 'gemini-3.8-flash',
+            protocol: 'google',
+            context_length: 1000000,
+            models: ['gemini-3.8-flash', 'gemini-4-argon'],
+        });
+        expect(gemini?.auth_type ?? '').toBe('');
+        expect(gemini?.wire_api ?? '').toBe('');
+        expect(PROVIDER_LOGOS['Google Gemini']).toBeTruthy();
+    });
+
     it('keeps Qwen defaults aligned with the built-in GUI provider', () => {
         const qwen = KNOWN_OPENAI_ENDPOINTS.find(provider => provider.name === 'Qwen');
 

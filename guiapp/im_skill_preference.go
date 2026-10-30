@@ -110,7 +110,8 @@ func matchPreferredLocalSkillMode(exec *SkillExecutor, userText, agentDomain str
 		if st != skillEntryStatusActive && st != skillEntryStatusUnknown {
 			continue
 		}
-		if !nlSkillIsAgentGuided(sk) && learnedSkillMissingParameterContract(sk.Source, sk.Steps) {
+		guided := skillDefinitionGuidesAgent(sk)
+		if !guided && learnedSkillMissingParameterContract(sk.Source, sk.Steps) {
 			continue
 		}
 		score, identity, identityScore := preferredLocalSkillScore(sk, lower)
@@ -123,7 +124,6 @@ func matchPreferredLocalSkillMode(exec *SkillExecutor, userText, agentDomain str
 		if !identity && !isIntentCategoryCompatibleWithSkill(userIntent, sk.Description) {
 			continue
 		}
-		guided := nlSkillIsAgentGuided(sk)
 		if !skillMatchOutranks(identityScore, score, guided, bestIdentity, bestScore, bestGuided) {
 			continue
 		}
@@ -160,7 +160,7 @@ func preferredLocalSkillScore(sk NLSkillDefinition, msgLower string) (score int,
 	}
 	score = identityScore
 	identity = identityScore > 0
-	if nlSkillIsAgentGuided(sk) {
+	if skillDefinitionGuidesAgent(sk) {
 		return score, identity, identityScore
 	}
 	desc := strings.ToLower(strings.TrimSpace(sk.Description))
@@ -209,6 +209,14 @@ func nlSkillIsAgentGuided(s NLSkillDefinition) bool {
 	return cskill.IsAgentGuidedWorkflowSkill(skillDefinitionAsEntry(s))
 }
 
+// skillDefinitionGuidesAgent is a procedure the agent runs with host file
+// tools. That is either an imported agent-guided workflow, or a host
+// procedure whose SKILL.md is the program. Identity is the only score for
+// both, so a description token cannot volunteer one.
+func skillDefinitionGuidesAgent(s NLSkillDefinition) bool {
+	return nlSkillIsAgentGuided(s) || skillHostProcedure(*skillDefinitionAsEntry(s))
+}
+
 // agentGuidedSkillOwnerID is the session owner used for sticky workflow
 // memory. Prompt construction often passes PolicyOwnerID; the loop keys
 // phase state by LoopContext.UserID. Mixing them made follow-up turns keep
@@ -255,7 +263,7 @@ func (h *IMMessageHandler) recallAgentGuidedSkill(userID string, exec *SkillExec
 		return ""
 	}
 	for _, sk := range exec.List() {
-		if sk.Name == name && nlSkillIsAgentGuided(sk) {
+		if sk.Name == name && skillDefinitionGuidesAgent(sk) {
 			st := normalizeSkillEntryStatus(sk.Status)
 			if st == skillEntryStatusActive || st == skillEntryStatusUnknown {
 				return name

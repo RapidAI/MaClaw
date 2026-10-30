@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { localizeText } from '../../i18n';
+import { intlLocale, localizeText, normalizeLang } from '../../i18n';
+import { localizeMailboxServerText } from '../../i18n/mailboxServerText';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -77,11 +78,11 @@ function textFor(lang: string, en: string, hans: string, hant: string) {
     return localizeText(lang, en, hans, hant);
 }
 
-function errText(err: unknown) {
-    if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
-        return (err as { message: string }).message;
-    }
-    return String(err || '');
+function errText(lang: string, err: unknown) {
+    const raw = err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string'
+        ? (err as { message: string }).message
+        : String(err || '');
+    return localizeMailboxServerText(lang, raw);
 }
 
 /* ------------------------------------------------------------------ */
@@ -167,31 +168,32 @@ function FolderGlyph({ special }: { special?: string }) {
 /* ------------------------------------------------------------------ */
 
 // Mail lists read best compact: time only for today, month/day this year,
-// full date once another year is involved.
-function formatWhen(raw?: string) {
+// full date once another year is involved. locale is intlLocale(lang) so the
+// month follows the UI language.
+function formatWhen(raw: string | undefined, locale: string) {
     const value = raw?.trim() || '';
     if (!value) return '';
     const parsed = Date.parse(value);
     if (Number.isNaN(parsed)) return value;
     const date = new Date(parsed);
     const now = new Date();
-    const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const time = date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
     if (date.toDateString() === now.toDateString()) return time;
     const monthOptions = { month: 'short', day: 'numeric' } as const;
     if (date.getFullYear() !== now.getFullYear()) {
-        return date.toLocaleDateString(undefined, { ...monthOptions, year: 'numeric' });
+        return date.toLocaleDateString(locale, { ...monthOptions, year: 'numeric' });
     }
-    return `${date.toLocaleDateString(undefined, monthOptions)} ${time}`;
+    return `${date.toLocaleDateString(locale, monthOptions)} ${time}`;
 }
 
 // The reading pane is where mail gets quoted, filed and replied to, so its
 // header needs the full precise date — no year-dropping shortcuts here.
-function formatWhenFull(raw?: string) {
+function formatWhenFull(raw: string | undefined, locale: string) {
     const value = raw?.trim() || '';
     if (!value) return '';
     const parsed = Date.parse(value);
     if (Number.isNaN(parsed)) return value;
-    return new Date(parsed).toLocaleString(undefined, {
+    return new Date(parsed).toLocaleString(locale, {
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
@@ -223,14 +225,18 @@ function senderHue(raw?: string) {
     return hash;
 }
 
-function folderLabel(t: (en: string, hans: string, hant: string) => string, folder: FolderRow) {
+function folderLabel(lang: string, t: (en: string, hans: string, hant: string) => string, folder: FolderRow) {
+    // "Archive" is already the verb Архивлах. The folder name needs the noun.
+    const archive = normalizeLang(lang) === 'mn'
+        ? t('Mail archive', '归档', '封存')
+        : t('Archive', '归档', '封存');
     const role = ({
         inbox: t('Inbox', '收件箱', '收件匣'),
         drafts: t('Drafts', '草稿', '草稿'),
         sent: t('Sent', '已发送', '已傳送'),
         junk: t('Junk', '垃圾邮件', '垃圾郵件'),
         trash: t('Trash', '已删除', '已刪除'),
-        archive: t('Archive', '归档', '封存'),
+        archive,
         all: t('All mail', '全部邮件', '全部郵件'),
     } as Record<string, string>)[folder.special || ''];
     return role || folder.name;
@@ -259,6 +265,7 @@ export function MailboxManageDialog({
     onClose: () => void;
 }) {
     const t = (en: string, hans: string, hant: string) => textFor(lang, en, hans, hant);
+    const locale = intlLocale(lang);
     const { showConfirm } = useDialog();
     const portalThemeAttributes = usePortalThemeAttributes();
     const closeRef = useRef<HTMLButtonElement>(null);
@@ -354,7 +361,7 @@ export function MailboxManageDialog({
             setLoading('');
         }).catch((err: unknown) => {
             if (mine !== folderGen.current) return;
-            setError(errText(err));
+            setError(errText(lang, err));
             setLoading('');
         });
         return () => {
@@ -443,7 +450,7 @@ export function MailboxManageDialog({
         }).catch((err: unknown) => {
             if (mine !== messageGen.current) return;
             setMessages([]);
-            setError(errText(err));
+            setError(errText(lang, err));
             setLoading('');
         });
     };
@@ -502,7 +509,7 @@ export function MailboxManageDialog({
             if (!next.seen) void applySeen(uid, true, true);
         }).catch((err: unknown) => {
             if (mine !== readGen.current) return;
-            setError(errText(err));
+            setError(errText(lang, err));
             setLoading('');
         });
     };
@@ -756,11 +763,11 @@ export function MailboxManageDialog({
                 refillError = err;
             }
             if (failure) {
-                setError(errText(failure) + (done.length > 0
+                setError(errText(lang, failure) + (done.length > 0
                     ? t(' Some messages were deleted.', '（前面的邮件已删除，后面的没有执行。）', '（前面的郵件已刪除，後面的沒有執行。）')
                     : ''));
             } else if (refillError) {
-                setError(errText(refillError));
+                setError(errText(lang, refillError));
             }
         } finally {
             busyRef.current = false;
@@ -819,7 +826,7 @@ export function MailboxManageDialog({
             const result = await MailboxBrowseDelete(account.id, folder, [message.uid]);
             await finishDelete(folder, generation, foldersSnap, [message.uid], pageFromDelete(result));
         } catch (err: unknown) {
-            setError(errText(err));
+            setError(errText(lang, err));
         } finally {
             busyRef.current = false;
             setActionUid(null);
@@ -861,12 +868,12 @@ export function MailboxManageDialog({
                 setError('');
             } catch (err: unknown) {
                 if (mine !== folderGen.current) return;
-                setError(errText(err));
+                setError(errText(lang, err));
             }
             setLoading('');
         }).catch((err: unknown) => {
             if (mine !== folderGen.current) return;
-            setError(errText(err));
+            setError(errText(lang, err));
             setLoading('');
         });
     };
@@ -948,7 +955,7 @@ export function MailboxManageDialog({
                                         onClick={() => selectFolder(folder.name)}
                                     >
                                         <FolderGlyph special={folder.special} />
-                                        <span className="mailbox-manage__folder-name">{folderLabel(t, folder)}</span>
+                                        <span className="mailbox-manage__folder-name">{folderLabel(lang, t, folder)}</span>
                                         {count > 0 && <span className="mailbox-manage__badge" aria-label={t('{{count}} unread', `${count} 封未读`, `${count} 封未讀`).replace('{{count}}', String(count))}>{count > 99 ? '99+' : count}</span>}
                                     </button>
                                 </li>
@@ -1046,7 +1053,7 @@ export function MailboxManageDialog({
                                                 {shortFrom(message.from) || t('(unknown sender)', '（未知发件人）', '（未知寄件人）')}
                                             </span>
                                             {message.has_attachment && <IconPaperclip size={12} className="mailbox-manage__attach" />}
-                                            <span className="mailbox-manage__when">{formatWhen(message.date)}</span>
+                                            <span className="mailbox-manage__when">{formatWhen(message.date, locale)}</span>
                                         </span>
                                         <span className="mailbox-manage__subject" title={message.subject?.trim() || undefined}>
                                             {message.subject?.trim() || t('(no subject)', '（无主题）', '（無主題）')}
@@ -1132,7 +1139,7 @@ export function MailboxManageDialog({
                                             <p className="mailbox-manage__view__from">
                                                 <strong>{shortFrom(sender) || t('(unknown sender)', '（未知发件人）', '（未知寄件人）')}</strong>
                                                 {senderAddr && <span className="mailbox-manage__view__addr">{senderAddr}</span>}
-                                                {reading.date && <span className="mailbox-manage__view__date">{formatWhenFull(reading.date)}</span>}
+                                                {reading.date && <span className="mailbox-manage__view__date">{formatWhenFull(reading.date, locale)}</span>}
                                             </p>
                                             {reading.to && <p className="mailbox-manage__view__to">{t('To', '收件人', '收件人')}: {reading.to}</p>}
                                         </div>

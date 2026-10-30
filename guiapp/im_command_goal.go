@@ -21,7 +21,9 @@ func (h *IMMessageHandler) noteInboundUserMessageForGoal(msg IMUserMessage, trim
 		return
 	}
 	if classifyImmediateIMCommand(trimmed) == imCommandGoal {
-		h.app.goalContinuation.resetActiveGoalNoToolCounter(msg.UserID)
+		// The counter lives on the stored row. The composer may spell the
+		// same session with the other slash.
+		h.app.goalContinuation.resetActiveGoalNoToolCounter(h.queuedGoalTimerKey(msg.UserID))
 	}
 }
 
@@ -35,7 +37,14 @@ func (h *IMMessageHandler) preemptQueuedGoalTurn(msg IMUserMessage) {
 	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform {
 		return
 	}
-	h.app.goalContinuation.OnUserMessage(msg.UserID)
+	// Drop the row's timer and a timer left under the other spelling.
+	// OnUserMessage also resets the no-tool counter on the row it is given.
+	chatID := strings.TrimSpace(msg.UserID)
+	goalKey := h.queuedGoalTimerKey(chatID)
+	h.app.goalContinuation.OnUserMessage(goalKey)
+	if goalKey != chatID {
+		h.app.goalContinuation.CancelPending(chatID)
+	}
 }
 
 // suspendQueuedGoalTurn parks the cooldown timer for one side command.
@@ -46,12 +55,50 @@ func (h *IMMessageHandler) suspendQueuedGoalTurn(userID string) func() {
 	if h == nil || h.app == nil || h.app.goalContinuation == nil {
 		return func() {}
 	}
-	turn, ok := h.app.goalContinuation.suspendQueuedTurn(userID)
+	parkKey, turn, ok := h.parkQueuedGoalTurn(userID)
 	if !ok {
 		return func() {}
 	}
 	engine := h.app.goalContinuation
-	return func() { engine.restoreSuspendedGoalTurn(userID, turn) }
+	return func() { engine.restoreSuspendedGoalTurn(parkKey, turn) }
+}
+
+// queuedGoalTimerKey is the id whose cooldown timer belongs to this chat.
+// Scheduling follows the stored goal row, so a forward-slash composer and a
+// backslash store key do not share a map entry. Session fences stay on the
+// chat id.
+func (h *IMMessageHandler) queuedGoalTimerKey(chatUserID string) string {
+	chatUserID = strings.TrimSpace(chatUserID)
+	goalKey, _ := h.continuationGoalKey(chatUserID)
+	if goalKey == "" {
+		return chatUserID
+	}
+	return goalKey
+}
+
+// parkQueuedGoalTurn stops the cooldown timer for this chat. The stored row's
+// timer is the one to put back. A timer still armed under the other spelling
+// is dropped, so the two spellings cannot both fire. When only the chat id
+// has a timer, that one is parked.
+func (h *IMMessageHandler) parkQueuedGoalTurn(chatUserID string) (string, suspendedGoalTurn, bool) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return "", suspendedGoalTurn{}, false
+	}
+	chatUserID = strings.TrimSpace(chatUserID)
+	goalKey := h.queuedGoalTimerKey(chatUserID)
+	engine := h.app.goalContinuation
+	if turn, ok := engine.suspendQueuedTurn(goalKey); ok {
+		if goalKey != chatUserID {
+			engine.CancelPending(chatUserID)
+		}
+		return goalKey, turn, true
+	}
+	if goalKey != chatUserID {
+		if turn, ok := engine.suspendQueuedTurn(chatUserID); ok {
+			return chatUserID, turn, true
+		}
+	}
+	return goalKey, suspendedGoalTurn{}, false
 }
 
 // beginQueuedGoalTurnHold parks the cooldown timer once a message has passed
@@ -69,8 +116,9 @@ func (h *IMMessageHandler) beginQueuedGoalTurnHold(msg IMUserMessage) func(keep 
 		return func(bool) {}
 	}
 	engine := h.app.goalContinuation
-	engine.resetActiveGoalNoToolCounter(msg.UserID)
-	turn, ok := engine.suspendQueuedTurn(msg.UserID)
+	chatID := strings.TrimSpace(msg.UserID)
+	engine.resetActiveGoalNoToolCounter(h.queuedGoalTimerKey(chatID))
+	parkKey, turn, ok := h.parkQueuedGoalTurn(chatID)
 	if !ok {
 		return func(bool) {}
 	}
@@ -83,7 +131,7 @@ func (h *IMMessageHandler) beginQueuedGoalTurnHold(msg IMUserMessage) func(keep 
 		if keep {
 			return
 		}
-		engine.restoreSuspendedGoalTurn(msg.UserID, turn)
+		engine.restoreSuspendedGoalTurn(parkKey, turn)
 	}
 }
 

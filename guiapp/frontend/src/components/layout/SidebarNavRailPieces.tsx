@@ -1,5 +1,7 @@
 import { AppsRailIcon, ExpertRailIcon, GossipIcon, ProFeaturesIcon, SettingsIcon } from './SidebarNavIcons';
 import { requestRailMiddleFocus, useRailMiddleFocus } from './railMiddleFocus';
+import { localizeText, normalizeLang } from '../../i18n';
+import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'react';
 
 /**
@@ -164,6 +166,8 @@ type SidebarPrimaryNavProps = {
     onToggleConnectMenu?: (target: HTMLElement) => void;
     /** Solo IM, mailbox or hardware, opened from 连接. */
     connectSoloActive?: boolean;
+    /** Display language. Cyrillic samples used to fall through to Chinese. */
+    lang?: string;
     /** Current settings tab, used to mark IM, 邮箱 or 硬件 inside the connect menu. */
     settingsTab?: string;
 };
@@ -274,28 +278,34 @@ const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClic
     );
 };
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, latexTemplatesActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, runningTaskCount = 0, onOpenBackgroundTasks, proMenuOpen = false, onToggleProMenu, proFeaturesLabel: proFeaturesLabelProp, showWorkflowEntry = true, connectLabel, connectTitle, connectMenuOpen = false, onToggleConnectMenu, connectSoloActive = false }: SidebarPrimaryNavProps) => {
-    // The rail is also used by the English and Traditional-Chinese builds. The
-    // existing localized labels are the only language signal available here,
-    // so infer the display language without changing the parent component API.
+export const SidebarPrimaryNav = ({ lang, navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, latexTemplatesActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, runningTaskCount = 0, onOpenBackgroundTasks, proMenuOpen = false, onToggleProMenu, proFeaturesLabel: proFeaturesLabelProp, showWorkflowEntry = true, connectLabel, connectTitle, connectMenuOpen = false, onToggleConnectMenu, connectSoloActive = false }: SidebarPrimaryNavProps) => {
+    // Callers that omit lang still have to be told apart. Cyrillic is its own
+    // case: treating it as "not English" used to print the Simplified labels.
     const languageSample = `${aiAssistantLabel} ${appsLabel} ${utilitiesLabel} ${workflowLabel || ''}`;
-    const isEnglish = /^[\x00-\x7F\s&]+$/.test(languageSample);
-    // 程/置 are shared by Simplified and Traditional Chinese (for example
-    // 小程序), so use characters whose forms actually differ. Otherwise the
-    // split rail would label a zh-Hans build as AI 專家.
-    const isTraditional = !isEnglish && /[專體務設]/.test(languageSample);
-    const labels = isEnglish
-        ? { workbench: 'Workbench', tasks: 'Tasks', apps: 'Mini apps', experts: 'AI experts', employees: 'Digital employees', files: 'Library', settings: 'Settings' }
-        : isTraditional
-            ? { workbench: '工作台', tasks: '任務', apps: '小程式', experts: 'AI 專家', employees: '數字員工', files: '資料庫', settings: '設定' }
-        : { workbench: '工作台', tasks: '任务', apps: '小程序', experts: 'AI 专家', employees: '数字员工', files: '资料库', settings: '设置' };
+    const inferred = /^[\x00-\x7F\s&]+$/.test(languageSample)
+        ? 'en'
+        : /[\u0400-\u04FF]/.test(languageSample)
+            ? 'mn'
+            // 程/置 are shared by Simplified and Traditional (for example 小程序).
+            : /[專體務設]/.test(languageSample) ? 'zh-Hant' : 'zh-Hans';
+    const resolved = lang && String(lang).trim() ? normalizeLang(lang) : inferred;
+    const text = (en: string, zhHans: string, zhHant: string) => localizeText(resolved, en, zhHans, zhHant);
+    const labels = {
+        workbench: text('Workbench', '工作台', '工作台'),
+        tasks: text('Tasks', '任务', '任務'),
+        apps: resolved === 'mn' ? miniAppShortLabel('mn') : text('Mini apps', '小程序', '小程式'),
+        experts: text('AI experts', 'AI 专家', 'AI 專家'),
+        employees: text('Digital employees', '数字员工', '數字員工'),
+        files: text('Library', '资料库', '資料庫'),
+        settings: text('Settings', '设置', '設定'),
+    };
 
     // Keep the old combined entry available to isolated embedders/tests that
     // do not opt into the split navigation. The packaged app replaces the
     // direct AI 专家 rail item with a 专业功能 menu (AI experts, workflows, tools).
     // A single remaining destination opens directly, so disabling entries
     // does not leave a one-item popup.
-    const proFeaturesLabel = proFeaturesLabelProp || (isEnglish ? 'Features' : isTraditional ? '專業功能' : '专业功能');
+    const proFeaturesLabel = proFeaturesLabelProp || text('Features', '专业功能', '專業功能');
     const useProMenu = showToolsEntry && !!onToggleProMenu;
     const proTargets = visibleProFeatureTabs({
         showUtilitiesEntry,
@@ -327,7 +337,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 aiStyle
             />
             <div aria-hidden="true" className="snrp-divider" />
-            <SemanticNavItem id="tasks" label={labels.tasks} icon={<TaskRailIcon />} active={navTab === 'remote'} onClick={() => { if (onOpenBackgroundTasks) onOpenBackgroundTasks(); else switchTool('remote'); }} title={isEnglish ? 'Task monitor' : isTraditional ? '任務監控' : '任务监控'} testId="sidebar-task-monitor-nav" badgeCount={runningTaskCount} badgeLabel={isEnglish ? `: ${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} running` : isTraditional ? `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 個執行中` : `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 个执行中`} />
+            <SemanticNavItem id="tasks" label={labels.tasks} icon={<TaskRailIcon />} active={navTab === 'remote'} onClick={() => { if (onOpenBackgroundTasks) onOpenBackgroundTasks(); else switchTool('remote'); }} title={text('Task monitor', '任务监控', '任務監控')} testId="sidebar-task-monitor-nav" badgeCount={runningTaskCount} badgeLabel={resolved === 'zh-Hant' ? `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 個執行中` : resolved === 'zh-Hans' ? `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 个执行中` : resolved === 'mn' ? `: ${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} ажиллаж байна` : `: ${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} running`} />
             {showAppEntry && <SemanticNavItem id="apps" label={labels.apps} legacyLabel={appsLabel} icon={<AppsRailIcon />} active={navTab === 'apps'} onClick={() => switchTool('apps')} title={appsLabel} testId="sidebar-apps-nav" />}
             <SemanticNavItem
                 id="experts"
@@ -348,7 +358,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
             <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={employeesActive} onClick={() => { switchTool('ai'); requestRailMiddleFocus('employees'); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
             <SemanticNavItem id="extensions" label={extensionsLabel} icon={<ExtensionsRailIcon />} active={extensionsMenuOpen || navTab === 'skills' || navTab === 'mcp'} current={navTab === 'skills' || navTab === 'mcp'} onClick={event => { if (onToggleExtensionsMenu) onToggleExtensionsMenu(event.currentTarget); }} title={extensionsLabel} testId="sidebar-extensions-nav" menuTrigger={{ expanded: extensionsMenuOpen, controls: 'extensions-popup-menu' }} />
             <SemanticNavItem id="files" label={labels.files} icon={<FolderRailIcon />} active={libraryMenuOpen || navTab === 'files' || knowledgeActive || latexTemplatesActive} current={navTab === 'files' || knowledgeActive || latexTemplatesActive} onClick={event => { if (onToggleLibraryMenu) onToggleLibraryMenu(event.currentTarget); }} title={labels.files} testId="sidebar-files-nav" menuTrigger={{ expanded: libraryMenuOpen, controls: 'library-popup-menu' }} />
-            <SemanticNavItem id="connect" label={connectLabel || (isEnglish ? 'Connect' : isTraditional ? '連接' : '连接')} icon={<ConnectRailIcon />} active={connectMenuOpen || connectSoloActive} current={connectSoloActive} onClick={event => { if (onToggleConnectMenu) onToggleConnectMenu(event.currentTarget); }} title={connectTitle || connectLabel || (isEnglish ? 'Connect' : isTraditional ? '連接即時通訊、郵箱和硬體' : '连接即时通讯、邮箱和硬件')} testId="sidebar-connect-nav" menuTrigger={{ expanded: connectMenuOpen, controls: 'connect-popup-menu' }} />
+            <SemanticNavItem id="connect" label={connectLabel || text('Connect', '连接', '連接')} icon={<ConnectRailIcon />} active={connectMenuOpen || connectSoloActive} current={connectSoloActive} onClick={event => { if (onToggleConnectMenu) onToggleConnectMenu(event.currentTarget); }} title={connectTitle || connectLabel || text('Connect chat, email and hardware', '连接即时通讯、邮箱和硬件', '連接即時通訊、郵箱和硬體')} testId="sidebar-connect-nav" menuTrigger={{ expanded: connectMenuOpen, controls: 'connect-popup-menu' }} />
             <SemanticNavItem id="settings" label={labels.settings} icon={<SettingsIcon />} active={navTab === 'settings' && !knowledgeActive && !connectSoloActive} onClick={() => switchTool('settings')} title={labels.settings} testId="sidebar-settings-nav" />
         </>
     );

@@ -6,6 +6,7 @@ import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
 import { SuggestCombobox } from "../ui/SuggestCombobox";
 import { capabilityBandName, hubOfficialModelAliases, officialModelAlias } from "../../utils/capabilityModelLabel";
 import { panelText } from "../../i18n/mnPanel";
+import type { AgentProviderSwitchTarget } from "./agentProviderSwitchOffer";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
 type RoleAssignment = { model?: string; inherit_hub?: boolean };
@@ -63,6 +64,10 @@ type Props = {
     // assignment read model refreshes even if a Wails event was missed while
     // the provider dialog was open.
     providerListRevision?: number;
+    // Set after the user agrees to point the agent at a provider that was just
+    // tested and saved. Applied as an unsaved assistant draft; the model field
+    // takes focus so the user can choose a model and save.
+    agentProviderSwitch?: AgentProviderSwitchTarget | null;
     // Optional control rendered immediately after the assignment help text.
     // The parent uses this for "Import other agents" so the action stays
     // available while this panel is still loading or failed to load.
@@ -152,7 +157,7 @@ function applyVisionProbeToProvider(provider: Provider, model: string, status?: 
     };
 }
 
-export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0, descriptionAction }: Props) {
+export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0, agentProviderSwitch = null, descriptionAction }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant = zhHans) =>
         panelText(lang ?? "", en, zhHans, zhHant), [lang]);
     const [state, setState] = useState<PanelState | null>(null);
@@ -165,6 +170,17 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     const [catalogByProvider, setCatalogByProvider] = useState<Record<string, string[]>>({});
     const catalogFetchSeqRef = useRef<Record<string, number>>({});
     const dirtyRef = useRef(false);
+    const appliedSwitchTokenRef = useRef(0);
+    const switchFocusTimersRef = useRef<Array<number>>([]);
+    // StrictMode clears the focus timer before it fires. A later directory
+    // refresh must not use that same replay to pull the caret back.
+    const switchFocusReplayRef = useRef(false);
+    const switchFocusLandedTokenRef = useRef(0);
+    // Set synchronously when a handoff changes the draft, before React renders
+    // the dirty flag. An in-flight eligibility refresh must not put the old
+    // assignment back over that draft.
+    const preserveDraftForSwitchRef = useRef(false);
+    const [assistantSwitchHint, setAssistantSwitchHint] = useState<{ providerID: string; name: string; model?: string } | null>(null);
     const loadGenerationRef = useRef(0);
     // Eligibility refresh shares loadGenerationRef so a late snapshot cannot
     // overwrite a newer read. It must not also cancel the spinner: the panel
@@ -188,7 +204,10 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         });
     };
 
-    const load = useCallback(async () => {
+    const load = useCallback(async (force = false) => {
+        // A handoff sets the flag before the next render. Save and discard pass
+        // force so they still replace the draft after clearing that flag.
+        if (!force && preserveDraftForSwitchRef.current) return;
         const generation = ++loadGenerationRef.current;
         const loadingGeneration = ++loadingGenerationRef.current;
         setLoading(true);
@@ -196,6 +215,13 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         try {
             const next = await GetMaclawLLMProfilePanelState() as unknown as PanelState;
             if (generation !== loadGenerationRef.current) return;
+            // dirtyRef is still false while the handoff render is pending, and
+            // it stays true after the preserve flag is cleared. An in-flight
+            // reload must not put the saved assignment back over either one.
+            if (!force && (preserveDraftForSwitchRef.current || dirtyRef.current)) {
+                setState(previous => previous ? { ...next, profiles: previous.profiles } : next);
+                return;
+            }
             setState(next);
             setDraft(cloneProfiles(next.profiles));
             setCatalogByProvider({});
@@ -216,11 +242,12 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             const next = await GetMaclawLLMProfilePanelState() as unknown as PanelState;
             if (generation !== loadGenerationRef.current) return;
 
-            if (dirtyRef.current) {
+            if (dirtyRef.current || preserveDraftForSwitchRef.current) {
                 // A successful Provider management test changes eligibility,
                 // not the user's assignment. Replace only the directory and
                 // revision so the new provider is selectable without losing a
-                // draft that is already being edited in this panel.
+                // draft that is already being edited, including the unsaved
+                // switch onto a provider that was just saved.
                 setState(previous => previous ? { ...next, profiles: previous.profiles } : next);
                 return;
             }
@@ -300,6 +327,12 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         state.profiles.assistant.provider_id !== assistant?.provider_id ||
         state.profiles.assistant.model !== assistant?.model
     );
+    // The handoff hint describes the assistant draft only. Other unsaved rows
+    // must not keep it on screen after the assistant matches the saved assignment.
+    const assistantSelectionPending = !!state && !!assistant && (
+        String(state.profiles.assistant?.provider_id || "") !== String(assistant.provider_id || "")
+        || String(state.profiles.assistant?.model || "") !== String(assistant.model || "")
+    );
     const dirty = !!state && !!draft && JSON.stringify(cloneProfiles(state.profiles)) !== JSON.stringify(draft);
     dirtyRef.current = dirty;
 
@@ -321,6 +354,9 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                 setError(t("Model assignments changed elsewhere. Refresh before saving.", "模型分配已在其他位置更新，请刷新后再保存。"));
                 return;
             }
+            // The handoff has not rendered yet, so dirtyRef is still false.
+            // Skip the reload instead of reporting a conflict for our own draft.
+            if (preserveDraftForSwitchRef.current) return;
             void load();
         };
         const cleanup = EventsOn("llm-profiles-changed", onProfilesChanged);
@@ -329,6 +365,8 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
 
     useEffect(() => () => {
         loadGenerationRef.current += 1;
+        switchFocusTimersRef.current.forEach(timer => window.clearTimeout(timer));
+        switchFocusTimersRef.current = [];
         catalogFetchSeqRef.current = {};
         eligibilityRefreshQueuedRef.current = false;
         eligibilityRefreshRunningRef.current = false;
@@ -397,7 +435,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         const provider = providerByID.get(providerLookupKey(providerID));
         return provider?.is_hub_service ? officialModelAlias(raw) : raw;
     };
-    const setProvider = (profile: "assistant" | "coding" | "caption", providerID: string) => {
+    const setProvider = (profile: "assistant" | "coding" | "caption", providerID: string, modelOverride?: string) => {
         const models = providerModels(providerID);
         const provider = providerByID.get(providerLookupKey(providerID));
         const preferredRaw = String(provider?.model || "").trim();
@@ -407,15 +445,72 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         const preferredMatch = preferred
             ? models.find(model => model.toLowerCase() === preferred.toLowerCase())
             : "";
+        const override = String(modelOverride || "").trim();
         // The live catalog is prepended and starts with aliases such as
         // default-model. Keep the provider's saved model instead of that alias.
-        const nextModel = providerID ? (preferredMatch || models[0] || "") : "";
+        // A handoff passes the model that just passed Test & Save so a stale
+        // directory record cannot replace it.
+        const nextModel = providerID ? (override || preferredMatch || models[0] || "") : "";
         setDraft(prev => prev ? ({
             ...prev,
             [profile]: { ...prev[profile], provider_id: providerID, model: nextModel },
         }) : prev);
         invalidateProbeResults(profile, ...(profile === "assistant" && codingFollows ? ["coding" as const] : []));
     };
+    const setProviderRef = useRef(setProvider);
+    setProviderRef.current = setProvider;
+    useEffect(() => {
+        const request = agentProviderSwitch;
+        if (!request || !state) return;
+        const provider = (state.providers || []).find(item => providerLookupKey(item.name) === providerLookupKey(request.providerName));
+        if (!provider?.id) return;
+        const testedModel = String(request.model || "").trim();
+        const applying = appliedSwitchTokenRef.current !== request.token;
+        if (!applying && !switchFocusReplayRef.current) return;
+        if (applying) {
+            appliedSwitchTokenRef.current = request.token;
+            preserveDraftForSwitchRef.current = true;
+            setProviderRef.current("assistant", provider.id, testedModel);
+            setAssistantSwitchHint({ providerID: provider.id, name: provider.name, model: testedModel });
+        }
+        switchFocusReplayRef.current = false;
+        const localTimers: Array<number> = [];
+        const remember = (timer: number) => {
+            localTimers.push(timer);
+            switchFocusTimersRef.current.push(timer);
+        };
+        remember(window.setTimeout(() => {
+            const focusModel = () => {
+                const input = document.querySelector<HTMLInputElement>('[data-field="assistant-model"]');
+                // The column also holds the hint and its save button. Centering
+                // that block puts the model field toward the edge. Center the
+                // field. If it is not mounted yet, bring the column to the top
+                // and let the retry center the field.
+                if (input) input.scrollIntoView?.({ block: "center" });
+                else document.getElementById("llm-assistant-provider-switch")?.scrollIntoView?.({ block: "start" });
+                input?.focus();
+                input?.select();
+                const landed = !!input && document.activeElement === input;
+                if (landed) switchFocusLandedTokenRef.current = request.token;
+                return landed;
+            };
+            if (!focusModel()) remember(window.setTimeout(focusModel, 50));
+        }, 0));
+        return () => {
+            localTimers.forEach(timer => window.clearTimeout(timer));
+            switchFocusTimersRef.current = switchFocusTimersRef.current.filter(timer => !localTimers.includes(timer));
+            // The timer has not landed yet. StrictMode's cleanup is that case.
+            // A refresh that arrives after the caret is in the field is not.
+            switchFocusReplayRef.current = switchFocusLandedTokenRef.current !== request.token;
+        };
+    }, [agentProviderSwitch, state]);
+    useEffect(() => {
+        // dirtyRef is updated during render. Once the hint has rendered, that
+        // flag is enough to protect a real draft, and leaving this set would
+        // freeze later directory refreshes after the user reverts the form.
+        if (!assistantSwitchHint) return;
+        preserveDraftForSwitchRef.current = false;
+    }, [assistantSwitchHint]);
     const setModel = (profile: "assistant" | "coding" | "caption", model: string) => {
         setDraft(prev => prev ? ({ ...prev, [profile]: { ...prev[profile], model } }) : prev);
         invalidateProbeResults(profile, ...(profile === "assistant" && codingFollows ? ["coding" as const] : []));
@@ -454,7 +549,9 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         setError("");
         try {
             await SaveMaclawLLMProfiles(draft as any, state.revision);
-            await load();
+            preserveDraftForSwitchRef.current = false;
+            setAssistantSwitchHint(null);
+            await load(true);
             onSaved?.();
         } catch (err) {
             setError(String(err));
@@ -464,7 +561,9 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     };
     const refreshDraft = () => {
         if (saving) return;
-        void load();
+        preserveDraftForSwitchRef.current = false;
+        setAssistantSwitchHint(null);
+        void load(true);
     };
     const probeLabel = (result?: ProbeResult) => {
         if (!result) return "";
@@ -531,6 +630,13 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         }
     };
 
+    const modelOptionsFor = (profile: "assistant" | "coding" | "caption", providerID?: string) => {
+        const options = providerModels(providerID);
+        const hinted = profile === "assistant" ? String(assistantSwitchHint?.model || "").trim() : "";
+        if (!hinted || providerLookupKey(providerID) !== providerLookupKey(assistantSwitchHint?.providerID)) return options;
+        if (options.some(item => item.toLowerCase() === hinted.toLowerCase())) return options;
+        return [hinted, ...options];
+    };
     const selectorAria = (profile: "assistant" | "coding" | "caption", kind: "provider" | "model") => {
         if (profile === "assistant") return kind === "provider" ? t("Assistant provider", "普通 AI 助手服务商") : t("Assistant model", "普通 AI 助手模型");
         if (profile === "caption") return kind === "provider" ? t("Caption provider", "Caption 服务商") : t("Caption model", "Caption 模型");
@@ -552,10 +658,11 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                     listboxId={`${profile}-profile-models`}
                     ariaLabel={selectorAria(profile, "model")}
                     value={modelFieldValue(value.provider_id, value.model)}
-                    options={providerModels(value.provider_id)}
+                    options={modelOptionsFor(profile, value.provider_id)}
                     onChange={model => setModel(profile, model)}
                     placeholder={t("Select or enter model ID", "选择或输入模型 ID")}
                     disabled={profile === "caption" && !value.provider_id}
+                    inputProps={profile === "assistant" ? { "data-field": "assistant-model" } : undefined}
                     openOnEnter
                     toggleLabel={t("Show model list", "显示模型列表", "顯示模型列表")}
                     emptyText={t("No matching models", "没有匹配的模型", "沒有匹配的模型")}
@@ -629,6 +736,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     if (!state || !draft) return wrapSection(<div role="alert" className="llm-profile-assignments__state llm-profile-assignments__state--error">{error || t("Could not load model assignments.", "无法加载模型分配。")}</div>);
 
     const captionVision = visionSelection("caption");
+    const assistantSwitchModelLabel = modelFieldValue(assistant?.provider_id, assistant?.model).trim();
     return wrapSection(<>
         {providers.length === 0 && <div role="status" className="llm-profile-assignments__state llm-profile-assignments__state--soft">
             {t("No eligible providers yet. Test and save a provider in Provider management, or keep using the current assistant provider.", "暂无可用服务商。请先在服务商管理中检测并保存，或继续使用当前助手服务商。")}
@@ -637,7 +745,37 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         <div style={{ display: "grid", gap: 14 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 14, alignItems: "center" }}>
                 <div style={{ minWidth: 0 }}><strong style={{ fontSize: "0.78rem", color: colors.text }}>{t("AI assistant", "普通 AI 助手")}</strong><p style={{ margin: "3px 0 0", color: colors.textMuted, fontSize: "0.68rem", lineHeight: 1.35 }}>{t("Chat, IM, and workflows", "聊天、IM 与工作流")}</p></div>
-                <div style={{ minWidth: 0 }}>{renderSelectors("assistant", assistant || {})}{renderProbeAction("assistant")}</div>
+                <div id="llm-assistant-provider-switch" style={{ minWidth: 0 }}>
+                    {assistantSelectionPending && assistantSwitchHint && providerLookupKey(assistant?.provider_id) === providerLookupKey(assistantSwitchHint.providerID) && (
+                        <div data-testid="assistant-provider-switch-hint" className="llm-config-alert llm-config-alert--info" style={{ marginBottom: 10 }}>
+                            {/* The visible sentence follows the draft model. A live region that includes it would re-announce on every keystroke. */}
+                            <div role="status" className="sr-only">
+                                {t(
+                                    `“${assistantSwitchHint.name}” is selected and is not saved yet. Choose a model and save for it to take effect.`,
+                                    `已选中「${assistantSwitchHint.name}」，尚未保存。请选择模型并保存配置，即可生效。`,
+                                    `已選中「${assistantSwitchHint.name}」，尚未保存。請選擇模型並保存配置，即可生效。`,
+                                )}
+                            </div>
+                            <div>
+                                {assistantSwitchModelLabel
+                                    ? t(
+                                        `“${assistantSwitchHint.name}” is selected with model “${assistantSwitchModelLabel}”, and is not saved yet. Choose a model and save for it to take effect.`,
+                                        `已选中「${assistantSwitchHint.name}」，模型为「${assistantSwitchModelLabel}」，尚未保存。请选择模型并保存配置，即可生效。`,
+                                        `已選中「${assistantSwitchHint.name}」，模型為「${assistantSwitchModelLabel}」，尚未保存。請選擇模型並保存配置，即可生效。`,
+                                    )
+                                    : t(
+                                        `“${assistantSwitchHint.name}” is selected as the assistant provider and is not saved yet. Choose a model and save for it to take effect.`,
+                                        `已选中「${assistantSwitchHint.name}」作为 Agent 的服务商，尚未保存。请选择模型并保存配置，即可生效。`,
+                                        `已選中「${assistantSwitchHint.name}」作為 Agent 的服務商，尚未保存。請選擇模型並保存配置，即可生效。`,
+                                    )}
+                            </div>
+                            <button type="button" onClick={() => void save()} disabled={saving} className="llm-config-btn llm-config-btn--primary" style={{ marginTop: 8 }}>
+                                {saving ? t("Saving…", "正在保存…") : t("Save changes", "保存更改")}
+                            </button>
+                        </div>
+                    )}
+                    {renderSelectors("assistant", assistant || {})}{renderProbeAction("assistant")}
+                </div>
             </div>
             <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 14, alignItems: "start" }}>
                 <div style={{ minWidth: 0 }}><strong style={{ fontSize: "0.78rem", color: colors.text }}>{t("Coding Agent", "编程 Agent")}</strong><p style={{ margin: "3px 0 0", color: colors.textMuted, fontSize: "0.68rem", lineHeight: 1.35 }}>{t("Coding workbench and coding tasks", "编程工作台与编程任务")}</p></div>
@@ -690,7 +828,9 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                                 {isGrounder ? t("Not used", "不使用", "不使用") : foregroundUsesAssistant ? t("Follow AI assistant", "跟随普通 AI 助手", "跟隨普通 AI 助手") : t("Follow Hub", "跟随 Hub", "跟隨 Hub")}
                             </label>
                             {inherits
-                                ? <div aria-live="polite" style={{ color: colors.textSecondary, fontSize: "0.74rem" }}>{t("Effective now: ", "当前生效：", "目前生效：")}{!isGrounder && summary?.provider_name ? `${summary.provider_name} · ` : ""}{shown}</div>
+                                ? <div aria-live="polite" style={{ color: colors.textSecondary, fontSize: "0.74rem" }}>{foregroundUsesAssistant && assistantSelectionPending
+                                    ? <>{t("Effective after save: ", "保存后生效：")}{followingAssistantProviderName} · {followingAssistantModel}</>
+                                    : <>{t("Effective now: ", "当前生效：", "目前生效：")}{!isGrounder && summary?.provider_name ? `${summary.provider_name} · ` : ""}{shown}</>}</div>
                                 : <SuggestCombobox
                                     listboxId={`${key}-role-models`}
                                     ariaLabel={aria}

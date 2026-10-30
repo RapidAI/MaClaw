@@ -102,6 +102,22 @@ describe('EmailSettingsPanel', () => {
         confirm.mockRestore();
     });
 
+    it('labels the mailbox page and a receive probe in Mongolian', async () => {
+        vi.mocked(MailboxAccountTestDraft).mockResolvedValue('收件连接正常' as never);
+        render(<EmailSettingsPanel lang="mn" />);
+        await screen.findByText('Work');
+
+        expect(screen.getByRole('button', { name: 'Имэйл удирдах' })).toBeTruthy();
+        expect(screen.getByText('анхдагч')).toBeTruthy();
+        expect(screen.queryByText('邮箱管理')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Засах' }));
+        expect((screen.getAllByPlaceholderText('Хост')[0] as HTMLInputElement).value).toBe('imap.example.com');
+        fireEvent.click(screen.getByRole('button', { name: 'Хүлээн авалт шалгах' }));
+        expect(await screen.findByText('Хүлээн авах холболт хэвийн')).toBeTruthy();
+        expect(screen.queryByText('收件连接正常')).toBeNull();
+    });
+
     it('sends default false when the public-default checkbox is cleared', async () => {
         vi.mocked(MailboxSignaturesList).mockResolvedValue([
             { id: 's1', name: '公共', body: 'hello', default: false },

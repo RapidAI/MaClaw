@@ -40,6 +40,7 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     telegramStatus: string;
     weixinStatus: string;
     lansengerStatus: string;
+    messengerStatus?: string;
     /**
      * Channel switch from settings. `false` means the user already turned it
      * off, so the chip must drop "已连接" immediately. The gateway event can
@@ -50,6 +51,7 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     telegramEnabled?: boolean;
     weixinEnabled?: boolean;
     lansengerEnabled?: boolean;
+    messengerEnabled?: boolean;
     backgroundTaskCount?: number;
     /** Live counts for the task-monitor tabs shown on the workbench status card. */
     workbenchTaskCounts?: WorkbenchTaskCounts;
@@ -244,10 +246,12 @@ export const SidebarSystemStatus = ({
     telegramStatus,
     weixinStatus,
     lansengerStatus,
+    messengerStatus = '',
     qqBotEnabled,
     telegramEnabled,
     weixinEnabled,
     lansengerEnabled,
+    messengerEnabled,
     backgroundTaskCount = 0,
     workbenchTaskCounts,
     botTaskCount,
@@ -592,6 +596,7 @@ export const SidebarSystemStatus = ({
         { label: textForLang(lang, 'WeChat', '微信', '微信'), status: displayedIMChannelStatus(weixinEnabled, weixinStatus) },
         { label: textForLang(lang, 'QQ', 'QQ', 'QQ'), status: displayedIMChannelStatus(qqBotEnabled, qqBotStatus) },
         { label: 'Telegram', status: displayedIMChannelStatus(telegramEnabled, telegramStatus) },
+        { label: 'Messenger', status: displayedIMChannelStatus(messengerEnabled, messengerStatus) },
         ...(showLansenger ? [{ label: textForLang(lang, 'Lansenger', '蓝信', '藍信'), status: displayedIMChannelStatus(lansengerEnabled, lansengerStatus) }] : []),
     ];
     const imKind = aggregateIMConnectionKind(imChannels.map((channel) => channel.status));

@@ -304,8 +304,10 @@ func gatewayRejectedLLMFailure(resp *llm.Response, err error) bool {
 	// Headers arrived and the body was dropped before any payload. The coding
 	// hosts suppress the immediate non-stream fallback for this case, so it has
 	// to reach the outer backoff or the turn dies on the first dropped
-	// connection.
-	if llm.IsUnexpectedStreamEOF(err) {
+	// connection. A gateway that names the same stall inside an HTTP 200
+	// error frame ("upstream stream idle timeout") is that dropped body, not
+	// a model rejection.
+	if llm.IsUnexpectedStreamEOF(err) || llm.IsStreamIdleStall(err) {
 		return true
 	}
 	return false
@@ -336,9 +338,10 @@ func shouldRetrySimpleLLMError(err error) bool {
 		return true
 	}
 	// Headers arrived and then the stream went silent. That is the idle
-	// reader's stall, not a body-parse failure, so it waits for the outer
-	// backoff instead of an immediate second request.
-	if llm.IsSSEIdleTimeoutError(err) {
+	// reader's stall, or the same stall named by the gateway, not a
+	// body-parse failure. It waits for the outer backoff instead of an
+	// immediate second request.
+	if llm.IsStreamIdleStall(err) {
 		return true
 	}
 	// The upstream closed the SSE body mid-frame. Coding hosts suppress the
@@ -445,6 +448,9 @@ func DoSimpleLLMRequestContextWithOptions(parent context.Context, cfg corelib.Ma
 }
 
 func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
+	if cfg.IsGoogleProtocol() {
+		return doSimpleGoogleRequest(ctx, cfg, messages, client, options)
+	}
 	resp, err := doSimpleOpenAIRequestOnce(ctx, cfg, messages, client, options)
 	// HTTP 400 is not an outer transport retry. A thinking-off refusal still
 	// has one legal-effort retry, matching the non-stream Do helper.
@@ -452,6 +458,26 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 		return doSimpleOpenAIRequestOnce(ctx, next, messages, client, options)
 	}
 	return resp, err
+}
+
+func doSimpleGoogleRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
+	resp, err := llm.DoGoogleRequestWithOptions(ctx, cfg, messages, client, llm.GoogleGenerateRequestOptions{
+		ResponseFormat: options.ResponseFormat,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no response from model")
+	}
+	text := resp.Choices[0].Message.Content
+	if text == "" {
+		text = resp.Choices[0].Message.ReasoningContent
+	}
+	if text == "" {
+		return nil, fmt.Errorf("no response from model")
+	}
+	return &LLMSimpleResponse{Content: StripThinkingTags(text)}, nil
 }
 
 func doSimpleOpenAIRequestOnce(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {

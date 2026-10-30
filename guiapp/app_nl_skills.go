@@ -572,13 +572,35 @@ func (e *SkillExecutor) resumeStatusOverlayPersistence() {
 // waitForStatusOverlayPersistence stops new load-time overlay writes and
 // waits for all already-scheduled writes. It is used during App shutdown.
 func (e *SkillExecutor) waitForStatusOverlayPersistence() {
+	e.waitForStatusOverlayPersistenceWithin(0)
+}
+
+// waitForStatusOverlayPersistenceWithin is the shutdown form. A limit above
+// zero stops waiting so a stuck overlay write cannot hold the process open.
+// The in-flight write keeps running until the process exits.
+func (e *SkillExecutor) waitForStatusOverlayPersistenceWithin(limit time.Duration) {
 	if e == nil {
 		return
 	}
 	e.statusOverlayPersistMu.Lock()
 	e.statusOverlayPersistClosed = true
 	e.statusOverlayPersistMu.Unlock()
-	e.statusOverlayPersistWG.Wait()
+	if limit <= 0 {
+		e.statusOverlayPersistWG.Wait()
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		e.statusOverlayPersistWG.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		log.Printf("[shutdown] status overlay persist still running after %s", limit)
+	}
 }
 
 // drainStatusOverlayPersistence waits for already queued load-time overlay

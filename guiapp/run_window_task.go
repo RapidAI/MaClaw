@@ -142,14 +142,65 @@ func (a *App) ensureRunWindowManager() {
 		return a.pauseRunWindowAfterCurrent(sessionUserID)
 	}
 	m.stopRun = func(sessionUserID string) error {
-		_, err := a.CancelAIAssistantSessionForSession(sessionUserID)
-		return err
+		return a.stopRunWindowSession(sessionUserID)
 	}
 	m.workFinished = func(sessionUserID string, startedAt, now time.Time, allowImplicit bool) bool {
 		return a.runWindowWorkFinished(sessionUserID, startedAt, now, allowImplicit)
 	}
 	m.start()
 	a.runWindowManager = m
+}
+
+// stopRunWindowSession cancels the turn this window is attached to.
+// CancelAIAssistantSessionForSession folds slash spellings onto one project
+// id and cancels that id. A goal continuation is dispatched on the stored
+// row, so its loop can be the other spelling. That loop is stopped here too.
+func (a *App) stopRunWindowSession(sessionUserID string) error {
+	sessionUserID = strings.TrimSpace(sessionUserID)
+	if a == nil || sessionUserID == "" {
+		return nil
+	}
+	_, err := a.CancelAIAssistantSessionForSession(sessionUserID)
+	// Skip only an id this call already stopped. A failed cancel must still
+	// be retried on every spelling, including the folded project id.
+	skipped := ""
+	if err == nil {
+		if id, normErr := normalizeAIAssistantSessionUserID(sessionUserID); normErr == nil {
+			skipped = id
+		}
+	}
+	handler := a.runWindowHandler()
+	if handler == nil {
+		return err
+	}
+	if handler.stopOtherRunWindowLoops(sessionUserID, skipped) {
+		return nil
+	}
+	return err
+}
+
+func (h *IMMessageHandler) stopOtherRunWindowLoops(sessionUserID, alreadyStopped string) bool {
+	if h == nil {
+		return false
+	}
+	alreadyStopped = strings.TrimSpace(alreadyStopped)
+	stopped := false
+	for _, id := range runWindowSessionIDs(sessionUserID) {
+		if id == "" || id == alreadyStopped {
+			continue
+		}
+		ctx, text, _ := h.loopContextForCancel(id)
+		if ctx == nil && strings.TrimSpace(text) == "" {
+			continue
+		}
+		if h.app != nil {
+			h.app.revokeDesktopCodingTaskRelation(id)
+		}
+		if _, err := h.CancelSessionForUser(id); err == nil {
+			stopped = true
+		}
+	}
+	return stopped
 }
 
 func (a *App) pauseRunWindowAfterCurrent(sessionUserID string) (bool, error) {
@@ -230,7 +281,7 @@ func runWindowWorkFinishedOn(handler *IMMessageHandler, continuation *GoalContin
 	if continuation != nil && continuation.blocksRunWindowCompletion(sessionUserID) {
 		return false
 	}
-	if handler.isWorkflowV2Active(sessionUserID) {
+	if handler.runWindowWorkflowActive(sessionUserID) {
 		return false
 	}
 	ended := handler.sessionLoopEndedAt(sessionUserID)
@@ -240,30 +291,77 @@ func runWindowWorkFinishedOn(handler *IMMessageHandler, continuation *GoalContin
 	return allowImplicit && now.Sub(startedAt) > runWindowPauseAttachGrace
 }
 
+// runWindowSessionIDs is every spelling of one chat. A goal continuation is
+// dispatched on the stored row, so its loop is published under
+// desktop-user:F:\bird2 while the window is bound to desktop-user:F:/bird2.
+// The maps stay where the turn wrote them. Readers look at both.
+func runWindowSessionIDs(userID string) []string {
+	userID = strings.TrimSpace(userID)
+	ids := goalBarCandidateIDs(userID)
+	if len(ids) == 0 && userID != "" {
+		return []string{userID}
+	}
+	return ids
+}
+
+func runWindowSessionMatches(bound, notified string) bool {
+	notified = strings.TrimSpace(notified)
+	if notified == "" {
+		return false
+	}
+	for _, id := range runWindowSessionIDs(bound) {
+		if id == notified {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *IMMessageHandler) runWindowSessionBusy(userID string) bool {
 	if h == nil || strings.TrimSpace(userID) == "" {
 		return false
 	}
 	// Pending text stays set until the request lock is released, which is
 	// after the loop has already finished. It is not another turn yet.
-	if h.inFlightTurnForUser(userID) != nil {
-		return true
+	for _, id := range runWindowSessionIDs(userID) {
+		if h.inFlightTurnForUser(id) != nil || h.getSessionLoopCtx(id) != nil {
+			return true
+		}
 	}
-	return h.getSessionLoopCtx(userID) != nil
+	return false
+}
+
+func (h *IMMessageHandler) runWindowWorkflowActive(userID string) bool {
+	if h == nil {
+		return false
+	}
+	for _, id := range runWindowSessionIDs(userID) {
+		if h.isWorkflowV2Active(id) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) sessionLoopEndedAt(userID string) time.Time {
 	if h == nil || strings.TrimSpace(userID) == "" {
 		return time.Time{}
 	}
-	v, ok := h.sessionLoops.Load(userID)
-	if !ok {
-		return time.Time{}
+	var latest time.Time
+	for _, id := range runWindowSessionIDs(userID) {
+		v, ok := h.sessionLoops.Load(id)
+		if !ok {
+			continue
+		}
+		state := v.(*sessionLoopState)
+		state.stateMu.RLock()
+		ended := state.endedAt
+		state.stateMu.RUnlock()
+		if ended.After(latest) {
+			latest = ended
+		}
 	}
-	state := v.(*sessionLoopState)
-	state.stateMu.RLock()
-	defer state.stateMu.RUnlock()
-	return state.endedAt
+	return latest
 }
 
 func (h *IMMessageHandler) RequestPauseAfterCurrentUnit(userID string) bool {
@@ -271,17 +369,21 @@ func (h *IMMessageHandler) RequestPauseAfterCurrentUnit(userID string) bool {
 	if h == nil || userID == "" {
 		return false
 	}
-	ctx := h.getSessionLoopCtx(userID)
-	if ctx == nil {
-		if turn := h.inFlightTurnForUser(userID); turn != nil {
-			ctx = turn.ctx
+	accepted := false
+	for _, id := range runWindowSessionIDs(userID) {
+		ctx := h.getSessionLoopCtx(id)
+		if ctx == nil {
+			if turn := h.inFlightTurnForUser(id); turn != nil {
+				ctx = turn.ctx
+			}
 		}
+		if ctx == nil {
+			continue
+		}
+		ctx.RequestPauseAfterCurrent()
+		accepted = true
 	}
-	if ctx == nil {
-		return false
-	}
-	ctx.RequestPauseAfterCurrent()
-	return true
+	return accepted
 }
 
 func takeRunWindowPause(ctx *LoopContext) (string, bool) {
@@ -466,7 +568,7 @@ func (m *runWindowManager) tracksRunningSession(sessionUserID string) bool {
 	defer m.mu.Unlock()
 	for i := range m.tasks {
 		task := &m.tasks[i]
-		if task.Status == runWindowRunning && strings.TrimSpace(task.SessionUserID) == sessionUserID {
+		if task.Status == runWindowRunning && runWindowSessionMatches(task.SessionUserID, sessionUserID) {
 			return true
 		}
 	}

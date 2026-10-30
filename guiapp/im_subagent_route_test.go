@@ -4,10 +4,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	coreintent "github.com/RapidAI/CodeClaw/corelib/intent"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -83,7 +86,7 @@ func TestCodingSubAgentLegacyRouteDisabled(t *testing.T) {
 	attachCodeProjectToRouteHandler(t, h)
 	msg := IMUserMessage{UserID: "u1", Text: "repair the failing startup path in this project"}
 
-	resp, _, handled := h.routeSubAgentExecution(msg, nil, &LoopContext{Kind: LoopKindChat}, nil, nil, nil)
+	resp, _, handled := h.routeSubAgentExecution(msg, nil, &LoopContext{Kind: LoopKindChat}, nil, nil, nil, stoppedGoalUserTurn{})
 	if handled || resp != nil {
 		t.Fatal("bug_fix intent without active orchestrator must not route to CodingSubAgent")
 	}
@@ -110,7 +113,7 @@ func TestRouteSubAgentExecutionBlockedByActiveDocOnlyWorkflow(t *testing.T) {
 	orch := h.getTaskOrchestrator(userID)
 	orch.Activate([]*TaskItem{{Index: 1, Title: "T1", Description: "edit file"}}, "req", "design", ".", "")
 
-	resp, history, handled := h.routeSubAgentExecution(IMUserMessage{UserID: userID, Text: "continue"}, nil, &LoopContext{Kind: LoopKindChat}, nil, nil, nil)
+	resp, history, handled := h.routeSubAgentExecution(IMUserMessage{UserID: userID, Text: "continue"}, nil, &LoopContext{Kind: LoopKindChat}, nil, nil, nil, stoppedGoalUserTurn{})
 	if handled || resp != nil || len(history) != 0 {
 		t.Fatalf("subagent route = handled=%v resp=%#v history=%#v, want blocked pass-through", handled, resp, history)
 	}
@@ -138,7 +141,7 @@ func TestRouteSubAgentExecutionUsesRuntimePolicyOwner(t *testing.T) {
 	remoteOrch.Activate([]*TaskItem{{Index: 0, Title: "Remote task", Description: "remote"}}, "req", "design", ".", "")
 	ctx := &LoopContext{Kind: LoopKindChat, Runtime: RuntimeContext{RequestID: "req-subagent", PolicyOwnerID: remoteOwnerID}}
 
-	resp, history, handled := h.routeSubAgentExecution(IMUserMessage{UserID: desktopID, Text: "continue"}, nil, ctx, nil, nil, nil)
+	resp, history, handled := h.routeSubAgentExecution(IMUserMessage{UserID: desktopID, Text: "continue"}, nil, ctx, nil, nil, nil, stoppedGoalUserTurn{})
 	if !handled || resp == nil || len(history) != 1 {
 		t.Fatalf("runtime-owned subagent route = handled=%v resp=%#v history=%#v", handled, resp, history)
 	}
@@ -150,5 +153,55 @@ func TestRouteSubAgentExecutionUsesRuntimePolicyOwner(t *testing.T) {
 	}
 	if remoteOrch.IsActive() {
 		t.Fatal("completed remote orchestrator should deactivate after run")
+	}
+}
+
+func TestLegacySubAgentRouteSchedulesTheRearmedGoal(t *testing.T) {
+	original := runTaskWithSubAgent
+	t.Cleanup(func() { runTaskWithSubAgent = original })
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "legacy-route-report"}
+	}
+
+	const userID = "legacy-route-goal"
+	app, store, engine := newGoalBarApp(t)
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	g, err := store.Set(userID, "图形版本愤怒的小鸟，c++语言")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "Billing daily count exceeded") {
+		t.Fatal("failed to mark the goal failed")
+	}
+	handler := app.imHandler
+	handler.memory = agent.NewConversationMemory()
+	handler.taskOrchestratorRegistry = NewTaskOrchestratorRegistry()
+	handler.pendingReplyPromptClassifier = func(string) (bool, error) { return false, nil }
+	orch := handler.getTaskOrchestrator(userID)
+	orch.Activate([]*TaskItem{{Index: 0, Title: "implement", Description: "ship it"}}, "req", "design", ".", "")
+
+	keep := false
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:            IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续这个任务"},
+		Trimmed:            "继续这个任务",
+		WorkflowAgentLoop:  true,
+		queuedGoalTurnHold: &keep,
+	})
+	if resp == nil || !strings.Contains(resp.Text, "legacy-route-report") {
+		t.Fatalf("legacy route did not finish the turn: %#v", resp)
+	}
+	if !keep {
+		t.Fatal("legacy route returned without post-loop scheduling")
+	}
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || got.Summary != "" || got.ComposerClockStopped() {
+		t.Fatalf("legacy route left the stopped goal, got %+v", got)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !goalBarPending(engine, userID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !goalBarPending(engine, userID) {
+		t.Fatal("re-armed goal has no next turn")
 	}
 }

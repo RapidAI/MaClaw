@@ -234,8 +234,25 @@ func DoOpenAIRequestStreamWithOptions(
 	onReasoning TokenCallback,
 	opts OpenAIChatRequestOptions,
 ) (*Response, error) {
-	opts.Stream = true
 	opts.Tools = tools
+	if cfg.IsGoogleProtocol() {
+		opts.Stream = true
+		googleOpts, err := googleGenerateOptionsFromOpenAI(opts)
+		if err != nil {
+			return nil, err
+		}
+		return DoGoogleRequestStreamWithOptions(ctx, cfg, messages, client, onToken, onReasoning, googleOpts)
+	}
+	// CodeGen opens an upstream SSE read for stream:true and aborts that read
+	// after 2m0s without a chunk ("upstream stream idle timeout after 2m0s").
+	// The SSE preamble arrives before any model byte, and streamingRequestContext
+	// then releases the route deadline, leaving the gateway's upstream idle
+	// timer in charge of the turn. A buffered completion keeps stream:false so
+	// the caller's route deadline covers the whole body.
+	if corelib.IsCodeGenURL(cfg.URL) {
+		return completeCodeGenOpenAIChat(ctx, cfg, messages, tools, client, onToken, onReasoning, opts)
+	}
+	opts.Stream = true
 	cfg = bindOpenCodeSession(ctx, cfg, messages)
 	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, opts)
 	if err != nil {
@@ -247,69 +264,9 @@ func DoOpenAIRequestStreamWithOptions(
 
 	startedAt := time.Now()
 	result, statusCode, body, err := openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
-	if err != nil && !TransparentRequestRetriesDisabled(ctx) {
-		// Handle "unsupported parameter" — the endpoint doesn't accept max_tokens at all.
-		// Retry once without the parameter and cache so subsequent requests skip it.
-		if (statusCode == 400 || statusCode == 422) && looksLikeUnsupportedMaxTokensParam(string(body), err.Error()) {
-			log.Printf("[LLM-stream] max_tokens_unsupported model=%s — retrying without max_tokens/max_output_tokens %s",
-				cfg.Model, traceFields)
-			var reqMap map[string]interface{}
-			if json.Unmarshal(reqBody, &reqMap) == nil {
-				delete(reqMap, "max_tokens")
-				delete(reqMap, "max_output_tokens")
-				delete(reqMap, "max_completion_tokens")
-				if retryBody, marshalErr := json.Marshal(reqMap); marshalErr == nil {
-					result, statusCode, body, err = openAISDKChatStream(ctx, cfg, retryBody, client, onToken, onReasoning)
-					if err == nil {
-						// Cache 0 to signal "don't send max_tokens for this model"
-						cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
-						maxOutputTokensCache.Store(cacheKey, 0)
-						log.Printf("[LLM-stream] max_tokens_unsupported succeeded model=%s — cached skip %s",
-							cfg.Model, traceFields)
-					}
-				}
-			}
-		}
-		// Auto-downgrade max_tokens via binary halving if API rejects it as too high.
-		// No parsing of error message numbers — just detect "is this about max_tokens?" and halve.
-		if err != nil && (statusCode == 400 || statusCode == 422) && looksLikeMaxTokensError(string(body), err.Error()) {
-			currentLimit := cfg.EffectiveMaxOutputTokens()
-			const minOutputTokens = 1024
-			const maxDowngradeAttempts = 6 // 65536 → 32768 → 16384 → 8192 → 4096 → 2048 → 1024
-			for attempt := 0; attempt < maxDowngradeAttempts && currentLimit > minOutputTokens; attempt++ {
-				currentLimit /= 2
-				if currentLimit < minOutputTokens {
-					currentLimit = minOutputTokens
-				}
-				log.Printf("[LLM-stream] max_tokens_downgrade model=%s attempt=%d trying=%d %s",
-					cfg.Model, attempt+1, currentLimit, traceFields)
-				var reqMap map[string]interface{}
-				if json.Unmarshal(reqBody, &reqMap) != nil {
-					break
-				}
-				reqMap["max_tokens"] = currentLimit
-				delete(reqMap, "max_completion_tokens")
-				retryBody, marshalErr := json.Marshal(reqMap)
-				if marshalErr != nil {
-					break
-				}
-				retryStartedAt := time.Now()
-				result, statusCode, body, err = openAISDKChatStream(ctx, cfg, retryBody, client, onToken, onReasoning)
-				if err == nil {
-					log.Printf("[LLM-stream] max_tokens_downgrade succeeded model=%s limit=%d elapsed=%s %s",
-						cfg.Model, currentLimit, time.Since(retryStartedAt).Round(time.Millisecond), traceFields)
-					// Cache the discovered limit so subsequent requests skip the probe.
-					cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
-					maxOutputTokensCache.Store(cacheKey, currentLimit)
-					break
-				}
-				// If the error is no longer about max_tokens, stop halving
-				if !looksLikeMaxTokensError(string(body), err.Error()) {
-					break
-				}
-			}
-		}
-	}
+	result, statusCode, body, err = recoverOpenAIMaxTokensRejection(ctx, cfg, reqBody, result, statusCode, body, err, "[LLM-stream]", func(retryBody []byte) (*Response, int, []byte, error) {
+		return openAISDKChatStream(ctx, cfg, retryBody, client, onToken, onReasoning)
+	})
 	if err != nil {
 		// Streaming can fail after an SSE prefix has already reached the host.
 		// Return that assembled prefix unchanged so callers can avoid a retry
@@ -353,6 +310,144 @@ func DoOpenAIRequestStreamWithOptions(
 	}
 	log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), traceFields)
 	return result, nil
+}
+
+// completeCodeGenOpenAIChat performs one CodeGen chat completion on the
+// caller's route deadline and then delivers reasoning before the answer.
+// The deadline stays attached for the whole body read. Output-limit recovery
+// stays on this JSON call; it does not open an SSE read.
+func completeCodeGenOpenAIChat(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+	onToken TokenCallback,
+	onReasoning TokenCallback,
+	opts OpenAIChatRequestOptions,
+) (*Response, error) {
+	opts.Stream = false
+	resp, err := DoOpenAIRequestWithOptions(ctx, cfg, messages, tools, client, opts)
+	if err != nil || resp == nil || len(resp.Choices) == 0 {
+		return resp, err
+	}
+	msg := resp.Choices[0].Message
+	// One-shot delivery. Reasoning first matches a stream. Line filters keep
+	// an unterminated tail until Flush, and that Flush runs after the answer
+	// callback, so a finished reasoning document has to end on a line boundary
+	// or the answer is emitted before the thought.
+	if onReasoning != nil && msg.ReasoningContent != "" {
+		reasoning := msg.ReasoningContent
+		if !strings.HasSuffix(reasoning, "\n") {
+			reasoning += "\n"
+		}
+		onReasoning(reasoning)
+	}
+	if onToken != nil && msg.Content != "" {
+		onToken(msg.Content)
+	}
+	return resp, nil
+}
+
+// recoverOpenAIMaxTokensRejection repeats one chat completion when the
+// endpoint rejects the output-length field or its value. send must stay on
+// the same wire as the failed attempt. A buffered CodeGen completion retries
+// through the JSON client; opening the stream client would arm the upstream
+// idle timer again. The request owner that disabled transparent retries sees
+// the original rejection and does not get a hidden successor.
+func recoverOpenAIMaxTokensRejection(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	reqBody []byte,
+	result *Response,
+	statusCode int,
+	body []byte,
+	err error,
+	logTag string,
+	send func([]byte) (*Response, int, []byte, error),
+) (*Response, int, []byte, error) {
+	if err == nil || TransparentRequestRetriesDisabled(ctx) {
+		return result, statusCode, body, err
+	}
+	traceFields := RequestTraceLogFields(ctx)
+	// The endpoint doesn't accept max_tokens at all. Retry once without the
+	// parameter and cache so later requests skip it.
+	if (statusCode == 400 || statusCode == 422) && looksLikeUnsupportedMaxTokensParam(string(body), err.Error()) {
+		log.Printf("%s max_tokens_unsupported model=%s — retrying without max_tokens/max_output_tokens %s",
+			logTag, cfg.Model, traceFields)
+		var reqMap map[string]interface{}
+		if json.Unmarshal(reqBody, &reqMap) == nil {
+			delete(reqMap, "max_tokens")
+			delete(reqMap, "max_output_tokens")
+			delete(reqMap, "max_completion_tokens")
+			if retryBody, marshalErr := json.Marshal(reqMap); marshalErr == nil {
+				result, statusCode, body, err = send(retryBody)
+				if err == nil {
+					cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
+					maxOutputTokensCache.Store(cacheKey, 0)
+					log.Printf("%s max_tokens_unsupported succeeded model=%s — cached skip %s",
+						logTag, cfg.Model, traceFields)
+				}
+			}
+		}
+	}
+	// Binary-halve a value the endpoint calls too high. Do not parse a number
+	// out of the error text.
+	if err != nil && (statusCode == 400 || statusCode == 422) && looksLikeMaxTokensError(string(body), err.Error()) {
+		// Halve the value that was rejected. A cached ceiling can be far below
+		// EffectiveMaxOutputTokens; starting from the config ceiling would
+		// retry a larger limit than the one the endpoint just refused.
+		currentLimit := rejectedMaxOutputTokens(reqBody, cfg.EffectiveMaxOutputTokens())
+		const minOutputTokens = 1024
+		const maxDowngradeAttempts = 6 // 65536 → 32768 → 16384 → 8192 → 4096 → 2048 → 1024
+		for attempt := 0; attempt < maxDowngradeAttempts && currentLimit > minOutputTokens; attempt++ {
+			currentLimit /= 2
+			if currentLimit < minOutputTokens {
+				currentLimit = minOutputTokens
+			}
+			log.Printf("%s max_tokens_downgrade model=%s attempt=%d trying=%d %s",
+				logTag, cfg.Model, attempt+1, currentLimit, traceFields)
+			var reqMap map[string]interface{}
+			if json.Unmarshal(reqBody, &reqMap) != nil {
+				break
+			}
+			reqMap["max_tokens"] = currentLimit
+			delete(reqMap, "max_completion_tokens")
+			retryBody, marshalErr := json.Marshal(reqMap)
+			if marshalErr != nil {
+				break
+			}
+			retryStartedAt := time.Now()
+			result, statusCode, body, err = send(retryBody)
+			if err == nil {
+				log.Printf("%s max_tokens_downgrade succeeded model=%s limit=%d elapsed=%s %s",
+					logTag, cfg.Model, currentLimit, time.Since(retryStartedAt).Round(time.Millisecond), traceFields)
+				cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
+				maxOutputTokensCache.Store(cacheKey, currentLimit)
+				break
+			}
+			if !looksLikeMaxTokensError(string(body), err.Error()) {
+				break
+			}
+		}
+	}
+	return result, statusCode, body, err
+}
+
+// rejectedMaxOutputTokens is the output cap on the request the endpoint
+// refused. The next probe halves that number. A missing cap falls back to
+// the config ceiling, which is what the request builder would have sent.
+func rejectedMaxOutputTokens(reqBody []byte, fallback int) int {
+	var reqMap map[string]interface{}
+	if json.Unmarshal(reqBody, &reqMap) != nil {
+		return fallback
+	}
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		if n, ok := openAIChatInt(reqMap[key]); ok && n > 0 {
+			return n
+		}
+	}
+	return fallback
 }
 
 // DoAnthropicRequestStream sends a streaming Anthropic chat request.

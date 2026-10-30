@@ -225,16 +225,6 @@ func adminDatabaseIdemScopeKey(p agentservice.Principal, key string) string {
 	return p.TenantID + "\x00" + p.UserID + "\x00" + key
 }
 
-func loadAdminDatabaseIdemRecords(dataRoot string) map[string]adminDatabaseProfileIdemRecord {
-	records := map[string]adminDatabaseProfileIdemRecord{}
-	if err := readAdminJSON(dataRoot, adminDatabaseProfilesIdemFile, &records); err != nil {
-		// Missing or unreadable store starts empty; a corrupt file must not
-		// block configuration writes (the write below replaces it).
-		return map[string]adminDatabaseProfileIdemRecord{}
-	}
-	return records
-}
-
 // replayAdminDatabaseIdem looks up a stored idempotency record. Same
 // fingerprint replays the first result; a different one conflicts (409).
 // Entries older than the TTL are pruned whenever the store is written.
@@ -269,7 +259,7 @@ func (s *HTTPServer) storeAdminDatabaseIdem(p agentservice.Principal, key, finge
 		Result:      json.RawMessage(result),
 		CreatedAt:   now,
 	}
-	if err := writeAdminJSON(s.svc.DataRoot(), adminDatabaseProfilesIdemFile, records); err != nil {
+	if err := saveAdminDatabaseIdemRecords(s.svc.DataRoot(), records); err != nil {
 		// The mutation already succeeded; losing the replay record degrades a
 		// retried request into a repeat write, which upsert semantics tolerate.
 		_ = s.recordAdminAudit(context.Background(), "admin.database_profile_idem_store_failed", "database_profile", key, map[string]string{"tenant_id": p.TenantID, "user_id": p.UserID})

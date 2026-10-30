@@ -16,6 +16,7 @@ package tool
 // with failures. Rules below a confidence threshold are auto-pruned.
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -42,11 +43,13 @@ type ToolRule struct {
 
 // ToolMemoryStore manages per-tool persistent rules.
 type ToolMemoryStore struct {
-	mu     sync.RWMutex
-	rules  []ToolRule
-	byTool map[string][]int // toolName → indices into rules slice
-	path   string           // persistence file path
-	dirty  bool
+	mu          sync.RWMutex
+	rules       []ToolRule
+	byTool      map[string][]int // toolName → indices into rules slice
+	path        string           // legacy JSON path; the live rows are in the sibling database
+	db          *sql.DB
+	dirty       bool
+	rulesLoaded bool // true only after a complete read of tool_rules
 }
 
 const (
@@ -362,19 +365,45 @@ func (s *ToolMemoryStore) evictOldest(count int) {
 }
 
 func (s *ToolMemoryStore) load() {
+	if err := s.openDB(); err != nil {
+		log.Printf("[tool-memory] sqlite open failed, reading legacy JSON: %v", err)
+		s.loadLegacyFile()
+		return
+	}
+	if err := s.loadDB(); err != nil {
+		// The rows are still in SQLite. Importing the legacy file here would
+		// replace them with that older copy.
+		log.Printf("[tool-memory] sqlite load: %v", err)
+		return
+	}
+	s.importLegacyJSON()
+}
+
+// loadLegacyFile reports whether the JSON file was absent or parsed. A read or
+// parse failure leaves the import unmarked so a later open can retry it.
+func (s *ToolMemoryStore) loadLegacyFile() bool {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
-		return // file doesn't exist yet, start empty
+		return os.IsNotExist(err)
 	}
 	var rules []ToolRule
 	if err := json.Unmarshal(data, &rules); err != nil {
 		log.Printf("[tool-memory] failed to parse %s: %v", s.path, err)
-		return
+		return false
 	}
 	s.rules = rules
+	return true
 }
 
 func (s *ToolMemoryStore) saveLocked() {
+	if s.db != nil {
+		if err := s.saveDB(); err != nil {
+			log.Printf("[tool-memory] sqlite save: %v", err)
+			return
+		}
+		s.dirty = false
+		return
+	}
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		log.Printf("[tool-memory] failed to create dir %s: %v", dir, err)

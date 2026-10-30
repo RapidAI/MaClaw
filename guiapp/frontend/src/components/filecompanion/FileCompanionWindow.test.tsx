@@ -4246,6 +4246,154 @@ describe("FileCompanionWindow", () => {
         ], used)).toBeNull();
     });
 
+    it("a restored received copy waits for the library list before answering locally", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const path = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+        let resolveList: (value: ListLibraryResult) => void = () => undefined;
+        listLibrary.mockImplementation(() => new Promise<ListLibraryResult>((resolve) => { resolveList = resolve; }));
+        addShareNote.mockResolvedValue({
+            notesRevision: 1,
+            notes: [{ id: "cn_back", author: "me@example.com", text: "这段怎么看", createdAt: "2026-10-30T00:00:00Z" }],
+        });
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (opened: string) => doc(opened));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-input");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "这段怎么看" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(send).not.toHaveBeenCalled();
+        expect(addShareNote).not.toHaveBeenCalled();
+        resolveList({
+            items: [{
+                path,
+                source: "cloud",
+                token,
+                mine: false,
+                host: false,
+                hostKnown: true,
+                notes: [],
+            }],
+            notice: "",
+            notesReply: true,
+        });
+        await waitFor(() => expect(addShareNote).toHaveBeenCalledWith(path, "这段怎么看"));
+        expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a restored copy the hub no longer shares answers locally once the list returns", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const path = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+        let resolveList: (value: ListLibraryResult) => void = () => undefined;
+        listLibrary.mockImplementation(() => new Promise<ListLibraryResult>((resolve) => { resolveList = resolve; }));
+        send.mockResolvedValue(undefined);
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (opened: string) => doc(opened));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-input");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "这段怎么看" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(send).not.toHaveBeenCalled();
+        resolveList({ items: [], notice: "" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        expect(addShareNote).not.toHaveBeenCalled();
+    });
+
+    it("a restored copy the host already withdrew does not answer locally", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const path = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+        let resolveList: (value: ListLibraryResult) => void = () => undefined;
+        listLibrary.mockImplementation(() => new Promise<ListLibraryResult>((resolve) => { resolveList = resolve; }));
+        send.mockResolvedValue(undefined);
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (opened: string) => doc(opened));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-input");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "这段怎么看" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(send).not.toHaveBeenCalled();
+        resolveList({ items: [], notice: "", removed: [path] });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-shared.pdf")).toBeNull());
+        expect(send).not.toHaveBeenCalled();
+        expect(addShareNote).not.toHaveBeenCalled();
+    });
+
+    it("a restored copy on an older hub still answers locally after the list", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const path = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+        let resolveList: (value: ListLibraryResult) => void = () => undefined;
+        listLibrary.mockImplementation(() => new Promise<ListLibraryResult>((resolve) => { resolveList = resolve; }));
+        send.mockResolvedValue(undefined);
+        addShareNote.mockResolvedValue({
+            notesRevision: 1,
+            notes: [{ id: "cn_old", author: "me@example.com", text: "这段怎么看", createdAt: "2026-10-30T00:00:00Z" }],
+        });
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (opened: string) => doc(opened));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-input");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "这段怎么看" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(send).not.toHaveBeenCalled();
+        resolveList({
+            items: [{
+                path,
+                source: "cloud",
+                token,
+                mine: false,
+                host: false,
+                hostKnown: true,
+                notes: [],
+            }],
+            notice: "",
+            notesReply: false,
+        });
+        await waitFor(() => expect(addShareNote).toHaveBeenCalledWith(path, "这段怎么看"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    });
+
+    it("reopening the same shared file keeps the next line a note", async () => {
+        const path = "C:/library/shared.pdf";
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (opened: string) => doc(opened));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path,
+                source: "cloud",
+                token,
+                mine: false,
+                host: false,
+                hostKnown: true,
+                owner: "host@example.com",
+                notes: [],
+            }],
+            notice: "",
+            notesReply: true,
+        });
+        addShareNote.mockResolvedValue({
+            notesRevision: 1,
+            notes: [{ id: "cn_again", author: "me@example.com", text: "再问一句", createdAt: "2026-10-30T00:00:00Z" }],
+        });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-host-badge");
+        runtime.emit("file-companion:open", [path]);
+        await waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId("file-companion-host-badge").getAttribute("data-state")).toBe("guest");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "再问一句" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(addShareNote).toHaveBeenCalledWith(path, "再问一句"));
+        expect(send).not.toHaveBeenCalled();
+    });
+
     it("a participant waits for host review instead of answering locally", async () => {
         boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
         open.mockImplementation(async (path: string) => doc(path));

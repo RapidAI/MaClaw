@@ -13,4 +13,8 @@ describe('imSubTabOptions', () => {
     it('includes Slack as an IM channel', () => {
         expect(imSubTabOptions('zh-Hans').some(tab => tab.key === 'slack' && tab.label === 'Slack')).toBe(true);
     });
+
+    it('includes Facebook Messenger as an IM channel', () => {
+        expect(imSubTabOptions('zh-Hans').some(tab => tab.key === 'messenger' && tab.label === 'Messenger')).toBe(true);
+    });
 });

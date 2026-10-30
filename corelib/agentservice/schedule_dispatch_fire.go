@@ -177,6 +177,8 @@ func reviewedHostScheduleDispatchFireChannel(channelScope string) (string, bool)
 		return scheduler.DeliveryChannelQQ, true
 	case scheduler.DeliveryChannelSlack, "slack_local", "slacklocal":
 		return scheduler.DeliveryChannelSlack, true
+	case scheduler.DeliveryChannelMessenger, "messenger_local", "messengerlocal", "facebook-messenger", "facebook_messenger", "facebookmessenger":
+		return scheduler.DeliveryChannelMessenger, true
 	// Companion hardware terminals. Listed explicitly so a device-bound dispatch
 	// is not silently dropped: this function returning false makes the whole
 	// fire a no-op, with no error and no delivery record.

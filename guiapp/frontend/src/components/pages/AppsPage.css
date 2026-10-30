@@ -5394,7 +5394,7 @@
 
 .apps-one-click-errors__item small {
     display: grid;
-    grid-template-columns: 42px minmax(0, 1fr);
+    grid-template-columns: fit-content(14em) minmax(0, 1fr);
     gap: 6px;
 }
 

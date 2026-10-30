@@ -23,7 +23,6 @@ func TestRequestQuitWithoutContextTerminates(t *testing.T) {
 
 func TestRequestQuitWithoutContextRemovesTrayIconFirst(t *testing.T) {
 	c := newExitController()
-	c.trayIconGrace = 0
 
 	var events []string
 	c.setTrayQuit(func() { events = append(events, "tray") })
@@ -36,11 +35,98 @@ func TestRequestQuitWithoutContextRemovesTrayIconFirst(t *testing.T) {
 	}
 }
 
-func TestRequestQuitForcesExitWhenShutdownStalls(t *testing.T) {
+func TestRequestQuitKeepsTrayUntilProcessExits(t *testing.T) {
+	c := newExitController()
+	c.gracefulTimeout = time.Hour
+
+	var mu sync.Mutex
+	var events []string
+	quitStarted := make(chan struct{})
+	release := make(chan struct{})
+	c.setTrayQuit(func() {
+		mu.Lock()
+		events = append(events, "tray")
+		mu.Unlock()
+	})
+	c.quitRuntime = func(context.Context) {
+		close(quitStarted)
+		<-release
+	}
+	c.terminateProcess = func(int) {
+		mu.Lock()
+		events = append(events, "terminate")
+		mu.Unlock()
+	}
+
+	c.requestQuit(context.Background())
+	select {
+	case <-quitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("quitRuntime was not called")
+	}
+	mu.Lock()
+	if len(events) != 0 {
+		got := append([]string(nil), events...)
+		mu.Unlock()
+		t.Fatalf("events while shutting down = %v, tray must stay up", got)
+	}
+	mu.Unlock()
+
+	// Shutdown finished: icon removal and termination are one step.
+	c.exitNow()
+	close(release)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0] != "tray" || events[1] != "terminate" {
+		t.Fatalf("events = %v, want [tray terminate]", events)
+	}
+}
+
+func TestRequestQuitDoesNotKillDuringPrepare(t *testing.T) {
 	c := newExitController()
 	c.gracefulTimeout = 30 * time.Millisecond
-	c.quitRuntime = func(context.Context) {} // simulates a wedged Wails shutdown
 
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var killed atomic.Bool
+	c.setPrepareExit(func() {
+		close(started)
+		<-release
+	})
+	c.quitRuntime = func(context.Context) {}
+	c.terminateProcess = func(int) { killed.Store(true) }
+
+	c.requestQuit(context.Background())
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("prepare was not called")
+	}
+	time.Sleep(80 * time.Millisecond)
+	if killed.Load() {
+		t.Fatal("watchdog fired while session state was still flushing")
+	}
+	close(release)
+
+	deadline := time.Now().Add(time.Second)
+	for !killed.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !killed.Load() {
+		t.Fatal("watchdog did not fire after the flush returned")
+	}
+}
+
+func TestRequestQuitBackstopKillsStuckFlush(t *testing.T) {
+	c := newExitController()
+	c.gracefulTimeout = time.Hour
+	c.flushBudget = 40 * time.Millisecond
+
+	c.setPrepareExit(func() { <-make(chan struct{}) })
+	c.quitRuntime = func(context.Context) {
+		t.Error("Wails shutdown started while the session flush was stuck")
+	}
 	exitCh := make(chan int, 1)
 	c.terminateProcess = func(code int) { exitCh <- code }
 
@@ -51,8 +137,45 @@ func TestRequestQuitForcesExitWhenShutdownStalls(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0", code)
 		}
+	case <-time.After(time.Second):
+		t.Fatal("stuck session flush was not forced to exit")
+	}
+}
+
+func TestRequestQuitForcesExitWhenShutdownStalls(t *testing.T) {
+	c := newExitController()
+	c.gracefulTimeout = 30 * time.Millisecond
+	c.quitRuntime = func(context.Context) {} // simulates a wedged Wails shutdown
+
+	var mu sync.Mutex
+	var events []string
+	exitCh := make(chan int, 1)
+	c.setTrayQuit(func() {
+		mu.Lock()
+		events = append(events, "tray")
+		mu.Unlock()
+	})
+	c.terminateProcess = func(code int) {
+		mu.Lock()
+		events = append(events, "terminate")
+		mu.Unlock()
+		exitCh <- code
+	}
+
+	c.requestQuit(context.Background())
+
+	select {
+	case code := <-exitCh:
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchdog did not force the process to exit")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0] != "tray" || events[1] != "terminate" {
+		t.Fatalf("events = %v, want [tray terminate]", events)
 	}
 }
 
@@ -82,7 +205,6 @@ func TestRequestQuitIsIdempotent(t *testing.T) {
 
 func TestFinishDesktopExitRemovesTrayIconBeforeTerminating(t *testing.T) {
 	c := newExitController()
-	c.trayIconGrace = 0
 
 	var events []string
 	c.setTrayQuit(func() { events = append(events, "tray") })
@@ -95,16 +217,19 @@ func TestFinishDesktopExitRemovesTrayIconBeforeTerminating(t *testing.T) {
 	}
 }
 
-func TestFinishDesktopExitSkipsGraceWithoutTray(t *testing.T) {
+func TestFinishDesktopExitTerminatesWithoutTray(t *testing.T) {
 	c := newExitController()
-	c.trayIconGrace = time.Hour // would hang the test if it were applied
 
+	var codes []int
+	c.terminateProcess = func(code int) { codes = append(codes, code) }
 	start := time.Now()
-	c.terminateProcess = func(int) {}
 	c.finishDesktopExit()
 
+	if len(codes) != 1 || codes[0] != 0 {
+		t.Fatalf("terminate calls = %v, want [0]", codes)
+	}
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("finishDesktopExit waited %s without a tray loop", elapsed)
+		t.Fatalf("finishDesktopExit took %s without a tray", elapsed)
 	}
 }
 

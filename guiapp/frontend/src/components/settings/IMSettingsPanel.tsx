@@ -5,6 +5,7 @@ import { ThirdPartyAccessSettings } from './ThirdPartyAccessSettings';
 import { QQBotSettings } from './QQBotSettings';
 import { TelegramBotSettings } from './TelegramBotSettings';
 import { SlackSettings } from './SlackSettings';
+import { MessengerSettings } from './MessengerSettings';
 import { WeixinSettings } from './WeixinSettings';
 import { LansengerSettings } from './LansengerSettings';
 import { IMSubTabs, type IMSubTab } from './IMSubTabs';
@@ -154,6 +155,16 @@ export const IMSettingsPanel = ({
 
         {imSubTab === 'slack' && (
             <SlackSettings
+                config={config}
+                setConfig={setConfig}
+                lang={lang}
+                saveRemoteConfigField={saveRemoteConfigField}
+                setIMAuditPlatform={setIMAuditPlatform}
+            />
+        )}
+
+        {imSubTab === 'messenger' && (
+            <MessengerSettings
                 config={config}
                 setConfig={setConfig}
                 lang={lang}

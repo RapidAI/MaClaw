@@ -847,6 +847,29 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	}
 	messages := []interface{}{map[string]string{"role": "user", "content": prompt}}
 	parsedTools, toolChoiceValue := providerTestToolValues(tools, toolChoice)
+	if cfg.IsGoogleProtocol() {
+		endpoint, body, err := corellm.BuildGoogleGenerateContentRequestData(cfg, messages, corellm.GoogleGenerateRequestOptions{
+			Tools:                   parsedTools,
+			ToolChoice:              toolChoiceValue,
+			ExplicitToolReplacement: len(parsedTools) > 0,
+			MaxOutputTokens:         maxTokens,
+		})
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if key := strings.TrimSpace(cfg.Key); key != "" {
+			req.Header.Set("x-goog-api-key", key)
+		}
+		if ua := cfg.UserAgent(); ua != "" {
+			req.Header.Set("User-Agent", ua)
+		}
+		return req, nil
+	}
 	if cfg.Protocol == "anthropic" {
 		endpoint, body, err := corellm.BuildAnthropicMessagesRequestData(cfg, messages, corellm.AnthropicMessagesRequestOptions{MaxTokens: maxTokens})
 		if err != nil {
@@ -1090,7 +1113,9 @@ func llmProviderTestReply(body []byte, protocol, wireAPI string) (string, error)
 		response *corellm.Response
 		err      error
 	)
-	if protocol == "anthropic" {
+	if strings.EqualFold(protocol, "google") || strings.EqualFold(protocol, "gemini") {
+		response, err = corellm.ParseGoogleGenerateContent(body)
+	} else if protocol == "anthropic" {
 		var anthropic struct {
 			Content []struct {
 				Type     string `json:"type"`

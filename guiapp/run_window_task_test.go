@@ -383,6 +383,70 @@ func TestRunWindowWorkFinishedFollowsSession(t *testing.T) {
 	}
 }
 
+func TestRunWindowWorkFinishedSeesTheStoredSlashLoop(t *testing.T) {
+	const asked = `desktop-user:F:/bird2`
+	const stored = `desktop-user:F:\bird2`
+	h := &IMMessageHandler{}
+	started := time.Now().Add(-time.Minute)
+	store := goal.NewStore("")
+	g, err := store.Set(stored, "图形版本愤怒的小鸟，c++语言")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.UpdateStatus(stored, g.GoalID, goal.StatusPaused, "用户已停止当前回合。")
+	engine := NewGoalContinuationEngine(store, nil)
+
+	storedLoop := NewLoopContext("stored-live", 1, nil)
+	cleanupStored := h.beginAgentLoopRuntime(storedLoop, stored, "续接", "goal-continuation")
+	if runWindowWorkFinishedOn(h, engine, asked, started, time.Now(), false) {
+		cleanupStored()
+		t.Fatal("a continuation still running on the stored spelling looked finished")
+	}
+	if !h.RequestPauseAfterCurrentUnit(asked) || !storedLoop.ConsumePauseAfterCurrent() {
+		cleanupStored()
+		t.Fatal("pause after the current unit missed the stored loop")
+	}
+	cleanupStored()
+	if !runWindowWorkFinishedOn(h, engine, asked, started, time.Now(), false) {
+		t.Fatal("the window stayed open after the stored loop ended")
+	}
+
+	m := &runWindowManager{tasks: []RunWindowTask{{
+		ID: "rw-slash", Status: runWindowRunning, SessionUserID: asked,
+	}}}
+	if !m.tracksRunningSession(stored) {
+		t.Fatal("settle on the stored spelling missed the composer window")
+	}
+	if m.tracksRunningSession(`desktop-user:F:/other`) {
+		t.Fatal("a different project matched this window")
+	}
+}
+
+func TestRunWindowDeleteStopsTheStoredSlashLoop(t *testing.T) {
+	const asked = `desktop-user:F:/bird2`
+	const stored = `desktop-user:F:\bird2`
+	h := &IMMessageHandler{}
+	loop := NewLoopContext("stored-live", 1, nil)
+	cleanup := h.beginAgentLoopRuntime(loop, asked, "续接", "goal-continuation")
+	defer cleanup()
+	go func() {
+		<-loop.CancelC
+		loop.Done()
+	}()
+	// The window id is the normalized backslash row. That cancel found no
+	// loop, so the forward-slash continuation still has to be stopped.
+	if !h.stopOtherRunWindowLoops(stored, stored) {
+		t.Fatal("delete left the continuation loop running")
+	}
+	if !loop.IsCancelled() || !loop.UserCancelled() {
+		t.Fatal("stored-spelling cancel did not stop the forward-slash loop")
+	}
+	cleanup()
+	if h.stopOtherRunWindowLoops(stored, stored) {
+		t.Fatal("a second delete found another loop")
+	}
+}
+
 func TestRunWindowKeepsClaimUntilSessionAttaches(t *testing.T) {
 	m := newTestRunWindowManager(t)
 	now := time.Date(2026, 10, 14, 1, 0, 0, 0, time.Local)

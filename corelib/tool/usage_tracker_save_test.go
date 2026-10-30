@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,8 +10,8 @@ import (
 )
 
 // TestUsageTrackerDebouncedSaveLands pins the coalescing writer: recording a
-// tool outcome must reach disk without an explicit Save(), keep every record
-// written within one debounce window, and use the atomic temp+rename path.
+// tool outcome must reach the SQLite history without an explicit Save(), and
+// keep every record written within one debounce window.
 func TestUsageTrackerDebouncedSaveLands(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "usage.json")
@@ -23,11 +24,12 @@ func TestUsageTrackerDebouncedSaveLands(t *testing.T) {
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if _, err := os.Stat(path); err == nil {
+		n, err := usageRowCount(path)
+		if err == nil && n == 3 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("debounced save never wrote the history file")
+			t.Fatalf("debounced save never wrote 3 rows (count=%d err=%v)", n, err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -118,4 +120,15 @@ func TestUsageTrackerConcurrentRecordAndSave(t *testing.T) {
 	if n != writers*perWriter {
 		t.Fatalf("reloaded %d records, want %d", n, writers*perWriter)
 	}
+}
+
+func usageRowCount(path string) (int, error) {
+	db, err := sql.Open("sqlite", usageDBPath(path)+"?_pragma=busy_timeout(5000)&mode=ro")
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var n int
+	err = db.QueryRow(`SELECT COUNT(*) FROM usage_records`).Scan(&n)
+	return n, err
 }

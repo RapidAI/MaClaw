@@ -23,7 +23,16 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportProject: vi.fn(),
 }));
 
-import { companionLibrarySync, companionWithdrawnNotice } from "./FileCompanionLibrary";
+import { companionInstalledSharePath, companionLibrarySync, companionWithdrawnNotice } from "./FileCompanionLibrary";
+
+describe("companionInstalledSharePath", () => {
+    it("recognizes a received copy by the share folder", () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        expect(companionInstalledSharePath(`C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`)).toBe(true);
+        expect(companionInstalledSharePath(`C:\\Users\\me\\.maclaw\\data\\file-companion\\library-files\\${token}\\shared.pdf`)).toBe(true);
+        expect(companionInstalledSharePath("C:/Users/me/Desktop/paper.pdf")).toBe(false);
+    });
+});
 
 describe("companionLibrarySync", () => {
     it("reads the withdrawn paths and the hosts to ask", () => {

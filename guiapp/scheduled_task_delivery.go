@@ -80,6 +80,8 @@ func (a *App) deliverScheduledTaskTarget(ctx context.Context, channel, botProfil
 		return a.deliverQQScheduledTarget(ctx, target, text)
 	case scheduler.DeliveryChannelSlack:
 		return a.deliverSlackScheduledTarget(ctx, target, text)
+	case scheduler.DeliveryChannelMessenger:
+		return a.deliverMessengerScheduledTarget(ctx, target, text)
 	case scheduler.DeliveryChannelDevice:
 		return a.deliverDeviceScheduledTarget(ctx, target, text)
 	default:

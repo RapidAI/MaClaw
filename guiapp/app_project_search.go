@@ -268,6 +268,14 @@ type ProjectWorkflowState struct {
 	Status        string `json:"status,omitempty"`
 	ProjectPath   string `json:"project_path,omitempty"`
 	PendingReview bool   `json:"pending_review,omitempty"`
+	// UpdatedAt is the time this outcome was recorded. The task list uses it
+	// to keep the newer of a ledger row and an unfinished slot. It is not a
+	// client field.
+	UpdatedAt time.Time `json:"-"`
+	// RuntimeLive is set on a ledger row the user can still see moving or
+	// still has to approve. A queued row is shown as running and is not live.
+	// It is not a client field.
+	RuntimeLive bool `json:"-"`
 }
 
 // ProjectSearchArtifact is the small source-backed artifact summary attached
@@ -358,7 +366,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	if len(records) > 0 {
 		v2WorkflowStates = a.v2WorkflowStatesByOwner()
 	}
-	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
+	codingActiveByRef, codingActiveUpdated := a.activeCodingRuntimeStatusesByRef()
 	sharedRefs := codingRuntimeRefShareCounts(records, func(rec memory.ProjectRecord) bool {
 		return !omittedFromTaskSidebar(rec)
 	})
@@ -373,7 +381,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, liveOwners)
+		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, codingActiveUpdated, sharedRefs, liveOwners)
 		results = append(results, result)
 		if len(results) == limit {
 			break
@@ -522,7 +530,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	records = collapseDuplicateCloudWorkspaceRecords(records)
 	scenesByPath := projectSceneMap(a.sceneIndexForTaskList(searchLimit * 2))
 	v2WorkflowStates := a.v2WorkflowStatesByOwner()
-	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
+	codingActiveByRef, codingActiveUpdated := a.activeCodingRuntimeStatusesByRef()
 	sharedRefs := codingRuntimeRefShareCounts(shareRecords, func(rec memory.ProjectRecord) bool {
 		if !isTaskManagementRecord(rec) || pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) || omittedFromTaskSidebar(rec) {
 			return false
@@ -550,7 +558,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, liveOwners)
+		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, codingActiveUpdated, sharedRefs, liveOwners)
 		results = append(results, result)
 	}
 	if strings.TrimSpace(query) == "" {
@@ -4992,7 +5000,7 @@ func (a *App) workflowSnapshotForExecutionPath(executionProjectPath string, v2Ca
 // stays with it even when its project path is the shared working directory.
 // A snapshot or ledger row found only on that directory is kept for the tasks
 // whose sessions are executing there.
-func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath string, v2Cache map[string]*v2.WorkflowState, activeByRef map[string]string, shared map[string]struct{}, liveOwners map[string]struct{}) {
+func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath string, v2Cache map[string]*v2.WorkflowState, activeByRef map[string]string, ledgerUpdated map[string]time.Time, shared map[string]struct{}, liveOwners map[string]struct{}) {
 	if a == nil || result == nil {
 		return
 	}
@@ -5003,17 +5011,23 @@ func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath st
 		}
 	}
 	result.ActiveWorkflow = state
+	if runtimeState := codingLedgerStatusForTask(result.ProjectPath, result.Tags, activeByRef, ledgerUpdated, shared, liveOwners); ledgerReplacesWorkflowSnapshot(result.ActiveWorkflow, runtimeState) {
+		result.ActiveWorkflow = runtimeState
+	}
+	// A dated ledger or snapshot is the outcome only while nothing newer
+	// is waiting. An undated ledger still wins over a snapshot that is not
+	// live: callers that pass a status without a time are stating that
+	// outcome directly. A later interrupt that never wrote its own ledger
+	// row keeps the row recoverable. A phase named "execution" does not make
+	// a paused attempt live, so this comparison still runs for it.
 	if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
-		if runtimeState := codingLedgerStatusForTask(result.ProjectPath, result.Tags, activeByRef, shared, liveOwners); runtimeState != nil {
-			result.ActiveWorkflow = runtimeState
-		}
-		if result.ActiveWorkflow == nil {
-			if memory := a.currentConversationMemory(); memory != nil {
-				if slot := memory.GetUnfinishedSlot(projectSessionOwnerID(result.ProjectPath)); slot != nil {
-					result.ActiveWorkflow = &ProjectWorkflowState{
-						ID: slot.SlotID, Type: "agent_recovery", Phase: "interrupted",
-						Status: "interrupted", ProjectPath: result.ProjectPath,
-					}
+		if memory := a.currentConversationMemory(); memory != nil {
+			if slot := memory.GetUnfinishedSlot(projectSessionOwnerID(result.ProjectPath)); unfinishedSlotSupersedes(slot, result.ActiveWorkflow) {
+				result.ActiveWorkflow = &ProjectWorkflowState{
+					ID: slot.SlotID, Type: "agent_recovery", Phase: "interrupted",
+					Status:      "interrupted",
+					ProjectPath: result.ProjectPath,
+					UpdatedAt:   slot.UpdatedAt,
 				}
 			}
 		}
@@ -5183,19 +5197,19 @@ func codingRuntimeRefForTaskTags(tags []string) string {
 // read saw one, so a quiet refresh does not take a second turn on the ledger's
 // single connection. A GUI that stays up still records the corpse, and that
 // row no longer outranks a later failure.
-func (a *App) activeCodingRuntimeStatusesByRef() map[string]string {
+func (a *App) activeCodingRuntimeStatusesByRef() (map[string]string, map[string]time.Time) {
 	if a == nil {
-		return nil
+		return nil, nil
 	}
 	store := a.openExistingCodingRuntimeStore()
 	if store == nil {
-		return nil
+		return nil, nil
 	}
 	now := time.Now().UTC()
-	byRef, stale, err := store.ReadTaskList(now)
+	byRef, updated, stale, err := store.ReadTaskListUpdated(now)
 	if err != nil {
 		log.Printf("[task-search] coding runtime status load failed: %v", err)
-		return nil
+		return nil, nil
 	}
 	if stale {
 		if expired, expireErr := store.ExpireLeases(now); expireErr != nil {
@@ -5205,10 +5219,15 @@ func (a *App) activeCodingRuntimeStatusesByRef() map[string]string {
 		}
 	}
 	out := make(map[string]string, len(byRef))
+	times := make(map[string]time.Time, len(byRef))
 	for ref, status := range byRef {
-		out[normalizeCodingRuntimeRef(ref)] = status
+		key := normalizeCodingRuntimeRef(ref)
+		out[key] = status
+		if updated != nil {
+			times[key] = updated[ref]
+		}
 	}
-	return out
+	return out, times
 }
 
 // recordsContainCodingRuntimeRef reports that a search page includes a coding
@@ -5299,7 +5318,7 @@ func taskMayUseSharedDirectoryStatus(projectPath, directory string, shared map[s
 // Several tasks may share a directory and edit different parts, so that
 // status is applied only to the tasks whose own session is executing. Every
 // other task keeps the workflow snapshot it already has.
-func codingLedgerStatusForTask(projectPath string, tags []string, activeByRef map[string]string, shared map[string]struct{}, owners map[string]struct{}) *ProjectWorkflowState {
+func codingLedgerStatusForTask(projectPath string, tags []string, activeByRef map[string]string, ledgerUpdated map[string]time.Time, shared map[string]struct{}, owners map[string]struct{}) *ProjectWorkflowState {
 	ref := normalizeCodingRuntimeRef(codingRuntimeRefForTaskTags(tags))
 	if ref == "" || len(activeByRef) == 0 {
 		return nil
@@ -5307,7 +5326,78 @@ func codingLedgerStatusForTask(projectPath string, tags []string, activeByRef ma
 	if _, ok := shared[ref]; ok && !taskSessionIsExecuting(projectPath, owners) {
 		return nil
 	}
-	return activeCodingRuntimeWorkflowForTags(tags, activeByRef)
+	state := activeCodingRuntimeWorkflowForTags(tags, activeByRef)
+	if state != nil && ledgerUpdated != nil {
+		state.UpdatedAt = ledgerUpdated[ref]
+	}
+	return state
+}
+
+// ledgerReplacesWorkflowSnapshot reports that the coding ledger is the row.
+// A workflow that is actually running keeps its phase. A paused or
+// interrupted snapshot looks running when its phase id contains "execute";
+// that attempt has stopped, so only a later ledger row replaces it. A live
+// ledger row replaces every snapshot that is not actually running: its clock
+// is the attempt start, and a dead lease is already ranked interrupted.
+func ledgerReplacesWorkflowSnapshot(snapshot, ledger *ProjectWorkflowState) bool {
+	if ledger == nil {
+		return false
+	}
+	if snapshot == nil {
+		return true
+	}
+	if projectWorkflowSnapshotActive(snapshot) && !pausedOrInterruptedWorkflow(snapshot) {
+		return false
+	}
+	if ledger.RuntimeLive {
+		return true
+	}
+	if projectWorkflowSnapshotActive(snapshot) && pausedOrInterruptedWorkflow(snapshot) {
+		if ledger.UpdatedAt.IsZero() || snapshot.UpdatedAt.IsZero() {
+			return false
+		}
+		return ledger.UpdatedAt.After(snapshot.UpdatedAt)
+	}
+	return !terminalWorkflowIsNewer(snapshot, ledger)
+}
+
+func pausedOrInterruptedWorkflow(state *ProjectWorkflowState) bool {
+	if state == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Status)) {
+	case "paused", "pause", "interrupted", "suspended":
+		return true
+	default:
+		return false
+	}
+}
+
+// terminalWorkflowIsNewer reports that candidate was stored after base.
+// An outcome with no time does not outrank one that has a time, and two
+// undated outcomes are not ordered.
+func terminalWorkflowIsNewer(candidate, base *ProjectWorkflowState) bool {
+	if candidate == nil || base == nil || candidate.UpdatedAt.IsZero() || base.UpdatedAt.IsZero() {
+		return false
+	}
+	return candidate.UpdatedAt.After(base.UpdatedAt)
+}
+
+// unfinishedSlotSupersedes reports that the recovery slot is the later fact.
+// No workflow yet means the slot is the row. An undated workflow stays: the
+// caller named that outcome without a clock. A dated workflow stays when it
+// is newer than the slot, so a finished run is not put back to 待处理.
+func unfinishedSlotSupersedes(slot *agent.UnfinishedTaskSlot, state *ProjectWorkflowState) bool {
+	if slot == nil {
+		return false
+	}
+	if state == nil {
+		return true
+	}
+	if state.UpdatedAt.IsZero() || slot.UpdatedAt.IsZero() {
+		return false
+	}
+	return slot.UpdatedAt.After(state.UpdatedAt)
 }
 
 // activeCodingRuntimeWorkflowForTags merges the durable coding runtime ledger
@@ -5324,7 +5414,10 @@ func activeCodingRuntimeWorkflowForTags(tags []string, activeByRef map[string]st
 		return nil
 	}
 	switch codingruntime.TaskStatus(status) {
-	case codingruntime.TaskRunning, codingruntime.TaskQueued, codingruntime.TaskWaitingChild:
+	case codingruntime.TaskRunning, codingruntime.TaskWaitingChild:
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskRunning), RuntimeLive: true}
+	case codingruntime.TaskQueued:
+		// Shown as running, but a row that never started is not a live run.
 		return &ProjectWorkflowState{Status: string(codingruntime.TaskRunning)}
 	case codingruntime.TaskCompleted:
 		// A finished write that an older ledger still marks non-terminal is
@@ -5332,7 +5425,7 @@ func activeCodingRuntimeWorkflowForTags(tags []string, activeByRef map[string]st
 		return &ProjectWorkflowState{Status: string(codingruntime.TaskCompleted)}
 	case codingruntime.TaskWaitingApproval:
 		// Only an approval is waiting on the user. There is a concrete decision.
-		return &ProjectWorkflowState{Status: "waiting_review", PendingReview: true}
+		return &ProjectWorkflowState{Status: "waiting_review", PendingReview: true, RuntimeLive: true}
 	case codingruntime.TaskFailed:
 		// The ledger outcome is the task outcome. A later has_output check must
 		// not turn this into a completed row.
@@ -5374,6 +5467,7 @@ func projectWorkflowStateFromV2(state *v2.WorkflowState) *ProjectWorkflowState {
 		ProjectPath: state.ProjectPath,
 		Phase:       phaseID,
 		Status:      status,
+		UpdatedAt:   state.UpdatedAt,
 		// A cancelled workflow can retain its phase's waiting-confirm status in
 		// storage. Terminal status takes precedence over a stale review marker.
 		// A suspended workflow cannot present its confirm until the user resumes

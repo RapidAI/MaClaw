@@ -492,6 +492,15 @@ export function companionSharePathKey(path: string): string {
     return text;
 }
 
+// companionInstalledSharePath is a file this machine accepted into the share
+// directory. The folder name is the share token, so a tab restored after the
+// window restarts is still that discussion until the library list says the
+// link is gone.
+export function companionInstalledSharePath(path: string): boolean {
+    const text = path.trim().replace(/\\/g, "/");
+    return /(?:^|\/)file-companion\/library-files\/cd_[0-9a-f]{32}\//i.test(text);
+}
+
 // companionNotesRevisionWins reports that incoming should replace the notes
 // already shown. Revision 0 is an old hub, or a response that did not carry
 // one, and it must not cover a list that already has a revision.

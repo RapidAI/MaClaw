@@ -26,6 +26,7 @@ describe('getHeaderTitle', () => {
         expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'general')).toBe('通用设置');
         expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'general')).toBe('通用設定');
         expect(getHeaderTitle('settings', 'en', t, false, 'general')).toBe('General');
+        expect(getHeaderTitle('settings', 'mn', t, false, 'general')).toBe('Ерөнхий');
         expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'llm')).toBe('大模型配置');
     });
 

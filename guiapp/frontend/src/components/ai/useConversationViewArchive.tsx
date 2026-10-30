@@ -382,8 +382,20 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
         const onKey = (event: KeyboardEvent) => {
             if (event.key === "Escape") setOpen(false);
         };
+        // React's wheel and touch listeners are passive, so they cannot cancel
+        // the live transcript scroller that this dialog is mounted inside.
+        const stopFrameGesture = (event: Event) => {
+            if (scrollerRef.current?.contains(event.target as Node)) return;
+            event.preventDefault();
+        };
+        dialog?.addEventListener("wheel", stopFrameGesture, { passive: false });
+        dialog?.addEventListener("touchmove", stopFrameGesture, { passive: false });
         window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
+        return () => {
+            dialog?.removeEventListener("wheel", stopFrameGesture);
+            dialog?.removeEventListener("touchmove", stopFrameGesture);
+            window.removeEventListener("keydown", onKey);
+        };
     }, [open]);
 
     useEffect(() => {
@@ -486,6 +498,7 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
             aria-modal="true"
             tabIndex={-1}
             data-testid="conversation-archive-dialog"
+            data-scroll-intent-boundary=""
             aria-label={localizeText(lang, "Earlier messages", "更早的对话", "更早的對話")}
             style={{
                 position: "fixed",
@@ -516,7 +529,7 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
                     {localizeText(lang, "Close", "关闭", "關閉")}
                 </button>
             </div>
-            <div ref={scrollerRef} style={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "12px 14px" }}>
+            <div ref={scrollerRef} data-testid="conversation-archive-scroller" style={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "12px 14px" }}>
                 {loading && rows.length > 0 ? (
                     <div style={{ color: t.textMuted, fontSize: "12px", marginBottom: "8px" }}>{localizeText(lang, "Loading...", "加载中...", "載入中...")}</div>
                 ) : null}

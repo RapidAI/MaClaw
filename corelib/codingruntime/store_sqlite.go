@@ -178,9 +178,11 @@ func preferActiveCodingRuntimeStatus(cur activeCodingRuntimeRefChoice, next acti
 // ListActiveTaskStatusesByProjectRef returns one coding runtime status per
 // project_ref. Pure agent loop coding runs (local and remote) never create a
 // workflow snapshot, so the task list merges this ledger status into its
-// status stats. A newest completed or cancelled row is omitted: the registry
-// already shows that write. A newest failed row is kept, because the registry
-// only knows that a file exists and would otherwise list the turn as completed.
+// status stats. A newest completed row stays: dropping it and trusting
+// has_output left a stale failed snapshot or an unfinished slot as the row,
+// so a later success still showed 失败 or 待处理. A newest cancelled row is
+// omitted. A newest failed row is kept, because the registry only knows that
+// a file exists and would otherwise list the turn as completed.
 // A live run or an approval still needs the user and outranks any sibling,
 // older or newer. A running row is that live run only while its lease is
 // still open, or while this process is still inside the attempt. A dead
@@ -207,7 +209,7 @@ func preferActiveCodingRuntimeStatus(cur activeCodingRuntimeRefChoice, next acti
 // recorded host file activity: that write is complete and is reported as
 // completed.
 func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, error) {
-	statuses, _, err := s.listActiveTaskStatuses(time.Now().UTC())
+	statuses, _, _, err := s.listActiveTaskStatuses(time.Now().UTC())
 	return statuses, err
 }
 
@@ -216,12 +218,20 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 // including a child row the list then skips. Statuses already rank that
 // corpse at the lease end. Call ExpireLeases only when the bool is true.
 func (s *SQLiteStore) ReadTaskList(now time.Time) (map[string]string, bool, error) {
+	statuses, _, stale, err := s.listActiveTaskStatuses(now)
+	return statuses, stale, err
+}
+
+// ReadTaskListUpdated is ReadTaskList plus the time of the row that won.
+// The task list compares that time with an unfinished slot, so a later
+// completion replaces a stale interrupt and a later interrupt stays visible.
+func (s *SQLiteStore) ReadTaskListUpdated(now time.Time) (map[string]string, map[string]time.Time, bool, error) {
 	return s.listActiveTaskStatuses(now)
 }
 
-func (s *SQLiteStore) listActiveTaskStatuses(now time.Time) (map[string]string, bool, error) {
+func (s *SQLiteStore) listActiveTaskStatuses(now time.Time) (map[string]string, map[string]time.Time, bool, error) {
 	if s == nil || s.db == nil {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	rows, err := s.db.Query(`SELECT t.task_id, t.project_ref, t.status, t.updated_at, t.parent_task_id,
 		COALESCE(a.error_code, ''),
@@ -232,7 +242,7 @@ func (s *SQLiteStore) listActiveTaskStatuses(now time.Time) (map[string]string, 
 		LEFT JOIN coding_runtime_attempts a ON a.task_id = t.task_id
 			AND a.attempt_no = (SELECT MAX(attempt_no) FROM coding_runtime_attempts WHERE task_id = t.task_id)`)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	defer rows.Close()
 	nowUnix := unixNanos(now)
@@ -245,12 +255,12 @@ func (s *SQLiteStore) listActiveTaskStatuses(now time.Time) (map[string]string, 
 	for rows.Next() {
 		var row statusRow
 		if err := rows.Scan(&row.taskID, &row.ref, &row.status, &row.updatedAt, &row.parentID, &row.errorCode, &row.hasFileActivity, &row.leaseUntil, &row.attemptID); err != nil {
-			return nil, false, err
+			return nil, nil, false, err
 		}
 		scanned = append(scanned, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	// Same order as ExpireLeases. The first dead child stamps a waiting
 	// parent, so the read ranks that parent at the same child's lease end.
@@ -331,17 +341,21 @@ func (s *SQLiteStore) listActiveTaskStatuses(now time.Time) (map[string]string, 
 		}
 	}
 	byRef := make(map[string]string, len(choices))
+	updated := make(map[string]time.Time, len(choices))
 	for ref, choice := range choices {
-		// Drop a newest completed or cancelled row: the task list already shows
-		// that write. Keep a newest failure, and keep a blocked row that was
-		// rewritten to completed (raw status is still blocked).
-		switch TaskStatus(choice.rawStatus) {
-		case TaskCompleted, TaskCancelled:
+		// Keep a newest completed row so the task list can replace a stale
+		// failure or interrupt. A cancelled row is still omitted. Keep a
+		// newest failure, and keep a blocked row that was rewritten to
+		// completed (raw status is still blocked).
+		if TaskStatus(choice.rawStatus) == TaskCancelled {
 			continue
 		}
 		byRef[ref] = choice.status
+		if choice.updatedAt > 0 {
+			updated[ref] = fromUnixNanos(choice.updatedAt)
+		}
 	}
-	return byRef, stale, nil
+	return byRef, updated, stale, nil
 }
 
 func (s *SQLiteStore) ListChildTasks(parentTaskID string) ([]*Task, error) {

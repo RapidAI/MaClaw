@@ -663,6 +663,11 @@ func BuildOpenAIChatRequestData(
 
 func BuildOpenAIChatCompletionsEndpoint(rawURL string) string {
 	endpoint := strings.TrimRight(strings.TrimSpace(rawURL), "/")
+	if base, ok := corelib.GoogleAIStudioOpenAIBase(endpoint); ok {
+		// The documented base ends in /openai, not /v1. Appending /v1 would
+		// miss https://generativelanguage.googleapis.com/v1beta/openai/chat/completions.
+		return base + "/chat/completions"
+	}
 	if strings.HasSuffix(endpoint, "/chat/completions") {
 		return endpoint
 	}
@@ -676,6 +681,9 @@ func BuildOpenAIModelsEndpointCandidates(rawURL, protocol string) []string {
 	baseURL := strings.TrimRight(strings.TrimSpace(rawURL), "/")
 	if baseURL == "" {
 		return nil
+	}
+	if base, ok := corelib.GoogleAIStudioOpenAIBase(baseURL); ok {
+		return []string{base + "/models"}
 	}
 	if strings.HasSuffix(baseURL, "/chat/completions") {
 		baseURL = strings.TrimRight(strings.TrimSuffix(baseURL, "/chat/completions"), "/")
@@ -1446,6 +1454,9 @@ func sanitizeOpenAIChatMessagesForSDKCompatibility(messages []interface{}, prese
 			if toolCalls := sanitizeOpenAIToolCallsForSDK(mm["tool_calls"]); len(toolCalls) > 0 {
 				out["tool_calls"] = toolCalls
 			}
+			if sig := strings.TrimSpace(stringValue(mm["thought_signature"])); sig != "" {
+				out["thought_signature"] = sig
+			}
 			if functionCall := sanitizeOpenAIFunctionCallForSDK(mm["function_call"]); functionCall != nil {
 				out["function_call"] = functionCall
 			}
@@ -1565,14 +1576,23 @@ func normalizeOpenAIChatToolCallsForLinkage(raw interface{}) ([]map[string]inter
 		if id == "" {
 			id = randomContentToolCallID()
 		}
-		out = append(out, map[string]interface{}{
+		rebuilt := map[string]interface{}{
 			"id":   id,
 			"type": normalizeToolCallType(stringValue(call["type"])),
 			"function": map[string]interface{}{
 				"name":      name,
 				"arguments": normalizeOpenAIToolArgumentsString(fn["arguments"]),
 			},
-		})
+		}
+		// This pass runs before the SDK sanitizer. Dropping the signature here
+		// makes the later copy a no-op, and Gemini 3+ then rejects the replay.
+		if sig := thoughtSignatureFromToolCallMap(call); sig != "" {
+			rebuilt["thought_signature"] = sig
+		}
+		if extra, ok := call["extra_content"]; ok && extra != nil {
+			rebuilt["extra_content"] = extra
+		}
+		out = append(out, rebuilt)
 	}
 	return out, len(out) > 0
 }
@@ -1747,14 +1767,23 @@ func sanitizeOpenAIToolCallsForSDK(raw interface{}) []interface{} {
 			id = randomContentToolCallID()
 		}
 		args := normalizeOpenAIToolArgumentsString(fn["arguments"])
-		out = append(out, map[string]interface{}{
+		rebuilt := map[string]interface{}{
 			"id":   id,
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":      name,
 				"arguments": args,
 			},
-		})
+		}
+		// Gemini 3+ rejects the next tool turn when this signature is dropped.
+		// The OpenAI compatibility route reads it back from extra_content.
+		if sig := thoughtSignatureFromToolCallMap(call); sig != "" {
+			rebuilt["thought_signature"] = sig
+		}
+		if extra, ok := call["extra_content"]; ok && extra != nil {
+			rebuilt["extra_content"] = extra
+		}
+		out = append(out, rebuilt)
 	}
 	return out
 }
@@ -2733,6 +2762,15 @@ func DoOpenAIRequestWithOptions(
 ) (*Response, error) {
 	opts.Stream = false
 	opts.Tools = tools
+	// Native generateContent retries a thinking-off refusal inside
+	// DoGoogleRequestWithOptions. Returning here keeps that to one retry.
+	if cfg.IsGoogleProtocol() {
+		googleOpts, err := googleGenerateOptionsFromOpenAI(opts)
+		if err != nil {
+			return nil, err
+		}
+		return DoGoogleRequestWithOptions(ctx, cfg, messages, client, googleOpts)
+	}
 	result, _, err := doOpenAIRequestRawWithOptions(ctx, cfg, messages, client, opts)
 	if next, ok := ConfigAfterThinkingRejection(cfg, err); ok {
 		result, _, err = doOpenAIRequestRawWithOptions(ctx, next, messages, client, opts)
@@ -2775,6 +2813,14 @@ func llmIncompleteSuccessBody(statusCode int, body []byte, err error) bool {
 }
 
 func doOpenAIRequestRawWithOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, opts OpenAIChatRequestOptions) (*Response, []byte, error) {
+	if cfg.IsGoogleProtocol() {
+		googleOpts, err := googleGenerateOptionsFromOpenAI(opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp, err := DoGoogleRequestWithOptions(ctx, cfg, messages, client, googleOpts)
+		return resp, nil, err
+	}
 	tools := opts.Tools
 	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, opts)
 	if err != nil {
@@ -2786,6 +2832,16 @@ func doOpenAIRequestRawWithOptions(ctx context.Context, cfg corelib.MaclawLLMCon
 
 	startedAt := time.Now()
 	body, statusCode, err := openAISDKChatRaw(ctx, cfg, reqBody, client)
+	// CodeGen chat is a buffered completion, so it never reaches the stream
+	// entry's output-limit recovery. Retry on this same JSON client. The
+	// stream client would set Accept: text/event-stream and arm the gateway's
+	// upstream idle timer.
+	if corelib.IsCodeGenURL(cfg.URL) && (ctx == nil || ctx.Err() == nil) {
+		_, statusCode, body, err = recoverOpenAIMaxTokensRejection(ctx, cfg, reqBody, nil, statusCode, body, err, "[LLM]", func(retryBody []byte) (*Response, int, []byte, error) {
+			raw, st, sendErr := openAISDKChatRaw(ctx, cfg, retryBody, client)
+			return nil, st, raw, sendErr
+		})
+	}
 	if err != nil {
 		log.Printf("[LLM] done %s model=%s configured_model=%s protocol=%s status=error http_status=%d elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, statusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		// A canceled or expired request can still report HTTP 200 with a prefix

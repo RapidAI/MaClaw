@@ -98,9 +98,9 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 		return
 	}
 
-	// Kimi, MiniMax, Groq, OpenRouter, Together, and Doubao each reject at
-	// least one of the generic spellings. A Qwen model id on those hosts must
-	// not be sent enable_thinking. This also covers the Anthropic wire for
+	// Kimi, MiniMax, Gemini, Groq, OpenRouter, Together, and Doubao each reject
+	// at least one of the generic spellings. A Qwen model id on those hosts
+	// must not be sent enable_thinking. This also covers the Anthropic wire for
 	// Kimi and MiniMax, which do not use Claude budget_tokens.
 	if applyNativeVendorReasoning(cfg, body, mode, api) {
 		return
@@ -673,6 +673,11 @@ func nativeVendorReasoningKind(cfg MaclawLLMConfig, api ReasoningAPIKind) string
 		return ""
 	}
 	switch {
+	case hostIs(host, "generativelanguage.googleapis.com"):
+		if _, ok := GoogleAIStudioOpenAIBase(cfg.URL); ok {
+			return "gemini"
+		}
+		return ""
 	case hostIs(host, "groq.com"):
 		return "groq"
 	case hostIs(host, "openrouter.ai"):
@@ -708,6 +713,8 @@ func applyNativeVendorReasoning(cfg MaclawLLMConfig, body map[string]interface{}
 		applyKimiReasoning(cfg, body, mode)
 	case "minimax":
 		applyMiniMaxReasoning(cfg, body, mode)
+	case "gemini":
+		applyGeminiReasoning(cfg, body, mode)
 	case "groq":
 		body["reasoning_effort"] = groqReasoningEffort(cfg, mode)
 	case "openrouter":
@@ -812,6 +819,190 @@ func applyMiniMaxReasoning(cfg MaclawLLMConfig, body map[string]interface{}, mod
 	// turn thinking off. Leave the body without a thinking field.
 }
 
+// GoogleAIStudioOpenAIBase is the OpenAI-compatible root for an AI Studio
+// API key, https://generativelanguage.googleapis.com/v1beta/openai.
+// The native generateContent host without an /openai segment is not this API.
+func GoogleAIStudioOpenAIBase(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !hostIs(llmEndpointHostname(raw), "generativelanguage.googleapis.com") {
+		return "", false
+	}
+	normalized := raw
+	switch {
+	case strings.HasPrefix(normalized, "//"):
+		normalized = "https:" + normalized
+	case !strings.Contains(normalized, "://"):
+		normalized = "https://" + normalized
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed.Hostname() == "" {
+		return "", false
+	}
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	openaiAt := -1
+	for i, part := range parts {
+		if strings.EqualFold(part, "openai") {
+			openaiAt = i
+			break
+		}
+	}
+	if openaiAt < 0 {
+		return "", false
+	}
+	parsed.Path = "/" + strings.Join(parts[:openaiAt+1], "/")
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), true
+}
+
+func applyGeminiReasoning(cfg MaclawLLMConfig, body map[string]interface{}, mode string) {
+	// The OpenAI compatibility layer accepts reasoning_effort and rejects the
+	// generic thinking object. none is legal only on older Flash checkpoints.
+	body["reasoning_effort"] = geminiReasoningEffort(cfg, mode)
+}
+
+func geminiReasoningEffort(cfg MaclawLLMConfig, mode string) string {
+	if mode == "disabled" {
+		if geminiThinkingCanDisable(cfg) {
+			return "none"
+		}
+		return "low"
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort)) {
+	case "none", "off", "false", "0":
+		if geminiThinkingCanDisable(cfg) {
+			return "none"
+		}
+		return "low"
+	case "minimal", "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	case "max", "xhigh", "ultra":
+		return "high"
+	default:
+		return "medium"
+	}
+}
+
+// geminiThinkingCanDisable reports checkpoints whose OpenAI compatibility
+// layer accepts reasoning_effort=none. Gemini 2.5 Pro, Gemini 3, and Gemini 4
+// keep thinking on; none becomes the cheapest legal level instead.
+func geminiThinkingCanDisable(cfg MaclawLLMConfig) bool {
+	id := geminiModelID(cfg)
+	if strings.Contains(id, "gemini-2.5-pro") {
+		return false
+	}
+	return strings.HasPrefix(id, "gemini-2.5") ||
+		strings.HasPrefix(id, "gemini-2.0") ||
+		strings.HasPrefix(id, "gemini-1.5") ||
+		strings.HasPrefix(id, "gemini-1.0")
+}
+
+func geminiModelID(cfg MaclawLLMConfig) string {
+	id := strings.ToLower(strings.TrimSpace(cfg.Model))
+	id = strings.ReplaceAll(id, "_", "-")
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		id = id[i+1:]
+	}
+	if i := strings.IndexByte(id, '['); i > 0 {
+		id = strings.TrimSpace(id[:i])
+	}
+	return id
+}
+
+// ApplyGeminiGenerateContentThinking writes generationConfig.thinkingConfig
+// for the native generateContent API. It does not write reasoning_effort or
+// thinking.type. Auto asks for the thought trace without naming a level.
+// Gemini 2.0 and earlier have no thinkingConfig and are left alone.
+func ApplyGeminiGenerateContentThinking(cfg MaclawLLMConfig, generationConfig map[string]interface{}) {
+	if generationConfig == nil {
+		return
+	}
+	absorbConfiguredThinkingLevel(&cfg)
+	mode := normalizeReasoningMode(cfg.ThinkingMode)
+	if floor := rememberedThinkingFloor(cfg); floor != "" && mode == "disabled" {
+		mode = "enabled"
+		if !explicitThinkingEffort(cfg.ReasoningEffort) {
+			cfg.ReasoningEffort = floor
+		}
+	}
+	switch geminiNativeThinkingWire(geminiModelID(cfg)) {
+	case "budget":
+		applyGeminiThinkingBudget(cfg, generationConfig, mode)
+	case "level":
+		applyGeminiThinkingLevel(cfg, generationConfig, mode)
+	}
+}
+
+func geminiNativeThinkingWire(id string) string {
+	switch {
+	case strings.Contains(id, "gemini-2.5"):
+		return "budget"
+	case strings.Contains(id, "gemini-3"), strings.Contains(id, "gemini-4"):
+		return "level"
+	default:
+		return ""
+	}
+}
+
+func applyGeminiThinkingBudget(cfg MaclawLLMConfig, generationConfig map[string]interface{}, mode string) {
+	if mode == "" {
+		generationConfig["thinkingConfig"] = map[string]interface{}{"includeThoughts": true}
+		return
+	}
+	budget, ok := geminiNativeThinkingBudget(cfg, mode)
+	if !ok {
+		generationConfig["thinkingConfig"] = map[string]interface{}{"includeThoughts": true}
+		return
+	}
+	thinking := map[string]interface{}{"thinkingBudget": budget}
+	if budget != 0 {
+		thinking["includeThoughts"] = true
+	}
+	generationConfig["thinkingConfig"] = thinking
+}
+
+func geminiNativeThinkingBudget(cfg MaclawLLMConfig, mode string) (int, bool) {
+	effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	if mode == "disabled" || effort == "none" || effort == "off" || effort == "false" || effort == "0" {
+		if geminiThinkingCanDisable(cfg) {
+			return 0, true
+		}
+		// Gemini 2.5 Pro rejects a zero budget. 128 is its minimum.
+		return 128, true
+	}
+	switch effort {
+	case "minimal":
+		return 512, true
+	case "low":
+		return 1024, true
+	case "medium":
+		return 8192, true
+	case "high", "max", "xhigh", "ultra":
+		return 24576, true
+	default:
+		if mode == "enabled" {
+			return 8192, true
+		}
+		return 0, false
+	}
+}
+
+func applyGeminiThinkingLevel(cfg MaclawLLMConfig, generationConfig map[string]interface{}, mode string) {
+	if mode == "" {
+		generationConfig["thinkingConfig"] = map[string]interface{}{"includeThoughts": true}
+		return
+	}
+	level := geminiReasoningEffort(cfg, mode)
+	if level == "none" || level == "" {
+		level = "low"
+	}
+	generationConfig["thinkingConfig"] = map[string]interface{}{
+		"thinkingLevel":  level,
+		"includeThoughts": true,
+	}
+}
+
 func groqReasoningEffort(cfg MaclawLLMConfig, mode string) string {
 	if mode == "disabled" {
 		return "none"
@@ -893,7 +1084,15 @@ func ProbeNeedsReasoningRoom(cfg MaclawLLMConfig) bool {
 	if IsAlwaysOnThinkingModel(cfg) || isXAIReasoningEndpoint(cfg) {
 		return true
 	}
+	// Native generateContent has no /openai segment, so the OpenAI host
+	// check below does not see it. Gemini 3, Gemini 4, and 2.5 Pro still
+	// spend the first tokens on a trace when thinking cannot be disabled.
+	if cfg.IsGoogleProtocol() && !geminiThinkingCanDisable(cfg) {
+		return true
+	}
 	switch nativeVendorReasoningKind(cfg, ReasoningAPIChat) {
+	case "gemini":
+		return !geminiThinkingCanDisable(cfg)
 	case "kimi":
 		switch kimiReasoningFamily(cfg.Model) {
 		case "k3", "k27code":

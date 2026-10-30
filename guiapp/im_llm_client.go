@@ -27,6 +27,9 @@ func (h *IMMessageHandler) doLLMRequestWithContext(ctx context.Context, cfg core
 	if cfg.Protocol == "anthropic" {
 		return h.doAnthropicLLMRequestWithContext(ctx, cfg, messages, tools, httpClient)
 	}
+	if cfg.IsGoogleProtocol() {
+		return h.doOpenAILLMRequestWithContext(ctx, cfg, messages, tools, httpClient)
+	}
 	return h.doOpenAILLMRequestWithContext(ctx, cfg, messages, tools, httpClient)
 }
 

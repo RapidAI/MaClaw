@@ -25,6 +25,7 @@ import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
 import { LLMConfigHubOfficialCard } from "./LLMConfigHubOfficialCard";
 import { hubCapabilityModelOptions } from "../../utils/capabilityModelLabel";
 import { isProviderShareExcluded, LLMConfigProviderShareHeading, TokenBankShareChipButton } from "./TokenBankShareChipButton";
+import { agentProviderSwitchConfirmCopy, agentProviderSwitchPlan, type AgentProviderSwitchPlan, type AgentProviderSwitchTarget } from "./agentProviderSwitchOffer";
 
 interface Props {
     lang?: string;
@@ -42,6 +43,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
     // successful Provider management Test & Save. Wails events remain useful
     // for other surfaces, but must not be the only refresh mechanism here.
     const [providerListRevision, setProviderListRevision] = useState(0);
+    // Set only after the user agrees to move the just-saved provider onto the
+    // agent assignment. The assignment panel applies it as a draft and asks
+    // for a model plus an explicit save.
+    const [agentProviderSwitch, setAgentProviderSwitch] = useState<AgentProviderSwitchTarget | null>(null);
+    const agentProviderSwitchTokenRef = useRef(0);
     // An empty list is valid data. Track readiness separately so a slow local
     // config read is never rendered as if the user selected "None".
     const [providerListReady, setProviderListReady] = useState(false);
@@ -852,6 +858,31 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         setDlgTestResult(null);
     }, [dlgSelectedIdx]);
 
+    const finishTestedProviderSave = async (providerName: string, testedModel: string) => {
+        let plan: AgentProviderSwitchPlan = "confirm";
+        try {
+            plan = agentProviderSwitchPlan(await GetMaclawLLMProfilePanelState(), providerName, testedModel);
+        } catch {
+            // A failed assignment read must not hide the switch offer.
+        }
+        if (plan === "confirm") {
+            const copy = agentProviderSwitchConfirmCopy(t, providerName);
+            const accepted = await showConfirm(copy.message, copy.title, {
+                confirmText: t("Switch", "切换", "切換"),
+                cancelText: t("Not now", "暂不", "暫不"),
+            });
+            if (!accepted) plan = "none";
+        }
+        if (plan === "none") {
+            setTimeout(() => setDlgOpen(false), 800);
+            return;
+        }
+        agentProviderSwitchTokenRef.current += 1;
+        setAgentProviderSwitch({ providerName, model: testedModel, token: agentProviderSwitchTokenRef.current });
+        setDlgSaving(false);
+        setDlgOpen(false);
+    };
+
     const dlgHandleSave = async () => {
         if (dlgIsNone) {
             setDlgSaving(true);
@@ -909,7 +940,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                             ? t("Vision support: enabled", "图片理解：支持")
                             : t("Vision support: disabled", "图片理解：不支持")}`,
                 });
-                setTimeout(() => setDlgOpen(false), 800);
+                await finishTestedProviderSave(saveName, String(sp.model || ""));
                 return;
             } catch (e) {
                 setDlgTestResult({ ok: false, msg: String(e) });
@@ -986,9 +1017,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             });
             onStatusChange?.(true, true);
             onProviderChanged?.();
-            // Auto-close on success: test passed and config saved, no need for extra click.
-            // Keep dlgSaving=true during close animation to prevent double-click.
-            setTimeout(() => setDlgOpen(false), 800);
+            // The connection is saved. Offer to point the agent at this provider;
+            // declining keeps the previous auto-close. Agreeing closes at once so
+            // model assignment can take focus.
+            await finishTestedProviderSave(saveName, String(sp.model || ""));
             return;
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
@@ -1057,6 +1089,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                 lang={lang}
                 onSaved={handleProfilesSaved}
                 providerListRevision={providerListRevision}
+                agentProviderSwitch={agentProviderSwitch}
                 descriptionAction={
                     <button
                         type="button"

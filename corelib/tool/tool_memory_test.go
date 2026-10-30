@@ -133,9 +133,9 @@ func TestToolMemoryStore_Persistence(t *testing.T) {
 	s1.LearnRule("bash", "key2", "project", "rule 2")
 	s1.Flush()
 
-	// Verify file exists
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("file not created: %v", err)
+	// Rows live in the sibling database, not the legacy JSON file.
+	if _, err := os.Stat(toolMemoryDBPath(path)); err != nil {
+		t.Fatalf("database not created: %v", err)
 	}
 
 	// Load from file
@@ -143,6 +143,70 @@ func TestToolMemoryStore_Persistence(t *testing.T) {
 	rules := s2.AllRules()
 	if len(rules) != 2 {
 		t.Fatalf("expected 2 rules after reload, got %d", len(rules))
+	}
+	found := s2.Search("rule 1")
+	if len(found) != 1 || found[0].Content != "rule 1" {
+		t.Fatalf("search = %+v", found)
+	}
+}
+
+func TestToolMemorySQLiteLoadFailureDoesNotImportLegacyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tool_rules.json")
+	s1 := NewToolMemoryStore(path)
+	s1.LearnRule("bash", "keep", "", "keep me")
+	s1.Flush()
+	if _, err := s1.db.Exec(`UPDATE tool_rules SET confidence=? WHERE key=?`, "nope", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s1.db.Exec(`DELETE FROM tool_rule_meta WHERE key='legacy_import'`); err != nil {
+		t.Fatal(err)
+	}
+	stale := []byte(`[{"key":"stale","tool_name":"bash","content":"from json","confidence":0.9}]`)
+	if err := os.WriteFile(path, stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewToolMemoryStore(path)
+	var content string
+	if err := s2.db.QueryRow(`SELECT content FROM tool_rules WHERE key=?`, "keep").Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if content != "keep me" {
+		t.Fatalf("content = %q", content)
+	}
+	var n int
+	if err := s2.db.QueryRow(`SELECT COUNT(*) FROM tool_rules WHERE key=?`, "stale").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("stale rules imported: %d", n)
+	}
+	s2.LearnRule("bash", "new", "", "after failed load")
+	s2.Flush()
+	if err := s2.db.QueryRow(`SELECT content FROM tool_rules WHERE key=?`, "keep").Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if content != "keep me" {
+		t.Fatalf("flush replaced unread rules: %q", content)
+	}
+	if err := s2.db.QueryRow(`SELECT COUNT(*) FROM tool_rules WHERE key=?`, "new").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("flush wrote a rule over the unread table: %d", n)
+	}
+}
+
+func TestToolMemorySearchKeepsKeyWhenTextAlsoMatches(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tool_rules.json")
+	s := NewToolMemoryStore(path)
+	s.LearnRule("bash", "lan_zhou_host", "", "generic compile hint")
+	s.LearnRule("bash", "other", "", "lan_zhou_host is in the body")
+	s.Flush()
+	found := s.Search("lan_zhou_host")
+	if len(found) != 2 {
+		t.Fatalf("search = %+v", found)
 	}
 }
 

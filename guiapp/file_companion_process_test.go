@@ -379,6 +379,7 @@ func TestFileCompanionStartupDoesNotOpenMainTranscriptOrEnvCheck(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	before := environmentCheckEntries.Load()
 	app.fileCompanionStartup(context.Background())
+	t.Cleanup(app.stopFileCompanionLanguageWatcher)
 	if environmentCheckEntries.Load() != before {
 		t.Fatal("companion startup called CheckEnvironment")
 	}

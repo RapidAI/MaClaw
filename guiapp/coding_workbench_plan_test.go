@@ -2874,12 +2874,12 @@ func TestColloquialContinueResumesTheUnfinishedChecklist(t *testing.T) {
 			{Index: 5, Title: "Leave unrelated features alone", Status: codingStepPending},
 		},
 	}
-	for _, utter := range []string{"继续呀", "继续啊", "接着做", "继续执行呀", "那么继续一下", "continue please", acpProgrammingUserText("D:/repo", "继续呀")} {
+	for _, utter := range []string{"继续呀", "继续啊", "接着做", "继续执行呀", "那么继续一下", "continue please", "继续这个任务", "请继续这个任务", "繼續這個任務", "继续这个任务吧", "请继续一下这个任务呀", "continue this task please", acpProgrammingUserText("D:/repo", "继续呀")} {
 		if !codingWorkbenchShouldResumeIncompletePlan(utter, mem) {
 			t.Fatalf("%q should resume the unfinished checklist", utter)
 		}
 	}
-	for _, utter := range []string{"继续完善，加入图形界面", "继续把食物改成星星", "那么把速度再降一半", "go online"} {
+	for _, utter := range []string{"继续完善，加入图形界面", "继续把食物改成星星", "那么把速度再降一半", "go online", "继续下载"} {
 		if codingWorkbenchShouldResumeIncompletePlan(utter, mem) {
 			t.Fatalf("%q must stay a new request", utter)
 		}

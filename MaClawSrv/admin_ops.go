@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -882,21 +881,6 @@ func effectiveSandboxStrictFromConfig(cfg adminRuntimeConfig) (bool, string) {
 	return false, "default"
 }
 
-func loadAdminRuntimeConfig(dataRoot string) (adminRuntimeConfig, error) {
-	var cfg adminRuntimeConfig
-	if err := readAdminJSON(dataRoot, "admin_runtime_config.json", &cfg); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return adminRuntimeConfig{}, nil
-		}
-		return adminRuntimeConfig{}, err
-	}
-	return cfg, nil
-}
-
-func saveAdminRuntimeConfig(dataRoot string, cfg adminRuntimeConfig) error {
-	return writeAdminJSON(dataRoot, "admin_runtime_config.json", cfg)
-}
-
 func adminActorLabel(dataRoot, token string) string {
 	if session, user, err := getAdminSessionUser(dataRoot, token, time.Now().UTC()); err == nil && session != nil && user != nil {
 		return user.Username
@@ -1178,27 +1162,6 @@ func validateSandboxProfile(profile sandboxProfile) sandboxProfileValidation {
 		out.Warnings = append(out.Warnings, "host network weakens sandbox isolation")
 	}
 	return out
-}
-
-func loadSandboxProfiles(dataRoot string) (sandboxProfilesFile, error) {
-	var profiles sandboxProfilesFile
-	if err := readAdminJSON(dataRoot, "sandbox_profiles.json", &profiles); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return sandboxProfilesFile{Profiles: map[string]sandboxProfile{}}, nil
-		}
-		return sandboxProfilesFile{}, err
-	}
-	if profiles.Profiles == nil {
-		profiles.Profiles = map[string]sandboxProfile{}
-	}
-	return profiles, nil
-}
-
-func saveSandboxProfiles(dataRoot string, profiles sandboxProfilesFile) error {
-	if profiles.Profiles == nil {
-		profiles.Profiles = map[string]sandboxProfile{}
-	}
-	return writeAdminJSON(dataRoot, "sandbox_profiles.json", profiles)
 }
 
 func sandboxReportAuditMetadata(r *http.Request, report sandboxDiagnoseReport) map[string]string {

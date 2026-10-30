@@ -9,6 +9,7 @@ import { mnTailPackB } from './mnTailPackB';
 import { mnTailPackC } from './mnTailPackC';
 import { mnTailPackD } from './mnTailPackD';
 import { mnTailPackE } from './mnTailPackE';
+import { mnTailPackF } from './mnTailPackF';
 
 const mnTailGenerated: Record<string, string> = {
     "\nCoding tasks cannot use a cloud workspace. Confirming moves this task to a local directory.": "\nПрограмчлалын даалгавар үүлэн ажлын талбар ашиглахгүй. Баталбал энэ даалгавар локал хавтас руу шилжинэ.",
@@ -499,7 +500,6 @@ const mnTailGenerated: Record<string, string> = {
     "Invite digital employee": "Тоон ажилтан урих",
     "Invoice": "Нэхэмжлэл",
     "Jobs": "Ажил",
-    "Keep ${keepLower}": "${keepLower} хэвээр",
     "Keep copy": "Хуулбар үлдээх",
     "Keep local": "Локалыг үлдээх",
     "Keep typing. It sends when this reply finishes.": "Үргэлжлүүлэн бичнэ үү. Энэ хариу дуусахад илгээгдэнэ.",
@@ -1183,7 +1183,9 @@ const mnTailGenerated: Record<string, string> = {
     "↑↓ select · Enter / Tab complete · Esc dismiss": "↑↓ сонгох · Enter / Tab гүйцээх · Esc хаах",
 };
 
+// Later spreads win. F is first so it only fills gaps; the generated map and packs A–E keep their sentences.
 const mnTail: Record<string, string> = {
+    ...mnTailPackF,
     ...mnTailGenerated,
     ...mnTailPackA,
     ...mnTailPackB,

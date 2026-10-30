@@ -9,6 +9,7 @@ export const subscriptionUrls: { [key: string]: string } = {
     "百度千帆": "https://cloud.baidu.com/product/codingplan.html",
     "Codex": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
     "DeepSeek": "https://platform.deepseek.com/api_keys",
+    "Google AI Studio": "https://aistudio.google.com/apikey",
     "XiaoMi": "https://platform.xiaomimimo.com/#/console/api-keys",
     "摩尔线程": "https://code.mthreads.com/",
     "快手": "https://www.streamlake.com/marketing/coding-plan",
@@ -43,6 +44,7 @@ export const knownProviderEndpoints: ProviderEndpoint[] = [
 
     // OpenAI Protocol (Codex)
     { name: "OpenAI Official", url: "https://api.openai.com/v1", protocol: "openai", region: "global", description: "Official OpenAI API" },
+    { name: "Google AI Studio", url: "https://generativelanguage.googleapis.com/v1beta/openai", protocol: "openai", region: "global", description: "Google AI Studio API key" },
     { name: "xAI-Grok", url: "https://api.x.ai/v1", protocol: "openai", region: "global", description: "xAI Grok Build API" },
     { name: "GLM", url: "https://open.bigmodel.cn/api/coding/paas/v4", protocol: "openai", region: "china" },
     { name: "Kimi", url: "https://api.kimi.com/coding/v1", protocol: "openai", region: "china" },
@@ -62,6 +64,10 @@ export const knownProviderEndpoints: ProviderEndpoint[] = [
 
 // Recommended model IDs per provider (used for model name suggestions)
 export const recommendedModels: { [provider: string]: { id: string; note?: string }[] } = {
+    "Google AI Studio": [
+        { id: "gemini-3.8-flash", note: "Default" },
+        { id: "gemini-4-argon", note: "Flagship" },
+    ],
     "GLM": [{ id: "glm-5.1" }],
     "Kimi": [{ id: "kimi-k2-thinking" }, { id: "kimi-for-coding" }],
     "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
@@ -110,6 +116,7 @@ const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
     "zh-Hans": {
         "Claude Official": "原厂",
         "OpenAI Official": "原厂",
+        "Google AI Studio": "谷歌 AI Studio",
         "Custom": "自定义",
         "GLM": "智谱",
         "Kimi": "月之暗面",
@@ -131,6 +138,7 @@ const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
     "zh-Hant": {
         "Claude Official": "原廠",
         "OpenAI Official": "原廠",
+        "Google AI Studio": "谷歌 AI Studio",
         "Custom": "自訂",
         "GLM": "智譜",
         "Kimi": "月之暗面",

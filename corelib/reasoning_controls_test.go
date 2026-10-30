@@ -931,6 +931,49 @@ func TestApplyGlobalThinkingLevelMapsProviders(t *testing.T) {
 			},
 		},
 		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://generativelanguage.googleapis.com/v1beta/openai", Model: "gemini-3.8-flash"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if _, exists := body["thinking"]; exists {
+					t.Fatalf("gemini kept thinking: %#v", body)
+				}
+				if body["reasoning_effort"] != "low" {
+					t.Fatalf("gemini 3 none = %#v, want low", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "max",
+			cfg:   MaclawLLMConfig{URL: "https://generativelanguage.googleapis.com/v1beta/openai", Model: "gemini-4-argon"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["reasoning_effort"] != "high" {
+					t.Fatalf("gemini 4 max = %#v, want high", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://generativelanguage.googleapis.com/v1beta/openai", Model: "gemini-2.5-flash"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["reasoning_effort"] != "none" {
+					t.Fatalf("gemini 2.5 flash none = %#v, want none", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://generativelanguage.googleapis.com/v1beta/openai", Model: "gemini-2.5-pro"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["reasoning_effort"] != "low" {
+					t.Fatalf("gemini 2.5 pro none = %#v, want low", body["reasoning_effort"])
+				}
+			},
+		},
+		{
 			level: "low",
 			cfg:   MaclawLLMConfig{URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2"},
 			api:   ReasoningAPIResponses,
@@ -1010,6 +1053,7 @@ func TestApplyReasoningControlsAutoDoesNotInventVendorEffort(t *testing.T) {
 		{URL: "https://openrouter.ai/api/v1", Model: "glm-5.3-flash"},
 		{URL: "https://api.together.xyz/v1", Model: "glm-5.3-flash"},
 		{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k3"},
+		{URL: "https://generativelanguage.googleapis.com/v1beta/openai", Model: "gemini-3.8-flash"},
 	} {
 		body := map[string]interface{}{"model": cfg.Model}
 		ApplyReasoningControls(cfg, body, ReasoningAPIChat)
@@ -1088,6 +1132,10 @@ func TestProbeNeedsReasoningRoom(t *testing.T) {
 		{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k3"},
 		{URL: "https://api.moonshot.cn/v1", Model: "kimi-k2.7-code"},
 		{URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7"},
+		{URL: "https://generativelanguage.googleapis.com/v1beta/openai", Model: "gemini-3.8-flash"},
+		{URL: "generativelanguage.googleapis.com/v1beta/openai", Model: "gemini-4-argon"},
+		{Protocol: "google", URL: "https://generativelanguage.googleapis.com/v1beta", Model: "gemini-3.8-flash"},
+		{Protocol: "google", URL: "https://generativelanguage.googleapis.com/v1beta", Model: "gemini-2.5-pro"},
 	}
 	for _, cfg := range needs {
 		if !ProbeNeedsReasoningRoom(cfg) {
@@ -1100,6 +1148,9 @@ func TestProbeNeedsReasoningRoom(t *testing.T) {
 		{Model: "kimi-k2-thinking", URL: "https://api.kimi.com/coding/v1"},
 		{Model: "MiniMax-M3", URL: "https://api.minimaxi.com/v1"},
 		{Model: "kimi-k3", URL: "https://api.openai.com/v1"},
+		{Model: "gemini-2.5-flash", URL: "https://generativelanguage.googleapis.com/v1beta/openai"},
+		{Model: "gemini-3.8-flash", URL: "https://api.openai.com/v1"},
+		{Protocol: "google", Model: "gemini-2.5-flash", URL: "https://generativelanguage.googleapis.com/v1beta"},
 	}
 	for _, cfg := range quiet {
 		if ProbeNeedsReasoningRoom(cfg) {

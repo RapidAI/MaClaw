@@ -185,6 +185,105 @@ func TestConversationSQLiteActiveBranchDoesNotLoadWholeSession(t *testing.T) {
 	}
 }
 
+func TestConversationSQLiteSearchUsesEntryColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conversation.json")
+	cm := NewPersistentConversationMemory(path)
+	defer cm.Stop()
+	cm.Save("desktop-user", []ConversationEntry{
+		{Role: "user", Content: "weather in lanzhou tomorrow"},
+		{Role: "assistant", Content: "rain is likely"},
+	})
+	if err := cm.FlushNow(); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := cm.SearchEntries("desktop-user", "weather", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Role != "user" {
+		t.Fatalf("hits = %#v", hits)
+	}
+	short, err := cm.SearchEntries("desktop-user", "ai", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(short) != 1 || short[0].Role != "assistant" {
+		t.Fatalf("short query hits = %#v", short)
+	}
+	db, err := sql.Open("sqlite", conversationSQLitePath(path)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var role, text string
+	if err := db.QueryRow(`SELECT role, content_text FROM conversation_entries WHERE session_id='desktop-user' AND role='user'`).Scan(&role, &text); err != nil {
+		t.Fatal(err)
+	}
+	if role != "user" || !strings.Contains(text, "weather") {
+		t.Fatalf("columns role=%q text=%q", role, text)
+	}
+}
+
+func TestConversationSQLiteSearchFoldsLetterCase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conversation.json")
+	cm := NewPersistentConversationMemory(path)
+	cm.Save("desktop-user", []ConversationEntry{
+		{Role: "user", Content: "Weather forecast tonight"},
+		{Role: "assistant", Content: "weather forecast is clear"},
+	})
+	if err := cm.FlushNow(); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := cm.SearchEntries("desktop-user", "Weather", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("write-path hits = %#v", hits)
+	}
+	cm.Stop()
+
+	db, err := sql.Open("sqlite", conversationSQLitePath(path)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM conversation_entries_fts`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO conversation_entries_fts(session_id, node_id, role, tool_name, content_text)
+		SELECT session_id, node_id, role, tool_name, content_text FROM conversation_entries`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM conversation_meta WHERE key='fts_lower_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := NewPersistentConversationMemory(path)
+	defer reopened.Stop()
+	folded, err := reopened.SearchEntries("desktop-user", "WEATHER", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folded) != 2 {
+		t.Fatalf("rebuilt hits = %#v", folded)
+	}
+	check, err := sql.Open("sqlite", conversationSQLitePath(path)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	var stored string
+	if err := check.QueryRow(`SELECT content_text FROM conversation_entries WHERE content_text LIKE '%Weather forecast tonight%'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored, "Weather forecast tonight") {
+		t.Fatalf("stored text = %q", stored)
+	}
+}
+
 func TestConversationSQLiteIncrementalFlushUpdatesOnlyChangedNodes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conversation.json")
 	cm := NewPersistentConversationMemory(path)

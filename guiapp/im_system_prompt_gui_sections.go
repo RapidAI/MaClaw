@@ -333,7 +333,7 @@ func writeRegisteredSkillsSection(b *strings.Builder, skills []NLSkillDefinition
 		if strings.TrimSpace(s.Description) == "" && len(s.Triggers) == 0 && len(s.Steps) == 0 {
 			continue
 		}
-		if nlSkillIsAgentGuided(s) {
+		if skillDefinitionGuidesAgent(s) {
 			guided = append(guided, s)
 			continue
 		}

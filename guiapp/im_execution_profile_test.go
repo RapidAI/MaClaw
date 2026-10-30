@@ -605,11 +605,13 @@ func TestExecutionProfileStoresAuthoritativeSemanticResultForMaterialization(t *
 
 func TestSemanticChannelScopeCanonicalizesLocalRuntimePlatforms(t *testing.T) {
 	for input, want := range map[string]string{
-		"lansenger_local": "lansenger",
-		"weixin_local":    "weixin",
-		"telegram_local":  "telegram",
-		"qqbot_local":     "qqbot",
-		"lansenger":       "lansenger",
+		"lansenger_local":    "lansenger",
+		"weixin_local":       "weixin",
+		"telegram_local":     "telegram",
+		"qqbot_local":        "qqbot",
+		"lansenger":          "lansenger",
+		"messenger_local":    "messenger",
+		"facebook-messenger": "messenger",
 	} {
 		if got := semanticChannelScope(input); got != want {
 			t.Fatalf("semanticChannelScope(%q) = %q, want %q", input, got, want)

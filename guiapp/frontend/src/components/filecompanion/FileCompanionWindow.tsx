@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { companionCommandBubble, companionFill, companionNoteAlias, companionPaperAlias, cs, getCompanionUiLang, setCompanionUiLang } from "../../i18n/mnCompanion";
+import { normalizeLang } from "../../i18n/langSelect";
 import {
     ChooseFileCompanionFiles,
     CancelFileCompanionTurn,
@@ -54,7 +55,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionHostShares, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionWithdrawnNotice, sameCompanionMineShare, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionHostShares, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionWithdrawnNotice, sameCompanionMineShare, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -392,6 +393,22 @@ type RuntimeAPI = {
 
 function runtimeAPI(): RuntimeAPI | undefined {
     return (window as unknown as { runtime?: RuntimeAPI }).runtime;
+}
+
+// The companion process emits this when the main window writes a new language.
+// The string matches guiapp/ui_language.go.
+export const COMPANION_UI_LANGUAGE_EVENT = "ui-language:changed";
+
+function companionLanguagePayload(payload: unknown): string {
+    // Wails Notify hands the callback the data array. The test runtime emits
+    // the string itself. A dropped array leaves the window on its startup language.
+    const raw = Array.isArray(payload) ? payload[0] : payload;
+    if (typeof raw === "string") return raw.trim();
+    if (raw && typeof raw === "object") {
+        const value = (raw as { language?: unknown }).language;
+        if (typeof value === "string") return value.trim();
+    }
+    return "";
 }
 
 type ConvertDoneBody = {
@@ -1727,7 +1744,7 @@ function sameShareNotes(left: CompanionShareNote[], right: CompanionShareNote[])
 
 type SharePart = { token: string; mine: boolean; revision: number; notes: CompanionShareNote[] };
 type ShareBind = { mine: boolean; notes: CompanionShareNote[]; parts: SharePart[] };
-type PendingShareNote = { path: string; text: string };
+type PendingShareNote = { path: string; text: string; requestId?: string; held?: boolean };
 const pendingShareNoteCap = 20;
 
 // One open file can belong to more than one share. The page shows every
@@ -1978,15 +1995,32 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     useEffect(() => {
         if (!languageBinding) return undefined;
         let live = true;
+        // A language event can arrive while the startup read is still in flight.
+        // The startup tag is the language at process start, so it must not
+        // paint over a switch that already happened.
+        let eventApplied = false;
+        const apply = (value: string) => {
+            setUiLang(normalizeLang(value));
+        };
+        const onChange = (payload: unknown) => {
+            const value = companionLanguagePayload(payload);
+            if (!value) return;
+            eventApplied = true;
+            apply(value);
+        };
+        const runtime = runtimeAPI();
+        runtime?.EventsOn?.(COMPANION_UI_LANGUAGE_EVENT, onChange);
         void GetCurrentLanguage().then((value) => {
-            if (!live) return;
-            const next = String(value || "").trim();
-            setUiLang(next || "en");
+            if (!live || eventApplied) return;
+            apply(String(value || ""));
         }).catch(() => {
-            if (live) setUiLang("en");
+            if (live && !eventApplied) setUiLang("en");
         });
-        return () => { live = false; };
-    }, []);
+        return () => {
+            live = false;
+            runtime?.EventsOff?.(COMPANION_UI_LANGUAGE_EVENT);
+        };
+    }, [languageBinding]);
     const [openMenu, setOpenMenu] = useState(false);
     // 独立界面 state: the window switches between the reading view, the
     // 文档管理 screen, and the 阅读群组 screen. 分享 opens over either.
@@ -2127,6 +2161,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // this file is the host's. It waits here and is posted only if the reader
     // is not the host.
     const pendingShareNotesRef = useRef(new Map<string, PendingShareNote[]>());
+    // A restored received copy is named by its library-files folder. Until the
+    // library list classifies it, a chat line waits instead of starting a
+    // private answer that the host never sees.
+    const libraryReadyRef = useRef(false);
+    const releaseHeldShareNotesRef = useRef<() => void>(() => undefined);
     // A highlight painted before the list says this file is hosted waits here.
     const pendingShareMarksRef = useRef(new Set<string>());
     const publishShareNoteRef = useRef<(path: string, text: string) => Promise<boolean>>(async () => false);
@@ -2216,8 +2255,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 removed.add(key);
             }
         }
-        for (const key of pendingShareNotesRef.current.keys()) {
-            if (!grouped.has(key)) pendingShareNotesRef.current.delete(key);
+        for (const key of [...pendingShareNotesRef.current.keys()]) {
+            if (grouped.has(key)) continue;
+            const queued = pendingShareNotesRef.current.get(key) ?? [];
+            const held = queued.filter((line) => line.held);
+            if (held.length === 0) pendingShareNotesRef.current.delete(key);
+            else pendingShareNotesRef.current.set(key, held);
         }
         const accepted = new Map<string, ShareBind>();
         for (const [key, group] of grouped) {
@@ -2378,6 +2421,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // The window poll and 文档管理 both read the library. One apply keeps notes,
     // the sharer's transcript, and a removed copy on the same path key.
     applyLibraryListRef.current = (listed) => {
+        libraryReadyRef.current = true;
         // The same list carries the Hub capability and the share bindings, so
         // read the capability first: a participant's question must not be
         // rerouted to a host on a Hub that cannot send the answer back.
@@ -2397,8 +2441,16 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         // re-rendering the whole window on every tick.
         if (libraryViewOpenRef.current) setLibraryListSnapshot(listed);
         const synced = companionLibrarySync(listed);
+        // A line typed before this list returned was waiting to learn whether
+        // the file is shared. The copy is already gone, so answering it locally
+        // only toasts a send failure on top of the withdrawal notice.
+        for (const path of synced.removed) {
+            const key = companionSharePathKey(path);
+            if (key) pendingShareNotesRef.current.delete(key);
+        }
         for (const update of synced.updates) applyShareUpdateRef.current(update);
         applyShareNotesRef.current(listed);
+        releaseHeldShareNotesRef.current();
         if (synced.removed.length === 0) return;
         // The host is read before the next render replaces shareHosts. The
         // notice waits until an open tab is about to close, so a document that
@@ -2534,7 +2586,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             void ListFileCompanionLibrary().then((listed) => {
                 if (stopped || libraryDeleteGen.current !== started) return;
                 applyLibraryListRef.current(listed);
-            }).catch(() => undefined).finally(() => {
+            }).catch(() => {
+                libraryReadyRef.current = true;
+                releaseHeldShareNotesRef.current();
+            }).finally(() => {
                 reading = false;
             });
         };
@@ -2719,6 +2774,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 return;
             }
             const next = tabFromDoc(doc, trimmed);
+            const bound = shareByPathRef.current.get(companionSharePathKey(next.path || trimmed));
+            if (bound) {
+                next.shareToken = shareBindToken(bound);
+                next.shareMine = bound.mine;
+                next.notes = bound.notes;
+            }
             const imported = doc.imported === true || doc.Imported === true;
             if (imported && next.path && !next.error) {
                 const hasField = (lower: string, upper: string) =>
@@ -2789,6 +2850,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     const keepSelection = sameSelectionAnchor(next.content, tab.selection, tab.selectionStart);
                     return {
                         ...next,
+                        shareToken: next.shareToken || tab.shareToken,
+                        shareMine: next.shareToken ? next.shareMine : tab.shareMine,
+                        notes: next.shareToken ? (next.notes ?? []) : (tab.notes ?? []),
                         messages: tab.messages,
                         draft: tab.draft,
                         selection: keepSelection ? tab.selection : "",
@@ -4149,18 +4213,59 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setReviewingNoteID("");
         }
     };
+    releaseHeldShareNotesRef.current = () => {
+        for (const [key, queued] of [...pendingShareNotesRef.current.entries()]) {
+            const held = queued.filter((line) => line.held);
+            if (held.length === 0) continue;
+            const bind = shareByPathRef.current.get(key);
+            // A received share posts these lines as notes. The host seat, and a
+            // file the list did not bind, still need the local turn that was held.
+            if (bind && !bind.mine) continue;
+            const rest = queued.filter((line) => !line.held);
+            if (rest.length === 0) pendingShareNotesRef.current.delete(key);
+            else pendingShareNotesRef.current.set(key, rest);
+            for (const line of held) {
+                void SendFileCompanionMessage({
+                    path: line.path,
+                    text: line.text,
+                    request_id: line.requestId || nextCompanionRequestID(),
+                }).catch((err) => {
+                    showToast(shownHostError(err, "发送失败"), "error", 6000);
+                });
+            }
+        }
+    };
     flushPendingShareNotesRef.current = () => {
         for (const [key, queued] of pendingShareNotesRef.current) {
             const bind = shareByPathRef.current.get(key);
             if (!bind) continue;
             pendingShareNotesRef.current.delete(key);
-            if (bind.mine || queued.length === 0) continue;
+            if (bind.mine || queued.length === 0) {
+                const held = queued.filter((line) => line.held);
+                if (bind.mine && held.length > 0) pendingShareNotesRef.current.set(key, held);
+                continue;
+            }
             const lines = queued.slice();
             void (async () => {
                 for (const line of lines) {
                     await publishShareNoteRef.current(line.path, line.text);
                 }
             })();
+            // An older Hub records the note and does not send it back as the
+            // host's answer. A line held for the library list still has to
+            // answer on this machine, which is what an already-bound share does.
+            if (!notesReplyRef.current) {
+                for (const line of lines) {
+                    if (!line.held) continue;
+                    void SendFileCompanionMessage({
+                        path: line.path,
+                        text: line.text,
+                        request_id: line.requestId || nextCompanionRequestID(),
+                    }).catch((err) => {
+                        showToast(shownHostError(err, "发送失败"), "error", 6000);
+                    });
+                }
+            }
         }
     };
 
@@ -4244,9 +4349,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }
             } else if (!notePhrase && !paperTurn) {
                 const queued = pendingShareNotesRef.current.get(key) ?? [];
-                queued.push({ path: tabPath, text: shareNoteText });
+                const held = !libraryReadyRef.current && companionInstalledSharePath(tabPath);
+                queued.push({ path: tabPath, text: shareNoteText, requestId: requestID, held });
                 if (queued.length > pendingShareNoteCap) queued.splice(0, queued.length - pendingShareNoteCap);
                 pendingShareNotesRef.current.set(key, queued);
+                if (held) hostThread = true;
             }
         }
         // The question is sent once the user bubble is committed. The reply
@@ -5703,7 +5810,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     key={`${activeTab.path}:${activeTab.previewEpoch}`}
                                     file={{ fileName: activeTab.name, filePath: activeTab.path, absPath: activeTab.path, content: activeTab.content, updatedAt: activeTab.previewEpoch }}
                                     theme={appearance.previewTheme}
-                                    lang="zh-Hans"
+                                    lang={uiLang}
                                     pdfAnnotate={kind === "pdf"}
                                 />
                             </div>

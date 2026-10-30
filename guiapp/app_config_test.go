@@ -2549,6 +2549,19 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"slack_client_secret":          " slack-secret ",
 		"slack_bot_token":              " xoxb-token ",
 		"slack_team_name":              " Acme ",
+		"messenger_enabled":            true,
+		"messenger_page_id":            " 12345 ",
+		"messenger_page_access_token":  " page-token ",
+		"messenger_app_secret":         " app-secret ",
+		"messenger_verify_token":       " verify ",
+		"messenger_graph_api_version":  "25.0",
+		"messenger_webhook_path":       "/facebook-messenger/webhook",
+		"messenger_listen_host":        "127.0.0.1",
+		"messenger_listen_port":        float64(8791),
+		"messenger_allow_from":         []interface{}{"psid:1001", "1001"},
+		"messenger_dm_policy":          "open",
+		"messenger_default_psid":       "messenger:1001",
+		"messenger_public_base_url":    "https://example.com/",
 		"lansenger_enabled":            true,
 		"lansenger_app_id":             " lx-app ",
 		"lansenger_app_secret":         "lx-secret ",
@@ -2642,6 +2655,9 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	}
 	if patched.IMProgressNudgeEnabled == nil || *patched.IMProgressNudgeEnabled || !patched.QQBotEnabled || patched.QQBotAppID != "qq-app" || patched.QQBotAppSecret != "qq-secret " || !patched.TelegramBotEnabled || patched.TelegramBotToken != "tg-token" || !patched.SlackEnabled || patched.SlackClientID != "slack-client" || patched.SlackClientSecret != "slack-secret" || patched.SlackBotToken != "xoxb-token" || patched.SlackTeamName != "Acme" {
 		t.Fatalf("IM bot fields not applied: %#v", patched)
+	}
+	if !patched.MessengerEnabled || patched.MessengerPageID != "12345" || patched.MessengerPageAccessToken != "page-token" || patched.MessengerAppSecret != "app-secret" || patched.MessengerVerifyToken != "verify" || patched.MessengerGraphAPIVersion != "v25.0" || patched.MessengerWebhookPath != "/facebook-messenger/webhook" || patched.MessengerListenHost != "127.0.0.1" || patched.MessengerListenPort != 8791 || len(patched.MessengerAllowFrom) != 1 || patched.MessengerAllowFrom[0] != "1001" || patched.MessengerDMPolicy != "open" || patched.MessengerDefaultPSID != "1001" || patched.MessengerPublicBaseURL != "https://example.com" {
+		t.Fatalf("Messenger fields not applied: %#v", patched)
 	}
 	if !patched.LansengerEnabled || patched.LansengerAppID != "lx-app" || patched.LansengerAppSecret != "lx-secret " || patched.LansengerGatewayURL != "https://apigw.example.com" || patched.LansengerWSSURL != "wss://ws.example.com" {
 		t.Fatalf("Lansenger fields not applied: %#v", patched)

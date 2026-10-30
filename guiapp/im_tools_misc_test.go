@@ -196,6 +196,7 @@ func TestParseScheduleDeliveryArgsCanonicalizesLocalGatewayPlatform(t *testing.T
 		"telegram_local":  scheduler.DeliveryChannelTelegram,
 		"qqbot_local":     scheduler.DeliveryChannelQQ,
 		"slack_local":     scheduler.DeliveryChannelSlack,
+		"messenger_local": scheduler.DeliveryChannelMessenger,
 	} {
 		args := map[string]interface{}{
 			"user_id":                          "self",

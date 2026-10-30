@@ -170,6 +170,8 @@ func CanonicalDeliveryChannel(channel string) string {
 		return DeliveryChannelWeixin
 	case "电报":
 		return DeliveryChannelTelegram
+	case "脸书":
+		return DeliveryChannelMessenger
 	case "QQ", "qq", "qq机器人":
 		return DeliveryChannelQQ
 	case "设备", "码卡龙", "小卡", "硬件设备", "终端":
@@ -187,6 +189,8 @@ func CanonicalDeliveryChannel(channel string) string {
 		return DeliveryChannelQQ
 	case DeliveryChannelSlack, "slacklocal":
 		return DeliveryChannelSlack
+	case DeliveryChannelMessenger, "messengerlocal", "facebookmessenger", "facebook":
+		return DeliveryChannelMessenger
 	case DeliveryChannelDevice, "devicelocal", "hardware", "hardwarelocal", "esp32", "companion", "maclawdevice":
 		return DeliveryChannelDevice
 	default:

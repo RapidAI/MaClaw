@@ -974,6 +974,9 @@ func (a *App) wireEmbedderToIMHandlers(emb embedding.Embedder, wireTools bool) {
 	if a.telegramGateway != nil {
 		wire(a.telegramGateway.currentLocalHandler())
 	}
+	if a.messengerGateway != nil {
+		wire(a.messengerGateway.currentLocalHandler())
+	}
 	if a.qqBotGateway != nil {
 		wire(a.qqBotGateway.currentLocalHandler())
 	}

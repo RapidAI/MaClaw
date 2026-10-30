@@ -1527,6 +1527,7 @@ func TestConsumePendingTemplateCodingSubAgentExecutionClearsState(t *testing.T) 
 		"req-template-coding-test",
 		nil,
 		nil,
+		false,
 	)
 
 	if !handled || resp == nil {
@@ -1908,6 +1909,7 @@ func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
 		"req-template-remote-coding-test",
 		nil,
 		nil,
+		false,
 	)
 
 	if !handled || resp == nil {
@@ -1964,6 +1966,7 @@ func TestConsumePendingRemoteOpsDiagnosisForcesInquiry(t *testing.T) {
 		"req-remote-ops-diagnosis-test",
 		nil,
 		nil,
+		false,
 	)
 	if !handled || resp == nil {
 		t.Fatalf("diagnosis pending remote task should run, handled=%v response=%#v", handled, resp)
@@ -2021,6 +2024,7 @@ func TestConsumePendingTemplateRemoteCodingExecutionShowsFailureReason(t *testin
 		"req-template-remote-coding-failure-reason-test",
 		nil,
 		nil,
+		false,
 	)
 	// The failure summary now surfaces the runner's own wording plus the raw
 	// error instead of the older templated "远程编程未完成…失败原因：…" banner;

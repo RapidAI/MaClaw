@@ -69,6 +69,262 @@ func TestSessionGoalBarContinueAndCancel(t *testing.T) {
 	}
 }
 
+func TestUserContinueRearmsStoppedGoalWithoutScheduling(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "图形版本愤怒的小鸟，c++语言")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "Billing daily count exceeded") {
+		t.Fatal("failed to mark the goal failed")
+	}
+	handler := app.imHandler
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续这个任务"}, stoppedGoalUserTurn{})
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || got.Summary != "" || !got.ShouldContinue() || got.ComposerClockStopped() {
+		t.Fatalf("continue this task should re-arm the failed goal, got %+v", got)
+	}
+	if goalBarPending(engine, userID) {
+		t.Fatal("the user message is the turn; continue must not schedule another one")
+	}
+
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusPaused, "用户已暂停") {
+		t.Fatal("failed to pause")
+	}
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续"}, stoppedGoalUserTurn{})
+	got = store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || got.ComposerClockStopped() {
+		t.Fatalf("继续 should re-arm a paused goal, got %+v", got)
+	}
+	if goalBarPending(engine, userID) {
+		t.Fatal("paused continue must not schedule beside the user turn")
+	}
+
+	// The phrase list never contained this wording. The turn is still the
+	// same session's work, so the stopped goal leaves the stop.
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "编译失败") {
+		t.Fatal("failed to fail again")
+	}
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "Үргэлжлүүлээд энэ ажлыг хий"}, stoppedGoalUserTurn{})
+	if got = store.Get(userID); got == nil || got.Status != goal.StatusActive || got.Summary != "" || got.ComposerClockStopped() {
+		t.Fatalf("an unlisted wording must re-arm the same session, got %+v", got)
+	}
+	if goalBarPending(engine, userID) {
+		t.Fatal("an unlisted continue must not schedule beside the user turn")
+	}
+
+	// A new checklist request is still this session's work. Plan resume may
+	// treat the words as a new requirement; the goal bar follows the work.
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "编译失败") {
+		t.Fatal("failed to fail again")
+	}
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续完善界面"}, stoppedGoalUserTurn{})
+	if got = store.Get(userID); got == nil || got.Status != goal.StatusActive {
+		t.Fatalf("same-session work must re-arm even when the words add a requirement, got %+v", got)
+	}
+
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusBudgetLimit, "Turn limit reached") {
+		t.Fatal("failed to mark the turn limit")
+	}
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "keep going"}, stoppedGoalUserTurn{})
+	if got = store.Get(userID); got == nil || got.Status != goal.StatusActive || !got.ShouldContinue() {
+		t.Fatalf("a budget stop must re-arm with the session's work, got %+v", got)
+	}
+
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "编译失败") {
+		t.Fatal("failed to fail again")
+	}
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续这个任务"}, stoppedGoalUserTurn{FreshTask: true})
+	if got = store.Get(userID); got == nil || got.Status != goal.StatusFailed || got.Summary != "编译失败" {
+		t.Fatalf("a new task must leave the failed goal, got %+v", got)
+	}
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "goal-continuation", Text: "继续这个任务"}, stoppedGoalUserTurn{})
+	if got = store.Get(userID); got == nil || got.Status != goal.StatusFailed {
+		t.Fatalf("a host continuation must not re-arm from this path, got %+v", got)
+	}
+
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusComplete, "做完了") {
+		t.Fatal("failed to complete")
+	}
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续这个任务"}, stoppedGoalUserTurn{})
+	if got = store.Get(userID); got == nil || got.Status != goal.StatusComplete {
+		t.Fatalf("a completed goal stays finished, got %+v", got)
+	}
+}
+
+func TestDocumentConfirmLeavesStoppedGoalAlone(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "图形版本愤怒的小鸟，c++语言")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const summary = "Billing daily count exceeded"
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, summary) {
+		t.Fatal("failed to mark the goal failed")
+	}
+	handler := app.imHandler
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续"}, stoppedGoalUserTurn{DocPhase: true})
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusFailed || got.Summary != summary || goalBarPending(engine, userID) {
+		t.Fatalf("a document confirm must leave the failed goal, pending=%v goal=%+v", goalBarPending(engine, userID), got)
+	}
+	engine.mu.Lock()
+	_, marked := engine.continueRearmed[userID]
+	engine.mu.Unlock()
+	if marked {
+		t.Fatal("a document confirm must not record continueRearmed")
+	}
+}
+
+func TestUserTurnExecutesSessionGoalByRoute(t *testing.T) {
+	app, _, _ := newGoalBarApp(t)
+	handler := app.imHandler
+	const userID = "desktop-user"
+	if handler.userTurnExecutesSessionGoal(userID, false, false) {
+		t.Fatal("a shared chat reply is not the goal's work")
+	}
+	if handler.userTurnExecutesSessionGoal(userID, true, true) {
+		t.Fatal("a document confirmation is not the goal's work")
+	}
+	if !handler.userTurnExecutesSessionGoal(userID, true, false) {
+		t.Fatal("a workflow implementation turn is the goal's work")
+	}
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{Kind: "local"})
+	t.Cleanup(func() { handler.clearStickyCodingWorkbenchMemory(userID) })
+	if !handler.userTurnExecutesSessionGoal(userID, false, false) {
+		t.Fatal("a coding workbench turn is the goal's work")
+	}
+	if handler.userTurnExecutesSessionGoal(userID, false, true) {
+		t.Fatal("a document confirmation stays out of a coding tab")
+	}
+}
+
+func TestApplyDerivedWorkflowPhase(t *testing.T) {
+	doc, id := applyDerivedWorkflowPhase(false, "", "design", true)
+	if !doc || id != "design" {
+		t.Fatalf("confirmation gate must take the active document phase, doc=%v id=%q", doc, id)
+	}
+	doc, id = applyDerivedWorkflowPhase(false, "", "implement", false)
+	if doc || id != "implement" {
+		t.Fatalf("an execution phase stays execution, doc=%v id=%q", doc, id)
+	}
+	doc, id = applyDerivedWorkflowPhase(false, "implement", "design", true)
+	if doc || id != "implement" {
+		t.Fatalf("a named execution phase keeps its route, doc=%v id=%q", doc, id)
+	}
+	doc, id = applyDerivedWorkflowPhase(true, "", "", false)
+	if !doc || id != "" {
+		t.Fatalf("a routed document phase with no active id stays a document, doc=%v id=%q", doc, id)
+	}
+}
+
+func TestUserContinueThenStopPausesAgain(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "图形版本愤怒的小鸟，c++语言")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "Billing daily count exceeded") {
+		t.Fatal("failed to mark the goal failed")
+	}
+	handler := app.imHandler
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续这个任务吧"}, stoppedGoalUserTurn{})
+	if got := store.Get(userID); got == nil || got.Status != goal.StatusActive || got.ComposerClockStopped() {
+		t.Fatalf("particle continue should re-arm, got %+v", got)
+	}
+	// The continue mark belongs to the turn that was already dying. It must
+	// not swallow the next explicit stop.
+	handler.pauseStillActiveUserStop(userID)
+	if got := store.Get(userID); got == nil || got.Status != goal.StatusActive {
+		t.Fatalf("the continue mark should leave this turn active, got %+v", got)
+	}
+	handler.markTaskCancelledByUser(userID)
+	handler.pauseStillActiveUserStop(userID)
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusPaused || goalBarPending(engine, userID) {
+		t.Fatalf("a later stop should pause, pending=%v goal=%+v", goalBarPending(engine, userID), got)
+	}
+	if !strings.Contains(got.Summary, "停止") {
+		t.Fatalf("summary = %q", got.Summary)
+	}
+}
+
+func TestUserContinueLeavesUnarmedRemoteStatusUntouched(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	userID := stickyTestUserID(t)
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	g, err := store.Set(userID, "remote fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const summary = "Billing daily count exceeded"
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, summary) {
+		t.Fatal("failed to mark the goal failed")
+	}
+	handler := app.imHandler
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:          "remote",
+		RemoteHost:    "dev.example",
+		RemoteWorkDir: "/src/app",
+	})
+	t.Cleanup(func() { handler.clearStickyCodingWorkbenchMemory(userID) })
+
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续这个任务"}, stoppedGoalUserTurn{})
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusFailed || got.Summary != summary || goalBarPending(engine, userID) {
+		t.Fatalf("dead SSH must keep the failed row, pending=%v goal=%+v", goalBarPending(engine, userID), got)
+	}
+	engine.mu.Lock()
+	_, marked := engine.continueRearmed[userID]
+	engine.mu.Unlock()
+	if marked {
+		t.Fatal("an unarmed continue must not record continueRearmed")
+	}
+}
+
+func TestUserContinueRearmsWhileRemoteEngineIsStillPending(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	userID := stickyTestUserID(t)
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	g, err := store.Set(userID, "remote fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "Billing daily count exceeded") {
+		t.Fatal("failed to mark the goal failed")
+	}
+	handler := app.imHandler
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:            "remote",
+		RemoteHost:      "dev.example",
+		RemoteSessionID: "ssh-1",
+		RemoteWorkDir:   "/src/app",
+	})
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
+		SessionID: "ssh-1",
+		WorkDir:   "/src/app",
+	})
+	t.Cleanup(func() {
+		handler.pendingV2SubAgentExecution.Delete(userID)
+		handler.pendingTemplateRemoteCoding.Delete(userID)
+		handler.clearStickyCodingWorkbenchMemory(userID)
+	})
+
+	// Same order as pure remote coding: re-arm while the SSH engine flag
+	// is still stored, then consume it. Deleting first looks unarmed.
+	handler.releaseStoppedGoalForUserContinue(IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续这个任务"}, stoppedGoalUserTurn{})
+	handler.pendingTemplateRemoteCoding.Delete(userID)
+	handler.pendingV2SubAgentExecution.Delete(userID)
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || got.Summary != "" || got.ComposerClockStopped() || goalBarPending(engine, userID) {
+		t.Fatalf("armed remote continue should re-arm without a second timer, pending=%v goal=%+v", goalBarPending(engine, userID), got)
+	}
+}
+
 func TestSessionGoalBarContinuePastBudget(t *testing.T) {
 	app, store, engine := newGoalBarApp(t)
 	const userID = "desktop-user"

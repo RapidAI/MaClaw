@@ -76,6 +76,17 @@ import (
 type App struct {
 	ctx             context.Context
 	CurrentLanguage string
+	// uiLanguageStateMu guards CurrentLanguage and uiLanguageSeq. The companion
+	// watch goroutine writes CurrentLanguage while Wails calls read it.
+	uiLanguageStateMu sync.Mutex
+	// uiLanguageSeq counts language commits in this process. Startup may apply
+	// the saved config language only when the count is still the one it saw
+	// before the window could accept a choice.
+	uiLanguageSeq uint64
+	// uiLanguageSideMu serializes the tray, the agent-view language, and the
+	// sidecar write. Those run after the memory commit, so a newer switch can
+	// land while an older call is still inside UpdateTrayMenu.
+	uiLanguageSideMu sync.Mutex
 	// suitePurchases caches the latest purchase entitlement per Suite so the
 	// subsequent download/install request can carry purchase_id without
 	// exposing payment identifiers in the UI state.
@@ -429,6 +440,7 @@ type App struct {
 	qqBotGateway        *qqBotGatewayManager
 	telegramGateway     *telegramGatewayManager
 	slackGateway        *slackGatewayManager
+	messengerGateway    *messengerGatewayManager
 	weixinGateway       *weixinGatewayManager
 	lansengerGateway    *lansengerGatewayManager
 	lansengerGateways   *lansengerGatewayRegistry
@@ -1101,6 +1113,9 @@ func (a *App) sharedMemoryStoreHandlers() map[*IMMessageHandler]struct{} {
 	if a.slackGateway != nil {
 		add(a.slackGateway.currentLocalHandler())
 	}
+	if a.messengerGateway != nil {
+		add(a.messengerGateway.currentLocalHandler())
+	}
 	if a.qqBotGateway != nil {
 		add(a.qqBotGateway.currentLocalHandler())
 	}
@@ -1313,7 +1328,7 @@ func (a *App) newHardwareMemoryStore(clientID string) (*memory.Store, error) {
 	if baseDir == "" {
 		return nil, fmt.Errorf("hardware agent data directory is not configured")
 	}
-	store, err := memory.NewStoreWithMode(filepath.Join(baseDir, "memory"), memory.StoreModeJSON)
+	store, err := memory.NewStoreWithMode(filepath.Join(baseDir, "memory"), memory.StoreModeSQLite)
 	if err != nil {
 		return nil, fmt.Errorf("open hardware memory store: %w", err)
 	}
@@ -2755,6 +2770,7 @@ func (a *App) syncIMGatewaysFromConfig() {
 	start(a.ensureQQBotGateway)
 	start(a.ensureTelegramGateway)
 	start(a.ensureSlackGateway)
+	start(a.ensureMessengerGateway)
 	start(a.ensureWeixinGateway)
 	start(a.ensureLansengerGateway)
 	start(a.ensureThirdPartyGateway)
@@ -2776,6 +2792,13 @@ func releaseIMSyncLock(mu *sync.Mutex, stop func()) {
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
+	// Quit flushes through this hook before its deadline starts. Register it
+	// before the --quit fast path so that launch also writes the resume slot.
+	appExit.setPrepareExit(a.persistSessionsForShutdown)
+	// Sampled before any slow startup work. A language choice that lands while
+	// config is still loading must keep the sidecar, or the companion follows
+	// the previous language after the main window has already switched.
+	languageSeq := a.currentUILanguageSeq()
 	startupBegin := time.Now()
 	log.Printf("[startup] begin")
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
@@ -2868,9 +2891,7 @@ func (a *App) startup(ctx context.Context) {
 		a.logStoragePaths("startup.config_loaded", &config)
 		a.applyConfiguredProxies(config)
 		// a.syncToCodeBuddySettings(config, ")
-		if config.Language != "" {
-			a.SetLanguage(config.Language)
-		}
+		a.applyConfigLanguageIfUnchanged(config.Language, languageSeq)
 
 		// Let the renderer paint before the heavy init below begins. This
 		// goroutine does not block the window, but on a low-core machine its
@@ -3298,9 +3319,51 @@ func (a *App) SetCodingFontFamily(id string) error {
 	return err
 }
 
+// persistSessionsForShutdown writes the resume slot and the debounced
+// conversation / coding-workbench state before slower shutdown work. Quit
+// force-kills the process a few seconds later, so this has to be first.
+func (a *App) persistSessionsForShutdown() {
+	started := time.Now()
+	a.conversationMemoryMu.Lock()
+	conversationMemory := a.aiConversationMemory
+	a.aiConversationMemory = nil
+	a.conversationMemoryMu.Unlock()
+	if conversationMemory != nil {
+		// Persist unfinished-task slots for sessions with active agent loops
+		// BEFORE the flush below, so a graceful exit leaves a resume entry
+		// point (previously only crashes/max-rounds produced one).
+		if a.imHandler != nil {
+			a.imHandler.snapshotInterruptedSessionsForShutdown()
+			a.imHandler.waitForInterruptedSessionsForShutdown()
+		}
+		// Force-flush dirty state to disk BEFORE stopping the persist loop.
+		// Without an explicit flush, the 150ms debounce timer in persistLoop
+		// may not have fired yet, losing the latest conversation history and
+		// unfinished task slots.
+		if err := conversationMemory.FlushNow(); err != nil {
+			log.Printf("[shutdown] conversation memory flush failed: %v", err)
+		}
+		conversationMemory.Stop()
+	}
+	// Pure-coding sticky (.coding_workbench.json): step-status updates use a
+	// debounced disk write; flush all pending + in-memory sessions now.
+	// Use existing hubClient only — do not ensure/create infrastructure at exit.
+	if hub := a.hubClient(); hub != nil && hub.imHandler != nil {
+		hub.imHandler.FlushAllStickyCodingWorkbenchMemory()
+	} else {
+		flushAllStickyCodingDebouncedPersist()
+	}
+	log.Printf("[exit-lifecycle] session state flushed in %s", time.Since(started).Round(time.Millisecond))
+}
+
 func (a *App) shutdown(ctx context.Context) {
-	// Release the exclusive serial port before the process exits.
-	a.stopBuddyService()
+	// Persist resume state before the slower teardown. Tray quit force-kills
+	// the process a few seconds after shutdown starts, and the serial-port
+	// and network steps below can use that whole window.
+	a.persistSessionsForShutdown()
+	// The COM port closes with the process. Waiting the full restart budget
+	// here kept the tray icon up for most of the quit deadline.
+	a.stopBuddyServiceWithin(200 * time.Millisecond)
 	// Closing the window stops this surface's wait. It does not cancel the
 	// server run. The person saying stop is what posts cancel.
 	abandonDesktopSurface()
@@ -3316,7 +3379,7 @@ func (a *App) shutdown(ctx context.Context) {
 	// imported Markdown workflow. Drain it before other shutdown work (and
 	// before temporary application data can be removed).
 	if a.skillExecutor != nil {
-		a.skillExecutor.waitForStatusOverlayPersistence()
+		a.skillExecutor.waitForStatusOverlayPersistenceWithin(200 * time.Millisecond)
 	}
 	a.maybeCleanToolCacheOnExit()
 	// Clean up workstation mode (restore lock screen policy, etc.)
@@ -3326,37 +3389,6 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.remoteSessions != nil {
 		a.remoteSessions.SaveActiveCheckpointsForShutdown()
-	}
-	a.conversationMemoryMu.Lock()
-	conversationMemory := a.aiConversationMemory
-	a.aiConversationMemory = nil
-	a.conversationMemoryMu.Unlock()
-	if conversationMemory != nil {
-		// Persist unfinished-task slots for sessions with active agent loops
-		// BEFORE the flush below, so a graceful exit leaves a resume entry
-		// point (previously only crashes/max-rounds produced one).
-		if a.imHandler != nil {
-			a.imHandler.snapshotInterruptedSessionsForShutdown()
-			a.imHandler.waitForInterruptedSessionsForShutdown()
-		}
-		// Force-flush dirty state to disk BEFORE stopping the persist loop.
-		// When the process is killed by an updater (no graceful shutdown),
-		// the OS-level signal handler may still reach this code path via
-		// Wails OnShutdown. Without an explicit flush, the 150ms debounce
-		// timer in persistLoop may not have fired yet, losing the latest
-		// conversation history and unfinished task slots.
-		if err := conversationMemory.FlushNow(); err != nil {
-			log.Printf("[shutdown] conversation memory flush failed: %v", err)
-		}
-		conversationMemory.Stop()
-	}
-	// Pure-coding sticky (.coding_workbench.json): step-status updates use a
-	// debounced disk write; flush all pending + in-memory sessions now.
-	// Use existing hubClient only — do not ensure/create infrastructure at exit.
-	if hub := a.hubClient(); hub != nil && hub.imHandler != nil {
-		hub.imHandler.FlushAllStickyCodingWorkbenchMemory()
-	} else {
-		flushAllStickyCodingDebouncedPersist()
 	}
 	a.confirmationStoreMu.Lock()
 	confirmationStore := a.aiConfirmationStore
@@ -3445,6 +3477,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.slackGateway != nil {
 		a.slackGateway.Stop()
+	}
+	if a.messengerGateway != nil {
+		a.messengerGateway.Stop()
 	}
 	if a.weixinGateway != nil {
 		a.weixinGateway.Stop()
@@ -4129,12 +4164,71 @@ func (a *App) startConfigWatcher() {
 	a.ensureConfigWatchedStoragePath()
 }
 func (a *App) SetLanguage(lang string) {
+	// The companion process must not publish. Its startup read of config can
+	// be older than the file the main window just wrote, and writing it back
+	// would restore the previous language.
+	a.setLanguage(lang, uiLanguagePublishedBy(classifyDesktopLaunch(os.Args).Mode))
+}
+
+// setLanguage stores the interface language. publish writes the file the
+// companion process watches. Adopting a watched change passes false so the
+// two processes cannot echo the file back and forth.
+func (a *App) setLanguage(lang string, publish bool) {
+	a.commitLanguage(lang, publish, 0, false)
+}
+
+// applyConfigLanguageIfUnchanged publishes a language read from config when
+// no commit has landed since seen. The check and the memory write are one
+// critical section, so a choice that arrived during the read is left as-is.
+func (a *App) applyConfigLanguageIfUnchanged(lang string, seen uint64) {
+	if strings.TrimSpace(lang) == "" {
+		return
+	}
+	a.commitLanguage(lang, uiLanguagePublishedBy(classifyDesktopLaunch(os.Args).Mode), seen, true)
+}
+
+func (a *App) currentUILanguageSeq() uint64 {
+	if a == nil {
+		return 0
+	}
+	a.uiLanguageStateMu.Lock()
+	defer a.uiLanguageStateMu.Unlock()
+	return a.uiLanguageSeq
+}
+
+// commitLanguage records one interface language. mustMatch refuses the commit
+// when uiLanguageSeq is no longer seen. Tray text, agent-view text, and the
+// sidecar are applied under uiLanguageSideMu, and only while this commit is
+// still the latest. UpdateTrayMenu can block; a newer switch waits, then
+// paints after the older call, instead of letting the older menu win.
+func (a *App) commitLanguage(lang string, publish bool, seen uint64, mustMatch bool) {
+	if a == nil {
+		return
+	}
 	normalized := string(normalizeAppLanguageKind(lang))
+	a.uiLanguageStateMu.Lock()
+	if mustMatch && a.uiLanguageSeq != seen {
+		a.uiLanguageStateMu.Unlock()
+		return
+	}
+	a.uiLanguageSeq++
+	seq := a.uiLanguageSeq
 	a.CurrentLanguage = normalized
+	a.uiLanguageStateMu.Unlock()
+
+	a.uiLanguageSideMu.Lock()
+	defer a.uiLanguageSideMu.Unlock()
+	if a.currentUILanguageSeq() != seq {
+		return
+	}
 	setAgentViewLang(normalized)
 	if UpdateTrayMenu != nil {
 		UpdateTrayMenu(normalized)
 	}
+	if !publish || a.currentUILanguageSeq() != seq {
+		return
+	}
+	logUILanguageWrite(a.publishUILanguageIfCurrent(normalized))
 }
 
 // Greet returns a greeting for the given name
@@ -8526,6 +8620,11 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SlackBotUserID = strings.TrimSpace(v)
+		case "messenger_enabled", "messenger_page_id", "messenger_page_access_token", "messenger_app_secret", "messenger_verify_token", "messenger_graph_api_version", "messenger_webhook_path", "messenger_listen_host", "messenger_listen_port", "messenger_allow_from", "messenger_dm_policy", "messenger_default_psid", "messenger_public_base_url":
+			if err := applyMessengerConfigField(&cfg, key, value); err != nil {
+				return corelib.AppConfig{}, err
+			}
+			imGatewayChanged = true
 		case "lansenger_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

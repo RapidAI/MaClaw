@@ -82,7 +82,7 @@ func HasLLMNetworkRetryMarker(s string) bool {
 		strings.Contains(s, "timeout awaiting response headers") ||
 		strings.Contains(s, "connection reset") ||
 		strings.Contains(s, "connection refused") ||
-		strings.Contains(s, "SSE stream idle timeout")
+		llm.IsStreamIdleTimeoutText(s)
 }
 
 func IsRetryableLLMError(err error) bool {

@@ -29,6 +29,7 @@ import {
     MailboxBrowseRead,
     MailboxBrowseStart,
 } from '../../../../wailsjs/go/main/App';
+import { intlLocale } from '../../../i18n';
 import { MailboxManageDialog, MESSAGE_PAGE } from '../MailboxManageDialog';
 
 function fullPage(overrides: Array<{ uid: number; subject: string; seen?: boolean; from?: string }> = []) {
@@ -106,6 +107,37 @@ describe('MailboxManageDialog', () => {
         const spamRow = screen.getByRole('button', { name: /中奖通知/ });
         expect(spamRow.className).toContain('mailbox-manage__message--unread');
         expect(screen.getByText('选择一封邮件，在这里查看内容。')).toBeTruthy();
+    });
+
+    it('labels the mail window in Mongolian', async () => {
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [
+                { name: 'INBOX', special: 'inbox' },
+                { name: 'Junk', special: 'junk' },
+                { name: 'Archive', special: 'archive' },
+            ],
+            box: 'INBOX',
+            unseen: { INBOX: 2 },
+            messages: [
+                { uid: 1, from: 'a@ex.com', subject: 'Тайлан', date: '2024-03-02T08:00:00Z', seen: true },
+            ],
+        } as never);
+
+        render(<MailboxManageDialog lang="mn" account={account} onClose={onClose} />);
+
+        expect(await screen.findByRole('dialog', { name: 'Имэйл удирдах' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Ирсэн/ })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Спам' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Архив' })).toBeTruthy();
+        expect(screen.getByLabelText('2 уншаагүй')).toBeTruthy();
+        expect(screen.getByText('Энд унших захидлаа сонгоно уу.')).toBeTruthy();
+        const when = new Date('2024-03-02T08:00:00Z').toLocaleDateString(intlLocale('mn'), {
+            month: 'short', day: 'numeric', year: 'numeric',
+        });
+        expect(screen.getByText(when)).toBeTruthy();
+        expect(screen.queryByText('邮箱管理')).toBeNull();
+        expect(screen.queryByText('收件箱')).toBeNull();
+        expect(screen.queryByText('Архивлах')).toBeNull();
     });
 
     it('opens a message, sanitizes the HTML body and marks it read automatically', async () => {

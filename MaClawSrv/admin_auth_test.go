@@ -50,8 +50,11 @@ func TestAdminBootstrapInitializeLoginMeLogout(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("bootstrap initialize = %d body = %s", w.Code, w.Body.String())
 	}
-	if _, err := os.Stat(filepath.Join(dataRoot, "state", "admin_bootstrap.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(dataRoot, "state", "admin_state.db")); err != nil {
 		t.Fatalf("expected bootstrap state: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataRoot, "state", "admin_bootstrap.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy bootstrap json should be gone, stat err=%v", err)
 	}
 
 	loginBody := `{"username":"admin.owner","password":"strong-password-123"}`

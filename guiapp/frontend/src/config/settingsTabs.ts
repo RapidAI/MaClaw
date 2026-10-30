@@ -231,7 +231,7 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
         },
         {
             id: 'misData' as const,
-            label: 'MIS数据',
+            label: textForLang(lang, 'MIS data', 'MIS数据', 'MIS數據'),
             desc: textForLang(lang, 'Enterprise structured data service', '企业结构化数据服务', '企業結構化資料服務'),
             icon: settingsTabIcons.misData,
         },

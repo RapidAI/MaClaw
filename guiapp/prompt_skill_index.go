@@ -17,13 +17,14 @@ func promptSkillIndexEntries(skills []NLSkillDefinition, limit int) []NLSkillDef
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
-		// Defense in depth for stale overlays written by older builds. Imported
-		// Markdown project workflows must not re-enter the runnable-skill prompt
-		// solely because their persisted status still says "active".
-		if s.ExecutionClass == "agent_guided_workflow" {
+		if strings.TrimSpace(s.Name) == "" {
 			continue
 		}
-		if strings.TrimSpace(s.Name) == "" {
+		// This index is the runnable manage_skill list. A host procedure and
+		// an imported agent-guided workflow are executed with host file tools,
+		// so they stay out. A shell browser skill that is not that procedure
+		// stays out because its command would open a separate browser.
+		if skillDefinitionGuidesAgent(s) || s.ExecutionClass == "agent_guided_workflow" {
 			continue
 		}
 		if isShellBrowserAutomationSkill(s) {

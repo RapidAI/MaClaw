@@ -305,6 +305,11 @@ type winTray struct {
 // Optional. The window proc calls it without holding the tray lock.
 var OnTaskbarCreated func()
 
+// OnSessionEnd is started on a new goroutine when Windows is ending the
+// session (WM_ENDSESSION). It is not called when the app closes its own
+// tray window. Optional.
+var OnSessionEnd func()
+
 // isReady checks if the tray as already been initialized. It is not goroutine safe with in regard to the initialization function, but prevents a panic when functions are called too early.
 func (t *winTray) isReady() bool {
 	return t.initialized.IsSet()
@@ -394,15 +399,23 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 		pDestroyWindow.Call(uintptr(t.window))
 		t.wcex.unregister()
 	case WM_DESTROY:
-		// same as WM_ENDSESSION, but throws 0 exit code after all
+		// The hidden tray window is going away. Drop the icon here. Do not
+		// terminate: this callback is the window procedure, and
+		// TerminateProcess from that stack does not kill the process.
 		defer pPostQuitMessage.Call(uintptr(int32(0)))
-		fallthrough
-	case WM_ENDSESSION:
 		t.muNID.Lock()
 		if t.nid != nil {
 			t.nid.delete()
 		}
 		t.muNID.Unlock()
+		systrayExit()
+	case WM_ENDSESSION:
+		// Logoff. Icon removal and process termination stay together on a
+		// normal goroutine (OnSessionEnd). Deleting the icon here would
+		// leave it gone while this callback is still on the stack.
+		if OnSessionEnd != nil {
+			go OnSessionEnd()
+		}
 		systrayExit()
 	case t.wmSystrayMessage:
 		switch lParam {
@@ -1051,6 +1064,26 @@ func quit() {
 		0,
 		0,
 	)
+}
+
+// RemoveIcon deletes the notification icon and returns after the shell has
+// accepted the removal. It does not stop the tray message loop and does not
+// run the exit callback, so the caller can terminate the process in the same
+// step. The shell call is made without the tray lock so a notification
+// callback cannot deadlock against this function.
+func RemoveIcon() {
+	wt.muNID.Lock()
+	nid := wt.nid
+	if nid == nil {
+		wt.muNID.Unlock()
+		return
+	}
+	snapshot := *nid
+	wt.muNID.Unlock()
+	if err := snapshot.delete(); err != nil {
+		log.Printf("systray: Shell_NotifyIcon(NIM_DELETE): %v", err)
+		_ = snapshot.delete()
+	}
 }
 
 func setInternalLoop(bool) {

@@ -191,6 +191,16 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
             <path d="M12 2.7a9.3 9.3 0 0 0-2.94 18.12c.47.09.64-.2.64-.45v-1.63c-2.61.57-3.16-1.1-3.16-1.1-.42-1.08-1.05-1.37-1.05-1.37-.86-.58.07-.57.07-.57.95.07 1.45.98 1.45.98.85 1.45 2.22 1.03 2.76.79.09-.61.33-1.03.6-1.27-2.08-.24-4.27-1.04-4.27-4.64 0-1.03.37-1.87.97-2.53-.1-.24-.42-1.2.09-2.5 0 0 .79-.25 2.56.97A8.9 8.9 0 0 1 12 7.42c.78 0 1.56.1 2.29.31 1.77-1.22 2.55-.97 2.55-.97.51 1.3.19 2.26.1 2.5.6.66.96 1.5.96 2.53 0 3.61-2.2 4.4-4.28 4.63.34.29.64.84.64 1.69v2.5c0 .25.17.55.65.45A9.3 9.3 0 0 0 12 2.7Z" fill="currentColor"/>
         </svg>
     ),
+    "Google AI Studio": (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 2.4 13.9 9.1 20.6 11 13.9 12.9 12 19.6 10.1 12.9 3.4 11 10.1 9.1 12 2.4Z" fill="currentColor"/>
+        </svg>
+    ),
+    "Google Gemini": (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 2.4 13.9 9.1 20.6 11 13.9 12.9 12 19.6 10.1 12.9 3.4 11 10.1 9.1 12 2.4Z" fill="currentColor"/>
+        </svg>
+    ),
     "xAI-Grok": (
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M5 4h3.3l2.9 4.5L14 4h3.2l-4.3 6.5L18.7 20h-3.3l-4-6.2L7.2 20H4l5.7-8.7L5 4Z" fill="currentColor"/>

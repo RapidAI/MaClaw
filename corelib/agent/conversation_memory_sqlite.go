@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 )
@@ -37,6 +38,11 @@ CREATE TABLE IF NOT EXISTS conversation_entries (
     entry_order INTEGER NOT NULL DEFAULT 0,
     created_at_ns INTEGER NOT NULL DEFAULT 0,
     updated_at_ns INTEGER NOT NULL DEFAULT 0,
+    role TEXT NOT NULL DEFAULT '',
+    tool_name TEXT NOT NULL DEFAULT '',
+    tool_call_id TEXT NOT NULL DEFAULT '',
+    content_text TEXT NOT NULL DEFAULT '',
+    ts_ns INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (session_id, node_id),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
@@ -106,6 +112,9 @@ func openConversationSQLite(storePath string) (*conversationSQLiteStore, error) 
 	if _, err := db.Exec(conversationSQLiteSchema); err != nil {
 		return fail(err)
 	}
+	if err := ensureConversationSearchSchema(db); err != nil {
+		return fail(err)
+	}
 	imported, err := sqliteLegacyImportDone(db)
 	if err != nil {
 		return fail(err)
@@ -123,6 +132,9 @@ func openConversationSQLite(storePath string) (*conversationSQLiteStore, error) 
 				log.Printf("[ConversationMemory] migrated legacy file backup failed path=%q err=%v", path, err)
 			}
 		}
+	}
+	if err := backfillConversationSearchFields(db); err != nil {
+		return fail(err)
 	}
 	return store, nil
 }
@@ -377,6 +389,9 @@ ON CONFLICT(session_id) DO UPDATE SET
 		return orders, err
 	}
 	for _, id := range plan.deletes {
+		if _, err := tx.Exec(`DELETE FROM conversation_entries_fts WHERE session_id=? AND node_id=?`, userID, id); err != nil {
+			return nil, err
+		}
 		if _, err := tx.Exec(`DELETE FROM conversation_entries WHERE session_id=? AND node_id=?`, userID, id); err != nil {
 			return nil, err
 		}
@@ -438,13 +453,23 @@ ON CONFLICT(session_id) DO UPDATE SET
 		branchInfo, _ := json.Marshal(map[string]interface{}{"root": entry.parentID == ""})
 		if _, err := tx.Exec(`
 INSERT INTO conversation_entries(session_id, node_id, parent_id, branch_info_json,
-    entry_json, entry_order, created_at_ns, updated_at_ns)
-VALUES(?,?,?,?,?,?,?,?)
+    entry_json, entry_order, created_at_ns, updated_at_ns, role, tool_name, tool_call_id, content_text, ts_ns)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(session_id,node_id) DO UPDATE SET
     parent_id=excluded.parent_id, branch_info_json=excluded.branch_info_json,
     entry_json=excluded.entry_json, entry_order=excluded.entry_order,
-    updated_at_ns=excluded.updated_at_ns`,
-			userID, entry.id, entry.parentID, string(branchInfo), entry.payload, order, created, now); err != nil {
+    updated_at_ns=excluded.updated_at_ns,
+    role=excluded.role, tool_name=excluded.tool_name, tool_call_id=excluded.tool_call_id,
+    content_text=excluded.content_text, ts_ns=excluded.ts_ns`,
+			userID, entry.id, entry.parentID, string(branchInfo), entry.payload, order, created, now,
+			entry.role, entry.toolName, entry.toolCallID, entry.contentText, entry.tsNS); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`DELETE FROM conversation_entries_fts WHERE session_id=? AND node_id=?`, userID, entry.id); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`INSERT INTO conversation_entries_fts(session_id, node_id, role, tool_name, content_text) VALUES(?,?,?,?,?)`,
+			userID, entry.id, strings.ToLower(entry.role), strings.ToLower(entry.toolName), strings.ToLower(entry.contentText)); err != nil {
 			return nil, err
 		}
 	}
@@ -709,10 +734,15 @@ type sqliteEntryPlan struct {
 }
 
 type sqlitePlannedEntry struct {
-	id       string
-	parentID string
-	payload  string
-	created  int64
+	id          string
+	parentID    string
+	payload     string
+	created     int64
+	role        string
+	toolName    string
+	toolCallID  string
+	contentText string
+	tsNS        int64
 }
 
 func planSQLiteEntries(entries, baseline []ConversationEntry) (sqliteEntryPlan, error) {
@@ -735,10 +765,15 @@ func planSQLiteEntries(entries, baseline []ConversationEntry) (sqliteEntryPlan, 
 			return sqliteEntryPlan{}, err
 		}
 		plan.upserts = append(plan.upserts, sqlitePlannedEntry{
-			id:       entry.ID,
-			parentID: entry.ParentID,
-			payload:  string(payload),
-			created:  entry.Timestamp * int64(time.Millisecond),
+			id:          entry.ID,
+			parentID:    entry.ParentID,
+			payload:     string(payload),
+			created:     entry.Timestamp * int64(time.Millisecond),
+			role:        entry.Role,
+			toolName:    entry.ToolName,
+			toolCallID:  entry.ToolCallID,
+			contentText: conversationEntrySearchText(entry),
+			tsNS:        entry.Timestamp * int64(time.Millisecond),
 		})
 	}
 	for id := range baselineByID {
@@ -853,6 +888,10 @@ func (cm *ConversationMemory) flushSQLiteDirtyForUser(onlyUser string) error {
 		return restore(err)
 	}
 	for userID := range deletedSessions {
+		if _, err := tx.Exec(`DELETE FROM conversation_entries_fts WHERE session_id=?`, userID); err != nil {
+			_ = tx.Rollback()
+			return restore(err)
+		}
 		if _, err := tx.Exec(`DELETE FROM sessions WHERE session_id=?`, userID); err != nil {
 			_ = tx.Rollback()
 			return restore(err)
@@ -959,4 +998,414 @@ func loadSQLiteSeparateSessionEntries(path, userID string) ([]ConversationEntry,
 		_ = db.Close()
 	}
 	return nil, nil
+}
+
+func ensureConversationSearchSchema(db *sql.DB) error {
+	have := map[string]bool{}
+	rows, err := db.Query(`PRAGMA table_info(conversation_entries)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	alters := []struct{ name, stmt string }{
+		{"role", `ALTER TABLE conversation_entries ADD COLUMN role TEXT NOT NULL DEFAULT ''`},
+		{"tool_name", `ALTER TABLE conversation_entries ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''`},
+		{"tool_call_id", `ALTER TABLE conversation_entries ADD COLUMN tool_call_id TEXT NOT NULL DEFAULT ''`},
+		{"content_text", `ALTER TABLE conversation_entries ADD COLUMN content_text TEXT NOT NULL DEFAULT ''`},
+		{"ts_ns", `ALTER TABLE conversation_entries ADD COLUMN ts_ns INTEGER NOT NULL DEFAULT 0`},
+	}
+	for _, col := range alters {
+		if have[col.name] {
+			continue
+		}
+		if _, err := db.Exec(col.stmt); err != nil {
+			return err
+		}
+	}
+	for _, stmt := range []string{
+		`DROP INDEX IF EXISTS conversation_entries_role`,
+		`DROP INDEX IF EXISTS conversation_entries_tool`,
+		`CREATE INDEX IF NOT EXISTS conversation_entries_ts ON conversation_entries(session_id, ts_ns)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS conversation_entries_fts USING fts5(
+			session_id UNINDEXED,
+			node_id UNINDEXED,
+			role,
+			tool_name,
+			content_text,
+			tokenize='trigram'
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func backfillConversationSearchFields(db *sql.DB) error {
+	var value string
+	err := db.QueryRow(`SELECT value FROM conversation_meta WHERE key='entry_fields_v1'`).Scan(&value)
+	if err == nil && value == "1" {
+		return lowerConversationFTS(db)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var lastRowid int64
+	wipe := true
+	for {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		done, err := backfillConversationChunk(tx, &lastRowid, wipe)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if done {
+			return lowerConversationFTS(db)
+		}
+		wipe = false
+	}
+}
+
+type conversationBackfillEntry struct {
+	sessionID, nodeID, role, toolName, toolCallID, text string
+	ts                                                  int64
+}
+
+// backfillConversationChunk fills one page of search columns. The first page
+// clears the full-text index. The marker is written on the page that exhausts
+// the table, so a crash before that marker redoes the fill on the next open.
+// That same page marks fts_lower_v1 because the fill already stores lowercase text.
+func backfillConversationChunk(tx *sql.Tx, lastRowid *int64, wipe bool) (bool, error) {
+	if wipe {
+		if _, err := tx.Exec(`DELETE FROM conversation_entries_fts`); err != nil {
+			return false, err
+		}
+	}
+	rows, err := tx.Query(`SELECT rowid, session_id, node_id, entry_json FROM conversation_entries WHERE rowid > ? ORDER BY rowid LIMIT 400`, *lastRowid)
+	if err != nil {
+		return false, err
+	}
+	var pending []conversationBackfillEntry
+	scanned := 0
+	for rows.Next() {
+		var rowid int64
+		var sessionID, nodeID, payload string
+		if err := rows.Scan(&rowid, &sessionID, &nodeID, &payload); err != nil {
+			_ = rows.Close()
+			return false, err
+		}
+		scanned++
+		*lastRowid = rowid
+		var entry ConversationEntry
+		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+			continue
+		}
+		pending = append(pending, conversationBackfillEntry{
+			sessionID: sessionID, nodeID: nodeID,
+			role: entry.Role, toolName: entry.ToolName, toolCallID: entry.ToolCallID,
+			text: conversationEntrySearchText(entry), ts: entry.Timestamp * int64(time.Millisecond),
+		})
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return false, err
+	}
+	if len(pending) > 0 {
+		updateStmt, err := tx.Prepare(`UPDATE conversation_entries SET role=?, tool_name=?, tool_call_id=?, content_text=?, ts_ns=? WHERE session_id=? AND node_id=?`)
+		if err != nil {
+			return false, err
+		}
+		defer updateStmt.Close()
+		insertStmt, err := tx.Prepare(`INSERT INTO conversation_entries_fts(session_id, node_id, role, tool_name, content_text) VALUES(?,?,?,?,?)`)
+		if err != nil {
+			return false, err
+		}
+		defer insertStmt.Close()
+		for _, item := range pending {
+			if _, err := updateStmt.Exec(item.role, item.toolName, item.toolCallID, item.text, item.ts, item.sessionID, item.nodeID); err != nil {
+				return false, err
+			}
+			if _, err := insertStmt.Exec(item.sessionID, item.nodeID, strings.ToLower(item.role), strings.ToLower(item.toolName), strings.ToLower(item.text)); err != nil {
+				return false, err
+			}
+		}
+	}
+	if scanned == 400 {
+		return false, nil
+	}
+	if _, err := tx.Exec(`INSERT INTO conversation_meta(key, value) VALUES('entry_fields_v1','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`INSERT INTO conversation_meta(key, value) VALUES('fts_lower_v1','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// lowerConversationFTS rebuilds the trigram index in lowercase once.
+// The tokenizer keeps letter case, so a hit in one case used to hide the other.
+// The fold is strings.ToLower, the same fold the query uses. SQLite lower() only
+// folds ASCII, so a rebuilt row could miss the query.
+func lowerConversationFTS(db *sql.DB) error {
+	var value string
+	err := db.QueryRow(`SELECT value FROM conversation_meta WHERE key='fts_lower_v1'`).Scan(&value)
+	if err == nil && value == "1" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var lastRowid int64
+	wipe := true
+	for {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		done, err := lowerConversationFTSChunk(tx, &lastRowid, wipe)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		wipe = false
+	}
+}
+
+func lowerConversationFTSChunk(tx *sql.Tx, lastRowid *int64, wipe bool) (bool, error) {
+	if wipe {
+		if _, err := tx.Exec(`DELETE FROM conversation_entries_fts`); err != nil {
+			return false, err
+		}
+	}
+	rows, err := tx.Query(`SELECT rowid, session_id, node_id, role, tool_name, content_text FROM conversation_entries WHERE rowid > ? ORDER BY rowid LIMIT 400`, *lastRowid)
+	if err != nil {
+		return false, err
+	}
+	type ftsRow struct {
+		sessionID, nodeID, role, toolName, text string
+	}
+	var pending []ftsRow
+	scanned := 0
+	for rows.Next() {
+		var rowid int64
+		var item ftsRow
+		if err := rows.Scan(&rowid, &item.sessionID, &item.nodeID, &item.role, &item.toolName, &item.text); err != nil {
+			_ = rows.Close()
+			return false, err
+		}
+		scanned++
+		*lastRowid = rowid
+		pending = append(pending, item)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return false, err
+	}
+	if len(pending) > 0 {
+		insertStmt, err := tx.Prepare(`INSERT INTO conversation_entries_fts(session_id, node_id, role, tool_name, content_text) VALUES(?,?,?,?,?)`)
+		if err != nil {
+			return false, err
+		}
+		defer insertStmt.Close()
+		for _, item := range pending {
+			if _, err := insertStmt.Exec(item.sessionID, item.nodeID, strings.ToLower(item.role), strings.ToLower(item.toolName), strings.ToLower(item.text)); err != nil {
+				return false, err
+			}
+		}
+	}
+	if scanned == 400 {
+		return false, nil
+	}
+	if _, err := tx.Exec(`INSERT INTO conversation_meta(key, value) VALUES('fts_lower_v1','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SearchEntries finds messages in one session by role, tool name, or text.
+func (cm *ConversationMemory) SearchEntries(userID, query string, limit int) ([]ConversationEntry, error) {
+	if cm == nil {
+		return nil, nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if cm.sqliteActive() {
+		return cm.sqlite.searchEntries(userID, query, limit)
+	}
+	return cm.searchLoadedEntries(userID, query, limit), nil
+}
+
+func (s *conversationSQLiteStore) searchEntries(userID, query string, limit int) ([]ConversationEntry, error) {
+	if utf8.RuneCountInString(query) < 3 {
+		return s.searchEntriesLike(userID, query, limit)
+	}
+	rows, err := s.db.Query(`
+		SELECT e.entry_json
+		FROM conversation_entries_fts
+		JOIN conversation_entries e
+		  ON e.session_id = conversation_entries_fts.session_id
+		 AND e.node_id = conversation_entries_fts.node_id
+		WHERE conversation_entries_fts MATCH ?
+		  AND e.session_id = ?
+		ORDER BY e.ts_ns DESC, e.entry_order DESC
+		LIMIT ?`, conversationFTSPhrase(strings.ToLower(query)), userID, limit)
+	if err != nil {
+		return s.searchEntriesLike(userID, query, limit)
+	}
+	defer rows.Close()
+	var out []ConversationEntry
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var entry ConversationEntry
+		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+			continue
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		_ = rows.Close()
+		return s.searchEntriesLike(userID, query, limit)
+	}
+	return out, nil
+}
+
+func (s *conversationSQLiteStore) searchEntriesLike(userID, query string, limit int) ([]ConversationEntry, error) {
+	like := conversationLikeContains(query)
+	rows, err := s.db.Query(`
+		SELECT entry_json FROM conversation_entries
+		WHERE session_id = ?
+		  AND (content_text LIKE ? ESCAPE '\' OR role LIKE ? ESCAPE '\'
+		    OR tool_name LIKE ? ESCAPE '\' OR tool_call_id LIKE ? ESCAPE '\')
+		ORDER BY ts_ns DESC, entry_order DESC
+		LIMIT ?`, userID, like, like, like, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ConversationEntry
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var entry ConversationEntry
+		if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+func (cm *ConversationMemory) searchLoadedEntries(userID, query string, limit int) []ConversationEntry {
+	sh := cm.shardNoWait(userID)
+	sh.mu.RLock()
+	session := sh.sessions[userID]
+	var entries []ConversationEntry
+	if session != nil {
+		entries = append(entries, session.entries...)
+	}
+	sh.mu.RUnlock()
+	needle := strings.ToLower(query)
+	var out []ConversationEntry
+	for i := len(entries) - 1; i >= 0 && len(out) < limit; i-- {
+		if strings.Contains(strings.ToLower(conversationEntrySearchText(entries[i])), needle) {
+			out = append(out, entries[i])
+		}
+	}
+	return out
+}
+
+func conversationEntrySearchText(entry ConversationEntry) string {
+	text := strings.Join([]string{
+		entry.Role,
+		entry.ToolName,
+		entry.ToolCallID,
+		entry.ReasoningContent,
+		conversationContentText(entry.Content),
+	}, "\n")
+	return trimSearchText(text, 4000)
+}
+
+func trimSearchText(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
+}
+
+func conversationLikeContains(text string) string {
+	var b strings.Builder
+	b.Grow(len(text) + 2)
+	b.WriteByte('%')
+	for _, r := range text {
+		if r == '\\' || r == '%' || r == '_' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('%')
+	return b.String()
+}
+
+func conversationContentText(content interface{}) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case nil:
+		return ""
+	default:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+}
+
+func conversationFTSPhrase(query string) string {
+	return `"` + strings.ReplaceAll(strings.TrimSpace(query), `"`, "") + `"`
 }

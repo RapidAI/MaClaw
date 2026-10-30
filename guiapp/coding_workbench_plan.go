@@ -2126,9 +2126,10 @@ func codingWorkbenchContinueCue(userText string) bool {
 }
 
 // codingContinueUtteranceHasNoNewRequirement reports a continue act whose
-// payload is only politeness or a discourse particle. The unfinished
-// checklist is the requirement. Anything left after the continue head is a
-// new request and must not resume.
+// payload is only politeness, a discourse particle, or a name for the
+// current task. "继续这个任务" is that continue. The unfinished checklist
+// is the requirement. Anything left after the continue head, such as
+// "继续完善界面", is a new request and must not resume.
 func codingContinueUtteranceHasNoNewRequirement(userText string) bool {
 	text := strings.ToLower(strings.TrimSpace(acpInnerUserRequest(userText)))
 	text = strings.Trim(text, codingContinueTrimRunes)
@@ -2140,11 +2141,38 @@ func codingContinueUtteranceHasNoNewRequirement(userText string) bool {
 		if !strings.HasPrefix(text, stem) {
 			continue
 		}
-		if codingContinueRemainderEmpty(text[len(stem):]) {
+		rest := text[len(stem):]
+		if codingContinueRemainderEmpty(rest) || codingContinueNamesCurrentTask(rest) {
 			return true
 		}
 	}
 	return false
+}
+
+// codingContinueNamesCurrentTask reports a tail that only points at the
+// task or goal already on screen. It carries no new requirement.
+// Trailing discourse particles use the same list as an empty remainder,
+// so "继续这个任务吧" is still this task. "继续下载" stays a new request.
+func codingContinueNamesCurrentTask(rest string) bool {
+	rest = strings.Trim(rest, codingContinueTrimRunes)
+	rest = peelCodingContinueFillers(rest)
+	for _, particle := range []string{"一下子", "一下"} {
+		if !strings.HasPrefix(rest, particle) {
+			continue
+		}
+		rest = strings.Trim(strings.TrimPrefix(rest, particle), codingContinueTrimRunes)
+		break
+	}
+	rest = peelCodingContinueTrailingParticles(rest)
+	switch rest {
+	case "这个任务", "這個任務", "该任务", "該任務", "当前任务", "當前任務",
+		"这个目标", "這個目標", "该目标", "該目標", "当前目标", "當前目標",
+		"这项任务", "這項任務", "手头的任务", "手上的任务", "手头任务", "手上任务",
+		"this task", "the task", "this goal", "the goal", "current task", "the current task":
+		return true
+	default:
+		return false
+	}
 }
 
 // Longest first, so "继续执行" is the head of "继续执行呀" and is not split
@@ -2193,6 +2221,13 @@ var codingContinueParticles = []string{
 }
 
 func codingContinueRemainderEmpty(rest string) bool {
+	return peelCodingContinueTrailingParticles(rest) == ""
+}
+
+// peelCodingContinueTrailingParticles removes discourse particles from the
+// end of a continue tail. Longest match wins, so "一下" goes before "下".
+// A leftover such as "载" from "下载" is not a task name.
+func peelCodingContinueTrailingParticles(rest string) string {
 	rest = strings.Trim(rest, codingContinueTrimRunes)
 	for rest != "" {
 		stripped := false
@@ -2205,10 +2240,10 @@ func codingContinueRemainderEmpty(rest string) bool {
 			break
 		}
 		if !stripped {
-			return false
+			return rest
 		}
 	}
-	return true
+	return ""
 }
 
 func codingPlanStepWasStarted(status string) bool {
