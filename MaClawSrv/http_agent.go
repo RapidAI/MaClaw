@@ -515,6 +515,9 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	run, msg, err := s.svc.PostMessage(shotCtx, p, shotID, r.PathValue("sessionId"), in)
 	if err == nil {
 		dropUnaskedDesktopShot(shot, in.Content, msg)
+		if msg != nil && run != nil {
+			msg.Content = desktopReplyAfterDelegation(shotID, run.ID, run.SessionID, msg.Content)
+		}
 		publishDesktopReply(msg, shot)
 	} else if msg != nil {
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
@@ -596,6 +599,7 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 		}
 		if err == nil && msg != nil && run != nil {
+			msg.Content = desktopReplyAfterDelegation(instanceID, run.ID, run.SessionID, msg.Content)
 			msg.Content = desktopReplyWithLink(run.ID, msg.Content)
 			desktopDropAskAfterPost(msg.Content, msg.Metadata)
 		}

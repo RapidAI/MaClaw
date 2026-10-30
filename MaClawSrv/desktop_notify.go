@@ -326,6 +326,12 @@ func desktopDelegate(ctx context.Context, request agentruntime.TurnRequest, args
 	// No order id and no key=value text: papers 2026-10-30 the main bot still
 	// quoted "DELEGATED to=... order=note_..." as 工具原样返回. The id lives in
 	// the mailbox and the feed; this turn only needs who took the task.
+	if !desktopWakeTurn(request) {
+		// The turn's reply becomes one sentence naming who has it
+		// (desktopReplyAfterDelegation at finish).
+		content, _ := desktopTurnMessage(request)
+		desktopNoteDelegated(runKey, target, content)
+	}
 	return fmt.Sprintf("%s has the task. Its result reaches the person by itself.", target), nil
 }
 
