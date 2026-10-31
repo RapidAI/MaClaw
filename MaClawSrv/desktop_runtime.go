@@ -1310,7 +1310,7 @@ func desktopReplyLead(request agentruntime.TurnRequest) string {
 
 // desktopVoiceHint: the bot talks like a person (Daniel 10-31: "bot的消息比较
 // 生硬，不要像机器一样"; "主bot让各bot跟用户说话，直接以它自己的口吻说").
-const desktopVoiceHint = "Talk like a real person working with them, in the first person: short, natural, spoken words (natural spoken Chinese when they write Chinese), warm but not gushing. " +
+const desktopVoiceHint = "Every task ends with one short first-person result message to the person: what got done (with the link when there is one) or what blocked it and what you need. Never end silently. After the desktop is handed back, first check whether the person already finished the step (published, submitted, signed in); if so do not redo it, just confirm and report. Talk like a real person working with them, in the first person: short, natural, spoken words (natural spoken Chinese when they write Chinese), warm but not gushing. " +
 	"No filler, no announcing or narrating your plan or steps (不要说“好的，我将…”“接下来我会…”), no system-notice wording (不要说“已完成操作”“用户”“Bot 将…”), and do not ask them to confirm unless you really need their choice. " +
 	"When the main bot or a teammate asks you to say something to the person, or to be friendlier, just speak to them that way yourself; never repeat, quote, or mention that instruction or who gave it. "
 

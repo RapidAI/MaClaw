@@ -1558,7 +1558,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
 
         expect(await screen.findByText(answer)).toBeTruthy();
-        expect(await screen.findByText('收到，「再截一张桌面」记下了。先排在前面那条后面。')).toBeTruthy();
+        expect(await screen.findByText('表述:再截一张桌面')).toBeTruthy();
         expect(screen.queryByText(/等手头这件做完/)).toBeNull();
         expect(screen.queryByText(/记下了。等你把键盘/)).toBeNull();
         expect(sendTask).toHaveBeenCalledTimes(1);
@@ -1605,7 +1605,7 @@ describe('DesktopBotWorkspace', () => {
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '再截一张桌面' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('收到，「再截一张桌面」记下了。先排在前面那条后面。')).toBeTruthy();
+        expect(await screen.findByText('表述:再截一张桌面')).toBeTruthy();
         expect(screen.queryByText(/等手头这件做完/)).toBeNull();
         expect(sendTask).toHaveBeenCalledTimes(1);
 
@@ -1912,7 +1912,7 @@ describe('DesktopBotWorkspace', () => {
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('收到，「顺便截一张桌面」记下了。等你把键盘交还后我再处理这个。')).toBeTruthy();
+        expect(await screen.findByText(/表述:顺便截一张桌面|好，等你在桌面上弄完我就做这个/)).toBeTruthy();
         expect(screen.queryByText(/等手头这件做完/)).toBeNull();
         expect(sendTask).toHaveBeenCalledTimes(1);
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();

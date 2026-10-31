@@ -1439,17 +1439,17 @@ function queuedAckReply(content: string, lang: string, wait: 'task' | 'keyboard'
     const task = flat.length > 16 ? `${flat.slice(0, 15)}…` : flat;
     if (wait === 'ahead') {
         return task
-            ? localizeText(lang, `Got it — "${task}" is queued behind the earlier message.`, `收到，「${task}」记下了。先排在前面那条后面。`, `收到，「${task}」記下了。先排在前面那條後面。`)
-            : localizeText(lang, "Got it — it's queued behind the earlier message.", '收到，记下了。先排在前面那条后面。', '收到，記下了。先排在前面那條後面。');
+            ? localizeText(lang, "Got it, I'll fold that in and let you know when it's done.", '好，我一起弄好，做完告诉你。', '好，我一起弄好，做完告訴你。')
+            : localizeText(lang, "Got it, I'll fold that in and let you know when it's done.", '好，我一起弄好，做完告诉你。', '好，我一起弄好，做完告訴你。');
     }
     if (wait === 'keyboard') {
         return task
-            ? localizeText(lang, `Got it — "${task}" is queued. I'll pick it up when you hand the keyboard back.`, `收到，「${task}」记下了。等你把键盘交还后我再处理这个。`, `收到，「${task}」記下了。等你把鍵盤交還後我再處理這個。`)
-            : localizeText(lang, "Got it — it's queued. I'll pick it up when you hand the keyboard back.", '收到，记下了。等你把键盘交还后我再处理这个。', '收到，記下了。等你把鍵盤交還後我再處理這個。');
+            ? localizeText(lang, "OK — once you're done on the desktop I'll do this and tell you how it went.", '好，等你在桌面上弄完我就做这个，做完告诉你。', '好，等你在桌面上弄完我就做這個，做完告訴你。')
+            : localizeText(lang, "OK — once you're done on the desktop I'll do this and tell you how it went.", '好，等你在桌面上弄完我就做这个，做完告诉你。', '好，等你在桌面上弄完我就做這個，做完告訴你。');
     }
     return task
-        ? localizeText(lang, `Got it — "${task}" is queued. I'll pick it up the moment the current task is done.`, `收到，「${task}」记下了。等手头这件做完我就来处理这个。`, `收到，「${task}」記下了。等手頭這件做完我就來處理這個。`)
-        : localizeText(lang, "Got it — it's queued, and I'll pick it up the moment the current task is done.", '收到，记下了。等手头这件做完我就来处理这个。', '收到，記下了。等手頭這件做完我就來處理這個。');
+        ? localizeText(lang, "OK, I'll do this right after what I'm on now and tell you how it went.", '好，手上这件做完就弄这个，弄好告诉你。', '好，手上這件做完就弄這個，弄好告訴你。')
+        : localizeText(lang, "OK, I'll do this right after what I'm on now and tell you how it went.", '好，手上这件做完就弄这个，弄好告诉你。', '好，手上這件做完就弄這個，弄好告訴你。');
 }
 
 function messageID() {
@@ -4888,7 +4888,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     if (matches.length > 0) {
                         const targetID = matches.length === 1 ? String(matches[0].candidate.run_id || '') : '';
                         const receipt = await AppendDesktopBotSupplement(botId, targetID, String(matches[0].verdict?.instruction || content.trim())) as { accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null;
-                        const note = String(receipt?.message || localizeText(lang, 'On it', '在办'));
+                        const note = String(receipt?.message || localizeText(lang, "Got it, I'll work that in.", '好，我按这个改，弄好告诉你。'));
                         const supplementFiles = splitAckMaterials(content).paths;
                         if (receipt?.stage === 'queued') {
                             // Only the receipt's ids go on the bubble. The
@@ -5529,7 +5529,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (live.length === 0) return;
             const runId = live.length === 1 ? String(live[0].run_id || '') : '';
             const receipt = await AppendDesktopBotSupplement(botId, runId, order) as { stage?: string; message?: string; supplement_id?: string } | null;
-            const note = String(receipt?.message || localizeText(langNow, 'On it', '在办'));
+            const note = String(receipt?.message || localizeText(langNow, "Got it, I'll work that in.", '好，我按这个改，弄好告诉你。'));
             const supplementId = String(receipt?.supplement_id || '').trim();
             commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: note, ack: true, supplementId: supplementId || undefined, supplementRunId: runId || undefined }]);
         } catch {
@@ -5775,7 +5775,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         const stored = messagesForBot(ownerId, botId);
                         const at = stored.findIndex(item => item.id === userMessage.id);
                         const queuedUser: DesktopBotMessage = { ...userMessage, queued: true };
-                        const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: queuedAckReply(content, lang, waitingOnPerson ? 'keyboard' : 'ahead'), ack: true };
+                        const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: (told || '').trim() && !['STOP_WORK', content.trim()].includes((told || '').trim()) ? told.trim() : queuedAckReply(content, lang, waitingOnPerson ? 'keyboard' : 'ahead'), ack: true };
                         const next = at >= 0
                             ? [...stored.slice(0, at), queuedUser, ackMessage, ...stored.slice(at + 1)]
                             : [...stored, queuedUser, ackMessage];

@@ -125,12 +125,12 @@ func (s *Service) resumeAfterHandBack(tenantID, desktopUser, key string, resume 
 	w.resumed[once] = time.Now()
 	w.mu.Unlock()
 	trigger, _ := resume["trigger"].(string)
-	message := "桌面已自动交还给你（人类接管期间无操作），请先看清当前页面状态，再继续刚才的任务；不要重新打开或刷新页面。"
+	message := "桌面已自动交还给你（对方一段时间没再操作）。先看清当前页面：如果对方已经替你完成了（比如已发布、已提交、已登录），不要重做，直接确认结果；否则接着做刚才的任务，不要重新打开或刷新页面。最后一定用你自己的话给用户一句结果：做成了什么（有链接带上链接），或者卡在哪。"
 	if trigger == "published" {
-		message = "页面显示已经发布成功了，桌面已自动交还给你。去笔记管理里找到这篇的链接，用你自己的话简短告诉我发好了（带上链接）；不要再点发布，也不要刷新页面。"
+		message = "页面显示已经发布成功了，桌面已自动交还给你。去笔记管理里找到这篇的链接，用你自己的话简短告诉用户发好了（带上链接）；不要再点发布、不要重新填写，也不要刷新页面。"
 	}
 	if trigger == "signed_in" {
-		message = "页面已显示登录成功，桌面已自动交还给你，请沿用这个登录状态继续刚才的任务；不要重新打开或刷新页面。"
+		message = "页面已显示登录成功，桌面已自动交还给你，请沿用这个登录状态继续刚才的任务；不要重新打开或刷新页面。做完后用你自己的话给用户一句结果。"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

@@ -96,7 +96,7 @@ type FallbackVoice = 'hans' | 'hant' | 'en' | 'mn';
 
 const FALLBACK_VARIANTS: Record<string, Record<FallbackVoice, string[]>> = {
     queued: {
-        hans: ['手上这件做完，马上接这个。', '记下了，排在现在这件后面。', '收到，等这件收尾就开始。'],
+        hans: ['手上这件做完，马上接这个。', '好，这件弄完就做，做完告诉你。', '收到，等这件收尾就开始。'],
         hant: ['手上這件做完，馬上接這個。', '記下了，排在現在這件後面。', '收到，等這件收尾就開始。'],
         en: ['Noted. That comes right after the current job.', "Got it, it's next in line.", "I'll start that as soon as this one wraps up."],
         mn: ['Одоогийн ажил дуусмагц үүнийг авна.', 'Тэмдэглэв. Одоогийн ажлын ард байна.', 'Ойлголоо. Энэ ажил дуусмагц эхэлнэ.'],

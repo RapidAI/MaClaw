@@ -94,7 +94,7 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 	if strings.Contains(system, "they do not interrupt each other") || strings.Contains(system, "do not tell them to wait until it finishes") {
 		t.Fatal("system prompt still starts a second job beside the running one")
 	}
-	if !strings.Contains(system, "told says this one waits until the job already underway finishes") {
+	if !strings.Contains(system, "you will do it right after the current job") {
 		t.Fatal("system prompt does not hold a new job until the running one finishes")
 	}
 	if strings.Contains(system, desktopBotConfirmTask) || strings.Contains(system, "not to make the change on this turn") {
