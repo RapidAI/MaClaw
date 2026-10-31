@@ -97,6 +97,9 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() {
 		return desktopPublishRecordText(r), nil
 	}
+	if out, done, err := desktopPublishLedgerGuard(scope, session, spec, args); done {
+		return out, err
+	}
 	// The pictures a run planned stay planned: a retry that passes fewer
 	// files would publish without them (BILI-cv53625427 dropped all three
 	// on its third call and passed read-back).

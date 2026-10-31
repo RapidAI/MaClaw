@@ -100,7 +100,7 @@ func desktopPublishRecordUpdate(scope agentruntime.Scope, fn func(r *desktopPubl
 // lists only by id becomes the public post link when site data knows its
 // pattern.
 func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, rep *browser.PublishReport, runErr ...error) desktopPublishRecord {
-	return desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) {
+	rec := desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) {
 		r.Calls++
 		r.Title = spec.Title
 		if len(spec.Files) > r.PlannedImages {
@@ -137,6 +137,12 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 			}
 		}
 	})
+
+	if rec.posted() {
+		// The post outlives the run: a resumed or new run must not post it again.
+		desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "posted", Host: desktopLedgerHost(firstNonEmptyStr(spec.EditorURL, rec.URL)), Title: spec.Title, URL: rec.URL, Run: scope.RunID, Detail: string(rec.State)})
+	}
+	return rec
 }
 
 // desktopRecordVerifiedPage: a run that verified its own result page (a
@@ -208,4 +214,13 @@ func desktopPublishRecordLegacyText(r desktopPublishRecord) string {
 		return "PUBLISH STATE: not_submitted — nothing was posted; the page shows a blocking notice: " + r.Notice + ". Tell the user exactly this; do not retry until it is resolved."
 	}
 	return "PUBLISH STATE: not_submitted — nothing was posted. Fix what the failed step names and run action=publish again with the full title, body and files."
+}
+
+func firstNonEmptyStr(v ...string) string {
+	for _, s := range v {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }

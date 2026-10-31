@@ -7,10 +7,11 @@ import "github.com/RapidAI/CodeClaw/corelib/agentservice"
 func init() { agentservice.RunGoalReached = desktopPublishSettled }
 
 func desktopPublishSettled(runID string) (string, bool) {
-	rec, ok := desktopPublishRecordOf(runID)
-	if !ok {
-		return "", false
+	if rec, ok := desktopPublishRecordOf(runID); ok {
+		if r := desktopReplyTemplate(rec); r != "" {
+			return r, true
+		}
 	}
-	r := desktopReplyTemplate(rec)
-	return r, r != ""
+	// The watchdog ended the run: its honest result is the answer.
+	return desktopWatchdogVerdict(runID)
 }

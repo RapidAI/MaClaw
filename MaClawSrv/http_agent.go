@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	transporthttp "github.com/RapidAI/CodeClaw/MaClawSrv/transport/http"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"io"
@@ -612,6 +613,8 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 			noteDesktopReplyHandoff(tenantID, userID, instanceID, msg.Content)
 		}
 		handoff, attention := takeDesktopTurn(tenantID, userID, instanceID)
+		// Exactly one result per task, on success and on failure.
+		msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID}, run, msg, err, handoff)
 		storeDesktopTurnResult(run, msg, handoff, attention)
 		runID := ""
 		runStatus := ""

@@ -162,6 +162,8 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"title_selector":  map[string]any{"type": "string", "description": "publish: CSS selector of the title field if not auto-found"},
 				"body_selector":   map[string]any{"type": "string", "description": "publish: CSS selector of the body editor if not auto-found"},
 				"upload_selector": map[string]any{"type": "string", "description": "publish: CSS selector of the file input"},
+				"check_posted":    map[string]any{"type": "boolean", "description": "publish: first look (read-only) in the post list at verify_url for this title; if it is already there nothing is filled or posted. Use it after the person was handed the editor to publish"},
+				"republish":       map[string]any{"type": "boolean", "description": "publish: only when the person explicitly asked to post the same article again; otherwise a post already on record is never repeated"},
 				"explore":         map[string]any{"type": "boolean", "description": "publish: read-only probe of the editor (fields, frames, file inputs, publish buttons, notices); types, uploads and clicks nothing. Use it on a new site before the real publish"},
 				"upload_trigger":  map[string]any{"type": "string", "description": "publish: visible text of the upload button when there is no file input yet"},
 				"submit_texts":    map[string]any{"type": "array", "description": "publish: exact text of the publish button(s), e.g. [\"发布\"]", "items": map[string]any{"type": "string"}},
@@ -204,7 +206,28 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 	return []agentruntime.ToolDefinition{def}, nil
 }
 
-func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime.TurnRequest, name string, args map[string]any) (string, error) {
+// InvokeTool runs one desktop tool call under the run watchdog
+// (desktop_watchdog.go), which sees every call whatever guard answers it.
+func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime.TurnRequest, name string, args map[string]any) (string, error) {
+	scope, _, scopeErr := desktopScopeForTurn(request)
+	if scopeErr != nil || strings.TrimSpace(name) != desktopToolName {
+		return m.invokeDesktopTool(ctx, request, name, args)
+	}
+	warn, stop := desktopWatchdogBefore(scope, strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args)
+	if stop != nil {
+		return "", stop
+	}
+	out, err := m.invokeDesktopTool(ctx, request, name, args)
+	desktopWatchdogAfter(scope, err)
+	if err == nil {
+		out += warn
+	} else if warn != "" {
+		err = fmt.Errorf("%w%s", err, warn)
+	}
+	return out, err
+}
+
+func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agentruntime.TurnRequest, name string, args map[string]any) (string, error) {
 	if strings.TrimSpace(name) != desktopToolName {
 		return "", fmt.Errorf("unknown desktop tool %s", name)
 	}
@@ -431,6 +454,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 	prompt := "The current user has one cloud desktop through the desktop tool. "
 	if scope, _, err := desktopScopeForTurn(request); err == nil {
 		prompt += desktopExperienceText(scope, "")
+		prompt += desktopLedgerPromptText(scope)
 		task := desktopTurnTask(request)
 		desktopRecipeBegin(scope, task)
 		prompt += desktopRecipeText(scope, task)

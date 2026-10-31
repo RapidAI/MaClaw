@@ -62,6 +62,12 @@ func requestDesktopTakeover(ctx context.Context, scope agentruntime.Scope, reaso
 	if desktopElementMissingRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) {
 		return "", fmt.Errorf("%s", desktopElementMissingRefusal)
 	}
+	if desktopPublishOnlyTakeoverRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) {
+		if refusal := desktopLedgerTakeoverRefusal(scope); refusal != "" {
+			return "", fmt.Errorf("%s", refusal)
+		}
+		desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "publish_takeover", Host: desktopLedgerHost(desktopTaskSpecFor(scope.RunID).EditorURL), Run: scope.RunID, Detail: reason})
+	}
 	// Hand back is automatic now (signed in / published / idle): the person
 	// is not told to press 交还.
 	reason = strings.TrimSpace(desktopHandBackAskRe.ReplaceAllString(reason, ""))
@@ -124,6 +130,11 @@ func desktopNoteAutoHandback(scope agentruntime.Scope, out map[string]any) {
 	idle := 0
 	if v, ok := out["auto_handback_idle"].(float64); ok {
 		idle = int(v)
+	}
+	trig, _ := out["auto_handback_trigger"].(string)
+	desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "handback", Run: scope.RunID, Detail: trig})
+	if trig == "published" {
+		desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "posted", Host: desktopLedgerHost(desktopTaskSpecFor(scope.RunID).EditorURL), Run: scope.RunID, Detail: "seen_after_takeover"})
 	}
 	if trigger, _ := out["auto_handback_trigger"].(string); trigger == "published" {
 		desktopEmitNote(scope, "takeover_auto_handback", "bot", "看到已经发出去了，我来收个尾")
