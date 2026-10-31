@@ -52,6 +52,14 @@ func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, e
 	return h.finishUserSessionCancel(userID, false)
 }
 
+// requestCancelSessionForUserExcept is RequestCancelSessionForUser with one
+// loop exempted. A host stop tool runs inside the loop it may stop; that loop
+// is the one still owing the person the tool's verified answer, so it is not
+// work to cancel. Everything else this session owns still stops.
+func (h *IMMessageHandler) requestCancelSessionForUserExcept(userID string, except *LoopContext) (string, error) {
+	return h.finishUserSessionCancelExcept(userID, false, except)
+}
+
 // finishUserSessionCancel stops this session, including a goal continuation
 // published, queued, or already admitted under either slash spelling.
 // The continuation timer is dropped before a published loop is waited on,
@@ -62,11 +70,15 @@ func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, e
 // revokes, matching the goal bar. A stop that finds this spelling leaves
 // the pause to that turn.
 func (h *IMMessageHandler) finishUserSessionCancel(userID string, wait bool) (string, error) {
+	return h.finishUserSessionCancelExcept(userID, wait, nil)
+}
+
+func (h *IMMessageHandler) finishUserSessionCancelExcept(userID string, wait bool, except *LoopContext) (string, error) {
 	if h == nil {
 		return "", fmt.Errorf("missing userID")
 	}
 	userID = strings.TrimSpace(userID)
-	twinText, loopStopped, timerStopped := h.signalSlashTwinGoalSession(userID)
+	twinText, loopStopped, timerStopped := h.signalSlashTwinGoalSessionExcept(userID, except)
 	// A fire can already have left the timer and not yet published a loop.
 	// Pause revokes that admit. Stop has to see it too, on every spelling.
 	admitted := h.liveContinuationAdmitted(userID)
@@ -89,7 +101,7 @@ func (h *IMMessageHandler) finishUserSessionCancel(userID string, wait bool) (st
 	if wait {
 		text, err = h.cancelSessionForUserOne(userID)
 	} else {
-		text, err = h.requestCancelSessionForUserOne(userID)
+		text, err = h.requestCancelSessionForUserOneExcept(userID, except)
 	}
 	if err != nil && ownsPause {
 		log.Printf("[CancelSessionForUser] stopped slash-twin continuation user=%s twin_loop=%v twin_timer=%v admitted=%v", userID, loopStopped, timerStopped, admitted)
@@ -102,11 +114,13 @@ func (h *IMMessageHandler) finishUserSessionCancel(userID string, wait bool) (st
 	return text, err
 }
 
-// signalSlashTwinGoalSession cancels a turn that belongs to this session but
-// was published under the other slash spelling. It does not wait and it does
-// not call CancelSessionForUser: that waits on DoneC, and LoopContext.Cancel
-// does not close DoneC. A queued timer is only reported; the caller drops it.
-func (h *IMMessageHandler) signalSlashTwinGoalSession(asked string) (taskText string, loopStopped, timerStopped bool) {
+// signalSlashTwinGoalSessionExcept cancels a turn that belongs to this session
+// but was published under the other slash spelling. It does not wait and it
+// does not call CancelSessionForUser: that waits on DoneC, and
+// LoopContext.Cancel does not close DoneC. A queued timer is only reported;
+// the caller drops it. except is the turn asking to stop, which must survive
+// even if another spelling happens to resolve to the same context.
+func (h *IMMessageHandler) signalSlashTwinGoalSessionExcept(asked string, except *LoopContext) (taskText string, loopStopped, timerStopped bool) {
 	if h == nil {
 		return "", false, false
 	}
@@ -122,7 +136,7 @@ func (h *IMMessageHandler) signalSlashTwinGoalSession(asked string) (taskText st
 		if ctx == nil && strings.TrimSpace(text) == "" {
 			continue
 		}
-		if ctx != nil && !ctx.IsCancelled() {
+		if ctx != nil && ctx != except && !ctx.IsCancelled() {
 			ctx.MarkUserCancel()
 			ctx.Cancel()
 		}
@@ -254,7 +268,11 @@ func (h *IMMessageHandler) cancelSessionForUserOne(userID string) (string, error
 	return taskText, nil
 }
 
-func (h *IMMessageHandler) requestCancelSessionForUserOne(userID string) (string, error) {
+// requestCancelSessionForUserOneExcept is the non-waiting session cancel with
+// one loop exempted. The exempted loop is the turn that invoked the stop tool:
+// it must finish so the tool's say can reach the person. Cancelling only that
+// turn would stop nothing and turn a verified answer into "Task cancelled".
+func (h *IMMessageHandler) requestCancelSessionForUserOneExcept(userID string, except *LoopContext) (string, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return "", fmt.Errorf("missing userID")
@@ -264,6 +282,11 @@ func (h *IMMessageHandler) requestCancelSessionForUserOne(userID string) (string
 	stoppedRound := h.cancelSessionRoundContinuation(userID)
 	cancelledHorizon := h.cancelHorizonSessionWithReason(userID, "session")
 	ctx, taskText, published := h.loopContextForCancel(userID)
+	if ctx != nil && except != nil && ctx == except {
+		// The only turn this cancel can reach is the one asking to stop. It is
+		// not work to stop; leave it live so it can deliver the tool's answer.
+		return "", nil
+	}
 	if ctx == nil {
 		if taskText != "" {
 			h.markTaskCancelledByUser(userID)

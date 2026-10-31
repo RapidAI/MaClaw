@@ -216,6 +216,15 @@ func (h *IMMessageHandler) resetIMSessionForUser(userID, responseLang string) *I
 // together prevents /stop from cancelling only a LoopContext while leaving an
 // active workflow, goal continuation, or side-runner alive.
 func (h *IMMessageHandler) cancelCurrentTaskForUser(userID, responseLang string) *IMAgentResponse {
+	return h.cancelCurrentTaskForUserExcept(userID, responseLang, nil)
+}
+
+// cancelCurrentTaskForUserExcept is cancelCurrentTaskForUser with one loop
+// exempted. A host stop tool runs inside the chat loop; that loop is the
+// answer's carrier, not the work. Cancelling it turns every verified stop into
+// "Task cancelled" and drops the tool's say, so the in-loop path exempts it
+// while every other owner (tasks, workflow, goal, desktop runs) still stops.
+func (h *IMMessageHandler) cancelCurrentTaskForUserExcept(userID, responseLang string, except *LoopContext) *IMAgentResponse {
 	h.cancelWorkflowForUser(userID)
 	confirmationCancelled := false
 	btwCancelled := false
@@ -266,7 +275,7 @@ func (h *IMMessageHandler) cancelCurrentTaskForUser(userID, responseLang string)
 		loop.Cancel()
 		loopCancelled = true
 	}
-	taskText, err := h.RequestCancelSessionForUser(userID)
+	taskText, err := h.requestCancelSessionForUserExcept(userID, except)
 	if err == nil {
 		return settle(&IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "task", truncateRunes(taskText, 30))})
 	}

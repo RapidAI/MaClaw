@@ -1741,3 +1741,29 @@ func TestChatTaskInterruptedAnswerResumes(t *testing.T) {
 	waitChatTaskStatus(t, reloaded, "ct-answer", chatTaskDone)
 	waitChatTaskPersistIdle(t, reloaded)
 }
+
+func TestChatTaskGuidanceDoesNotOfferStopAsAnEscape(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	text := h.chatTaskDispatchGuidance(desktopUserID)
+	if strings.Contains(text, "If you are unsure, call stop_all_work") {
+		t.Fatalf("uncertainty still routes to the stop tool:\n%s", text)
+	}
+	if !strings.Contains(text, "Never call stop_all_work because you are unsure how to continue") {
+		t.Fatalf("guidance lost the stop-tool boundary:\n%s", text)
+	}
+	var stopDescription string
+	for _, def := range chatTaskForegroundHandoffDefinitions() {
+		if extractToolName(def) != chatTaskToolStop {
+			continue
+		}
+		if fn, ok := def["function"].(map[string]interface{}); ok {
+			stopDescription, _ = fn["description"].(string)
+		}
+	}
+	if !strings.Contains(stopDescription, "only when the person's own message asks") {
+		t.Fatalf("tool description still invites a self-initiated stop: %q", stopDescription)
+	}
+	if strings.Contains(stopDescription, "Call this whenever the user wants") {
+		t.Fatal("tool description still offers stop as a general escape")
+	}
+}

@@ -2107,3 +2107,28 @@ func TestSemanticSessionResidueFollowUpKeepsOriginalSummary(t *testing.T) {
 		t.Fatal("a fresh office label kept the prior task")
 	}
 }
+
+func TestFreshAnaphoricSendDropsTheCarriedMailboxCeiling(t *testing.T) {
+	loop := &LoopContext{semanticResidueRemaining: map[string]int{
+		"information.search.web":                  2,
+		"document.generate.file":                  0,
+		string(tool.CapabilityMessageSendMailbox): 0,
+	}}
+	loop.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
+	needs := []tool.CapabilityNeed{{ID: "need:mail", Capability: tool.CapabilityMessageSendMailbox, Required: true}}
+	if got := clampNeedsToResidueRemaining(needs, loop.semanticResidueRemaining); len(got) != 1 {
+		t.Fatalf("fresh mailbox need was clamped: %#v (ceiling=%v)", got, loop.semanticResidueRemaining)
+	}
+	// Other carried ceilings are still the open task's replay authority.
+	if left := loop.semanticResidueRemaining["information.search.web"]; left != 2 {
+		t.Fatalf("unrelated search ceiling changed: %v", loop.semanticResidueRemaining)
+	}
+
+	// Without the host's fresh-send decision the spent count still clamps.
+	spent := &LoopContext{semanticResidueRemaining: map[string]int{
+		string(tool.CapabilityMessageSendMailbox): 0,
+	}}
+	if got := clampNeedsToResidueRemaining(needs, spent.semanticResidueRemaining); len(got) != 0 {
+		t.Fatalf("spent mailbox need survived the replay ceiling: %#v", got)
+	}
+}

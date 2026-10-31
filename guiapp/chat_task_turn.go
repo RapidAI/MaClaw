@@ -148,7 +148,7 @@ func looksLikeDesktopChatStop(text string) bool {
 	trimmed = strings.Trim(trimmed, " \t\r\n.。!！?？,~～")
 	switch trimmed {
 	case "stop", "stop it", "stop all", "stop everything", "cancel", "cancel all", "cancel everything", "abort", "never mind", "nevermind", "forget it",
-		"停", "停下", "停止", "停掉", "别做了", "不要了", "取消", "都取消", "全部停止", "全部停下", "都停下", "算了", "不用了", "别跑了", "停止所有", "取消所有", "都停", "全停", "停一下", "先停", "停止吧", "取消吧", "别继续了", "不要继续了", "不干了", "不做了", "别干了":
+		"停", "停下", "停止", "停掉", "别做了", "别弄了", "不要了", "取消", "都取消", "全部停止", "全部停下", "都停下", "算了", "不用了", "别跑了", "停止所有", "取消所有", "都停", "全停", "停一下", "先停", "停止吧", "取消吧", "别继续了", "不要继续了", "不干了", "不做了", "别干了":
 		return true
 	default:
 		return desktopChatStopParts(trimmed)
@@ -172,7 +172,7 @@ func desktopChatStopParts(text string) bool {
 	parts := []string{
 		"stopeverything", "canceleverything", "nevermind", "forgetit", "stopall", "stopit", "cancelall",
 		"全部停止", "全部停下", "停止所有", "取消所有", "别继续了", "不要继续了", "都停下", "都取消",
-		"别做了", "不要了", "不干了", "不做了", "别干了", "别跑了", "不用了", "停一下", "停止吧", "取消吧",
+		"别做了", "别弄了", "不要了", "不干了", "不做了", "别干了", "别跑了", "不用了", "停一下", "停止吧", "取消吧",
 		"先停", "算了", "停下", "停止", "停掉", "都停", "全停", "取消", "abort", "stop", "cancel", "停",
 	}
 	rest := compact
@@ -436,7 +436,7 @@ func chatTaskControlToolDefinitions() []map[string]interface{} {
 				"title":   map[string]string{"type": "string", "description": "Title of the running work when more than one is open. Optional."},
 				"task_id": map[string]string{"type": "string", "description": "Internal id. Leave empty when title or the only running item is enough."},
 			}, []string{"note"}),
-		toolDef(chatTaskToolStop, "Stop every running task, desktop run, and foreground loop for this chat. Call this whenever the user wants that work stopped, cancelled, or held, in any language or phrasing, and call it before you say it stopped. Do not call it to change the content of the work, such as stopping bold text or stopping music inside a video being edited. If you are unsure whether they mean the running work, call it with intent pause rather than continuing. The result has idle and say. Tell the user only say. Claim the work stopped only when idle is true.",
+		toolDef(chatTaskToolStop, "Stop every running task, desktop run, and foreground loop for this chat. Call it only when the person's own message asks to stop, cancel, or hold that work, in any language or phrasing, and call it before you say it stopped. Never call it because you are unsure how to continue, because a tool is missing, or merely to end your turn. Do not call it to change the content of the work, such as stopping bold text or stopping music inside a video being edited. If you are unsure whether the person meant the running work, not how to do it, call it with intent pause rather than continuing. The result has idle and say. Tell the user only say. Claim the work stopped only when idle is true.",
 			map[string]interface{}{
 				"intent": map[string]string{"type": "string", "description": "stop or pause. pause holds the work and asks what they meant. Omit it to stop."},
 			}, nil),

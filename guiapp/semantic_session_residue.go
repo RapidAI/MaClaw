@@ -247,6 +247,25 @@ func (h *IMMessageHandler) storeSemanticSessionResidue(key string, residue seman
 	}
 }
 
+// dropSemanticResidueCeiling removes one carried capability count. The host
+// calls it when this turn authorizes a fresh delivery: the previous turn's
+// spent count belongs to that send, not to this one, and
+// clampNeedsToResidueRemaining would otherwise delete the new need.
+func (c *LoopContext) dropSemanticResidueCeiling(capability string) {
+	if c == nil || strings.TrimSpace(capability) == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.semanticResidueRemaining == nil {
+		return
+	}
+	delete(c.semanticResidueRemaining, strings.TrimSpace(capability))
+	if len(c.semanticResidueRemaining) == 0 {
+		c.semanticResidueRemaining = nil
+	}
+}
+
 // resetSemanticTurnLocalState drops residue bookkeeping that belongs to one
 // inbound turn. A reused LoopContext otherwise keeps a greeting closure or a
 // spent ceiling, and the next message cannot plan tools.
@@ -265,6 +284,9 @@ func resetSemanticTurnLocalState(ctx *LoopContext) {
 	ctx.semanticResidueLookupFacts = false
 	ctx.semanticResidueLookupUsed = false
 	ctx.semanticResidueUsed = nil
+	// The stop-request verdict belongs to one inbound message. A reused loop
+	// must classify the next message instead of answering from this one.
+	ctx.workStopVerdict = nil
 	// Desktop chat handoff is turn-local. A reused loop that kept the previous
 	// message's round count or a stale dispatch offer would publish only the
 	// handoff tools on the next message.

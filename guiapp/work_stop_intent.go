@@ -189,6 +189,9 @@ func desktopChatPauseAskText(chinese bool) string {
 
 // applyWorkStop cancels the session's work and speaks only from the verified
 // state. ignore is the loop currently answering, which is not itself the work.
+// When it is set, the cancel also exempts that loop: the turn that called the
+// stop tool still has to deliver the answer, and a stop that reaches only it
+// has stopped nothing.
 func (h *IMMessageHandler) applyWorkStop(msg IMUserMessage, intent string, ignore *LoopContext) (*IMAgentResponse, bool) {
 	if h == nil {
 		return nil, false
@@ -196,18 +199,24 @@ func (h *IMMessageHandler) applyWorkStop(msg IMUserMessage, intent string, ignor
 	sessionKey := desktopChatSessionKey(msg)
 	chinese := desktopChatChinese(msg.Lang, msg.Text)
 	running := h.sessionWorkLeft(sessionKey, ignore)
-	_ = h.cancelCurrentTaskForUser(sessionKey, msg.Lang)
+	_ = h.cancelCurrentTaskForUserExcept(sessionKey, msg.Lang, ignore)
 	h.cancelDesktopRunsForSession(sessionKey)
 	left := h.sessionWorkLeft(sessionKey, ignore)
 	var text string
 	switch {
 	case left:
 		text = h.chatBotReply("stopping", msg.Text, msg.Lang, "work-stop:"+intent, "", desktopChatCopy(msg.Lang, chinese, "Still stopping.", "还在停。"))
-	case !running:
+	case !running && ignore == nil:
+		// Nothing this session owns is running. The pre-loop stop path still
+		// answers from the verified idle state.
 		text = h.chatBotReply("idle", msg.Text, msg.Lang, "work-stop:"+intent, "", desktopChatCopy(msg.Lang, chinese, "Nothing is running.", "没在做事。"))
 	case intent == workStopIntentPause:
 		text = h.chatBotReply("pause", msg.Text, msg.Lang, "work-stop:"+intent, "", desktopChatCopy(msg.Lang, chinese, "Paused. Stop all of it, or just change it?", "先停一下。全停，还是只改内容？"))
 	default:
+		// This includes a tool called by the only live turn: the caller is
+		// exempt from the cancel, but the person did ask to stop, and the
+		// work surface closes after this answer. "Nothing is running" would
+		// deny the request that just ended the turn.
 		text = h.chatBotReply("stopped", msg.Text, msg.Lang, "work-stop:"+intent, "", desktopChatCopy(msg.Lang, chinese, "Stopped.", "停了。"))
 	}
 	target := ignore
@@ -340,6 +349,12 @@ func (h *IMMessageHandler) correctUnbackedStopClaim(msg IMUserMessage, loop *Loo
 	if !loop.WorkLiveAtStart || !h.assistantClaimsWorkStopped(text) {
 		return resp
 	}
+	// The reply claims a stop the person never asked for. Replacing the text is
+	// one thing; cancelling the work that is still live is another. Only a turn
+	// whose own sentence verifiably asks to stop may cancel it.
+	if requested, verified := h.workStopRequestVerdict(loop, desktopChatSessionKey(msg), msg.Text); !verified || !requested {
+		return resp
+	}
 	corrected, ok := h.applyWorkStop(msg, workStopIntentStop, loop)
 	if !ok || corrected == nil || strings.TrimSpace(corrected.Text) == "" {
 		return resp
@@ -363,6 +378,10 @@ func (h *IMMessageHandler) stopAllWorkTool(policyUserID string, args map[string]
 		sessionKey = strings.TrimSpace(loop.UserID)
 	}
 	text := h.sessionLoopUserText(sessionKey)
+	if requested, verified := h.workStopRequestVerdict(loop, sessionKey, text); verified && !requested {
+		log.Printf("[work-stop] stop_all_work rejected: the turn's message did not ask to stop user=%q text_len=%d", sessionKey, utf8.RuneCountInString(text))
+		return chatTaskToolRejected("stop_all_work", semanticStopToolNotRequested)
+	}
 	lang := "en"
 	for _, r := range text {
 		if unicode.Is(unicode.Han, r) {
@@ -402,6 +421,73 @@ func (h *IMMessageHandler) stopAllWorkTool(policyUserID string, args map[string]
 		ToolName: "stop_all_work",
 		Outcome:  toolOutcomeSucceeded,
 	}
+}
+
+// semanticStopToolNotRequested is returned when the model selects the stop
+// control tool on a turn whose own sentence asks for something else. It names
+// the next step, and forbids a retry loop, because the rejection itself is the
+// whole answer for that call.
+const semanticStopToolNotRequested = "this turn's message did not ask to stop the work. Do not call stop_all_work again in this turn; finish the task with the tools listed for this turn."
+
+// workStopVerdict is the host's decision about one turn's stop request. It is
+// cached on the loop because the tool path and the post-turn claim guard ask
+// the same question about the same sentence.
+type workStopVerdict struct {
+	text      string
+	requested bool
+	verified  bool
+}
+
+func (c *LoopContext) cachedWorkStopVerdict(text string) (requested, verified, ok bool) {
+	if c == nil {
+		return false, false, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.workStopVerdict == nil || c.workStopVerdict.text != text {
+		return false, false, false
+	}
+	return c.workStopVerdict.requested, c.workStopVerdict.verified, true
+}
+
+func (c *LoopContext) cacheWorkStopVerdict(text string, requested, verified bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.workStopVerdict = &workStopVerdict{text: text, requested: requested, verified: verified}
+	c.mu.Unlock()
+}
+
+// workStopRequestVerdict reports whether the sentence this loop is working on
+// actually asks for a stop. stop_all_work is model-selected, so a model that
+// misreads a new instruction can otherwise cancel work the person still wants
+// (production 2026-10-31: "把重庆的天气也发给他" cancelled its own send turn).
+// The instant phrase list needs no model call; any other wording is classified
+// once per turn. verified is false only when the classifier could not decide:
+// the tool path keeps its fallback then, while the post-turn claim path must
+// not cancel on a guess. requested is meaningful only when verified.
+func (h *IMMessageHandler) workStopRequestVerdict(loop *LoopContext, sessionKey, text string) (requested, verified bool) {
+	text = strings.TrimSpace(text)
+	if requested, verified, ok := loop.cachedWorkStopVerdict(text); ok {
+		return requested, verified
+	}
+	if looksLikeDesktopChatStop(text) {
+		loop.cacheWorkStopVerdict(text, true, true)
+		return true, true
+	}
+	if text == "" {
+		loop.cacheWorkStopVerdict(text, false, true)
+		return false, true
+	}
+	intent, err := h.classifyWorkStopIntent(context.Background(), sessionKey, text)
+	if err != nil || intent == "" {
+		loop.cacheWorkStopVerdict(text, false, false)
+		return false, false
+	}
+	requested = intent == workStopIntentStop || intent == workStopIntentPause
+	loop.cacheWorkStopVerdict(text, requested, true)
+	return requested, true
 }
 
 // ClassifyDesktopWorkStop is the desktop bot's fast check while a run is

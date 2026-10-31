@@ -444,6 +444,12 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		if rewritten := semanticGovernedEffectPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
 			semanticIntent = rewritten
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			// An explicit send is a new delivery too. The open task's spent
+			// mailbox count belongs to its own send, so it must not clamp the
+			// need this rewrite just promoted.
+			if rewritten.HasLabel(intent.LabelMailboxSend) {
+				loopCtx.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
+			}
 			logGovernedEffectPlanning(msg.UserID, rewritten.Reason)
 		}
 		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
@@ -459,6 +465,19 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			semanticIntent = rewritten
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 			log.Printf("[semantic-routing] fetched document read user=%q", msg.UserID)
+		}
+		// A deictic send ("也发给他") names the recipient, not the channel.
+		// Once this session has mailed through a configured mailbox, the new
+		// artifact continues that channel, and the mail tool must be on the
+		// surface for the model to deliver at all.
+		if rewritten := semanticAnaphoricMailboxFollowUp(semanticIntent, msg.Text, history); rewritten != nil {
+			semanticIntent = rewritten
+			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			// The open task already spent its mailbox grant last turn. That
+			// spent count is not this send's quota; leaving it on the carried
+			// ceiling would clamp the mailbox need away before planning.
+			loopCtx.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
+			log.Printf("[semantic-routing] anaphoric mailbox delivery user=%q", msg.UserID)
 		}
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)

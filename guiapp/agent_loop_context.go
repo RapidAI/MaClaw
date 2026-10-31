@@ -25,14 +25,19 @@ type LoopContext struct {
 	SlotKind    SlotKind // Coding, Scheduled, Auto (Background only)
 	Description string   // human-readable task description
 
-	mu                     sync.RWMutex
-	maxIterations          int // current max iterations for this loop
-	iteration              int // current iteration count
-	status                 LoopState
-	userCancelled          bool  // set only for an explicit user stop, before CancelC is closed
-	pauseAfterCurrent      bool  // finish the in-flight request or subtask, then stop before the next one
-	replanRevision         int64 // increments when live user guidance should interrupt/re-plan
-	replansSealed          bool  // final response won the accept/commit race; reject later steering
+	mu                sync.RWMutex
+	maxIterations     int // current max iterations for this loop
+	iteration         int // current iteration count
+	status            LoopState
+	userCancelled     bool  // set only for an explicit user stop, before CancelC is closed
+	pauseAfterCurrent bool  // finish the in-flight request or subtask, then stop before the next one
+	replanRevision    int64 // increments when live user guidance should interrupt/re-plan
+	replansSealed     bool  // final response won the accept/commit race; reject later steering
+	// workStopVerdict caches the host's verification of this turn's stop
+	// request. A stop tool call and the post-turn false-claim guard read the
+	// same sentence, and classifying it twice would spend a second model call.
+	// The entry is keyed by the text it decided, so steering cannot reuse it.
+	workStopVerdict        *workStopVerdict
 	currentOperationCancel context.CancelFunc
 	currentOperation       *loopReplannableOperation
 	cancelHooks            map[uint64]func()

@@ -59,7 +59,7 @@ func TestWorkStopFastPathSkipsTheClassifier(t *testing.T) {
 func TestWorkStopClassifierHandlesPhrasingTheListMisses(t *testing.T) {
 	classify := func(text string) (string, error) {
 		switch strings.TrimSpace(text) {
-		case "算了别弄了", "yamete", "hold on, don't post that":
+		case "先别发了", "yamete", "hold on, don't post that":
 			return `{"intent":"stop"}`, nil
 		case "hold on":
 			return `{"intent":"pause"}`, nil
@@ -69,7 +69,7 @@ func TestWorkStopClassifierHandlesPhrasingTheListMisses(t *testing.T) {
 			return "", fmt.Errorf("unexpected %q", text)
 		}
 	}
-	for _, text := range []string{"算了别弄了", "yamete", "hold on, don't post that"} {
+	for _, text := range []string{"先别发了", "yamete", "hold on, don't post that"} {
 		t.Run(text, func(t *testing.T) {
 			h, _ := testChatTaskHandler(t)
 			release := startHeldChatTask(t, h)
@@ -121,7 +121,7 @@ func TestWorkStopClassifierErrorLeavesTheLineForTheLoop(t *testing.T) {
 	h.workStopClassifier = func(string) (string, error) {
 		return "", fmt.Errorf("timeout")
 	}
-	resp, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "算了别弄了", Lang: "zh-Hans"})
+	resp, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "先别发了", Lang: "zh-Hans"})
 	if handled || resp != nil {
 		t.Fatalf("error was handled: %+v", resp)
 	}
@@ -169,6 +169,110 @@ func TestStopAllWorkToolCancelsAndReportsIdle(t *testing.T) {
 	}
 }
 
+func TestStopAllWorkToolRejectsATurnThatDidNotAskToStop(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	release := startHeldChatTask(t, h)
+	defer release()
+	h.workStopClassifier = func(string) (string, error) {
+		return `{"intent":"continue_other"}`, nil
+	}
+	loop := NewLoopContext("chat-new-work", desktopChatForegroundIterationBudget, nil)
+	publishDesktopChatLoop(h, loop, "把重庆的天气也发给他")
+	result, ok := h.executeChatTaskToolIfAny(desktopUserID, "stop_all_work", map[string]interface{}{"intent": "pause"})
+	if !ok || result.Outcome == toolOutcomeSucceeded {
+		t.Fatalf("stop ran without a stop request: ok:%v %+v", ok, result)
+	}
+	if !strings.Contains(result.Text, "did not ask to stop") {
+		t.Fatalf("rejection text = %q", result.Text)
+	}
+	if h.ensureChatTasks().activeCount(desktopUserID) != 1 {
+		t.Fatal("a non-stop turn cancelled the running task")
+	}
+	if loop.IsCancelled() || loop.WorkStopRan {
+		t.Fatalf("calling loop was stopped cancelled:%v ran:%v", loop.IsCancelled(), loop.WorkStopRan)
+	}
+}
+
+func TestStopAllWorkToolDoesNotCancelTheLoopThatCallsIt(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	loop := NewLoopContext("chat-self-stop", desktopChatForegroundIterationBudget, nil)
+	publishDesktopChatLoop(h, loop, "先停")
+	result, ok := h.executeChatTaskToolIfAny(desktopUserID, "stop_all_work", nil)
+	if !ok || result.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("idle stop = ok:%v %+v", ok, result)
+	}
+	payload := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(strings.SplitN(result.Text, "\n", 2)[0]), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["idle"] != true || payload["say"] != "停了。" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if loop.IsCancelled() {
+		t.Fatal("the calling turn cancelled itself")
+	}
+	if !loop.WorkStopRan || !loop.WorkStopIdle {
+		t.Fatalf("loop flags ran:%v idle:%v", loop.WorkStopRan, loop.WorkStopIdle)
+	}
+}
+
+func TestStopAllWorkToolDoesNotCancelItsCallerWhileStoppingOtherWork(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	release := startHeldChatTask(t, h)
+	defer release()
+	loop := NewLoopContext("chat-stop-other", desktopChatForegroundIterationBudget, nil)
+	publishDesktopChatLoop(h, loop, "算了别弄了")
+	result, ok := h.executeChatTaskToolIfAny(desktopUserID, "stop_all_work", nil)
+	if !ok || result.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("stop = ok:%v %+v", ok, result)
+	}
+	if h.ensureChatTasks().activeCount(desktopUserID) != 0 {
+		t.Fatal("stop left the other task running")
+	}
+	if loop.IsCancelled() {
+		t.Fatal("the turn that delivered the stop answer was cancelled")
+	}
+}
+
+func TestStopAllWorkToolKeepsItsFallbackWhenClassificationFails(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	release := startHeldChatTask(t, h)
+	defer release()
+	h.workStopClassifier = func(string) (string, error) {
+		return "", fmt.Errorf("timeout")
+	}
+	loop := NewLoopContext("chat-stop-unknown", desktopChatForegroundIterationBudget, nil)
+	publishDesktopChatLoop(h, loop, "先别发了")
+	result, ok := h.executeChatTaskToolIfAny(desktopUserID, "stop_all_work", nil)
+	if !ok || result.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("fallback stop = ok:%v %+v", ok, result)
+	}
+	if h.ensureChatTasks().activeCount(desktopUserID) != 0 {
+		t.Fatal("fallback stop left the task running")
+	}
+	if loop.IsCancelled() {
+		t.Fatal("the fallback stop cancelled its own turn")
+	}
+}
+
+func TestWorkStopVerdictIsClassifiedOncePerTurn(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	calls := 0
+	h.workStopClassifier = func(string) (string, error) {
+		calls++
+		return `{"intent":"continue_other"}`, nil
+	}
+	loop := NewLoopContext("chat-stop-cache", desktopChatForegroundIterationBudget, nil)
+	publishDesktopChatLoop(h, loop, "把重庆的天气也发给他")
+	if _, ok := h.executeChatTaskToolIfAny(desktopUserID, "stop_all_work", nil); !ok {
+		t.Fatal("stop tool was not handled")
+	}
+	h.workStopRequestVerdict(loop, desktopUserID, "把重庆的天气也发给他")
+	if calls != 1 {
+		t.Fatalf("classifier ran %d times for one turn", calls)
+	}
+}
+
 func TestStopAllWorkToolPauseAsksAndWorkersCannotCancel(t *testing.T) {
 	h, _ := testChatTaskHandler(t)
 	release := startHeldChatTask(t, h)
@@ -197,6 +301,9 @@ func TestStopClaimWithoutCancelRunsTheCancel(t *testing.T) {
 	h, _ := testChatTaskHandler(t)
 	release := startHeldChatTask(t, h)
 	defer release()
+	h.workStopClassifier = func(string) (string, error) {
+		return `{"intent":"stop"}`, nil
+	}
 	loop := NewLoopContext("chat", desktopChatForegroundIterationBudget, nil)
 	loop.WorkLiveAtStart = true
 	publishDesktopChatLoop(h, loop, "算了别弄了")
@@ -207,6 +314,49 @@ func TestStopClaimWithoutCancelRunsTheCancel(t *testing.T) {
 	}
 	if h.ensureChatTasks().activeCount(desktopUserID) != 0 {
 		t.Fatal("unbacked stop claim left the task running")
+	}
+}
+
+func TestStopClaimDoesNotCancelANonStopTurn(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	release := startHeldChatTask(t, h)
+	defer release()
+	h.workStopClassifier = func(string) (string, error) {
+		return `{"intent":"continue_other"}`, nil
+	}
+	loop := NewLoopContext("chat-claim-new-work", desktopChatForegroundIterationBudget, nil)
+	loop.WorkLiveAtStart = true
+	publishDesktopChatLoop(h, loop, "把重庆的天气也发给他")
+	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "把重庆的天气也发给他", Lang: "zh-Hans"}
+	out := h.correctUnbackedStopClaim(msg, loop, &IMAgentResponse{Text: "好的，已停下。"})
+	if out == nil || out.Text != "好的，已停下。" {
+		t.Fatalf("claim guard changed a non-stop turn: %+v", out)
+	}
+	if h.ensureChatTasks().activeCount(desktopUserID) != 1 {
+		t.Fatal("a false stop claim cancelled work the person still wants")
+	}
+	if loop.WorkStopRan {
+		t.Fatal("the claim guard recorded a stop that was never requested")
+	}
+}
+
+func TestStopClaimDoesNotCancelWhenTheStopIsUnverified(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	release := startHeldChatTask(t, h)
+	defer release()
+	h.workStopClassifier = func(string) (string, error) {
+		return "", fmt.Errorf("timeout")
+	}
+	loop := NewLoopContext("chat-claim-unknown", desktopChatForegroundIterationBudget, nil)
+	loop.WorkLiveAtStart = true
+	publishDesktopChatLoop(h, loop, "先别发了")
+	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "先别发了", Lang: "zh-Hans"}
+	out := h.correctUnbackedStopClaim(msg, loop, &IMAgentResponse{Text: "好的，已停下。"})
+	if out == nil || out.Text != "好的，已停下。" {
+		t.Fatalf("unverified claim changed the reply: %+v", out)
+	}
+	if h.ensureChatTasks().activeCount(desktopUserID) != 1 {
+		t.Fatal("an unverified stop claim cancelled live work")
 	}
 }
 
@@ -235,6 +385,9 @@ func TestStopClaimInAnotherLanguageRunsTheCancel(t *testing.T) {
 	loop := NewLoopContext("chat-ja", desktopChatForegroundIterationBudget, nil)
 	loop.WorkLiveAtStart = true
 	publishDesktopChatLoop(h, loop, "やめて")
+	h.workStopClassifier = func(string) (string, error) {
+		return `{"intent":"stop"}`, nil
+	}
 	h.workStopClaimClassifier = func(text string) (bool, error) {
 		return strings.Contains(text, "やめました"), nil
 	}
@@ -301,5 +454,17 @@ func TestDesktopBotStopPaceBecomesTheCancelToken(t *testing.T) {
 	}
 	if got.Pace != "reply" || got.Told != "STOP_WORK" || got.Instruction != "" {
 		t.Fatalf("stop pace = %#v", got)
+	}
+}
+
+func TestWorkStopVerdictDoesNotSurviveTheNextTurn(t *testing.T) {
+	loop := NewLoopContext("chat-stop-reset", desktopChatForegroundIterationBudget, nil)
+	loop.cacheWorkStopVerdict("把重庆的天气也发给他", false, true)
+	if _, _, ok := loop.cachedWorkStopVerdict("把重庆的天气也发给他"); !ok {
+		t.Fatal("verdict was not cached")
+	}
+	resetSemanticTurnLocalState(loop)
+	if _, _, ok := loop.cachedWorkStopVerdict("把重庆的天气也发给他"); ok {
+		t.Fatal("the next turn reused the previous stop verdict")
 	}
 }
