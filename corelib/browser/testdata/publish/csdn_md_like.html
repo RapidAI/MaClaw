@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Write (synthetic CSDN-style markdown editor)</title>
+<!-- Synthetic, no real site: a markdown source editor that is a bare
+     contenteditable <pre> (no CodeMirror API), like editor.csdn.net/md. -->
+<style>pre{min-height:300px;width:800px;border:1px solid #ccc;white-space:pre-wrap}</style></head><body>
+<input class="t" placeholder="请输入文章标题（5~100个字）" style="width:600px">
+<pre class="editor__inner markdown-highlighting" contenteditable="true"></pre>
+<button id="pub">发布文章</button>
+<script>
+const ed = document.querySelector("pre");
+document.getElementById("pub").addEventListener("click", async ev => {
+  if (!ev.isTrusted) return;
+  const r = await fetch("/publish", {method: "POST", body: JSON.stringify({title: document.querySelector(".t").value, body: ed.innerText})});
+  location.href = await r.text();
+});
+</script></body></html>

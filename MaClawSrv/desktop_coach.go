@@ -251,6 +251,11 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("rich_fill needs text")
 	}
+	if desktopArg(args, "selector") == "" {
+		if why := browser.ParagraphProblem(text); why != "" {
+			return "", fmt.Errorf("rich_fill refused: %s", why)
+		}
+	}
 	var parts []string
 	if note := desktopRaiseBrowser(ctx, scope); note != "" {
 		parts = append(parts, "raised the browser ("+note+")")

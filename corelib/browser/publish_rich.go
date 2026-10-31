@@ -52,6 +52,10 @@ func parseRichBody(body string, files int, plainBold ...string) richDoc {
 	var d richDoc
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	isHTML := richTagRe.MatchString(body)
+	orig := body
+	if !isHTML {
+		body = Paragraphize(body)
+	}
 	var cur []string
 	flush := func() {
 		seg := strings.Join(cur, "\n")
@@ -100,7 +104,7 @@ func parseRichBody(body string, files int, plainBold ...string) richDoc {
 	d.text = strings.Join(d.texts, "\n")
 	d.plain = richHTMLPlain(all, plainBold...)
 	if !d.rich {
-		d.plain = body
+		d.plain = orig
 	}
 	return d
 }
@@ -202,6 +206,9 @@ func richHTMLPlain(h string, plainBold ...string) string {
 	h = richHTMLBoldRe.ReplaceAllString(h, strings.ReplaceAll(pb, "$1", "${2}"))
 	h = regexp.MustCompile(`(?i)<li[^>]*>`).ReplaceAllString(h, "• ")
 	h = regexp.MustCompile(`(?i)<a [^>]*href="([^"]+)"[^>]*>(.*?)</a>`).ReplaceAllString(h, "$2 $1")
+	// paragraphs, headings, lists and quotes end with a blank line so a
+	// plain note editor shows them apart; list items and <br> one line
+	h = regexp.MustCompile(`(?i)</(p|h[1-6]|ul|ol|blockquote)>`).ReplaceAllString(h, "\n\n")
 	h = richBlockEndRe.ReplaceAllString(h, "\n")
 	h = richAnyTagRe.ReplaceAllString(h, "")
 	h = html.UnescapeString(h)

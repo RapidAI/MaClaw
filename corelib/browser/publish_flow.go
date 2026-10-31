@@ -172,6 +172,11 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		p.rep.Stuck = "spec"
 		return p.rep, fmt.Errorf("publish not started: the body has [[img:%d]] but only %d picture file(s) were given; pass a file for every anchor or remove the anchor (nothing was filled or posted)", b[0], len(spec.Files))
 	}
+	if why := ParagraphProblem(spec.Body); why != "" {
+		p.rep.State = PublishNotSubmitted
+		p.rep.Stuck = "spec"
+		return p.rep, fmt.Errorf("publish not started: %s", why)
+	}
 	p.net = startNetTracker(d)
 	defer p.net.stop()
 	defer p.recordMethod()
@@ -902,7 +907,11 @@ func (p *publishRun) fillBody() (string, error) {
 	}
 	// Pictures that went to a gallery (note-style sites) leave a plain
 	// caption body: those editors do not keep bold or headings.
-	if p.doc.rich && !p.gallery {
+	// A multi-paragraph plain body in a contenteditable goes in as <p>
+	// paragraphs too: typed Enter keys make <div>/<br> lines that many
+	// editors merge or drop, so the article landed as one block.
+	paras := !p.doc.rich && strings.Contains(strings.TrimSpace(p.spec.Body), "\n")
+	if (p.doc.rich || paras) && !p.gallery {
 		obj, _ := p.element(p.bodyExpr())
 		if obj != "" {
 			if v, _ := p.call(obj, `function() { return this.isContentEditable ? 'yes' : 'no'; }`); v == "yes" {
@@ -951,7 +960,7 @@ func (p *publishRun) markdownText() string {
 	if strings.HasPrefix(strings.TrimSpace(p.spec.Body), "<") {
 		return p.doc.plain
 	}
-	return strings.TrimSpace(imgAnchorRe.ReplaceAllString(p.spec.Body, ""))
+	return strings.TrimSpace(Paragraphize(imgAnchorRe.ReplaceAllString(p.spec.Body, "")))
 }
 
 // fillMarkdown writes the Markdown source into the markdown editor, first
@@ -994,6 +1003,10 @@ func (p *publishRun) fillMarkdown() (string, error) {
 		got, _ = p.call(obj, readValueFn)
 		if !holds(got, text) {
 			why = fmt.Sprintf("read back %d chars (%q)", len([]rune(got)), clipRunes(got, 24))
+			continue
+		}
+		if w, g := paraCount(text), paraCount(got); w > 2 && g*2 < w {
+			why = fmt.Sprintf("the editor kept %d of %d paragraph(s) (blank lines lost)", g, w)
 			continue
 		}
 		if bad := markdownDrift(text, got); bad != "" {

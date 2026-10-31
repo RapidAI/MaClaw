@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Write (synthetic paragraph editor)</title>
+<!-- Synthetic, no real site: a contenteditable body that keeps one <p> per
+     paragraph (ProseMirror/tiptap style); a pasted or inserted "\n" inside
+     a paragraph is flattened to a space, as those editors do. -->
+<style>.ProseMirror{min-height:300px;width:800px;border:1px solid #ccc}</style></head><body>
+<input class="t" placeholder="填写标题" style="width:600px">
+<div class="ProseMirror" contenteditable="true"><p><br></p></div>
+<button id="pub">发布</button>
+<script>
+const ed = document.querySelector(".ProseMirror");
+ed.addEventListener("beforeinput", e => {
+  if (e.inputType === "insertText" && e.data && e.data.includes("\n")) { e.preventDefault(); document.execCommand("insertText", false, e.data.replace(/\n+/g, " ")); }
+});
+document.getElementById("pub").addEventListener("click", async ev => {
+  if (!ev.isTrusted) return;
+  const paras = [...ed.querySelectorAll("p,h1,h2,h3,li")].map(p => p.innerText.trim()).filter(Boolean);
+  const r = await fetch("/publish", {method: "POST", body: JSON.stringify({title: document.querySelector(".t").value, body: paras.join("\n\n")})});
+  location.href = await r.text();
+});
+</script></body></html>
