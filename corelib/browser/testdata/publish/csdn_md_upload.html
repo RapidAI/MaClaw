@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Write (synthetic markdown editor, slow picture upload)</title>
+<!-- Synthetic, no real site: a markdown <pre> editor; a pasted picture is
+     uploaded (8s each) and then its Markdown link is inserted. The title
+     input carries no 标题 placeholder, only an article-bar__title class. -->
+</head><body>
+<div class="article-bar"><input class="article-bar__title text-input" maxlength="100" style="width:600px"></div>
+<pre class="editor__inner markdown-highlighting" contenteditable="true" style="min-height:300px;width:800px;border:1px solid #ccc"></pre>
+<button id="pub">发布</button>
+<script>
+const ed = document.querySelector(".editor__inner");
+let n = 0;
+ed.addEventListener("paste", e => {
+  const f = e.clipboardData && e.clipboardData.files && e.clipboardData.files[0];
+  if (!f) return;
+  e.preventDefault();
+  const k = ++n;
+  setTimeout(async () => {
+    const r = await fetch("/upload?n=" + k, {method: "POST", body: f});
+    const u = await r.text();
+    ed.append("\n![在这里插入图片描述](" + location.origin + u + ")\n");
+  }, 7000);
+});
+document.getElementById("pub").addEventListener("click", async ev => {
+  if (!ev.isTrusted) return;
+  const r = await fetch("/publish", {method: "POST", body: JSON.stringify({title: document.querySelector(".article-bar__title").value, body: ed.innerText})});
+  location.href = await r.text();
+});
+</script></body></html>

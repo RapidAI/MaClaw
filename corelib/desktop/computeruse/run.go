@@ -339,7 +339,11 @@ func CtlRequest(action string, args map[string]any, frame desktop.Shot) (map[str
 		if !ok {
 			return nil, fmt.Errorf("clipboard_set requires text")
 		}
-		return map[string]any{"op": desktop.CtlClipboardSet, "text": text}, nil
+		req := map[string]any{"op": desktop.CtlClipboardSet, "text": text}
+		if h, _ := args["html"].(string); strings.TrimSpace(h) != "" {
+			req["html"] = h // rich editors paste the formatted form
+		}
+		return req, nil
 	case "window_list":
 		return map[string]any{"op": desktop.CtlWindows}, nil
 	case "screen_info":

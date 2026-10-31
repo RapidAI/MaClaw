@@ -299,7 +299,24 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 	default:
 		return "", fmt.Errorf("rich_fill needs ref (from probe) or x,y of the editor body")
 	}
-	if err := step(map[string]any{"action": "clipboard_set", "text": text}); err != nil {
+	clip := map[string]any{"action": "clipboard_set", "text": text}
+	if sel == "" && browser.HasMarkdown(text) {
+		ctxOut, _ := operateDesktopWithTimeout(ctx, scope, map[string]any{"action": "script", "script": desktopRichContextScript})
+		switch kind, host := desktopRichContext(ctxOut); {
+		case kind == "code" || kind == "field":
+			// markdown source editors and plain textareas keep the text as written
+		case desktopPlainNoteHostRe.MatchString(host):
+			text = browser.MarkdownPlain(text)
+			clip["text"] = text
+			parts = append(parts, "note editor keeps no formatting: Markdown markers removed, paragraphs kept")
+		case kind == "ce":
+			clip["text"] = browser.MarkdownPlain(text)
+			clip["html"] = browser.MarkdownHTML(text)
+			text = browser.MarkdownText(text)
+			parts = append(parts, "pasted as formatted text (headings, bold, paragraphs)")
+		}
+	}
+	if err := step(clip); err != nil {
 		return "", err
 	}
 	desktopNoteClipboard(desktopOwner(scope), map[string]any{"text": text})
@@ -485,6 +502,29 @@ func desktopAfterPublishCheck(scope agentruntime.Scope, action string, args map[
 // desktopRichFocusScript focuses the largest visible contenteditable (the
 // article body of Draft.js / ProseMirror / Quill editors) and reports whether
 // keyboard focus is in it.
+// desktopPlainNoteHostRe: note editors that show Markdown markers literally
+// and keep no bold or headings.
+var desktopPlainNoteHostRe = regexp.MustCompile(`(?i)(xiaohongshu|xhscdn|douyin|weibo|kuaishou)\.`)
+
+// desktopRichContextScript names the focused editor's kind and the host.
+const desktopRichContextScript = `const ae = document.activeElement;
+let k = 'none';
+if (ae) {
+  if (ae.closest && ae.closest('.CodeMirror,.cm-editor,.monaco-editor,pre,[class*=markdown],[class*=bytemd]')) k = 'code';
+  else if (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT') k = 'field';
+  else if (ae.isContentEditable) k = 'ce';
+}
+return 'RICH_CTX kind=' + k + ' host=' + location.hostname;`
+
+var desktopRichCtxRe = regexp.MustCompile(`RICH_CTX kind=(\w+) host=([\w.-]*)`)
+
+func desktopRichContext(out string) (kind, host string) {
+	if m := desktopRichCtxRe.FindStringSubmatch(out); m != nil {
+		return m[1], m[2]
+	}
+	return "", ""
+}
+
 func desktopRichFocusScriptFor(sel string) string {
 	if strings.TrimSpace(sel) == "" {
 		return desktopRichFocusScript

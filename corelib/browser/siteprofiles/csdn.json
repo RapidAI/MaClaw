@@ -1,0 +1,32 @@
+{
+  "id": "csdn",
+  "hosts": [
+    "editor.csdn.net"
+  ],
+  "request_words": [
+    "CSDN",
+    "csdn"
+  ],
+  "editor_url": "https://editor.csdn.net/md/",
+  "verify_url": "https://mp.csdn.net/mp_blog/manage/article",
+  "title_selector": "input.article-bar__title, .article-bar__title input, input[placeholder*='文章标题']",
+  "body_selector": "pre.editor__inner, .editor__inner[contenteditable]",
+  "body_kind": "markdown",
+  "image_mode": "paste",
+  "submit_texts": [
+    "发布文章"
+  ],
+  "confirm_texts": [
+    "发布文章"
+  ],
+  "success_texts": [
+    "发布成功",
+    "审核中"
+  ],
+  "success_url": "^https://mp\\.csdn\\.net/mp_blog/creation/success/\\d+",
+  "playbook": [
+    "the article editor is https://editor.csdn.net/md/ (Markdown): ONE action=publish with title=, body= in Markdown (## headings, a blank line between paragraphs) and files=[pictures]; publish writes the Markdown, pastes each picture (CSDN uploads it and inserts its link; each takes several seconds) and opens the 发布文章 panel",
+    "the title is the input at the top (placeholder 请输入文章标题（5～100个字）); a title shorter than 5 characters is refused by CSDN",
+    "after a failed publish call the page is /md?articleId=N (a saved draft): call publish again on that same page, never open a second editor"
+  ]
+}

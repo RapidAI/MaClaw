@@ -72,3 +72,22 @@ func paraCount(s string) int {
 	}
 	return n
 }
+
+// MarkdownHTML is the light Markdown body as editor HTML: <p> paragraphs,
+// <h2>/<h3> headings, <strong>, lists and quotes.
+func MarkdownHTML(md string) string { return richMarkdownHTML(Paragraphize(md)) }
+
+// MarkdownPlain is the body for an editor that keeps no formatting (note
+// sites such as Xiaohongshu): markers removed, headings on their own line,
+// list items as "• ", a blank line between paragraphs.
+func MarkdownPlain(md string) string {
+	return richHTMLPlain(richMarkdownHTML(Paragraphize(md)))
+}
+
+var mdMarkRe = regexp.MustCompile(`(?m)^\s*#{1,6}\s+\S|\*\*[^*\n]+\*\*|__[^_\n]+__|^\s*[-*]\s+\S|^\s*>\s?\S`)
+
+// HasMarkdown reports whether the text carries Markdown markers.
+func HasMarkdown(s string) bool { return mdMarkRe.MatchString(s) }
+
+// MarkdownText is the visible text a rich editor shows for MarkdownHTML.
+func MarkdownText(md string) string { return richHTMLText(MarkdownHTML(md)) }

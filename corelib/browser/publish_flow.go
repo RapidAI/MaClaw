@@ -215,6 +215,12 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 			// draft saved, post found); the budget is only a safety net.
 			budget = publishSafetyBudget(spec.StepBudget)
 		}
+		if st.name == "paste_images" {
+			// Each pasted picture waits for the site's upload (CSDN takes
+			// 5-15s a picture): three pictures never fit one 30s budget,
+			// and a cut-off paste kept running and doubled the next try.
+			budget = maxDur(budget, minDur(time.Duration(len(spec.Files))*pictureWait+10*time.Second, 180*time.Second))
+		}
 		if !spec.Deadline.IsZero() {
 			if rem := time.Until(spec.Deadline); rem < budget {
 				budget = maxDur(rem, time.Second)
@@ -435,7 +441,7 @@ func (p *publishRun) call(obj, fn string) (string, error) {
 const publishHelpersJS = `const __vis = e => { if (!e) return false; const r = e.getBoundingClientRect(); const s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
 const __area = e => { const r = e.getBoundingClientRect(); return r.width * r.height; };
 const __all = (sel) => { const out = []; const walk = root => { root.querySelectorAll(sel).forEach(e => out.push(e)); root.querySelectorAll('*').forEach(n => { if (n.shadowRoot) walk(n.shadowRoot); }); }; walk(document); document.querySelectorAll('iframe,frame').forEach(f => { try { if (f.contentDocument) walk(f.contentDocument); } catch (e) {} }); return out; };
-const __title = (sel) => { if (sel) return document.querySelector(sel); const c = __all('input:not([type]),input[type=text],textarea,[contenteditable="true"]').filter(__vis); const lab = e => [...(e.labels || [])].map(l => l.innerText).join(' '); return c.find(e => /标题|title/i.test((e.placeholder || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-placeholder') || ''))) || c.find(e => /标题|主题|title|subject|headline/i.test(lab(e) + ' ' + (e.name || '') + ' ' + (e.id || ''))) || null; };
+const __title = (sel) => { if (sel) return document.querySelector(sel); const c = __all('input:not([type]),input[type=text],textarea,[contenteditable="true"]').filter(__vis); const lab = e => [...(e.labels || [])].map(l => l.innerText).join(' '); return c.find(e => /标题|title/i.test((e.placeholder || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-placeholder') || ''))) || c.find(e => /标题|主题|title|subject|headline/i.test(lab(e) + ' ' + (e.name || '') + ' ' + (e.id || ''))) || c.find(e => e.tagName !== 'TEXTAREA' && !e.isContentEditable && /title/i.test(String(e.className || '') + ' ' + String((e.parentElement && e.parentElement.className) || ''))) || null; };
 const __body = (sel, title) => { if (sel) return document.querySelector(sel); const c = __all('[contenteditable="true"],[contenteditable=""],textarea,.CodeMirror').filter(e => __vis(e) && !(e.closest && e.parentElement && e.parentElement.closest('.CodeMirror')) && e !== title && __area(e) > 4000 && !(title && e.contains(title))); c.sort((a, b) => __area(b) - __area(a)); return c.find(e => e.isContentEditable) || c[0] || null; };
 const __kind = e => { if (!e) return ''; if (e.closest('.CodeMirror,.cm-editor,.monaco-editor,.bytemd,[class*=markdown],[class*=Markdown],[class*=md-editor]')) return 'markdown'; if (e.tagName === 'TEXTAREA') return 'plain'; return e.isContentEditable ? 'rich' : 'plain'; };`
 

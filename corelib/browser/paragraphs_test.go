@@ -34,3 +34,20 @@ func TestRichPlainKeepsBlankLines(t *testing.T) {
 		t.Fatalf("plain=%q", d.plain)
 	}
 }
+
+func TestMarkdownForNoteAndRichEditors(t *testing.T) {
+	md := "## 亮点\n**多 Bot 协作**，每个 Bot 有桌面 ✨\n- 自动发布\n- 自动核对\n结尾一段。"
+	plain := MarkdownPlain(md)
+	if strings.ContainsAny(plain, "#*") || !strings.Contains(plain, "亮点\n\n多 Bot 协作，每个 Bot 有桌面 ✨\n\n• 自动发布\n• 自动核对\n\n结尾一段。") {
+		t.Fatalf("plain=%q", plain)
+	}
+	h := MarkdownHTML(md)
+	for _, w := range []string{"<h3>亮点</h3>", "<strong>多 Bot 协作</strong>", "<li>自动发布</li>", "<p>结尾一段。</p>"} {
+		if !strings.Contains(h, w) {
+			t.Fatalf("html %q lacks %q", h, w)
+		}
+	}
+	if !HasMarkdown(md) || HasMarkdown("普通一段文字。\n\n第二段。") {
+		t.Fatal("HasMarkdown")
+	}
+}

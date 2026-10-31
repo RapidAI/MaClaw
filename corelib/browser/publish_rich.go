@@ -202,7 +202,7 @@ func richHTMLPlain(h string, plainBold ...string) string {
 	if len(plainBold) > 0 && strings.Contains(plainBold[0], "$1") {
 		pb = plainBold[0]
 	}
-	h = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`).ReplaceAllString(h, "\n"+strings.ReplaceAll(pb, "$1", "${1}")+"\n")
+	h = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`).ReplaceAllString(h, "\n"+strings.ReplaceAll(pb, "$1", "${1}")+"\n\n")
 	h = richHTMLBoldRe.ReplaceAllString(h, strings.ReplaceAll(pb, "$1", "${2}"))
 	h = regexp.MustCompile(`(?i)<li[^>]*>`).ReplaceAllString(h, "• ")
 	h = regexp.MustCompile(`(?i)<a [^>]*href="([^"]+)"[^>]*>(.*?)</a>`).ReplaceAllString(h, "$2 $1")
@@ -256,13 +256,16 @@ func (p *publishRun) pasteFile(obj string, k int) error {
 
 // pasteImageHere pastes picker file k at the current caret and waits for
 // one more <img>.
+// pictureWait is how long one pasted picture may take to upload and show.
+const pictureWait = 25 * time.Second
+
 func (p *publishRun) pasteImageHere(obj string, k int) error {
 	before := p.imgCount(obj)
 	fn := `function(k) { const f = document.getElementById('__pub_picker').files[k]; const dt = new DataTransfer(); dt.items.add(f); this.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); return 'ok'; }`
 	if _, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": fn, "arguments": []map[string]interface{}{{"value": k}}, "returnByValue": true}); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(minDur(p.spec.StepBudget, 20*time.Second))
+	deadline := time.Now().Add(pictureWait)
 	for time.Now().Before(deadline) {
 		if p.imgCount(obj) > before {
 			time.Sleep(300 * time.Millisecond)

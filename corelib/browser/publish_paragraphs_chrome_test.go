@@ -35,3 +35,24 @@ func TestPublishKeepsParagraphs(t *testing.T) {
 		}
 	}
 }
+
+// A markdown editor whose picture uploads take several seconds each: three
+// pictures fit the paste step, and a classed title input is found.
+func TestPublishCSDNLikeSlowPictures(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "csdn_md_upload.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit")
+	img := fixtureImage(t)
+	rep, err := RunPublish(d, PublishSpec{Files: []string{img, img, img}, Title: "MaClaw 介绍与技术特性", Body: paragraphBody, StepBudget: 30 * time.Second})
+	t.Logf("%+v", rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(site.published) != 1 {
+		t.Fatalf("published %+v", site.published)
+	}
+	body := site.published[0]["body"]
+	if strings.Count(body, "![") != 3 || site.published[0]["title"] != "MaClaw 介绍与技术特性" {
+		t.Fatalf("published %q", site.published[0])
+	}
+}

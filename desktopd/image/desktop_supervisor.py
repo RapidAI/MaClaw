@@ -7275,6 +7275,15 @@ def ctl_clipboard_set(request):
         if len(data) > CTL_TEXT_MAX:
             return {"ok": False, "error": "clipboard text is larger than %d bytes" % CTL_TEXT_MAX}
         targets = [("clipboard", "UTF8_STRING", data), ("primary", "UTF8_STRING", data)]
+        html_text = request.get("html")
+        if isinstance(html_text, str) and html_text.strip():
+            # xclip serves one target per selection: the clipboard carries
+            # the HTML (a browser paste keeps headings, bold and paragraphs),
+            # the primary selection the plain text.
+            hdata = html_text.encode("utf-8")
+            if len(hdata) > CTL_TEXT_MAX:
+                return {"ok": False, "error": "clipboard html is larger than %d bytes" % CTL_TEXT_MAX}
+            targets = [("clipboard", "text/html", hdata), ("primary", "UTF8_STRING", data)]
     for selection, mime, payload in targets:
         # xclip keeps serving the selection in the background; its output
         # must not hold the docker exec pipe open.
