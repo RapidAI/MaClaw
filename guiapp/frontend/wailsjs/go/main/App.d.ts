@@ -3151,3 +3151,5 @@ export function DistillDesktopDemoRecording(arg1:string,arg2:Record<string,any>,
 export function GetDesktopDemoShot(arg1:string,arg2:string,arg3:string):Promise<Record<string,any>>;
 export function RedistillDesktopDemoSkill(arg1:string,arg2:string,arg3:string):Promise<Record<string,any>>;
 export function UpdateDesktopDemoSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<Record<string,any>>;
+
+export function RouteDesktopBotFollowUp(arg1:string,arg2:string):Promise<{routed:boolean,reason:string,bot_id?:string,run_id?:string}>;

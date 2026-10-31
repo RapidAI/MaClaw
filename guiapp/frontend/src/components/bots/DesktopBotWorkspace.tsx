@@ -42,6 +42,7 @@ import {
     CreateDesktopBot,
     CancelDesktopBotRun,
     AppendDesktopBotSupplement,
+    RouteDesktopBotFollowUp,
     UploadDesktopBotMaterialChunk,
     DeleteDesktopBot,
     DeleteDesktopBotSchedule,
@@ -5569,6 +5570,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 if (!preset) setCommand('');
                 applyFollowRef.current(true);
                 answerDesktopControl(botId, content, control, 'now');
+                return;
+            }
+        }
+        // Subscription passthrough: a follow-up to the task a teammate owns
+        // goes straight to that teammate's run (Hub decides by rules; what
+        // they cannot settle comes back and is read here as usual). The
+        // teammate answers in its own voice, so no ack is added here.
+        if (!literal && !preset && !verbatim && !desktopWorkActive(botId)) {
+            const route = await withinBudget(RouteDesktopBotFollowUp(botId, content), 4000).catch(() => undefined);
+            if (userIdRef.current !== userId) return;
+            if (route && route.routed) {
+                setCommand('');
+                applyFollowRef.current(true);
+                commit(botId, [...messagesForBot(userId, botId), { id: messageID(), role: 'user', content }]);
                 return;
             }
         }

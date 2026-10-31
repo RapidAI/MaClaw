@@ -688,3 +688,32 @@ func GetBotActiveRunsHandler(svc *botmgmt.Service, identity botAuthenticator) ht
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }
+
+// PostBotFollowUpHandler POST /api/v1/bots/{id}/followup
+// Subscription passthrough: a person's message to bot {id} goes straight to
+// the teammate run that owns the task it refines (routed=true), or comes
+// back routed=false with the reason, and the bot reads it as usual.
+func PostBotFollowUpHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		var in struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botSupplementBodyLimit)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		route, err := svc.RouteFollowUp(r.Context(), principal.TenantID, principal.UserID, strings.TrimSpace(r.PathValue("id")), in.Content)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, route)
+	}
+}

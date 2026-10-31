@@ -2695,3 +2695,32 @@ func desktopBotInfo(bot hubBot) DesktopBotInfo {
 		Shape:       strings.TrimSpace(bot.Shape),
 	}
 }
+
+// DesktopBotFollowUpRoute is Hub's answer to a follow-up: routed means the
+// message already reached the teammate run that owns the task it refines.
+type DesktopBotFollowUpRoute struct {
+	Routed bool   `json:"routed"`
+	Reason string `json:"reason"`
+	BotID  string `json:"bot_id,omitempty"`
+	RunID  string `json:"run_id,omitempty"`
+}
+
+// RouteDesktopBotFollowUp asks Hub to pass the person's message straight to
+// the teammate subscribed to it (subscription passthrough). Not routed:
+// the bot reads the message as usual.
+func (a *App) RouteDesktopBotFollowUp(botID, content string) (*DesktopBotFollowUpRoute, error) {
+	botID = strings.TrimSpace(botID)
+	content = strings.TrimSpace(content)
+	if botID == "" || content == "" {
+		return &DesktopBotFollowUpRoute{Reason: "empty"}, nil
+	}
+	var out DesktopBotFollowUpRoute
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/followup"
+	if err := a.desktopBotCall(context.Background(), http.MethodPost, path, map[string]string{"content": content}, &out, 8*time.Second); err != nil {
+		return nil, err
+	}
+	if out.Routed {
+		botlog.Write(botID, "gui.followup_routed", nil, "to", out.BotID, "run", out.RunID)
+	}
+	return &out, nil
+}

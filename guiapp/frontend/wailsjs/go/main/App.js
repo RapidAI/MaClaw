@@ -6361,3 +6361,7 @@ export function RedistillDesktopDemoSkill(arg1, arg2, arg3) {
 export function UpdateDesktopDemoSkill(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['UpdateDesktopDemoSkill'](arg1, arg2, arg3, arg4, arg5);
 }
+
+export function RouteDesktopBotFollowUp(arg1, arg2) {
+  return window['go']['main']['App']['RouteDesktopBotFollowUp'](arg1, arg2);
+}
