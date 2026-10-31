@@ -1497,7 +1497,7 @@ def start_desktop(key, display):
         return
     # No usable session: whatever is left of the old one belongs to a display
     # that is about to be replaced, and it would hold the VNC ports.
-    for name in ("proxy", "vgate", "vnc", "x11vnc", "fluxbox", "dbus", "xvfb"):
+    for name in ("proxy", "vgate", "vnc", "x11vnc", "panel", "panelbus", "fluxbox", "dbus", "xvfb"):
         kill_pid(pids.pop(name, None))
     clear_stale_display(display)
     # -s 0 disables the server's own ten-minute blank before any client connects.
@@ -3515,6 +3515,15 @@ def proc_argv(pid):
     return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
 
 
+def proc_on_panel_bus(pid, display):
+    """The desktop taskbar the supervisor runs (its private bus), not a panel of the session."""
+    try:
+        raw = (PROC / str(int(pid)) / "environ").read_bytes()
+    except (OSError, TypeError, ValueError):
+        return False
+    return ("DBUS_SESSION_BUS_ADDRESS=unix:path=%s" % bot_panel_bus(display)).encode() in raw.split(b"\0")
+
+
 def proc_on_display(pid, display):
     try:
         raw = (PROC / str(int(pid)) / "environ").read_bytes()
@@ -3538,7 +3547,7 @@ def desktop_part(pid, key, display):
         return "xvfb" if len(argv) > 1 and argv[1] == screen else ""
     if names[0] == "x11vnc":
         return "x11vnc" if screen in argv else ""
-    if names[0] == "dbus-daemon" and display != DISPLAY_MIN and "--address=unix:path=%s" % bot_panel_bus(display) in argv:
+    if names[0] == "dbus-daemon" and "--address=unix:path=%s" % bot_panel_bus(display) in argv:
         return "panelbus"
     if names[0] == "dbus-daemon":
         return "dbus" if "--address=unix:path=/tmp/.maclaw-dbus-%d" % display in argv else ""
@@ -3548,7 +3557,7 @@ def desktop_part(pid, key, display):
         # A bot display runs only the window manager; the pid key stays
         # "fluxbox" (the window session) like the owner's desktop.
         return "fluxbox" if proc_on_display(pid, display) else ""
-    if names[0] in ("xfce4-panel", BOT_DOCK_NAME) and display != DISPLAY_MIN:
+    if names[0] in ("xfce4-panel", BOT_DOCK_NAME) and (display != DISPLAY_MIN or proc_on_panel_bus(pid, display)):
         return "panel" if proc_on_display(pid, display) else ""
     if names[0] == "fcitx5" and display != DISPLAY_MIN:
         return "fcitx" if proc_on_display(pid, display) else ""
@@ -3812,6 +3821,10 @@ def watch_vnc(key, display):
                 ensure_vnc(key, display)
                 ensure_proxy(key, display)
                 keep_screen_awake(display)
+                try:
+                    ensure_bot_panel(key, display)
+                except Exception as exc:  # never break the watcher
+                    print("desktop panel: %s" % exc, file=sys.stderr)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
             lock_file.close()
@@ -5653,14 +5666,52 @@ def start_bot_desktop(key, display):
 # strut, so a maximized Chromium ends above it. NO_AT_BRIDGE keeps it out of
 # the AT-SPI tree the agent reads. About 13 MB PSS per display.
 
-BOT_PANEL_SIZE = 30
+BOT_PANEL_SIZE = 34
 BOT_PANEL_RETRY_SECONDS = 60
 BOT_WALLPAPERS = {
     "soft25": "maclaw-soft-25.jpg", "soft40": "maclaw-soft-40.jpg", "soft55": "maclaw-soft-55.jpg",
     "soft-topbar": "maclaw-soft-40.jpg", "dark": "maclaw-dark.jpg", "colorful": "maclaw-colorful.jpg",
     "topbar": "maclaw-colorful.jpg", "clean": "gray-gradient.png",
 }
-BOT_PANEL_XML = """<?xml version="1.0" encoding="UTF-8"?>
+# The taskbar every display shows, like a normal XFCE desktop: application
+# menu, launchers, window list, tray and clock along the bottom. Launchers
+# and menu entries start programs through the display's "run" wrapper.
+def bot_panel_xml(launchers):
+    ids = [1, 2] + [10 + n for n in range(len(launchers))] + [3, 4, 5, 6, 7]
+    plugins = [
+        '    <property name="plugin-1" type="string" value="whiskermenu">\n'
+        '      <property name="button-title" type="string" value="应用程序"/>\n'
+        '      <property name="show-button-title" type="bool" value="true"/>\n'
+        '      <property name="button-icon" type="string" value="org.xfce.panel.applicationsmenu"/>\n'
+        '    </property>',
+        '    <property name="plugin-2" type="string" value="separator"/>',
+    ]
+    for n, name in enumerate(launchers):
+        plugins.append(
+            '    <property name="plugin-%d" type="string" value="launcher">\n'
+            '      <property name="items" type="array"><value type="string" value="%s"/></property>\n'
+            '    </property>' % (10 + n, name))
+    plugins += [
+        '    <property name="plugin-3" type="string" value="tasklist">\n'
+        '      <property name="flat-buttons" type="bool" value="true"/>\n'
+        '      <property name="show-handle" type="bool" value="false"/>\n'
+        '      <property name="grouping" type="uint" value="0"/>\n'
+        '      <property name="show-labels" type="bool" value="true"/>\n'
+        '    </property>',
+        '    <property name="plugin-4" type="string" value="separator">\n'
+        '      <property name="expand" type="bool" value="true"/>\n'
+        '      <property name="style" type="uint" value="0"/>\n'
+        '    </property>',
+        '    <property name="plugin-5" type="string" value="systray">\n'
+        '      <property name="square-icons" type="bool" value="true"/>\n'
+        '    </property>',
+        '    <property name="plugin-6" type="string" value="clock">\n'
+        '      <property name="digital-layout" type="uint" value="3"/>\n'
+        '      <property name="digital-time-format" type="string" value="%H:%M"/>\n'
+        '    </property>',
+        '    <property name="plugin-7" type="string" value="showdesktop"/>',
+    ]
+    return """<?xml version="1.0" encoding="UTF-8"?>
 <channel name="xfce4-panel" version="1.0">
   <property name="configver" type="int" value="2"/>
   <property name="panels" type="array">
@@ -5671,25 +5722,23 @@ BOT_PANEL_XML = """<?xml version="1.0" encoding="UTF-8"?>
       <property name="length" type="uint" value="100"/>
       <property name="position-locked" type="bool" value="true"/>
       <property name="size" type="uint" value="%d"/>
-      <property name="icon-size" type="uint" value="16"/>
+      <property name="icon-size" type="uint" value="20"/>
       <property name="background-style" type="uint" value="1"/>
       <property name="background-rgba" type="array">
         <value type="double" value="0.97"/><value type="double" value="0.97"/>
-        <value type="double" value="0.98"/><value type="double" value="0.94"/>
+        <value type="double" value="0.98"/><value type="double" value="0.96"/>
       </property>
-      <property name="plugin-ids" type="array"><value type="int" value="1"/></property>
+      <property name="plugin-ids" type="array">%s</property>
     </property>
   </property>
   <property name="plugins" type="empty">
-    <property name="plugin-1" type="string" value="tasklist">
-      <property name="flat-buttons" type="bool" value="true"/>
-      <property name="show-handle" type="bool" value="false"/>
-      <property name="grouping" type="uint" value="0"/>
-      <property name="show-labels" type="bool" value="true"/>
-    </property>
+%s
   </property>
 </channel>
-""" % BOT_PANEL_SIZE
+""" % (BOT_PANEL_SIZE, "".join('<value type="int" value="%d"/>' % n for n in ids), "\n".join(plugins))
+
+
+BOT_PANEL_XML = bot_panel_xml([])
 BOT_PANEL_CSS = """.xfce4-panel, .xfce4-panel label, .xfce4-panel button, .xfce4-panel button label,
 #tasklist-button label, .tasklist button label { color: #23262b; }
 .xfce4-panel button:checked label, .tasklist button:checked label { color: #000000; font-weight: bold; }
@@ -5852,16 +5901,82 @@ def write_bot_dock(key, display, cfg):
         os.symlink(shutil.which("plank"), str(link))
 
 
-def ensure_bot_panel(key, display, pids=None, log=None):
-    """Wallpaper and bottom dock (or tasklist panel) on a running bot display.
+def desktop_menu_entry(text, run):
+    """A system desktop entry that starts through the display's wrapper."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("DBusActivatable="):
+            continue  # D-Bus activation would start it on the panel's private bus
+        if line.startswith("TryExec="):
+            continue
+        if line.startswith("Exec="):
+            line = "Exec=%s %s" % (shlex.quote(str(run)), line[5:])
+        out.append(line)
+    return "\n".join(out) + "\n"
 
-    Plank, styled like the owner's soft25 dock, with this bot's launchers;
-    xfce4-panel with a tasklist when Plank is not installed. Started at most
-    once per BOT_PANEL_RETRY_SECONDS, so a dock that keeps crashing is not
-    respawned every watcher tick. Never touches Chromium.
+
+def write_desktop_panel(key, display, cfg):
+    """Taskbar config of one display: launchers and a menu that run on it."""
+    run = cfg / "run"
+    write_if_changed(run, bot_app_env_script(display), 0o700)
+    user = user_key_of(key) if is_bot_key(key) else ""
+    profile = screen_profile(user, display) if user else ""
+    lo = ROOT / key / "libreoffice"
+    panel_dir = cfg / "xfce4" / "panel"
+    names = []
+    for n, (item, name, icon, wmclass, argv, needs) in enumerate(BOT_DOCK_APPS[:4]):
+        if not (os.path.exists(needs) or shutil.which(needs)):
+            continue
+        if item == "browser":
+            argv = ["/usr/bin/maclaw-browser"]
+        cmd = " ".join(shlex.quote(part.format(profile=profile, lo=lo)) for part in [str(run)] + list(argv))
+        entry = "\n".join(["[Desktop Entry]", "Type=Application", "Name=%s" % name, "Icon=%s" % icon,
+                           "Exec=%s" % cmd, "Terminal=false", ""])
+        fname = "%s.desktop" % item
+        write_if_changed(panel_dir / ("launcher-%d" % (10 + len(names))) / fname, entry, 0o600)
+        names.append(fname)
+    # Whisker Menu reads its button from its own rc file.
+    write_if_changed(panel_dir / "whiskermenu-1.rc", "button-title=应用程序\nshow-button-title=true\nshow-button-icon=true\n", 0o600)
+    apps = cfg / "data" / "applications"
+    src = Path("/usr/share/applications")
+    if src.is_dir():
+        for path in src.glob("*.desktop"):
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            write_if_changed(apps / path.name, desktop_menu_entry(text, run), 0o600)
+    write_if_changed(cfg / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xfce4-panel.xml", bot_panel_xml(names), 0o600)
+
+
+def kill_display_docks(display):
+    """Plank docks on this display: the taskbar replaces them."""
+    for entry in PROC.iterdir():
+        if not entry.name.isdigit():
+            continue
+        argv = proc_argv(int(entry.name))
+        if not argv or os.path.basename(argv[0]) not in ("plank", BOT_DOCK_NAME):
+            continue
+        try:
+            raw = (entry / "environ").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        # The XFCE session exports DISPLAY=:N.0, the supervisor :N.
+        if ("DISPLAY=:%d" % display).encode() in raw or ("DISPLAY=:%d.0" % display).encode() in raw:
+            kill_pid(int(entry.name))
+
+
+def ensure_bot_panel(key, display, pids=None, log=None):
+    """Wallpaper and the bottom taskbar on a running display.
+
+    Every display (the owner's and each bot's) gets the full XFCE taskbar
+    (menu, launchers, window list, tray, clock) instead of a bare dock, so the
+    person sees and works a whole desktop. It runs on a private D-Bus with
+    its own config dir (not ~/.config, shared by every display); its strut
+    keeps maximized windows above it, so screen coordinates stay whole-screen.
+    Started at most once per BOT_PANEL_RETRY_SECONDS. Never touches Chromium.
     """
-    dock = shutil.which("plank") is not None
-    if display == DISPLAY_MIN or shutil.which("dbus-daemon") is None or not (dock or shutil.which("xfce4-panel")):
+    if shutil.which("dbus-daemon") is None or shutil.which("xfce4-panel") is None:
         return
     if os.environ.get("MACLAW_BOT_PANEL", "1").strip() == "0":
         return
@@ -5869,8 +5984,14 @@ def ensure_bot_panel(key, display, pids=None, log=None):
         return
     if pids is None:
         pids = current_pids(key, display)
-    if pid_alive(pids.get("panel")):
-        return
+    panel = pids.get("panel")
+    if pid_alive(panel):
+        argv = proc_argv(panel) or [""]
+        if os.path.basename(argv[0]) != BOT_DOCK_NAME:
+            if display == DISPLAY_MIN:
+                kill_display_docks(display)  # the session's autostart dock
+            return
+        kill_pid(pids.pop("panel"))  # the old dock gives way to the taskbar
     now = time.time()
     if now - _bot_panel_tried.get(key, 0) < BOT_PANEL_RETRY_SECONDS:
         return
@@ -5879,24 +6000,21 @@ def ensure_bot_panel(key, display, pids=None, log=None):
     home.mkdir(mode=0o700, exist_ok=True)
     if log is None:
         log = open(home / "desktop.log", "ab")
-    set_bot_wallpaper(display, log)
+    if display != DISPLAY_MIN:
+        set_bot_wallpaper(display, log)
     cfg = home / "panel-config"
     try:
-        if dock:
-            write_bot_dock(key, display, cfg)
-        else:
-            write_if_changed(cfg / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xfce4-panel.xml", BOT_PANEL_XML, 0o600)
+        write_desktop_panel(key, display, cfg)
         write_if_changed(cfg / "gtk-3.0" / "gtk.css", BOT_PANEL_CSS, 0o600)
     except OSError as exc:
-        print("bot panel config: %s" % exc, file=sys.stderr)
+        print("desktop panel config: %s" % exc, file=sys.stderr)
         return
+    kill_display_docks(display)
     env = desktop_env(display)
     env["XDG_CONFIG_HOME"] = str(cfg)
     env["XDG_CONFIG_DIRS"] = str(cfg)
+    env["XDG_DATA_HOME"] = str(cfg / "data")
     env["NO_AT_BRIDGE"] = "1"
-    if dock:
-        env["XDG_DATA_HOME"] = str(cfg / "data")
-        env["GSETTINGS_BACKEND"] = "keyfile"
     for name in ("QT_ACCESSIBILITY", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "SESSION_MANAGER"):
         env.pop(name, None)
     bus = bot_panel_bus(display)
@@ -5905,17 +6023,17 @@ def ensure_bot_panel(key, display, pids=None, log=None):
         os.unlink(bus)
     except OSError:
         pass
-    # bamfdaemon (Plank) or xfconfd (xfce4-panel) is started by this bus and
-    # inherits its environment: the dock's own config dir.
+    # xfconfd is started by this bus and inherits its environment: the
+    # panel's own config dir.
     pids["panelbus"] = spawn(["dbus-daemon", "--session", "--nofork", "--nopidfile", "--address=unix:path=%s" % bus], env, log).pid
     for _ in range(40):
         if Path(bus).exists():
             break
         time.sleep(0.05)
     env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s" % bus
-    argv = [str(cfg / BOT_DOCK_NAME)] if dock else ["xfce4-panel", "--disable-wm-check"]
-    pids["panel"] = spawn(argv, env, log).pid
+    pids["panel"] = spawn(["xfce4-panel", "--disable-wm-check"], env, log).pid
     write_pids(key, pids)
+    log_event("desktop_panel_started", key=key, display=display)
 
 
 def ensure_gates():
