@@ -94,6 +94,15 @@ export function botFeedLineOf(content: string, self: string, opts: { feed?: BotF
     return null;
 }
 
+// botFeedLineInternal: a teammate's order or message to this bot is an
+// internal brief (Daniel 10-31: 主bot让各bot跟用户说话，直接以它自己的口吻说).
+// The person sees what this bot then says in its own voice, not the relay
+// line "主 Bot → Bot 6 消息 对用户友好点。".
+export function botFeedLineInternal(line: BotFeedLineData, self: string): boolean {
+    const me = (self || '').trim() || '我';
+    return line.to === me && line.from !== me && (line.kind === '消息' || line.kind === '交代任务') && !line.files.length;
+}
+
 export function BotFeedLine({ line }: { line: BotFeedLineData }) {
     return (
         <details className={'desktop-bot-feed' + (line.alert ? ' is-alert' : '')} data-testid="desktop-bot-feed" data-kind={line.kind}>

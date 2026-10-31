@@ -321,10 +321,14 @@ print(s["auto_handback"], s["auto_handback_trigger"])
 sup._login_probe_at.clear()
 sup.ctl_takeover_begin({"key": bot, "reason": "拿不到发布按钮，请帮忙点发布"})
 print(sup.takeover_expire_if_idle(bot, now=time.time() + 60), sup.takeover_state(bot) is not None)
+sup._login_probe_at.clear()
+page.update(url="https://creator.xiaohongshu.com/publish/publish?source=official&published=true")
+sup.ctl_takeover_begin({"key": bot, "reason": "标题、正文、4 张图已填好，请点右下角红色「发布」按钮"})
+print(sup.takeover_expire_if_idle(bot, now=time.time() + 60), sup.ctl_bot_state({"key": bot, "watch": True})["resume"]["trigger"])
 print(sup.page_shows_signed_in({"url": "https://x.com/i/flow/login", "state": "complete", "form": False}),
       sup.page_shows_signed_in({"url": "https://x.com/home", "state": "loading", "form": False}))
 `, botOwner)
-	want := "False\nFalse\nTrue True\nFalse signed_in True None True\nTrue signed_in\nFalse True\nFalse False"
+	want := "False\nFalse\nTrue True\nFalse signed_in True None True\nTrue signed_in\nFalse True\nTrue published\nFalse False"
 	if out != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}

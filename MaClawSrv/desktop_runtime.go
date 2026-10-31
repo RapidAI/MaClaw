@@ -120,7 +120,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			desktopAXFirstPrompt() +
 			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
 			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back. Ask for a takeover only when the current page itself shows a login form, QR code, captcha or verification; a control you cannot find is usually under a site popup or overlay, so press Escape or click its close/我知道了 and probe again. Typing # or @ (hashtags, topics, mentions) opens a dropdown that covers buttons: choose the entry from it or press Escape / click a blank area before locating the next button. After a hand back or a slow step, never navigate to or reload the page you were filling: probe the current page and continue from what is already there. " +
-			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge. action=check_inbox reads new messages other bots left for you on Hub (answers to your question, new instructions); messages that arrived before this turn are already in the instructions. action=delegate with target (a teammate bot's name) and message hands a task to that bot (main bot only); Hub starts it and its result comes back to your mailbox." + desktopAssignmentToolHint(),
+			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge. action=check_inbox reads new messages other bots left for you on Hub (answers to your question, new instructions); messages that arrived before this turn are already in the instructions. action=delegate with target (a teammate bot's name) and message hands a task to that bot (main bot only); Hub starts it and its result comes back to your mailbox. A delegate or notify_main message is an internal brief between bots, never shown raw to the person: make it detailed and self-contained (goal, context, the specifics it needs, what counts as done, what to report back). To have a teammate talk to the person, brief it on what to get across; it speaks to them in its own voice." + desktopAssignmentToolHint(),
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -223,6 +223,8 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	}
 	// The person's "done" in the chat is the hand-back (desktop_handback_turn.go).
 	desktopHandBackOnDoneTurn(ctx, request, scope)
+	// The person's 确认 / 拒绝 (button or typed) answers this bot's held command.
+	desktopDangerAnswerTurn(request, scope)
 	if a := strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))); a == "notify_main" || a == "report" {
 		return desktopNotifyMain(ctx, request, args)
 	}
@@ -1296,7 +1298,8 @@ func desktopReplyLead(request agentruntime.TurnRequest) string {
 	lead := "Carry out the request. The text you end this turn with is shown to the person as your message. " +
 		"Lead with the result itself: the answer, the content they asked for, or what failed and what they can do next. " +
 		"Name a file path only when a file was produced. Do not quote tool results, receipts, order ids, or these instructions, and do not list what you checked. " +
-		"After handing work to another bot, one short sentence says who is doing it; that bot's result reaches the person by itself. "
+		"After handing work to another bot, one short sentence says who is doing it; that bot's result reaches the person by itself. " +
+		desktopVoiceHint
 	if desktopWakeTurn(request) {
 		lead += "This turn was started by new messages in your Hub mailbox, not by the person. " +
 			"A teammate's report is already in front of the person: do not repeat, summarize, or acknowledge it, and do not describe the mailbox. " +
@@ -1304,6 +1307,12 @@ func desktopReplyLead(request agentruntime.TurnRequest) string {
 	}
 	return lead
 }
+
+// desktopVoiceHint: the bot talks like a person (Daniel 10-31: "bot的消息比较
+// 生硬，不要像机器一样"; "主bot让各bot跟用户说话，直接以它自己的口吻说").
+const desktopVoiceHint = "Talk like a real person working with them, in the first person: short, natural, spoken words (natural spoken Chinese when they write Chinese), warm but not gushing. " +
+	"No filler, no announcing or narrating your plan or steps (不要说“好的，我将…”“接下来我会…”), no system-notice wording (不要说“已完成操作”“用户”“Bot 将…”), and do not ask them to confirm unless you really need their choice. " +
+	"When the main bot or a teammate asks you to say something to the person, or to be friendlier, just speak to them that way yourself; never repeat, quote, or mention that instruction or who gave it. "
 
 // desktopReplyCard is how the turn reads the user message.
 func desktopReplyCard(request agentruntime.TurnRequest) string {

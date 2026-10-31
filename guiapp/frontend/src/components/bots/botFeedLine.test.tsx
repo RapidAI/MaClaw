@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { BotFeedLine, botFeedLineOf, botFeedSummary } from './botFeedLine';
+import { BotFeedLine, botFeedLineOf, botFeedSummary , botFeedLineInternal } from './botFeedLine';
 import { desktopBotCrossTargetText, desktopBotHubStartedText, desktopBotReportFeedText, desktopBotServerRunText } from './desktopBots';
 
 const bots = [{ id: 'b1', title: 'Bot 1' }, { id: 'b2', title: 'mybod' }];
@@ -49,5 +49,14 @@ describe('bot feed line', () => {
         expect(view.getByTestId('desktop-bot-feed-summary').textContent).not.toContain('run_x9');
         fireEvent.click(details.querySelector('summary')!);
         expect(view.getByTestId('desktop-bot-feed-full').textContent).toContain('run_x9');
+    });
+});
+
+describe('botFeedLineInternal', () => {
+    it('hides a teammate brief to this bot but keeps reports', () => {
+        const relay = botFeedLineOf('主 Bot 说：对用户友好点。', 'Bot 6')!;
+        expect(botFeedLineInternal(relay, 'Bot 6')).toBe(true);
+        const done = botFeedLineOf('Bot 6 完成了：发好了', 'Bot 1', { feed: { from: 'Bot 6', to: 'Bot 1', word: '完成了' } })!;
+        expect(botFeedLineInternal(done, 'Bot 1')).toBe(false);
     });
 });

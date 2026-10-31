@@ -62,6 +62,9 @@ func requestDesktopTakeover(ctx context.Context, scope agentruntime.Scope, reaso
 	if desktopElementMissingRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) {
 		return "", fmt.Errorf("%s", desktopElementMissingRefusal)
 	}
+	// Hand back is automatic now (signed in / published / idle): the person
+	// is not told to press 交还.
+	reason = strings.TrimSpace(desktopHandBackAskRe.ReplaceAllString(reason, ""))
 	if len([]rune(reason)) > 300 {
 		reason = string([]rune(reason)[:300])
 	}
@@ -74,7 +77,7 @@ func requestDesktopTakeover(ctx context.Context, scope agentruntime.Scope, reaso
 	noteDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID, reason)
 	noteDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID)
 	return "Takeover requested. The person now sees this desktop with your reason: " + reason +
-		". Do not use the desktop any more in this turn. End your turn now with one short message telling them what to do and to press hand back (交还) when finished; you continue after that.", nil
+		". Do not use the desktop any more in this turn. End your turn now with one short, friendly sentence in your own voice telling them what to do. Do not tell them to press 交还: the desktop comes back to you by itself once they are signed in, have published, or stop touching it, and you continue then.", nil
 }
 
 // desktopBotYield stops an isolated bot's desktop action while the person
@@ -110,6 +113,8 @@ func desktopBotYield(ctx context.Context, scope agentruntime.Scope) error {
 	return fmt.Errorf("用户刚刚在这个桌面上输入，正在操作；请暂停桌面动作，结束本轮并告诉用户完成后点交还")
 }
 
+var desktopHandBackAskRe = regexp.MustCompile(`[，,。；;、 ]*(完成|弄好|登录|操作|做完|处理)?(后|之后|以后|好了)?(请)?(再)?(点|按|点击)(一下)?(右上角)?(「|“|")?交还(」|”|")?(按钮)?(给我|一下)?[。！!]?`)
+
 // desktopNoteAutoHandback shows in the feed that a human takeover ended by
 // itself after the supervisor saw no person input for its idle limit.
 func desktopNoteAutoHandback(scope agentruntime.Scope, out map[string]any) {
@@ -120,11 +125,15 @@ func desktopNoteAutoHandback(scope agentruntime.Scope, out map[string]any) {
 	if v, ok := out["auto_handback_idle"].(float64); ok {
 		idle = int(v)
 	}
+	if trigger, _ := out["auto_handback_trigger"].(string); trigger == "published" {
+		desktopEmitNote(scope, "takeover_auto_handback", "bot", "看到已经发出去了，我来收个尾")
+		return
+	}
 	if trigger, _ := out["auto_handback_trigger"].(string); trigger == "signed_in" {
 		log.Printf("[desktop] takeover auto hand back: page shows signed in")
-		desktopEmitNote(scope, "takeover_auto_handback", "bot", "页面已显示登录成功，已自动交还给 Bot")
+		desktopEmitNote(scope, "takeover_auto_handback", "bot", "看到你已经登录好了，我接着做")
 		return
 	}
 	log.Printf("[desktop] takeover auto hand back after %ds without human input", idle)
-	desktopEmitNote(scope, "takeover_auto_handback", "bot", fmt.Sprintf("人类接管 %d 秒无操作，已自动交还给 Bot", idle))
+	desktopEmitNote(scope, "takeover_auto_handback", "bot", fmt.Sprintf("你有 %d 秒没动桌面了，我先接着做；还要操作的话随时接管", idle))
 }

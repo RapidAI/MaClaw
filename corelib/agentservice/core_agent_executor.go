@@ -2902,6 +2902,9 @@ func (c *coreAgentCallbacks) mergeConnectorAsk(metadata map[string]string) {
 		metadata["send_to_user_kind"] = kind
 	}
 	desktopbot.ApplyDangerAsk(metadata, strings.TrimSpace(c.session.ID))
+	if c.connectorAsk.Kind == "ask" || c.connectorAsk.Kind == "" && strings.TrimSpace(c.connectorAsk.Text) != "" {
+		desktopbot.ApplyConfirmButtons(metadata)
+	}
 }
 
 func connectorCallURL(args map[string]interface{}) string {

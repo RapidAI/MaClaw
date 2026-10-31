@@ -116,7 +116,7 @@ func desktopSayHint() string {
 	if !desktopSayOn() {
 		return ""
 	}
-	return " action=say with message (and room for a group room) speaks to the person directly; say only what is new to them (Hub refuses a repeat of what another bot already said). One say per run: put the result in that one message. A later say in the same run is refused unless it carries update=true for information the person has not had yet."
+	return " action=say with message (and room for a group room) speaks to the person directly, in your own voice as yourself (first person, like a colleague talking, not a relay or a system notice); say only what is new to them (Hub refuses a repeat of what another bot already said). One say per run: put the result in that one message. A later say in the same run is refused unless it carries update=true for information the person has not had yet."
 }
 
 func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[string]any) (string, error) {

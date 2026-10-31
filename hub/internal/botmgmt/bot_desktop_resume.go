@@ -126,6 +126,9 @@ func (s *Service) resumeAfterHandBack(tenantID, desktopUser, key string, resume 
 	w.mu.Unlock()
 	trigger, _ := resume["trigger"].(string)
 	message := "桌面已自动交还给你（人类接管期间无操作），请先看清当前页面状态，再继续刚才的任务；不要重新打开或刷新页面。"
+	if trigger == "published" {
+		message = "页面显示已经发布成功了，桌面已自动交还给你。去笔记管理里找到这篇的链接，用你自己的话简短告诉我发好了（带上链接）；不要再点发布，也不要刷新页面。"
+	}
 	if trigger == "signed_in" {
 		message = "页面已显示登录成功，桌面已自动交还给你，请沿用这个登录状态继续刚才的任务；不要重新打开或刷新页面。"
 	}

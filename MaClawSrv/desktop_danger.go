@@ -79,3 +79,15 @@ func desktopDangerAskKeys(scope agentruntime.Scope) []string {
 		strings.TrimSpace(scope.InstanceID),
 	}
 }
+
+// desktopDangerAnswerTurn: a turn whose message is a bare yes/no answers the
+// commands this instance holds for the person (the danger ask buttons).
+func desktopDangerAnswerTurn(request agentruntime.TurnRequest, scope agentruntime.Scope) {
+	content, _ := desktopTurnMessage(request)
+	yes, ok := desktopbot.DangerAnswer(content)
+	if !ok {
+		return
+	}
+	prefix := strings.Join([]string{strings.TrimSpace(scope.TenantID), strings.TrimSpace(scope.UserID), strings.TrimSpace(scope.InstanceID)}, "\x00") + "\x00"
+	desktopbot.AnswerDanger(prefix, yes, desktopbot.DangerNow())
+}

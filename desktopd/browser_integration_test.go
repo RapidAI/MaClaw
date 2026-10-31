@@ -290,13 +290,14 @@ env = sup.desktop_env(20) if False else None
 	}
 }
 
-func TestBrowserTestTypeIsOptIn(t *testing.T) {
-	out := runSupervisorPython(t, `print("--test-type" in sup.browser_argv(Path("/p"), 18020))`)
-	if out != "False" {
-		t.Fatalf("default argv has --test-type: %s", out)
+// The --no-sandbox warning bar is hidden by default (--test-type); =0 shows it.
+func TestBrowserTestTypeHidesTheSandboxBar(t *testing.T) {
+	out := runSupervisorPython(t, `print("--test-type" in sup.browser_argv(Path("/p"), 18020), "--test-type" in sup.SHARED_BROWSER_WRAPPER)`)
+	if out != "True True" {
+		t.Fatalf("default argv lacks --test-type: %s", out)
 	}
-	out = runSupervisorPython(t, `print("--test-type" in sup.browser_argv(Path("/p"), 18020))`, "MACLAW_BROWSER_TEST_TYPE=1")
-	if out != "True" {
-		t.Fatalf("opt-in argv lacks --test-type: %s", out)
+	out = runSupervisorPython(t, `print("--test-type" in sup.browser_argv(Path("/p"), 18020))`, "MACLAW_BROWSER_TEST_TYPE=0")
+	if out != "False" {
+		t.Fatalf("opt-out argv has --test-type: %s", out)
 	}
 }

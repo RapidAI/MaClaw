@@ -158,7 +158,7 @@ import {
 } from './desktopBots';
 import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from './botUnread';
 import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
-import { BotFeedLine, botFeedLineOf } from './botFeedLine';
+import { BotFeedLine, botFeedLineInternal, botFeedLineOf } from './botFeedLine';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
 import { DesktopBotComposer } from './DesktopBotComposer';
 import { BotEditDialog } from './BotEditDialog';
@@ -847,7 +847,7 @@ function copy(lang: string) {
             screenSwitch: 'Desktops',
             handBack: 'Hand back to the bot',
             handBackBusy: 'Handing the desktop back…',
-            handoffFallback: 'This bot needs you on its desktop.',
+            handoffFallback: 'I need a hand on my desktop — tap here.',
             handBackFailed: 'The desktop was not handed back.',
             noSharedDesktop: 'No bot is sharing your desktop.',
             isolatedDesktop: 'Own desktop',
@@ -1019,10 +1019,10 @@ function copy(lang: string) {
             send: '發送',
             working: '正在工作',
             arranging: '正在安排',
-            idle: '待命',
+            idle: '有空',
             workingTag: '工作中',
             arrangingTag: '安排中',
-            idleTag: '待命',
+            idleTag: '有空',
             confirm: '按這個安排執行',
             secretHint: '密碼請用下面的密碼框，不要貼進對話。',
             secretSave: '儲存',
@@ -1059,7 +1059,7 @@ function copy(lang: string) {
             screenSwitch: '桌面',
             handBack: '交還給 Bot',
             handBackBusy: '正在交還桌面…',
-            handoffFallback: '這個 Bot 需要你在它的桌面上操作。',
+            handoffFallback: '我這邊卡住了，要你幫我在桌面上弄一下，點這裡過來。',
             handBackFailed: '桌面沒有交還給 Bot。',
             noSharedDesktop: '沒有 Bot 在共用你的桌面。',
             isolatedDesktop: '獨立桌面',
@@ -1229,10 +1229,10 @@ function copy(lang: string) {
         send: '发送',
         working: '正在工作',
         arranging: '正在安排',
-        idle: '待命',
+        idle: '有空',
         workingTag: '工作中',
         arrangingTag: '安排中',
-        idleTag: '待命',
+        idleTag: '有空',
         confirm: '按这个安排执行',
         secretHint: '密码请用下面的密码框，不要贴进对话。',
         secretSave: '保存',
@@ -1269,7 +1269,7 @@ function copy(lang: string) {
         screenSwitch: '桌面',
         handBack: '交还给 bot',
         handBackBusy: '正在交还桌面…',
-        handoffFallback: '这个 bot 需要你在它的桌面上操作。',
+        handoffFallback: '我这边卡住了，要你帮我在桌面上弄一下，点这里过来。',
         handBackFailed: '桌面没有交还给 bot。',
         noSharedDesktop: '没有 bot 在共用你的桌面。',
         isolatedDesktop: '独立桌面',
@@ -6500,6 +6500,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 const feedLine = message.role === 'assistant' && message.chat && !message.askUser && message.phase !== 'plan' && !message.localPaths?.length && !message.files?.length
                                     ? botFeedLineOf(message.content || '', selected.title, { feed: message.feed, failed: message.failed })
                                     : null;
+                                if (feedLine && botFeedLineInternal(feedLine, selected.title)) return null;
                                 if (feedLine) return (
                                     <div key={message.id} className="desktop-bot-chat__entry desktop-bot-chat__entry--feed" data-message-role="feed">
                                         <BotFeedLine line={feedLine} />

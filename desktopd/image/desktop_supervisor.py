@@ -1315,13 +1315,14 @@ def browser_argv(profile, chrome_port, bot=False):
 def browser_test_type_flags():
     """--test-type hides the "--no-sandbox ... security will suffer" bar.
 
-    Opt-in only (MACLAW_BROWSER_TEST_TYPE=1, e.g. on test desktops): it is a
-    switch for Chromium's own test harnesses, it hides that warning from the
-    person as well, and its other effects are not a stable contract.
+    The desktop runs Chromium as root in a container, so --no-sandbox is
+    required and the bar is noise the person cannot act on (Daniel 10-31:
+    "桌面上还有这个提示"). No policy hides it; --test-type is the switch that
+    does. On by default; MACLAW_BROWSER_TEST_TYPE=0 shows the bar again.
     """
-    if os.environ.get("MACLAW_BROWSER_TEST_TYPE", "").strip() == "1":
-        return ["--test-type"]
-    return []
+    if os.environ.get("MACLAW_BROWSER_TEST_TYPE", "").strip() == "0":
+        return []
+    return ["--test-type"]
 
 
 def browser_proxy_flags():
@@ -3178,7 +3179,7 @@ SHARED_BROWSER_WRAPPER = """#!/bin/sh
 if [ -f /desktop_supervisor.py ]; then
   exec python3 /desktop_supervisor.py browser "$@"
 fi
-MACLAW_SUPERVISED_BROWSER=1 exec /usr/bin/chromium --no-sandbox "$@"
+MACLAW_SUPERVISED_BROWSER=1 exec /usr/bin/chromium --no-sandbox --test-type "$@"
 """
 
 BROWSER_SIGNIN_POLICY = '{"BrowserSignin": 0}\n'
@@ -3419,7 +3420,7 @@ def open_shared_browser(args):
         return 0
     env = os.environ.copy()
     env[SUPERVISED_BROWSER_ENV] = "1"
-    argv = [browser_bin(), "--no-sandbox", "--user-data-dir=%s" % opened, "--profile-directory=Default"] + list(args)
+    argv = [browser_bin(), "--no-sandbox", "--user-data-dir=%s" % opened, "--profile-directory=Default"] + browser_test_type_flags() + list(args)
     os.execvpe(argv[0], argv, env)
     return 0
 
@@ -6489,7 +6490,7 @@ def takeover_expire_if_idle(key, now=None):
 LOGIN_TAKEOVER_RE = re.compile(r"登录|登陆|扫码|二维码|验证码|人机验证|滑块|captcha|log ?in|sign ?in|verif", re.I)
 PUBLISH_TAKEOVER_RE = re.compile(r"发布|发表|提交|publish|post\b|submit", re.I)
 LOGIN_URL_RE = re.compile(r"login|signin|sign_in|sign-in|passport|/auth|account/|sso\.|captcha|verify|challenge", re.I)
-LOGIN_PROBE_SECONDS = 10
+LOGIN_PROBE_SECONDS = 5
 LOGIN_PAGE_PROBE = (
     "(() => { const vis = e => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e); "
     "return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; }; "
@@ -6497,7 +6498,8 @@ LOGIN_PAGE_PROBE = (
     "const box = [...document.querySelectorAll('[class*=login i],[class*=captcha i],[id*=login i],[id*=captcha i],iframe[src*=captcha i]')]"
     ".some(e => vis(e) && e.getBoundingClientRect().width > 200 && e.getBoundingClientRect().height > 150); "
     "const qr = /扫码登录|二维码登录|验证码登录|安全验证|拖动滑块/.test((document.body && document.body.innerText || '').slice(0, 20000)); "
-    "return {url: location.href, state: document.readyState, form: pw || box || qr}; })()"
+    "const published = /发布成功|发表成功|已发布|笔记发布成功|published successfully/i.test((document.body && document.body.innerText || '').slice(0, 20000)); "
+    "return {url: location.href, state: document.readyState, form: pw || box || qr, published: published}; })()"
 )
 
 
@@ -6525,6 +6527,16 @@ def login_page_state(key):
     return value if isinstance(value, dict) else None
 
 
+PUBLISHED_URL_RE = re.compile(r"[?&](published|publish_success|success)=(true|1)\b", re.I)
+PUBLISH_YIELD_SECONDS = 3
+
+
+def page_shows_published(state):
+    if not isinstance(state, dict):
+        return False
+    return bool(PUBLISHED_URL_RE.search(str(state.get("url") or ""))) or bool(state.get("published"))
+
+
 def page_shows_signed_in(state):
     if not isinstance(state, dict) or state.get("state") != "complete":
         return False
@@ -6538,7 +6550,9 @@ def takeover_login_done(key, data, now):
     """During a login/captcha takeover, end it once the page shows the person
     is signed in and they have not touched the display for the yield window
     (never while they are typing). Probed at most every LOGIN_PROBE_SECONDS."""
-    if not login_takeover(data.get("reason")):
+    reason = str(data.get("reason") or "")
+    publish = bool(PUBLISH_TAKEOVER_RE.search(reason))
+    if not publish and not login_takeover(reason):
         return False
     try:
         since = float(data.get("since") or 0)
@@ -6549,23 +6563,24 @@ def takeover_login_done(key, data, now):
         last = max(last, (ROOT / key / "human_input").stat().st_mtime)
     except OSError:
         pass
-    if now - last < BOT_HUMAN_YIELD_SECONDS:
+    if now - last < (PUBLISH_YIELD_SECONDS if publish else BOT_HUMAN_YIELD_SECONDS):
         return False
     probed = _login_probe_at.get(key, 0)
     if now - probed < LOGIN_PROBE_SECONDS:
         return False
     _login_probe_at[key] = now
     state = login_page_state(key)
-    if not page_shows_signed_in(state):
+    trigger = "published" if publish else "signed_in"
+    if not (page_shows_published(state) if publish else page_shows_signed_in(state)):
         return False
     url = str(state.get("url") or "")[:200]
-    log_event("takeover_auto_handback", key=key, trigger="signed_in", url=url,
+    log_event("takeover_auto_handback", key=key, trigger=trigger, url=url,
               reason=str(data.get("reason") or "")[:120])
-    ctl_takeover_end({"key": key, "source": "login_detected"})
-    note_handback_resume(key, data, "signed_in", now, url=url)
+    ctl_takeover_end({"key": key, "source": "published_detected" if publish else "login_detected"})
+    note_handback_resume(key, data, trigger, now, url=url)
     try:
         (ROOT / key / "auto_handback.json").write_text(json.dumps(
-            {"at": int(now), "trigger": "signed_in", "url": url,
+            {"at": int(now), "trigger": trigger, "url": url,
              "reason": str(data.get("reason") or "")[:120]}), encoding="utf-8")
     except OSError:
         pass

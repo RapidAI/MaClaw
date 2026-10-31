@@ -7,7 +7,14 @@ import (
 	"time"
 )
 
-const DangerWait = 15 * time.Second
+// DangerWait is how long a held command waits for the person's answer
+// (the 确认 / 拒绝 buttons under the ask). 15 s was too short to click.
+const DangerWait = 10 * time.Minute
+
+// DangerOptions are the two buttons guiapp shows under a danger ask.
+var DangerOptions = []string{"确认", "拒绝"}
+
+const DangerDeclinedError = "这个人没同意，这一条不执行。不要再问，也不要换个办法做同一件事；跳过它，用别的方式把任务做完，做不了就直接说哪一步没做。"
 
 const DangerAskedError = "这一条要先问这个人。在 send_to_user 里用你自己的口吻说清楚要做什么（不要写出密码、token 等秘密）、为什么需要它，然后停下等回答。没有回答就不执行。不要改用别的动作代替。"
 
@@ -41,7 +48,8 @@ type DangerResult struct {
 }
 
 type dangerHold struct {
-	at time.Time
+	at     time.Time
+	answer int // 0 waiting, 1 approved, -1 declined
 }
 
 var (
@@ -92,6 +100,16 @@ func GateDanger(in DangerInput) DangerResult {
 		}
 		return DangerResult{Run: true}
 	}
+	// rm -rf of scratch paths inside the bot's own container (/tmp, a work
+	// dir, a subfolder of home, a relative path below the cwd) is routine
+	// cleanup, e.g. re-cloning a repo: Bot 5 asked 「我需要执行「rm -rf」才能
+	// 继续，可以吗？」 in the middle of a post (10-31). A block still holds it.
+	if label == "rm -rf" && rmScratchOnly(call.Command) {
+		if in.VerdictOK && strings.EqualFold(strings.TrimSpace(in.Verdict), "block") {
+			return holdDanger(in, dangerLabel(label, call))
+		}
+		return DangerResult{Run: true}
+	}
 	if always || mustAsk(in, listed, readonly) {
 		return holdDanger(in, dangerLabel(label, call))
 	}
@@ -106,6 +124,12 @@ func installAsks() bool {
 // shows its package names; any other command is named by its kind so a secret
 // in the command line never reaches the chat.
 func dangerLabel(label string, call DangerCall) string {
+	if label == "rm -rf" {
+		if targets := rmTargets(call.Command); len(targets) > 0 {
+			return "rm:" + strings.Join(targets, "、")
+		}
+		return label
+	}
 	if label != "install" {
 		return label
 	}
@@ -144,6 +168,13 @@ func holdDanger(in DangerInput, label string) DangerResult {
 	ask := ConnectorAsk{Kind: "ask", Text: dangerAskText(label)}
 	if value, ok := dangerHolds.Load(key); ok {
 		held, _ := value.(dangerHold)
+		switch held.answer {
+		case 1:
+			dangerHolds.Delete(key) // one-shot: this run of this command
+			return DangerResult{Run: true}
+		case -1:
+			return DangerResult{Error: DangerDeclinedError}
+		}
 		if !now.Before(held.at.Add(DangerWait)) {
 			return DangerResult{Error: DangerSilenceError}
 		}
@@ -158,7 +189,143 @@ func dangerAskText(label string) string {
 	if label == "" {
 		label = "这一条命令"
 	}
-	return "我需要执行「" + label + "」才能继续，可以吗？"
+	if paths, ok := strings.CutPrefix(label, "rm:"); ok {
+		return "我想把 " + paths + " 整个删掉再继续，可以吗？"
+	}
+	if label == "这一条命令" {
+		return "我想在桌面上跑一条命令，可能会改动东西，先问你一下，可以吗？"
+	}
+	return "我想执行「" + label + "」再继续，可以吗？"
+}
+
+// rmTargets are the paths of every rm -rf in command, a secret-looking one
+// (key=value, a long token) shortened so it never reaches the chat.
+func rmTargets(cmd string) []string {
+	var out []string
+	for _, seg := range splitShell(cmd) {
+		if !rmRecursiveForce(seg) {
+			continue
+		}
+		fields := strings.Fields(seg)
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "-") {
+				continue
+			}
+			out = append(out, redactPath(strings.Trim(f, `"'`)))
+		}
+	}
+	return out
+}
+
+func redactPath(p string) string {
+	if strings.Contains(p, "=") {
+		return "…"
+	}
+	parts := strings.Split(p, "/")
+	for i, part := range parts {
+		if len(part) >= 24 && !strings.ContainsAny(part, ".-_ ") {
+			parts[i] = "…"
+		}
+	}
+	return strings.Join(parts, "/")
+}
+
+// rmScratchOnly: every rm -rf target is a scratch path in the container.
+func rmScratchOnly(cmd string) bool {
+	any := false
+	for _, seg := range splitShell(cmd) {
+		if !rmRecursiveForce(seg) {
+			continue
+		}
+		fields := strings.Fields(seg)
+		targets := 0
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "-") {
+				continue
+			}
+			targets++
+			if !rmScratchPath(strings.Trim(f, `"'`)) {
+				return false
+			}
+		}
+		if targets == 0 {
+			return false
+		}
+		any = true
+	}
+	return any
+}
+
+var rmScratchRoots = []string{"/tmp/", "/var/tmp/", "/root/work/", "/root/tmp/", "/workspace/", "~/", "$HOME/", "/root/"}
+
+var rmSystemUnderRoot = []string{".ssh", ".config", ".local", ".cache/chromium", ".mozilla", ".gnupg", "Desktop", "素材", "chrome", "browser"}
+
+func rmScratchPath(p string) bool {
+	if p == "" || strings.Contains(p, "..") || strings.Contains(p, "`") {
+		return false
+	}
+	if strings.Contains(p, "$") && !strings.HasPrefix(p, "$HOME/") {
+		return false
+	}
+	clean := strings.TrimRight(p, "/")
+	if !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, "$") {
+		// relative to the cwd: a named subfolder, not . or *
+		return clean != "" && clean != "." && !strings.HasPrefix(clean, "*")
+	}
+	for _, root := range rmScratchRoots {
+		if !strings.HasPrefix(clean+"/", root) || len(clean)+1 <= len(root) {
+			continue
+		}
+		rest := strings.TrimPrefix(clean+"/", root)
+		if strings.HasPrefix(rest, "*") {
+			return false
+		}
+		if root == "~/" || root == "$HOME/" || root == "/root/" {
+			for _, keep := range rmSystemUnderRoot {
+				if strings.HasPrefix(rest, keep+"/") || strings.HasPrefix(rest, keep) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// AnswerDanger records the person's 确认 (yes) or 拒绝 for every held command
+// whose key starts with prefix and still waits. It reports how many it
+// answered.
+func AnswerDanger(prefix string, yes bool, now time.Time) int {
+	if now.IsZero() {
+		now = DangerNow()
+	}
+	n := 0
+	dangerHolds.Range(func(k, v any) bool {
+		key, _ := k.(string)
+		held, _ := v.(dangerHold)
+		if strings.HasPrefix(key, prefix) && held.answer == 0 && now.Before(held.at.Add(DangerWait)) {
+			held.answer = -1
+			if yes {
+				held.answer = 1
+			}
+			dangerHolds.Store(key, held)
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// DangerAnswer reads a short chat reply as yes/no to a held ask.
+func DangerAnswer(text string) (yes, ok bool) {
+	t := strings.ToLower(strings.Trim(strings.TrimSpace(text), "。.!！~ "))
+	switch t {
+	case "确认", "確認", "可以", "同意", "好", "好的", "行", "执行", "继续", "yes", "y", "ok", "okay", "approve":
+		return true, true
+	case "拒绝", "拒絕", "不行", "不要", "不可以", "不同意", "取消", "别", "no", "n", "deny", "decline":
+		return false, true
+	}
+	return false, false
 }
 
 // NoteDangerAsk stores the first ask for each key. A later ask does not replace it.
@@ -212,6 +379,19 @@ func ApplyDangerAsk(metadata map[string]string, keys ...string) {
 		kind = "ask"
 	}
 	metadata["send_to_user_kind"] = kind
+	ApplyConfirmButtons(metadata)
+}
+
+// ApplyConfirmButtons puts 确认 / 拒绝 under a yes/no ask that has no
+// choices of its own (guiapp renders ask_user_options_json as buttons).
+func ApplyConfirmButtons(metadata map[string]string) {
+	if metadata == nil || strings.TrimSpace(metadata["send_to_user_kind"]) != "ask" || strings.TrimSpace(metadata["ask_user_options_json"]) != "" {
+		return
+	}
+	if strings.TrimSpace(metadata["ask_user_question"]) == "" {
+		metadata["ask_user_question"] = metadata["send_to_user"]
+	}
+	metadata["ask_user_options_json"] = `["确认","拒绝"]`
 }
 
 func classifyDanger(call DangerCall) (label string, always, listed, readonly bool) {

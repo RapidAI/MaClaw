@@ -517,7 +517,7 @@ describe('DesktopBotWorkspace', () => {
         // Nothing has been sent, so nothing is occupied: the turn is still
         // this person's to start.
         expect(sendTask).not.toHaveBeenCalled();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
     });
 
     it('sends your own words when you choose them', async () => {
@@ -742,7 +742,7 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByText('北京今天晴，25 度。')).toBeTruthy();
         // The accepted-task reply stays in the history; the result is its own bubble.
         expect(screen.getByText(told('帮我看看北京天气'))).toBeTruthy();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
     });
 
     it('formats a bot reply and keeps the command on the user side', async () => {
@@ -1426,7 +1426,7 @@ describe('DesktopBotWorkspace', () => {
             send_to_user: '已截图',
         });
         expect(await screen.findByText('已截图')).toBeTruthy();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
     });
 
     it('folds a follow-up into the one live run it changes, even when that run is not the first', async () => {
@@ -1901,7 +1901,7 @@ describe('DesktopBotWorkspace', () => {
             desktop_user_control: true,
         });
         expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '你是谁呀?' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
@@ -2801,7 +2801,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getAllByText(ack)).toHaveLength(1);
         expect(sendTask).not.toHaveBeenCalled();
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
         const stored = JSON.parse(localStorage.getItem('maclaw.desktopBotPersona.v1') || '{}') as { alice?: { bot_1?: string } };
         expect(stored.alice?.bot_1).toBe(kept);
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
@@ -2848,7 +2848,7 @@ describe('DesktopBotWorkspace', () => {
         expect(armSchedule).not.toHaveBeenCalled();
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
         expect(screen.queryByText(/记下了/)).toBeNull();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
     });
 
     it('answers a status question from the task query and does not start work', async () => {
@@ -3321,7 +3321,7 @@ describe('DesktopBotWorkspace', () => {
         expect(sendTask).not.toHaveBeenCalled();
         expect(armSchedule).toHaveBeenCalledWith('bot_1', '每分钟问好', 'create', '向用户问好一次。', 1, -1, -1, -1);
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
 
         const report = {
             request_id: 'desktop-bot-sched-task-1-1',
@@ -3508,7 +3508,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByText(answer)).toBeTruthy();
         expect(screen.getByText('你是谁呀?')).toBeTruthy();
         expect(screen.queryByText(/记下了/)).toBeNull();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
     });
 
     it('does not queue a direct reading that forgot the work order', async () => {
@@ -3926,7 +3926,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByRole('tab', { name: '詳情' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: '電腦' })).toBeTruthy();
         expect(screen.getByText('值班 的螢幕')).toBeTruthy();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('有空');
     });
 
     it('shows a retry on the computer card when the desktop picture fails', async () => {
@@ -5607,8 +5607,9 @@ describe('DesktopBotWorkspace', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-open', deferred: true, session_key: 'alice:bot_6' });
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('Bot 6'));
-        expect(await screen.findByText('主 Bot 交代：打开示例网站')).toBeTruthy();
+        // A teammate's brief stays internal: not shown as a relay line.;
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_6', '打开示例网站', 'execute'));
+        expect(screen.queryByText('主 Bot 交代：打开示例网站')).toBeNull();
         expect(claimCross).toHaveBeenCalledWith('bot_6', 'n9');
         expect(armCross).toHaveBeenCalledWith('bot_6', 'n9');
         act(() => {

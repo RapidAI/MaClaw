@@ -67,7 +67,7 @@ func desktopWaitForPerson(ctx context.Context, scope agentruntime.Scope) (string
 	}
 	started := time.Now()
 	log.Printf("[desktop] pause for person reason=%s run=%s", why, scope.RunID)
-	desktopEmitNote(scope, "takeover_pause", "bot", "用户正在操作桌面，Bot 暂停桌面动作，等待用户操作结束")
+	desktopEmitNote(scope, "takeover_pause", "bot", "你在用桌面，我先停一下，等你弄完")
 	for i := 0; ; i++ {
 		wait := desktopPauseIntervals[len(desktopPauseIntervals)-1]
 		if i < len(desktopPauseIntervals) {
@@ -85,7 +85,7 @@ func desktopWaitForPerson(ctx context.Context, scope agentruntime.Scope) (string
 		}
 		if present, _ = desktopPersonPresent(ctx, scope); !present {
 			log.Printf("[desktop] resume after %s run=%s", time.Since(started).Round(time.Second), scope.RunID)
-			desktopEmitNote(scope, "takeover_resume", "bot", "用户已离开桌面，Bot 自动恢复并重新观察画面")
+			desktopEmitNote(scope, "takeover_resume", "bot", "你弄完了，我看一眼现在的页面接着做")
 			return desktopResumeNote, nil
 		}
 	}

@@ -161,3 +161,15 @@ func TestDesktopStepTimeoutWaitsOnALiveSlowPage(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+// The takeover reason shown to the person no longer asks them to press 交还.
+func TestDesktopTakeoverReasonDropsHandBackAsk(t *testing.T) {
+	for in, want := range map[string]string{
+		"标题、正文、4 张图已填好，请点页面右下角红色「发布」按钮，完成后按交还": "标题、正文、4 张图已填好，请点页面右下角红色「发布」按钮",
+		"请扫码登录小红书，登录后点交还。":                     "请扫码登录小红书",
+	} {
+		if got := strings.TrimSpace(desktopHandBackAskRe.ReplaceAllString(in, "")); got != want {
+			t.Errorf("%q -> %q", in, got)
+		}
+	}
+}
