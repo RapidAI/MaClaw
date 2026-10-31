@@ -546,6 +546,10 @@ type IMMessageHandler struct {
 	// workStopClaimClassifier reports whether an assistant reply claims the
 	// running work already stopped. Tests inject it.
 	workStopClaimClassifier func(text string) (bool, error)
+	// anaphoricDeliveryClassifier decides whether a follow-up continues an
+	// earlier mailbox delivery. Tests inject it; production uses the
+	// lightweight model so the decision is semantic, not phrase-based.
+	anaphoricDeliveryClassifier func(text string) (string, error)
 
 	// pendingCapabilityGap stores the result of an async capability gap
 	// resolution (skill search + install) that completed after the response

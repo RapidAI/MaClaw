@@ -1,9 +1,13 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -11,80 +15,64 @@ import (
 )
 
 // A follow-up can point at a recipient without naming the channel: "把重庆的
-// 天气也发给他", "send it to the same address". The classifier reads only that
-// sentence, so it plans the default delivery for the artifact (this chat) and
-// the mail tool is never rendered. Once this session has delivered through a
-// configured mailbox, the deictic send continues that channel. The
-// classification then carries mailbox_send, which is what puts the tool on the
-// surface. The recipient itself stays in conversation history; the model fills
-// it from there, and the send still needs its confirmation.
+// 天气也发给他", "send it to the same address", or the same thought in any
+// other language. The intent classifier reads only that sentence, so it plans
+// the default delivery for the artifact (this chat) and the mail tool is never
+// rendered. Once this session has delivered through a configured mailbox, a
+// follow-up may continue that channel. The decision is semantic, by the
+// lightweight model, not by a phrase list: the wording rules differ between
+// languages and a list would only cover the ones someone remembered to add.
 //
-// This is deliberately narrow: an explicit channel in the sentence ("发邮件",
-// "发微信", "email") is left to the classifier, and history must show both a
-// mailbox send and an address. A deictic send with no such history is not an
-// email.
+// This method only runs when the structural evidence is already present: a
+// trusted managed classification, a fully mapped rule set, and a recent
+// mailbox send with an address in this session's history. The model then
+// answers one question: is this new artifact going to that earlier recipient,
+// or to the current chat / something else. A classifier failure means no
+// rewrite; the model's own petition path remains.
+//
+// The recipient itself stays in conversation history; the model fills it from
+// there, and the send still needs its confirmation.
 
 const (
-	anaphoricDeliveryHistoryWindow = 24
-	anaphoricDeliveryReason        = "anaphoric mailbox delivery"
+	// Count user turns, not raw entries: one tool-heavy turn can add dozens
+	// of tool rows between the send and the follow-up that says "also send it
+	// to him". Six turns is far enough for a continuation and short enough that
+	// an unrelated old send does not keep re-arming the classifier.
+	anaphoricDeliveryUserTurns       = 6
+	anaphoricDeliveryClassifyTimeout = 2 * time.Second
+	anaphoricDeliveryReason          = "anaphoric mailbox delivery"
 )
+
+const anaphoricDeliveryClassifyPrompt = `An earlier turn in this conversation delivered an artifact by email to a recipient. A new message just arrived. Decide where the new artifact of this turn should be delivered. Reply with one JSON object and nothing else: {"deliver":"mailbox"} or {"deliver":"current_chat"}.
+
+mailbox: the message asks to deliver the new result to that earlier email recipient, or to the same address, in any language and any phrasing, including an implicit continuation of that delivery.
+current_chat: the message asks for anything else: delivery to the speaker or to this chat, another channel, a status question about an earlier send, a negation or a correction, or a request that is unclear. If you are unsure, reply current_chat.
+
+Do not explain.`
 
 var (
 	emailAddressPattern = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
-	// A send verb aimed at a person. The object is the artifact this session
-	// just produced, so no channel noun is present. The cues keep the recipient
-	// or the artifact: a bare "也发" also matches "也发现" and "也发生".
-	anaphoricDeliveryCues = []string{
-		"也发给他", "也发给她", "也发给他们", "也发给我", "也发一份", "也发过去",
-		"再发一份", "再发一次", "再发给他", "再发给她", "再发给他们", "再发给我", "再发过去",
-		"发给他", "发给她", "发给他们", "发给我", "发一份", "发过去",
-		"给他发", "给她发", "给他们发", "给我发",
-		"同样发", "照样发", "照这样发",
-		"also send", "send it to him", "send it to her", "send it to them",
-		"send it to me", "send the same", "same address", "same recipient",
-	}
-	// The sentence already names where it goes. The classifier can read that,
-	// and this rewrite must not overwrite an explicit choice.
-	explicitDeliveryChannelCues = []string{
-		"邮箱", "邮件", "email", "e-mail", "mailbox",
-		"微信", "wechat", "qq", "会话", "聊天", "群里", "群聊", "chat",
-		"短信", "消息", "私信", "钉钉", "飞书", "telegram", "whatsapp",
-	}
-	// A negated send is the opposite request. "别发给他" contains the same
-	// deictic phrase as "也发给他", and the plan must not email because of it.
-	// Each entry keeps the object: a bare "别发" also matches "分别发给".
-	anaphoricDeliveryNegations = []string{
-		"别发给他", "别发给她", "别发给他们", "别发给我", "别发过去",
-		"别给他发", "别给她发", "别给他们发", "别给我发",
-		"不要发给他", "不要发给她", "不要发给他们", "不要发给我", "不要发过去",
-		"不要给他发", "不要给她发", "不要给他们发", "不要给我发",
-		"不用发给他", "不用发给她", "不用发给他们", "不用发给我", "不用发过去",
-		"不用给他发", "不用给她发", "不用给他们发", "不用给我发",
-		"不必发给他", "不必发给她", "不必发给他们", "不必发给我",
-		"不必给他发", "不必给她发",
-		"别再发给他", "不要再发给他", "不用再发给他", "不必再发给他",
-		"先别发", "暂时别发", "先别给他发", "先别给她发", "先别给我发",
-		"don't send", "do not send", "no need to send", "not to send",
-	}
-	// A status question about a send that already happened is not a new
-	// delivery: "发给他了吗", "did you send it to him".
-	anaphoricDeliveryStatusCues = []string{
-		"发了吗", "发了没", "发给他了吗", "发给她了吗", "发给他们了吗",
-		"发过去了吗", "发出去了吗", "发出去没", "有没有发", "是否发",
-		"给他发了吗", "给她发了吗", "给他们发了吗", "给我发了吗",
-		"did you send", "have you sent", "was it sent", "has it been sent",
-		"did it get sent",
-	}
 	// The managed surface renders the trusted adapter name; the legacy
 	// catalog and the petition directory use mailbox_send. Both are the same
 	// send, and history may record either.
 	mailboxSendToolNames = []string{"mailbox_send", "semantic_send_trusted_mailbox"}
 )
 
+// mailboxSendAllowed reports this turn's channel policy for the mail tool.
+// A Lansenger group chat allows only its explicit tool list, and the mailbox
+// is not on it. Adding the label there would plan a capability the group
+// filter removes, so the caller skips the rewrite.
+func (c *LoopContext) mailboxSendAllowed() bool {
+	if c == nil || c.LansengerGroupPermissions == nil {
+		return true
+	}
+	return c.LansengerGroupPermissions.allowsTool("mailbox_send")
+}
+
 // semanticAnaphoricMailboxFollowUp appends mailbox_send to a continuation that
 // sends the new artifact to the recipient of an earlier mailbox delivery.
 // Nil means the caller must leave the classification alone.
-func semanticAnaphoricMailboxFollowUp(current *intent.ClassificationResult, userText string, history []agent.ConversationEntry) *intent.ClassificationResult {
+func (h *IMMessageHandler) semanticAnaphoricMailboxFollowUp(current *intent.ClassificationResult, sessionKey, userText string, history []agent.ConversationEntry) *intent.ClassificationResult {
 	// A degraded or low-confidence verdict is not a managed plan at all; the
 	// label would grant nothing, and the model's petition path remains. Do not
 	// manufacture authority from a classification the host did not trust.
@@ -112,10 +100,24 @@ func semanticAnaphoricMailboxFollowUp(current *intent.ClassificationResult, user
 	if isGoalSystemContinuation(userText) || isSessionRoundContinuation(userText) {
 		return nil
 	}
-	if !anaphoricRecipientDeliveryText(userText) {
+	if strings.TrimSpace(userText) == "" {
 		return nil
 	}
-	if !historyCarriesMailboxDelivery(history, anaphoricDeliveryHistoryWindow) {
+	// A pending mailbox draft already owns the next email send for this
+	// session. The turn should resolve that draft (confirm or cancel), not arm
+	// a second one; a new draft would replace the pending question.
+	if h.peekMailboxDraftID(sessionKey) != "" {
+		return nil
+	}
+	if !historyCarriesMailboxDelivery(history, anaphoricDeliveryUserTurns) {
+		return nil
+	}
+	delivery, err := h.classifyAnaphoricDelivery(sessionKey, userText)
+	if err != nil {
+		log.Printf("[anaphoric-delivery] verdict unavailable user=%q err=%v", sessionKey, err)
+		return nil
+	}
+	if delivery != "mailbox" {
 		return nil
 	}
 	out := *current
@@ -131,51 +133,98 @@ func semanticAnaphoricMailboxFollowUp(current *intent.ClassificationResult, user
 	return &out
 }
 
-func anaphoricRecipientDeliveryText(text string) bool {
-	raw := strings.ToLower(strings.TrimSpace(text))
-	if raw == "" {
-		return false
+func (h *IMMessageHandler) classifyAnaphoricDelivery(sessionKey, text string) (string, error) {
+	if h == nil {
+		return "", fmt.Errorf("handler not initialized")
 	}
-	// Chinese has no word boundary, so "别发给他" also sits inside
-	// "分别发给他", which is a send. Drop the benign 别-compounds before the
-	// negation scan; the positive scan still sees the deictic send.
-	negationScan := raw
-	for _, benign := range []string{"分别", "特别", "区别", "类别"} {
-		negationScan = strings.ReplaceAll(negationScan, benign, "")
+	if h.anaphoricDeliveryClassifier != nil {
+		raw, err := h.anaphoricDeliveryClassifier(text)
+		if err != nil {
+			return "", err
+		}
+		return parseAnaphoricDelivery(raw)
 	}
-	if containsAnyMarker(negationScan, anaphoricDeliveryNegations) {
-		return false
+	ctx, cancel := context.WithTimeout(context.Background(), anaphoricDeliveryClassifyTimeout)
+	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "anaphoric-delivery", OwnerID: sessionKey})
+	result, err := h.LLMClassify(ctx, LLMClassifyRequest{
+		SystemPrompt:      anaphoricDeliveryClassifyPrompt,
+		UserMessage:       truncateRunes(strings.TrimSpace(text), 500),
+		TimeoutSec:        2,
+		Tag:               "anaphoric-delivery",
+		Role:              maclawLLMRoleForeground,
+		PreferLightweight: true,
+		NoThinking:        true,
+		MaxOutputTokens:   30,
+	})
+	if err != nil {
+		return "", err
 	}
-	if containsAnyMarker(raw, anaphoricDeliveryStatusCues) {
-		return false
+	if result == nil || strings.TrimSpace(result.Text) == "" {
+		return "", fmt.Errorf("empty anaphoric delivery classification")
 	}
-	if containsAnyMarker(raw, explicitDeliveryChannelCues) {
-		return false
+	return parseAnaphoricDelivery(result.Text)
+}
+
+func parseAnaphoricDelivery(raw string) (string, error) {
+	text := strings.TrimSpace(raw)
+	text = strings.TrimPrefix(text, "```json")
+	text = strings.TrimPrefix(text, "```")
+	text = strings.TrimSuffix(text, "```")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", fmt.Errorf("empty anaphoric delivery")
 	}
-	return containsAnyMarker(raw, anaphoricDeliveryCues)
+	var payload struct {
+		Deliver string `json:"deliver"`
+	}
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		start := strings.Index(text, "{")
+		end := strings.LastIndex(text, "}")
+		if start >= 0 && end > start {
+			_ = json.Unmarshal([]byte(text[start:end+1]), &payload)
+		}
+	}
+	deliver := strings.ToLower(strings.TrimSpace(payload.Deliver))
+	if deliver == "" {
+		// A non-reasoning model sometimes answers with the bare word, with or
+		// without a trailing period.
+		deliver = strings.Trim(strings.ToLower(text), " \t\r\n.。!！")
+	}
+	switch deliver {
+	case "mailbox":
+		return "mailbox", nil
+	case "current_chat", "chat", "none", "current":
+		return "current_chat", nil
+	default:
+		return "", fmt.Errorf("unrecognized anaphoric delivery %q", truncateRunes(text, 80))
+	}
 }
 
 // historyCarriesMailboxDelivery reports a recent mailbox send and an address
-// in the same window. The address is what "他" can resolve to; a mailbox call
-// without one cannot name a recipient for this turn.
-func historyCarriesMailboxDelivery(history []agent.ConversationEntry, window int) bool {
+// in the same window. The address is what an anaphoric recipient can resolve
+// to; a mailbox call without one cannot name a recipient for this turn.
+func historyCarriesMailboxDelivery(history []agent.ConversationEntry, userTurns int) bool {
 	if len(history) == 0 {
 		return false
 	}
-	start := len(history) - window
-	if window <= 0 || start < 0 {
-		start = 0
-	}
 	sent := false
 	addressed := false
-	for i := len(history) - 1; i >= start; i-- {
+	seenUsers := 0
+	for i := len(history) - 1; i >= 0; i-- {
 		entry := history[i]
+		role := strings.ToLower(strings.TrimSpace(entry.Role))
+		if role == "user" && !entry.HostContinuation {
+			seenUsers++
+			if seenUsers > userTurns {
+				break
+			}
+		}
 		if conversationEntrySentMail(entry) {
 			sent = true
 		}
 		// Only the person's own words and the model's calls can name the
 		// recipient. A web result can contain an address that is not one.
-		role := strings.ToLower(strings.TrimSpace(entry.Role))
 		if !addressed && (role == "user" || role == "assistant") && emailAddressPattern.MatchString(conversationEntrySearchText(entry)) {
 			addressed = true
 		}

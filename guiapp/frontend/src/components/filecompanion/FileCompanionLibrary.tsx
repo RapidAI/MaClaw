@@ -21,11 +21,11 @@ import {
     FileCompanionExportProject,
 } from "../../../wailsjs/go/main/App";
 import { useDialog } from "../CustomDialog";
+import { companionProjectMarksJSON, savePdfBookmarks } from "./pdfBookmarks";
 import { loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
-import { loadChatMarks, saveChatMarks } from "./chatMarks";
-import { loadPdfAnnotations } from "./pdfTranslations";
+import { saveChatMarks } from "./chatMarks";
 import { savePdfTranslations } from "./pdfTranslations";
-import { loadPdfDrawings, savePdfDrawings } from "./pdfDrawings";
+import { savePdfDrawings } from "./pdfDrawings";
 
 export type CompanionLibraryItem = {
     id: string;
@@ -61,6 +61,8 @@ export type CompanionLibraryItem = {
     annotations?: string;
     // drawings is the same import-only value for freehand marks.
     drawings?: string;
+    // bookmarks is the same import-only value for named places on the paper.
+    bookmarks?: string;
     // Notes are other readers' discussion carried on each cloud row.
     notes: CompanionShareNote[];
     // token is the share identity on the hub. A cloud row's id is the token,
@@ -105,6 +107,10 @@ export type CompanionShareUpdate = {
     // drawings is the host's freehand strokes, optional for the same reason.
     drawings: string;
     drawingsKnown: boolean;
+    // bookmarks is the host's named places, optional so a legacy project
+    // leaves this reader's bookmarks alone.
+    bookmarks: string;
+    bookmarksKnown: boolean;
     messages: unknown[];
     project: boolean;
     replaceMessages: boolean;
@@ -240,6 +246,7 @@ function readItem(raw: unknown): CompanionLibraryItem | null {
         chatMarks: textOf(record, "chatMarks", "ChatMarks"),
         annotations: textOf(record, "annotations", "Annotations"),
         drawings: textOf(record, "drawings", "Drawings"),
+        bookmarks: textOf(record, "bookmarks", "Bookmarks"),
         notes: companionNotesFrom(record.notes ?? record.Notes),
         token: textOf(record, "token", "Token") || (id.startsWith("cd_") ? id : ""),
     };
@@ -397,6 +404,8 @@ function readUpdates(raw: unknown): CompanionShareUpdate[] {
         const annotations = record.annotations ?? record.Annotations;
         const hasDrawings = Object.prototype.hasOwnProperty.call(record, "drawings") || Object.prototype.hasOwnProperty.call(record, "Drawings");
         const drawings = record.drawings ?? record.Drawings;
+        const hasBookmarks = Object.prototype.hasOwnProperty.call(record, "bookmarks") || Object.prototype.hasOwnProperty.call(record, "Bookmarks");
+        const bookmarks = record.bookmarks ?? record.Bookmarks;
         return {
             path,
             highlights: textOf(record, "highlights", "Highlights"),
@@ -406,6 +415,8 @@ function readUpdates(raw: unknown): CompanionShareUpdate[] {
             annotationsKnown: hasAnnotations,
             drawings: typeof drawings === "string" ? drawings : "",
             drawingsKnown: hasDrawings,
+            bookmarks: typeof bookmarks === "string" ? bookmarks : "",
+            bookmarksKnown: hasBookmarks,
             messages: Array.isArray(messages) ? messages : [],
             project: boolOf(record, "project", "Project"),
             replaceMessages: hasMessages,
@@ -965,12 +976,7 @@ export function CompanionLibraryView({
     // Every reader mark travels together: PDF highlights and freehand marks on
     // the paper, answer highlights on the chat, and placed notes. One payload
     // keeps them on one revision.
-    const marksJSONOf = (path: string): string => JSON.stringify({
-        highlights: loadPdfMarks(path) || [],
-        chatMarks: loadChatMarks(path),
-        annotations: loadPdfAnnotations(path),
-        drawings: loadPdfDrawings(path),
-    });
+    const marksJSONOf = (path: string): string => companionProjectMarksJSON(path);
 
     const syncRow = async (item: CompanionLibraryItem) => {
         if (!item.path || rowBusy[item.id]) return;
@@ -1052,6 +1058,7 @@ export function CompanionLibraryView({
                         savePdfMarks(path, []);
                         savePdfTranslations(path, []);
                         savePdfDrawings(path, []);
+                        savePdfBookmarks(path, []);
                         saveChatMarks(path, []);
                         onProjectDeleted?.(path);
                     }
@@ -1918,7 +1925,7 @@ export function CompanionShareDialog({
     // per render and both actions send the same string. Answer highlights
     // travel with the paper highlights so one revision carries both.
     const marks = loadPdfMarks(path);
-    const marksJSON = JSON.stringify({ highlights: marks, chatMarks: loadChatMarks(path), annotations: loadPdfAnnotations(path), drawings: loadPdfDrawings(path) });
+    const marksJSON = companionProjectMarksJSON(path);
     const highlightsCount = marks.length;
 
     const shareCurrent = async () => {
@@ -2338,6 +2345,8 @@ export function CompanionImportDialog({
                     annotationsKnown: Boolean(imported.annotations),
                     drawings: imported.drawings ?? "",
                     drawingsKnown: Boolean(imported.drawings),
+                    bookmarks: imported.bookmarks ?? "",
+                    bookmarksKnown: Boolean(imported.bookmarks),
                     messages: [],
                     project: true,
                     replaceMessages: false,

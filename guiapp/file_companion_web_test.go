@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestFileCompanionYouTubeFrameIsEmbed(t *testing.T) {
@@ -1244,6 +1246,403 @@ func TestFileCompanionWebFollowUpUsesNoteExcerpt(t *testing.T) {
 	if strings.Contains(second, marker) || strings.Contains(second, "已生成的笔记摘录") {
 		t.Fatal("regenerating a web note attached the old note")
 	}
+}
+
+func TestFileCompanionWebCancelLeavesTheChat(t *testing.T) {
+	app := newVideoNoteTestApp(t)
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	opened, err := app.FileCompanionOpenWebPage("https://example.com/watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := opened.SessionID
+	if sessionID == "" {
+		t.Fatal("missing session")
+	}
+	userID := "file-companion:" + sessionID
+	if err := app.ensureFileCompanionHandler(userID, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	app.imHandler.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "上一问"},
+		{Role: "assistant", Content: "旧回答"},
+	})
+	gen := app.fileCompanionChatGen(userID)
+	if err := app.CancelFileCompanionWebGeneration(sessionID, "req-web"); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.fileCompanionChatGen(userID); got != gen {
+		t.Fatalf("chat gen %d -> %d", gen, got)
+	}
+	loaded := app.imHandler.memory.Load(userID)
+	if len(loaded) != 2 || loaded[0].Content != "上一问" || loaded[1].Content != "旧回答" {
+		t.Fatalf("memory = %#v", loaded)
+	}
+	if !app.fileCompanionChatStopped("req-web") {
+		t.Fatal("cancel did not mark the request")
+	}
+	if app.fileCompanionChatStopped("req-next") {
+		t.Fatal("cancel marked a later request")
+	}
+	if err := app.CancelFileCompanionWebGeneration("", "req-empty"); err != nil {
+		t.Fatal(err)
+	}
+	if app.fileCompanionChatStopped("req-empty") {
+		t.Fatal("an unknown session marked a request")
+	}
+}
+
+func TestFileCompanionWebCancelBeforeTheNoteStartsWritesNothing(t *testing.T) {
+	app := newVideoNoteTestApp(t)
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	opened, err := app.FileCompanionOpenWebPage("https://example.com/watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevCap := fileCompanionWebCaptureHook
+	prevModel := fileCompanionNoteModelHook
+	prevASR := fileCompanionNoteASRHook
+	prevOCR := fileCompanionNoteOCRStateHook
+	fileCompanionWebCaptureHook = func() ([]webNoteShot, []byte, bool) {
+		t.Error("cancelled note captured")
+		return nil, nil, true
+	}
+	fileCompanionNoteModelHook = func(fileCompanionNoteModelRequest) *IMAgentResponse {
+		t.Error("cancelled note called the model")
+		return &IMAgentResponse{Text: "不该写"}
+	}
+	t.Cleanup(func() {
+		fileCompanionWebCaptureHook = prevCap
+		fileCompanionNoteModelHook = prevModel
+		fileCompanionNoteASRHook = prevASR
+		fileCompanionNoteOCRStateHook = prevOCR
+	})
+	if err := app.CancelFileCompanionWebGeneration(opened.SessionID, "req-early"); err != nil {
+		t.Fatal(err)
+	}
+	err = app.SendFileCompanionWebMessage(FileCompanionWebTurnRequest{
+		SessionID: opened.SessionID, Text: "记笔记", Purpose: "video-note", RequestID: "req-early", RectW: 960, RectH: 540,
+	})
+	if err == nil || !strings.Contains(err.Error(), fileCompanionErrNoteCancelled) {
+		t.Fatalf("early cancel = %v", err)
+	}
+	if md := app.fileCompanionFindNoteMarkdown(opened.SessionID); md != "" {
+		if _, statErr := os.Stat(md); statErr == nil {
+			t.Fatal("early cancel wrote a note")
+		}
+	}
+	app.fileCompanionSetWebNotePhase(opened.SessionID, webNotePhaseRecording)
+	if err := app.CancelFileCompanionWebGeneration(opened.SessionID, "req-rec"); err != nil {
+		t.Fatal(err)
+	}
+	st := app.companionRuntime()
+	st.noteMu.Lock()
+	armed := len(st.noteStopped[opened.SessionID])
+	st.noteMu.Unlock()
+	if armed != 0 {
+		t.Fatalf("recording cancel armed %d note stops", armed)
+	}
+	app.fileCompanionSetWebNotePhase(opened.SessionID, webNotePhaseIdle)
+
+	fileCompanionWebCaptureHook = func() ([]webNoteShot, []byte, bool) {
+		return []webNoteShot{{At: 0, Gray: bytesRepeat(40, 256), JPEG: tinyNoteJPEG(t)}}, tinyPCMWav(1), false
+	}
+	fileCompanionNoteASRHook = func([]byte) (string, error) { return "讲完了", nil }
+	fileCompanionNoteOCRStateHook = func() (bool, bool) { return false, false }
+	fileCompanionNoteModelHook = func(fileCompanionNoteModelRequest) *IMAgentResponse {
+		return &IMAgentResponse{Text: "## 概要\n写出来\n## 章节\n00:00 开始\n## 要点\n00:00 一点\n## 金句\n00:00 「话」\n## 不确定的地方\n无\n"}
+	}
+	if err := app.SendFileCompanionWebMessage(FileCompanionWebTurnRequest{
+		SessionID: opened.SessionID, Text: "记笔记", Purpose: "video-note", RequestID: "req-next", RectW: 960, RectH: 540,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := readWebNote(t, app, opened.SessionID)
+	if !strings.Contains(body, "写出来") {
+		t.Fatalf("later note = %s", body)
+	}
+}
+
+func TestFileCompanionNoteCancelStaysOnItsRequest(t *testing.T) {
+	app := &App{}
+	const session = "sess-note"
+
+	ctxLive, cancelLive := app.fileCompanionBeginNote(session, context.Background(), "req-live")
+	app.fileCompanionMarkNoteStopped(session, "req-other")
+	if ctxLive.Err() != nil {
+		t.Fatal("cancel of another request stopped the live note")
+	}
+	if !noteStopContains(app, session, "req-other") {
+		t.Fatal("cancel of another request was forgotten")
+	}
+	if noteStopContains(app, session, "req-live") {
+		t.Fatal("the live note was marked stopped")
+	}
+	ctxOther, cancelOther := app.fileCompanionBeginNote(session, context.Background(), "req-other")
+	if ctxOther.Err() == nil {
+		t.Fatal("late begin of the cancelled request ran")
+	}
+	if ctxLive.Err() != nil {
+		t.Fatal("late begin replaced the live note")
+	}
+	app.fileCompanionEndNote(session, "req-other", cancelOther)
+	st := app.companionRuntime()
+	st.noteMu.Lock()
+	live := ""
+	if st.noteCancelID != nil {
+		live = st.noteCancelID[session]
+	}
+	st.noteMu.Unlock()
+	if live != "req-live" {
+		t.Fatalf("live id = %q", live)
+	}
+
+	app.fileCompanionMarkNoteStopped(session, "req-live")
+	if ctxLive.Err() == nil {
+		t.Fatal("matching cancel left the live note running")
+	}
+	if noteStopContains(app, session, "req-live") || noteStopContains(app, session, "req-other") {
+		t.Fatal("matching cancel left a stop mark")
+	}
+	app.fileCompanionEndNote(session, "req-live", cancelLive)
+
+	app.fileCompanionMarkNoteStopped(session, "req-a")
+	app.fileCompanionMarkNoteStopped(session, "req-b")
+	ctxA, cancelA := app.fileCompanionBeginNote(session, context.Background(), "req-a")
+	ctxB, cancelB := app.fileCompanionBeginNote(session, context.Background(), "req-b")
+	if ctxA.Err() == nil || ctxB.Err() == nil {
+		t.Fatal("a second cancel erased the first")
+	}
+	ctxC, cancelC := app.fileCompanionBeginNote(session, context.Background(), "req-c")
+	if ctxC.Err() != nil {
+		t.Fatal("two cancels stopped a later request")
+	}
+	app.fileCompanionEndNote(session, "req-a", cancelA)
+	app.fileCompanionEndNote(session, "req-b", cancelB)
+	if ctxC.Err() != nil {
+		t.Fatal("ending a cancelled request stopped the later note")
+	}
+	app.fileCompanionEndNote(session, "req-c", cancelC)
+
+	app.fileCompanionMarkNoteStopped(session, "req-early")
+	ctxEarly, cancelEarly := app.fileCompanionBeginNote(session, context.Background(), "req-early")
+	if ctxEarly.Err() == nil {
+		t.Fatal("pre-begin cancel did not stop that request")
+	}
+	ctxNext, cancelNext := app.fileCompanionBeginNote(session, context.Background(), "req-next")
+	if ctxNext.Err() != nil {
+		t.Fatal("pre-begin cancel stopped a later request")
+	}
+	app.fileCompanionEndNote(session, "req-early", cancelEarly)
+	if ctxNext.Err() != nil {
+		t.Fatal("ending the stopped request cancelled the later note")
+	}
+	st.noteMu.Lock()
+	live = ""
+	if st.noteCancelID != nil {
+		live = st.noteCancelID[session]
+	}
+	hasCancel := st.noteCancel != nil && st.noteCancel[session] != nil
+	st.noteMu.Unlock()
+	if live != "req-next" || !hasCancel {
+		t.Fatalf("later note lost: id=%q cancel=%v", live, hasCancel)
+	}
+	app.fileCompanionEndNote(session, "req-next", cancelNext)
+
+	app.fileCompanionMarkNoteStopped(session, "req-armed")
+	ctxKeep, cancelKeep := app.fileCompanionBeginNote(session, context.Background(), "req-keep")
+	ctxArmed, cancelArmed := app.fileCompanionBeginNote(session, context.Background(), "req-armed")
+	if ctxArmed.Err() == nil {
+		t.Fatal("armed request started")
+	}
+	if ctxKeep.Err() != nil {
+		t.Fatal("armed request replaced the live note")
+	}
+	app.fileCompanionEndNote(session, "req-armed", cancelArmed)
+	if ctxKeep.Err() != nil {
+		t.Fatal("ending the armed request cancelled the live note")
+	}
+	app.fileCompanionEndNote(session, "req-keep", cancelKeep)
+	st.noteMu.Lock()
+	_, still := st.noteCancel[session]
+	st.noteMu.Unlock()
+	if still {
+		t.Fatal("ending the live note left its cancel")
+	}
+
+	ctxAny, cancelAny := app.fileCompanionBeginNote(session, context.Background(), "req-any")
+	app.fileCompanionMarkNoteStopped(session, "")
+	if ctxAny.Err() == nil {
+		t.Fatal("empty request id left the live note running")
+	}
+	if noteStopContains(app, session, "req-any") {
+		t.Fatal("empty request id armed a note stop")
+	}
+	app.fileCompanionEndNote(session, "req-any", cancelAny)
+}
+
+func noteStopContains(app *App, sessionID, requestID string) bool {
+	st := app.companionRuntime()
+	st.noteMu.Lock()
+	defer st.noteMu.Unlock()
+	_, ok := st.noteStopped[sessionID][requestID]
+	return ok
+}
+
+func TestFileCompanionWebCancelLeavesAnotherNote(t *testing.T) {
+	app := newVideoNoteTestApp(t)
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	opened, err := app.FileCompanionOpenWebPage("https://example.com/watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := opened.SessionID
+	noteCtx, noteCancel := app.fileCompanionBeginNote(sessionID, context.Background(), "req-note")
+	defer app.fileCompanionEndNote(sessionID, "req-note", noteCancel)
+	capCtx, capCancel := app.fileCompanionBeginWebCapture(sessionID, noteCtx, 3, "req-note")
+	defer app.fileCompanionEndWebCapture(sessionID, "req-note", capCancel)
+	app.fileCompanionSetWebNotePhase(sessionID, webNotePhaseRecording)
+	defer app.fileCompanionSetWebNotePhase(sessionID, webNotePhaseIdle)
+
+	if err := app.CancelFileCompanionWebGeneration(sessionID, "req-chat"); err != nil {
+		t.Fatal(err)
+	}
+	if noteCtx.Err() != nil || capCtx.Err() != nil {
+		t.Fatal("chat cancel stopped the recording note")
+	}
+	if !noteStopContains(app, sessionID, "req-chat") {
+		t.Fatal("chat cancel was forgotten")
+	}
+	if noteStopContains(app, sessionID, "req-note") {
+		t.Fatal("chat cancel marked the live note")
+	}
+	if err := app.CancelFileCompanionWebGeneration(sessionID, "req-note"); err != nil {
+		t.Fatal(err)
+	}
+	if capCtx.Err() == nil {
+		t.Fatal("note cancel left the recording running")
+	}
+	if noteCtx.Err() != nil {
+		t.Fatal("recording cancel dropped the note")
+	}
+	app.fileCompanionSetWebNotePhase(sessionID, webNotePhaseWriting)
+	if err := app.CancelFileCompanionWebGeneration(sessionID, "req-chat"); err != nil {
+		t.Fatal(err)
+	}
+	if noteCtx.Err() != nil {
+		t.Fatal("chat cancel during writing dropped the note")
+	}
+	if err := app.CancelFileCompanionWebGeneration(sessionID, "req-note"); err != nil {
+		t.Fatal(err)
+	}
+	if noteCtx.Err() == nil {
+		t.Fatal("writing cancel left the note running")
+	}
+}
+
+func TestFileCompanionStoppedWebNoteLeavesTheLiveRecording(t *testing.T) {
+	app := newVideoNoteTestApp(t)
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	opened, err := app.FileCompanionOpenWebPage("https://example.com/watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := opened.SessionID
+	liveCtx, liveCancel := app.fileCompanionBeginNote(sessionID, context.Background(), "req-live")
+	defer app.fileCompanionEndNote(sessionID, "req-live", liveCancel)
+	capCtx, capCancel := app.fileCompanionBeginWebCapture(sessionID, liveCtx, 4, "req-live")
+	defer app.fileCompanionEndWebCapture(sessionID, "req-live", capCancel)
+	app.fileCompanionSetWebNotePhase(sessionID, webNotePhaseRecording)
+	defer app.fileCompanionSetWebNotePhase(sessionID, webNotePhaseIdle)
+	work := filepath.Join(app.GetDataDir(), "file-companion", "work", sessionID)
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(work, "keep.txt")
+	if err := os.WriteFile(keep, []byte("live"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := fileCompanionWebCaptureHook
+	fileCompanionWebCaptureHook = func() ([]webNoteShot, []byte, bool) {
+		t.Error("stopped note started a capture")
+		return nil, nil, true
+	}
+	t.Cleanup(func() { fileCompanionWebCaptureHook = prev })
+	app.fileCompanionMarkNoteStopped(sessionID, "req-late")
+	err = app.FileCompanionWebNote(FileCompanionWebNoteRequest{
+		URL: "https://example.com/watch", SessionID: sessionID, RequestID: "req-late", RectW: 960, RectH: 540, CaptureEpoch: 9,
+	})
+	if err == nil || !strings.Contains(err.Error(), fileCompanionErrNoteCancelled) {
+		t.Fatalf("stopped note = %v", err)
+	}
+	if liveCtx.Err() != nil || capCtx.Err() != nil {
+		t.Fatal("stopped note tore down the live recording")
+	}
+	if phase := app.fileCompanionWebNotePhase(sessionID); phase != webNotePhaseRecording {
+		t.Fatalf("phase = %d", phase)
+	}
+	body, err := os.ReadFile(keep)
+	if err != nil || string(body) != "live" {
+		t.Fatalf("work file = %q %v", body, err)
+	}
+	canonical := filepath.Join(t.TempDir(), "clip.mp4")
+	localSession := fileCompanionSessionID(canonical)
+	localCtx, localCancel := app.fileCompanionBeginNote(localSession, context.Background(), "req-local-live")
+	defer app.fileCompanionEndNote(localSession, "req-local-live", localCancel)
+	localWork := filepath.Join(app.GetDataDir(), "file-companion", "work", localSession)
+	if err := os.MkdirAll(localWork, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localKeep := filepath.Join(localWork, "keep.txt")
+	if err := os.WriteFile(localKeep, []byte("live"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.fileCompanionMarkNoteStopped(localSession, "req-local")
+	err = app.fileCompanionRunVideoNote(canonical, canonical, FileCompanionTurnRequest{RequestID: "req-local", Text: "记笔记"})
+	if err == nil || !strings.Contains(err.Error(), fileCompanionErrNoteCancelled) {
+		t.Fatalf("stopped local note = %v", err)
+	}
+	if localCtx.Err() != nil {
+		t.Fatal("stopped local note cancelled the live note")
+	}
+	body, err = os.ReadFile(localKeep)
+	if err != nil || string(body) != "live" {
+		t.Fatalf("local work file = %q %v", body, err)
+	}
+}
+
+func TestFileCompanionEndWebCaptureKeepsTheNewerAttempt(t *testing.T) {
+	app := &App{}
+	const session = "sess-cap"
+	ctx1, cancel1 := app.fileCompanionBeginWebCapture(session, context.Background(), 1, "req-1")
+	ctx2, cancel2 := app.fileCompanionBeginWebCapture(session, context.Background(), 2, "req-2")
+	if ctx1.Err() == nil {
+		t.Fatal("the new capture left the previous one running")
+	}
+	app.fileCompanionEndWebCapture(session, "req-1", cancel1)
+	if ctx2.Err() != nil {
+		t.Fatal("ending the previous capture cancelled the new one")
+	}
+	if _, matched := app.fileCompanionStopWebCapture(session, 2); !matched || ctx2.Err() == nil {
+		t.Fatal("stop missed the live capture")
+	}
+	app.fileCompanionEndWebCapture(session, "req-2", cancel2)
 }
 
 func bytesRepeat(b byte, n int) []byte {

@@ -1357,6 +1357,14 @@ export function CancelFileCompanionTurn(arg1) {
   return window['go']['main']['App']['CancelFileCompanionTurn'](arg1);
 }
 
+export function CancelFileCompanionGeneration(arg1, arg2) {
+  return window['go']['main']['App']['CancelFileCompanionGeneration'](arg1, arg2);
+}
+
+export function CancelFileCompanionWebGeneration(arg1, arg2) {
+  return window['go']['main']['App']['CancelFileCompanionWebGeneration'](arg1, arg2);
+}
+
 export function CancelFileCompanionWebTurn(arg1, arg2) {
   return window['go']['main']['App']['CancelFileCompanionWebTurn'](arg1, arg2);
 }
@@ -1531,6 +1539,10 @@ export function SaveCompanionPdfMarks(arg1, arg2) {
 
 export function SaveCompanionPdfDrawings(arg1, arg2) {
   return window['go']['main']['App']['SaveCompanionPdfDrawings'](arg1, arg2);
+}
+
+export function SaveCompanionPdfBookmarks(arg1, arg2) {
+  return window['go']['main']['App']['SaveCompanionPdfBookmarks'](arg1, arg2);
 }
 
 export function SaveCompanionPdfTranslations(arg1, arg2) {

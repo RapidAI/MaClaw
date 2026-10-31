@@ -167,6 +167,44 @@ func TestAdoptLateTreeSemanticIntentUsesCachedSearch(t *testing.T) {
 	}
 }
 
+func TestAdoptLateTreeSemanticIntentKeepsInFlightQueryVector(t *testing.T) {
+	uic := semanticClassifierForLabel(t, intent.LabelSearch)
+	text := "长江学者申请后，一般研究项目执行几年？"
+	userID := "desktop-user:query-vec"
+	warmed := uic.ClassifyContext(context.Background(), intent.MessageContext{Text: text, UserID: userID})
+	if warmed.Primary != intent.LabelSearch || warmed.Degraded {
+		t.Fatalf("warm cache = %+v, want search", warmed)
+	}
+	live := []float32{0.25, 0.5}
+	anchors := map[string]float64{"search": 0.8}
+	h := &IMMessageHandler{unifiedClassifier: uic}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelUnknown, Confidence: 0.30, Layer: 2, Degraded: true,
+			Reason:       "embedding ambiguous; tree classification unavailable (l2=workflow_task conf=0.73)",
+			QueryVec:     live,
+			AnchorMaxCos: anchors,
+		},
+		Execution: fullExecutionProfile("semantic classifier degraded"),
+	}}
+	if !h.adoptLateTreeSemanticIntent(ctx, userID, text, nil) {
+		t.Fatal("late tree cache must be adopted on the current turn")
+	}
+	got := ctx.Runtime.SemanticIntent
+	if got == nil || got.Primary != intent.LabelSearch {
+		t.Fatalf("adopted intent = %+v, want search", got)
+	}
+	live[0] = 9
+	anchors["search"] = 0
+	if len(got.QueryVec) != 2 || got.QueryVec[0] != 0.25 || got.AnchorMaxCos["search"] != 0.8 {
+		t.Fatalf("adopted evidence = vec %v anchors %v", got.QueryVec, got.AnchorMaxCos)
+	}
+	cached, ok := uic.ClassifyCached(intent.MessageContext{Text: text, UserID: userID})
+	if !ok || len(cached.QueryVec) != 0 {
+		t.Fatalf("cache kept a query vector: ok=%v vec=%v", ok, cached.QueryVec)
+	}
+}
+
 func TestAdoptLateTreeProjectSearchKeepsLookupContinuation(t *testing.T) {
 	uic := semanticClassifierForLabel(t, intent.LabelSearch)
 	text := "octop中有sso登录功能吗？"
@@ -341,7 +379,7 @@ func TestPrepareAgentLoopToolsClassifierTimeoutKeepsWebSearch(t *testing.T) {
 	// A fresh LoopContext carrying the same runtime snapshot avoids copying
 	// the context's RWMutex while exercising the deny policy.
 	denied := &LoopContext{
-		Runtime: ctx.Runtime,
+		Runtime:                   ctx.Runtime,
 		LansengerGroupPermissions: &lansengerGroupPermissionPolicy{AllowWebSearch: false},
 	}
 	blocked := h.prepareAgentLoopTools("u1", "长江学者申请后，一般研究项目执行几年？", denied, agentLoopPhase{})

@@ -1,11 +1,14 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CheckYOLOModel, DownloadYOLOModel, GetScreenParsingEnabled } from '../../../../wailsjs/go/main/App';
+import { EventsOn } from '../../../../wailsjs/runtime';
 import { EmbeddingConfigPanel } from '../EmbeddingConfigPanel';
 
 const mocks = vi.hoisted(() => ({
     vectorEnabled: vi.fn(),
     setComputerUse: vi.fn(),
     confirm: vi.fn(),
+    events: new Map<string, (data: any) => void>(),
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -42,7 +45,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
-    EventsOn: vi.fn(),
+    EventsOn: vi.fn((name: string, fn: (data: any) => void) => {
+        mocks.events.set(name, fn);
+    }),
     EventsOff: vi.fn(),
 }));
 
@@ -55,6 +60,8 @@ describe('EmbeddingConfigPanel', () => {
         mocks.vectorEnabled.mockResolvedValue(true);
         mocks.setComputerUse.mockResolvedValue(undefined);
         mocks.confirm.mockResolvedValue(true);
+        mocks.events.clear();
+        vi.mocked(GetScreenParsingEnabled).mockResolvedValue(true);
     });
 
     afterEach(() => {
@@ -78,6 +85,49 @@ describe('EmbeddingConfigPanel', () => {
         expect(screen.getAllByText('模型已就绪').length).toBeGreaterThanOrEqual(1);
         expect(screen.getByRole('button', { name: '重新下载' })).toBeTruthy();
         expect(screen.getByRole('button', { name: '删除' })).toBeTruthy();
+    });
+
+    it('starts OmniParser download without a click when the weights are missing', async () => {
+        vi.mocked(CheckYOLOModel)
+            .mockResolvedValueOnce({ exists: false, size: 0, downloading: false } as never)
+            .mockResolvedValueOnce({ exists: false, size: 0, downloading: true } as never);
+        render(<EmbeddingConfigPanel lang="zh-Hans" />);
+
+        expect(await screen.findByText('正在下载模型...')).toBeTruthy();
+        await waitFor(() => expect(vi.mocked(CheckYOLOModel)).toHaveBeenCalled());
+        await waitFor(() => expect(vi.mocked(DownloadYOLOModel)).toHaveBeenCalled());
+        expect(screen.queryByRole('button', { name: '下载模型' })).toBeNull();
+    });
+
+    it('keeps screen parsing off when the finished download says it stayed off', async () => {
+        vi.mocked(GetScreenParsingEnabled).mockResolvedValue(false);
+        vi.mocked(CheckYOLOModel)
+            .mockResolvedValueOnce({ exists: false, size: 0, downloading: false } as never)
+            .mockResolvedValueOnce({ exists: true, size: 77, downloading: false } as never);
+        render(<EmbeddingConfigPanel lang="zh-Hans" />);
+
+        const box = await screen.findByRole('switch', { name: '启用屏幕解析' }) as HTMLInputElement;
+        await waitFor(() => expect(vi.mocked(DownloadYOLOModel)).toHaveBeenCalled());
+        await waitFor(() => expect(box.checked).toBe(false));
+
+        const onProgress = mocks.events.get('yolo-download-progress');
+        expect(onProgress).toBeTypeOf('function');
+        act(() => { onProgress?.({ percent: 100, downloaded: 77 }); });
+        expect(box.checked).toBe(false);
+        act(() => { onProgress?.({ percent: 100, screen_parsing_enabled: true }); });
+        expect(box.checked).toBe(true);
+        act(() => { onProgress?.({ percent: 100, screen_parsing_enabled: false }); });
+        expect(box.checked).toBe(false);
+        expect(vi.mocked(EventsOn)).toHaveBeenCalled();
+    });
+
+    it('follows an OmniParser download that has already started', async () => {
+        vi.mocked(CheckYOLOModel).mockResolvedValueOnce({ exists: false, size: 0, downloading: true } as never);
+        render(<EmbeddingConfigPanel lang="zh-Hans" />);
+
+        expect(await screen.findByText('正在下载模型...')).toBeTruthy();
+        expect(vi.mocked(DownloadYOLOModel)).not.toHaveBeenCalled();
+        expect(screen.queryByRole('button', { name: '下载模型' })).toBeNull();
     });
 
     it('persists turning Computer Use off from its section switch', async () => {

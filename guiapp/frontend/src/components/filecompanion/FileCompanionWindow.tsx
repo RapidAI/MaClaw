@@ -3,7 +3,9 @@ import { companionCommandBubble, companionFill, companionNoteAlias, companionPap
 import { normalizeLang } from "../../i18n/langSelect";
 import {
     ChooseFileCompanionFiles,
+    CancelFileCompanionGeneration,
     CancelFileCompanionTurn,
+    CancelFileCompanionWebGeneration,
     CancelFileCompanionWebTurn,
     StopFileCompanionWebNote,
     FileCompanionDiscardWebNote,
@@ -79,8 +81,9 @@ import { NoteResultCard } from "./NoteResultCard";
 import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps } from "../../utils/windowDrag";
 import { CompanionAppearanceProvider, useCompanionAppearance } from "./useCompanionAppearance";
+import { companionProjectMarksJSON, loadPdfBookmarks, PDF_BOOKMARKS_CHANGED_EVENT, savePdfBookmarks } from "./pdfBookmarks";
 import { loadPdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks } from "./pdfMarks";
-import { loadPdfAnnotations, loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, savePdfTranslations } from "./pdfTranslations";
+import { loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, savePdfTranslations } from "./pdfTranslations";
 import { loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT, savePdfDrawings } from "./pdfDrawings";
 import { CHAT_MARKS_CHANGED_EVENT, CHAT_MARK_TEXT_MAX, loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
 import { applyChatHighlights, chatHighlightsSupported, chatMarkAtOffset, chatMessageIndexAt, chatMessageRoot, chatOffsetForPoint, chatSelectionSlices, chatTextSpans, clearChatHighlights, type ChatSelectionSlice } from "./chatMarkAnchors";
@@ -266,6 +269,8 @@ type CompanionDoc = {
     Annotations?: unknown;
     drawings?: unknown;
     Drawings?: unknown;
+    bookmarks?: unknown;
+    Bookmarks?: unknown;
     imported?: boolean;
     Imported?: boolean;
 };
@@ -2352,6 +2357,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             const kept = loadPdfDrawings(update.path).filter((item) => item.shared !== true);
             savePdfDrawings(update.path, [...kept, ...incoming]);
         }
+        // Bookmarks replace the page list, the same way highlights do. A legacy
+        // project omits the field and leaves this reader's bookmarks alone.
+        if (update.bookmarksKnown) {
+            try {
+                savePdfBookmarks(update.path, update.bookmarks ? JSON.parse(update.bookmarks) : []);
+            } catch {
+                savePdfBookmarks(update.path, []);
+            }
+        }
         if (!update.replaceMessages) return;
         const updateKey = companionSharePathKey(update.path);
         const sessionId = tabsRef.current.find((tab) => companionSharePathKey(tab.path) === updateKey)?.sessionId ?? "";
@@ -2470,6 +2484,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 savePdfMarks(path, []);
                 savePdfTranslations(path, []);
                 savePdfDrawings(path, []);
+                savePdfBookmarks(path, []);
                 saveChatMarks(path, []);
             } catch {
                 // Nothing else can be done without storage; keep withdrawing.
@@ -2495,12 +2510,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             return;
         }
         sharePushInFlightRef.current.add(path);
-        void SyncFileCompanionShare(path, JSON.stringify({
-            highlights: loadPdfMarks(path),
-            chatMarks: loadChatMarks(path),
-            annotations: loadPdfAnnotations(path),
-            drawings: loadPdfDrawings(path),
-        }))
+        void SyncFileCompanionShare(path, companionProjectMarksJSON(path))
             .then(() => {
                 sharePushWarnedRef.current.delete(path);
             })
@@ -2551,11 +2561,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         window.addEventListener(CHAT_MARKS_CHANGED_EVENT, onMarksChanged);
         window.addEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, onMarksChanged);
         window.addEventListener(PDF_DRAWINGS_CHANGED_EVENT, onMarksChanged);
+        window.addEventListener(PDF_BOOKMARKS_CHANGED_EVENT, onMarksChanged);
         return () => {
             window.removeEventListener(PDF_MARKS_CHANGED_EVENT, onMarksChanged);
             window.removeEventListener(CHAT_MARKS_CHANGED_EVENT, onMarksChanged);
             window.removeEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, onMarksChanged);
             window.removeEventListener(PDF_DRAWINGS_CHANGED_EVENT, onMarksChanged);
+            window.removeEventListener(PDF_BOOKMARKS_CHANGED_EVENT, onMarksChanged);
         };
     }, []);
     useEffect(() => {
@@ -2690,6 +2702,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         introQueueRef.current = introQueueRef.current.filter((item) => item !== path);
     };
     const requestEpochRef = useRef(new Map<string, number>());
+    // The progress button names the turn it stops. Later tokens for that id
+    // are dropped. A later turn has a new id.
+    const cancelledRequestsRef = useRef(new Set<string>());
+    const sendingOwnerRef = useRef(new Map<string, string>());
+    const latestRequestRef = useRef(new Map<string, string>());
+    const paperOwnerRef = useRef(new Map<string, string>());
     const paperRequestIds = useRef(new Set<string>());
     const videoNoteRequestIds = useRef(new Set<string>());
     const webFullscreenRef = useRef(false);
@@ -2787,8 +2805,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 const hasChatMarks = hasField("chatMarks", "ChatMarks");
                 const hasAnnotations = hasField("annotations", "Annotations");
                 const hasDrawings = hasField("drawings", "Drawings");
+                const hasBookmarks = hasField("bookmarks", "Bookmarks");
                 const hasHighlights = hasField("highlights", "Highlights");
-                if (hasHighlights || hasChatMarks || hasAnnotations || hasDrawings) {
+                if (hasHighlights || hasChatMarks || hasAnnotations || hasDrawings || hasBookmarks) {
                     applyShareUpdateRef.current({
                         path: next.path,
                         // A project without the highlights field must not erase
@@ -2800,6 +2819,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         annotationsKnown: hasAnnotations,
                         drawings: docFieldJSON(doc, "drawings", "Drawings"),
                         drawingsKnown: hasDrawings,
+                        bookmarks: hasBookmarks ? docFieldJSON(doc, "bookmarks", "Bookmarks") : JSON.stringify(loadPdfBookmarks(next.path)),
+                        bookmarksKnown: hasBookmarks,
                         messages: [],
                         project: true,
                         replaceMessages: false,
@@ -2927,6 +2948,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const onProgress = (payload: unknown) => {
             const parsed = parsedSession(payload);
             if (!parsed) return;
+            if (cancelledRequestsRef.current.has(parsed.requestID)) return;
             if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, parsed.sessionId, parsed.requestID)) return;
             const text = eventString(parsed.body, "text", "Text");
             if (!text || text === "__heartbeat__") return;
@@ -2939,6 +2961,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const onToken = (payload: unknown) => {
             const parsed = parsedSession(payload);
             if (!parsed) return;
+            if (cancelledRequestsRef.current.has(parsed.requestID)) return;
             if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, parsed.sessionId, parsed.requestID)) return;
             const delta = eventString(parsed.body, "text", "Text");
             const part = splitCompanionStreamDelta(delta);
@@ -2968,6 +2991,20 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             const text = eventString(parsed.body, "text", "Text");
             const reasoning = eventString(parsed.body, "reasoning", "Reasoning");
             const errText = eventString(parsed.body, "error", "Error");
+            const stopped = cancelledRequestsRef.current.has(parsed.requestID);
+            // A cancel error, or an empty finish, must not replace the answer
+            // already on screen. A real reply can still land: the host skipped
+            // the file write, and a web note that was only recording still
+            // publishes its card.
+            if (stopped && (errText || !text.trim())) {
+                paperRequestIds.current.delete(parsed.requestID);
+                if (videoNoteRequestIds.current.delete(parsed.requestID)) {
+                    if (noteBusyRequestRef.current === parsed.requestID) noteBusyRequestRef.current = "";
+                    setNoteBusyRef.current(parsed.requestID);
+                }
+                setTabs((current) => current.map((tab) => tab.sessionId === parsed.sessionId ? { ...tab, status: "" } : tab));
+                return;
+            }
             const note = errText ? turnErrorText(errText) : "";
             const shown = text && note && !text.includes(note) ? `${text}\n\n${note}` : (text || note);
             const localPath = eventString(parsed.body, "local_file_path", "LocalFilePath");
@@ -2991,10 +3028,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }
                 setNoteBusyRef.current(parsed.requestID);
             }
-            const resultPath = paper && !videoNote && !errText && localPath ? localPath : "";
+            const resultPath = !stopped && paper && !videoNote && !errText && localPath ? localPath : "";
             const matched = tabsRef.current.find((tab) => tab.sessionId === parsed.sessionId);
             const matchedName = matched?.name.toLowerCase() ?? "";
-            const reloadPath = !paper && !videoNote && !errText && localPath && matched && matched.kind !== "web" && !matchedName.endsWith(".xlsx") && !matchedName.endsWith(".pptx")
+            const reloadPath = !stopped && !paper && !videoNote && !errText && localPath && matched && matched.kind !== "web" && !matchedName.endsWith(".xlsx") && !matchedName.endsWith(".pptx")
                 ? matched.path
                 : "";
             setTabs((current) => current.map((tab) => {
@@ -3035,14 +3072,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     else messages.push(next);
                 }
                 const name = tab.name.toLowerCase();
-                if (!paper && (name.endsWith(".xlsx") || name.endsWith(".pptx")) && !localPath && text && !errText) {
+                if (!stopped && !paper && (name.endsWith(".xlsx") || name.endsWith(".pptx")) && !localPath && text && !errText) {
                     const payloadJSON = officePayloadJSON(text, tab.name);
                     if (payloadJSON) void FileCompanionReplaceOffice(tab.path, payloadJSON).catch(() => undefined);
                 }
                 return { ...tab, messages, status: "" };
             }));
             // The finished answer is the other half of what participants see.
-            if (!errText && matched) pushShareTranscriptRef.current(matched.path);
+            // A turn the reader stopped does not publish that partial.
+            if (!stopped && !errText && matched) pushShareTranscriptRef.current(matched.path);
             if (reloadPath) void openPath(reloadPath, false, true);
         };
         const windowIsEmpty = () => opensInFlight.current === 0 && !tabCommittedRef.current && tabsRef.current.length === 0;
@@ -3902,6 +3940,28 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         sendingPathsRef.current = next;
         setSendingPaths(next);
     };
+    const beginSending = (path: string, requestID: string) => {
+        sendingOwnerRef.current.set(path, requestID);
+        latestRequestRef.current.set(path, requestID);
+        markSending(path, true);
+    };
+    // An older turn must not clear a question the reader already sent.
+    const endSending = (path: string, requestID: string) => {
+        const owner = sendingOwnerRef.current.get(path);
+        if (requestID && owner && owner !== requestID) return;
+        if (!requestID || owner === requestID) sendingOwnerRef.current.delete(path);
+        markSending(path, false);
+    };
+    const beginPaper = (path: string, requestID: string) => {
+        paperOwnerRef.current.set(path, requestID);
+        markPaperBusy(path, true);
+    };
+    const endPaper = (path: string, requestID: string) => {
+        const owner = paperOwnerRef.current.get(path);
+        if (requestID && owner && owner !== requestID) return;
+        if (!requestID || owner === requestID) paperOwnerRef.current.delete(path);
+        markPaperBusy(path, false);
+    };
     const tabIsSending = (path: string) => sendingPathsRef.current.has(path);
     const otherWebNoteRunning = (path: string) => {
         for (const busy of noteBusyPathsRef.current) {
@@ -3926,6 +3986,25 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // The button follows the file on screen. Another file's agent does not
     // mark this one 处理中, and a click here starts this file's own turn.
     const sendBusy = Boolean(activeTab && (sendingPaths.has(activeTab.path) || activeTab.status.trim()));
+    // The same button stays 「处理中」 and stops this file's turn. The draft
+    // stays. The note button is left on 停止 until that turn's finally, so a
+    // second note cannot start while this one is still writing.
+    const cancelGeneration = () => {
+        const tab = tabsRef.current.find((item) => item.path === activeRef.current);
+        if (!tab) return;
+        const path = tab.path;
+        const requestID = sendingOwnerRef.current.get(path) || latestRequestRef.current.get(path) || "";
+        const busy = sendingPathsRef.current.has(path) || tab.status.trim() !== "";
+        if (!busy && !requestID) return;
+        if (requestID) cancelledRequestsRef.current.add(requestID);
+        endSending(path, requestID);
+        endPaper(path, requestID);
+        setTabs((current) => current.map((item) => item.path === path ? { ...item, status: "" } : item));
+        const call = tab.kind === "web"
+            ? CancelFileCompanionWebGeneration(tab.sessionId, requestID)
+            : CancelFileCompanionGeneration(path, requestID);
+        void Promise.resolve(call).catch(() => undefined);
+    };
     const paperBusy = Boolean(activeTab && paperBusyPaths.has(activeTab.path));
     const convertBusy = Boolean(activeTab && convertBusyPaths.has(activeTab.path));
     const showConvert = Boolean(activeTab && !isWebTab && kind === "pdf" && !activeTab.error && scanPaths.has(activeTab.path));
@@ -4117,12 +4196,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         exportFlight.current.add(flight);
         setProjectExportBusyPath(path);
         try {
-            const dest = await FileCompanionExportProject(path, JSON.stringify({
-                highlights: loadPdfMarks(path),
-                chatMarks: loadChatMarks(path),
-                annotations: loadPdfAnnotations(path),
-                drawings: loadPdfDrawings(path),
-            }));
+            const dest = await FileCompanionExportProject(path, companionProjectMarksJSON(path));
             if (dest) {
                 showToast(cs("已导出项目"), "success", 6000);
                 void ShowItemInFolder(dest).catch(() => undefined);
@@ -4287,11 +4361,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const paperTurn = !isWebTab && companionPaperAlias(text);
         // One player. A second web note would record over the one already running.
         if (webNotePhrase && otherWebNoteRunning(tabPath)) return false;
+        // The progress button is already 「发送」, and a normal question can go
+        // out. This tab's note is still writing, so another note waits.
+        if ((notePhrase || webNotePhrase) && noteBusyPathsRef.current.has(tabPath)) return false;
         // A new question always re-arms the follow, even if the reader had
         // scrolled away during the previous answer.
         scrollToBottom("auto", true);
-        markSending(tabPath, true);
         const requestID = nextCompanionRequestID();
+        beginSending(tabPath, requestID);
         bindCompanionRequest(sessionId, requestID);
         let accepted = false;
         try {
@@ -4310,7 +4387,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             accepted = true;
         } finally {
             if (!accepted) {
-                markSending(tabPath, false);
+                endSending(tabPath, requestID);
                 drainIntroRef.current();
             }
         }
@@ -4388,7 +4465,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 } else {
                     if (paperTurn) {
                         paperRequestIds.current.add(requestID);
-                        markPaperBusy(tabPath, true);
+                        beginPaper(tabPath, requestID);
                     }
                     await SendFileCompanionMessage({
                         path: tabPath,
@@ -4408,6 +4485,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }
             } catch (err) {
                 if (paperTurn) paperRequestIds.current.delete(requestID);
+                if (cancelledRequestsRef.current.has(requestID)) return;
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
                 const note = shownHostError(err, "发送失败");
                 const assistantID = `${requestID}:assistant`;
@@ -4417,8 +4495,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     return { ...tab, status: "", messages: [...tab.messages, { id: assistantID, role: "assistant", text: note }] };
                 }));
             } finally {
-                markSending(tabPath, false);
-                if (paperTurn) markPaperBusy(tabPath, false);
+                endSending(tabPath, requestID);
+                if (paperTurn) endPaper(tabPath, requestID);
                 if (notePhrase || webNotePhrase) {
                     if (noteBusyRequestRef.current === requestID) noteBusyRequestRef.current = "";
                     markNoteBusy(tabPath, requestID, false);
@@ -4434,9 +4512,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const tabPath = activeTab.path;
         const sessionId = activeTab.sessionId;
         scrollToBottom("auto", true);
-        markSending(tabPath, true);
-        markPaperBusy(tabPath, true);
         const requestID = nextCompanionRequestID();
+        beginSending(tabPath, requestID);
+        beginPaper(tabPath, requestID);
         bindCompanionRequest(sessionId, requestID);
         try {
             if (activeTab.dirty && activeTab.editable && !activeTab.readOnly) {
@@ -4455,6 +4533,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 });
             } catch (err) {
                 paperRequestIds.current.delete(requestID);
+                if (cancelledRequestsRef.current.has(requestID)) return;
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
                 const note = shownHostError(err, "发送失败");
                 const assistantID = `${requestID}:assistant`;
@@ -4465,8 +4544,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }));
             }
         } finally {
-            markSending(tabPath, false);
-            markPaperBusy(tabPath, false);
+            endSending(tabPath, requestID);
+            endPaper(tabPath, requestID);
             drainIntroRef.current();
         }
     };
@@ -4602,8 +4681,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             noteEpochRef.current = captureEpoch;
         }
         scrollToBottom("auto", true);
-        markSending(tabPath, true);
         const requestID = nextCompanionRequestID();
+        beginSending(tabPath, requestID);
         if (web) noteBusyRequestRef.current = requestID;
         markNoteBusy(tabPath, requestID, true);
         bindCompanionRequest(sessionId, requestID);
@@ -4631,6 +4710,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             }
         } catch (err) {
             videoNoteRequestIds.current.delete(requestID);
+            if (cancelledRequestsRef.current.has(requestID)) return;
             if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
             const note = shownHostError(err, "发送失败");
             const assistantID = `${requestID}:assistant`;
@@ -4640,7 +4720,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 return { ...tab, status: "", messages: [...tab.messages, { id: assistantID, role: "assistant", text: note }] };
             }));
         } finally {
-            markSending(tabPath, false);
+            endSending(tabPath, requestID);
             if (noteBusyRequestRef.current === requestID) noteBusyRequestRef.current = "";
             markNoteBusy(tabPath, requestID, false);
             drainIntroRef.current();
@@ -4667,8 +4747,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             return Promise.resolve();
         }
         const text = FILE_COMPANION_INTRO;
-        markSending(tabPath, true);
         const requestID = nextCompanionRequestID("intro");
+        beginSending(tabPath, requestID);
         bindCompanionRequest(sessionId, requestID);
         if (activeRef.current === tabPath) scrollToBottom("auto", true);
         const message: ChatMessage = { id: `${requestID}:user`, role: "user", text };
@@ -4680,6 +4760,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             try {
                 await SendFileCompanionMessage({ path: tabPath, text, request_id: requestID });
             } catch (err) {
+                if (cancelledRequestsRef.current.has(requestID)) return;
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
                 const note = shownHostError(err, "发送失败");
                 const assistantID = `${requestID}:assistant`;
@@ -4689,7 +4770,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     return { ...item, status: "", messages: [...item.messages, { id: assistantID, role: "assistant", text: note }] };
                 }));
             } finally {
-                markSending(tabPath, false);
+                endSending(tabPath, requestID);
             }
         })();
     };
@@ -4841,6 +4922,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             const chatMarks = String(raw?.chatMarks || raw?.ChatMarks || "");
             const annotations = String(raw?.annotations || raw?.Annotations || "");
             const drawings = String(raw?.drawings || raw?.Drawings || "");
+            const bookmarks = String(raw?.bookmarks || raw?.Bookmarks || "");
             const has = (name: string) => Object.prototype.hasOwnProperty.call(raw, name) || Object.prototype.hasOwnProperty.call(raw, name[0].toUpperCase() + name.slice(1));
             if (!path) {
                 const failure = cs("导入失败：没有拿到文件");
@@ -4848,7 +4930,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 else setArxivMessage(failure);
                 return;
             }
-            if (highlights || has("chatMarks") || has("annotations") || has("drawings")) {
+            if (highlights || has("chatMarks") || has("annotations") || has("drawings") || has("bookmarks")) {
                 applyShareUpdateRef.current({
                     path,
                     highlights,
@@ -4858,6 +4940,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     annotationsKnown: has("annotations"),
                     drawings,
                     drawingsKnown: has("drawings"),
+                    bookmarks,
+                    bookmarksKnown: has("bookmarks"),
                     messages: [],
                     project: true,
                     replaceMessages: false,
@@ -6107,6 +6191,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             lang={uiLang}
                             onChange={(draft) => updateActive({ draft })}
                             onSubmit={() => send()}
+                            onCancel={() => { cancelGeneration(); }}
                         />
                     </section>
                 </div>

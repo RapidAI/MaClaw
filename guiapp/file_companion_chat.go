@@ -105,13 +105,16 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 		return err
 	}
 	logFileCompanion("turn start session=%s", sessionID)
-	cancelCtx := a.ctx
-	if cancelCtx == nil {
-		cancelCtx = context.Background()
-	}
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
 		requestID = fmt.Sprintf("file-companion-%d", time.Now().UnixNano())
+	}
+	// Forget runs after deliver has read the flag. A click during the model
+	// call is still visible at the write.
+	defer a.fileCompanionForgetChatStop(requestID)
+	cancelCtx := a.ctx
+	if cancelCtx == nil {
+		cancelCtx = context.Background()
 	}
 	msg := IMUserMessage{
 		RequestID:              requestID,
@@ -191,13 +194,139 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 			resp.FileCompanionFiles = files
 		}
 	}
+	if a.fileCompanionChatStopped(requestID) {
+		return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+	}
 	if paper {
 		return a.fileCompanionDeliverPaper(canonical, sessionID, userID, requestID, resp)
 	}
 	return a.fileCompanionDeliverTurn(path, grant, canonical, sessionID, userID, requestID, selection, prefer, resp)
 }
 
+// fileCompanionMarkChatStopped records one request the progress button cancelled.
+// An empty id matches nothing, so a click after the turn has finished cannot
+// stop the next question.
+func (a *App) fileCompanionMarkChatStopped(requestID string) {
+	requestID = strings.TrimSpace(requestID)
+	if a == nil || requestID == "" {
+		return
+	}
+	st := a.companionRuntime()
+	st.chatMu.Lock()
+	defer st.chatMu.Unlock()
+	if st.chatStop == nil {
+		st.chatStop = map[string]struct{}{}
+	}
+	st.chatStop[requestID] = struct{}{}
+}
+
+func (a *App) fileCompanionChatStopped(requestID string) bool {
+	requestID = strings.TrimSpace(requestID)
+	if a == nil || requestID == "" {
+		return false
+	}
+	st := a.companionRuntime()
+	st.chatMu.Lock()
+	defer st.chatMu.Unlock()
+	if st.chatStop == nil {
+		return false
+	}
+	_, ok := st.chatStop[requestID]
+	return ok
+}
+
+func (a *App) fileCompanionForgetChatStop(requestID string) {
+	requestID = strings.TrimSpace(requestID)
+	if a == nil || requestID == "" {
+		return
+	}
+	st := a.companionRuntime()
+	st.chatMu.Lock()
+	defer st.chatMu.Unlock()
+	delete(st.chatStop, requestID)
+}
+
+// errFileCompanionTurnCancelled means this request was stopped before its
+// bytes became the file the reader has open. Callers keep the partial reply
+// and do not surface the sentinel.
+var errFileCompanionTurnCancelled = errors.New("file companion turn cancelled")
+
+// fileCompanionBeforeCommitHook runs after the new bytes exist and before
+// fileCompanionPublishTurn takes chatMu. Tests cancel the turn from here.
+var fileCompanionBeforeCommitHook func()
+
+// fileCompanionPublishTurn commits a file while holding chatMu.
+// fileCompanionMarkChatStopped takes that same lock, so a cancel either is
+// visible here and commit is skipped, or it lands after commit has returned.
+// The slow work (PDF generation, office encoding) stays outside this lock.
+func (a *App) fileCompanionPublishTurn(requestID string, commit func() error) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	if fileCompanionBeforeCommitHook != nil {
+		fileCompanionBeforeCommitHook()
+	}
+	requestID = strings.TrimSpace(requestID)
+	st := a.companionRuntime()
+	st.chatMu.Lock()
+	defer st.chatMu.Unlock()
+	if requestID != "" && st.chatStop != nil {
+		if _, stopped := st.chatStop[requestID]; stopped {
+			return errFileCompanionTurnCancelled
+		}
+	}
+	if commit == nil {
+		return nil
+	}
+	return commit()
+}
+
+// fileCompanionFinishCancelledTurn ends a turn the reader stopped.
+// The partial reply stays on the event. The open file and a paper PDF do not.
+func (a *App) fileCompanionFinishCancelledTurn(sessionID, userID, requestID string, resp *IMAgentResponse) error {
+	if resp == nil {
+		resp = &IMAgentResponse{}
+	}
+	resp.Error = ""
+	resp.LocalFilePath = ""
+	resp.LocalFilePaths = nil
+	a.emitFileCompanionTurn(requestID, userID, resp)
+	logFileCompanion("turn end session=%s cancelled", sessionID)
+	return nil
+}
+
+// CancelFileCompanionGeneration stops one file's in-flight chat.
+// requestID is the turn the window started. The transcript and chat generation
+// stay. A note that is running for this file is cancelled as well.
+func (a *App) CancelFileCompanionGeneration(path, requestID string) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	if !a.isFileCompanionProcess() {
+		return errors.New("file companion is not running")
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("path is required")
+	}
+	_, canonical, err := a.fileCompanionGrant(path)
+	if err != nil {
+		return err
+	}
+	sessionID := fileCompanionSessionID(canonical)
+	userID := "file-companion:" + sessionID
+	a.fileCompanionMarkChatStopped(requestID)
+	a.fileCompanionMarkNoteStopped(sessionID, requestID)
+	if a.imHandler != nil {
+		_, _ = a.imHandler.RequestCancelSessionForUser(userID)
+	}
+	return nil
+}
+
 func (a *App) fileCompanionDeliverTurn(path string, grant *fileCompanionGrant, canonical, sessionID, userID, requestID, selection string, selectionStart int, resp *IMAgentResponse) error {
+	if a.fileCompanionChatStopped(requestID) {
+		return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+	}
 	if resp == nil {
 		logFileCompanion("turn end session=%s empty", sessionID)
 		return errors.New("empty response")
@@ -210,7 +339,13 @@ func (a *App) fileCompanionDeliverTurn(path string, grant *fileCompanionGrant, c
 	reply := strings.TrimSpace(resp.Text)
 	ext := strings.ToLower(filepath.Ext(canonical))
 	if ext == ".xlsx" || ext == ".pptx" {
-		applied, officeErr := a.fileCompanionApplyModelOfficeReply(canonical, reply)
+		if a.fileCompanionChatStopped(requestID) {
+			return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+		}
+		applied, officeErr := a.fileCompanionApplyModelOfficeReply(canonical, requestID, reply)
+		if errors.Is(officeErr, errFileCompanionTurnCancelled) {
+			return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+		}
 		if officeErr != nil {
 			logFileCompanion("turn end session=%s office-refused", sessionID)
 			if strings.TrimSpace(resp.Error) == "" {
@@ -223,9 +358,15 @@ func (a *App) fileCompanionDeliverTurn(path string, grant *fileCompanionGrant, c
 			resp.LocalFilePath = canonical
 		}
 	} else if strings.TrimSpace(selection) != "" && grant != nil && grant.Editable && reply != "" {
-		result, appendErr := a.fileCompanionWriteText(path, grant.LoadedHash, func(current string) (string, error) {
+		if a.fileCompanionChatStopped(requestID) {
+			return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+		}
+		result, appendErr := a.fileCompanionWriteText(path, grant.LoadedHash, requestID, func(current string) (string, error) {
 			return fileCompanionAppendAfterSelection(current, selection, reply, selectionStart), nil
 		})
+		if errors.Is(appendErr, errFileCompanionTurnCancelled) {
+			return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+		}
 		if appendErr != nil {
 			logFileCompanion("turn end session=%s append-refused", sessionID)
 			if strings.TrimSpace(resp.Error) == "" {
@@ -595,24 +736,37 @@ func (a *App) ensureFileCompanionHandler(userID, sessionID string) error {
 // fileCompanionReplaceOffice wholly replaces the current .xlsx or .pptx.
 // It runs outside the agent loop and calls the existing writers directly.
 func (a *App) fileCompanionReplaceOffice(path string, payload map[string]interface{}) error {
+	_, err := a.fileCompanionWriteOffice(path, "", payload)
+	return err
+}
+
+// fileCompanionWriteOffice writes payload to target. An empty target is the
+// open file, and that path also reloads the preview. A staged target is the
+// model reply's temp file: the caller publishes it under chatMu.
+func (a *App) fileCompanionWriteOffice(path, target string, payload map[string]interface{}) (string, error) {
 	if a == nil {
-		return errors.New("app unavailable")
+		return "", errors.New("app unavailable")
 	}
 	grant, canonical, err := a.fileCompanionGrant(path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	ext := strings.ToLower(filepath.Ext(canonical))
 	switch ext {
 	case ".xlsx", ".pptx":
 	default:
-		return fmt.Errorf("office replace refused for %s", ext)
+		return "", fmt.Errorf("office replace refused for %s", ext)
 	}
 	if a.fileCompanionExtractTruncated(canonical) {
-		return errors.New("truncated extract cannot be written")
+		return "", errors.New("truncated extract cannot be written")
+	}
+	dest := canonical
+	staged := strings.TrimSpace(target) != ""
+	if staged {
+		dest = target
 	}
 	args := map[string]interface{}{
-		"file_path": canonical,
+		"file_path": dest,
 		"data":      payload,
 	}
 	var writeErr error
@@ -623,7 +777,10 @@ func (a *App) fileCompanionReplaceOffice(path string, payload map[string]interfa
 	}
 	if writeErr != nil {
 		logFileCompanion("office replace refused ext=%s", ext)
-		return writeErr
+		return "", writeErr
+	}
+	if staged {
+		return canonical, nil
 	}
 	logFileCompanion("office replace ext=%s", ext)
 	a.emitEvent("file-companion:preview-reload", map[string]string{
@@ -631,7 +788,7 @@ func (a *App) fileCompanionReplaceOffice(path string, payload map[string]interfa
 		"ext":  ext,
 	})
 	_, _ = a.FileCompanionOpen(grant.UserPath)
-	return nil
+	return canonical, nil
 }
 
 // FileCompanionReplaceOffice wholly replaces the open .xlsx or .pptx from a
@@ -649,15 +806,52 @@ func (a *App) FileCompanionReplaceOffice(path, payloadJSON string) error {
 	return a.fileCompanionReplaceOffice(path, payload)
 }
 
-func (a *App) fileCompanionApplyModelOfficeReply(path, reply string) (bool, error) {
+func (a *App) fileCompanionApplyModelOfficeReply(path, requestID, reply string) (bool, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	raw, ok := fileCompanionOfficePayloadJSON(reply, ext)
 	if !ok {
 		return false, nil
 	}
-	if err := a.FileCompanionReplaceOffice(path, raw); err != nil {
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return false, err
 	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "companion-*"+ext)
+	if err != nil {
+		return false, err
+	}
+	tempName := temp.Name()
+	_ = temp.Close()
+	_ = os.Remove(tempName)
+	canonical, err := a.fileCompanionWriteOffice(path, tempName, payload)
+	if err != nil {
+		_ = os.Remove(tempName)
+		return false, err
+	}
+	pubErr := a.fileCompanionPublishTurn(requestID, func() error {
+		backup, replaceErr := fileCompanionReplaceFile(tempName, canonical)
+		if replaceErr != nil {
+			return replaceErr
+		}
+		if backup != "" {
+			_ = os.Remove(backup)
+		}
+		return nil
+	})
+	if pubErr != nil {
+		_ = os.Remove(tempName)
+		return false, pubErr
+	}
+	logFileCompanion("office replace ext=%s", ext)
+	a.emitEvent("file-companion:preview-reload", map[string]string{
+		"path": canonical,
+		"ext":  ext,
+	})
+	openPath := path
+	if grant, _, grantErr := a.fileCompanionGrant(path); grantErr == nil && grant.UserPath != "" {
+		openPath = grant.UserPath
+	}
+	_, _ = a.FileCompanionOpen(openPath)
 	return true, nil
 }
 

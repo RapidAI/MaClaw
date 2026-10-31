@@ -479,10 +479,11 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 			if st != nil {
 				st.outcome = "skipped_empty_text"
 			}
-			if !u.cacheStoreSuppressed(cacheKey) {
-				u.cache.Store(cacheKey, &result)
-				u.cacheSource.Store(cacheKey, CacheSourceL2)
-			}
+			// An empty string can sit near a short anchor. That cosine is not
+			// a tool-head query.
+			dropLayer2QueryEvidence(&result)
+			ReleaseNamedSkillFromWorkflowIntercept(msg.Text, &result)
+			u.storeClassification(cacheKey, &result, CacheSourceL2)
 			u.cacheAndLog(cacheKey, msg.Text, &result)
 			return result
 		}
@@ -779,6 +780,7 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 				NormalizeDeclaredComposite(&bestResult)
 				applyExecutionAffordances(msg.Text, &bestResult)
 				bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
+				carryLayer2QueryEvidence(&bestResult, l2Result)
 				u.cacheAndLog(cacheKey, msg.Text, &bestResult)
 				return bestResult
 			}
@@ -839,12 +841,11 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 		}
 		if skipTree {
 			// Policy skip is stable for this text, unlike an L3 timeout.
-			// cacheAndLog refuses all Degraded results; store the hint here,
-			// subject to the same per-key tombstone guard as every other store.
-			if !u.cacheStoreSuppressed(cacheKey) {
-				u.cache.Store(cacheKey, &result)
-				u.cacheSource.Store(cacheKey, CacheSourceL2)
-			}
+			// cacheAndLog refuses degraded results, so the hint is stored
+			// here. Release the named-skill intercept first: the snapshot
+			// must match the result this call returns.
+			ReleaseNamedSkillFromWorkflowIntercept(msg.Text, &result)
+			u.storeClassification(cacheKey, &result, CacheSourceL2)
 		} else if !treeSkippedSlowEndpoint {
 			// A timeout only degraded THIS turn. The tree verdict remains
 			// durable knowledge for the same classification input: the user's
@@ -1018,6 +1019,64 @@ func containsLabel(labels []IntentLabel, want IntentLabel) bool {
 	return false
 }
 
+// CarryLayer2QueryEvidence copies Layer 2 query evidence onto a replacement
+// result. The classification cache omits QueryVec. An in-flight turn that
+// already embedded the query still has it, and the tool head reads that copy.
+func CarryLayer2QueryEvidence(dst *ClassificationResult, src ClassificationResult) {
+	carryLayer2QueryEvidence(dst, src)
+}
+
+// carryLayer2QueryEvidence copies the live query vector onto a result that
+// replaced the Layer 2 struct. Tool routing scores the tool head on that
+// vector and does not embed again. An empty destination is left alone when
+// Layer 2 itself had no vector.
+func carryLayer2QueryEvidence(dst *ClassificationResult, src ClassificationResult) {
+	if dst == nil {
+		return
+	}
+	if len(dst.QueryVec) == 0 && len(src.QueryVec) > 0 {
+		dst.QueryVec = append([]float32(nil), src.QueryVec...)
+	}
+	if len(dst.AnchorMaxCos) == 0 && len(src.AnchorMaxCos) > 0 {
+		copied := make(map[string]float64, len(src.AnchorMaxCos))
+		for label, score := range src.AnchorMaxCos {
+			copied[label] = score
+		}
+		dst.AnchorMaxCos = copied
+	}
+}
+
+// classificationWithoutQueryVec is the form written to a long-lived cache.
+// The live result keeps QueryVec for this turn's tool head.
+func classificationWithoutQueryVec(result ClassificationResult) ClassificationResult {
+	result.QueryVec = nil
+	return result
+}
+
+// storeClassification writes a cache copy that does not retain the query
+// vector. A suppressed scope is left untouched. The caller's result is not
+// modified, so a degraded hint can stay cached and still return its vector.
+func (u *UnifiedIntentClassifier) storeClassification(cacheKey string, result *ClassificationResult, source string) {
+	if result == nil || u.cacheStoreSuppressed(cacheKey) {
+		return
+	}
+	stored := classificationWithoutQueryVec(*result)
+	u.cache.Store(cacheKey, &stored)
+	if source != "" {
+		u.cacheSource.Store(cacheKey, source)
+	}
+}
+
+// dropLayer2QueryEvidence removes query evidence that must not be scored.
+// An empty classification string still embeds near a short anchor.
+func dropLayer2QueryEvidence(result *ClassificationResult) {
+	if result == nil {
+		return
+	}
+	result.QueryVec = nil
+	result.AnchorMaxCos = nil
+}
+
 // lookupHintOrUnknownFromL2 keeps an unconfirmed search/live_data primary as a
 // degraded hint, and an office primary at or above the lookup floor as a
 // governed hint; every other family collapses to unknown. Secondary labels,
@@ -1050,8 +1109,12 @@ func lookupHintOrUnknownFromL2(l2 ClassificationResult, skipTree bool) Classific
 	}
 	keepHint := l2.Primary == LabelSearch || l2.Primary == LabelLiveData ||
 		(l2.Primary == LabelOffice && l2.Confidence >= EmbeddingLookupMinScore)
+	finish := func(result ClassificationResult) ClassificationResult {
+		carryLayer2QueryEvidence(&result, l2)
+		return result
+	}
 	if !keepHint {
-		return collapse()
+		return finish(collapse())
 	}
 	// A PDF half must stay unconfirmed when the tree cannot rule: shipping
 	// the lookup alone makes the loop report the generate tool as
@@ -1059,16 +1122,16 @@ func lookupHintOrUnknownFromL2(l2 ClassificationResult, skipTree bool) Classific
 	// keeps the weather answer and does not deliver the card.
 	for _, sec := range l2.Secondary {
 		if sec == LabelDocumentGenerate {
-			return collapse()
+			return finish(collapse())
 		}
 	}
-	return ClassificationResult{
+	return finish(ClassificationResult{
 		Primary:    l2.Primary,
 		Confidence: l2.Confidence,
 		Layer:      2,
 		Reason:     reason,
 		Degraded:   true,
-	}
+	})
 }
 
 func classifyByTreeWithTimeout(parent context.Context, llmContextFn LLMClassifyContextFunc, llmFn LLMClassifyFunc, treeText, text string, timeout time.Duration) ([]TreeCandidate, error) {
@@ -1322,8 +1385,7 @@ func (u *UnifiedIntentClassifier) storeEmbOnly(key string, res *ClassificationRe
 		})
 		u.embOnlyCount.Store(1)
 	}
-	stored := *res
-	stored.QueryVec = nil
+	stored := classificationWithoutQueryVec(*res)
 	u.embOnlyCache.Store(key, &stored)
 }
 
@@ -1570,12 +1632,7 @@ func (u *UnifiedIntentClassifier) StoreRecoveredClassification(msg MessageContex
 		return
 	}
 	cacheKey := classificationCacheKey(u.cacheEpoch.Load(), msg)
-	if u.cacheStoreSuppressed(cacheKey) {
-		return
-	}
-	stored := result
-	u.cache.Store(cacheKey, &stored)
-	u.cacheSource.Store(cacheKey, classificationProvenance(&stored))
+	u.storeClassification(cacheKey, &result, classificationProvenance(&result))
 }
 
 // cacheStoreSuppressed reports whether a store for cacheKey is currently
@@ -1636,10 +1693,7 @@ func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *Cla
 			// Do not retain the Layer 2 vector in the long-lived classification
 			// cache (≈4 KB per turn). Live PreResolved still carries QueryVec
 			// for same-turn tool routing.
-			stored := *result
-			stored.QueryVec = nil
-			u.cache.Store(cacheKey, &stored)
-			u.cacheSource.Store(cacheKey, classificationProvenance(result))
+			u.storeClassification(cacheKey, result, classificationProvenance(result))
 		}
 	}
 	log.Printf("[UnifiedIntentClassifier] result: text_len=%d primary=%s conf=%.2f layer=%d reason=%s",

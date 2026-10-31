@@ -145,6 +145,16 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 
+	// The request activity clock starts here, before immediate-command
+	// dispatch. /plan approve (and the other workbench slashes that run a
+	// coding turn) return from this function. A clock started after that
+	// return never ticks while the turn waits for another task to finish
+	// writing the same directory, and the desktop then reports 600s of silence.
+	// A fast command returns before the first 30s tick. One clock covers the
+	// rest of the handler too; do not start a second one after preflight.
+	stopRequestHeartbeat := startRequestLevelHeartbeat(onProgress)
+	defer stopRequestHeartbeat()
+
 	if resp, handled := h.handleImmediateIMCommandWithLoop(msg, trimmed, providedLoopCtx, onProgress, onToken); handled {
 		return resp
 	}
@@ -200,18 +210,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		onProgress("[Status] 已接收任务，正在准备执行路径")
 	}
 
-	// Start a request-level heartbeat ticker that covers the ENTIRE request
-	// lifecycle — including pre-loop phases (IUM LLM calls, proactive_recall,
-	// system prompt build) that happen before the agent loop's own heartbeat
-	// ticker starts. This ensures the frontend's activity timeout window is
-	// never triggered while the backend is actively processing.
-	//
-	// The agent loop has its own heartbeat ticker (startAgentLoopHeartbeat)
-	// which is redundant with this one but harmless — multiple resets of the
-	// frontend timer are idempotent.
-	stopRequestHeartbeat := startRequestLevelHeartbeat(onProgress)
-	defer stopRequestHeartbeat()
-
+	// The agent loop has its own heartbeat ticker (startAgentLoopHeartbeat).
+	// It overlaps the request clock started above and is harmless: another
+	// reset of the same frontend timer does not change the deadline.
 	preflight := h.prepareIMMessagePreflight(&msg, &trimmed)
 	if preflight.Handled {
 		return preflight.Response

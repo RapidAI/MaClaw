@@ -96,7 +96,7 @@ func (a *App) fileCompanionChatGen(userID string) uint64 {
 	return st.chatGen[userID]
 }
 
-func (a *App) fileCompanionBeginNote(sessionID string, parent context.Context) (context.Context, context.CancelFunc) {
+func (a *App) fileCompanionBeginNote(sessionID string, parent context.Context, requestID string) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -104,30 +104,59 @@ func (a *App) fileCompanionBeginNote(sessionID string, parent context.Context) (
 	if a == nil {
 		return ctx, cancel
 	}
+	requestID = strings.TrimSpace(requestID)
 	st := a.companionRuntime()
 	st.noteMu.Lock()
 	if st.noteCancel == nil {
 		st.noteCancel = map[string]context.CancelFunc{}
 	}
-	if prev := st.noteCancel[sessionID]; prev != nil {
-		prev()
+	if st.noteCancelID == nil {
+		st.noteCancelID = map[string]string{}
 	}
-	st.noteCancel[sessionID] = cancel
+	stopped := fileCompanionNoteStopHas(st, sessionID, requestID)
+	if stopped {
+		fileCompanionNoteStopDrop(st, sessionID, requestID)
+	}
+	// A stopped request must not tear down a note that already began under
+	// another id. Its own context is cancelled below.
+	liveID := st.noteCancelID[sessionID]
+	replace := !stopped || liveID == "" || liveID == requestID
+	if replace {
+		if prev := st.noteCancel[sessionID]; prev != nil {
+			prev()
+		}
+		st.noteCancel[sessionID] = cancel
+		st.noteCancelID[sessionID] = requestID
+	}
 	st.noteMu.Unlock()
+	if stopped {
+		cancel()
+	}
 	return ctx, cancel
 }
 
-func (a *App) fileCompanionEndNote(sessionID string, cancel context.CancelFunc) {
+func (a *App) fileCompanionEndNote(sessionID, requestID string, cancel context.CancelFunc) {
 	if cancel != nil {
 		cancel()
 	}
 	if a == nil {
 		return
 	}
+	sessionID = strings.TrimSpace(sessionID)
+	requestID = strings.TrimSpace(requestID)
 	st := a.companionRuntime()
 	st.noteMu.Lock()
-	if st.noteCancel != nil {
-		delete(st.noteCancel, sessionID)
+	stored := ""
+	if st.noteCancelID != nil {
+		stored = st.noteCancelID[sessionID]
+	}
+	if stored == requestID {
+		if st.noteCancel != nil {
+			delete(st.noteCancel, sessionID)
+		}
+		if st.noteCancelID != nil {
+			delete(st.noteCancelID, sessionID)
+		}
 	}
 	st.noteMu.Unlock()
 }
@@ -142,6 +171,86 @@ func (a *App) fileCompanionCancelNote(sessionID string) {
 	st.noteMu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+// fileCompanionMarkNoteStopped stops the note that belongs to requestID.
+// A different live note keeps running. This id is remembered either way, so
+// a later begin of it cancels itself and does not replace that note.
+// An empty requestID still cancels whatever note is live and remembers nothing.
+func (a *App) fileCompanionMarkNoteStopped(sessionID, requestID string) {
+	if a == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	requestID = strings.TrimSpace(requestID)
+	if sessionID == "" {
+		return
+	}
+	st := a.companionRuntime()
+	st.noteMu.Lock()
+	liveID := ""
+	if st.noteCancelID != nil {
+		liveID = st.noteCancelID[sessionID]
+	}
+	var cancel context.CancelFunc
+	switch {
+	case requestID == "":
+		cancel = st.noteCancel[sessionID]
+	case liveID == requestID:
+		fileCompanionNoteStopDrop(st, sessionID, requestID)
+		cancel = st.noteCancel[sessionID]
+	default:
+		fileCompanionNoteStopAdd(st, sessionID, requestID)
+	}
+	st.noteMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (a *App) fileCompanionNoteLiveID(sessionID string) string {
+	if a == nil || sessionID == "" {
+		return ""
+	}
+	st := a.companionRuntime()
+	st.noteMu.Lock()
+	defer st.noteMu.Unlock()
+	if st.noteCancelID == nil {
+		return ""
+	}
+	return st.noteCancelID[sessionID]
+}
+
+// The noteMu holder is the caller. The maps remember every cancelled id.
+func fileCompanionNoteStopHas(st *fileCompanionRuntime, sessionID, requestID string) bool {
+	if st == nil || requestID == "" || st.noteStopped == nil {
+		return false
+	}
+	_, ok := st.noteStopped[sessionID][requestID]
+	return ok
+}
+
+func fileCompanionNoteStopAdd(st *fileCompanionRuntime, sessionID, requestID string) {
+	if st == nil || sessionID == "" || requestID == "" {
+		return
+	}
+	if st.noteStopped == nil {
+		st.noteStopped = map[string]map[string]struct{}{}
+	}
+	if st.noteStopped[sessionID] == nil {
+		st.noteStopped[sessionID] = map[string]struct{}{}
+	}
+	st.noteStopped[sessionID][requestID] = struct{}{}
+}
+
+func fileCompanionNoteStopDrop(st *fileCompanionRuntime, sessionID, requestID string) {
+	if st == nil || requestID == "" || st.noteStopped == nil {
+		return
+	}
+	delete(st.noteStopped[sessionID], requestID)
+	if len(st.noteStopped[sessionID]) == 0 {
+		delete(st.noteStopped, sessionID)
 	}
 }
 
@@ -256,14 +365,20 @@ func (a *App) fileCompanionRunVideoNote(path, canonical string, req FileCompanio
 	if requestID == "" {
 		requestID = "file-companion-note"
 	}
+	defer a.fileCompanionForgetChatStop(requestID)
 	parent := a.ctx
 	if parent == nil {
 		parent = context.Background()
 	}
 	clearGen := a.fileCompanionCaptureChatGen(userID)
-	ctx, cancel := a.fileCompanionBeginNote(sessionID, parent)
+	ctx, cancel := a.fileCompanionBeginNote(sessionID, parent, requestID)
 	ctx = context.WithValue(ctx, noteTurnIDsKey{}, noteTurnIDs{RequestID: requestID, UserID: userID})
-	defer a.fileCompanionEndNote(sessionID, cancel)
+	defer a.fileCompanionEndNote(sessionID, requestID, cancel)
+	// The work directory is shared by the session. A request that was
+	// cancelled before Begin must not remove the note that is still writing.
+	if ctx.Err() != nil {
+		return a.fileCompanionFailNote(requestID, userID, fileCompanionErrNoteCancelled)
+	}
 	work := filepath.Join(a.GetDataDir(), "file-companion", "work", sessionID)
 	defer os.RemoveAll(work)
 

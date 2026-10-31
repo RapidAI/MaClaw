@@ -103,8 +103,28 @@ export function EmbeddingConfigPanel({ lang }: Props) {
                 const spOn = await GetScreenParsingEnabled();
                 setSpEnabled(spOn);
                 const spInfo: any = await CheckYOLOModel();
-                setSpModelExists(spInfo.exists);
+                const spExists = !!spInfo.exists;
+                setSpModelExists(spExists);
                 setSpModelSize(spInfo.size || 0);
+                if (!spExists && spInfo.downloading) {
+                    setSpDownloading(true);
+                } else if (!spExists) {
+                    setSpDownloading(true);
+                    setSpError('');
+                    try {
+                        await DownloadYOLOModel();
+                        const again: any = await CheckYOLOModel();
+                        const againExists = !!again.exists;
+                        setSpModelExists(againExists);
+                        setSpModelSize(again.size || 0);
+                        setSpDownloading(!!again.downloading && !againExists);
+                        if (again.error) setSpError(String(again.error));
+                        if (againExists) setSpEnabled(await GetScreenParsingEnabled());
+                    } catch (e: any) {
+                        setSpError(e?.message || String(e));
+                        setSpDownloading(false);
+                    }
+                }
             } catch {}
             try {
                 const cuOn = await GetComputerUseEnabled();
@@ -205,7 +225,12 @@ export function EmbeddingConfigPanel({ lang }: Props) {
             if (pct >= 100) {
                 setSpDownloading(false);
                 setSpModelExists(true);
-                setSpModelSize(data.downloaded || 0);
+                if (data.downloaded) setSpModelSize(data.downloaded);
+                // Percent 100 is the file landing. The toggle follows
+                // screen_parsing_enabled, which is sent after that decision.
+                if (typeof data.screen_parsing_enabled === 'boolean') {
+                    setSpEnabled(data.screen_parsing_enabled);
+                }
             }
         });
         return () => { EventsOff('yolo-download-progress'); };

@@ -337,10 +337,11 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelDocumentDelivery,
 			Domain: "内容处理 (Content)",
-			TreeText: "用户要把已有文件发送到指定目标、邮箱、路径或另一会话。" +
-				"语义判据：目标是交付到当前会话以外的收件人/位置，而不是本机打开或阅读附件。" +
+			TreeText: "用户要把已有文件发回自己、发到另一个会话、路径或即时通讯。" +
+				"语义判据：目标是当前会话以外的位置，但不是一个邮箱地址。" +
 				"边界：「用系统程序打开本地文档」→ document_open；「阅读已上传附件」→ document_read；" +
-				"「把本轮附件发回当前渠道」→ attachment_delivery；「生成 PDF」→ document_generate。",
+				"「把本轮附件发回当前渠道」→ attachment_delivery；「生成 PDF」→ document_generate；" +
+				"「发到邮箱地址或已配置邮箱」→ mailbox_send。",
 			EmbedTexts: []string{
 				"把这个文件发送给我",
 				"帮我发送这份报告",
@@ -357,7 +358,8 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要把当前已有事实渲染成一份 PDF 文件。" +
 				"语义判据：目标是单阶段排版/导出 PDF，产出物由已收集的事实或用户给出的正文决定，不需要多阶段设计决策。" +
 				"排除：撰写商业计划、研究报告、论文、竞品分析等需要受众/结构/论证设计的多阶段任务 → workflow_task；" +
-				"打开已有本地文档 → document_open；发送到指定目标 → document_delivery；把本轮已上传附件原样发回 → attachment_delivery；" +
+				"打开已有本地文档 → document_open；发给我或发到即时通讯 → document_delivery；把本轮已上传附件原样发回 → attachment_delivery；" +
+				"发到邮箱地址或已配置邮箱 → mailbox_send；" +
 				"保存为 markdown/.md 文本文件而不是 PDF → file_write。",
 			EmbedTexts: []string{
 				"生成一份PDF文档并发给我",
@@ -1163,7 +1165,7 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要查看、搜索或读取已经配置的邮箱里的邮件，不发送。" +
 				"语义判据：用户目标是收件箱、未读邮件、某封邮件正文或附件。" +
 				"边界：「发微信、QQ 或 IM 消息」→ 既有 IM 发送；「用浏览器打开网页邮箱」→ browser；" +
-				"「把文件发到邮箱」→ document_delivery；「发邮件、回复或转发」→ mailbox_send；" +
+				"「发邮件、回复、转发，或把文件发到邮箱」→ mailbox_send；" +
 				"「删除邮件、清空收件箱、删除邮箱里的邮件」→ mailbox_delete。",
 			EmbedTexts: []string{
 				"看看我的邮件",
@@ -1180,11 +1182,11 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelMailboxSend,
 			Domain: "邮箱 (Mailbox)",
-			TreeText: "用户要通过已配置的邮箱发信、回复或转发。发送前必须由用户确认。" +
-				"语义判据：用户目标是把一封邮件送到对方邮箱。" +
-				"边界：「发到微信或 QQ」→ 既有 IM 发送；「只查看收件箱」→ mailbox_read；" +
+			TreeText: "用户要通过已配置的邮箱把内容送到一个邮箱地址，包括回复、转发，以及先整理成文件再寄出。发送前必须由用户确认。" +
+				"语义判据：收件方是邮箱，不取决于用了哪个动词。" +
+				"边界：「发给我、发回当前会话、发到微信或 QQ」→ document_delivery 或 attachment_delivery；「只查看收件箱」→ mailbox_read；" +
 				"「配置或添加邮箱帐号」→ mailbox_configure；「删除邮件或清空收件箱」→ mailbox_delete；" +
-				"「用浏览器打开网页邮箱」→ browser；「把文件发到邮箱」→ document_delivery。",
+				"「用浏览器打开网页邮箱」→ browser。",
 			EmbedTexts: []string{
 				"给对方发一封邮件",
 				"回复这封邮件",

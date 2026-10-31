@@ -279,7 +279,9 @@ func (c *sharedAgentLoopCallbacks) mailboxIntakeRejectReason(argsJSON string, se
 	}
 	canonical, err := c.semanticCanonicalArguments(selection, argsJSON)
 	if err != nil {
-		return err.Error()
+		// ParameterError.Error is only the code. The field path and hint are
+		// what let the model correct the call; the grant stays live either way.
+		return mailboxCanonicalIntakeReason(err)
 	}
 	args := canonical.Values
 	if args == nil {
@@ -290,7 +292,12 @@ func (c *sharedAgentLoopCallbacks) mailboxIntakeRejectReason(argsJSON string, se
 		args = parsed
 	}
 	if isSend {
-		return mailboxSendIntakeReason(args)
+		if reason := mailboxSendIntakeReason(args); reason != "" {
+			return reason
+		}
+		// Send checks the workspace only after the one-shot grant is admitted.
+		// A missing file would then leave the model with no second call.
+		return c.mailboxAttachmentIntakeReason(args)
 	}
 	if isDelete {
 		return mailbox.DeleteShapeReason(args)
@@ -298,8 +305,25 @@ func (c *sharedAgentLoopCallbacks) mailboxIntakeRejectReason(argsJSON string, se
 	return mailboxConfigureIntakeReason(args)
 }
 
+func mailboxCanonicalIntakeReason(err error) string {
+	text := strings.TrimSpace(semanticModelParameterRejection(semanticCanonicalRejectionText(err)))
+	return strings.TrimPrefix(text, "[system rejected] ")
+}
+
 func mailboxSendIntakeReason(args map[string]interface{}) string {
 	return mailbox.SendShapeReason(args)
+}
+
+func (c *sharedAgentLoopCallbacks) mailboxAttachmentIntakeReason(args map[string]interface{}) string {
+	var host *mailbox.Host
+	if c != nil && c.handler != nil {
+		host = c.handler.mailboxHost(c.mailboxPrincipalID())
+	}
+	reason := mailbox.SendAttachmentIntakeReason(host, args)
+	if reason == "" {
+		return ""
+	}
+	return reason + " The call was refused before execution, so the tool remains available: correct the attachment path and call again. Do not ask the user to re-authorize tools."
 }
 
 func mailboxConfigureIntakeReason(args map[string]interface{}) string {

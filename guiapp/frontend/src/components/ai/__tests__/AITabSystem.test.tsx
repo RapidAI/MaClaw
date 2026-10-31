@@ -2056,6 +2056,45 @@ describe('useAITabManager', () => {
             }
         });
 
+        it('drops the oldest closed cloud workspace tab state past the cache cap', () => {
+            const { result } = renderHook(() => useAITabManager());
+            const ids: string[] = [];
+            for (let i = 0; i < 34; i++) {
+                let tab: AITab | null = null;
+                act(() => {
+                    tab = result.current.createProjectTab(`D:/tasks/cloud-evict-${i}`, `Cloud ${i}`, { cloudWorkspaceId: `cws_evict_${i}` });
+                });
+                ids.push(tab!.id);
+                act(() => {
+                    result.current.closeTab(tab!.id, { suppressNewTaskGuide: true });
+                });
+            }
+            expect(result.current.getTabState(ids[0])).toBeUndefined();
+            expect(result.current.getTabState(ids[1])).toBeUndefined();
+            expect(result.current.getTabState(ids[33])?.projectPath).toBe('D:/tasks/cloud-evict-33');
+        });
+
+        it('does not open the new-task guide when an idle switch closes the last task tab', () => {
+            const guide = vi.fn();
+            window.addEventListener('maclaw:open-new-task-wizard', guide);
+            try {
+                const { result } = renderHook(() => useAITabManager());
+                let tab: AITab | null = null;
+                act(() => {
+                    tab = result.current.createProjectTab('D:/tasks/only', 'Only');
+                });
+
+                act(() => {
+                    result.current.closeTab(tab!.id, { suppressNewTaskGuide: true });
+                });
+
+                expect(result.current.activeTab.id).toBe('local');
+                expect(guide).not.toHaveBeenCalled();
+            } finally {
+                window.removeEventListener('maclaw:open-new-task-wizard', guide);
+            }
+        });
+
         it('does not affect other tabs when closing one', () => {
             const { result } = renderHook(() => useAITabManager());
 

@@ -1,13 +1,10 @@
 package remote
 
 import (
-	"encoding/json"
 	"fmt"
-	"os/exec"
-	"strings"
+	"sync"
 	"syscall"
-
-	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+	"unsafe"
 )
 
 // Stubs for non-Windows platforms — the compiler needs these on Windows
@@ -26,83 +23,95 @@ func buildMultiMonitorScreenshotLinux() string        { return "" }
 func buildSingleMonitorScreenshotDarwin(_ int) string { return "" }
 func buildSingleMonitorScreenshotLinux(_ int) string  { return "" }
 
-// enumDisplaysWindows enumerates all connected displays by running a
-// PowerShell one-liner that queries [System.Windows.Forms.Screen]::AllScreens
-// and outputs JSON.
+// enumDisplaysWindows lists monitors in this process's coordinate space.
+//
+// Screen.AllScreens from a DPI-unaware PowerShell process returns logical
+// pixels. Computer Use captures with per-monitor-aware GetWindowRect and
+// GetSystemMetrics, which are physical pixels. Mixing the two made a 150%
+// desktop report scale 1.5 and shifted every click. EnumDisplayMonitors in
+// this process matches the screenshot.
 func enumDisplaysWindows() ([]DisplayInfo, error) {
-	psScript := `Add-Type -AssemblyName System.Windows.Forms;` +
-		`Add-Type -AssemblyName System.Drawing;` +
-		`$screens = [System.Windows.Forms.Screen]::AllScreens;` +
-		`$result = @();` +
-		`$i = 0;` +
-		`foreach ($s in $screens) {` +
-		`  $result += @{` +
-		`    index = $i;` +
-		`    name = $s.DeviceName;` +
-		`    x = $s.Bounds.X;` +
-		`    y = $s.Bounds.Y;` +
-		`    width = $s.Bounds.Width;` +
-		`    height = $s.Bounds.Height;` +
-		`    scale = [Math]::Round(96.0 / 96.0, 2);` +
-		`    primary = $s.Primary` +
-		`  };` +
-		`  $i++` +
-		`};` +
-		`$result | ConvertTo-Json -Compress`
-
-	psExe, err := coretool.ResolveWindowsPowerShell()
-	if err != nil {
-		return nil, fmt.Errorf("enumDisplaysWindows: %w", err)
-	}
-	cmd := exec.Command(psExe, "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("enumDisplaysWindows: powershell failed: %w", err)
-	}
-
-	outStr := strings.TrimSpace(string(out))
-	if outStr == "" {
-		return nil, fmt.Errorf("enumDisplaysWindows: empty output from powershell")
-	}
-
-	// PowerShell outputs a single object (not array) when there's only one screen.
-	// Normalize to always be an array.
-	if !strings.HasPrefix(outStr, "[") {
-		outStr = "[" + outStr + "]"
-	}
-
-	var raw []struct {
-		Index   int     `json:"index"`
-		Name    string  `json:"name"`
-		X       int     `json:"x"`
-		Y       int     `json:"y"`
-		Width   int     `json:"width"`
-		Height  int     `json:"height"`
-		Scale   float64 `json:"scale"`
-		Primary bool    `json:"primary"`
-	}
-	if err := json.Unmarshal([]byte(outStr), &raw); err != nil {
-		return nil, fmt.Errorf("enumDisplaysWindows: json parse failed: %w (output: %s)", err, outStr)
-	}
-
-	displays := make([]DisplayInfo, len(raw))
-	for i, r := range raw {
-		displays[i] = DisplayInfo{
-			Index:   r.Index,
-			Name:    r.Name,
-			X:       r.X,
-			Y:       r.Y,
-			Width:   r.Width,
-			Height:  r.Height,
-			Scale:   r.Scale,
-			Primary: r.Primary,
-		}
-	}
-	if len(displays) == 0 {
+	hits := collectMonitors()
+	if len(hits) == 0 {
 		return nil, fmt.Errorf("enumDisplaysWindows: no displays found")
 	}
-	return displays, nil
+	for i := range hits {
+		hits[i].Index = i
+	}
+	return hits, nil
+}
+
+const monitorInfoPrimary = 1
+
+type monitorInfoEx struct {
+	CbSize    uint32
+	RcMonitor printRect
+	RcWork    printRect
+	DwFlags   uint32
+	SzDevice  [32]uint16
+}
+
+var (
+	monitorUser32           = syscall.NewLazyDLL("user32.dll")
+	monitorShcore           = syscall.NewLazyDLL("shcore.dll")
+	procEnumDisplayMonitors = monitorUser32.NewProc("EnumDisplayMonitors")
+	procGetMonitorInfoW     = monitorUser32.NewProc("GetMonitorInfoW")
+	procGetDpiForMonitor    = monitorShcore.NewProc("GetDpiForMonitor")
+
+	monitorEnumOnce sync.Once
+	monitorEnumCB   uintptr
+	monitorEnumMu   sync.Mutex
+	monitorEnumHits []DisplayInfo
+)
+
+func collectMonitors() []DisplayInfo {
+	monitorEnumMu.Lock()
+	defer monitorEnumMu.Unlock()
+	monitorEnumOnce.Do(func() {
+		monitorEnumCB = syscall.NewCallback(monitorEnumProc)
+	})
+	monitorEnumHits = monitorEnumHits[:0]
+	procEnumDisplayMonitors.Call(0, 0, monitorEnumCB, 0)
+	out := make([]DisplayInfo, len(monitorEnumHits))
+	copy(out, monitorEnumHits)
+	return out
+}
+
+func monitorEnumProc(hmon, _, _, _ uintptr) uintptr {
+	var info monitorInfoEx
+	info.CbSize = uint32(unsafe.Sizeof(info))
+	if ret, _, _ := procGetMonitorInfoW.Call(hmon, uintptr(unsafe.Pointer(&info))); ret == 0 {
+		return 1
+	}
+	w := int(info.RcMonitor.right - info.RcMonitor.left)
+	h := int(info.RcMonitor.bottom - info.RcMonitor.top)
+	if w <= 0 || h <= 0 {
+		return 1
+	}
+	monitorEnumHits = append(monitorEnumHits, DisplayInfo{
+		Name:    syscall.UTF16ToString(info.SzDevice[:]),
+		X:       int(info.RcMonitor.left),
+		Y:       int(info.RcMonitor.top),
+		Width:   w,
+		Height:  h,
+		Scale:   monitorDPIScale(hmon),
+		Primary: info.DwFlags&monitorInfoPrimary != 0,
+	})
+	return 1
+}
+
+func monitorDPIScale(hmon uintptr) float64 {
+	if err := procGetDpiForMonitor.Find(); err != nil {
+		return 1
+	}
+	var dpiX, dpiY uint32
+	// MDT_EFFECTIVE_DPI = 0. S_OK is 0. Bounds stay in this process's
+	// pixels either way; scale is informational.
+	hr, _, _ := procGetDpiForMonitor.Call(hmon, 0, uintptr(unsafe.Pointer(&dpiX)), uintptr(unsafe.Pointer(&dpiY)))
+	if hr != 0 || dpiX == 0 {
+		return 1
+	}
+	return float64(dpiX) / 96
 }
 
 // buildMultiMonitorScreenshotWindows generates a PowerShell command that
@@ -111,11 +120,11 @@ func enumDisplaysWindows() ([]DisplayInfo, error) {
 // SM_CYVIRTUALSCREEN) instead of PrimaryScreen.Bounds.
 //
 // It preserves the existing 5-level degradation chain:
-//   1. CopyFromScreen (virtual desktop)
-//   2. BitBlt (virtual desktop)
-//   3. tscon + CopyFromScreen (virtual desktop)
-//   4. PrintWindow composite (virtual desktop)
-//   5. DXGI capture
+//  1. CopyFromScreen (virtual desktop)
+//  2. BitBlt (virtual desktop)
+//  3. tscon + CopyFromScreen (virtual desktop)
+//  4. PrintWindow composite (virtual desktop)
+//  5. DXGI capture
 //
 // Each level uses virtual desktop coordinates so all monitors are captured.
 func buildMultiMonitorScreenshotWindows() string {

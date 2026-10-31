@@ -5,14 +5,15 @@ import "strings"
 type codingAgentEventPhaseKind string
 
 const (
-	codingAgentEventPhaseUnknown   codingAgentEventPhaseKind = ""
-	codingAgentEventPhaseStarting  codingAgentEventPhaseKind = "starting"
-	codingAgentEventPhaseRunning   codingAgentEventPhaseKind = "running"
-	codingAgentEventPhaseCompleted codingAgentEventPhaseKind = "completed"
-	codingAgentEventPhaseFailed    codingAgentEventPhaseKind = "failed"
-	codingAgentEventPhaseRetrying  codingAgentEventPhaseKind = "retrying"
-	codingAgentEventPhaseSkipped   codingAgentEventPhaseKind = "skipped"
-	codingAgentEventPhaseResult    codingAgentEventPhaseKind = "result"
+	codingAgentEventPhaseUnknown       codingAgentEventPhaseKind = ""
+	codingAgentEventPhaseStarting      codingAgentEventPhaseKind = "starting"
+	codingAgentEventPhaseRunning       codingAgentEventPhaseKind = "running"
+	codingAgentEventPhaseCompleted     codingAgentEventPhaseKind = "completed"
+	codingAgentEventPhaseFailed        codingAgentEventPhaseKind = "failed"
+	codingAgentEventPhaseRetrying      codingAgentEventPhaseKind = "retrying"
+	codingAgentEventPhaseSkipped       codingAgentEventPhaseKind = "skipped"
+	codingAgentEventPhaseResult        codingAgentEventPhaseKind = "result"
+	codingAgentEventPhaseWaitingWriter codingAgentEventPhaseKind = "waiting_writer"
 )
 
 func normalizeCodingAgentEventPhaseKind(phase string) codingAgentEventPhaseKind {
@@ -31,6 +32,8 @@ func normalizeCodingAgentEventPhaseKind(phase string) codingAgentEventPhaseKind 
 		return codingAgentEventPhaseSkipped
 	case codingAgentEventPhaseResult:
 		return codingAgentEventPhaseResult
+	case codingAgentEventPhaseWaitingWriter:
+		return codingAgentEventPhaseWaitingWriter
 	default:
 		return codingAgentEventPhaseUnknown
 	}

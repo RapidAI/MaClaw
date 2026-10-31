@@ -25,6 +25,7 @@ const (
 	companionReaderPDFMarksKind        = "pdf_marks"
 	companionReaderPDFTranslationsKind = "pdf_translations"
 	companionReaderPDFDrawingsKind     = "pdf_drawings"
+	companionReaderPDFBookmarksKind    = "pdf_bookmarks"
 	companionReaderChatMarksKind       = "chat_marks"
 	companionReaderInputHistoryKind    = "input_history"
 	// One document can hold many long translations (200 × 12k characters), so
@@ -104,8 +105,8 @@ func companionReaderNormalizeHistory(entries []string) []string {
 
 // LoadCompanionReaderState returns every stored value for the companion reader
 // as JSON: {"pdf_marks": {path: [...mark...]}, "pdf_translations": {path: [...]},
-// "pdf_drawings": {path: [...]}, "chat_marks": {path: [...mark...]},
-// "input_history": ["..."]}.
+// "pdf_drawings": {path: [...]}, "pdf_bookmarks": {path: [...]},
+// "chat_marks": {path: [...mark...]}, "input_history": ["..."]}.
 // legacyPDFMarksJSON and legacyInputHistoryJSON are the old WebView documents
 // (maclaw.fileCompanionPdfMarks.v1 and maclaw.fileCompanionInputHistory.v1).
 // A non-empty document inserts rows that are not stored yet, so a leftover
@@ -137,6 +138,7 @@ type companionReaderStatePayload struct {
 	PDFMarks        map[string]json.RawMessage `json:"pdf_marks"`
 	PDFTranslations map[string]json.RawMessage `json:"pdf_translations"`
 	PDFDrawings     map[string]json.RawMessage `json:"pdf_drawings"`
+	PDFBookmarks    map[string]json.RawMessage `json:"pdf_bookmarks"`
 	ChatMarks       map[string]json.RawMessage `json:"chat_marks"`
 	InputHistory    []string                   `json:"input_history"`
 }
@@ -146,6 +148,7 @@ func readCompanionReaderState(db *sql.DB) (companionReaderStatePayload, error) {
 		PDFMarks:        map[string]json.RawMessage{},
 		PDFTranslations: map[string]json.RawMessage{},
 		PDFDrawings:     map[string]json.RawMessage{},
+		PDFBookmarks:    map[string]json.RawMessage{},
 		ChatMarks:       map[string]json.RawMessage{},
 		InputHistory:    []string{},
 	}
@@ -171,6 +174,10 @@ func readCompanionReaderState(db *sql.DB) (companionReaderStatePayload, error) {
 		case companionReaderPDFDrawingsKind:
 			if json.Valid([]byte(value)) {
 				payload.PDFDrawings[key] = json.RawMessage(value)
+			}
+		case companionReaderPDFBookmarksKind:
+			if json.Valid([]byte(value)) {
+				payload.PDFBookmarks[key] = json.RawMessage(value)
 			}
 		case companionReaderChatMarksKind:
 			if json.Valid([]byte(value)) {
@@ -311,6 +318,28 @@ func (a *App) SaveCompanionPdfMarks(path, marksJSON string) error {
 		return a.deleteCompanionReaderState(companionReaderPDFMarksKind, key)
 	}
 	return a.writeCompanionReaderState(companionReaderPDFMarksKind, key, marksJSON)
+}
+
+// SaveCompanionPdfBookmarks stores one document's bookmarks. An empty list
+// removes the row, which is what clearing every bookmark means. Order in the
+// array is the order the reader added them.
+func (a *App) SaveCompanionPdfBookmarks(path, bookmarksJSON string) error {
+	key := companionReaderPathKey(path)
+	if key == "" || len(key) > companionReaderKeyMaxBytes {
+		return fmt.Errorf("invalid companion document path")
+	}
+	bookmarksJSON = strings.TrimSpace(bookmarksJSON)
+	if len(bookmarksJSON) > companionReaderValueMaxBytes {
+		return fmt.Errorf("companion pdf bookmarks exceed %d bytes", companionReaderValueMaxBytes)
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal([]byte(bookmarksJSON), &list); err != nil {
+		return fmt.Errorf("companion pdf bookmarks must be a JSON array")
+	}
+	if len(list) == 0 {
+		return a.deleteCompanionReaderState(companionReaderPDFBookmarksKind, key)
+	}
+	return a.writeCompanionReaderState(companionReaderPDFBookmarksKind, key, bookmarksJSON)
 }
 
 // SaveCompanionPdfDrawings stores one document's freehand strokes and boxes.

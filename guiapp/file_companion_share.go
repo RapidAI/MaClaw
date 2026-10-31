@@ -64,7 +64,7 @@ func normalizeFileCompanionContact(value string) string {
 }
 
 func (a *App) writeFileCompanionShareZip(source, highlightsJSON string) (string, error) {
-	highlights, chatMarks, annotations, drawings, err := fileCompanionSplitSharePayload(highlightsJSON)
+	highlights, chatMarks, annotations, drawings, bookmarks, err := fileCompanionSplitSharePayload(highlightsJSON)
 	if err != nil {
 		return "", err
 	}
@@ -79,7 +79,7 @@ func (a *App) writeFileCompanionShareZip(source, highlightsJSON string) (string,
 		_ = os.Remove(name)
 		return "", errors.New("无法保存分享")
 	}
-	if err := writeFileCompanionProject(name, source, highlights, chatMarks, annotations, drawings, messages, paperPath, paperTurn); err != nil {
+	if err := writeFileCompanionProject(name, source, highlights, chatMarks, annotations, drawings, bookmarks, messages, paperPath, paperTurn); err != nil {
 		_ = os.Remove(name)
 		return "", err
 	}
@@ -109,6 +109,7 @@ type fileCompanionShareStage struct {
 	chatMarks   json.RawMessage
 	annotations json.RawMessage
 	drawings    json.RawMessage
+	bookmarks   json.RawMessage
 	messages    []FileCompanionMessage
 	paper       []byte
 	paperPath   string
@@ -122,6 +123,7 @@ type fileCompanionShareInstall struct {
 	chatMarks   json.RawMessage
 	annotations json.RawMessage
 	drawings    json.RawMessage
+	bookmarks   json.RawMessage
 	messages    []FileCompanionMessage
 	project     bool
 }
@@ -206,6 +208,7 @@ func (a *App) stageFileCompanionShare(token, fallbackName string, raw []byte) (*
 		stage.chatMarks = manifest.ChatMarks
 		stage.annotations = manifest.Annotations
 		stage.drawings = manifest.Drawings
+		stage.bookmarks = manifest.Bookmarks
 		stage.messages = manifest.Messages
 		stage.paperPath = paperPath
 		stage.paperTurn = manifest.PaperTurn
@@ -309,6 +312,7 @@ func (a *App) publishStagedFileCompanionShareLocked(stage *fileCompanionShareSta
 		chatMarks:   stage.chatMarks,
 		annotations: stage.annotations,
 		drawings:    stage.drawings,
+		bookmarks:   stage.bookmarks,
 		messages:    stage.messages,
 		project:     stage.project,
 	}, nil
@@ -377,6 +381,11 @@ func (a *App) commitLockedFileCompanionShare(stage *fileCompanionShareStage, epo
 			store.Drawings = string(installed.drawings)
 		} else {
 			store.Drawings = ""
+		}
+		if installed.bookmarks != nil {
+			store.Bookmarks = string(installed.bookmarks)
+		} else {
+			store.Bookmarks = ""
 		}
 	}
 	saved := *store
@@ -1026,6 +1035,10 @@ func (a *App) pullFileCompanionShare(hub, viewer string, item FileCompanionLibra
 		if installed.drawings != nil {
 			strokes := string(installed.drawings)
 			update.Drawings = &strokes
+		}
+		if installed.bookmarks != nil {
+			places := string(installed.bookmarks)
+			update.Bookmarks = &places
 		}
 		messages := installed.messages
 		if messages == nil {

@@ -24,6 +24,7 @@ import { loadPdfMarks, savePdfMarks, hydratePdfMarks } from "./pdfMarks";
 import { hydrateChatMarks, loadChatMarks, saveChatMarks } from "./chatMarks";
 import { hydratePdfTranslations, loadPdfTranslations, notifyPdfAnnotationsChanged, savePdfTranslations } from "./pdfTranslations";
 import { hydratePdfDrawings, loadPdfDrawings, notifyPdfDrawingsChanged, savePdfDrawings } from "./pdfDrawings";
+import { hydratePdfBookmarks, loadPdfBookmarks } from "./pdfBookmarks";
 import { chatTextSpans } from "./chatMarkAnchors";
 import { fileCompanionInputHistory, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
 
@@ -73,6 +74,8 @@ const openWeb = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const sendWeb = vi.fn();
 const clearWeb = vi.fn();
 const cancelTurn = vi.fn();
+const cancelGeneration = vi.fn();
+const cancelWebGeneration = vi.fn();
 const cancelWeb = vi.fn();
 const stopWeb = vi.fn();
 const playerLeft = vi.fn();
@@ -130,6 +133,8 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     SendFileCompanionWebMessage: (...args: unknown[]) => sendWeb(...args),
     ClearFileCompanionWebChat: (...args: unknown[]) => clearWeb(...args),
     CancelFileCompanionTurn: (...args: unknown[]) => cancelTurn(...args),
+    CancelFileCompanionGeneration: (...args: unknown[]) => cancelGeneration(...args),
+    CancelFileCompanionWebGeneration: (...args: unknown[]) => cancelWebGeneration(...args),
     CancelFileCompanionWebTurn: (...args: unknown[]) => cancelWeb(...args),
     StopFileCompanionWebNote: (...args: unknown[]) => stopWeb(...args),
     FileCompanionWebPlayerLeft: (...args: unknown[]) => playerLeft(...args),
@@ -380,6 +385,10 @@ beforeEach(() => {
     clearWeb.mockReset();
     cancelTurn.mockReset();
     cancelTurn.mockResolvedValue(undefined);
+    cancelGeneration.mockReset();
+    cancelGeneration.mockResolvedValue(undefined);
+    cancelWebGeneration.mockReset();
+    cancelWebGeneration.mockResolvedValue(undefined);
     cancelWeb.mockReset();
     cancelWeb.mockResolvedValue(undefined);
     stopWeb.mockReset();
@@ -404,6 +413,7 @@ beforeEach(() => {
     hydrateChatMarks({});
     hydratePdfTranslations({});
     hydratePdfDrawings({});
+    hydratePdfBookmarks({});
     ready.mockResolvedValue(undefined);
     replaceOffice.mockResolvedValue(undefined);
     clearChat.mockResolvedValue(undefined);
@@ -1977,7 +1987,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-share-months"));
         fireEvent.change(screen.getByTestId("file-companion-share-amount"), { target: { value: "2" } });
         fireEvent.click(screen.getByTestId("file-companion-library-share"));
-        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "private", "secret", "", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [] }), 60));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "private", "secret", "", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }), 60));
         expect(screen.getByTestId("file-companion-library-link").textContent).toContain("/hub/documents/shares/");
         fireEvent.click(screen.getByTestId("file-companion-share-dialog-close"));
         await waitFor(() => expect(screen.queryByTestId("file-companion-share-dialog")).toBeNull());
@@ -2490,7 +2500,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShare.mock.calls[0] as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [], drawings: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] });
     });
 
     it("pushes the host's own highlight change to the share", async () => {
@@ -2509,7 +2519,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], annotations: [], drawings: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] });
     });
 
     it("pushes the host's answer highlight to the share", async () => {
@@ -2528,7 +2538,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [chatMark], annotations: [], drawings: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [chatMark], annotations: [], drawings: [], bookmarks: [] });
     });
 
     it("pushes the host's placed annotation to the share", async () => {
@@ -2556,7 +2566,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [annotation], drawings: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [annotation], drawings: [], bookmarks: [] });
     });
 
     it("pushes the host's freehand drawing to the share", async () => {
@@ -2584,7 +2594,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [], drawings: [drawing] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [], drawings: [drawing], bookmarks: [] });
     });
 
     it("pushes a highlight painted before the library list names the host", async () => {
@@ -2607,7 +2617,7 @@ describe("FileCompanionWindow", () => {
         });
         await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
-        expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], annotations: [], drawings: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] });
     });
 
     it("warns once when the automatic share push fails", async () => {
@@ -2935,15 +2945,15 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(screen.getByTestId("file-companion-share-group-pick").querySelectorAll("option").length).toBeGreaterThan(1));
         fireEvent.change(screen.getByTestId("file-companion-share-group-pick"), { target: { value: groupID } });
         fireEvent.click(screen.getByTestId("file-companion-library-share"));
-        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "group", "", groupID, JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [] }), 0));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "group", "", groupID, JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }), 0));
         await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
         fireEvent.click(screen.getByTestId("file-companion-share-person"));
         fireEvent.change(screen.getByTestId("file-companion-share-target"), { target: { value: "reader@example.com" } });
         fireEvent.click(screen.getByTestId("file-companion-library-share"));
-        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "person", "", "reader@example.com", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [] }), 0));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "person", "", "reader@example.com", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }), 0));
         await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
         fireEvent.click(screen.getByTestId("file-companion-library-sync"));
-        await waitFor(() => expect(syncShare).toHaveBeenCalledWith("C:/notes/a.md", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [] })));
+        await waitFor(() => expect(syncShare).toHaveBeenCalledWith("C:/notes/a.md", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] })));
     });
 
     it("selects a newly created group and clears the selection when it is dissolved", async () => {
@@ -5091,6 +5101,118 @@ describe("FileCompanionWindow", () => {
         });
     });
 
+    it("cancels the running turn from the progress button and keeps the draft", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "上一问" },
+                { role: "assistant", text: "旧回答" },
+            ],
+        }));
+        let fail: (err: unknown) => void = () => undefined;
+        send.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByText("旧回答");
+        fireEvent.change(await screen.findByTestId("file-companion-input"), { target: { value: "方法的实验充分吗" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        const sent = send.mock.calls[0][0] as { path?: string; request_id?: string };
+        await screen.findByText("方法的实验充分吗");
+        act(() => {
+            runtime.emit("ai-assistant-token", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "实验部分",
+                request_id: sent.request_id,
+            }));
+            runtime.emit("ai-assistant-progress", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "正在整理上下文并准备模型请求",
+                request_id: sent.request_id,
+            }));
+        });
+        await screen.findByText("实验部分");
+        await screen.findByTestId("file-companion-progress");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "还想问一句" } });
+        const button = screen.getByTestId("file-companion-send");
+        expect(button.textContent).toBe("处理中");
+        expect(button.getAttribute("aria-label")).toBe("取消");
+        fireEvent.click(button);
+        await waitFor(() => {
+            expect(cancelGeneration).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("file-companion-send").textContent).toBe("发送");
+        });
+        expect(cancelGeneration).toHaveBeenCalledWith("C:/notes/a.md", sent.request_id);
+        expect(send).toHaveBeenCalledTimes(1);
+        expect(screen.getByText("旧回答")).toBeTruthy();
+        expect(screen.getByText("方法的实验充分吗")).toBeTruthy();
+        expect(screen.getByText("实验部分")).toBeTruthy();
+        expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("还想问一句");
+        expect(screen.queryByTestId("file-companion-progress")).toBeNull();
+        act(() => {
+            runtime.emit("ai-assistant-token", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "迟到的片段",
+                request_id: sent.request_id,
+            }));
+            runtime.emit("ai-assistant-progress", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "还在整理",
+                request_id: sent.request_id,
+            }));
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "",
+                error: "cancelled",
+                request_id: sent.request_id,
+            }));
+        });
+        expect(screen.queryByText("迟到的片段")).toBeNull();
+        expect(screen.queryByText("cancelled")).toBeNull();
+        expect(screen.queryByText("还在整理")).toBeNull();
+        expect(screen.getByText("实验部分")).toBeTruthy();
+        expect(screen.getByText("旧回答")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-send").textContent).toBe("发送");
+        await act(async () => { fail(new Error("cancelled")); });
+        expect(screen.queryByText("cancelled")).toBeNull();
+        expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("还想问一句");
+    });
+
+    it("does not start a second web note from the composer while the cancelled one is still writing", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        await screen.findByTestId("file-companion-web-frame");
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "记笔记" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止"));
+        const first = sendWeb.mock.calls[0][0] as { requestId?: string; text?: string };
+        expect(first.text).toBe("记笔记");
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-send").textContent).toBe("发送"));
+        expect(cancelWebGeneration).toHaveBeenCalledWith("web-abc", first.requestId);
+        expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "记笔记" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        expect(sendWeb).toHaveBeenCalledTimes(1);
+        expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("记笔记");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "这页在讲什么" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(2));
+        expect(sendWeb.mock.calls[1][0]).toEqual(expect.objectContaining({ text: "这页在讲什么", sessionId: "web-abc" }));
+        await act(async () => { release(); });
+    });
+
     it("shows the drawing an answer refers to, and zoom it on click", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/figs.md"] });
         open.mockImplementation(async (path: string) => doc(path, {
@@ -5397,6 +5519,8 @@ describe("FileCompanionWindow", () => {
         hydratePdfTranslations({ "c:/paper.pdf": [annotation] });
         const drawing = { id: "d1", page: 1, color: "yellow" as const, tool: "line" as const, points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }] };
         hydratePdfDrawings({ "c:/paper.pdf": [drawing] });
+        const bookmark = { id: "b1", page: 2, x: 0.2, y: 0.4, color: "orange" as const, name: "先加" };
+        hydratePdfBookmarks({ "c:/paper.pdf": [bookmark] });
         boot.mockResolvedValue({ paths: ["C:/paper.pdf"] });
         open.mockResolvedValue(doc("C:/paper.pdf", {
             messages: [{ role: "user", text: "这段讲什么" }, { role: "assistant", text: "讲方法", reasoning: "先看摘要" }],
@@ -5411,6 +5535,7 @@ describe("FileCompanionWindow", () => {
         expect(packed.chatMarks).toEqual([]);
         expect(packed.annotations).toEqual([annotation]);
         expect(packed.drawings).toEqual([drawing]);
+        expect(packed.bookmarks).toEqual([bookmark]);
         expect(screen.getByText("这段讲什么")).toBeTruthy();
 
         hydratePdfMarks({});
@@ -5421,6 +5546,7 @@ describe("FileCompanionWindow", () => {
             chatMarks: [importedChatMark],
             annotations: [annotation],
             drawings: [drawing],
+            bookmarks: [{ id: "b9", page: 7, x: 0.1, y: 0.8, color: "teal", name: "后加" }],
             imported: true,
         }));
         runtime.emit("file-companion:open", ["C:/project.zip"]);
@@ -5432,6 +5558,7 @@ describe("FileCompanionWindow", () => {
         expect(loadChatMarks("C:/restored/paper.pdf")).toEqual([importedChatMark]);
         expect(loadPdfTranslations("C:/restored/paper.pdf")[0]).toMatchObject({ id: "a1", kind: "annotation", shared: true });
         expect(loadPdfDrawings("C:/restored/paper.pdf")[0]).toMatchObject({ id: "d1", shared: true });
+        expect(loadPdfBookmarks("C:/restored/paper.pdf")).toEqual([{ id: "b9", page: 7, x: 0.1, y: 0.8, color: "teal", name: "后加" }]);
     });
 
     it("shows the assistant reply on the matching session_key only", async () => {

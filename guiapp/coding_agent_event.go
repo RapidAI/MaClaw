@@ -367,3 +367,23 @@ func emitCodingAgentEvent(onProgress func(string), event CodingAgentEvent) {
 	}
 	onProgress(message)
 }
+
+// codingWriterAdmissionWaitDetail is the turn's account of a writer admission
+// wait that is still real: an unknown scope, an unknown write set, a remote
+// shared tree, or an isolated merge. Shared local tasks with concrete claims
+// do not take this wait. The sentence is the phase detail, not a board banner.
+const codingWriterAdmissionWaitDetail = "同一目录上另一个任务还在写入，本任务等它结束后再开始"
+
+// codingWriterAdmissionWaitEvent is the coding-turn phase for that wait.
+// assistant_note is activity the process list already renders. task_status
+// alone leaves the list empty, and a bare sentence is dropped by the trail filter.
+func codingWriterAdmissionWaitEvent(task *TaskItem) CodingAgentEvent {
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseWaitingWriter, task, "", "")
+	event.Event = codingAgentEventKindAssistantNote.String()
+	event.Detail = codingWriterAdmissionWaitDetail
+	return event
+}
+
+func emitCodingWriterAdmissionWait(onProgress func(string), task *TaskItem) {
+	emitCodingAgentEvent(onProgress, codingWriterAdmissionWaitEvent(task))
+}

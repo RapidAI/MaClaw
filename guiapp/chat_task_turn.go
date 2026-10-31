@@ -513,6 +513,11 @@ func (h *IMMessageHandler) tryDesktopChatStopReply(msg IMUserMessage) (*IMAgentR
 	if h == nil || !h.desktopChatTurn(msg) {
 		return nil, false
 	}
+	// Goal and session-round continuations replay the open task inside a host
+	// prompt. The person did not type that line, so it is not a stop request.
+	if isGoalSystemContinuation(msg.Text) || isSessionRoundContinuation(msg.Text) {
+		return nil, false
+	}
 	sessionKey := desktopChatSessionKey(msg)
 	if h.peekMailboxDraftID(sessionKey) != "" && mailbox.IsCancelText(msg.Text) {
 		return nil, false

@@ -49,6 +49,29 @@ func TestCompanionReaderStatePersistsPdfMarks(t *testing.T) {
 	}
 }
 
+func TestCompanionReaderStatePersistsPdfBookmarks(t *testing.T) {
+	app := newCompanionReaderTestApp(t)
+	bookmarks := `[{"id":"b1","page":7,"x":0.2,"y":0.4,"color":"teal","name":"基线"}]`
+	if err := app.SaveCompanionPdfBookmarks(`C:\Docs\Paper.PDF`, bookmarks); err != nil {
+		t.Fatalf("SaveCompanionPdfBookmarks: %v", err)
+	}
+	payload := loadCompanionReaderTestState(t, app, "", "")
+	got, ok := payload.PDFBookmarks["c:/docs/paper.pdf"]
+	if !ok || !strings.Contains(string(got), "基线") {
+		t.Fatalf("bookmarks = %v", payload.PDFBookmarks)
+	}
+	if err := app.SaveCompanionPdfBookmarks(`C:\Docs\Paper.PDF`, "[]"); err != nil {
+		t.Fatalf("SaveCompanionPdfBookmarks empty: %v", err)
+	}
+	payload = loadCompanionReaderTestState(t, app, "", "")
+	if _, ok := payload.PDFBookmarks["c:/docs/paper.pdf"]; ok {
+		t.Fatalf("cleared bookmarks remained: %v", payload.PDFBookmarks)
+	}
+	if err := app.SaveCompanionPdfBookmarks("/tmp/a.pdf", `{"not":"an array"}`); err == nil {
+		t.Fatal("object bookmarks were accepted")
+	}
+}
+
 func TestCompanionReaderStatePersistsPdfDrawings(t *testing.T) {
 	app := newCompanionReaderTestApp(t)
 	drawings := `[{"id":"d1","page":1,"color":"yellow","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`

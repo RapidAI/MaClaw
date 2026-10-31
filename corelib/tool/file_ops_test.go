@@ -1,9 +1,15 @@
 package tool
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestResolveFileToolPath(t *testing.T) {
@@ -135,6 +141,316 @@ func TestEditTextFile(t *testing.T) {
 	data, _ = os.ReadFile(path)
 	if string(data) != "x b y" {
 		t.Fatalf("content = %q, want %q", string(data), "x b y")
+	}
+}
+
+func TestEditTextFileReadsLatestBytesUnderPathLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	var closeRelease sync.Once
+	finish := func() { closeRelease.Do(func() { close(release) }) }
+	textFileMutationHook.Store(func(got string) {
+		if got != path {
+			return
+		}
+		once.Do(func() { close(entered) })
+		<-release
+	})
+	t.Cleanup(func() {
+		textFileMutationHook.Store((func(string))(nil))
+		finish()
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := EditTextFile(path, "fresh", "FRESH", false)
+		errCh <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("edit did not enter the file lock")
+	}
+	if err := os.WriteFile(path, []byte("fresh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	finish()
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "FRESH\n" {
+		t.Fatalf("content = %q, want the edit applied to the bytes written while the lock was held", data)
+	}
+}
+
+func TestConcurrentEditTextFileKeepsBothReplacements(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "both.txt")
+	for round := 0; round < 20; round++ {
+		if err := os.WriteFile(path, []byte("left right\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		errCh := make(chan error, 2)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, err := EditTextFile(path, "left", "LEFT", false)
+			errCh <- err
+		}()
+		go func() {
+			defer wg.Done()
+			_, err := EditTextFile(path, "right", "RIGHT", false)
+			errCh <- err
+		}()
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			if err != nil {
+				t.Fatalf("round %d: %v", round, err)
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "LEFT RIGHT\n" {
+			t.Fatalf("round %d content = %q, want both replacements", round, data)
+		}
+	}
+}
+
+func TestTextFileWriteLockIsPerPath(t *testing.T) {
+	dir := t.TempDir()
+	held := filepath.Join(dir, "a.txt")
+	other := filepath.Join(dir, "b.txt")
+	heldLock := textFileWriteLock(held)
+	heldLock.Lock()
+	t.Cleanup(heldLock.Unlock)
+	done := make(chan error, 1)
+	go func() {
+		_, err := WriteTextFile(other, "bee", "overwrite")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("write of a different file waited on the other path lock")
+	}
+	data, err := os.ReadFile(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "bee" {
+		t.Fatalf("content = %q", data)
+	}
+}
+
+func TestTextFileWriteLockKeyStableAcrossCreate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.go")
+	before := textFileWriteLockKey(path)
+	if err := os.WriteFile(path, []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if after := textFileWriteLockKey(path); after != before {
+		t.Fatalf("lock key changed after create: before %q after %q", before, after)
+	}
+	nested := filepath.Join(dir, "newsub", "file.go")
+	beforeNested := textFileWriteLockKey(nested)
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nested, []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if afterNested := textFileWriteLockKey(nested); afterNested != beforeNested {
+		t.Fatalf("lock key changed after creating a parent: before %q after %q", beforeNested, afterNested)
+	}
+	if textFileWriteLock(path) != textFileWriteLock(path) {
+		t.Fatal("same path did not keep its mutex")
+	}
+}
+
+func TestTextFileWriteLockFollowsJunction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows junction")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, real).CombinedOutput(); err != nil {
+		t.Skip("junction unavailable: " + err.Error() + " " + string(out))
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+	viaLink := filepath.Join(link, "child", "file.go")
+	viaReal := filepath.Join(real, "child", "file.go")
+	before := textFileWriteLockKey(viaLink)
+	if got := textFileWriteLockKey(viaReal); got != before {
+		t.Fatalf("junction and target did not share a key before create: link %q real %q", before, got)
+	}
+	if err := os.MkdirAll(filepath.Dir(viaLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(viaLink, []byte("seed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if after := textFileWriteLockKey(viaLink); after != before {
+		t.Fatalf("junction lock key changed after create: before %q after %q", before, after)
+	}
+	if got := textFileWriteLockKey(viaReal); got != before {
+		t.Fatalf("junction and target diverged after create: link %q real %q", before, got)
+	}
+	held := textFileWriteLock(viaLink)
+	held.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := WriteTextFile(viaReal, "joined", "overwrite")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		held.Unlock()
+		t.Fatalf("target path did not share the junction lock: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	held.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("write did not finish after the junction lock was released")
+	}
+	data, err := os.ReadFile(viaLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "joined" {
+		t.Fatalf("content = %q", data)
+	}
+}
+
+func TestTextFileWriteLockFollowsNestedJunction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows junction")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mid := filepath.Join(dir, "mid")
+	link := filepath.Join(dir, "link")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", mid, real).CombinedOutput(); err != nil {
+		t.Skip("junction unavailable: " + err.Error() + " " + string(out))
+	}
+	t.Cleanup(func() { _ = os.Remove(mid) })
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, mid).CombinedOutput(); err != nil {
+		t.Skip("junction unavailable: " + err.Error() + " " + string(out))
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+	viaLink := filepath.Join(link, "child", "file.go")
+	viaReal := filepath.Join(real, "child", "file.go")
+	before := textFileWriteLockKey(viaLink)
+	if got := textFileWriteLockKey(viaReal); got != before {
+		t.Fatalf("nested junction key before create: link %q real %q", before, got)
+	}
+	if err := os.MkdirAll(filepath.Dir(viaReal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(viaReal, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if after := textFileWriteLockKey(viaLink); after != before {
+		t.Fatalf("nested junction key changed after create: before %q after %q", before, after)
+	}
+	if got := textFileWriteLockKey(viaReal); got != before {
+		t.Fatalf("nested junction key after create: link %q real %q", before, got)
+	}
+}
+
+func TestRewriteTextFileKeepsBothPassageEdits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "both.txt")
+	if err := os.WriteFile(path, []byte("alpha beta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replace := func(old, next string) error {
+		_, err := RewriteTextFile(path, func(current string) (string, bool, error) {
+			updated := strings.Replace(current, old, next, 1)
+			if updated == current {
+				return "", false, fmt.Errorf("missing %s", old)
+			}
+			return updated, true, nil
+		})
+		return err
+	}
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errCh <- replace("alpha", "ALPHA")
+	}()
+	go func() {
+		defer wg.Done()
+		errCh <- replace("beta", "BETA")
+	}()
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ALPHA BETA\n" {
+		t.Fatalf("content = %q, want both passage edits", data)
+	}
+}
+
+func TestTextFileWriteLockFollowsExistingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	link := filepath.Join(dir, "link.txt")
+	if err := os.WriteFile(target, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	if textFileWriteLock(target) != textFileWriteLock(link) {
+		t.Fatal("symlink and target did not share a lock")
+	}
+}
+
+func TestTextFileWriteLockKeyFoldsWindowsCase(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows path case")
+	}
+	dir := t.TempDir()
+	lower := filepath.Join(dir, "a.txt")
+	upper := filepath.Join(dir, "A.txt")
+	if textFileWriteLock(lower) != textFileWriteLock(upper) {
+		t.Fatal("case-distinct windows paths did not share a lock")
 	}
 }
 

@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -529,6 +531,198 @@ func TestFileCompanionDeliverTurnAppendsSelectionAndReportsRefusal(t *testing.T)
 		t.Fatalf("refusal resp path=%q err=%q", refused.LocalFilePath, refused.Error)
 	}
 	assertBytes(t, path, "alpha beta\n\ngamma")
+}
+
+func TestFileCompanionCancelKeepsTheFileAndTheNextTurn(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(path, []byte("alpha beta"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCompanionSideTranscript(t, app, path, "旧问题", "旧回答"); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := app.FileCompanionOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := "file-companion:" + doc.SessionID
+	gen := app.fileCompanionChatGen(userID)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	letGo := func() { releaseOnce.Do(func() { close(release) }) }
+	defer letGo()
+	prev := fileCompanionTurnModelHook
+	fileCompanionTurnModelHook = func(msg IMUserMessage) *IMAgentResponse {
+		if msg.RequestID == "turn-1" {
+			startedOnce.Do(func() { close(started) })
+			<-release
+			return &IMAgentResponse{Text: "不该写回"}
+		}
+		return &IMAgentResponse{Text: "第二问写回"}
+	}
+	t.Cleanup(func() { fileCompanionTurnModelHook = prev })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- app.SendFileCompanionMessage(FileCompanionTurnRequest{
+			Path:      path,
+			Text:      "改一下",
+			Selection: "beta",
+			RequestID: "turn-1",
+		})
+	}()
+	select {
+	case <-started:
+	case err := <-errCh:
+		t.Fatalf("turn ended before the model: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn did not start")
+	}
+	if err := app.CancelFileCompanionGeneration(path, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !app.fileCompanionChatStopped("turn-1") {
+		t.Fatal("cancel did not mark this request")
+	}
+	if app.fileCompanionChatStopped("turn-2") {
+		t.Fatal("cancel marked the next request")
+	}
+	if got := app.fileCompanionChatGen(userID); got != gen {
+		t.Fatalf("chat gen %d -> %d", gen, got)
+	}
+	letGo()
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, path, "alpha beta")
+	if got := app.fileCompanionChatGen(userID); got != gen {
+		t.Fatalf("chat gen after the turn %d -> %d", gen, got)
+	}
+	side := filepath.Join(app.GetDataDir(), "file-companion", "sessions", doc.SessionID+".json")
+	entries, err := agent.LoadSeparateSessionEntries(side, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[1].Content != "旧回答" {
+		t.Fatalf("side transcript = %#v", entries)
+	}
+	again, err := app.FileCompanionOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Messages) < 2 || again.Messages[1].Text != "旧回答" {
+		t.Fatalf("open chat = %#v", again.Messages)
+	}
+
+	if err := app.SendFileCompanionMessage(FileCompanionTurnRequest{
+		Path:      path,
+		Text:      "再改一下",
+		Selection: "beta",
+		RequestID: "turn-2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, path, "alpha beta\n\n第二问写回")
+}
+
+func TestFileCompanionCancelDuringPublishWritesNothing(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.md")
+	const original = "alpha beta\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := app.FileCompanionOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, canonical, err := app.fileCompanionGrant(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := "file-companion:" + doc.SessionID
+	reached := false
+	fileCompanionBeforeCommitHook = func() {
+		reached = true
+		if err := app.CancelFileCompanionGeneration(path, "turn-1"); err != nil {
+			t.Errorf("cancel: %v", err)
+		}
+	}
+	t.Cleanup(func() { fileCompanionBeforeCommitHook = nil })
+	resp := &IMAgentResponse{Text: "不该写回"}
+	if err := app.fileCompanionDeliverTurn(path, grant, canonical, doc.SessionID, userID, "turn-1", "beta", -1, resp); err != nil {
+		t.Fatal(err)
+	}
+	if !reached {
+		t.Fatal("publish did not reach the commit")
+	}
+	if resp.LocalFilePath != "" || resp.Error != "" || resp.Text != "不该写回" {
+		t.Fatalf("cancelled reply = %+v", resp)
+	}
+	assertBytes(t, path, original)
+	// A reader save is not this turn. The stop bit does not block it.
+	saved, err := app.FileCompanionSaveText(path, "读者自己的修改\n", grant.LoadedHash)
+	if err != nil || !saved.Saved {
+		t.Fatalf("reader save = %+v err=%v", saved, err)
+	}
+	assertBytes(t, path, "读者自己的修改\n")
+
+	xlsx := filepath.Join(dir, "book.xlsx")
+	if err := excel.WriteFile(xlsx, excel.WriteData{Sheets: []excel.WriteSheet{{
+		Name: "Sheet1",
+		Rows: [][]excel.WriteCell{{{Value: "seed"}}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	office, err := app.FileCompanionOpen(xlsx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	officeGrant, officeCanonical, err := app.fileCompanionGrant(xlsx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(xlsx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reached = false
+	fileCompanionBeforeCommitHook = func() {
+		reached = true
+		if err := app.CancelFileCompanionGeneration(xlsx, "office-1"); err != nil {
+			t.Errorf("cancel office: %v", err)
+		}
+	}
+	reply := "```json\n" + `{"sheets":[{"name":"Sheet1","rows":[[{"value":"replaced"}]]}]}` + "\n```"
+	officeResp := &IMAgentResponse{Text: reply}
+	if err := app.fileCompanionDeliverTurn(xlsx, officeGrant, officeCanonical, office.SessionID, "file-companion:"+office.SessionID, "office-1", "", -1, officeResp); err != nil {
+		t.Fatal(err)
+	}
+	if !reached {
+		t.Fatal("office publish did not reach the commit")
+	}
+	if officeResp.LocalFilePath != "" {
+		t.Fatalf("cancelled office path %q", officeResp.LocalFilePath)
+	}
+	after, err := os.ReadFile(xlsx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("cancel during office publish replaced the workbook")
+	}
 }
 
 func assertBytes(t *testing.T, path, want string) {

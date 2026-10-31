@@ -3248,9 +3248,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [props.onEnsureAssistantTabTask]);
 
-    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; openIntent?: "activate" | "restore"; cloudWorkspaceId?: string; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean; sessionKey?: string; focus?: boolean } | boolean) => {
+    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; openIntent?: "activate" | "restore"; cloudWorkspaceId?: string; fileWorkspaceId?: string; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean; sessionKey?: string; focus?: boolean } | boolean) => {
         const sessionKey = typeof options === "object" ? String(options.sessionKey || "").trim() : "";
         const cloudWorkspaceId = typeof options === "object" ? String(options.cloudWorkspaceId || "").trim() : "";
+        const fileWorkspaceId = typeof options === "object" ? String(options.fileWorkspaceId || "").trim() : "";
         const openIntent = typeof options === "object" ? options.openIntent : undefined;
         const tabExisted = sessionKey
             ? getTabs().some(tab => tab.type === "project" && tab.sessionKey === sessionKey)
@@ -3282,6 +3283,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             sessionKey,
             openIntent, ...(typeof options === "object" && options.focus === false ? { focus: false } : {}),
             cloudWorkspaceId: cloudWorkspaceId || undefined,
+            fileWorkspaceId: fileWorkspaceId || undefined,
             ...(prepareMode === "new-agent" ? {
                 onSessionReady: (readyTab: { id: string; projectPath?: string }) => {
                     setProjectTabSessionReadyRevisions(previous => ({
@@ -3765,7 +3767,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return sendMessageForTab(text, options);
     }, [sendMessageForTab]);
-    const closeTabWithProjectCleanup = useCallback((tabId: string) => closeAssistantProjectTab(tabId, {
+    const closeTabWithProjectCleanup = useCallback((tabId: string, options?: { suppressNewTaskGuide?: boolean }) => closeAssistantProjectTab(tabId, {
         getTabs, getTabState, saveTabState, closeTab, messages,
         activeTabIdRef, latestDisplayMessagesRef, latestProjectCloseSnapshotRef, clearedProjectTabIdsRef,
         projectConversationHydrationGenerationByTabIdRef, projectConversationHydrationByTabIdRef,
@@ -3773,7 +3775,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         deferredProjectInitialSendsRef, pendingRemoteInitialSendRef, previewStateMapRef, previewOwnerTabRef,
         previewOwnerResetPendingRef, skillRecordingTabId, setSkillRecordingTabId, abandonSkillRecording, setProjectTabPreparing,
         setProjectTabRouteVersion, setDetachedProjectRoundVersion, persistProjectTabMsgIds,
-    }), [abandonSkillRecording, closeTab, getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState, setDetachedProjectRoundVersion, setProjectTabPreparing, setProjectTabRouteVersion, setSkillRecordingTabId, skillRecordingTabId]);
+    }, options), [abandonSkillRecording, closeTab, getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState, setDetachedProjectRoundVersion, setProjectTabPreparing, setProjectTabRouteVersion, setSkillRecordingTabId, skillRecordingTabId]);
     const idleTaskSwitchRef = useRef<IdleTaskSwitchContext | null>(null);
     const dismissCoveredNewTaskRef = useRef<(() => void) | null>(null);
     const activateSwitchingTab = useCallback((tabId: string) => {

@@ -65,6 +65,10 @@ type fileCompanionRuntime struct {
 	emitted   [][]string
 	grants    map[string]*fileCompanionGrant
 	fileMu    map[string]*sync.Mutex
+	// paperBuild serializes one session's paper PDF. The figures directory
+	// is that session's cache, so two builds must not clear it together.
+	// Each attempt still writes its own paper-stage directory.
+	paperBuild map[string]*sync.Mutex
 	// discussionPaths maps a share-discussion session to the document it
 	// answers for. The host's background agent is not an open tab, so it has no
 	// document session id; this entry lets the PDF tools find the same file.
@@ -100,6 +104,10 @@ type fileCompanionRuntime struct {
 	chatMu      sync.Mutex
 	chatGen     map[string]uint64
 	chatDiscard map[string]bool
+	// chatStop is the request the progress button cancelled. Deliver of that
+	// request skips selection, office, and paper writes. It does not bump
+	// chatGen and does not drop the transcript. The next request id is absent.
+	chatStop map[string]struct{}
 
 	// noteMu guards the in-flight note cancel. Cancelling a note does not
 	// bump chatGen. /clear cancels the note and then drops the transcript.
@@ -112,9 +120,18 @@ type fileCompanionRuntime struct {
 	// writing when the status changes to 正在整理笔记, and stays there until
 	// the note function returns. webStop is still registered during both,
 	// so the phase is what tells 停止 to write the note or cancel it.
-	noteMu       sync.Mutex
-	noteCancel   map[string]context.CancelFunc
-	webStop      map[string]context.CancelFunc
+	noteMu     sync.Mutex
+	noteCancel map[string]context.CancelFunc
+	// noteCancelID is the request stored with noteCancel. A progress-button
+	// cancel and EndNote touch that request only.
+	noteCancelID map[string]string
+	// noteStopped is every request id the progress button cancelled for this
+	// session. One id does not erase another. Begin removes only its own id.
+	noteStopped map[string]map[string]struct{}
+	webStop     map[string]context.CancelFunc
+	// webStopID is the request stored with webStop. EndWebCapture removes
+	// that attempt only, so a newer capture keeps its stop func.
+	webStopID    map[string]string
 	webStopGen   map[string]int64
 	webStopAt    map[string]int64
 	webNotePhase map[string]int
@@ -161,6 +178,9 @@ func (a *App) companionRuntime() *fileCompanionRuntime {
 	if a.fileCompanion.fileMu == nil {
 		a.fileCompanion.fileMu = map[string]*sync.Mutex{}
 	}
+	if a.fileCompanion.paperBuild == nil {
+		a.fileCompanion.paperBuild = map[string]*sync.Mutex{}
+	}
 	if a.fileCompanion.discussionPaths == nil {
 		a.fileCompanion.discussionPaths = map[string]string{}
 	}
@@ -186,6 +206,20 @@ func (a *App) fileCompanionFileLock(canonical string) *sync.Mutex {
 	if mu == nil {
 		mu = &sync.Mutex{}
 		st.fileMu[canonical] = mu
+	}
+	return mu
+}
+
+// fileCompanionPaperBuildLock serializes paper builds for one session.
+// Generation stays outside chatMu. Cancel takes chatMu and does not take this lock.
+func (a *App) fileCompanionPaperBuildLock(sessionID string) *sync.Mutex {
+	st := a.companionRuntime()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	mu := st.paperBuild[sessionID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		st.paperBuild[sessionID] = mu
 	}
 	return mu
 }

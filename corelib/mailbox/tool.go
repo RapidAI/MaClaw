@@ -595,6 +595,26 @@ func SendShapeReason(args map[string]interface{}) string {
 	return ""
 }
 
+// SendAttachmentIntakeReason reports an attachment list Send would refuse.
+// The semantic grant is admitted before Send runs, so this check has to use
+// the same jail or a missing file cannot be corrected.
+func SendAttachmentIntakeReason(h *Host, args map[string]interface{}) string {
+	paths := stringList(args["attachments"])
+	if len(paths) == 0 {
+		return ""
+	}
+	if strings.TrimSpace(stringArg(args, "action")) != "send" {
+		return "只有发送新邮件可以带附件"
+	}
+	if h == nil {
+		return "附件必须位于任务工作区"
+	}
+	if _, err := h.loadOutboundFiles(paths); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 func recipientListReason(raw interface{}, required bool) string {
 	list, err := normalizeRecipients(stringList(raw))
 	if err != nil {
@@ -719,6 +739,11 @@ func boxArg(account Account, args map[string]interface{}) string {
 // list does. Numbers stay JSON numbers so a large uid keeps its digits when
 // the object is written back.
 func NormalizeMailboxSendInvocationArgs(argsJSON string) string {
+	// A map decode keeps the last copy of a repeated key. Rewriting that map
+	// would drop the duplicate and the canonicalizer could no longer reject it.
+	if jsonHasDuplicateKey(argsJSON) {
+		return argsJSON
+	}
 	dec := json.NewDecoder(strings.NewReader(argsJSON))
 	dec.UseNumber()
 	var parsed map[string]any
@@ -748,6 +773,69 @@ func NormalizeMailboxSendInvocationArgs(argsJSON string) string {
 		return argsJSON
 	}
 	return string(body)
+}
+
+// jsonHasDuplicateKey reports a repeated key anywhere in one JSON value.
+// Invalid JSON returns false; the caller leaves that text unchanged.
+func jsonHasDuplicateKey(raw string) bool {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	// A number that does not fit in float64 must not abort the scan. The
+	// rewriter decodes with UseNumber and would otherwise collapse a later
+	// repeated key that this scan never reached.
+	dec.UseNumber()
+	dup, ok := jsonValueHasDuplicateKey(dec)
+	return ok && dup
+}
+
+func jsonValueHasDuplicateKey(dec *json.Decoder) (bool, bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return false, false
+	}
+	switch tok {
+	case json.Delim('{'):
+		seen := make(map[string]struct{})
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return false, false
+			}
+			key, _ := keyTok.(string)
+			if _, exists := seen[key]; exists {
+				return true, true
+			}
+			seen[key] = struct{}{}
+			dup, ok := jsonValueHasDuplicateKey(dec)
+			if !ok {
+				return false, false
+			}
+			if dup {
+				return true, true
+			}
+		}
+		end, err := dec.Token()
+		if err != nil || end != json.Delim('}') {
+			return false, false
+		}
+		return false, true
+	case json.Delim('['):
+		for dec.More() {
+			dup, ok := jsonValueHasDuplicateKey(dec)
+			if !ok {
+				return false, false
+			}
+			if dup {
+				return true, true
+			}
+		}
+		end, err := dec.Token()
+		if err != nil || end != json.Delim(']') {
+			return false, false
+		}
+		return false, true
+	default:
+		return false, true
+	}
 }
 
 func stringList(raw interface{}) []string {

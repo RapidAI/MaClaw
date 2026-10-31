@@ -237,8 +237,11 @@ export interface UseAITabManagerResult {
     waitForProjectTabSession: (tabId: string) => Promise<void>;
     /** Create (or activate) an expert conversation tab. Returns the tab or null if limit reached. */
     createExpertTab: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }, options?: { focus?: boolean }) => AITab | null;
-    /** Close a tab by ID */
-    closeTab: (tabId: string) => void;
+    /**
+     * Close a tab by ID. An idle switch passes suppressNewTaskGuide because
+     * the caller is about to focus another task; the guide would cover it.
+     */
+    closeTab: (tabId: string, options?: { suppressNewTaskGuide?: boolean }) => void;
     /** Remove a deleted project's tabs without persisting an archived session. */
     discardDeletedProjectTabs: (projectPath: string) => void;
     /** Remove a deleted expert's tab and history without re-persisting conversation. */
@@ -1552,7 +1555,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     const openNewTaskGuide = () => {
         window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
     };
-    const closeTab = useCallback((tabId: string) => {
+    const closeTab = useCallback((tabId: string, options?: { suppressNewTaskGuide?: boolean }) => {
         const prev = tabStateRef.current;
         const tab = prev.tabs.find(t => t.id === tabId);
         if (!tab || !tab.closable) return;
@@ -1591,10 +1594,13 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         updateTabState(() => next);
         // Only leaving a sidebar task with nothing else open should cover the
         // local page. Closing a chat tab still returns to whatever was there.
-        if (closedWasActive && nextActiveId === "local" && isSidebarTaskTab(tab)) openNewTaskGuide();
+        // Idle switches close the covered task and then focus the destination.
+        // Raising the guide here paints 新建任务 back over that destination.
+        if (closedWasActive && nextActiveId === "local" && isSidebarTaskTab(tab) && !options?.suppressNewTaskGuide) openNewTaskGuide();
         // LRU eviction: prevent unbounded memory growth from cached closed tab states.
         const openTabIds = new Set(next.tabs.map(t => t.id));
         evictClosedTabStates(tabStatesRef.current, openTabIds, "proj-", 32);
+        evictClosedTabStates(tabStatesRef.current, openTabIds, "cws-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "ve-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "history-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "group-", 32);

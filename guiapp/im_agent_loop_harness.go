@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -189,11 +190,23 @@ func startAgentLoopHeartbeat(sendProgress func(string)) func() {
 	return startHeartbeatTicker(60*time.Second, sendProgress)
 }
 
+// requestActivityClockObserver is nil in production. A test sets it to see
+// that the request clock started. It must not block: other tests can enter
+// the handler while it is installed.
+var requestActivityClockObserver atomic.Value // func(func(string))
+
 // startRequestLevelHeartbeat covers the entire request processing lifecycle,
-// including pre-loop phases (IUM LLM calls, proactive_recall, system prompt
+// including an immediate command that runs a coding turn (/plan approve) and
+// the pre-loop phases (IUM LLM calls, proactive_recall, system prompt
 // construction) that happen before the agent loop's own heartbeat starts.
 // Interval is 30s, safely below the frontend's configurable activity timeout.
+// The handler starts this clock before immediate-command dispatch. That
+// command returns from the handler, so a clock started later never runs
+// while the turn waits on the directory writer.
 func startRequestLevelHeartbeat(onProgress func(string)) func() {
+	if observe, _ := requestActivityClockObserver.Load().(func(func(string))); observe != nil {
+		observe(onProgress)
+	}
 	return startHeartbeatTicker(30*time.Second, onProgress)
 }
 

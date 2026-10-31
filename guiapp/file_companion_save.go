@@ -49,6 +49,7 @@ type FileCompanionDocument struct {
 	ChatMarks   json.RawMessage `json:"chatMarks,omitempty"`
 	Annotations json.RawMessage `json:"annotations,omitempty"`
 	Drawings    json.RawMessage `json:"drawings,omitempty"`
+	Bookmarks   json.RawMessage `json:"bookmarks,omitempty"`
 	// Imported is set when Path is the document taken out of a project zip.
 	Imported bool `json:"imported,omitempty"`
 }
@@ -352,13 +353,13 @@ func (a *App) fileCompanionSessionKnown(sessionID string) bool {
 var errFileCompanionNotGranted = errors.New("path is outside the open file")
 
 func (a *App) FileCompanionSaveText(path, content, loadedHash string) (FileCompanionSaveResult, error) {
-	return a.fileCompanionWriteText(path, loadedHash, func(string) (string, error) {
+	return a.fileCompanionWriteText(path, loadedHash, "", func(string) (string, error) {
 		return content, nil
 	})
 }
 
 func (a *App) FileCompanionAppendText(path, insertion, loadedHash string) (FileCompanionSaveResult, error) {
-	return a.fileCompanionWriteText(path, loadedHash, func(current string) (string, error) {
+	return a.fileCompanionWriteText(path, loadedHash, "", func(current string) (string, error) {
 		selection, prefer := a.fileCompanionSelection(path)
 		return fileCompanionAppendAfterSelection(current, selection, insertion, prefer), nil
 	})
@@ -526,7 +527,7 @@ func fileCompanionMapNormalized(content string, normOffset int) int {
 	return len(content)
 }
 
-func (a *App) fileCompanionWriteText(path, loadedHash string, mutate func(current string) (string, error)) (FileCompanionSaveResult, error) {
+func (a *App) fileCompanionWriteText(path, loadedHash, requestID string, mutate func(current string) (string, error)) (FileCompanionSaveResult, error) {
 	var zero FileCompanionSaveResult
 	if a == nil {
 		return zero, errors.New("app unavailable")
@@ -596,20 +597,32 @@ func (a *App) fileCompanionWriteText(path, loadedHash string, mutate func(curren
 		st.mu.Unlock()
 		return FileCompanionSaveResult{Saved: true, DiskHash: hash}, nil
 	}
-	file, err := os.OpenFile(grant.UserPath, os.O_WRONLY|os.O_TRUNC, 0)
-	if err != nil {
-		return FileCompanionSaveResult{Error: "file is not writable"}, err
-	}
-	written, err := file.Write([]byte(next))
-	if err != nil || written != len(next) {
-		_ = file.Close()
-		if err == nil {
-			err = io.ErrShortWrite
+	writeNext := func() error {
+		file, openErr := os.OpenFile(grant.UserPath, os.O_WRONLY|os.O_TRUNC, 0)
+		if openErr != nil {
+			return openErr
 		}
-		return FileCompanionSaveResult{Error: "file is not writable"}, err
+		written, writeErr := file.Write([]byte(next))
+		if writeErr != nil || written != len(next) {
+			_ = file.Close()
+			if writeErr == nil {
+				writeErr = io.ErrShortWrite
+			}
+			return writeErr
+		}
+		return file.Close()
 	}
-	if err := file.Close(); err != nil {
-		return FileCompanionSaveResult{Error: "file is not writable"}, err
+	// A model append shares chatMu with the progress-button cancel. A reader
+	// save has an empty request id and writes immediately.
+	if strings.TrimSpace(requestID) != "" {
+		if pubErr := a.fileCompanionPublishTurn(requestID, writeNext); pubErr != nil {
+			if errors.Is(pubErr, errFileCompanionTurnCancelled) {
+				return zero, pubErr
+			}
+			return FileCompanionSaveResult{Error: "file is not writable"}, pubErr
+		}
+	} else if writeErr := writeNext(); writeErr != nil {
+		return FileCompanionSaveResult{Error: "file is not writable"}, writeErr
 	}
 	sum := sha256.Sum256([]byte(next))
 	hash := hex.EncodeToString(sum[:])

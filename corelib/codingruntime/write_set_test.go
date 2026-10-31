@@ -247,6 +247,91 @@ func TestPolicyDigestCoversWriteScopeAndIsolation(t *testing.T) {
 	}
 }
 
+func TestWriterAdmissionSharedLocalTreeRunsConcreteClaimsTogether(t *testing.T) {
+	root := filepath.Join("D:", "repo")
+	task := Task{ProjectRef: root, Mode: "local"}
+	claim := func(path string, directory bool) PolicySnapshot {
+		return PolicySnapshot{ProjectRoot: root, Mode: "local", WriteSet: WriteSet{Claims: []WriteClaim{{Path: path, Directory: directory}}}}
+	}
+	if got := WriterAdmissionConflict(task, claim("a.go", false), task, claim("b.go", false)); got.Conflicts {
+		t.Fatalf("disjoint files conflicted: %+v", got)
+	}
+	if got := WriterAdmissionConflict(task, claim("a.go", false), task, claim("a.go", false)); got.Conflicts {
+		t.Fatalf("same file blocked the attempt: %+v", got)
+	}
+	rootPolicy := claim(root+string(filepath.Separator), true)
+	if got := WriterAdmissionConflict(task, rootPolicy, task, claim("src/main.go", false)); got.Conflicts {
+		t.Fatalf("root directory claim blocked a file writer: %+v", got)
+	}
+	if got := WriterAdmissionConflict(task, rootPolicy, task, rootPolicy); got.Conflicts {
+		t.Fatalf("two root claims conflicted: %+v", got)
+	}
+	unknown := WriterAdmissionConflict(task, PolicySnapshot{ProjectRoot: root, Mode: "local"}, task, claim("a.go", false))
+	if !unknown.Conflicts || unknown.Reason != "unknown write set" {
+		t.Fatalf("unknown writer: %+v", unknown)
+	}
+	otherRoot := filepath.Join("D:", "other")
+	otherTask := Task{ProjectRef: otherRoot, Mode: "local"}
+	otherClaim := PolicySnapshot{ProjectRoot: otherRoot, Mode: "local", WriteSet: WriteSet{Claims: []WriteClaim{{Path: "a.go"}}}}
+	if got := WriterAdmissionConflict(task, PolicySnapshot{ProjectRoot: root, Mode: "local"}, otherTask, otherClaim); got.Conflicts {
+		t.Fatalf("unknown writer blocked a different project: %+v", got)
+	}
+	isolatedA := claim("a.go", false)
+	isolatedA.WorkspaceIsolated, isolatedA.FinalDiffGateRequired = true, true
+	isolatedB := claim("b.go", false)
+	isolatedB.WorkspaceIsolated, isolatedB.FinalDiffGateRequired = true, true
+	if got := WriterAdmissionConflict(task, isolatedA, task, isolatedB); got.Conflicts {
+		t.Fatalf("isolated disjoint writers conflicted: %+v", got)
+	}
+	isolatedSame := claim("a.go", false)
+	isolatedSame.WorkspaceIsolated, isolatedSame.FinalDiffGateRequired = true, true
+	if got := WriterAdmissionConflict(task, isolatedA, task, isolatedSame); !got.Conflicts || got.Reason != "overlapping write claim" {
+		t.Fatalf("isolated same-file writers: %+v", got)
+	}
+	if got := WriterAdmissionConflict(task, claim("b.go", false), task, isolatedA); !got.Conflicts {
+		t.Fatalf("shared writer was admitted beside an isolated writer: %+v", got)
+	}
+	remoteTask := Task{ProjectRef: "/srv/app", Mode: "remote"}
+	remoteA := PolicySnapshot{ProjectRoot: "/srv/app", Mode: "remote", RemoteTarget: "sha256:host", WriteSet: WriteSet{Claims: []WriteClaim{{Path: "a.go"}}}}
+	remoteB := remoteA
+	remoteB.WriteSet.Claims = []WriteClaim{{Path: "b.go"}}
+	if got := WriterAdmissionConflict(remoteTask, remoteA, remoteTask, remoteB); !got.Conflicts || got.Reason != "isolated workspace required" {
+		t.Fatalf("unisolated remote writers: %+v", got)
+	}
+}
+
+func TestMemoryStoreSharedLocalClaimsAdmitTogether(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 8, 10, 1, 2, 3, 0, time.UTC)
+	root := filepath.Join("D:", "shared-tree")
+	first, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootClaim := PolicySnapshot{
+		ProjectRoot:                root,
+		Mode:                       "local",
+		FinalWorkspaceGateRequired: true,
+		WriteSet:                   WriteSet{Claims: []WriteClaim{{Path: root + string(filepath.Separator), Directory: true}}},
+	}
+	fileClaim := PolicySnapshot{
+		ProjectRoot:                root,
+		Mode:                       "local",
+		FinalWorkspaceGateRequired: true,
+		WriteSet:                   WriteSet{Claims: []WriteClaim{{Path: "src/main.go"}}},
+	}
+	if _, err := store.StartAttempt(first.TaskID, "one", time.Minute, rootClaim, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(second.TaskID, "two", time.Minute, fileClaim, now); err != nil {
+		t.Fatalf("file writer waited behind the project-root claim: %v", err)
+	}
+}
+
 func TestMemoryStoreWriterAdmissionSerializesUnknownAndAllowsGuardedDisjoint(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 8, 10, 1, 2, 3, 0, time.UTC)

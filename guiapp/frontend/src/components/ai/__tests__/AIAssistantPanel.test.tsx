@@ -9907,6 +9907,73 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         expect(createTaskUnifiedMock).not.toHaveBeenCalled();
     });
 
+    it('shows the restored task conversation after an idle covered task is closed', async () => {
+        const coveredPath = 'D:/tasks/covered-weather';
+        const restoredPath = 'D:/tasks/lanzhou-weather';
+        loadProjectConversationHistoryMock.mockImplementation(async (path: string) => (
+            String(path) === coveredPath
+                ? [{ id: 'covered-user', role: 'user', content: 'covered weather chat', timestamp: 1 }]
+                : String(path) === restoredPath
+                    ? [{ id: 'lanzhou-user', role: 'user', content: 'lanzhou weather chat', timestamp: 2 }]
+                    : []
+        ));
+        const controls: { openProject?: (projectPath: string, taskTitle: string, cloudWorkspaceId?: string) => void } = {};
+        function Harness() {
+            const [pending, setPending] = useState<{
+                projectPath: string;
+                taskTitle: string;
+                autoSend: boolean;
+                prepareMode: 'restore-context';
+                cloudWorkspaceId?: string;
+            } | null>(null);
+            const base = defaultPanelProps();
+            controls.openProject = (projectPath, taskTitle, cloudWorkspaceId) => setPending({
+                projectPath,
+                taskTitle,
+                autoSend: false,
+                prepareMode: 'restore-context',
+                ...(cloudWorkspaceId ? { cloudWorkspaceId } : {}),
+            });
+            return (
+                <AIAssistantPanel
+                    {...base}
+                    window={{ inline: true }}
+                    state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+                    pendingProjectTabOpen={pending}
+                    onPendingProjectTabOpenHandled={() => setPending(null)}
+                />
+            );
+        }
+        try {
+            render(<Harness />, { wrapper: DialogProvider });
+            act(() => { controls.openProject?.(coveredPath, 'Covered weather'); });
+            await waitFor(() => {
+                expect(screen.getByText('covered weather chat').closest('[hidden]')).toBeNull();
+                expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+            });
+
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+            await waitFor(() => {
+                expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
+            });
+
+            createTaskUnifiedMock.mockClear();
+            act(() => { controls.openProject?.(restoredPath, '兰州天气', 'cws_weather'); });
+
+            await waitFor(() => {
+                expect(screen.queryByTestId('new-task-wizard-running-banner')).toBeNull();
+                expect(screen.getByText('lanzhou weather chat').closest('[hidden]')).toBeNull();
+            });
+            expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+            expect(createTaskUnifiedMock).not.toHaveBeenCalled();
+        } finally {
+            loadProjectConversationHistoryMock.mockReset();
+            loadProjectConversationHistoryMock.mockResolvedValue([]);
+        }
+    });
+
     it('returns to the already-open project assistant when its task row is clicked', async () => {
         const controls: { openProject?: () => void } = {};
         function Harness() {

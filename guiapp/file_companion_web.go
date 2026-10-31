@@ -288,18 +288,24 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 		parent = context.Background()
 	}
 	clearGen := a.fileCompanionCaptureChatGen(userID)
-	noteCtx, noteCancel := a.fileCompanionBeginNote(sessionID, parent)
+	noteCtx, noteCancel := a.fileCompanionBeginNote(sessionID, parent, requestID)
 	// The shared transcriber reads these ids, as a local note does.
 	// Without them it never replaces 正在记录声音, so the status stays on
 	// recording after the pictures have already stopped.
 	noteCtx = context.WithValue(noteCtx, noteTurnIDsKey{}, noteTurnIDs{RequestID: requestID, UserID: userID})
-	defer a.fileCompanionEndNote(sessionID, noteCancel)
+	defer a.fileCompanionEndNote(sessionID, requestID, noteCancel)
+	// A request cancelled before Begin returns a dead context and does not
+	// replace the live note. Capture, the shared work directory, and the
+	// phase belong to that live note, so this attempt must not touch them.
+	if noteCtx.Err() != nil {
+		return a.fileCompanionFailNote(requestID, userID, fileCompanionErrNoteCancelled)
+	}
 	// 停止 during capture or recognition ends capture only, so the note is
 	// written. Recognition shows 正在识别语音 and is still that phase.
 	// 停止 once the status is 正在整理笔记 cancels noteCtx.
 	// Leaving the player still ends capture only.
-	captureCtx, captureCancel := a.fileCompanionBeginWebCapture(sessionID, noteCtx, req.CaptureEpoch)
-	defer a.fileCompanionEndWebCapture(sessionID, captureCancel)
+	captureCtx, captureCancel := a.fileCompanionBeginWebCapture(sessionID, noteCtx, req.CaptureEpoch, requestID)
+	defer a.fileCompanionEndWebCapture(sessionID, requestID, captureCancel)
 	work := filepath.Join(a.GetDataDir(), "file-companion", "work", sessionID)
 	_ = os.MkdirAll(work, 0o755)
 	defer os.RemoveAll(work)
@@ -502,6 +508,76 @@ func (a *App) CancelFileCompanionTurn(path string) error {
 	return a.FileCompanionCancelNote(path)
 }
 
+// CancelFileCompanionWebGeneration stops one web tab's in-flight chat.
+// requestID is the turn the window started. A note still being recorded is
+// stopped with StopFileCompanionWebNote, so that recording is written.
+// A note already being written is cancelled. The transcript stays.
+func (a *App) CancelFileCompanionWebGeneration(sessionID, requestID string) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	if !a.isFileCompanionProcess() {
+		return errors.New("file companion is not running")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || a.fileCompanionWebFrame(sessionID) == "" {
+		return nil
+	}
+	requestID = strings.TrimSpace(requestID)
+	a.fileCompanionMarkChatStopped(requestID)
+	phase := a.fileCompanionWebNotePhase(sessionID)
+	liveID := a.fileCompanionNoteLiveID(sessionID)
+	// Empty id cancels whatever note is live. A note that has not stored an
+	// id yet is still this wave. A different id is a later chat turn.
+	ownsNote := requestID == "" || liveID == "" || liveID == requestID
+	if !ownsNote {
+		// Remember this request and leave the other note recording or writing.
+		a.fileCompanionMarkNoteStopped(sessionID, requestID)
+	} else if phase != webNotePhaseIdle || liveID != "" {
+		if err := a.StopFileCompanionWebNote(sessionID, 0); err != nil {
+			return err
+		}
+		// Recording and recognition still write the note. Cancelling the
+		// session here would mark that wave finished. This request is not
+		// remembered, so BeginNote does not treat the recording as discarded.
+		if phase != webNotePhaseWriting {
+			return nil
+		}
+	} else {
+		// BeginNote has not stored a cancel func yet. The note model uses
+		// noteCtx, not the session cancel below, so this request has to be
+		// remembered or that wave still records and writes.
+		a.fileCompanionMarkNoteStopped(sessionID, requestID)
+	}
+	if a.imHandler != nil {
+		_, _ = a.imHandler.RequestCancelSessionForUser("file-companion:" + sessionID)
+	}
+	return nil
+}
+
+func (a *App) fileCompanionWebNotePhase(sessionID string) int {
+	if a == nil || sessionID == "" {
+		return webNotePhaseIdle
+	}
+	st := a.companionRuntime()
+	st.noteMu.Lock()
+	defer st.noteMu.Unlock()
+	if st.webNotePhase == nil {
+		return webNotePhaseIdle
+	}
+	return st.webNotePhase[sessionID]
+}
+
+func (a *App) fileCompanionNoteCancelLive(sessionID string) bool {
+	if a == nil || sessionID == "" {
+		return false
+	}
+	st := a.companionRuntime()
+	st.noteMu.Lock()
+	defer st.noteMu.Unlock()
+	return st.noteCancel != nil && st.noteCancel[sessionID] != nil
+}
+
 // FileCompanionWebTurnRequest is one turn on a web playback tab.
 // It has no path, so it cannot enter fileCompanionGrant.
 type FileCompanionWebTurnRequest struct {
@@ -559,6 +635,7 @@ func (a *App) SendFileCompanionWebMessage(req FileCompanionWebTurnRequest) error
 	if requestID == "" {
 		requestID = fmt.Sprintf("file-companion-web-%d", time.Now().UnixNano())
 	}
+	defer a.fileCompanionForgetChatStop(requestID)
 	if fileCompanionIsVideoNotePurpose(req.Purpose) || text == "记笔记" || fileCompanionVideoNotePhraseMatches(text) {
 		return a.FileCompanionWebNote(FileCompanionWebNoteRequest{
 			URL:          frame,
@@ -782,12 +859,13 @@ func (a *App) FileCompanionWebViewContainsFullscreen() bool {
 	return view.ContainsFullScreen()
 }
 
-func (a *App) fileCompanionBeginWebCapture(sessionID string, parent context.Context, epoch int64) (context.Context, context.CancelFunc) {
+func (a *App) fileCompanionBeginWebCapture(sessionID string, parent context.Context, epoch int64, requestID string) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	if a == nil {
+	if a == nil || ctx.Err() != nil {
+		// An attempt that is already stopped must not replace the live capture.
 		return ctx, cancel
 	}
 	st := a.companionRuntime()
@@ -804,6 +882,10 @@ func (a *App) fileCompanionBeginWebCapture(sessionID string, parent context.Cont
 	stopped := epoch > 0 && st.webStopAt != nil && st.webStopAt[sessionID] >= epoch
 	st.webStop[sessionID] = cancel
 	st.webStopGen[sessionID] = epoch
+	if st.webStopID == nil {
+		st.webStopID = map[string]string{}
+	}
+	st.webStopID[sessionID] = strings.TrimSpace(requestID)
 	st.noteMu.Unlock()
 	if stopped {
 		cancel()
@@ -811,17 +893,24 @@ func (a *App) fileCompanionBeginWebCapture(sessionID string, parent context.Cont
 	return ctx, cancel
 }
 
-func (a *App) fileCompanionEndWebCapture(sessionID string, cancel context.CancelFunc) {
+func (a *App) fileCompanionEndWebCapture(sessionID, requestID string, cancel context.CancelFunc) {
 	if cancel != nil {
 		cancel()
 	}
 	if a == nil {
 		return
 	}
+	sessionID = strings.TrimSpace(sessionID)
+	requestID = strings.TrimSpace(requestID)
 	st := a.companionRuntime()
 	st.noteMu.Lock()
-	if st.webStop != nil {
+	stored := ""
+	if st.webStopID != nil {
+		stored = st.webStopID[sessionID]
+	}
+	if stored == requestID && st.webStop != nil {
 		delete(st.webStop, sessionID)
+		delete(st.webStopID, sessionID)
 	}
 	st.noteMu.Unlock()
 }

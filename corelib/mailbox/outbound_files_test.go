@@ -106,6 +106,45 @@ func TestOutboundAttachmentAcceptsASlashPathWithACommaInTheName(t *testing.T) {
 	}
 }
 
+func TestSendAttachmentIntakeReasonMatchesTheWorkspaceJail(t *testing.T) {
+	dir := t.TempDir()
+	name := "天气, 报告.pdf"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("%PDF-1.4 weather"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := testHost(twoAccounts(t), nil, &recordingSender{})
+	host.WorkingDir = dir
+	ready := map[string]interface{}{
+		"action": "send", "attachments": []any{filepath.ToSlash(filepath.Join(dir, name))},
+	}
+	if got := SendAttachmentIntakeReason(host, ready); got != "" {
+		t.Fatalf("slash path inside the workspace: %s", got)
+	}
+	missing := map[string]interface{}{
+		"action": "send", "attachments": []any{filepath.ToSlash(filepath.Join(dir, "missing.pdf"))},
+	}
+	if got := SendAttachmentIntakeReason(host, missing); !strings.Contains(got, "找不到附件") {
+		t.Fatalf("missing=%s", got)
+	}
+	outsidePath := filepath.Join(t.TempDir(), "secret.pdf")
+	if err := os.WriteFile(outsidePath, []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := map[string]interface{}{
+		"action": "send", "attachments": []any{filepath.ToSlash(outsidePath)},
+	}
+	if got := SendAttachmentIntakeReason(host, outside); !strings.Contains(got, "附件必须位于任务工作区") {
+		t.Fatalf("escape=%s", got)
+	}
+	reply := map[string]interface{}{"action": "reply", "attachments": []any{name}}
+	if got := SendAttachmentIntakeReason(host, reply); got != "只有发送新邮件可以带附件" {
+		t.Fatalf("reply=%s", got)
+	}
+	if got := SendAttachmentIntakeReason(host, map[string]interface{}{"action": "send"}); got != "" {
+		t.Fatalf("no attachments: %s", got)
+	}
+}
+
 func TestOutboundAttachmentAllowsADifferentWindowsCase(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("case-insensitive paths")

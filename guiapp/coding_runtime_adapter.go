@@ -237,7 +237,7 @@ func codingRuntimeErrorCode(result *CodingSubAgentResult) string {
 }
 
 func logCodingWriterAdmissionWait(conflict codingruntime.WriteSetConflict) {
-	log.Printf("[coding-runtime] another task is still writing this directory; waiting for it to finish (%s)", conflict.Reason)
+	log.Printf("[coding-runtime] waiting for another writer to finish (%s)", conflict.Reason)
 }
 
 func runGUICodingTaskWithLedger(ctx context.Context, store codingruntime.Store, ownerID, workflowID, phaseID, projectPath, requestedWork string, approvalGate codingruntime.ApprovalGate, run func() *CodingSubAgentResult) (*CodingSubAgentResult, *codingruntime.Attempt, error) {

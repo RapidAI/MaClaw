@@ -49,7 +49,11 @@ type fileCompanionProjectManifest struct {
 	Annotations json.RawMessage `json:"annotations,omitempty"`
 	// Drawings are the host's freehand strokes and boxes. Points are page
 	// fractions so they keep their place at any zoom.
-	Drawings    json.RawMessage        `json:"drawings,omitempty"`
+	Drawings json.RawMessage `json:"drawings,omitempty"`
+	// Bookmarks are named places on the paper. Array order is the order they
+	// were added. A legacy project omits the field and leaves a reader's own
+	// bookmarks alone.
+	Bookmarks   json.RawMessage        `json:"bookmarks,omitempty"`
 	Messages    []FileCompanionMessage `json:"messages"`
 	PaperResult string                 `json:"paperResult,omitempty"`
 	PaperTurn   int                    `json:"paperTurn,omitempty"`
@@ -109,7 +113,7 @@ func (a *App) FileCompanionExportProject(path, highlightsJSON string) (string, e
 	if err != nil || info.IsDir() {
 		return "", errors.New("文件无法读取")
 	}
-	highlights, chatMarks, annotations, drawings, err := fileCompanionSplitSharePayload(highlightsJSON)
+	highlights, chatMarks, annotations, drawings, bookmarks, err := fileCompanionSplitSharePayload(highlightsJSON)
 	if err != nil {
 		return "", err
 	}
@@ -140,7 +144,7 @@ func (a *App) FileCompanionExportProject(path, highlightsJSON string) (string, e
 	if sameFileCompanionExportPath(source, dest) {
 		return "", errors.New("不能覆盖当前文件")
 	}
-	if err := writeFileCompanionProject(dest, source, highlights, chatMarks, annotations, drawings, messages, paperPath, paperTurn); err != nil {
+	if err := writeFileCompanionProject(dest, source, highlights, chatMarks, annotations, drawings, bookmarks, messages, paperPath, paperTurn); err != nil {
 		return "", err
 	}
 	logFileCompanion("export project")
@@ -469,11 +473,11 @@ func fileCompanionCleanDrawing(item fileCompanionDrawing) (fileCompanionDrawing,
 
 // fileCompanionSplitSharePayload reads the companion marks payload the window
 // sends with a share or an export:
-// {"highlights":[],"chatMarks":[],"annotations":[],"drawings":[]}.
+// {"highlights":[],"chatMarks":[],"annotations":[],"drawings":[],"bookmarks":[]}.
 // A legacy caller still sends the highlights array alone; that keeps working
 // and leaves the other fields nil, so an old project does not clear a reader's
-// own answer highlights, placed notes, or drawings.
-func fileCompanionSplitSharePayload(raw string) (highlights, chatMarks, annotations, drawings json.RawMessage, err error) {
+// own answer highlights, placed notes, drawings, or bookmarks.
+func fileCompanionSplitSharePayload(raw string) (highlights, chatMarks, annotations, drawings, bookmarks json.RawMessage, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "{") {
 		var payload struct {
@@ -481,35 +485,124 @@ func fileCompanionSplitSharePayload(raw string) (highlights, chatMarks, annotati
 			ChatMarks   json.RawMessage `json:"chatMarks"`
 			Annotations json.RawMessage `json:"annotations"`
 			Drawings    json.RawMessage `json:"drawings"`
+			Bookmarks   json.RawMessage `json:"bookmarks"`
 		}
 		if json.Unmarshal([]byte(trimmed), &payload) == nil && len(payload.Highlights) > 0 {
 			highlights, err = fileCompanionCleanHighlights(string(payload.Highlights))
 			if err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 			if len(payload.ChatMarks) > 0 {
 				chatMarks, err = fileCompanionCleanChatMarks(payload.ChatMarks)
 				if err != nil {
-					return nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, err
 				}
 			}
 			if len(payload.Annotations) > 0 {
 				annotations, err = fileCompanionCleanAnnotations(payload.Annotations)
 				if err != nil {
-					return nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, err
 				}
 			}
 			if len(payload.Drawings) > 0 {
 				drawings, err = fileCompanionCleanDrawings(payload.Drawings)
 				if err != nil {
-					return nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, err
 				}
 			}
-			return highlights, chatMarks, annotations, drawings, nil
+			if len(payload.Bookmarks) > 0 {
+				bookmarks, err = fileCompanionCleanBookmarks(payload.Bookmarks)
+				if err != nil {
+					return nil, nil, nil, nil, nil, err
+				}
+			}
+			return highlights, chatMarks, annotations, drawings, bookmarks, nil
 		}
 	}
 	highlights, err = fileCompanionCleanHighlights(raw)
-	return highlights, nil, nil, nil, err
+	return highlights, nil, nil, nil, nil, err
+}
+
+type fileCompanionProjectBookmark struct {
+	ID    string  `json:"id"`
+	Page  int     `json:"page"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Color string  `json:"color"`
+	Name  string  `json:"name"`
+}
+
+func fileCompanionBookmarkColor(color string) bool {
+	switch color {
+	case "yellow", "orange", "red", "pink", "purple", "blue", "teal", "green":
+		return true
+	default:
+		return false
+	}
+}
+
+// fileCompanionCleanBookmarks validates named places before they travel with
+// a project. Order is the order they were added. A repeated id keeps that
+// place and takes the later fields. Past 200 valid bookmarks, the oldest drop.
+// The project size cap already bounds the raw list. The walk has to see every
+// row: cutting a raw tail would drop a real bookmark that sits in front of a
+// long run of rejected rows, and stopping at the 2000th valid row would drop
+// a newer one.
+func fileCompanionCleanBookmarks(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return json.RawMessage("[]"), nil
+	}
+	if len(raw) > fileCompanionProjectMaxMarks {
+		return nil, errors.New("书签无法保存")
+	}
+	var incoming []fileCompanionProjectBookmark
+	if err := json.Unmarshal(raw, &incoming); err != nil {
+		return nil, errors.New("书签无法保存")
+	}
+	cleaned := make([]fileCompanionProjectBookmark, 0, len(incoming))
+	// A repeated id is one bookmark. The later fields win and the first place stays.
+	seen := make(map[string]int, len(incoming))
+	for _, item := range incoming {
+		if !fileCompanionBookmarkColor(item.Color) {
+			continue
+		}
+		if item.Page < 1 || item.Page > 100000 {
+			continue
+		}
+		if !fileCompanionFinite(item.X) || !fileCompanionFinite(item.Y) || item.X < 0 || item.Y < 0 || item.X > 1 || item.Y > 1 {
+			continue
+		}
+		id := strings.TrimSpace(item.ID)
+		if id == "" || len(id) > 80 {
+			continue
+		}
+		name := strings.Join(strings.Fields(item.Name), " ")
+		runes := []rune(name)
+		if len(runes) == 0 {
+			continue
+		}
+		if len(runes) > 40 {
+			name = string(runes[:40])
+		}
+		row := fileCompanionProjectBookmark{
+			ID: id, Page: item.Page, X: item.X, Y: item.Y, Color: item.Color, Name: name,
+		}
+		if at, ok := seen[id]; ok {
+			cleaned[at] = row
+			continue
+		}
+		seen[id] = len(cleaned)
+		cleaned = append(cleaned, row)
+	}
+	if len(cleaned) > 200 {
+		cleaned = cleaned[len(cleaned)-200:]
+	}
+	encoded, err := json.Marshal(cleaned)
+	if err != nil {
+		return nil, errors.New("书签无法保存")
+	}
+	return encoded, nil
 }
 
 func fileCompanionCleanMark(mark fileCompanionProjectMark) (fileCompanionProjectMark, bool) {
@@ -597,7 +690,7 @@ func fileCompanionProjectSafeName(name string) string {
 	return cleaned
 }
 
-func writeFileCompanionProject(dest, source string, highlights, chatMarks, annotations, drawings json.RawMessage, messages []FileCompanionMessage, paperPath string, paperTurn int) error {
+func writeFileCompanionProject(dest, source string, highlights, chatMarks, annotations, drawings, bookmarks json.RawMessage, messages []FileCompanionMessage, paperPath string, paperTurn int) error {
 	src, err := os.Open(source)
 	if err != nil {
 		return errors.New("文件无法读取")
@@ -630,6 +723,7 @@ func writeFileCompanionProject(dest, source string, highlights, chatMarks, annot
 		ChatMarks:   chatMarks,
 		Annotations: annotations,
 		Drawings:    drawings,
+		Bookmarks:   bookmarks,
 		Messages:    messages,
 	}
 	if paperPath != "" && paperTurn > 0 {
@@ -756,6 +850,7 @@ func (a *App) fileCompanionOpenProjectZip(path string) (FileCompanionDocument, e
 	opened.ChatMarks = imported.chatMarks
 	opened.Annotations = imported.annotations
 	opened.Drawings = imported.drawings
+	opened.Bookmarks = imported.bookmarks
 	opened.Imported = true
 	logFileCompanion("import project")
 	return opened, nil
@@ -769,6 +864,7 @@ type fileCompanionProjectImport struct {
 	chatMarks   json.RawMessage
 	annotations json.RawMessage
 	drawings    json.RawMessage
+	bookmarks   json.RawMessage
 }
 
 func (a *App) importFileCompanionProject(path string) (fileCompanionProjectImport, error) {
@@ -876,6 +972,7 @@ func (a *App) importFileCompanionProject(path string) (fileCompanionProjectImpor
 		chatMarks:   manifest.ChatMarks,
 		annotations: manifest.Annotations,
 		drawings:    manifest.Drawings,
+		bookmarks:   manifest.Bookmarks,
 	}, nil
 }
 
@@ -928,6 +1025,13 @@ func readProjectManifest(file *zip.File) (fileCompanionProjectManifest, error) {
 		return manifest, errFileCompanionNotProject
 	}
 	manifest.Highlights = cleaned
+	if len(manifest.Bookmarks) > 0 {
+		bookmarks, bookmarkErr := fileCompanionCleanBookmarks(manifest.Bookmarks)
+		if bookmarkErr != nil {
+			return manifest, errFileCompanionNotProject
+		}
+		manifest.Bookmarks = bookmarks
+	}
 	return manifest, nil
 }
 

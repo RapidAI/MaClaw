@@ -18936,12 +18936,13 @@ func RunTaskWithSubAgent(
 	return runTaskWithSubAgentRuntimeOptions(handler, cfg, httpClient, task, projectPath, reqCtx, designCtx, prevOutputs, loopCtx, onToken, onProgress, defaultGUICodingRuntimeOptions(task, projectPath))
 }
 
-// defaultGUICodingRuntimeOptions is the production admission policy for a
-// serial GUI turn. Inquiry turns are explicitly read-only. Implementation and
-// operational turns are serialized writers and therefore require a successful
-// before/after workspace probe. Planned files form the narrow write-set; a
-// dynamic one-shot task with no file list receives an explicit project-root
-// directory claim so it is known-but-conservative rather than Unknown.
+// defaultGUICodingRuntimeOptions is the production admission policy for a GUI
+// turn. Inquiry turns are read-only. Implementation turns declare the plan's
+// files, or the project root when the file list is empty, and require a
+// successful before/after workspace probe. Those concrete claims run beside
+// other shared-tree tasks. Same-file writes are synchronized in the file
+// tools. The root claim stays a concrete declaration rather than Unknown.
+// Isolated worktree execution is a separate options path.
 func defaultGUICodingRuntimeOptions(task *TaskItem, projectPath string) *guiCodingRuntimeOptions {
 	options := &guiCodingRuntimeOptions{}
 	if codingTaskLooksInquiry(task) {
@@ -19119,8 +19120,9 @@ func runTaskWithSubAgentRuntimeOptions(
 	}
 	approvalGate := codingRuntimeApprovalGate(func() string { return sa.prepareTaskScopeApproval(task) })
 	if onProgress != nil {
+		waitTask := task
 		runtimeOptions.AdmissionWait = func(string) {
-			onProgress("同一目录上另一个任务还在写入，本任务等它结束后再开始")
+			emitCodingWriterAdmissionWait(onProgress, waitTask)
 		}
 	}
 	var unregisterRuntimeCancellation func()

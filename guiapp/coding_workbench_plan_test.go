@@ -2262,6 +2262,29 @@ func TestIsCodingAgentUserProgressTextKeepsTrailOnly(t *testing.T) {
 	}
 }
 
+func TestCodingWriterAdmissionWaitIsATrailEvent(t *testing.T) {
+	event := codingWriterAdmissionWaitEvent(&TaskItem{Index: 1, Title: "buddy"})
+	if event.Event != codingAgentEventKindAssistantNote.String() || event.Phase != codingAgentEventPhaseWaitingWriter.String() {
+		t.Fatalf("directory admission must be a visible coding phase, got %+v", event)
+	}
+	if event.TaskID != "T1" || event.Detail != codingWriterAdmissionWaitDetail {
+		t.Fatalf("admission note: %+v", event)
+	}
+	text := formatCodingAgentEvent(event)
+	if !isCodingAgentUserProgressText(text) {
+		t.Fatal("admission phase must pass the trail filter")
+	}
+	if isCodingAgentUserProgressText(codingWriterAdmissionWaitDetail) {
+		t.Fatal("the bare wait sentence is a board line, not a trail event")
+	}
+	var got []string
+	emitCodingAgentUserProgress(func(s string) { got = append(got, s) }, text)
+	emitCodingAgentUserProgress(func(s string) { got = append(got, s) }, codingWriterAdmissionWaitDetail)
+	if len(got) != 1 || got[0] != text {
+		t.Fatalf("only the phase event should be forwarded: %#v", got)
+	}
+}
+
 func TestEmitCodingAgentUserProgressDropsBoardBanners(t *testing.T) {
 	var got []string
 	emitCodingAgentUserProgress(func(s string) { got = append(got, s) }, "全功能编程工作台：开始执行")

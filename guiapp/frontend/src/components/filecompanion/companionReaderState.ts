@@ -1,5 +1,6 @@
 import { chatMarksSaveRevision, hydrateChatMarks } from "./chatMarks";
 import { FILE_COMPANION_INPUT_HISTORY_KEY, fileCompanionInputHistorySaveRevision, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
+import { hydratePdfBookmarks, pdfBookmarksSaveRevision } from "./pdfBookmarks";
 import { hydratePdfDrawings, pdfDrawingsSaveRevision } from "./pdfDrawings";
 import { hydratePdfMarks, PDF_MARK_STORAGE_KEY, pdfMarksSaveRevision } from "./pdfMarks";
 import { hydratePdfTranslations, PDF_TRANSLATION_STORAGE_KEY, pdfTranslationsSaveRevision } from "./pdfTranslations";
@@ -83,6 +84,7 @@ export async function hydrateCompanionReaderState(): Promise<void> {
     const marksRevision = pdfMarksSaveRevision();
     const translationsRevision = pdfTranslationsSaveRevision();
     const drawingsRevision = pdfDrawingsSaveRevision();
+    const bookmarksRevision = pdfBookmarksSaveRevision();
     const chatMarksRevision = chatMarksSaveRevision();
     const historyRevision = fileCompanionInputHistorySaveRevision();
     const raw = await load(
@@ -100,6 +102,7 @@ export async function hydrateCompanionReaderState(): Promise<void> {
     if (pdfMarksSaveRevision() === marksRevision) hydratePdfMarks(record.pdf_marks);
     if (pdfTranslationsSaveRevision() === translationsRevision) hydratePdfTranslations(record.pdf_translations);
     if (pdfDrawingsSaveRevision() === drawingsRevision) hydratePdfDrawings(record.pdf_drawings);
+    if (pdfBookmarksSaveRevision() === bookmarksRevision) hydratePdfBookmarks(record.pdf_bookmarks);
     if (chatMarksSaveRevision() === chatMarksRevision) hydrateChatMarks(record.chat_marks);
     if (fileCompanionInputHistorySaveRevision() === historyRevision) hydrateFileCompanionInputHistory(record.input_history);
     // Only now is the browser copy redundant.

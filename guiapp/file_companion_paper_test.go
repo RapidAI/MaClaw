@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
@@ -393,6 +395,235 @@ func TestFileCompanionPaperPDFLeavesTheSourceAlone(t *testing.T) {
 	}
 	if string(after) != original {
 		t.Fatal("ordinary chat rewrote the source")
+	}
+}
+
+func TestFileCompanionCancelSkipsThePaperPDF(t *testing.T) {
+	prevLookup := fileCompanionPaperLookupHook
+	fileCompanionPaperLookupHook = func(string) (string, string) { return "", "" }
+	t.Cleanup(func() { fileCompanionPaperLookupHook = prevLookup })
+
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paper.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := app.FileCompanionOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Error != "" || doc.SessionID == "" {
+		t.Fatalf("open pdf error=%q session=%q", doc.Error, doc.SessionID)
+	}
+	userID := "file-companion:" + doc.SessionID
+	gen := app.fileCompanionChatGen(userID)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	letGo := func() { releaseOnce.Do(func() { close(release) }) }
+	defer letGo()
+	prev := fileCompanionTurnModelHook
+	fileCompanionTurnModelHook = func(IMUserMessage) *IMAgentResponse {
+		startedOnce.Do(func() { close(started) })
+		<-release
+		return &IMAgentResponse{Text: "方法说明。实验对比了基线。"}
+	}
+	t.Cleanup(func() { fileCompanionTurnModelHook = prev })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- app.SendFileCompanionMessage(FileCompanionTurnRequest{
+			Path:      path,
+			Text:      "论文解读",
+			Purpose:   "paper",
+			RequestID: "paper-1",
+		})
+	}()
+	select {
+	case <-started:
+	case err := <-errCh:
+		t.Fatalf("paper turn ended before the model: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("paper turn did not start")
+	}
+	if err := app.CancelFileCompanionGeneration(path, "paper-1"); err != nil {
+		t.Fatal(err)
+	}
+	letGo()
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(source) != "%PDF-1.4\n" {
+		t.Fatalf("source = %q", source)
+	}
+	if got := app.fileCompanionChatGen(userID); got != gen {
+		t.Fatalf("chat gen %d -> %d", gen, got)
+	}
+	results := filepath.Join(app.GetDataDir(), "file-companion", "results", doc.SessionID)
+	listed, err := os.ReadDir(results)
+	if err == nil {
+		for _, item := range listed {
+			if strings.HasSuffix(strings.ToLower(item.Name()), ".pdf") {
+				t.Fatalf("cancel wrote %s", item.Name())
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestFileCompanionCancelDuringPaperPublishWritesNothing(t *testing.T) {
+	prevLookup := fileCompanionPaperLookupHook
+	fileCompanionPaperLookupHook = func(string) (string, string) { return "", "" }
+	t.Cleanup(func() { fileCompanionPaperLookupHook = prevLookup })
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.md")
+	const original = "alpha beta\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := app.FileCompanionOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, canonical, err := app.fileCompanionGrant(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = grant
+	userID := "file-companion:" + doc.SessionID
+	reached := false
+	fileCompanionBeforeCommitHook = func() {
+		reached = true
+		if err := app.CancelFileCompanionGeneration(path, "paper-1"); err != nil {
+			t.Errorf("cancel: %v", err)
+		}
+	}
+	t.Cleanup(func() { fileCompanionBeforeCommitHook = nil })
+	resp := &IMAgentResponse{Text: "方法说明。实验对比了基线。"}
+	if err := app.fileCompanionDeliverPaper(canonical, doc.SessionID, userID, "paper-1", resp); err != nil {
+		t.Fatal(err)
+	}
+	if !reached {
+		t.Fatal("paper publish did not reach the commit")
+	}
+	if resp.LocalFilePath != "" || resp.Error != "" {
+		t.Fatalf("cancelled paper = %+v", resp)
+	}
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(source) != original {
+		t.Fatalf("source = %q", source)
+	}
+	results := filepath.Join(app.GetDataDir(), "file-companion", "results", doc.SessionID)
+	listed, err := os.ReadDir(results)
+	if err == nil {
+		for _, item := range listed {
+			name := strings.ToLower(item.Name())
+			if strings.HasPrefix(item.Name(), "paper-stage-") || strings.HasSuffix(name, ".pdf") || strings.HasSuffix(name, ".pdf.tmp") {
+				t.Fatalf("cancel wrote %s", item.Name())
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestFileCompanionPaperBuildsDoNotShareATemp(t *testing.T) {
+	prevLookup := fileCompanionPaperLookupHook
+	fileCompanionPaperLookupHook = func(string) (string, string) { return "", "" }
+	t.Cleanup(func() { fileCompanionPaperLookupHook = prevLookup })
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(path, []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := app.FileCompanionOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, canonical, err := app.fileCompanionGrant(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := "file-companion:" + doc.SessionID
+	results := filepath.Join(app.GetDataDir(), "file-companion", "results", doc.SessionID)
+
+	var mu sync.Mutex
+	seen := map[string]struct{}{}
+	fileCompanionBeforeCommitHook = func() {
+		listed, readErr := os.ReadDir(results)
+		if readErr != nil {
+			t.Errorf("read results: %v", readErr)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, item := range listed {
+			if strings.HasPrefix(item.Name(), "paper-stage-") {
+				seen[item.Name()] = struct{}{}
+			}
+		}
+	}
+	t.Cleanup(func() { fileCompanionBeforeCommitHook = nil })
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	for _, id := range []string{"paper-a", "paper-b"} {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			resp := &IMAgentResponse{Text: "方法说明。" + id}
+			errCh <- app.fileCompanionDeliverPaper(canonical, doc.SessionID, userID, id, resp)
+		}(id)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(seen) < 2 {
+		t.Fatalf("stage dirs = %d", len(seen))
+	}
+	listed, err := os.ReadDir(results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdfs := 0
+	for _, item := range listed {
+		name := item.Name()
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(name, "paper-stage-") || strings.HasSuffix(lower, ".pdf.tmp") {
+			t.Fatalf("left %s", name)
+		}
+		if strings.HasSuffix(lower, ".pdf") && !item.IsDir() {
+			pdfs++
+		}
+	}
+	if pdfs != 1 {
+		t.Fatalf("pdf count = %d", pdfs)
 	}
 }
 

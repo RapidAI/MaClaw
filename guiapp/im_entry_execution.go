@@ -467,17 +467,26 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			log.Printf("[semantic-routing] fetched document read user=%q", msg.UserID)
 		}
 		// A deictic send ("也发给他") names the recipient, not the channel.
-		// Once this session has mailed through a configured mailbox, the new
-		// artifact continues that channel, and the mail tool must be on the
-		// surface for the model to deliver at all.
-		if rewritten := semanticAnaphoricMailboxFollowUp(semanticIntent, msg.Text, history); rewritten != nil {
-			semanticIntent = rewritten
-			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			// The open task already spent its mailbox grant last turn. That
-			// spent count is not this send's quota; leaving it on the carried
-			// ceiling would clamp the mailbox need away before planning.
-			loopCtx.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
-			log.Printf("[semantic-routing] anaphoric mailbox delivery user=%q", msg.UserID)
+		// Once this session has mailed through a configured mailbox, a
+		// follow-up may continue that channel; the lightweight model decides
+		// semantically, so the behavior does not depend on the language or a
+		// phrase list. The mail tool must be on the surface for the model to
+		// deliver at all.
+		//
+		// A pending answer resolves a host question (a card, a draft, a
+		// missing input); the resume plan owns that turn. Do not classify the
+		// answer as a new delivery sentence.
+		pendingAnswer := strings.TrimSpace(opts.AskUserContext) != "" || strings.TrimSpace(opts.PendingUserReplyContext) != ""
+		if !pendingAnswer && loopCtx.mailboxSendAllowed() {
+			if rewritten := h.semanticAnaphoricMailboxFollowUp(semanticIntent, msg.UserID, msg.Text, history); rewritten != nil {
+				semanticIntent = rewritten
+				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+				// The open task already spent its mailbox grant last turn. That
+				// spent count is not this send's quota; leaving it on the carried
+				// ceiling would clamp the mailbox need away before planning.
+				loopCtx.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
+				log.Printf("[semantic-routing] anaphoric mailbox delivery user=%q", msg.UserID)
+			}
 		}
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)

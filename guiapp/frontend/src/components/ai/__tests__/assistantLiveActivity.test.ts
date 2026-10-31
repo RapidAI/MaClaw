@@ -83,6 +83,25 @@ describe('assistantLiveActivity', () => {
         expect(resolveAssistantLiveActivity({
             streaming: false,
             busy: true,
+            codingProgress: {
+                event: 'assistant_note',
+                phase: 'waiting_writer',
+                detail: '同一目录上另一个任务还在写入，本任务等它结束后再开始',
+            },
+        })).toBe('waiting_for_writer');
+        expect(resolveAssistantLiveActivity({
+            streaming: false,
+            busy: true,
+            codingProgress: { event: 'assistant_note', phase: 'running', detail: 'looking at the parser' },
+        })).toBe('accessing_model');
+        expect(resolveAssistantLiveActivity({
+            streaming: false,
+            busy: true,
+            codingProgress: { event: 'tool_started', phase: 'waiting_writer', detail: 'read_file' },
+        })).toBe('reading_file');
+        expect(resolveAssistantLiveActivity({
+            streaming: false,
+            busy: true,
             hasReasoning: true,
         })).toBe('calling_tool');
         expect(resolveAssistantLiveActivity({
@@ -267,6 +286,10 @@ describe('assistantLiveActivity', () => {
         expect(assistantLiveActivityObject('updating_todo', 'zh-Hans', { toolName: 'todo_write' })).toBe('');
         expect(assistantLiveActivityLabel('editing_file', 'zh-Hans', 'edit_file')).toBe('正在编辑文件');
         expect(assistantLiveActivityLabel('accessing_model', 'zh-Hans')).toBe('正在访问模型');
+        expect(assistantLiveActivityLabel('waiting_for_writer', 'zh-Hans')).toBe('正在等待目录写入');
+        expect(assistantLiveActivityLabel('waiting_for_writer', 'zh-Hant')).toBe('正在等待目錄寫入');
+        expect(assistantLiveActivityLabel('waiting_for_writer', 'en')).toBe('Waiting for the directory');
+        expect(assistantLiveActivityObject('waiting_for_writer', 'zh-Hans', { providerName: 'CodeGen', modelId: 'vendor/deepseek-v4-flash' })).toBe('');
         expect(assistantLiveActivityLabel('analyzing', 'zh-Hans')).toBe('正在分析任务');
         expect(assistantLiveActivityLabel('syncing_context', 'zh-Hans')).toBe('正在同步上下文');
         expect(assistantLiveActivityLabel('searching_web', 'zh-Hans')).toBe('正在搜索网络');

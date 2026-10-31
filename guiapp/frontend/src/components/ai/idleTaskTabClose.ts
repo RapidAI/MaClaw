@@ -36,7 +36,8 @@ export type IdleTaskSwitchContext = {
     activeAwaitingUser: boolean;
     scopeApprovalProjectPath: string;
     getTabState: (tabId: string) => AITabState | undefined;
-    closeTab: (tabId: string) => void;
+    /** Idle closes must not raise the new-task guide; the switch is about to focus another task. */
+    closeTab: (tabId: string, options?: { suppressNewTaskGuide?: boolean }) => void;
 };
 
 type CloseableSnapshot = {
@@ -191,6 +192,6 @@ export function releaseIdleTaskTabs(ctx: IdleTaskSwitchContext | null | undefine
     const closing = planIdleTaskTabCloses(ctx, target);
     for (const tabId of closing) {
         console.info("[task-switch] auto-close idle tab", { tabId, nextTabId: target.nextTabId || "", projectPath: target.projectPath || "", expertId: target.expertId || "" });
-        ctx.closeTab(tabId);
+        ctx.closeTab(tabId, { suppressNewTaskGuide: true });
     }
 }

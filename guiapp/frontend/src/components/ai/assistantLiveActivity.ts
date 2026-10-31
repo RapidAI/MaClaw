@@ -32,7 +32,8 @@ export type AssistantLiveActivityKind =
     | "tts"
     | "asr"
     | "opening"
-    | "delegating";
+    | "delegating"
+    | "waiting_for_writer";
 
 const TOOL_KIND_BY_NAME: Record<string, AssistantLiveActivityKind> = {
     bash: "running_command",
@@ -209,6 +210,8 @@ export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang
             return localizeText(lang, "Opening", "正在打开", "正在開啟");
         case "delegating":
             return localizeText(lang, "Delegating", "正在委派任务", "正在委派任務");
+        case "waiting_for_writer":
+            return localizeText(lang, "Waiting for the directory", "正在等待目录写入", "正在等待目錄寫入");
         case "calling_tool":
         default:
             return localizeText(lang, "Calling tools", "正在调用工具", "正在呼叫工具");
@@ -444,7 +447,7 @@ export function resolveAssistantLiveActivity(opts: {
     hasReasoning?: boolean;
     reasoningText?: string;
     progressMessages?: Array<{ content?: string }>;
-    codingProgress?: { event?: string; detail?: string; command?: string; target?: string } | null;
+    codingProgress?: { event?: string; phase?: string; detail?: string; command?: string; target?: string } | null;
     /** Latest call already written into the assistant transcript. */
     latestToolCall?: { name?: string; action?: string } | null;
     /**
@@ -465,6 +468,11 @@ export function resolveAssistantLiveActivity(opts: {
     // An in-flight tool wins even if a few reasoning tokens are still flushing.
     if (codingEvent === "tool_started") {
         return liveActivityFromCodingEvent(codingEvent, opts.codingProgress?.detail || "", opts.codingProgress?.command, opts.codingProgress?.target);
+    }
+    // The directory writer gate is a turn phase. No model request has started,
+    // so the header must not fall through to "contacting the model".
+    if ((opts.codingProgress?.phase || "").trim().toLowerCase() === "waiting_writer") {
+        return "waiting_for_writer";
     }
     const latestText = latestProgressText(opts.progressMessages);
     if (isInFlightToolProgressText(latestText)) {

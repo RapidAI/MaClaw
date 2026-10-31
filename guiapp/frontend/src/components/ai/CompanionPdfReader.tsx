@@ -32,6 +32,26 @@ import {
     type PdfMarkRect,
 } from "../filecompanion/pdfMarks";
 import {
+    PDF_BOOKMARK_COLORS,
+    PDF_BOOKMARK_LIMIT,
+    PDF_BOOKMARK_TICK_LANE_PX,
+    PDF_BOOKMARK_TICK_PX,
+    PDF_BOOKMARK_TICK_WIDTH_PX,
+    loadPdfBookmarks,
+    newPdfBookmarkId,
+    pdfBookmarkFill,
+    pdfBookmarkInk,
+    pdfBookmarkLayoutMoved,
+    pdfBookmarkScrollIsReader,
+    pdfBookmarkScrollTop,
+    pdfBookmarkTickLanes,
+    pdfBookmarkTickTop,
+    savePdfBookmarks,
+    subscribePdfBookmarks,
+    type PdfBookmark,
+    type PdfBookmarkColor,
+} from "../filecompanion/pdfBookmarks";
+import {
     beginPdfTranslation,
     failPdfTranslation,
     finishPdfTranslation,
@@ -89,6 +109,8 @@ type MenuState = {
     hitNoteId: string;
     hitNoteKind: "" | "annotation" | "translation";
     hitMark: PdfMark | null;
+    hitBookmarkId: string;
+    anchor: { page: number; x: number; y: number } | null;
     parts: SelectionPart[];
 };
 
@@ -108,6 +130,55 @@ const PDF_COLOR_NAME: Record<PdfMarkColor, { en: string; zh: string; mn: string 
     blue: { en: "Blue", zh: "蓝色", mn: "Цэнхэр" },
     pink: { en: "Pink", zh: "粉色", mn: "Ягаан" },
 };
+
+const PDF_BOOKMARK_COLOR_NAME: Record<PdfBookmarkColor, { en: string; zh: string; mn: string }> = {
+    yellow: { en: "Yellow", zh: "黄色", mn: "Шар" },
+    orange: { en: "Orange", zh: "橙色", mn: "Улбар шар" },
+    red: { en: "Red", zh: "红色", mn: "Улаан" },
+    pink: { en: "Pink", zh: "粉色", mn: "Ягаан" },
+    purple: { en: "Purple", zh: "紫色", mn: "Нил ягаан" },
+    blue: { en: "Blue", zh: "蓝色", mn: "Цэнхэр" },
+    teal: { en: "Teal", zh: "青色", mn: "Номин" },
+    green: { en: "Green", zh: "绿色", mn: "Ногоон" },
+};
+
+function pdfReaderText(lang: string, en: string, zh: string, mn: string): string {
+    if (normalizeLang(lang) === "mn") return mn;
+    return tailText(lang, en, zh);
+}
+
+function pdfBookmarkSwatchLabel(id: PdfBookmarkColor, lang: string): string {
+    const color = PDF_BOOKMARK_COLOR_NAME[id];
+    return pdfReaderText(lang, `${color.en} bookmark`, `${color.zh}书签`, `${color.mn} хавчуурга`);
+}
+
+function pdfBookmarkChipLabel(lang: string, bookmark: PdfBookmark): string {
+    return pdfReaderText(
+        lang,
+        `Page ${bookmark.page}, ${bookmark.name}`,
+        `第 ${bookmark.page} 页，${bookmark.name}`,
+        `${bookmark.page}-р хуудас, ${bookmark.name}`,
+    );
+}
+
+/** A paper ribbon with a swallowtail, hung from the marked line. */
+function PdfBookmarkRibbon({ color }: { color: PdfBookmarkColor }) {
+    const fill = pdfBookmarkFill(color);
+    const ink = pdfBookmarkInk(color);
+    return (
+        <svg viewBox="0 0 16 40" aria-hidden="true" focusable="false">
+            <path
+                d="M.8.8h14.4V28L8 38.5.8 28Z"
+                fill={fill}
+                stroke={ink}
+                strokeWidth="1.2"
+                strokeLinejoin="round"
+            />
+            <path d="M2.15 1.8h3.15V26.6H2.15Z" fill="#fff" opacity=".5" />
+            <path d="M8 2.2v26" stroke={ink} strokeWidth=".7" opacity=".4" />
+        </svg>
+    );
+}
 
 function pdfSwatchLabel(id: PdfMarkColor, lang: string, kind: "highlight" | "pen"): string {
     const color = PDF_COLOR_NAME[id];
@@ -448,7 +519,7 @@ function markAt(marks: PdfMark[], page: number, x: number, y: number): PdfMark |
     return null;
 }
 
-type PdfMenuGlyphKind = "highlight" | "translate" | "copy" | "check" | "close" | "erase" | "note";
+type PdfMenuGlyphKind = "highlight" | "translate" | "copy" | "check" | "close" | "erase" | "note" | "bookmark";
 
 function PdfMenuGlyph({ kind }: { kind: PdfMenuGlyphKind }) {
     if (kind === "highlight") {
@@ -494,6 +565,13 @@ function PdfMenuGlyph({ kind }: { kind: PdfMenuGlyphKind }) {
             </svg>
         );
     }
+    if (kind === "bookmark") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M7 4h10a1 1 0 0 1 1 1v15l-6-3.2L6 20V5a1 1 0 0 1 1-1z" />
+            </svg>
+        );
+    }
     return (
         <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
@@ -525,10 +603,15 @@ type PdfSelectionMenuProps = {
     lang: string;
     state: MenuState;
     selectionText: string;
+    bookmarkName: string;
+    bookmarkColorId: PdfBookmarkColor;
     onTranslate: () => void;
     onCopy: () => void;
     onPaint: (color: PdfMarkColor) => void;
     onAnnotate: (text: string) => void;
+    onAddBookmark: (name: string, color: PdfBookmarkColor) => void;
+    onRenameBookmark: (name: string, color: PdfBookmarkColor) => void;
+    onDeleteBookmark: () => void;
     onClearNote: () => void;
     onClearMark: () => void;
     onClose: () => void;
@@ -544,10 +627,15 @@ function PdfSelectionMenu({
     lang,
     state,
     selectionText,
+    bookmarkName,
+    bookmarkColorId,
     onTranslate,
     onCopy,
     onPaint,
     onAnnotate,
+    onAddBookmark,
+    onRenameBookmark,
+    onDeleteBookmark,
     onClearNote,
     onClearMark,
     onClose,
@@ -556,6 +644,9 @@ function PdfSelectionMenu({
     const [place, setPlace] = useState({ left: state.x, top: state.y });
     const [annotationOpen, setAnnotationOpen] = useState(false);
     const [annotationText, setAnnotationText] = useState("");
+    const [bookmarkEditor, setBookmarkEditor] = useState<"" | "add" | "rename">("");
+    const [bookmarkDraft, setBookmarkDraft] = useState("");
+    const [bookmarkColor, setBookmarkColor] = useState<PdfBookmarkColor>("yellow");
 
     useLayoutEffect(() => {
         const root = rootRef.current;
@@ -573,7 +664,7 @@ function PdfSelectionMenu({
         measure();
         window.addEventListener("resize", measure);
         return () => window.removeEventListener("resize", measure);
-    }, [state.x, state.y, selectionText, state.hitId, state.hitNoteId, annotationOpen]);
+    }, [state.x, state.y, selectionText, state.hitId, state.hitNoteId, state.hitBookmarkId, annotationOpen, bookmarkEditor]);
 
     useEffect(() => {
         rootRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true });
@@ -624,6 +715,8 @@ function PdfSelectionMenu({
             onClose();
             return;
         }
+        const keyTarget = event.target as HTMLElement | null;
+        if (keyTarget?.closest?.("input, textarea")) return;
         if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
         const items = Array.from(root.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'));
         if (items.length === 0) return;
@@ -656,6 +749,72 @@ function PdfSelectionMenu({
         setAnnotationOpen(false);
         setAnnotationText("");
     };
+    const submitBookmark = () => {
+        const name = bookmarkDraft.trim();
+        if (!name) return;
+        if (bookmarkEditor === "rename") onRenameBookmark(name, bookmarkColor);
+        else onAddBookmark(name, bookmarkColor);
+    };
+    const openBookmarkAdd = () => {
+        setBookmarkEditor("add");
+        // A selection already names the place. A bare click still asks for one.
+        const seed = Array.from(selectionText.replace(/\s+/g, " ").trim()).slice(0, 40).join("");
+        setBookmarkDraft(seed);
+        setBookmarkColor("yellow");
+    };
+    const openBookmarkRename = () => {
+        setBookmarkEditor("rename");
+        setBookmarkDraft(bookmarkName);
+        setBookmarkColor(bookmarkColorId);
+    };
+    const bookmarkForm = (
+        <div data-testid="pdf-bookmark-editor" className="companion-pdf-bookmark-editor">
+            <input
+                data-testid="pdf-bookmark-name"
+                value={bookmarkDraft}
+                autoFocus
+                maxLength={40}
+                placeholder={pdfReaderText(lang, "Bookmark name", "书签名", "Хавчуургын нэр")}
+                aria-label={pdfReaderText(lang, "Bookmark name", "书签名", "Хавчуургын нэр")}
+                onChange={(event) => setBookmarkDraft(event.target.value)}
+                onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setBookmarkEditor("");
+                        return;
+                    }
+                    if (event.key === "Enter") {
+                        // Enter confirms an IME candidate. The name is not done.
+                        if (event.nativeEvent.isComposing) return;
+                        event.preventDefault();
+                        submitBookmark();
+                    }
+                }}
+            />
+            <div className="companion-pdf-menu-colors companion-pdf-menu-colors--bookmarks" role="group" aria-label={pdfReaderText(lang, "Bookmark colour", "书签颜色", "Хавчуургын өнгө")}>
+                {PDF_BOOKMARK_COLORS.map((color) => (
+                    <button
+                        key={color.id}
+                        type="button"
+                        data-testid={`pdf-bookmark-color-${color.id}`}
+                        className="companion-pdf-menu-color"
+                        aria-label={pdfBookmarkSwatchLabel(color.id, lang)}
+                        aria-pressed={bookmarkColor === color.id}
+                        title={pdfBookmarkSwatchLabel(color.id, lang)}
+                        onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                        onClick={() => setBookmarkColor(color.id)}
+                    >
+                        <span style={{ background: color.fill }} />
+                    </button>
+                ))}
+            </div>
+            <div className="companion-pdf-bookmark-editor-actions">
+                <button type="button" data-testid="pdf-bookmark-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setBookmarkEditor("")}>{pdfReaderText(lang, "Cancel", "取消", "Болих")}</button>
+                <button type="button" data-testid="pdf-bookmark-save" disabled={!bookmarkDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitBookmark}>{pdfReaderText(lang, "Save", "确认", "Баталгаажуулах")}</button>
+            </div>
+        </div>
+    );
     // The visible quote is trimmed to one line; the tooltip carries the whole
     // selection so a truncated head can still be read in full.
     const quoteTitle = quoteText.replace(/\s+/g, " ").trim();
@@ -666,7 +825,9 @@ function PdfSelectionMenu({
             className="companion-pdf-menu"
             data-testid="pdf-highlight-menu"
             role="menu"
-            aria-label={tailText(lang, "Selection actions", "选中文本操作")}
+            aria-label={state.hitBookmarkId
+                ? pdfReaderText(lang, "Bookmark actions", "书签操作", "Хавчуургын үйлдэл")
+                : tailText(lang, "Selection actions", "选中文本操作")}
             style={{ left: place.left, top: place.top }}
             onMouseDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => {
@@ -757,6 +918,32 @@ function PdfSelectionMenu({
                         >
                             <PdfMenuGlyph kind="note" />
                             <span className="companion-pdf-menu-item-label">{tailText(lang, "Note", "批注")}</span>
+                        </button>
+                    )}
+                </div>
+            ) : null}
+            {state.hitBookmarkId ? (
+                <div className="companion-pdf-menu-group">
+                    {bookmarkEditor === "rename" ? bookmarkForm : (
+                        <>
+                            <button type="button" role="menuitem" data-testid="pdf-bookmark-rename" className="companion-pdf-menu-item" {...activate(openBookmarkRename)}>
+                                <PdfMenuGlyph kind="note" />
+                                <span className="companion-pdf-menu-item-label">{pdfReaderText(lang, "Rename", "改名", "Нэр солих")}</span>
+                            </button>
+                            <button type="button" role="menuitem" data-testid="pdf-bookmark-delete" className="companion-pdf-menu-item companion-pdf-menu-item--danger" {...activate(onDeleteBookmark)}>
+                                <PdfMenuGlyph kind="erase" />
+                                <span className="companion-pdf-menu-item-label">{pdfReaderText(lang, "Delete bookmark", "删除书签", "Хавчуурга устгах")}</span>
+                            </button>
+                        </>
+                    )}
+                </div>
+            ) : null}
+            {state.anchor && !state.hitBookmarkId ? (
+                <div className="companion-pdf-menu-group">
+                    {bookmarkEditor === "add" ? bookmarkForm : (
+                        <button type="button" role="menuitem" data-testid="pdf-bookmark-add" className="companion-pdf-menu-item" {...activate(openBookmarkAdd)}>
+                            <PdfMenuGlyph kind="bookmark" />
+                            <span className="companion-pdf-menu-item-label">{pdfReaderText(lang, "Add bookmark", "添加书签", "Хавчуурга нэмэх")}</span>
                         </button>
                     )}
                 </div>
@@ -1156,6 +1343,8 @@ function PdfPageView({
     onToggleNote,
     onPlaceNote,
     onResizeNote,
+    bookmarks,
+    onJumpBookmark,
     active,
 }: {
     lang: string;
@@ -1174,6 +1363,8 @@ function PdfPageView({
     onToggleNote: (id: string) => void;
     onPlaceNote: (id: string, place: PdfTranslationPlace | null) => void;
     onResizeNote: (id: string, size: PdfTranslationSize | null) => void;
+    bookmarks: PdfBookmark[];
+    onJumpBookmark: (bookmark: PdfBookmark) => void;
     active: boolean;
 }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1440,12 +1631,16 @@ function PdfPageView({
         dragStopRef.current = stop;
     };
 
+    const pageBookmarks = active ? bookmarks.filter((bookmark) => bookmark.page === pageNumber) : [];
+    const tickLanes = pdfBookmarkTickLanes(pageBookmarks, viewport.height);
+
     return (
         <div
             ref={pageRef}
             className={noteOpen ? "companion-pdf-page companion-pdf-page--note" : "companion-pdf-page"}
             data-testid={`companion-pdf-page-${pageNumber}`}
             data-pdf-page={pageNumber}
+            {...(page ? { "data-pdf-ready": "" } : {})}
             style={{ width: viewport.width, height: viewport.height, "--page-w": `${viewport.width}px` } as React.CSSProperties}
         >
             {active ? <canvas ref={canvasRef} className="companion-pdf-canvas" /> : null}
@@ -1475,6 +1670,39 @@ function PdfPageView({
                     })}
                 </div>
             ) : null}
+            {active ? pageBookmarks.map((bookmark, index) => {
+                const lane = tickLanes[index] ?? 0;
+                return (
+                    <button
+                        key={bookmark.id}
+                        type="button"
+                        className="companion-pdf-bookmark-tick"
+                        data-pdf-bookmark={bookmark.id}
+                        data-testid={`pdf-bookmark-tick-${bookmark.id}`}
+                        title={pdfBookmarkChipLabel(lang, bookmark)}
+                        aria-label={pdfBookmarkChipLabel(lang, bookmark)}
+                        tabIndex={-1}
+                        style={{
+                            top: `${pdfBookmarkTickTop(bookmark.y, viewport.height)}px`,
+                            left: `${lane * PDF_BOOKMARK_TICK_LANE_PX}px`,
+                            width: PDF_BOOKMARK_TICK_WIDTH_PX,
+                            height: PDF_BOOKMARK_TICK_PX,
+                        }}
+                        onMouseDown={(event) => {
+                            if (event.button !== 0) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                        }}
+                        onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onJumpBookmark(bookmark);
+                        }}
+                    >
+                        <PdfBookmarkRibbon color={bookmark.color} />
+                    </button>
+                );
+            }) : null}
             {active ? (
                 <PdfDrawingLayer
                     pageNumber={pageNumber}
@@ -1970,6 +2198,371 @@ function PdfPager({
     );
 }
 
+function revealBookmarkChip(rail: HTMLElement, chip: HTMLElement) {
+    const railBox = rail.getBoundingClientRect();
+    const chipBox = chip.getBoundingClientRect();
+    if (railBox.height < 1 || chipBox.height < 1) return;
+    if (chipBox.top < railBox.top) rail.scrollTop += chipBox.top - railBox.top;
+    else if (chipBox.bottom > railBox.bottom) rail.scrollTop += chipBox.bottom - railBox.bottom;
+}
+
+type BookmarkFocus = {
+    id: string;
+    page: number;
+    gen: number;
+    listeners: Set<() => void>;
+};
+
+function publishBookmarkFocus(focus: BookmarkFocus, id: string, page: number): number {
+    focus.gen += 1;
+    focus.id = id;
+    focus.page = page;
+    focus.listeners.forEach((listener) => listener());
+    return focus.gen;
+}
+
+function releaseBookmarkFocus(focus: BookmarkFocus, gen: number): void {
+    if (focus.gen !== gen || !focus.id) return;
+    focus.id = "";
+    focus.page = 0;
+    focus.listeners.forEach((listener) => listener());
+}
+
+function pdfBookmarkPageSample(root: HTMLElement, page: number) {
+    const el = root.querySelector<HTMLElement>(`[data-pdf-page="${page}"]`);
+    if (!el) return null;
+    const pageBox = el.getBoundingClientRect();
+    if (pageBox.height < 1) return null;
+    const scrollerBox = root.getBoundingClientRect();
+    return {
+        pageTop: pageBox.top - scrollerBox.top + root.scrollTop,
+        pageHeight: pageBox.height,
+        scrollTop: root.scrollTop,
+    };
+}
+
+/** A page that has its canvas but not its pdf.js page is still a letter-size
+ *  shell. The jump has to keep the mark until those shells grow. A page that
+ *  was never revealed has no canvas and stays a shell, so it does not count. */
+function pdfBookmarkPageLoading(root: HTMLElement, page: number): boolean {
+    const pages = root.querySelectorAll<HTMLElement>("[data-pdf-page]");
+    for (const el of pages) {
+        if (el.querySelector(".companion-pdf-canvas") && !el.hasAttribute("data-pdf-ready")) return true;
+    }
+    const target = root.querySelector<HTMLElement>(`[data-pdf-page="${page}"]`);
+    return !target?.hasAttribute("data-pdf-ready");
+}
+
+/** Left bookmark list. The paper keeps at least PDF_BOOKMARK_RAIL_PDF_MIN. */
+export const PDF_BOOKMARK_RAIL_DEFAULT = 156;
+export const PDF_BOOKMARK_RAIL_MIN = 96;
+export const PDF_BOOKMARK_RAIL_MAX = 480;
+const PDF_BOOKMARK_RAIL_PDF_MIN = 240;
+const PDF_BOOKMARK_RAIL_STEP = 16;
+export const PDF_BOOKMARK_RAIL_STORAGE_KEY = "maclaw.companionPdf.bookmarkRailPx";
+
+/** stageWidth 0 means the stage is not measured yet, so only the hard cap applies. */
+export function clampPdfBookmarkRailWidth(width: number, stageWidth: number): number {
+    if (!Number.isFinite(width)) return PDF_BOOKMARK_RAIL_DEFAULT;
+    const room = Number.isFinite(stageWidth) && stageWidth > 0
+        ? stageWidth - PDF_BOOKMARK_RAIL_PDF_MIN
+        : PDF_BOOKMARK_RAIL_MAX;
+    const max = Math.max(PDF_BOOKMARK_RAIL_MIN, Math.min(PDF_BOOKMARK_RAIL_MAX, room));
+    return Math.round(Math.min(max, Math.max(PDF_BOOKMARK_RAIL_MIN, width)));
+}
+
+/**
+ * A request that still lands on the paper reserve keeps a wider saved width.
+ * Pulling inward, past that edge, adopts the narrower width.
+ */
+export function nextPdfBookmarkRailPreferred(preferred: number, requested: number, stageWidth: number): number {
+    if (!Number.isFinite(requested)) return clampPdfBookmarkRailWidth(preferred, 0);
+    const cap = clampPdfBookmarkRailWidth(PDF_BOOKMARK_RAIL_MAX, stageWidth);
+    const shown = clampPdfBookmarkRailWidth(requested, stageWidth);
+    if (shown >= cap) return clampPdfBookmarkRailWidth(Math.max(preferred, cap), 0);
+    return shown;
+}
+
+function readPdfBookmarkRailWidth(): number {
+    try {
+        const raw = localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY);
+        if (raw == null || raw.trim() === "") return PDF_BOOKMARK_RAIL_DEFAULT;
+        return clampPdfBookmarkRailWidth(Number(raw), 0);
+    } catch {
+        return PDF_BOOKMARK_RAIL_DEFAULT;
+    }
+}
+
+function writePdfBookmarkRailWidth(width: number): void {
+    try {
+        localStorage.setItem(PDF_BOOKMARK_RAIL_STORAGE_KEY, String(width));
+    } catch {
+        // Private mode can reject the write. The width still applies this visit.
+    }
+}
+
+/** The list owns its page highlight. A scroll must not re-render every page. */
+function PdfBookmarkRail({
+    lang,
+    path,
+    bookmarks,
+    scrollerRef,
+    focusRef,
+    onJump,
+}: {
+    lang: string;
+    path: string;
+    bookmarks: PdfBookmark[];
+    scrollerRef: React.RefObject<HTMLDivElement | null>;
+    focusRef: React.MutableRefObject<BookmarkFocus>;
+    onJump: (bookmark: PdfBookmark) => void;
+}) {
+    const railRef = useRef<HTMLDivElement>(null);
+    const columnRef = useRef<HTMLDivElement>(null);
+    const [readingPage, setReadingPage] = useState(1);
+    const [focusEpoch, setFocusEpoch] = useState(0);
+    const [preferredWidth, setPreferredWidth] = useState(readPdfBookmarkRailWidth);
+    const [stageWidth, setStageWidth] = useState(0);
+    const [railDragging, setRailDragging] = useState(false);
+    const preferredRef = useRef(preferredWidth);
+    preferredRef.current = preferredWidth;
+    const dragStopRef = useRef<(() => void) | null>(null);
+    const railMountedRef = useRef(true);
+    const railWidth = clampPdfBookmarkRailWidth(preferredWidth, stageWidth);
+
+    const rememberRailWidth = (next: number) => {
+        const width = clampPdfBookmarkRailWidth(next, 0);
+        preferredRef.current = width;
+        setPreferredWidth(width);
+        writePdfBookmarkRailWidth(width);
+    };
+
+    useEffect(() => {
+        // StrictMode runs this cleanup once on mount. The flag has to be true
+        // again, or the first drag never clears its highlight.
+        railMountedRef.current = true;
+        return () => {
+            railMountedRef.current = false;
+            dragStopRef.current?.();
+        };
+    }, []);
+
+    useEffect(() => {
+        const stage = columnRef.current?.parentElement;
+        if (!stage || typeof ResizeObserver === "undefined") return undefined;
+        const apply = () => setStageWidth(stage.clientWidth);
+        apply();
+        const observer = new ResizeObserver(apply);
+        observer.observe(stage);
+        return () => observer.disconnect();
+    }, []);
+
+    useEffect(() => {
+        const focus = focusRef.current;
+        focus.gen += 1;
+        focus.id = "";
+        focus.page = 0;
+        setReadingPage(1);
+    }, [path, focusRef]);
+
+    useEffect(() => {
+        const focus = focusRef.current;
+        const onFocus = () => {
+            if (focus.page > 0) {
+                setReadingPage(focus.page);
+            } else {
+                // The jump let go, or the bookmark was removed. The highlight
+                // belongs to the page under the bar again.
+                const scroller = scrollerRef.current;
+                const pages = scroller?.querySelectorAll<HTMLElement>("[data-pdf-page]");
+                const next = scroller && pages ? pdfPageAtScrollerTop(scroller, pages) : 0;
+                if (next > 0) setReadingPage(next);
+            }
+            setFocusEpoch((epoch) => epoch + 1);
+        };
+        focus.listeners.add(onFocus);
+        return () => {
+            focus.listeners.delete(onFocus);
+        };
+    }, [focusRef]);
+
+    useEffect(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller) return undefined;
+        let frame = 0;
+        const read = () => {
+            frame = 0;
+            // A jump parks the mark 72px down, so the previous page can still
+            // own the top edge. Keep the jumped page until the reader scrolls.
+            const focus = focusRef.current;
+            if (focus.id && focus.page > 0) {
+                setReadingPage((current) => (current === focus.page ? current : focus.page));
+                return;
+            }
+            const pages = scroller.querySelectorAll<HTMLElement>("[data-pdf-page]");
+            const next = pdfPageAtScrollerTop(scroller, pages);
+            if (next > 0) setReadingPage((current) => (current === next ? current : next));
+        };
+        const onScroll = () => {
+            if (!frame) frame = requestAnimationFrame(read);
+        };
+        scroller.addEventListener("scroll", onScroll, { passive: true });
+        read();
+        return () => {
+            scroller.removeEventListener("scroll", onScroll);
+            if (frame) cancelAnimationFrame(frame);
+        };
+    }, [scrollerRef, focusRef]);
+
+    useEffect(() => {
+        const rail = railRef.current;
+        if (!rail) return;
+        const focus = focusRef.current;
+        // Match the attribute. An id is not a CSS identifier, and a selector
+        // built from it breaks on quotes.
+        const focused = focus.id
+            ? Array.from(rail.querySelectorAll<HTMLElement>("[data-pdf-bookmark]")).find((el) => el.getAttribute("data-pdf-bookmark") === focus.id) ?? null
+            : null;
+        const onThisPage = focused?.getAttribute("data-pdf-bookmark-page") === String(readingPage);
+        const chip = onThisPage
+            ? focused
+            : rail.querySelector<HTMLElement>(`[data-pdf-bookmark-page="${readingPage}"]`);
+        if (focus.id && !bookmarks.some((bookmark) => bookmark.id === focus.id)) {
+            focus.gen += 1;
+            focus.id = "";
+            focus.page = 0;
+            focus.listeners.forEach((listener) => listener());
+        }
+        if (chip) revealBookmarkChip(rail, chip);
+    }, [readingPage, bookmarks, focusEpoch, focusRef]);
+
+    const resizeLabel = pdfReaderText(lang, "Drag to resize the bookmark list", "拖动调整书签列表宽度", "Хавчуургын жагсаалтын өргөнийг өөрчлөх");
+    const railMax = clampPdfBookmarkRailWidth(PDF_BOOKMARK_RAIL_MAX, stageWidth);
+
+    const startRailResize = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dragStopRef.current?.();
+        const handle = event.currentTarget;
+        try { handle.setPointerCapture(event.pointerId); } catch { /* jsdom */ }
+        const pointerId = event.pointerId;
+        const startX = event.clientX;
+        const startShown = railWidth;
+        const startPreferred = preferredRef.current;
+        const previousCursor = document.body.style.cursor;
+        const previousSelect = document.body.style.userSelect;
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        setRailDragging(true);
+        const end = (ev?: PointerEvent) => {
+            if (ev && ev.pointerId !== pointerId) return;
+            window.removeEventListener("pointermove", move, true);
+            window.removeEventListener("pointerup", end, true);
+            window.removeEventListener("pointercancel", end, true);
+            document.body.style.cursor = previousCursor;
+            document.body.style.userSelect = previousSelect;
+            if (dragStopRef.current === end) dragStopRef.current = null;
+            if (railMountedRef.current) setRailDragging(false);
+            writePdfBookmarkRailWidth(preferredRef.current);
+        };
+        const move = (ev: PointerEvent) => {
+            if (ev.pointerId !== pointerId) return;
+            ev.preventDefault();
+            const measured = columnRef.current?.parentElement?.clientWidth ?? 0;
+            const stageW = measured > 0 ? measured : stageWidth;
+            const next = nextPdfBookmarkRailPreferred(startPreferred, startShown + ev.clientX - startX, stageW);
+            if (next === preferredRef.current) return;
+            preferredRef.current = next;
+            setPreferredWidth(next);
+        };
+        dragStopRef.current = end;
+        window.addEventListener("pointermove", move, true);
+        window.addEventListener("pointerup", end, true);
+        window.addEventListener("pointercancel", end, true);
+    };
+
+    return (
+        <div
+            ref={columnRef}
+            className="companion-pdf-bookmark-column"
+            data-testid="pdf-bookmark-column"
+            style={{ width: railWidth, flexBasis: railWidth }}
+        >
+            <div
+                ref={railRef}
+                className="companion-pdf-bookmarks"
+                data-testid="pdf-bookmark-rail"
+                role="navigation"
+                aria-label={pdfReaderText(lang, "Bookmarks", "书签", "Хавчуурга")}
+            >
+                {bookmarks.map((bookmark) => {
+                    // A jump names one bookmark. Otherwise every bookmark on
+                    // the page under the bar is the current one.
+                    const focusedId = focusRef.current.id;
+                    const here = focusedId ? bookmark.id === focusedId : bookmark.page === readingPage;
+                    return (
+                    <button
+                        key={bookmark.id}
+                        type="button"
+                        className={here ? "companion-pdf-bookmark companion-pdf-bookmark--here" : "companion-pdf-bookmark"}
+                        data-pdf-bookmark={bookmark.id}
+                        data-pdf-bookmark-page={bookmark.page}
+                        data-testid={`pdf-bookmark-${bookmark.id}`}
+                        title={pdfBookmarkChipLabel(lang, bookmark)}
+                        aria-label={pdfBookmarkChipLabel(lang, bookmark)}
+                        aria-current={here ? "true" : undefined}
+                        onClick={() => onJump(bookmark)}
+                    >
+                        <span className="companion-pdf-bookmark-page">{bookmark.page}</span>
+                        <span className="companion-pdf-bookmark-swatch" aria-hidden="true">
+                            <PdfBookmarkRibbon color={bookmark.color} />
+                        </span>
+                        <span className="companion-pdf-bookmark-name">{bookmark.name}</span>
+                    </button>
+                    );
+                })}
+                {bookmarks.length >= PDF_BOOKMARK_LIMIT ? (
+                    <p className="companion-pdf-bookmark-cap" data-testid="pdf-bookmark-cap">
+                        {pdfReaderText(lang, "Showing the latest 200 bookmarks", "只保留最近 200 条书签", "Сүүлийн 200 хавчуурга")}
+                    </p>
+                ) : null}
+            </div>
+            <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-valuemin={PDF_BOOKMARK_RAIL_MIN}
+                aria-valuemax={railMax}
+                aria-valuenow={railWidth}
+                aria-label={resizeLabel}
+                title={resizeLabel}
+                tabIndex={0}
+                data-testid="pdf-bookmark-resize"
+                data-dragging={railDragging ? "true" : "false"}
+                className="companion-pdf-bookmark-resize"
+                onPointerDown={startRailResize}
+                onDoubleClick={() => rememberRailWidth(PDF_BOOKMARK_RAIL_DEFAULT)}
+                onKeyDown={(event) => {
+                    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+                    event.preventDefault();
+                    // The window is already holding the list on this edge.
+                    // Stepping further would replace a wider saved width with that temporary edge.
+                    if (event.key === "ArrowRight" && railWidth < preferredWidth) return;
+                    if (event.key === "ArrowLeft" && railWidth <= PDF_BOOKMARK_RAIL_MIN && preferredWidth > railWidth) return;
+                    const next = event.key === "Home"
+                        ? PDF_BOOKMARK_RAIL_MIN
+                        : event.key === "End"
+                            ? PDF_BOOKMARK_RAIL_MAX
+                            : event.key === "ArrowRight"
+                                ? preferredWidth + PDF_BOOKMARK_RAIL_STEP
+                                : Math.min(preferredWidth, railWidth) - PDF_BOOKMARK_RAIL_STEP;
+                    rememberRailWidth(next);
+                }}
+            />
+        </div>
+    );
+}
+
 /**
  * Companion-only PDF reader. Marks are stored beside the file, never inside it.
  * Other previews keep the iframe viewer.
@@ -1985,6 +2578,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     const [seen, setSeen] = useState<Record<number, boolean>>({ 1: true });
     const pagesBoxRef = useRef<HTMLDivElement>(null);
     const [marks, setMarks] = useState<PdfMark[]>(() => loadPdfMarks(absPath));
+    const [bookmarks, setBookmarks] = useState<PdfBookmark[]>(() => loadPdfBookmarks(absPath));
     const [translations, setTranslations] = useState<PdfTranslation[]>(() => loadPdfTranslations(absPath));
     const [drawings, setDrawings] = useState<PdfDrawing[]>(() => loadPdfDrawings(absPath));
     const [drawMode, setDrawMode] = useState(false);
@@ -2000,6 +2594,11 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     const [menu, setMenu] = useState<MenuState | null>(null);
     const marksRef = useRef(marks);
     marksRef.current = marks;
+    const bookmarksRef = useRef(bookmarks);
+    bookmarksRef.current = bookmarks;
+    const bookmarkJumpToken = useRef(0);
+    const bookmarkJumpStop = useRef<(() => void) | null>(null);
+    const bookmarkFocusRef = useRef<BookmarkFocus>({ id: "", page: 0, gen: 0, listeners: new Set() });
     const translationsRef = useRef(translations);
     translationsRef.current = translations;
     const translateBusyRef = useRef(loadPdfTranslationDrafts(absPath).length > 0);
@@ -2008,6 +2607,18 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
 
     const revealPage = useCallback((page: number) => {
         setSeen((current) => (current[page] ? current : { ...current, [page]: true }));
+    }, []);
+
+    const applyBookmarks = useCallback((next: PdfBookmark[]) => {
+        const focus = bookmarkFocusRef.current;
+        if (focus.id && !next.some((item) => item.id === focus.id)) {
+            // The jump closure still holds the old place. Stop it before the
+            // list forgets the bookmark, or a late page resize scrolls back.
+            bookmarkJumpToken.current += 1;
+            bookmarkJumpStop.current?.();
+            releaseBookmarkFocus(focus, focus.gen);
+        }
+        setBookmarks(next);
     }, []);
 
     const applyStoredTranslations = useCallback((path: string) => {
@@ -2021,8 +2632,15 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     }, []);
 
     useEffect(() => {
+        bookmarkJumpToken.current += 1;
+        bookmarkJumpStop.current?.();
+        const focus = bookmarkFocusRef.current;
+        focus.gen += 1;
+        focus.id = "";
+        focus.page = 0;
         applyStoredTranslations(absPath);
         setMarks(loadPdfMarks(absPath));
+        setBookmarks(loadPdfBookmarks(absPath));
         setDrawings(loadPdfDrawings(absPath));
         setDrawMode(false);
         setOpenNoteId("");
@@ -2040,13 +2658,19 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         setDrawings(loadPdfDrawings(pathRef.current));
     }), []);
 
+    useEffect(() => subscribePdfBookmarks((key) => {
+        if (key !== pdfMarkPathKey(pathRef.current)) return;
+        applyBookmarks(loadPdfBookmarks(pathRef.current));
+    }), [applyBookmarks]);
+
     // A host read slower than the startup wait can land after this reader is
     // already mounted. Re-read the mirrors instead of painting stale state.
     useEffect(() => subscribeCompanionReaderState(() => {
         setMarks(loadPdfMarks(pathRef.current));
+        applyBookmarks(loadPdfBookmarks(pathRef.current));
         setDrawings(loadPdfDrawings(pathRef.current));
         applyStoredTranslations(pathRef.current);
-    }), [applyStoredTranslations]);
+    }), [applyBookmarks, applyStoredTranslations]);
 
     useEffect(() => {
         let cancelled = false;
@@ -2150,6 +2774,11 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         };
     }, [src, lang]);
 
+    useEffect(() => () => {
+        bookmarkJumpToken.current += 1;
+        bookmarkJumpStop.current?.();
+    }, []);
+
     useEffect(() => {
         const scroller = scrollerRef.current;
         if (!scroller) return undefined;
@@ -2190,7 +2819,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             // Escape inside the annotation editor closes only the editor; the
             // menu stays open so the note can be written or the action chosen.
             const target = event.target as HTMLElement | null;
-            if (target?.closest?.("[data-testid='pdf-annotation-input']")) return;
+            if (target?.closest?.("[data-testid='pdf-annotation-input'], [data-testid='pdf-bookmark-name']")) return;
             event.preventDefault();
             event.stopPropagation();
             setMenu(null);
@@ -2259,6 +2888,159 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     const clearHit = () => {
         if (!menu?.hitId) return;
         commit(marksRef.current.filter((mark) => mark.id !== menu.hitId));
+    };
+
+    const commitBookmarks = (next: PdfBookmark[]) => {
+        savePdfBookmarks(absPath, next, true);
+        setMenu(null);
+    };
+
+    const addBookmark = (name: string, color: PdfBookmarkColor) => {
+        const anchor = menu?.anchor;
+        const trimmed = name.replace(/\s+/g, " ").trim();
+        if (!anchor || !trimmed) return;
+        commitBookmarks([...bookmarksRef.current, {
+            id: newPdfBookmarkId(),
+            page: anchor.page,
+            x: anchor.x,
+            y: anchor.y,
+            color,
+            name: trimmed,
+        }]);
+    };
+
+    const renameBookmark = (name: string, color: PdfBookmarkColor) => {
+        const id = menu?.hitBookmarkId;
+        const trimmed = name.replace(/\s+/g, " ").trim();
+        if (!id || !trimmed) return;
+        commitBookmarks(bookmarksRef.current.map((item) => (item.id === id ? { ...item, name: trimmed, color } : item)));
+    };
+
+    const deleteBookmark = () => {
+        const id = menu?.hitBookmarkId;
+        if (!id) return;
+        commitBookmarks(bookmarksRef.current.filter((item) => item.id !== id));
+    };
+
+    const jumpBookmark = (bookmark: PdfBookmark) => {
+        revealPage(bookmark.page);
+        bookmarkJumpToken.current += 1;
+        const token = bookmarkJumpToken.current;
+        bookmarkJumpStop.current?.();
+        bookmarkJumpStop.current = null;
+        const focusGen = publishBookmarkFocus(bookmarkFocusRef.current, bookmark.id, bookmark.page);
+        // An unseen page is a letter-size shell until pdf.js returns, and a
+        // shell above it can still grow after this page has its real size.
+        // Follow the pages box until the reader scrolls. The jump's own write
+        // is ignored; a wheel, a drag, or the pager leaves pageTop put and ends
+        // the watch, so a later shell does not pull the mark back.
+        let prev: { pageTop: number; pageHeight: number; scrollTop: number } | null = null;
+        let placed = -1;
+        let writing = false;
+        let stopped = false;
+        let layoutEnded = false;
+        let observer: ResizeObserver | null = null;
+        let timer = 0;
+        let quiet = 0;
+        let onScroll = () => {};
+        const scrollListen: AddEventListenerOptions = { capture: true, passive: true };
+        const stop = () => {
+            if (stopped) return;
+            stopped = true;
+            observer?.disconnect();
+            observer = null;
+            scrollerRef.current?.removeEventListener("scroll", onScroll, scrollListen);
+            if (timer) window.clearTimeout(timer);
+            if (quiet) window.clearTimeout(quiet);
+            timer = 0;
+            quiet = 0;
+            if (bookmarkJumpStop.current === stop) bookmarkJumpStop.current = null;
+        };
+        const align = () => {
+            if (stopped || bookmarkJumpToken.current !== token) return;
+            const root = scrollerRef.current;
+            if (!root) return;
+            const sample = pdfBookmarkPageSample(root, bookmark.page);
+            if (!sample) return;
+            if (!pdfBookmarkLayoutMoved(prev, sample)) return;
+            const nextTop = pdfBookmarkScrollTop(sample.pageTop, sample.pageHeight, bookmark.y);
+            writing = true;
+            root.scrollTop = nextTop;
+            placed = root.scrollTop;
+            writing = false;
+            const after = pdfBookmarkPageSample(root, bookmark.page);
+            prev = after ? { ...after, scrollTop: placed } : { ...sample, scrollTop: placed };
+        };
+        onScroll = () => {
+            if (writing || stopped || bookmarkJumpToken.current !== token) return;
+            if (placed < 0 || !prev) return;
+            const root = scrollerRef.current;
+            if (!root) return;
+            if (Math.abs(root.scrollTop - placed) <= 1) return;
+            const sample = pdfBookmarkPageSample(root, bookmark.page);
+            if (!sample) return;
+            if (pdfBookmarkScrollIsReader(prev, sample)) {
+                releaseBookmarkFocus(bookmarkFocusRef.current, focusGen);
+                stop();
+                return;
+            }
+            // A shell above the mark moves pageTop. Anchoring keeps that shift
+            // equal to the scroll delta, and the mark stays where it was put.
+            // Any other layout change is put back on the 72px line.
+            if (pdfBookmarkLayoutMoved(prev, sample)) {
+                align();
+                return;
+            }
+            prev = sample;
+            placed = sample.scrollTop;
+        };
+        // The pages are done moving. Drop the resize watch, and keep the scroll
+        // listener: the list stays on this bookmark until the reader scrolls.
+        // layoutEnded stays set so a callback already queued cannot start the
+        // watch again after the shells have their real size, or the 8s cap.
+        const endLayoutWatch = () => {
+            if (layoutEnded) return;
+            layoutEnded = true;
+            observer?.disconnect();
+            observer = null;
+            if (timer) window.clearTimeout(timer);
+            if (quiet) window.clearTimeout(quiet);
+            timer = 0;
+            quiet = 0;
+        };
+        const armQuiet = () => {
+            if (stopped || layoutEnded || bookmarkJumpToken.current !== token) return;
+            if (quiet) window.clearTimeout(quiet);
+            quiet = window.setTimeout(() => {
+                quiet = 0;
+                if (stopped || layoutEnded || bookmarkJumpToken.current !== token) return;
+                const root = scrollerRef.current;
+                // The target page can be ready while a page above it, revealed
+                // by this jump, is still the letter-size shell. Ending here
+                // would let that shell's real height slide the mark away.
+                if (root && pdfBookmarkPageLoading(root, bookmark.page)) {
+                    armQuiet();
+                    return;
+                }
+                endLayoutWatch();
+            }, 400);
+        };
+        scrollerRef.current?.addEventListener("scroll", onScroll, scrollListen);
+        bookmarkJumpStop.current = stop;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (bookmarkJumpToken.current !== token) return;
+            align();
+            const box = pagesBoxRef.current;
+            if (!box || typeof ResizeObserver === "undefined") return;
+            observer = new ResizeObserver(() => {
+                if (stopped || layoutEnded) return;
+                align();
+                armQuiet();
+            });
+            observer.observe(box);
+            armQuiet();
+            timer = window.setTimeout(endLayoutWatch, 8000);
+        }));
     };
 
     const closeMenu = useCallback(() => setMenu(null), []);
@@ -2447,6 +3229,22 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         // The Chinese popover is ordinary text. The page menu must not take
         // its right-click, or the browser copy menu never opens.
         if (target?.closest?.("[data-pdf-translation-pop]")) return;
+        const bookmarkId = target?.closest?.("[data-pdf-bookmark]")?.getAttribute("data-pdf-bookmark")?.trim() ?? "";
+        if (bookmarkId && bookmarksRef.current.some((item) => item.id === bookmarkId)) {
+            event.preventDefault();
+            setMenu({
+                x: event.clientX,
+                y: event.clientY,
+                hitId: "",
+                hitMark: null,
+                hitNoteId: "",
+                hitNoteKind: "",
+                hitBookmarkId: bookmarkId,
+                anchor: null,
+                parts: [],
+            });
+            return;
+        }
         event.preventDefault();
         const root = scrollerRef.current;
         if (!root) return;
@@ -2455,6 +3253,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         let hitMark: PdfMark | null = null;
         let hitNoteId = target?.closest?.("[data-pdf-translation-id]")?.getAttribute("data-pdf-translation-id")?.trim() ?? "";
         let hitNoteKind: "" | "annotation" | "translation" = "";
+        let anchor: { page: number; x: number; y: number } | null = null;
         if (hitNoteId) {
             // A click on the card's icon carries the id, not the kind; read the
             // kind back so the menu offers 删除批注 and not 取消翻译.
@@ -2464,9 +3263,10 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         if (pageEl) {
             const box = pageEl.getBoundingClientRect();
             const page = Number(pageEl.dataset.pdfPage);
-            if (box.width > 0 && box.height > 0) {
-                const x = (event.clientX - box.left) / box.width;
-                const y = (event.clientY - box.top) / box.height;
+            if (box.width > 0 && box.height > 0 && page >= 1) {
+                const x = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+                const y = Math.min(1, Math.max(0, (event.clientY - box.top) / box.height));
+                anchor = { page, x, y };
                 const hit = markAt(marksRef.current, page, x, y);
                 if (hit) {
                     hitId = hit.id;
@@ -2482,11 +3282,11 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             }
         }
         const parts = selectionParts(root);
-        if (parts.length === 0 && !hitId && !hitNoteId) {
+        if (!anchor && parts.length === 0 && !hitId && !hitNoteId) {
             setMenu(null);
             return;
         }
-        setMenu({ x: event.clientX, y: event.clientY, hitId, hitMark, hitNoteId, hitNoteKind, parts });
+        setMenu({ x: event.clientX, y: event.clientY, hitId, hitMark, hitNoteId, hitNoteKind, hitBookmarkId: "", anchor, parts });
     };
 
     const fill: React.CSSProperties = { background: theme.bg, color: theme.text };
@@ -2515,7 +3315,17 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             {translateError ? (
                 <p className="companion-pdf-translate-error" role="status" data-testid="pdf-translate-error">{translateError}</p>
             ) : null}
-            <div className="companion-pdf-stage">
+            <div className={bookmarks.length > 0 ? "companion-pdf-stage companion-pdf-stage--bookmarks" : "companion-pdf-stage"}>
+            {bookmarks.length > 0 ? (
+                <PdfBookmarkRail
+                    lang={lang}
+                    path={absPath}
+                    bookmarks={bookmarks}
+                    scrollerRef={scrollerRef}
+                    focusRef={bookmarkFocusRef}
+                    onJump={jumpBookmark}
+                />
+            ) : null}
             <div
                 className="companion-pdf-draw"
                 data-testid="pdf-draw"
@@ -2640,6 +3450,8 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                         onToggleNote={toggleNote}
                         onPlaceNote={placeNote}
                         onResizeNote={resizeNote}
+                        bookmarks={bookmarks}
+                        onJumpBookmark={jumpBookmark}
                         active={page === 1 || seen[page] === true}
                     />
                 ))}
@@ -2651,10 +3463,15 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                     lang={lang}
                     state={menu}
                     selectionText={selectionText}
+                    bookmarkName={bookmarks.find((item) => item.id === menu.hitBookmarkId)?.name ?? ""}
+                    bookmarkColorId={bookmarks.find((item) => item.id === menu.hitBookmarkId)?.color ?? "yellow"}
                     onTranslate={translateSelection}
                     onCopy={copySelection}
                     onPaint={paint}
                     onAnnotate={createAnnotation}
+                    onAddBookmark={addBookmark}
+                    onRenameBookmark={renameBookmark}
+                    onDeleteBookmark={deleteBookmark}
                     onClearNote={clearNote}
                     onClearMark={clearHit}
                     onClose={closeMenu}

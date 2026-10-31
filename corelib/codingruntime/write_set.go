@@ -217,6 +217,18 @@ func PolicyDigest(policy PolicySnapshot) (string, error) {
 // WriterAdmissionConflict compares two running or prospective writer
 // attempts. Read-only attempts never take this lock. An unknown workspace is
 // global and fail-closed because it cannot be proven disjoint from anything.
+//
+// Two non-isolated local writers with concrete claims share one project tree.
+// Different files run together. The same file is synchronized in the text
+// file tools, so an overlapping claim, including a project-root directory
+// claim, is not an attempt-level wait. An unknown write set stays fail-closed:
+// that writer may touch any path in that same workspace, including through
+// the shell. A different project is not part of the conflict.
+//
+// A workspace-isolated writer keeps CanAdmitParallelWriters. That is the
+// worktree merge rule: both sides isolated, disjoint claims, and a final diff
+// gate. Remote shared-tree writers stay on that gate as well. Their bytes go
+// out over SSH and are not covered by the local per-file lock.
 func WriterAdmissionConflict(leftTask Task, left PolicySnapshot, rightTask Task, right PolicySnapshot) WriteSetConflict {
 	if left.ReadOnly || right.ReadOnly {
 		return WriteSetConflict{}
@@ -229,7 +241,28 @@ func WriterAdmissionConflict(leftTask Task, left PolicySnapshot, rightTask Task,
 	if strings.TrimSpace(left.WriteSet.Scope.ProjectRef) == "" || strings.TrimSpace(right.WriteSet.Scope.ProjectRef) == "" {
 		return WriteSetConflict{Conflicts: true, Reason: "unknown write scope"}
 	}
+	if sharedLocalTreeWriters(left, right) {
+		// Unknown conflicts inside one workspace. A different project stays
+		// independent, matching CanAdmitParallelWriters.
+		if !sameWriteScope(left.WriteSet.Scope, right.WriteSet.Scope) {
+			return WriteSetConflict{}
+		}
+		if left.WriteSet.Unknown || right.WriteSet.Unknown {
+			return WriteSetConflict{Conflicts: true, Reason: "unknown write set"}
+		}
+		return WriteSetConflict{}
+	}
 	return CanAdmitParallelWriters(left.WriteSet, right.WriteSet, left.WorkspaceIsolated, right.WorkspaceIsolated, left.FinalDiffGateRequired && right.FinalDiffGateRequired)
+}
+
+// sharedLocalTreeWriters is the desktop project tree: both attempts are local
+// and neither is an isolated worktree merge.
+func sharedLocalTreeWriters(left, right PolicySnapshot) bool {
+	if left.WorkspaceIsolated || right.WorkspaceIsolated {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(left.WriteSet.Scope.Mode), "local") &&
+		strings.EqualFold(strings.TrimSpace(right.WriteSet.Scope.Mode), "local")
 }
 
 // NormalizeWriteSet validates an explicit write declaration against its
@@ -319,10 +352,11 @@ func normalizeWriteClaimPath(scope WriteScope, raw string, directory bool) (stri
 	}
 	if path == "." {
 		if directory {
-			// An explicit project-root directory claim is a bounded, conservative
-			// fallback for dynamic implementation tasks whose planner cannot know
-			// the target file until inspection. It remains a concrete claim and
-			// conflicts with every descendant writer; it is not WriteSet.Unknown.
+			// An explicit project-root directory claim is a bounded fallback for a
+			// dynamic task that cannot name its files yet. ConflictsWith still
+			// treats it as overlapping every descendant. Shared local admission
+			// does not turn that overlap into an attempt wait. It is not
+			// WriteSet.Unknown.
 			return ".", nil
 		}
 		return "", fmt.Errorf("coding runtime write set cannot claim project root as a file; use an explicit directory declaration")

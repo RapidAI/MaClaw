@@ -2,6 +2,9 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -341,6 +344,65 @@ func TestTrustedMailboxConfigureRejectsMissingServerBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestMailboxSendAttachmentRejectionKeepsTheGrant(t *testing.T) {
+	sender := &statusMailSender{}
+	h, userID := newMailboxToolFixture(t, sender)
+	dir := t.TempDir()
+	h.app.assistantSessionWorkingDirs.Store(userID, dir)
+	name := "天气, 报告.pdf"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("%PDF-1.4 weather"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.registry = NewToolRegistry()
+	registerBuiltinTools(h.registry, h)
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		userID, "发一封邮件", "desktop", "root-mail-attach", "turn-mail-attach",
+		&intent.ClassificationResult{Primary: intent.LabelMailboxSend, Confidence: .92},
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	closeSemanticSurface(t, surface)
+	toolName := semanticGrantNameForAdapter(surface, semanticTrustedMailboxSendAdapter)
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: userID, semanticSurface: surface, tools: defs}
+	grantLive := func() bool {
+		_, live := surface.grants[surface.resolveFunctionName(toolName)]
+		return live
+	}
+	replyArgs, err := json.Marshal(map[string]any{
+		"action": "reply", "uid": 3, "text": "收到", "attachments": []string{name},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cb.ExecuteTool(toolName, string(replyArgs))
+	if !strings.Contains(got, "只有发送新邮件可以带附件") || !strings.Contains(got, "tool remains available") || !grantLive() {
+		t.Fatalf("reply attachment result=%q live=%v", got, grantLive())
+	}
+	missingArgs, err := json.Marshal(map[string]any{
+		"action": "send", "to": []string{"a@ex.com"}, "subject": "状态", "text": "在线",
+		"attachments": []string{filepath.ToSlash(filepath.Join(dir, "missing.pdf"))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = cb.ExecuteTool(toolName, string(missingArgs))
+	if !strings.Contains(got, "找不到附件") || !grantLive() || sender.calls != 0 {
+		t.Fatalf("missing attachment result=%q live=%v calls=%d", got, grantLive(), sender.calls)
+	}
+	okArgs, err := json.Marshal(map[string]any{
+		"action": "send", "to": []string{"a@ex.com"}, "subject": "状态", "text": "在线",
+		"attachments": []string{filepath.ToSlash(filepath.Join(dir, name))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = cb.ExecuteTool(toolName, string(okArgs))
+	if !strings.Contains(got, "请确认发送这封邮件") || !strings.Contains(got, name) || sender.calls != 0 {
+		t.Fatalf("ready attachment result=%q calls=%d", got, sender.calls)
+	}
+}
+
 func TestTrustedMailboxSendKeepsTheGrantWhenTheMessageIsIncomplete(t *testing.T) {
 	sender := &statusMailSender{}
 	h, userID := newMailboxToolFixture(t, sender)
@@ -371,6 +433,10 @@ func TestTrustedMailboxSendKeepsTheGrantWhenTheMessageIsIncomplete(t *testing.T)
 	got = cb.ExecuteTool(name, `{"action":"forward","uid":3}`)
 	if !strings.Contains(got, "mailbox_send_recipient_required") {
 		t.Fatalf("result=%q", got)
+	}
+	got = cb.ExecuteTool(name, `{"action":"send","to":"a@ex.com","subject":"状态","text":"在线"}`)
+	if !strings.Contains(got, "parameter_type_mismatch: to (expected array)") || !strings.Contains(got, "tool remains available") {
+		t.Fatalf("string recipient hid the field: %q", got)
 	}
 	if sender.calls != 0 {
 		t.Fatal("incomplete send dialed SMTP")

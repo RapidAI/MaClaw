@@ -88,9 +88,18 @@ func trySetDpiAwareness() (ok bool) {
 	return ret == 0
 }
 
-// NativeScreenshot captures the entire screen using Windows GDI APIs directly
-// from Go, without spawning any external process. Returns base64-encoded PNG.
+// NativeScreenshot captures the entire screen. GDI BitBlt is used when the
+// display driver allows it. When BitBlt fails or the frame is blank,
+// finishScreenshot composites visible windows with PrintWindow.
 func NativeScreenshot() (string, error) {
+	width, _, _ := procGetSystemMetrics.Call(uintptr(smCxScreen))
+	height, _, _ := procGetSystemMetrics.Call(uintptr(smCyScreen))
+	b64, err := gdiNativeScreenshot()
+	return finishScreenshot(0, 0, int(width), int(height), b64, err)
+}
+
+// gdiNativeScreenshot is the GDI BitBlt capture of the primary monitor.
+func gdiNativeScreenshot() (string, error) {
 	width, _, _ := procGetSystemMetrics.Call(uintptr(smCxScreen))
 	height, _, _ := procGetSystemMetrics.Call(uintptr(smCyScreen))
 	if width == 0 || height == 0 {
@@ -165,9 +174,14 @@ func NativeScreenshot() (string, error) {
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
-// NativeScreenshotRect captures a rectangle in virtual-desktop coordinates
-// using GDI BitBlt (no PowerShell).
+// NativeScreenshotRect captures a rectangle in virtual-desktop coordinates.
+// A failed or blank BitBlt falls through to the PrintWindow composite.
 func NativeScreenshotRect(x, y, w, h int) (string, error) {
+	b64, err := gdiNativeScreenshotRect(x, y, w, h)
+	return finishScreenshot(x, y, w, h, b64, err)
+}
+
+func gdiNativeScreenshotRect(x, y, w, h int) (string, error) {
 	if w < 1 || h < 1 {
 		return "", fmt.Errorf("invalid screenshot rect %d,%d %dx%d", x, y, w, h)
 	}

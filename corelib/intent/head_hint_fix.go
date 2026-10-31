@@ -53,7 +53,7 @@ func vetoL2HintByHead(result ClassificationResult, headLabel string, headProb fl
 	if IntentLabel(headLabel) == result.Primary {
 		return result, false
 	}
-	return ClassificationResult{
+	replaced := ClassificationResult{
 		Primary:       LabelUnknown,
 		Confidence:    0.30,
 		Layer:         2,
@@ -61,7 +61,10 @@ func vetoL2HintByHead(result ClassificationResult, headLabel string, headProb fl
 		Degraded:      true,
 		RunnerUp:      result.Primary,
 		RunnerUpScore: result.Confidence,
-	}, true
+	}
+	// The admitted action hint reads this vector. A fresh struct would drop it.
+	carryLayer2QueryEvidence(&replaced, result)
+	return replaced, true
 }
 
 // isDeclaredCompositeResult reports whether r carries a taxonomy-declared
@@ -87,11 +90,12 @@ func overrideCompositeByHead(l2 ClassificationResult, headLabel string, headProb
 	if strongThreshold <= 0 || headProb < strongThreshold {
 		return l2, false
 	}
-	return ClassificationResult{
+	replaced := ClassificationResult{
 		Primary:    IntentLabel(headLabel),
 		Confidence: headProb,
 		Layer:      3,
 		Reason:     fmt.Sprintf("local head overrides L2 composite: head=%s (%.3f ≥ %.2f), l2=%s+%v (%.3f)", headLabel, headProb, strongThreshold, l2.Primary, l2.Secondary, l2.Confidence),
-		QueryVec:   l2.QueryVec,
-	}, true
+	}
+	carryLayer2QueryEvidence(&replaced, l2)
+	return replaced, true
 }

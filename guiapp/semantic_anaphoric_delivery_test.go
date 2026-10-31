@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -25,149 +26,183 @@ func mailboxSendHistory() []agent.ConversationEntry {
 	}
 }
 
-func TestAnaphoricMailboxFollowUpAddsMailboxToADeicticSend(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	for _, text := range []string{
-		"把重庆的天气也发给他",
-		"把北京和重庆的天气分别发给他",
-		"也给他发一份",
-		"再发一份给他",
-		"send it to him",
+func anaphoricClassifierHandler(classify func(string) (string, error)) *IMMessageHandler {
+	return &IMMessageHandler{anaphoricDeliveryClassifier: classify}
+}
+
+func TestAnaphoricMailboxFollowUpUsesTheSemanticVerdict(t *testing.T) {
+	current := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3,
+		Secondary: []intent.IntentLabel{intent.LabelLiveDataVisual},
+	}
+	var seen string
+	h := anaphoricClassifierHandler(func(text string) (string, error) {
+		seen = text
+		return `{"deliver":"mailbox"}`, nil
+	})
+	out := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "把重庆的天气也发给他", mailboxSendHistory())
+	if out == nil {
+		t.Fatal("mailbox verdict did not continue the channel")
+	}
+	if !out.HasLabel(intent.LabelMailboxSend) {
+		t.Fatalf("labels = %v", out.Labels())
+	}
+	if seen != "把重庆的天气也发给他" {
+		t.Fatalf("classifier saw %q", seen)
+	}
+	if current.HasLabel(intent.LabelMailboxSend) {
+		t.Fatal("the input classification was mutated")
+	}
+}
+
+func TestAnaphoricMailboxFollowUpKeepsCurrentChatWhenTheModelSaysSo(t *testing.T) {
+	current := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3,
+		Secondary: []intent.IntentLabel{intent.LabelLiveDataVisual},
+	}
+	for _, verdict := range []string{
+		`{"deliver":"current_chat"}`,
+		`{"deliver":"none"}`,
+		`current_chat`,
+		`current_chat.`,
+		"```json\n{\"deliver\":\"current_chat\"}\n```",
 	} {
-		out := semanticAnaphoricMailboxFollowUp(&current, text, mailboxSendHistory())
-		if out == nil {
-			t.Fatalf("%q: deictic send did not continue the mailbox channel", text)
-		}
-		if !out.HasLabel(intent.LabelMailboxSend) {
-			t.Fatalf("%q labels = %v", text, out.Labels())
-		}
-		if current.HasLabel(intent.LabelMailboxSend) {
-			t.Fatal("the input classification was mutated")
+		h := anaphoricClassifierHandler(func(string) (string, error) { return verdict, nil })
+		if out := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "把报告发给我", mailboxSendHistory()); out != nil {
+			t.Fatalf("%q was rewritten: %v", verdict, out.Labels())
 		}
 	}
 }
 
-func TestAnaphoricMailboxFollowUpNeedsARealMailboxHistory(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	addressOnly := []agent.ConversationEntry{
-		{Role: "user", Content: "我的邮箱是 znsoft@163.com"},
+func TestAnaphoricMailboxFollowUpFailsClosed(t *testing.T) {
+	current := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3,
+		Secondary: []intent.IntentLabel{intent.LabelLiveDataVisual},
 	}
-	if out := semanticAnaphoricMailboxFollowUp(&current, "把重庆的天气也发给他", addressOnly); out != nil {
-		t.Fatalf("an address without a send became a delivery: %v", out.Labels())
-	}
-	if out := semanticAnaphoricMailboxFollowUp(&current, "把重庆的天气也发给他", nil); out != nil {
-		t.Fatal("empty history became a delivery")
-	}
-}
-
-func TestAnaphoricMailboxFollowUpLeavesAnExplicitChannelAlone(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	for _, text := range []string{
-		"把重庆的天气发到他微信",
-		"把重庆的天气发到聊天里",
-		"email the Chongqing weather to him",
+	for _, classify := range []func(string) (string, error){
+		func(string) (string, error) { return "", fmt.Errorf("timeout") },
+		func(string) (string, error) { return "", nil },
+		func(string) (string, error) { return `{"deliver":"maybe"}`, nil },
+		func(string) (string, error) { return `not json`, nil },
 	} {
-		if out := semanticAnaphoricMailboxFollowUp(&current, text, mailboxSendHistory()); out != nil {
-			t.Fatalf("%q was rewritten: %v", text, out.Labels())
+		h := anaphoricClassifierHandler(classify)
+		if out := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "把重庆的天气也发给他", mailboxSendHistory()); out != nil {
+			t.Fatalf("a failed verdict rewrote the turn: %v", out.Labels())
 		}
 	}
 }
 
-func TestAnaphoricMailboxFollowUpIgnoresOrdinaryLookups(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	for _, text := range []string{"查一下重庆天气", "重庆天气怎么样", "生成重庆天气pdf", "我也发现重庆天气不错"} {
-		if out := semanticAnaphoricMailboxFollowUp(&current, text, mailboxSendHistory()); out != nil {
-			t.Fatalf("%q was rewritten: %v", text, out.Labels())
-		}
+func TestAnaphoricMailboxFollowUpSkipsStructuralGuardsWithoutClassifying(t *testing.T) {
+	current := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3,
+		Secondary: []intent.IntentLabel{intent.LabelLiveDataVisual},
 	}
-}
+	unmapped := current
+	unmapped.Secondary = []intent.IntentLabel{intent.LabelWorkflowTask}
+	workflow := current
+	workflow.WorkflowType = "presentation"
+	controlPlane := current
+	controlPlane.ControlPlaneFailure = true
+	alreadyMail := current
+	alreadyMail.Secondary = []intent.IntentLabel{intent.LabelMailboxSend}
+	degraded := current
+	degraded.Degraded = true
+	low := current
+	low.Confidence = 0.4
 
-func TestAnaphoricMailboxFollowUpReadsTypedAndReloadedCalls(t *testing.T) {
-	typed := []agent.ConversationEntry{
-		{Role: "user", Content: "发送给 znsoft@163.com"},
+	addressOnly := []agent.ConversationEntry{{Role: "user", Content: "我的邮箱是 znsoft@163.com"}}
+	sendNoAddress := []agent.ConversationEntry{
 		{Role: "assistant", ToolCalls: []map[string]string{{"name": "mailbox_send"}}},
 	}
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	if out := semanticAnaphoricMailboxFollowUp(&current, "再发一份给他", typed); out == nil {
-		t.Fatal("map-shaped tool calls were not read")
-	}
-}
-
-func TestAnaphoricMailboxFollowUpIgnoresNegatedAndStatusSends(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	for _, text := range []string{
-		"别发给他",
-		"先别发给他",
-		"别给他发",
-		"不用再发给他了",
-		"don't send it to him",
-		"把重庆天气发给他了吗",
-		"发给他了吗",
-		"给他发消息",
-		"did you send it to him",
-	} {
-		if out := semanticAnaphoricMailboxFollowUp(&current, text, mailboxSendHistory()); out != nil {
-			t.Fatalf("%q was rewritten: %v", text, out.Labels())
-		}
-	}
-}
-
-func TestAnaphoricMailboxFollowUpIgnoresUntrustedClassifications(t *testing.T) {
-	degraded := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3, Degraded: true}
-	if out := semanticAnaphoricMailboxFollowUp(&degraded, "把重庆的天气也发给他", mailboxSendHistory()); out != nil {
-		t.Fatalf("degraded verdict was rewritten: %v", out.Labels())
-	}
-	low := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.4, Layer: 3}
-	if out := semanticAnaphoricMailboxFollowUp(&low, "把重庆的天气也发给他", mailboxSendHistory()); out != nil {
-		t.Fatalf("low-confidence verdict was rewritten: %v", out.Labels())
-	}
-}
-
-func TestAnaphoricMailboxFollowUpIgnoresUnmappedCompanions(t *testing.T) {
-	current := intent.ClassificationResult{
-		Primary:    intent.LabelLiveData,
-		Secondary:  []intent.IntentLabel{intent.LabelWorkflowTask},
-		Confidence: 0.95,
-		Layer:      3,
-	}
-	if out := semanticAnaphoricMailboxFollowUp(&current, "把重庆的天气也发给他", mailboxSendHistory()); out != nil {
-		t.Fatalf("unmapped companion was published as a managed plan: %v", out.Labels())
-	}
-}
-
-func TestAnaphoricMailboxFollowUpIgnoresAddressesFromWebResults(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	history := []agent.ConversationEntry{
-		{Role: "assistant", ToolCalls: []map[string]interface{}{
-			{"function": map[string]interface{}{"name": "mailbox_send", "arguments": `{}`}},
-		}},
+	webAddress := []agent.ConversationEntry{
+		{Role: "assistant", ToolCalls: []map[string]string{{"name": "mailbox_send"}}},
 		{Role: "tool_result", Content: "contact: someone@example.com"},
 	}
-	if out := semanticAnaphoricMailboxFollowUp(&current, "把重庆的天气也发给他", history); out != nil {
-		t.Fatalf("a web result address became the recipient: %v", out.Labels())
+
+	tests := []struct {
+		name    string
+		current *intent.ClassificationResult
+		text    string
+		history []agent.ConversationEntry
+	}{
+		{"degraded", &degraded, "把重庆的天气也发给他", mailboxSendHistory()},
+		{"low confidence", &low, "把重庆的天气也发给他", mailboxSendHistory()},
+		{"unmapped companion", &unmapped, "把重庆的天气也发给他", mailboxSendHistory()},
+		{"workflow phase", &workflow, "把重庆的天气也发给他", mailboxSendHistory()},
+		{"control plane failure", &controlPlane, "把重庆的天气也发给他", mailboxSendHistory()},
+		{"already mailbox", &alreadyMail, "把重庆的天气也发给他", mailboxSendHistory()},
+		{"goal continuation", &current, "[系统续接][execute] 按步骤执行目标：把重庆的天气也发给他", mailboxSendHistory()},
+		{"session round", &current, "[系统续轮] 继续完成同一任务。\n\n任务：\n把重庆的天气也发给他", mailboxSendHistory()},
+		{"empty text", &current, "  ", mailboxSendHistory()},
+		{"no history", &current, "把重庆的天气也发给他", nil},
+		{"address without send", &current, "把重庆的天气也发给他", addressOnly},
+		{"send without address", &current, "把重庆的天气也发给他", sendNoAddress},
+		{"address only in web result", &current, "把重庆的天气也发给他", webAddress},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			h := anaphoricClassifierHandler(func(string) (string, error) {
+				calls++
+				return `{"deliver":"mailbox"}`, nil
+			})
+			if out := h.semanticAnaphoricMailboxFollowUp(tc.current, "user-1", tc.text, tc.history); out != nil {
+				t.Fatalf("guard %s was rewritten: %v", tc.name, out.Labels())
+			}
+			if calls != 0 {
+				t.Fatalf("classifier ran for a skipped turn: %d", calls)
+			}
+		})
 	}
 }
 
-func TestAnaphoricMailboxFollowUpDoesNotAliasTheInputSlice(t *testing.T) {
-	secondary := make([]intent.IntentLabel, 1, 4)
-	secondary[0] = intent.LabelDocumentGenerate
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Secondary: secondary, Confidence: 0.95, Layer: 3}
-	if out := semanticAnaphoricMailboxFollowUp(&current, "把重庆的天气也发给他", mailboxSendHistory()); out == nil {
-		t.Fatal("rewrite returned nil")
+func TestAnaphoricMailboxFollowUpReadsTrustedAndReloadedSendNames(t *testing.T) {
+	current := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3,
+		Secondary: []intent.IntentLabel{intent.LabelLiveDataVisual},
 	}
-	if spare := current.Secondary[:2][1]; spare != "" {
-		t.Fatalf("rewrite wrote into the input backing array: %v", spare)
+	h := anaphoricClassifierHandler(func(string) (string, error) { return `{"deliver":"mailbox"}`, nil })
+	histories := [][]agent.ConversationEntry{
+		{
+			{Role: "user", Content: "发送给 znsoft@163.com"},
+			{Role: "assistant", ToolCalls: []interface{}{
+				map[string]interface{}{
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      "semantic_send_trusted_mailbox",
+						"arguments": `{"to":["znsoft@163.com"]}`,
+					},
+				},
+			}},
+		},
+		{
+			{Role: "user", Content: "发送给 znsoft@163.com"},
+			{Role: "assistant", ToolCalls: []map[string]string{{"name": "mailbox_send"}}},
+		},
+		{
+			{Role: "user", Content: "发送给 znsoft@163.com"},
+			{Role: "tool", Content: map[string]interface{}{"name": "mailbox_send", "arguments": `{"to":["znsoft@163.com"]}`}},
+		},
+	}
+	for i, history := range histories {
+		if out := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "再发一份给他", history); out == nil {
+			t.Fatalf("history shape %d did not read as a mailbox send", i)
+		}
 	}
 }
 
 func TestAnaphoricMailboxFollowUpReachesThePlan(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	out := semanticAnaphoricMailboxFollowUp(&current, "把重庆的天气也发给他", mailboxSendHistory())
+	current := *liveDataVisualClassification()
+	h := &IMMessageHandler{
+		registry:                    NewToolRegistry(),
+		anaphoricDeliveryClassifier: func(string) (string, error) { return `{"deliver":"mailbox"}`, nil },
+	}
+	registerBuiltinTools(h.registry, h)
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Chongqing: light rain, 18C", nil }
+	out := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "把重庆的天气也发给他", mailboxSendHistory())
 	if out == nil {
 		t.Fatal("rewrite returned nil")
 	}
-	h := &IMMessageHandler{registry: NewToolRegistry()}
-	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Chongqing: light rain, 18C", nil }
 	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
 		"user-1", "把重庆的天气也发给他", "desktop", "root-anaphoric-mail", "turn-anaphoric-mail", out, nil,
 	)
@@ -190,13 +225,17 @@ func TestAnaphoricMailboxSurvivesTheCarriedResidueCeiling(t *testing.T) {
 	loop.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
 	requestCtx := withSemanticResidueRemaining(context.Background(), loop.semanticResidueRemaining)
 
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	rewritten := semanticAnaphoricMailboxFollowUp(&current, "把重庆的天气也发给他", mailboxSendHistory())
+	current := *liveDataVisualClassification()
+	h := &IMMessageHandler{
+		registry:                    NewToolRegistry(),
+		anaphoricDeliveryClassifier: func(string) (string, error) { return `{"deliver":"mailbox"}`, nil },
+	}
+	registerBuiltinTools(h.registry, h)
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Chongqing: light rain, 18C", nil }
+	rewritten := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "把重庆的天气也发给他", mailboxSendHistory())
 	if rewritten == nil {
 		t.Fatal("rewrite returned nil")
 	}
-	h := &IMMessageHandler{registry: NewToolRegistry()}
-	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Chongqing: light rain, 18C", nil }
 	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachmentsWithSession(
 		requestCtx, "user-1", "把重庆的天气也发给他", "desktop", "root-anaphoric-ceiling", "turn-anaphoric-ceiling", "session-anaphoric-ceiling", rewritten, nil,
 	)
@@ -221,47 +260,61 @@ func TestAnaphoricMailboxSurvivesTheCarriedResidueCeiling(t *testing.T) {
 	}
 }
 
-func TestAnaphoricMailboxFollowUpLeavesWorkflowAndControlPlaneTurnsAlone(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	workflow := current
-	workflow.WorkflowType = "presentation"
-	if out := semanticAnaphoricMailboxFollowUp(&workflow, "把重庆的天气也发给他", mailboxSendHistory()); out != nil {
-		t.Fatalf("workflow phase was rewritten: %v", out.Labels())
+func TestAnaphoricMailboxHistorySurvivesToolHeavyTurns(t *testing.T) {
+	// One turn can append dozens of tool rows after the send. The window is
+	// counted in user turns, so the send is still visible to the follow-up.
+	history := mailboxSendHistory()
+	for i := 0; i < 40; i++ {
+		history = append(history, agent.ConversationEntry{Role: "tool_result", Content: "tool output"})
 	}
-	failed := current
-	failed.ControlPlaneFailure = true
-	if out := semanticAnaphoricMailboxFollowUp(&failed, "把重庆的天气也发给他", mailboxSendHistory()); out != nil {
-		t.Fatalf("control-plane failure was rewritten: %v", out.Labels())
+	current := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3,
+		Secondary: []intent.IntentLabel{intent.LabelLiveDataVisual},
+	}
+	h := anaphoricClassifierHandler(func(string) (string, error) { return `{"deliver":"mailbox"}`, nil })
+	if out := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "把重庆的天气也发给他", history); out == nil {
+		t.Fatal("a tool-heavy previous turn hid the mailbox send")
+	}
+
+	// Six user turns later the send no longer arms the rewrite.
+	stale := mailboxSendHistory()
+	for i := 0; i < 7; i++ {
+		stale = append(stale, agent.ConversationEntry{Role: "user", Content: "继续"}, agent.ConversationEntry{Role: "assistant", Content: "好"})
+	}
+	if out := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "把重庆的天气也发给他", stale); out != nil {
+		t.Fatalf("an old send re-armed the rewrite: %v", out.Labels())
 	}
 }
 
-func TestAnaphoricMailboxFollowUpReadsTheTrustedSendName(t *testing.T) {
-	history := []agent.ConversationEntry{
-		{Role: "user", Content: "发送给 znsoft@163.com"},
-		{Role: "assistant", ToolCalls: []interface{}{
-			map[string]interface{}{
-				"type": "function",
-				"function": map[string]interface{}{
-					"name":      "semantic_send_trusted_mailbox",
-					"arguments": `{"to":["znsoft@163.com"]}`,
-				},
-			},
-		}},
+func TestAnaphoricMailboxFollowUpLeavesAPendingDraftAlone(t *testing.T) {
+	current := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3,
+		Secondary: []intent.IntentLabel{intent.LabelLiveDataVisual},
 	}
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	if out := semanticAnaphoricMailboxFollowUp(&current, "把重庆的天气也发给他", history); out == nil {
-		t.Fatal("the trusted adapter name was not read as a mailbox send")
+	calls := 0
+	h := anaphoricClassifierHandler(func(string) (string, error) {
+		calls++
+		return `{"deliver":"mailbox"}`, nil
+	})
+	h.pendingAskUser.Store("user-1", &pendingAskUserState{MailboxDraftID: "draft-1"})
+	if out := h.semanticAnaphoricMailboxFollowUp(&current, "user-1", "把重庆的天气也发给他", mailboxSendHistory()); out != nil {
+		t.Fatalf("a pending draft was re-armed: %v", out.Labels())
+	}
+	if calls != 0 {
+		t.Fatal("classifier ran while a mailbox draft was pending")
 	}
 }
 
-func TestAnaphoricMailboxFollowUpIgnoresHostContinuations(t *testing.T) {
-	current := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3}
-	goal := "[系统续接][execute] 按步骤执行目标：把重庆的天气也发给他\n\n当前步骤：发送报告"
-	if out := semanticAnaphoricMailboxFollowUp(&current, goal, mailboxSendHistory()); out != nil {
-		t.Fatalf("goal continuation re-armed the send: %v", out.Labels())
+func TestMailboxSendAllowedByChannelPolicy(t *testing.T) {
+	var nilLoop *LoopContext
+	if !nilLoop.mailboxSendAllowed() {
+		t.Fatal("a nil loop has no group policy")
 	}
-	round := "[系统续轮] 继续完成同一任务。从对话记录里已经完成的部分接着做。\n\n任务：\n把重庆的天气也发给他"
-	if out := semanticAnaphoricMailboxFollowUp(&current, round, mailboxSendHistory()); out != nil {
-		t.Fatalf("session round continuation re-armed the send: %v", out.Labels())
+	if !(&LoopContext{}).mailboxSendAllowed() {
+		t.Fatal("a direct chat allows the mail tool")
+	}
+	group := &LoopContext{LansengerGroupPermissions: &lansengerGroupPermissionPolicy{}}
+	if group.mailboxSendAllowed() {
+		t.Fatal("a group chat without an explicit mailbox grant must fail closed")
 	}
 }

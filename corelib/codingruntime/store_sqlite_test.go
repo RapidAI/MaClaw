@@ -258,6 +258,58 @@ func TestSQLiteStoreWriterAdmissionAllowsGuardedDisjointAcrossSeparateHandles(t 
 	}
 }
 
+func TestSQLiteStoreSharedLocalRootClaimAdmitsFileClaimAcrossHandles(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "runtime.db")
+	first, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	now := time.Date(2026, 8, 10, 1, 2, 3, 0, time.UTC)
+	// Join("D:", "name") is drive-relative on Windows, not an absolute root.
+	// The GUI claim is an absolute project directory.
+	root := filepath.Join(t.TempDir(), "project")
+	a, err := first.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := second.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootClaim := PolicySnapshot{
+		ProjectRoot:                root,
+		Mode:                       "local",
+		FinalWorkspaceGateRequired: true,
+		WriteSet:                   WriteSet{Claims: []WriteClaim{{Path: root + string(filepath.Separator), Directory: true}}},
+	}
+	fileClaim := PolicySnapshot{
+		ProjectRoot:                root,
+		Mode:                       "local",
+		FinalWorkspaceGateRequired: true,
+		WriteSet:                   WriteSet{Claims: []WriteClaim{{Path: "src/main.go"}}},
+	}
+	started, err := first.StartAttempt(a.TaskID, "one", time.Minute, rootClaim, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := second.GetAttempt(started.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Policy.WriteSet.Claims) != 1 || !reloaded.Policy.WriteSet.Claims[0].Directory || reloaded.Policy.WriteSet.Claims[0].Path != "." {
+		t.Fatalf("stored root claim = %+v", reloaded.Policy.WriteSet.Claims)
+	}
+	if _, err := second.StartAttempt(b.TaskID, "two", time.Minute, fileClaim, now); err != nil {
+		t.Fatalf("sqlite root claim blocked a disjoint file: %v", err)
+	}
+}
+
 func TestSQLiteStoreListAttemptsOrdersByAttemptNumber(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
 	if err != nil {

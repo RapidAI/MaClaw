@@ -19,6 +19,16 @@ const yoloModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download
 // yoloDownloadMu prevents concurrent YOLO model downloads.
 var yoloDownloadMu sync.Mutex
 
+// yolo download state is what the settings panel and the Computer Use banner
+// read. A missing file is not a download in progress, and a failed attempt
+// must stay failed until the next attempt starts.
+var (
+	yoloStateMu     sync.Mutex
+	yoloRunning     bool
+	yoloFailedMsg   string
+	yoloUserStopped bool
+)
+
 var yoloModelStatusCache struct {
 	sync.Mutex
 	valid  bool
@@ -63,6 +73,14 @@ func (a *App) SetScreenParsingEnabled(enabled bool) error {
 		return err
 	}
 	invalidateYOLOModelStatusCache()
+
+	yoloStateMu.Lock()
+	if enabled {
+		yoloUserStopped = false
+	} else if yoloRunning {
+		yoloUserStopped = true
+	}
+	yoloStateMu.Unlock()
 
 	if enabled {
 		go a.backgroundPreloadYOLOModel()
@@ -169,22 +187,90 @@ func computerusePlaybookShort() string {
 func (a *App) CheckYOLOModel() map[string]interface{} {
 	p := yoloModelPath()
 	if p == "" {
-		return map[string]interface{}{"exists": false, "path": "", "size": int64(0)}
+		return yoloStatusMap(false, "", 0)
 	}
 	yoloModelStatusCache.Lock()
-	defer yoloModelStatusCache.Unlock()
 	if yoloModelStatusCache.valid && yoloModelStatusCache.path == p {
-		return map[string]interface{}{"exists": yoloModelStatusCache.exists, "path": p, "size": yoloModelStatusCache.size}
+		exists := yoloModelStatusCache.exists
+		size := yoloModelStatusCache.size
+		yoloModelStatusCache.Unlock()
+		// File presence is cached. Download progress is not: a hit that
+		// omitted it kept a failed download looking in-progress.
+		return yoloStatusMap(exists, p, size)
 	}
-	yoloModelStatusCache.path = p
-	yoloModelStatusCache.exists = false
-	yoloModelStatusCache.size = 0
+	yoloModelStatusCache.Unlock()
+	exists, size := false, int64(0)
 	if fi, err := os.Stat(p); err == nil {
-		yoloModelStatusCache.exists = true
-		yoloModelStatusCache.size = fi.Size()
+		exists = true
+		size = fi.Size()
 	}
+	// A miss must not be cached. The file appears when the download renames
+	// it, and a cached miss would keep saying the weights are absent.
+	yoloRememberFile(p, exists, size)
+	return yoloStatusMap(exists, p, size)
+}
+
+func yoloRememberFile(path string, exists bool, size int64) {
+	yoloModelStatusCache.Lock()
+	defer yoloModelStatusCache.Unlock()
+	if !exists {
+		if yoloModelStatusCache.path == path {
+			yoloModelStatusCache.valid = false
+		}
+		return
+	}
+	yoloModelStatusCache.path = path
+	yoloModelStatusCache.exists = true
+	yoloModelStatusCache.size = size
 	yoloModelStatusCache.valid = true
-	return map[string]interface{}{"exists": yoloModelStatusCache.exists, "path": p, "size": yoloModelStatusCache.size}
+}
+
+func yoloStatusMap(exists bool, path string, size int64) map[string]interface{} {
+	running, failed := yoloDownloadStatus()
+	return map[string]interface{}{
+		"exists":      exists,
+		"path":        path,
+		"size":        size,
+		"downloading": running,
+		"error":       failed,
+	}
+}
+
+func yoloDownloadStatus() (running bool, failed string) {
+	yoloStateMu.Lock()
+	defer yoloStateMu.Unlock()
+	return yoloRunning, yoloFailedMsg
+}
+
+func yoloNoteDownloadStarted() {
+	yoloStateMu.Lock()
+	yoloRunning = true
+	yoloFailedMsg = ""
+	yoloStateMu.Unlock()
+}
+
+func yoloNoteDownloadFailed(err error) {
+	yoloStateMu.Lock()
+	yoloRunning = false
+	if err != nil {
+		yoloFailedMsg = err.Error()
+	} else {
+		yoloFailedMsg = "download failed"
+	}
+	yoloStateMu.Unlock()
+}
+
+func yoloNoteDownloadFinished() {
+	yoloStateMu.Lock()
+	yoloRunning = false
+	yoloFailedMsg = ""
+	yoloStateMu.Unlock()
+}
+
+func yoloAllowEnableAfterDownload() bool {
+	yoloStateMu.Lock()
+	defer yoloStateMu.Unlock()
+	return !yoloUserStopped
 }
 
 // DownloadYOLOModel downloads the YOLO model for screen parsing.
@@ -202,43 +288,119 @@ func (a *App) DownloadYOLOModel() error {
 	if err != nil {
 		return fmt.Errorf("create models dir: %w", err)
 	}
-	destPath := filepath.Join(dir, yoloModelFilename)
+	return a.downloadYOLOFile(filepath.Join(dir, yoloModelFilename))
+}
 
-	// 1) Try GitHub URL first (silent)
-	if err := a.downloadModelFromWithEvent(yoloModelDefaultURL, destPath, false, "yolo-download-progress"); err == nil {
-		return nil
-	}
-
-	// 2) Fallback: Hub URL
-	cfg, err := a.LoadConfig()
+// downloadYOLOFile fetches the weights and records running or failed for the
+// UI. GitHub is tried first. The Hub attempt is the same file, so a GitHub
+// error is not shown while the fallback is still going. The final failure is
+// one event, otherwise a silent preload leaves the panel spinning.
+func (a *App) downloadYOLOFile(destPath string) error {
+	yoloNoteDownloadStarted()
+	err := a.downloadModelFromWithEvent(yoloModelDefaultURL, destPath, false, "yolo-download-progress")
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		cfg, cfgErr := a.LoadConfig()
+		hubURL := ""
+		if cfgErr == nil {
+			hubURL = strings.TrimRight(cfg.RemoteHubURL, "/")
+		}
+		if hubURL == "" {
+			if cfgErr != nil {
+				err = fmt.Errorf("load config: %w", cfgErr)
+			} else {
+				err = fmt.Errorf("GitHub download failed and Hub URL not configured: %v", err)
+			}
+			yoloNoteDownloadFailed(err)
+			a.emitDownloadProgressNamed("yolo-download-progress", 0, 0, 0, err.Error())
+			return err
+		}
+		fallbackURL := hubURL + "/api/v1/models/" + yoloModelFilename
+		if hubErr := a.downloadModelFromWithEvent(fallbackURL, destPath, false, "yolo-download-progress"); hubErr != nil {
+			yoloNoteDownloadFailed(hubErr)
+			a.emitDownloadProgressNamed("yolo-download-progress", 0, 0, 0, hubErr.Error())
+			return hubErr
+		}
 	}
-	hubURL := strings.TrimRight(cfg.RemoteHubURL, "/")
-	if hubURL == "" {
-		return fmt.Errorf("GitHub download failed and Hub URL not configured")
+	yoloNoteDownloadFinished()
+	log.Printf("[yolo] model downloaded to %s", destPath)
+	if yoloAllowEnableAfterDownload() {
+		a.enableScreenParsingAfterYOLODownload(destPath)
+	} else {
+		log.Printf("[yolo] screen parsing stays off; it was turned off during the download")
 	}
-	fallbackURL := hubURL + "/api/v1/models/" + yoloModelFilename
-	return a.downloadModelFromWithEvent(fallbackURL, destPath, true, "yolo-download-progress")
+	// The byte-stream event already reported 100% before this decision.
+	// Publish the toggle only after it, so a mid-download off stays off.
+	a.emitYOLOScreenParsingSettled()
+	return nil
+}
+
+func yoloSettledProgress(enabled bool) map[string]interface{} {
+	status := downloadProgressNamedStatus(100, "")
+	return map[string]interface{}{
+		"percent":                100,
+		"downloaded":             int64(0),
+		"total":                  int64(0),
+		"error":                  "",
+		"status":                 status,
+		"runtime_status":         string(status.RuntimeStatusValue()),
+		"screen_parsing_enabled": enabled,
+	}
+}
+
+func (a *App) emitYOLOScreenParsingSettled() {
+	if a == nil || a.ctx == nil {
+		return
+	}
+	a.emitEvent("yolo-download-progress", yoloSettledProgress(a.GetScreenParsingEnabled()))
+}
+
+// yoloAutoDownloadPolicy is the missing-weights rule. A file that is not on
+// disk is downloaded without asking, and a successful download turns screen
+// parsing on. A file that is already present stays as the user left it: an
+// explicit off is not switched back on.
+func yoloAutoDownloadPolicy(fileExists, screenParsingEnabled bool) (download, enableOnSuccess bool) {
+	if fileExists {
+		return false, false
+	}
+	return true, !screenParsingEnabled
+}
+
+// enableScreenParsingAfterYOLODownload persists screen parsing once the
+// weights are on disk. It does not start another preload: the file is
+// already there, and SetScreenParsingEnabled would only queue a no-op.
+func (a *App) enableScreenParsingAfterYOLODownload(destPath string) {
+	if destPath == "" {
+		return
+	}
+	if _, err := os.Stat(destPath); err != nil {
+		return
+	}
+	if a.GetScreenParsingEnabled() {
+		return
+	}
+	if _, err := a.PatchConfigFields(map[string]interface{}{"screen_parsing_enabled": true}); err != nil {
+		log.Printf("[yolo] enable after download: %v", err)
+		return
+	}
+	invalidateYOLOModelStatusCache()
+	log.Printf("[yolo] screen parsing enabled after model download")
 }
 
 // backgroundPreloadYOLOModel silently downloads the YOLO model in the background
-// when screen parsing is enabled and the model file is missing.
+// when the weights file is missing, whether or not screen parsing is already on.
 // Reuses the same downloadModelFrom infrastructure as the embedding model.
 func (a *App) backgroundPreloadYOLOModel() {
-	// Check if enabled
-	if !a.GetScreenParsingEnabled() {
-		return
-	}
-
 	destPath := yoloModelPath()
 	if destPath == "" {
 		return
 	}
 
-	// Already exists?
-	if _, err := os.Stat(destPath); err == nil {
-		log.Printf("[yolo] model already exists: %s", destPath)
+	_, statErr := os.Stat(destPath)
+	download, _ := yoloAutoDownloadPolicy(statErr == nil, a.GetScreenParsingEnabled())
+	if !download {
+		if statErr == nil {
+			log.Printf("[yolo] model already exists: %s", destPath)
+		}
 		return
 	}
 
@@ -251,22 +413,7 @@ func (a *App) backgroundPreloadYOLOModel() {
 	defer invalidateYOLOModelStatusCache()
 
 	log.Println("[yolo] background preload: starting silent download")
-
-	// Try GitHub first
-	if err := a.downloadModelFromWithEvent(yoloModelDefaultURL, destPath, false, "yolo-download-progress"); err != nil {
-		// Fallback: Hub URL
-		cfg, _ := a.LoadConfig()
-		hubURL := strings.TrimRight(cfg.RemoteHubURL, "/")
-		if hubURL == "" {
-			log.Printf("[yolo] background preload: all sources failed: %v", err)
-			return
-		}
-		fallbackURL := hubURL + "/api/v1/models/" + yoloModelFilename
-		if err := a.downloadModelFromWithEvent(fallbackURL, destPath, false, "yolo-download-progress"); err != nil {
-			log.Printf("[yolo] background preload: fallback failed: %v", err)
-			return
-		}
+	if err := a.downloadYOLOFile(destPath); err != nil {
+		log.Printf("[yolo] background preload: %v", err)
 	}
-
-	log.Printf("[yolo] background preload: model downloaded to %s", destPath)
 }

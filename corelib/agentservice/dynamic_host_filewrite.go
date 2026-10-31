@@ -268,27 +268,29 @@ func (c *coreAgentCallbacks) EditReviewedHostFile(ctx context.Context, principal
 	if info.Size() > int64(srvWriteFileMaxSize) {
 		return "", fmt.Errorf("host_file_edit_content_too_large")
 	}
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return "", err
-	}
-	original := string(data)
-	replaced, err := coretool.ReplaceTextPassage(original, oldString, newString, false)
-	if err != nil {
-		if errors.Is(err, coretool.ErrTextPassageNotFound) {
-			return "", fmt.Errorf("host_file_edit_no_match")
+	size, err := coretool.RewriteTextFile(absPath, func(current string) (string, bool, error) {
+		if len(current) > srvWriteFileMaxSize {
+			return "", false, fmt.Errorf("host_file_edit_content_too_large")
 		}
-		return "", err
-	}
-	if replaced.Matches != 1 {
-		return "", fmt.Errorf("host_file_edit_ambiguous_match")
-	}
-	updated := replaced.Text
-	if len(updated) > srvWriteFileMaxSize {
-		return "", fmt.Errorf("host_file_write_content_too_large")
-	}
-	size, err := coretool.WriteTextFile(absPath, updated, string(coretool.WriteModeOverwrite))
+		replaced, err := coretool.ReplaceTextPassage(current, oldString, newString, false)
+		if err != nil {
+			if errors.Is(err, coretool.ErrTextPassageNotFound) {
+				return "", false, fmt.Errorf("host_file_edit_no_match")
+			}
+			return "", false, err
+		}
+		if replaced.Matches != 1 {
+			return "", false, fmt.Errorf("host_file_edit_ambiguous_match")
+		}
+		if len(replaced.Text) > srvWriteFileMaxSize {
+			return "", false, fmt.Errorf("host_file_write_content_too_large")
+		}
+		return replaced.Text, true, nil
+	})
 	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("host_file_edit_not_found")
+		}
 		return "", err
 	}
 	return fmt.Sprintf("Edited %s (%d bytes)", reviewedHostWorkspaceRelative(c.workspace, absPath, path), size), nil

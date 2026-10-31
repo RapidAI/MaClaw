@@ -133,6 +133,9 @@ func fileCompanionPaperUserTurn(path string) string {
 }
 
 func (a *App) fileCompanionDeliverPaper(canonical, sessionID, userID, requestID string, resp *IMAgentResponse) error {
+	if a.fileCompanionChatStopped(requestID) {
+		return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+	}
 	if resp == nil {
 		logFileCompanion("turn end session=%s empty", sessionID)
 		return errors.New("empty response")
@@ -162,7 +165,13 @@ func (a *App) fileCompanionDeliverPaper(canonical, sessionID, userID, requestID 
 		logFileCompanion("paper search failed session=%s", sessionID)
 	}
 	resp.Text = supplemented
-	pdfPath, err := a.fileCompanionWritePaperPDF(canonical, sessionID, supplemented)
+	if a.fileCompanionChatStopped(requestID) {
+		return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+	}
+	pdfPath, err := a.fileCompanionWritePaperPDF(canonical, sessionID, requestID, supplemented)
+	if errors.Is(err, errFileCompanionTurnCancelled) {
+		return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, resp)
+	}
 	if err != nil {
 		resp.Error = err.Error()
 		resp.LocalFilePath = ""
@@ -194,7 +203,7 @@ func (a *App) fileCompanionPaperLookupCtx(ctx context.Context, query string) (st
 	return firstPaperSearchPage(response.Results)
 }
 
-func (a *App) fileCompanionWritePaperPDF(canonical, sessionID, markdown string) (string, error) {
+func (a *App) fileCompanionWritePaperPDF(canonical, sessionID, requestID, markdown string) (string, error) {
 	if a == nil {
 		return "", errors.New("app unavailable")
 	}
@@ -207,7 +216,31 @@ func (a *App) fileCompanionWritePaperPDF(canonical, sessionID, markdown string) 
 	if sourceAbs != "" && strings.EqualFold(filepath.Clean(sourceAbs), filepath.Clean(outAbs)) {
 		return "", errors.New("不能覆盖当前文件")
 	}
-	markdown = fileCompanionEmbedPaperFigures(canonical, filepath.Dir(output), markdown, sessionID)
+	// One session shares the figures cache. Hold its build lock across embed,
+	// generation, and the rename. chatMu is taken only for the rename.
+	build := a.fileCompanionPaperBuildLock(sessionID)
+	build.Lock()
+	defer build.Unlock()
+	dir := filepath.Dir(output)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	markdown = fileCompanionEmbedPaperFigures(canonical, dir, markdown, sessionID)
+	// Each attempt has its own directory. A cancel removes that directory
+	// and cannot delete another attempt's PDF. The figures cache stays in dir.
+	stage, err := os.MkdirTemp(dir, "paper-stage-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(stage)
+	temp, err := os.CreateTemp(stage, "paper-*.pdf")
+	if err != nil {
+		return "", err
+	}
+	tmp := temp.Name()
+	if err := temp.Close(); err != nil {
+		return "", err
+	}
 	written, err := docgen.GenerateToFile(docgen.Spec{
 		Title:          fileCompanionPaperLabel,
 		Subtitle:       filepath.Base(canonical),
@@ -217,16 +250,33 @@ func (a *App) fileCompanionWritePaperPDF(canonical, sessionID, markdown string) 
 		FileNamePrefix: "paper",
 		PaperSize:      "A4",
 		Colorful:       true,
-	}, output)
+	}, tmp)
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(written), "latest.txt"), []byte(written), 0o644); err != nil {
-		logFileCompanion("paper record failed session=%s", sessionID)
-	} else {
+	wroteLatest := false
+	err = a.fileCompanionPublishTurn(requestID, func() error {
+		backup, replaceErr := fileCompanionReplaceFile(written, output)
+		if replaceErr != nil {
+			return replaceErr
+		}
+		if backup != "" {
+			_ = os.Remove(backup)
+		}
+		if writeErr := os.WriteFile(filepath.Join(dir, "latest.txt"), []byte(output), 0o644); writeErr != nil {
+			logFileCompanion("paper record failed session=%s", sessionID)
+			return nil
+		}
+		wroteLatest = true
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if wroteLatest {
 		a.fileCompanionRecordPaperTurn(sessionID)
 	}
-	return written, nil
+	return output, nil
 }
 
 func fileCompanionPaperOutput(dataDir, sessionID, source string) (string, error) {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useState } from "react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setCompanionUiLang } from "../../i18n/mnCompanion";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { FileCompanionComposer } from "./FileCompanionComposer";
@@ -186,5 +186,42 @@ describe("FileCompanionComposer", () => {
         expect(screen.getByTestId("sent").textContent).toBe("");
         expect(input().value).toBe("先别发出去");
         expect(fileCompanionInputHistory()).toEqual([]);
+    });
+
+    it("cancels a running turn from the progress button and leaves the draft", () => {
+        const onSubmit = vi.fn();
+        const onCancel = vi.fn();
+        render(
+            <FileCompanionComposer
+                path="a.pdf"
+                value="方法的实验充分吗?"
+                busy
+                onChange={() => undefined}
+                onSubmit={onSubmit}
+                onCancel={onCancel}
+            />,
+        );
+        const button = screen.getByTestId("file-companion-send");
+        expect(button.textContent).toBe("处理中");
+        expect(button.getAttribute("type")).toBe("button");
+        expect(button.getAttribute("aria-label")).toBe("取消");
+        expect((button as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(button);
+        expect(onCancel).toHaveBeenCalledTimes(1);
+        expect(onSubmit).not.toHaveBeenCalled();
+        expect(input().value).toBe("方法的实验充分吗?");
+        expect(fileCompanionInputHistory()).toEqual([]);
+    });
+
+    it("sends when the button is idle", () => {
+        render(<Harness />);
+        fireEvent.change(input(), { target: { value: "方法的实验充分吗" } });
+        const button = screen.getByTestId("file-companion-send");
+        expect(button.textContent).toBe("发送");
+        expect(button.getAttribute("type")).toBe("submit");
+        expect(button.getAttribute("aria-label")).toBe("发送");
+        fireEvent.click(button);
+        expect(screen.getByTestId("sent").textContent).toBe("方法的实验充分吗");
+        expect(fileCompanionInputHistory()).toContain("方法的实验充分吗");
     });
 });

@@ -74,10 +74,11 @@ func (a *App) ensureConfiguredAIModels() {
 				}
 			}
 
-			if a.GetScreenParsingEnabled() {
-				if !modelStatusExists(a.CheckYOLOModel()) {
-					startPreload("YOLO", a.backgroundPreloadYOLOModel)
-				}
+			// Missing OmniParser weights download on their own. Screen parsing
+			// is turned on when the file lands. An existing file with the
+			// feature explicitly off is left off.
+			if !modelStatusExists(a.CheckYOLOModel()) {
+				startPreload("YOLO", a.backgroundPreloadYOLOModel)
 			}
 		}
 

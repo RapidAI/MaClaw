@@ -365,6 +365,71 @@ func newHopRepeatFamilySurface(t *testing.T, capability string) (*semanticCallSu
 	}, store
 }
 
+func TestHopRunFailedWebSearchSettlesWhenFetchSucceeds(t *testing.T) {
+	plan := tool.ToolPlan{
+		RootTaskID: "root-weather",
+		ID:         "plan-weather",
+		Selections: []tool.PlannedSelection{
+			{ID: "search", NeedID: "need:information.search.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "fetch", NeedID: "need:information.fetch.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationFetchWeb}},
+			{ID: "shell", NeedID: "need:shell", FitProof: tool.FitProof{MatchedCapability: "shell.execute.remote_host"}},
+		},
+	}
+	store := tool.NewMemoryPlanExecutionStore()
+	issuer, err := tool.NewRandomInvocationIssuer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := tool.NewPlanExecutor(issuer, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	surface := &semanticCallSurface{
+		plan: plan,
+		scope: tool.InvocationScope{
+			RootTaskID: "root-weather", PlanID: "plan-weather",
+			SessionID: "session-weather", TurnID: "turn-weather", PrincipalID: "user-weather",
+		},
+		executor:  executor,
+		completed: map[string]bool{},
+	}
+	complete := func(id string, state tool.PlanExecutionState, reason string) {
+		t.Helper()
+		if _, _, err := store.Acquire(tool.PlanExecutionRecord{Scope: surface.scope, SelectionID: id}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Complete(surface.scope, id, state, "digest", reason, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete("search", tool.PlanExecutionFailed, "selection_execution_failed")
+	complete("shell", tool.PlanExecutionFailed, "parameter_required")
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface, checkpointRunID: "run-weather", userText: "北京天气"}
+
+	open := cb.hopRunSnapshot()
+	if !open.Steps[0].Required || open.Steps[0].Superseded || open.Steps[0].Status != HopStepFailed {
+		t.Fatalf("failed search without a fetch must stay open: %#v", open.Steps[0])
+	}
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("failed search and shell must keep the turn unsettled")
+	}
+
+	complete("fetch", tool.PlanExecutionSucceeded, "")
+	settled := cb.hopRunSnapshot()
+	if !settled.Steps[0].Superseded || settled.Steps[0].Status != HopStepFailed {
+		t.Fatalf("fetch success must supersede the failed search without erasing it: %#v", settled.Steps[0])
+	}
+	if settled.Steps[1].Status != HopStepCompleted {
+		t.Fatalf("fetch step: %#v", settled.Steps[1])
+	}
+	if settled.Steps[2].Superseded || settled.Steps[2].Status != HopStepFailed {
+		t.Fatalf("unrelated shell failure must stay open: %#v", settled.Steps[2])
+	}
+	if !cb.RequiredEffectUnsettled() || settled.Remaining != 1 {
+		t.Fatalf("shell must still block, remaining=%d unsettled=%v", settled.Remaining, cb.RequiredEffectUnsettled())
+	}
+}
+
 func TestHopRunFailedBaseSettlesWhenSiblingSucceeds(t *testing.T) {
 	surface, store := newHopRepeatFamilySurface(t, "shell.execute.remote_host")
 	cb := &sharedAgentLoopCallbacks{semanticSurface: surface, checkpointRunID: "run-repeat", userText: "在远程主机执行命令"}

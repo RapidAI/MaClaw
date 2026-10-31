@@ -2,10 +2,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanionPdfReader } from "../CompanionPdfReader";
+import { clampPdfBookmarkRailWidth, CompanionPdfReader, nextPdfBookmarkRailPreferred, PDF_BOOKMARK_RAIL_STORAGE_KEY } from "../CompanionPdfReader";
 import { hydratePdfMarks, loadPdfMarks, savePdfMarks } from "../../filecompanion/pdfMarks";
 import { hydratePdfDrawings, loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT } from "../../filecompanion/pdfDrawings";
+import { hydratePdfBookmarks, loadPdfBookmarks, PDF_BOOKMARKS_CHANGED_EVENT } from "../../filecompanion/pdfBookmarks";
 import { hydratePdfTranslations, loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, resetPdfTranslationFlight, savePdfTranslations } from "../../filecompanion/pdfTranslations";
 import { hydrateCompanionReaderState } from "../../filecompanion/companionReaderState";
 import type { CodePreviewTheme } from "../FileTabBar";
@@ -81,6 +83,7 @@ beforeEach(() => {
     hydratePdfMarks({});
     hydratePdfTranslations({});
     hydratePdfDrawings({});
+    hydratePdfBookmarks({});
     delete (window as unknown as { go?: unknown }).go;
     getDocument.mockReset();
     preview.mockReset();
@@ -94,6 +97,7 @@ beforeEach(() => {
         disconnect() {}
     }
     vi.stubGlobal("IntersectionObserver", QuietObserver);
+    localStorage.removeItem(PDF_BOOKMARK_RAIL_STORAGE_KEY);
 });
 
 describe("companion pdf reader", () => {
@@ -1516,5 +1520,552 @@ describe("companion pdf reader", () => {
         expect(Number.parseFloat(drawn.style.width)).toBeCloseTo((110 * 5) / length / 200 * 100, 5);
         expect(Number.parseFloat(drawn.style.left)).toBeCloseTo((40 + 110 * (length - 5) / length) / 200 * 100, 5);
         expect(Number.parseFloat(drawn.style.height)).toBeCloseTo(12 / 400 * 100, 5);
+    });
+
+    it("keeps the bookmark list between its minimum and the paper", () => {
+        expect(clampPdfBookmarkRailWidth(10, 800)).toBe(96);
+        expect(clampPdfBookmarkRailWidth(900, 800)).toBe(480);
+        expect(clampPdfBookmarkRailWidth(400, 500)).toBe(260);
+        expect(clampPdfBookmarkRailWidth(200, 0)).toBe(200);
+        expect(clampPdfBookmarkRailWidth(Number.NaN, 800)).toBe(156);
+        expect(nextPdfBookmarkRailPreferred(400, 300, 500)).toBe(400);
+        expect(nextPdfBookmarkRailPreferred(400, 260, 500)).toBe(400);
+        expect(nextPdfBookmarkRailPreferred(400, 259.6, 500)).toBe(400);
+        expect(nextPdfBookmarkRailPreferred(400, 259.4, 500)).toBe(259);
+        expect(nextPdfBookmarkRailPreferred(400, 200, 500)).toBe(200);
+        expect(nextPdfBookmarkRailPreferred(200, 300, 500)).toBe(260);
+        expect(nextPdfBookmarkRailPreferred(200, 80, 100)).toBe(200);
+        expect(nextPdfBookmarkRailPreferred(156, 236, 800)).toBe(236);
+        expect(nextPdfBookmarkRailPreferred(400, Number.NaN, 500)).toBe(400);
+    });
+
+    it("drags the left bookmark list and remembers the width", async () => {
+        pdfWithPages(1, "OnlyOne");
+        hydratePdfBookmarks({
+            "c:/docs/paper.pdf": [
+                { id: "a", page: 1, x: 0.2, y: 0.4, color: "yellow", name: "甲" },
+            ],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const handle = await screen.findByTestId("pdf-bookmark-resize");
+        const column = screen.getByTestId("pdf-bookmark-column");
+        expect(column.style.width).toBe("156px");
+        expect(handle.getAttribute("aria-label")).toBe("拖动调整书签列表宽度");
+        const stage = column.parentElement as HTMLElement;
+        Object.defineProperty(stage, "clientWidth", { configurable: true, value: 800 });
+
+        fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100 });
+        fireEvent.pointerMove(window, { pointerId: 1, clientX: 180 });
+        expect(column.style.width).toBe("236px");
+        fireEvent.pointerUp(window, { pointerId: 1, clientX: 180 });
+        expect(localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY)).toBe("236");
+
+        fireEvent.doubleClick(handle);
+        expect(column.style.width).toBe("156px");
+        expect(localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY)).toBe("156");
+
+        fireEvent.keyDown(handle, { key: "ArrowRight" });
+        expect(column.style.width).toBe("172px");
+        fireEvent.keyDown(handle, { key: "Home" });
+        expect(column.style.width).toBe("96px");
+        expect(column.style.flexBasis).toBe("96px");
+    });
+
+    it("keeps a wider bookmark list while the window is already limiting it", async () => {
+        const observers: Array<() => void> = [];
+        class RecordingResizeObserver {
+            constructor(callback: ResizeObserverCallback) {
+                observers.push(() => callback([], this as unknown as ResizeObserver));
+            }
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+        vi.stubGlobal("ResizeObserver", RecordingResizeObserver);
+        localStorage.setItem(PDF_BOOKMARK_RAIL_STORAGE_KEY, "400");
+        pdfWithPages(1, "OnlyOne");
+        hydratePdfBookmarks({
+            "c:/docs/paper.pdf": [
+                { id: "a", page: 1, x: 0.2, y: 0.4, color: "yellow", name: "甲" },
+            ],
+        });
+        const view = render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        try {
+            const handle = await screen.findByTestId("pdf-bookmark-resize");
+            const column = screen.getByTestId("pdf-bookmark-column");
+            expect(column.style.width).toBe("400px");
+            const stage = column.parentElement as HTMLElement;
+            Object.defineProperty(stage, "clientWidth", { configurable: true, value: 500 });
+            act(() => { observers.forEach((notify) => notify()); });
+            expect(column.style.width).toBe("260px");
+            expect(handle.getAttribute("aria-valuemax")).toBe("260");
+
+            fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100 });
+            fireEvent.pointerMove(window, { pointerId: 1, clientX: 100.4 });
+            fireEvent.pointerUp(window, { pointerId: 1, clientX: 100.4 });
+            expect(column.style.width).toBe("260px");
+            expect(localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY)).toBe("400");
+
+            fireEvent.keyDown(handle, { key: "ArrowRight" });
+            expect(column.style.width).toBe("260px");
+            expect(localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY)).toBe("400");
+
+            Object.defineProperty(stage, "clientWidth", { configurable: true, value: 120 });
+            act(() => { observers.forEach((notify) => notify()); });
+            expect(column.style.width).toBe("96px");
+            fireEvent.keyDown(handle, { key: "ArrowLeft" });
+            expect(column.style.width).toBe("96px");
+            expect(localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY)).toBe("400");
+
+            Object.defineProperty(stage, "clientWidth", { configurable: true, value: 500 });
+            act(() => { observers.forEach((notify) => notify()); });
+            expect(column.style.width).toBe("260px");
+            fireEvent.pointerDown(handle, { button: 0, pointerId: 2, clientX: 100 });
+            fireEvent.pointerMove(window, { pointerId: 2, clientX: 80 });
+            fireEvent.pointerUp(window, { pointerId: 2, clientX: 80 });
+            expect(column.style.width).toBe("240px");
+            expect(localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY)).toBe("240");
+        } finally {
+            view.unmount();
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it("restores the pointer when the bookmark list unmounts during a drag", async () => {
+        pdfWithPages(1, "OnlyOne");
+        hydratePdfBookmarks({
+            "c:/docs/paper.pdf": [
+                { id: "a", page: 1, x: 0.2, y: 0.4, color: "yellow", name: "甲" },
+            ],
+        });
+        const view = render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const handle = await screen.findByTestId("pdf-bookmark-resize");
+        fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 40 });
+        expect(document.body.style.cursor).toBe("col-resize");
+        view.unmount();
+        expect(document.body.style.cursor).toBe("");
+        expect(document.body.style.userSelect).toBe("");
+        fireEvent.pointerMove(window, { pointerId: 1, clientX: 90 });
+        fireEvent.pointerUp(window, { pointerId: 1, clientX: 90 });
+        expect(localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY)).toBe("156");
+    });
+
+    it("clears the drag highlight after a resize under StrictMode", async () => {
+        pdfWithPages(1, "OnlyOne");
+        hydratePdfBookmarks({
+            "c:/docs/paper.pdf": [
+                { id: "a", page: 1, x: 0.2, y: 0.4, color: "yellow", name: "甲" },
+            ],
+        });
+        render(
+            <StrictMode>
+                <CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />
+            </StrictMode>,
+        );
+        const handle = await screen.findByTestId("pdf-bookmark-resize");
+        const column = screen.getByTestId("pdf-bookmark-column");
+        const stage = column.parentElement as HTMLElement;
+        Object.defineProperty(stage, "clientWidth", { configurable: true, value: 800 });
+        fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100 });
+        expect(handle.getAttribute("data-dragging")).toBe("true");
+        fireEvent.pointerMove(window, { pointerId: 1, clientX: 140 });
+        fireEvent.pointerUp(window, { pointerId: 1, clientX: 140 });
+        expect(handle.getAttribute("data-dragging")).toBe("false");
+        expect(column.style.width).toBe("196px");
+    });
+
+    it("adds bookmarks in click order, jumps to the anchor, and renames or deletes from the bookmark menu", async () => {
+        pdfWithPages(2, "OnlyOne");
+        const announced = vi.fn();
+        window.addEventListener(PDF_BOOKMARKS_CHANGED_EVENT, announced);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        const scroller = screen.getByTestId("companion-pdf-scroll");
+        const page1 = screen.getByTestId("companion-pdf-page-1");
+        const page2 = screen.getByTestId("companion-pdf-page-2");
+        scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+        page1.getBoundingClientRect = () => clientRect(40, 0, 200, 400) as DOMRect;
+        page2.getBoundingClientRect = () => clientRect(40, 900, 200, 400) as DOMRect;
+        vi.spyOn(window, "getSelection").mockReturnValue({
+            isCollapsed: true,
+            rangeCount: 0,
+            toString: () => "",
+            removeAllRanges: () => undefined,
+        } as unknown as Selection);
+
+        const drawMenu = createEvent.contextMenu(screen.getByTestId("pdf-draw"));
+        fireEvent(screen.getByTestId("pdf-draw"), drawMenu);
+        expect(screen.queryByTestId("pdf-highlight-menu")).toBeNull();
+
+        fireEvent.contextMenu(page1, { clientX: 140, clientY: 300 });
+        const menu = screen.getByTestId("pdf-highlight-menu");
+        expect(menu.textContent).toContain("添加书签");
+        expect(screen.queryByTestId("pdf-highlight-yellow")).toBeNull();
+        fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-add"));
+        const name = screen.getByTestId("pdf-bookmark-name") as HTMLInputElement;
+        expect((screen.getByTestId("pdf-bookmark-save") as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.keyDown(name, { key: "Escape" });
+        expect(screen.queryByTestId("pdf-bookmark-name")).toBeNull();
+        expect(screen.getByTestId("pdf-bookmark-add")).toBeTruthy();
+
+        fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-add"));
+        expect(screen.getByTestId("pdf-bookmark-color-yellow").getAttribute("aria-pressed")).toBe("true");
+        fireEvent.click(screen.getByTestId("pdf-bookmark-color-orange"));
+        expect(screen.getByTestId("pdf-bookmark-color-orange").getAttribute("aria-pressed")).toBe("true");
+        expect(screen.getAllByTestId(/pdf-bookmark-color-/)).toHaveLength(8);
+        fireEvent.change(screen.getByTestId("pdf-bookmark-name"), { target: { value: "先加" } });
+        fireEvent.click(screen.getByTestId("pdf-bookmark-save"));
+
+        fireEvent.contextMenu(page2, { clientX: 80, clientY: 940 });
+        fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-add"));
+        fireEvent.click(screen.getByTestId("pdf-bookmark-color-teal"));
+        fireEvent.change(screen.getByTestId("pdf-bookmark-name"), { target: { value: "后加" } });
+        fireEvent.keyDown(screen.getByTestId("pdf-bookmark-name"), { key: "Enter" });
+
+        const rail = screen.getByTestId("pdf-bookmark-rail");
+        const names = () => Array.from(rail.querySelectorAll(".companion-pdf-bookmark-name")).map((node) => node.textContent);
+        expect(names()).toEqual(["先加", "后加"]);
+        const chips = () => Array.from(rail.querySelectorAll<HTMLElement>(".companion-pdf-bookmark"));
+        expect(chips()[0].querySelector(".companion-pdf-bookmark-page")?.textContent).toBe("1");
+        expect(chips()[1].querySelector(".companion-pdf-bookmark-page")?.textContent).toBe("2");
+        expect(document.querySelector(".companion-pdf-stage")?.classList.contains("companion-pdf-stage--bookmarks")).toBe(true);
+        expect(chips()[0].querySelector(".companion-pdf-bookmark-swatch path")?.getAttribute("fill")).toBe("#ffc078");
+        expect(screen.queryByTestId("pdf-bookmark-tick-" + (chips()[1].dataset.pdfBookmark ?? ""))).toBeNull();
+
+        await act(async () => {
+            fireEvent.click(chips()[1]);
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(scroller.scrollTop).toBe(868);
+        const secondId = chips()[1].getAttribute("data-pdf-bookmark") ?? "";
+        expect(screen.getByTestId(`pdf-bookmark-tick-${secondId}`)).toBeTruthy();
+
+        fireEvent.contextMenu(chips()[0]);
+        expect(screen.getByTestId("pdf-highlight-menu").getAttribute("aria-label")).toBe("书签操作");
+        expect(screen.queryByTestId("pdf-bookmark-add")).toBeNull();
+        fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-rename"));
+        expect(screen.getByTestId("pdf-bookmark-color-orange").getAttribute("aria-pressed")).toBe("true");
+        fireEvent.click(screen.getByTestId("pdf-bookmark-color-blue"));
+        fireEvent.change(screen.getByTestId("pdf-bookmark-name"), { target: { value: "改过" } });
+        fireEvent.click(screen.getByTestId("pdf-bookmark-save"));
+        expect(names()).toEqual(["改过", "后加"]);
+        const stored = loadPdfBookmarks("C:/docs/Paper.PDF");
+        expect(stored.map((item) => item.name)).toEqual(["改过", "后加"]);
+        expect(stored[0].color).toBe("blue");
+        expect(stored[0].page).toBe(1);
+        expect(stored[0].y).toBeCloseTo(0.75);
+        expect(stored[1].color).toBe("teal");
+        expect(stored[1].page).toBe(2);
+        expect(stored[1].y).toBeCloseTo(0.1);
+
+        fireEvent.contextMenu(screen.getByTestId(`pdf-bookmark-tick-${secondId}`));
+        fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-delete"));
+        expect(names()).toEqual(["改过"]);
+        expect(loadPdfBookmarks("C:/docs/Paper.PDF")).toHaveLength(1);
+        expect(announced).toHaveBeenCalled();
+        window.removeEventListener(PDF_BOOKMARKS_CHANGED_EVENT, announced);
+    });
+
+    it("labels bookmark actions in Khalkha", async () => {
+        pdfWithPages(1);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="mn" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        page.getBoundingClientRect = () => clientRect(0, 0, 200, 400) as DOMRect;
+        vi.spyOn(window, "getSelection").mockReturnValue({
+            isCollapsed: true,
+            rangeCount: 0,
+            toString: () => "",
+            removeAllRanges: () => undefined,
+        } as unknown as Selection);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 40 });
+        expect(screen.getByTestId("pdf-bookmark-add").textContent).toContain("Хавчуурга нэмэх");
+        fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-add"));
+        expect(screen.getByTestId("pdf-bookmark-name").getAttribute("placeholder")).toBe("Хавчуургын нэр");
+        expect(screen.getByTestId("pdf-bookmark-color-orange").getAttribute("aria-label")).toBe("Улбар шар хавчуурга");
+        expect(screen.getByTestId("pdf-bookmark-save").textContent).toBe("Баталгаажуулах");
+    });
+
+    it("names a new bookmark from the selection", async () => {
+        pdfWithPages(1);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        selectHello(page);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+        fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-add"));
+        expect((screen.getByTestId("pdf-bookmark-name") as HTMLInputElement).value).toBe("Hello");
+        expect((screen.getByTestId("pdf-bookmark-save") as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.keyDown(screen.getByTestId("pdf-bookmark-name"), { key: "Enter", isComposing: true });
+        expect(screen.getByTestId("pdf-bookmark-name")).toBeTruthy();
+        expect(loadPdfBookmarks("C:/docs/Paper.PDF")).toEqual([]);
+        fireEvent.keyDown(screen.getByTestId("pdf-bookmark-name"), { key: "Enter" });
+        expect(loadPdfBookmarks("C:/docs/Paper.PDF").map((item) => item.name)).toEqual(["Hello"]);
+    });
+
+    it("keeps nearby bookmark ticks side by side", async () => {
+        pdfWithPages(1, "OnlyOne");
+        hydratePdfBookmarks({
+            "c:/docs/paper.pdf": [
+                { id: "a", page: 1, x: 0.2, y: 0.5, color: "yellow", name: "甲" },
+                { id: "b", page: 1, x: 0.2, y: 0.51, color: "teal", name: "乙" },
+            ],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const first = await screen.findByTestId("pdf-bookmark-tick-a");
+        const second = screen.getByTestId("pdf-bookmark-tick-b");
+        expect(first.style.left).toBe("0px");
+        expect(first.style.top).toBe("200px");
+        expect(first.style.zIndex).toBe("");
+        expect(first.tabIndex).toBe(-1);
+        expect(second.style.left).toBe("18px");
+        expect(second.style.zIndex).toBe("");
+        expect(first.querySelector("path")?.getAttribute("fill")).toBe("#ffe08a");
+        expect(second.querySelector("path")?.getAttribute("fill")).toBe("#9ad8d0");
+        expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+        expect(screen.getByTestId("pdf-bookmark-b").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+        expect(screen.getByTestId("pdf-bookmark-a").getAttribute("aria-label")).toBe("第 1 页，甲");
+        fireEvent.click(screen.getByTestId("pdf-bookmark-b"));
+        expect(screen.getByTestId("pdf-bookmark-b").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+        expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(false);
+    });
+
+    it("follows a bookmark after the page grows out of the placeholder size", async () => {
+        const callbacks: Array<() => void> = [];
+        class RecordingObserver {
+            constructor(cb: () => void) {
+                callbacks.push(cb);
+            }
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+        vi.stubGlobal("ResizeObserver", RecordingObserver);
+        try {
+            pdfWithPages(2, "OnlyOne");
+            hydratePdfBookmarks({
+                "c:/docs/paper.pdf": [{ id: "late", page: 2, x: 0.2, y: 0.1, color: "teal", name: "后加" }],
+            });
+            render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            await screen.findByText("OnlyOne");
+            const scroller = screen.getByTestId("companion-pdf-scroll");
+            const page2 = screen.getByTestId("companion-pdf-page-2");
+            scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+            let pageHeight = 400;
+            let pageDocTop = 900;
+            page2.getBoundingClientRect = () => clientRect(40, pageDocTop - scroller.scrollTop, 200, pageHeight) as DOMRect;
+            fireEvent.click(screen.getByTestId("pdf-bookmark-late"));
+            await act(async () => {
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+            });
+            expect(scroller.scrollTop).toBe(868);
+            const follow = callbacks[callbacks.length - 1];
+            expect(typeof follow).toBe("function");
+            // A shell above this page grows. The mark's own height is unchanged.
+            pageDocTop = 1100;
+            act(() => follow());
+            expect(scroller.scrollTop).toBe(1068);
+            pageHeight = 800;
+            act(() => follow());
+            expect(scroller.scrollTop).toBe(1108);
+            // The reader scrolled. A shell that grows afterwards stays where they left it.
+            scroller.scrollTop = 200;
+            fireEvent.scroll(scroller);
+            pageDocTop = 1400;
+            act(() => follow());
+            expect(scroller.scrollTop).toBe(200);
+
+            // The page is ready, so the resize watch ends and a later shell stays put.
+            // The scroll listener is still there until the reader moves.
+            pageDocTop = 900;
+            pageHeight = 400;
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("pdf-bookmark-late"));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+            });
+            expect(scroller.scrollTop).toBe(868);
+            const settled = callbacks[callbacks.length - 1];
+            await waitFor(() => expect(page2.hasAttribute("data-pdf-ready")).toBe(true));
+            await act(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 450));
+            });
+            pageDocTop = 1400;
+            act(() => settled());
+            expect(scroller.scrollTop).toBe(868);
+
+            // Deleting the mark stops that jump. A shell that grows afterwards stays.
+            pageDocTop = 900;
+            pageHeight = 400;
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("pdf-bookmark-late"));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+            });
+            expect(scroller.scrollTop).toBe(868);
+            const live = callbacks[callbacks.length - 1];
+            fireEvent.contextMenu(screen.getByTestId("pdf-bookmark-late"));
+            fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-delete"));
+            expect(screen.queryByTestId("pdf-bookmark-rail")).toBeNull();
+            pageDocTop = 1400;
+            act(() => live());
+            expect(scroller.scrollTop).toBe(868);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it("keeps the bookmark in place while a page above it is still loading", async () => {
+        const callbacks: Array<() => void> = [];
+        class RecordingObserver {
+            constructor(cb: () => void) {
+                callbacks.push(cb);
+            }
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+        vi.stubGlobal("ResizeObserver", RecordingObserver);
+        let releasePage1 = () => {};
+        let released = false;
+        const gate = new Promise<void>((resolve) => {
+            releasePage1 = () => {
+                if (released) return;
+                released = true;
+                resolve();
+            };
+        });
+        const size = { width: 200, height: 400 };
+        getDocument.mockImplementation(() => ({
+            promise: Promise.resolve({
+                numPages: 2,
+                getPage: vi.fn(async (page: number) => {
+                    if (page === 1) await gate;
+                    return {
+                        getViewport: ({ scale }: { scale: number }) => ({
+                            width: size.width * scale,
+                            height: size.height * scale,
+                            scale,
+                            transform: [scale, 0, 0, -scale, 0, size.height * scale],
+                        }),
+                        getTextContent: async () => ({ items: [] }),
+                        render: () => ({ promise: Promise.resolve(), cancel: () => undefined }),
+                    };
+                }),
+                destroy: () => undefined,
+            }),
+            destroy: () => undefined,
+        }));
+        try {
+            hydratePdfBookmarks({
+                "c:/docs/paper.pdf": [{ id: "late", page: 2, x: 0.2, y: 0.1, color: "teal", name: "后加" }],
+            });
+            render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            await screen.findByTestId("pdf-bookmark-late");
+            const scroller = screen.getByTestId("companion-pdf-scroll");
+            const page1 = screen.getByTestId("companion-pdf-page-1");
+            const page2 = screen.getByTestId("companion-pdf-page-2");
+            expect(page1.querySelector("canvas")).toBeTruthy();
+            expect(page1.hasAttribute("data-pdf-ready")).toBe(false);
+            scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+            let pageHeight = 400;
+            let pageDocTop = 900;
+            page2.getBoundingClientRect = () => clientRect(40, pageDocTop - scroller.scrollTop, 200, pageHeight) as DOMRect;
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("pdf-bookmark-late"));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+            });
+            expect(scroller.scrollTop).toBe(868);
+            const follow = callbacks[callbacks.length - 1];
+            await act(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 450));
+            });
+            pageDocTop = 1100;
+            act(() => follow());
+            expect(scroller.scrollTop).toBe(1068);
+            releasePage1();
+            await waitFor(() => expect(page1.hasAttribute("data-pdf-ready")).toBe(true));
+            await waitFor(() => expect(page2.hasAttribute("data-pdf-ready")).toBe(true));
+            await act(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 450));
+            });
+            pageDocTop = 1400;
+            act(() => follow());
+            expect(scroller.scrollTop).toBe(1068);
+        } finally {
+            releasePage1();
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it("keeps the jumped bookmark highlighted while the previous page peeks, then follows a scroll", async () => {
+        pdfWithPages(2, "OnlyOne");
+        hydratePdfBookmarks({
+            "c:/docs/paper.pdf": [
+                { id: "a", page: 1, x: 0.2, y: 0.5, color: "yellow", name: "甲" },
+                { id: "b", page: 2, x: 0.2, y: 0.05, color: "teal", name: "乙" },
+            ],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        const scroller = screen.getByTestId("companion-pdf-scroll");
+        Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 400 });
+        scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+        screen.getByTestId("companion-pdf-page-1").getBoundingClientRect = () => clientRect(0, -scroller.scrollTop, 200, 400) as DOMRect;
+        screen.getByTestId("companion-pdf-page-2").getBoundingClientRect = () => clientRect(0, 400 - scroller.scrollTop, 200, 400) as DOMRect;
+        expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("pdf-bookmark-b"));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        // The mark sits 72px down, so page 1 still owns the top edge.
+        expect(scroller.scrollTop).toBe(348);
+        await act(async () => {
+            fireEvent.scroll(scroller);
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(screen.getByTestId("pdf-bookmark-b").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+        expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(false);
+
+        scroller.scrollTop = 0;
+        await act(async () => {
+            fireEvent.scroll(scroller);
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+        expect(screen.getByTestId("pdf-bookmark-b").classList.contains("companion-pdf-bookmark--here")).toBe(false);
+
+        // After the page is ready the resize watch ends, and the list still follows a scroll.
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("pdf-bookmark-b"));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        await waitFor(() => expect(screen.getByTestId("companion-pdf-page-2").hasAttribute("data-pdf-ready")).toBe(true));
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 450));
+        });
+        scroller.scrollTop = 0;
+        await act(async () => {
+            fireEvent.scroll(scroller);
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+        expect(screen.getByTestId("pdf-bookmark-b").classList.contains("companion-pdf-bookmark--here")).toBe(false);
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("pdf-bookmark-b"));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(scroller.scrollTop).toBe(348);
+        fireEvent.contextMenu(screen.getByTestId("pdf-bookmark-b"));
+        fireEvent.mouseDown(screen.getByTestId("pdf-bookmark-delete"));
+        expect(screen.queryByTestId("pdf-bookmark-b")).toBeNull();
+        expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+        expect(scroller.scrollTop).toBe(348);
     });
 });

@@ -138,4 +138,17 @@ describe("planIdleTaskTabCloses", () => {
         expect(state.closed).toEqual(["a"]);
         info.mockRestore();
     });
+
+    it("tells the idle close not to reopen the new-task guide", () => {
+        const info = vi.spyOn(console, "info").mockImplementation(() => {});
+        const calls: Array<{ id: string; options?: { suppressNewTaskGuide?: boolean } }> = [];
+        const state = ctx({
+            tabs: [projectTab("a", "D:/tasks/a")],
+            activeTabId: "a",
+            closeTab: (id, options) => { calls.push({ id, options }); },
+        });
+        releaseIdleTaskTabs(state, { projectPath: "D:/tasks/lanzhou" });
+        expect(calls).toEqual([{ id: "a", options: { suppressNewTaskGuide: true } }]);
+        info.mockRestore();
+    });
 });

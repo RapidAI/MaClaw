@@ -190,6 +190,14 @@ func TestNormalizeMailboxSendInvocationArgsLiftsACopiedPath(t *testing.T) {
 	if NormalizeMailboxSendInvocationArgs(trailing) != trailing {
 		t.Fatal("a second JSON value was rewritten")
 	}
+	dup := `{"action":"send","attachments":"a.pdf","action":"reply"}`
+	if NormalizeMailboxSendInvocationArgs(dup) != dup {
+		t.Fatal("a repeated key was rewritten")
+	}
+	overflow := `{"uid":1e9999,"attachments":"a.pdf","uid":1}`
+	if NormalizeMailboxSendInvocationArgs(overflow) != overflow {
+		t.Fatal("a number the float scan cannot read hid a repeated key")
+	}
 }
 
 func TestExpiredDraftDoesNotBlockTheNextSend(t *testing.T) {

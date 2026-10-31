@@ -3782,6 +3782,10 @@ function App() {
                 projectPath,
                 taskTitle: title,
                 autoSend: false,
+                // Cloud reopen waits for the saved transcript before the
+                // preparing lock drops. A local reopen stays a new agent so it
+                // does not pick up that context-restore wait.
+                prepareMode: cloudWorkspaceId ? 'restore-context' : 'new-agent',
                 agentMode,
                 remoteHost,
                 remoteSafety,
@@ -3789,6 +3793,7 @@ function App() {
                 // A copy shares the files. The workspace id stays off the tab
                 // identity so this reopen does not focus the original chat.
                 ...(copiedTask && cloudWorkspaceId ? { fileWorkspaceId: cloudWorkspaceId } : {}),
+                ...(!copiedTask && cloudWorkspaceId ? { cloudWorkspaceId } : {}),
             });
         } catch (error) {
             console.error("resumeTask failed:", error);

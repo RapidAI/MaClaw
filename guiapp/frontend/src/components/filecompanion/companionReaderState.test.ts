@@ -4,6 +4,7 @@ import { hydrateCompanionReaderState, subscribeCompanionReaderState } from "./co
 import { chatMarksSaveRevision, hydrateChatMarks, loadChatMarks, saveChatMarks } from "./chatMarks";
 import { fileCompanionInputHistory, FILE_COMPANION_INPUT_HISTORY_KEY, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
 import { hydratePdfDrawings, loadPdfDrawings } from "./pdfDrawings";
+import { hydratePdfBookmarks, loadPdfBookmarks, savePdfBookmarks } from "./pdfBookmarks";
 import { hydratePdfMarks, loadPdfMarks, PDF_MARK_STORAGE_KEY, pdfMarksSaveRevision, savePdfMarks } from "./pdfMarks";
 import { hydratePdfTranslations, loadPdfTranslations, PDF_TRANSLATION_STORAGE_KEY } from "./pdfTranslations";
 
@@ -25,6 +26,7 @@ beforeEach(() => {
     hydratePdfMarks({});
     hydratePdfTranslations({});
     hydratePdfDrawings({});
+    hydratePdfBookmarks({});
     hydrateChatMarks({});
     hydrateFileCompanionInputHistory([]);
     installHostBindings();
@@ -77,6 +79,16 @@ describe("companion reader state migration", () => {
                     points: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.4 }],
                 }],
             },
+            pdf_bookmarks: {
+                "c:/docs/paper.pdf": [{
+                    id: "b1",
+                    page: 2,
+                    x: 0.2,
+                    y: 0.4,
+                    color: "teal",
+                    name: "先加",
+                }],
+            },
             input_history: ["总结这一页"],
         }));
 
@@ -105,6 +117,14 @@ describe("companion reader state migration", () => {
         expect(loadPdfMarks("C:/docs/Paper.PDF").some((mark) => mark.id === "m1")).toBe(true);
         expect(loadPdfTranslations("C:/docs/Paper.PDF").some((item) => item.translation === "你好")).toBe(true);
         expect(loadPdfDrawings("C:/docs/Paper.PDF").some((item) => item.id === "d1" && item.tool === "box")).toBe(true);
+        expect(loadPdfBookmarks("C:/docs/Paper.PDF")).toEqual([{
+            id: "b1",
+            page: 2,
+            x: 0.2,
+            y: 0.4,
+            color: "teal",
+            name: "先加",
+        }]);
         expect(fileCompanionInputHistory()).toEqual(["总结这一页"]);
         // The host owns the data now, so the browser keys are gone.
         expect(localStorage.getItem(PDF_MARK_STORAGE_KEY)).toBeNull();
@@ -172,6 +192,14 @@ describe("companion reader state migration", () => {
             rects: [{ x: 0.2, y: 0.2, w: 0.1, h: 0.02 }],
             text: "Typed now",
         }]);
+        savePdfBookmarks("C:/docs/new.pdf", [{
+            id: "b-race",
+            page: 1,
+            x: 0.1,
+            y: 0.2,
+            color: "teal",
+            name: "刚加",
+        }]);
 
         release(JSON.stringify({
             pdf_marks: {},
@@ -183,11 +211,22 @@ describe("companion reader state migration", () => {
                     parts: [{ page: 1, rects: [{ x: 0.1, y: 0.1, w: 0.2, h: 0.03 }] }],
                 }],
             },
+            pdf_bookmarks: {
+                "c:/docs/new.pdf": [{
+                    id: "stale",
+                    page: 1,
+                    x: 0.5,
+                    y: 0.5,
+                    color: "red",
+                    name: "旧的",
+                }],
+            },
             input_history: ["上一问"],
         }));
         await hydrating;
 
         expect(loadPdfMarks("C:/docs/new.pdf").some((mark) => mark.id === "race")).toBe(true);
+        expect(loadPdfBookmarks("C:/docs/new.pdf").map((item) => item.id)).toEqual(["b-race"]);
         expect(loadPdfTranslations("C:/docs/Paper.PDF")).toHaveLength(1);
         expect(fileCompanionInputHistory()).toEqual(["上一问"]);
     });

@@ -416,11 +416,13 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 	return updated, finished, nil
 }
 
-// acquireAttempt is the single-writer gate for one directory. StartAttempt
-// denies an overlapping live claim. Two desktop tasks on the same project
-// both reach this gate; failing the second task's plan is the wrong outcome.
-// The second waits until the holder finishes or the caller cancels, then
-// takes the directory itself.
+// acquireAttempt starts the attempt. It waits only when StartAttempt reports
+// a real admission conflict: an unknown write set, an unknown scope, a remote
+// shared tree, or an isolated merge that is not ready. Two shared local tasks
+// with concrete claims, including the same file or the project root, do not
+// wait here. Same-file mutations are synchronized in the text file tools.
+// Failing the second task is still the wrong outcome when a wait remains:
+// this loop holds until the holder finishes or the caller cancels.
 func (r Runner) acquireAttempt(ctx context.Context, taskID string, leaseFor time.Duration, policy PolicySnapshot, now time.Time) (*Attempt, error) {
 	notified := false
 	for {

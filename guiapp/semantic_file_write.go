@@ -275,27 +275,31 @@ func (h *IMMessageHandler) editTrustedFile(principalID, path, oldString, newStri
 	if info.Size() > int64(writeFileMaxSize) {
 		return "", fmt.Errorf("trusted_file_edit_content_too_large")
 	}
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return "", err
-	}
-	original := string(data)
-	replaced, err := tool.ReplaceTextPassage(original, oldString, newString, false)
-	if err != nil {
-		if errors.Is(err, tool.ErrTextPassageNotFound) {
-			return "", fmt.Errorf("trusted_file_edit_no_match")
+	var original string
+	size, err := tool.RewriteTextFile(absPath, func(current string) (string, bool, error) {
+		if len(current) > writeFileMaxSize {
+			return "", false, fmt.Errorf("trusted_file_edit_content_too_large")
 		}
-		return "", err
-	}
-	if replaced.Matches != 1 {
-		return "", fmt.Errorf("trusted_file_edit_ambiguous_match")
-	}
-	updated := replaced.Text
-	if len(updated) > writeFileMaxSize {
-		return "", fmt.Errorf("trusted_file_write_content_too_large")
-	}
-	size, err := tool.WriteTextFile(absPath, updated, string(tool.WriteModeOverwrite))
+		original = current
+		replaced, err := tool.ReplaceTextPassage(current, oldString, newString, false)
+		if err != nil {
+			if errors.Is(err, tool.ErrTextPassageNotFound) {
+				return "", false, fmt.Errorf("trusted_file_edit_no_match")
+			}
+			return "", false, err
+		}
+		if replaced.Matches != 1 {
+			return "", false, fmt.Errorf("trusted_file_edit_ambiguous_match")
+		}
+		if len(replaced.Text) > writeFileMaxSize {
+			return "", false, fmt.Errorf("trusted_file_write_content_too_large")
+		}
+		return replaced.Text, true, nil
+	})
 	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("trusted_file_edit_not_found")
+		}
 		return "", err
 	}
 	h.emitLocalToolCodeFilePreview(principalID, absPath, false, original, true)

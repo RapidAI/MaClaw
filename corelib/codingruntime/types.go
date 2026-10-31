@@ -121,19 +121,21 @@ type PolicySnapshot struct {
 	Mode         string
 	ReadOnly     bool
 	// WriteSet is the frozen, normalized declaration used for cross-task
-	// writer admission. Empty declarations are persisted as Unknown and are
-	// therefore serialized within their workspace.
+	// writer admission. Empty declarations are persisted as Unknown and stay
+	// serialized within their workspace. Concrete claims on a shared local
+	// tree run together; the file tools synchronize one path.
 	WriteSet WriteSet
-	// WorkspaceIsolated and FinalDiffGateRequired are capability assertions
-	// from a host adapter. They are both required before two disjoint writers
-	// may run in the same workspace. Runner also requires a successful final
-	// diff gate result before such an attempt may complete.
+	// WorkspaceIsolated and FinalDiffGateRequired are the worktree merge gate.
+	// Two isolated writers may run together only when both flags are set and
+	// their claims are disjoint. Runner also requires a successful final diff
+	// gate result before such an attempt may complete. A shared local tree
+	// does not use this gate.
 	WorkspaceIsolated     bool
 	FinalDiffGateRequired bool
-	// FinalWorkspaceGateRequired is for serialized local writers whose host
-	// does not use an isolated worktree. Before recording completed, Runner
-	// must capture a second read-only workspace probe and confirm that it
-	// differs from the baseline. This prevents a bare model success response
+	// FinalWorkspaceGateRequired asks Runner, before recording completed, to
+	// capture a second read-only workspace probe and confirm that it differs
+	// from the baseline. The probe is per attempt. It does not serialize other
+	// tasks in the same project. This prevents a bare model success response
 	// from becoming a completed coding task without observable workspace
 	// evidence. An unchanged implementation can complete only when its host
 	// explicitly supplies independently verified, bounded no-change evidence;

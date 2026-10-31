@@ -14,6 +14,15 @@ const hopRunSpecVersion = "hop-run/v1"
 // turn's response projection, not a transport worker's later callback.
 const hopCurrentChannelDeliveryCapability = "artifact.deliver.current_channel"
 
+// A light lookup admits search and fetch as two ways to get the same fact.
+// Search is the required plan step. When every search engine times out, the
+// model is told to read the page with fetch. A trusted fetch success is the
+// fact the search step owed, so that failed search no longer blocks the turn.
+const (
+	hopInformationSearchWeb = "information.search.web"
+	hopInformationFetchWeb  = "information.fetch.web"
+)
+
 type HopStepStatus string
 
 const (
@@ -34,9 +43,10 @@ type HopRunStep struct {
 	DependsOn   []string      `json:"depends_on,omitempty"`
 	Status      HopStepStatus `json:"status"`
 	// Superseded is set when this step did not reach a trusted success but
-	// another selection in the same repeat family did. The family need is
-	// then settled; the step keeps its own evidence for audit but no longer
-	// blocks the run.
+	// the obligation was settled another way: a later sibling in the same
+	// repeat family succeeded, or a failed web search was recovered by a
+	// trusted web fetch in the same turn. The step keeps its own evidence
+	// for audit but no longer blocks the run.
 	Superseded bool            `json:"superseded,omitempty"`
 	Evidence   HopStepEvidence `json:"evidence"`
 }
@@ -65,6 +75,7 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 	surface := c.semanticSurface
 	optional, optionalKnown := semanticSurfaceOptionalNeeds(surface)
 	satisfiedFamilies := satisfiedHopFamilies(surface)
+	fetchSettledSearch := informationFetchSucceeded(surface)
 	snapshot := &HopRunSnapshot{
 		SpecVersion: hopRunSpecVersion,
 		RunID:       c.checkpointRunID,
@@ -111,6 +122,11 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 		// sibling succeeds, and the family need is then satisfied. The step
 		// keeps its own (failed/unsettled) evidence and is marked superseded.
 		superseded := required && step.Evidence.State != tool.PlanExecutionSucceeded && satisfiedFamilies[tool.RepeatFamilyID(selection.NeedID)]
+		if !superseded && fetchSettledSearch && required &&
+			step.Evidence.State == tool.PlanExecutionFailed &&
+			step.Capability == hopInformationSearchWeb {
+			superseded = true
+		}
 		if superseded {
 			step.Superseded = true
 		}
@@ -217,6 +233,36 @@ func hostTransportDeliveryStep(step HopRunStep) bool {
 	capability := strings.TrimSpace(step.Capability)
 	return strings.EqualFold(capability, hopCurrentChannelDeliveryCapability) ||
 		strings.EqualFold(capability, string(semanticSpecifiedTargetDeliveryCapability))
+}
+
+// informationFetchSucceeded reports a trusted information.fetch.web success
+// in this plan. That success is the recovery a light lookup uses after
+// information.search.web fails, so the failed search is no longer owed.
+func informationFetchSucceeded(surface *semanticCallSurface) bool {
+	if surface == nil {
+		return false
+	}
+	for _, selection := range surface.plan.Selections {
+		if string(selection.FitProof.MatchedCapability) != hopInformationFetchWeb {
+			continue
+		}
+		if surface.completed[selection.ID] {
+			return true
+		}
+		evidenceKey := hopEvidenceKey(surface, selection.ID)
+		if cached, ok := surface.hopEvidence[evidenceKey]; ok && cached.State == tool.PlanExecutionSucceeded {
+			return true
+		}
+		if surface.executor == nil {
+			continue
+		}
+		record, err := surface.executor.Execution(surface.scope, selection.ID)
+		if err != nil || record.State != tool.PlanExecutionSucceeded {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func hopEvidenceKey(surface *semanticCallSurface, selectionID string) string {

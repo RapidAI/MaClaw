@@ -103,6 +103,9 @@ type FileCompanionLibraryItem struct {
 	Annotations string `json:"annotations,omitempty"`
 	// Drawings is the same import-only value for the host's freehand marks.
 	Drawings string `json:"drawings,omitempty"`
+	// Bookmarks is the same import-only value for named places on the paper.
+	// A legacy project omits it and leaves a reader's own bookmarks alone.
+	Bookmarks string `json:"bookmarks,omitempty"`
 }
 
 // FileCompanionShareNote is one reader's discussion on a shared paper.
@@ -152,8 +155,8 @@ type FileCompanionShareResult struct {
 
 // FileCompanionShareUpdate is a newer project the reader should show.
 // Highlights and messages replace what that path had on screen. ChatMarks,
-// Annotations, and Drawings are present only when the project carries them; a
-// legacy project omits them and the reader's own marks and notes stay.
+// Annotations, Drawings, and Bookmarks are present only when the project
+// carries them; a legacy project omits them and the reader's own marks stay.
 type FileCompanionShareUpdate struct {
 	Path        string                 `json:"path"`
 	Token       string                 `json:"token"`
@@ -163,6 +166,7 @@ type FileCompanionShareUpdate struct {
 	ChatMarks   *string                `json:"chatMarks,omitempty"`
 	Annotations *string                `json:"annotations,omitempty"`
 	Drawings    *string                `json:"drawings,omitempty"`
+	Bookmarks   *string                `json:"bookmarks,omitempty"`
 	Messages    []FileCompanionMessage `json:"messages"`
 	Project     bool                   `json:"project"`
 }

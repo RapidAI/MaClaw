@@ -205,11 +205,17 @@ export function ComputerUseReadinessBanner({ lang, theme: t }: Props) {
 
     const msgFor = (iss: Issue) => {
         switch (iss.id) {
+            case "yolo_downloading":
+                return tr(
+                    "OmniParser weights are downloading in the background. Screen parsing turns on when the file is ready.",
+                    "OmniParser 权重正在后台下载，完成后将自动启用屏幕解析。",
+                    "OmniParser 權重正在後台下載，完成後將自動啟用螢幕解析。"
+                );
             case "yolo_missing":
                 return tr(
-                    "OmniParser weights missing — desktop parsing will use a11y/OCR only.",
-                    "缺少 OmniParser 权重，桌面解析将仅依赖 a11y/OCR。",
-                    "缺少 OmniParser 權重，桌面解析將僅依賴 a11y/OCR。"
+                    "OmniParser weights did not download. Retry to continue.",
+                    "OmniParser 权重下载失败，可重试。",
+                    "OmniParser 權重下載失敗，可重試。"
                 );
             case "accessibility":
                 return tr(

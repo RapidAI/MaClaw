@@ -980,6 +980,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(isCodingAgentActivePhase('starting')).toBe(true);
         expect(isCodingAgentActivePhase('running')).toBe(true);
         expect(isCodingAgentActivePhase('retrying')).toBe(true);
+        expect(isCodingAgentActivePhase('waiting_writer')).toBe(true);
         expect(isCodingAgentActivePhase('queued')).toBe(true);
         expect(isCodingAgentActivePhase('completed')).toBe(false);
         expect(isCodingAgentTerminalPhase('completed')).toBe(true);
@@ -1499,6 +1500,19 @@ describe('CodingAgentProgressStatus', () => {
         expect(table.className).toBe('coding-agent-file-changes caps-process-files');
         expect(table.getAttribute('aria-label')).toBe('1 个文件已更改');
         expect(container.querySelector('[data-testid="coding-agent-progress"]')?.className).toContain('caps-process-feed');
+    });
+
+    it('renders a directory-admission note without a tool line', () => {
+        const { container } = render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"assistant_note","phase":"waiting_writer","task_id":"T1","detail":"同一目录上另一个任务还在写入，本任务等它结束后再开始"}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+        expect(container.querySelector('[data-testid="coding-agent-assistant-note"]')?.textContent).toContain('同一目录上另一个任务还在写入');
     });
 
     it('renders a structured assistant note without requiring a tool line first', () => {

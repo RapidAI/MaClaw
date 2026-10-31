@@ -468,3 +468,71 @@ func TestWorkStopVerdictDoesNotSurviveTheNextTurn(t *testing.T) {
 		t.Fatal("the next turn reused the previous stop verdict")
 	}
 }
+
+func TestStopVerdictRejectsHostContinuationText(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	loop := NewLoopContext("chat-goal-stop", desktopChatForegroundIterationBudget, nil)
+	requested, verified := h.workStopRequestVerdict(loop, desktopUserID, "[系统续接][execute] 按步骤执行目标：算了别弄了")
+	if !verified || requested {
+		t.Fatalf("host continuation authorized a stop: requested=%v verified=%v", requested, verified)
+	}
+	roundRequested, roundVerified := h.workStopRequestVerdict(loop, desktopUserID, "[系统续轮] 继续完成同一任务。\n\n任务：\n算了别弄了")
+	if !roundVerified || roundRequested {
+		t.Fatalf("session round authorized a stop: requested=%v verified=%v", roundRequested, roundVerified)
+	}
+}
+
+func TestRejectedStopCallDoesNotCancelOnAFalseClaim(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	release := startHeldChatTask(t, h)
+	defer release()
+	h.workStopClassifier = func(string) (string, error) {
+		return `{"intent":"continue_other"}`, nil
+	}
+	loop := NewLoopContext("chat-reject-claim", desktopChatForegroundIterationBudget, nil)
+	loop.WorkLiveAtStart = true
+	publishDesktopChatLoop(h, loop, "把重庆的天气也发给他")
+	// The model mis-selects stop_all_work; the host rejects it.
+	if result, ok := h.executeChatTaskToolIfAny(desktopUserID, "stop_all_work", nil); !ok || result.Outcome == toolOutcomeSucceeded {
+		t.Fatalf("stop was not rejected: %+v", result)
+	}
+	// The model then claims the work stopped. The cached verdict must keep the
+	// claim guard from cancelling the task the person still wants.
+	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "把重庆的天气也发给他", Lang: "zh-Hans"}
+	out := h.correctUnbackedStopClaim(msg, loop, &IMAgentResponse{Text: "好的，已停下。"})
+	if out == nil || out.Text != "好的，已停下。" {
+		t.Fatalf("claim guard changed a non-stop turn: %+v", out)
+	}
+	if h.ensureChatTasks().activeCount(desktopUserID) != 1 {
+		t.Fatal("a rejected stop call still cancelled live work via the claim guard")
+	}
+	if loop.WorkStopRan {
+		t.Fatal("the claim guard recorded a stop that was never requested")
+	}
+}
+
+func TestHostContinuationPromptIsNotAUserStop(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	release := startHeldChatTask(t, h)
+	defer release()
+	h.workStopClassifier = func(string) (string, error) {
+		return `{"intent":"stop"}`, nil
+	}
+	goal := IMUserMessage{
+		UserID: desktopUserID, Platform: desktopPlatform, Lang: "zh-Hans",
+		Text: "[系统续接][execute] 按步骤执行目标：算了别弄了\n\n当前步骤：收尾",
+	}
+	if resp, handled := h.tryDesktopChatStopReply(goal); handled || resp != nil {
+		t.Fatalf("goal continuation was intercepted as a stop: %+v", resp)
+	}
+	if h.ensureChatTasks().activeCount(desktopUserID) != 1 {
+		t.Fatal("a host continuation cancelled live work")
+	}
+	round := IMUserMessage{
+		UserID: desktopUserID, Platform: desktopPlatform, Lang: "zh-Hans",
+		Text: "[系统续轮] 继续完成同一任务。\n\n任务：\n算了别弄了",
+	}
+	if resp, handled := h.tryDesktopChatStopReply(round); handled || resp != nil {
+		t.Fatalf("session round was intercepted as a stop: %+v", resp)
+	}
+}

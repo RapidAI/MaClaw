@@ -679,6 +679,10 @@ export function ClearFileCompanionWebChat(arg1:string):Promise<void>;
 
 export function CancelFileCompanionTurn(arg1:string):Promise<void>;
 
+export function CancelFileCompanionGeneration(arg1:string,arg2:string):Promise<void>;
+
+export function CancelFileCompanionWebGeneration(arg1:string,arg2:string):Promise<void>;
+
 export function CancelFileCompanionWebTurn(arg1:string,arg2:number):Promise<void>;
 
 export function StopFileCompanionWebNote(arg1:string,arg2:number):Promise<void>;
@@ -768,6 +772,8 @@ export function LoadCompanionReaderState(arg1:string,arg2:string,arg3:string):Pr
 export function SaveCompanionPdfMarks(arg1:string,arg2:string):Promise<void>;
 
 export function SaveCompanionPdfDrawings(arg1:string,arg2:string):Promise<void>;
+
+export function SaveCompanionPdfBookmarks(arg1:string,arg2:string):Promise<void>;
 
 export function SaveCompanionPdfTranslations(arg1:string,arg2:string):Promise<void>;
 

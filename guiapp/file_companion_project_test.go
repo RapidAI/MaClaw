@@ -15,6 +15,11 @@ import (
 
 func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	app.ctx = ctx
@@ -39,7 +44,8 @@ func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T)
 	chatMarks := `[{"message":1,"color":"green","start":0,"end":2,"text":"摘要"}]`
 	annotations := `[{"id":"a1","kind":"annotation","text":"方法","translation":"这里要复核","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]}]`
 	drawings := `[{"id":"d1","page":1,"color":"blue","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`
-	exportPayload := `{"highlights":` + highlights + `,"chatMarks":` + chatMarks + `,"annotations":` + annotations + `,"drawings":` + drawings + `}`
+	bookmarks := `[{"id":"b2","page":7,"x":0.4,"y":0.8,"color":"orange","name":"后加"},{"id":"b1","page":2,"x":0.2,"y":0.1,"color":"teal","name":"先加"},{"id":"bad","page":1,"x":0.2,"y":0.1,"color":"navy","name":"丢掉"}]`
+	exportPayload := `{"highlights":` + highlights + `,"chatMarks":` + chatMarks + `,"annotations":` + annotations + `,"drawings":` + drawings + `,"bookmarks":` + bookmarks + `}`
 
 	previous := fileCompanionSaveProjectDialog
 	defer func() { fileCompanionSaveProjectDialog = previous }()
@@ -100,6 +106,10 @@ func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T)
 	}
 	if len(imported.ChatMarks) == 0 || len(imported.Annotations) == 0 || len(imported.Drawings) == 0 {
 		t.Fatalf("restored marks: chat=%s annotations=%s drawings=%s", imported.ChatMarks, imported.Annotations, imported.Drawings)
+	}
+	var restoredBookmarks []fileCompanionProjectBookmark
+	if err := json.Unmarshal(imported.Bookmarks, &restoredBookmarks); err != nil || len(restoredBookmarks) != 2 || restoredBookmarks[0].Name != "后加" || restoredBookmarks[1].Color != "teal" {
+		t.Fatalf("restored bookmarks: %s %v", imported.Bookmarks, err)
 	}
 	var restoredDrawings []fileCompanionDrawing
 	if err := json.Unmarshal(imported.Drawings, &restoredDrawings); err != nil || len(restoredDrawings) != 1 || restoredDrawings[0].Tool != "line" {

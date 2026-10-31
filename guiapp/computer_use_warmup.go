@@ -2287,13 +2287,24 @@ func (a *App) GetComputerUseReadiness() map[string]interface{} {
 	yoloExists := modelStatusExists(yoloInfo)
 	if spOn && !yoloExists {
 		path, _ := yoloInfo["path"].(string)
-		issues = append(issues, map[string]interface{}{
-			"id":       "yolo_missing",
-			"severity": "warn",
-			"message":  "OmniParser weights missing — observe will use a11y/OCR only",
-			"action":   "download_yolo",
-			"path":     path,
-		})
+		downloading, _ := yoloInfo["downloading"].(bool)
+		failed, _ := yoloInfo["error"].(string)
+		if !downloading && failed != "" {
+			issues = append(issues, map[string]interface{}{
+				"id":       "yolo_missing",
+				"severity": "warn",
+				"message":  failed,
+				"action":   "download_yolo",
+				"path":     path,
+			})
+		} else {
+			issues = append(issues, map[string]interface{}{
+				"id":       "yolo_downloading",
+				"severity": "warn",
+				"message":  "OmniParser weights are downloading in the background. Screen parsing turns on when the file is ready.",
+				"path":     path,
+			})
+		}
 	}
 
 	// Permissions (prefer last warmup; live probe if empty)

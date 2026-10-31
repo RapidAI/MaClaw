@@ -472,6 +472,13 @@ func (h *IMMessageHandler) workStopRequestVerdict(loop *LoopContext, sessionKey,
 	if requested, verified, ok := loop.cachedWorkStopVerdict(text); ok {
 		return requested, verified
 	}
+	// A goal or session-round continuation is a host prompt that replays the
+	// open task. The person did not type it this turn, so it cannot authorize
+	// cancelling their work; a real stop request goes through the pre-loop path.
+	if isGoalSystemContinuation(text) || isSessionRoundContinuation(text) {
+		loop.cacheWorkStopVerdict(text, false, true)
+		return false, true
+	}
 	if looksLikeDesktopChatStop(text) {
 		loop.cacheWorkStopVerdict(text, true, true)
 		return true, true

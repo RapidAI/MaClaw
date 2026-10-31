@@ -38,6 +38,9 @@ func (h *IMMessageHandler) adoptLateTreeSemanticIntent(ctx *LoopContext, userID,
 		return false
 	}
 	copied := cached
+	// ClassifyCached drops QueryVec. The timeout hint already holds this
+	// turn's query vector; planning below scores the tool head on it.
+	intent.CarryLayer2QueryEvidence(&copied, *current)
 	normalizeSemanticClassificationForTurn(&copied)
 	// Same floor as leftover skip cache activation. A below-floor lookup
 	// would chat-project and drop the timeout pin; a weak office/search

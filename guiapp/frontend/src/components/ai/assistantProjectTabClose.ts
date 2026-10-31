@@ -19,7 +19,7 @@ export type AssistantProjectTabCloseDeps = {
     getTabs: () => AITab[];
     getTabState: (tabId: string) => AITabState | undefined;
     saveTabState: (tabId: string, state: Partial<AITabState>) => void;
-    closeTab: (tabId: string) => void;
+    closeTab: (tabId: string, options?: { suppressNewTaskGuide?: boolean }) => void;
     messages: ChatMessage[];
     activeTabIdRef: { current: string };
     latestDisplayMessagesRef: { current: ChatMessage[] };
@@ -88,7 +88,7 @@ function clearProjectRoundTracking(tabId: string, deps: AssistantProjectTabClose
 }
 
 /** Close one assistant tab and drop its in-panel project bookkeeping. History stays resumable. */
-export function closeAssistantProjectTab(tabId: string, deps: AssistantProjectTabCloseDeps) {
+export function closeAssistantProjectTab(tabId: string, deps: AssistantProjectTabCloseDeps, options?: { suppressNewTaskGuide?: boolean }) {
     const tab = deps.getTabs().find(item => item.id === tabId);
     if (tab?.type === "project") {
         deps.projectConversationHydrationGenerationByTabIdRef.current.set(
@@ -131,5 +131,5 @@ export function closeAssistantProjectTab(tabId: string, deps: AssistantProjectTa
     if (deps.skillRecordingTabId === tabId) {
         deps.abandonSkillRecording();
     }
-    deps.closeTab(tabId);
+    deps.closeTab(tabId, options);
 }

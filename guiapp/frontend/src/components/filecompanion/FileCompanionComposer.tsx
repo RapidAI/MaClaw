@@ -17,9 +17,10 @@ interface FileCompanionComposerProps {
     onSubmit: () => void | boolean | Promise<void | boolean>;
     busy?: boolean;
     lang?: string;
+    onCancel?: () => void;
 }
 
-export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = false, lang = "zh-Hans" }: FileCompanionComposerProps) {
+export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = false, lang = "zh-Hans", onCancel }: FileCompanionComposerProps) {
     setCompanionUiLang(lang);
     const { assistantTheme } = useCompanionAppearance();
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -94,6 +95,11 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
         resetHistoryBrowsing();
     };
 
+    const cancelBusy = () => {
+        if (!busy) return;
+        onCancel?.();
+    };
+
     const submitTyped = () => {
         const text = value.trim();
         // /clear still runs while a reply is on the way. Other text waits.
@@ -144,6 +150,10 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
         <form
             onSubmit={(event) => {
                 event.preventDefault();
+                if (busy) {
+                    cancelBusy();
+                    return;
+                }
                 submitTyped();
             }}
             style={{ position: "relative", padding: 12, background: "var(--theme-surface, #ffffff)", borderTop: "1px solid var(--theme-border, #e2e8f0)" }}
@@ -186,7 +196,19 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
                     onKeyDown={onKeyDown}
                     style={{ flex: 1, minHeight: 44, maxHeight: 160, border: "none", outline: "none", resize: "none", padding: "6px 4px", font: "inherit", fontSize: 14, lineHeight: 1.5, background: "transparent", color: "var(--theme-text-primary, #1e293b)" }}
                 />
-                <button type="submit" className="file-companion-send" data-testid="file-companion-send" disabled={!busy && !value.trim()} aria-busy={busy}>{busy ? cs("处理中") : cs("发送")}</button>
+                <button
+                    type={busy ? "button" : "submit"}
+                    className="file-companion-send"
+                    data-testid="file-companion-send"
+                    disabled={!busy && !value.trim()}
+                    aria-busy={busy}
+                    aria-label={busy ? cs("取消") : cs("发送")}
+                    title={busy ? cs("取消") : undefined}
+                    onClick={busy ? (event) => {
+                        event.preventDefault();
+                        cancelBusy();
+                    } : undefined}
+                >{busy ? cs("处理中") : cs("发送")}</button>
             </div>
             <p style={{ margin: "6px 2px 0", fontSize: 12, color: "var(--theme-text-muted, #94a3b8)" }}>{cs("Enter 发送，Shift+Enter 换行，↑↓ 翻看已发送的内容，/clear 清空")}</p>
         </form>
