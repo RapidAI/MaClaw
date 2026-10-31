@@ -4904,7 +4904,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 supplementId: supplementId || undefined,
                                 supplementRunId: targetID || undefined,
                             } : item);
-                            const folded = foldPlanConfirmation(settled, settled.findIndex(item => item.id === assistantMessage.id));
+                            // One message, one ack: the model's sentence is
+                            // already above, so the receipt bubble goes away.
+                            const ackShown = !!sentence && sentence !== content.trim() && !supplementFiles.length;
+                            const kept = ackShown ? settled.filter(item => item.id !== assistantMessage.id) : settled;
+                            const folded = ackShown ? kept : foldPlanConfirmation(kept, kept.findIndex(item => item.id === assistantMessage.id));
                             // Storage alone leaves the open chat on the typing
                             // bubble, so the person never sees that these words
                             // joined the job already running.
@@ -4914,7 +4918,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             pending.settled = true;
                             pendingRef.current.delete(ticket);
                             drainIfIdle(botId);
-                            if (supplementFiles.length) {
+                            if (!ackShown) {
                                 // The files are already with the run; the
                                 // receipt's word is swapped for a written line.
                                 void desktopBotAck({

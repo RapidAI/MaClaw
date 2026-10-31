@@ -1448,8 +1448,10 @@ describe('DesktopBotWorkspace', () => {
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '只要前5条' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('已收到，会在换工具头的下一步生效。')).toBeTruthy();
         await waitFor(() => expect(appendSupplement).toHaveBeenCalledWith('bot_1', 'run-head', '只要前5条'));
+        // One message, one ack: the model's own sentence, not also the receipt word.
+        await waitFor(() => expect(screen.getAllByText(told('只要前5条'))).toHaveLength(1));
+        expect(screen.queryByText('已收到，会在换工具头的下一步生效。')).toBeNull();
         expect(evaluateSupplement.mock.calls.map(call => call[0])).toEqual(['优化 arm64', '换工具头']);
         expect(sendTask).toHaveBeenCalledTimes(1);
     });

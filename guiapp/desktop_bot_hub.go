@@ -1007,24 +1007,29 @@ func (a *App) AppendDesktopBotSupplement(botID, runID, supplement string) (*Desk
 			candidates = append(candidates, run.RunID)
 		}
 		botlog.Write(botID, "gui.supplement_classified", nil, "stage", desktopBotSupplementAmbiguous, "candidates", strconv.Itoa(len(candidates)))
-		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementAmbiguous, Candidates: candidates, Message: "你有多个任务正在执行，请说明这条是补充给哪一个。"}, nil
+		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementAmbiguous, Candidates: candidates, Message: "我手上有好几件在做，这句是说哪一件的？"}, nil
 	}
 	if target == nil {
-		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementNoActiveRun, Message: "那个任务已经结束了，这条会作为新任务发送。"}, nil
+		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementNoActiveRun, Message: "那件已经做完了，这句我当新的事来做。"}, nil
 	}
 	// A run that stopped to ask a question is finished, not paused. Its answer
 	// must travel as the next ordinary turn, which already knows how to rebuild
 	// the question from session state; routing it here would drop it.
 	if target.WaitingForUser {
 		botlog.Write(botID, "gui.supplement_classified", nil, "stage", desktopBotSupplementWaitingForUser, "run", target.RunID)
-		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementWaitingForUser, RunID: target.RunID, Message: "这条会作为对正在等待的回答发送。"}, nil
+		return &DesktopBotSupplementReceipt{Stage: desktopBotSupplementWaitingForUser, RunID: target.RunID, Message: "好，我按你这句接着做。"}, nil
 	}
 	sent, err := a.postDesktopBotSupplement(botID, target.RunID, supplement)
 	if err != nil {
 		return nil, err
 	}
 	botlog.Write(botID, "gui.supplement_dispatched", nil, "run", target.RunID, "supplement", sent.SupplementID)
-	message := desktopbot.SteerOnIt
+	// The GUI shows the model's own sentence for a steer; this word is only
+	// a placeholder until it lands (never a canned 在办).
+	message := "好，我按这个改。"
+	if desktopBotLooksEnglish(supplement) {
+		message = "Got it, I'll work that in."
+	}
 	if names := desktopBotMaterialNames(supplement); len(names) > 0 {
 		// The GUI replaces this with a WriteDesktopBotAck sentence when it arrives.
 		_ = names

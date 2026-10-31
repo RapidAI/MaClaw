@@ -13,8 +13,8 @@ func TestDesktopBotSilenceCases(t *testing.T) {
 	if !strings.Contains(desktopBotUnderstandSystem, desktopbot.WorthSayingPrompt) || strings.Contains(desktopBotUnderstandSystem, "没有变化就结束") {
 		t.Fatal("the interruption rule is missing from the foreground prompt, or the routine line entered it")
 	}
-	if !strings.Contains(desktopBotUnderstandSystem, desktopbot.SteerOnIt) || !strings.Contains(desktopBotUnderstandSystem, desktopbot.SteerOnItEN) {
-		t.Fatal("a direction change no longer answers 在办")
+	if strings.Contains(desktopBotUnderstandSystem, "exactly "+desktopbot.SteerOnIt) || !strings.Contains(desktopBotUnderstandSystem, "我会发一篇图文并茂的帖子到csdn") {
+		t.Fatal("a direction change must get a model-written first-person sentence, not a canned 在办")
 	}
 	relays := 0
 	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
