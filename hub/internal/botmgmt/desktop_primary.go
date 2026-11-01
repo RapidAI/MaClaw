@@ -235,7 +235,10 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 		if primaryBotID(rec, userID) != fromBotID {
 			return BotCrossNote{}, ErrNotPrimary
 		}
-		target := resolveParticipant(rec, userID, in.Target)
+		target, rerr := resolveParticipantErr(rec, userID, in.Target)
+		if rerr != nil {
+			return BotCrossNote{}, rerr
+		}
 		if target != "" && target != fromBotID && localOwned(rec, userID, target) {
 			// A local (GUI-hosted) bot: Hub cannot start its run, so the
 			// order goes to its mailbox and its GUI wakes it.
@@ -358,7 +361,11 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 	case "", "main", "primary":
 		target = primaryBotID(*rec, userID)
 	default:
-		target = resolveParticipant(*rec, userID, target)
+		id, rerr := resolveParticipantErr(*rec, userID, target)
+		if rerr != nil {
+			return BotCrossNote{}, false, rerr
+		}
+		target = id
 	}
 	if target == "" || target == fromBotID || !participantOwned(*rec, userID, target) {
 		return BotCrossNote{}, false, ErrNoSuchBot
@@ -471,7 +478,7 @@ func (s *Service) PostBotReportFromInstance(ctx context.Context, tenantID, userI
 		return BotCrossNote{}, ErrNotFound
 	}
 	// A target given by name resolves to that bot's id (Hub or local bot).
-	in.Target = resolveParticipant(rec, userID, in.Target)
+	in.Target = resolveParticipant(rec, userID, in.Target) // reportLocked says why a name fits no bot
 	note, changed, err := s.reportLocked(&rec, userID, from, in)
 	if err != nil || !changed {
 		return note, err

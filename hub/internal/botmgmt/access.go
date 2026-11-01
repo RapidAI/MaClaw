@@ -1323,6 +1323,11 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	if err := configured(rec); err != nil {
 		return Bot{}, err
 	}
+	if ownerUserID != "" {
+		if err := botNameConflict(rec, ownerUserID, name, ""); err != nil {
+			return Bot{}, err
+		}
+	}
 	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, ownerUserID)
 	if err != nil {
 		return Bot{}, err

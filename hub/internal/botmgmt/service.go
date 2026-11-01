@@ -401,6 +401,9 @@ func (s *Service) UpdateBot(ctx context.Context, tenantID, botID, name, descript
 		return Bot{}, err
 	}
 	bot := rec.Bots[index]
+	if err := botNameConflict(rec, bot.OwnerUserID, name, bot.ID); err != nil {
+		return Bot{}, err
+	}
 	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
 	if err != nil {
 		return Bot{}, err

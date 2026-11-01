@@ -1793,6 +1793,14 @@ function readListWidth(): number {
     }
 }
 
+// botCallMessage is the Hub's own sentence for a failed call (Wails rejects
+// with a plain string, other paths with an Error), e.g. a name already taken.
+function botCallMessage(error: unknown): string {
+    if (typeof error === 'string') return error.trim();
+    if (error instanceof Error) return (error.message || '').trim();
+    return '';
+}
+
 export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: string }) {
     const text = copy(lang);
     const { showConfirm } = useDialog();
@@ -3669,7 +3677,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             created = await CreateDesktopBot(title, desc, look.color, look.shape);
         } catch (error) {
             if (gen !== loadGen.current) return;
-            const message = error instanceof Error && error.message ? error.message : text.unavailable;
+            const message = botCallMessage(error) || text.unavailable;
+            // A taken name is fixed in the dialog: keep it open with the reason.
+            if (message.includes('已经有一个叫')) {
+                setCreateNotice(message);
+                return;
+            }
             setCreateOpen(false);
             setListNotice(message);
             return;
@@ -3714,7 +3727,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             echoed = hubAppearance(updated);
         } catch (error) {
             if (gen !== loadGen.current) return;
-            setEditNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+            setEditNotice(botCallMessage(error) || text.unavailable);
             return;
         } finally {
             setEditSaving(false);

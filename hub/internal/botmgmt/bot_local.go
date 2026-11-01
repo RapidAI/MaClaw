@@ -50,23 +50,14 @@ func participantOwned(rec record, userID, id string) bool {
 	return botOwned(rec.Bots, userID, id) || localOwned(rec, userID, id)
 }
 
-// resolveParticipant turns a name into a Hub or local bot id of this user.
+// resolveParticipant is resolveParticipantErr for callers that check the
+// id themselves: a name it cannot resolve comes back unchanged.
 func resolveParticipant(rec record, userID, target string) string {
-	t := strings.TrimSpace(target)
-	if t == "" || participantOwned(rec, userID, t) {
-		return t
+	id, err := resolveParticipantErr(rec, userID, target)
+	if err != nil || id == "" {
+		return strings.TrimSpace(target)
 	}
-	for _, bot := range botsOwnedBy(rec.Bots, userID) {
-		if strings.EqualFold(strings.TrimSpace(bot.Name), t) {
-			return bot.ID
-		}
-	}
-	for _, b := range rec.LocalBots {
-		if b.Owner == strings.TrimSpace(userID) && strings.EqualFold(b.Name, t) {
-			return b.ID
-		}
-	}
-	return t
+	return id
 }
 
 // RegisterLocalBot adds or refreshes one local bot (a GUI heartbeat).
@@ -95,13 +86,12 @@ func (s *Service) RegisterLocalBot(ctx context.Context, tenantID, userID string,
 	if err != nil {
 		return LocalBot{}, err
 	}
-	for _, b := range botsOwnedBy(rec.Bots, userID) {
-		if strings.EqualFold(strings.TrimSpace(b.Name), name) {
-			return LocalBot{}, ErrInvalidInput // a Hub bot already has this name
-		}
+	id := localBotID(userID, device, name)
+	// One name per bot of this user, Hub and local bots alike.
+	if err := botNameConflict(rec, userID, name, id); err != nil {
+		return LocalBot{}, err
 	}
 	now := s.now().UTC().Format(time.RFC3339)
-	id := localBotID(userID, device, name)
 	mine := 0
 	for i := range rec.LocalBots {
 		b := &rec.LocalBots[i]

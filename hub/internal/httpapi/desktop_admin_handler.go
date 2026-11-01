@@ -588,6 +588,8 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 			switch {
 			case errors.Is(err, botmgmt.ErrInvalidInput):
 				writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "instance, user and text are required")
+			case botNameErrorStatus(err) != 0:
+				writeError(w, botNameErrorStatus(err), botNameErrorCode(err), err.Error())
 			case errors.Is(err, botmgmt.ErrNotFound), errors.Is(err, botmgmt.ErrNoSuchBot):
 				writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "no such bot")
 			case errors.Is(err, botmgmt.ErrRateLimited):
@@ -629,6 +631,8 @@ func PostDesktopInboxHandler(bots *botmgmt.Service) http.HandlerFunc {
 			switch {
 			case errors.Is(err, botmgmt.ErrInvalidInput):
 				writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "instance and user are required")
+			case botNameErrorStatus(err) != 0:
+				writeError(w, botNameErrorStatus(err), botNameErrorCode(err), err.Error())
 			case errors.Is(err, botmgmt.ErrNotFound), errors.Is(err, botmgmt.ErrNoSuchBot):
 				writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "no such bot")
 			default:
@@ -938,6 +942,8 @@ func PostDesktopDelegateHandler(bots *botmgmt.Service) http.HandlerFunc {
 			switch {
 			case errors.Is(err, botmgmt.ErrNotPrimary):
 				writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the main bot can delegate" + teamText, "team": team})
+			case botNameErrorStatus(err) != 0:
+				writeJSON(w, botNameErrorStatus(err), map[string]any{"error": err.Error(), "code": botNameErrorCode(err), "team": team})
 			case errors.Is(err, botmgmt.ErrNoSuchBot), errors.Is(err, botmgmt.ErrNotFound):
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such bot" + teamText, "team": team})
 			case errors.Is(err, botmgmt.ErrInvalidInput):
@@ -1016,6 +1022,8 @@ func writeAssignmentError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, botmgmt.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
+	case botNameErrorStatus(err) != 0:
+		writeError(w, botNameErrorStatus(err), botNameErrorCode(err), err.Error())
 	case errors.Is(err, botmgmt.ErrNotFound), errors.Is(err, botmgmt.ErrNoSuchBot):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such bot or assignment")
 	case errors.Is(err, botmgmt.ErrNotPrimary):
@@ -1064,4 +1072,27 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, note)
 		}
 	}
+}
+
+// botNameErrorStatus: a bot name that fits none or several bots, said in a
+// sentence the calling bot can pass on (0: not such an error).
+func botNameErrorStatus(err error) int {
+	var ne *botmgmt.BotNameError
+	if !errors.As(err, &ne) {
+		return 0
+	}
+	if errors.Is(err, botmgmt.ErrNoSuchBot) {
+		return http.StatusNotFound
+	}
+	return http.StatusConflict
+}
+
+func botNameErrorCode(err error) string {
+	switch {
+	case errors.Is(err, botmgmt.ErrAmbiguousBot):
+		return "BOT_AMBIGUOUS"
+	case errors.Is(err, botmgmt.ErrNameTaken):
+		return "BOT_NAME_TAKEN"
+	}
+	return "BOT_NOT_FOUND"
 }

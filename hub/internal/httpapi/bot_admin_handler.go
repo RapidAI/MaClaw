@@ -42,6 +42,8 @@ func writeBotError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "请先在 Bot 管理里保存 MaClawSrv 管理密钥")
 	case errors.Is(err, botmgmt.ErrNotConfigured):
 		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "save the MaClawSrv URL and access token first")
+	case errors.Is(err, botmgmt.ErrNameTaken):
+		writeError(w, http.StatusConflict, "BOT_NAME_TAKEN", err.Error())
 	case errors.Is(err, botmgmt.ErrNotFound):
 		writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "bot not found")
 	case errors.Is(err, botmgmt.ErrInvalidInput):
@@ -101,7 +103,11 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 	case errors.Is(err, botmgmt.ErrNotPrimary):
 		status, code, message = http.StatusForbidden, "NOT_PRIMARY", botmgmt.ErrNotPrimary.Error()
 	case errors.Is(err, botmgmt.ErrNoSuchBot):
-		status, code, message = http.StatusNotFound, "BOT_NOT_FOUND", botmgmt.ErrNoSuchBot.Error()
+		status, code, message = http.StatusNotFound, "BOT_NOT_FOUND", err.Error()
+	case errors.Is(err, botmgmt.ErrAmbiguousBot):
+		status, code, message = http.StatusConflict, "BOT_AMBIGUOUS", err.Error()
+	case errors.Is(err, botmgmt.ErrNameTaken):
+		status, code, message = http.StatusConflict, "BOT_NAME_TAKEN", err.Error()
 	case errors.Is(err, botmgmt.ErrRateLimited):
 		status, code, message = http.StatusTooManyRequests, "RATE_LIMITED", botmgmt.ErrRateLimited.Error()
 	default:

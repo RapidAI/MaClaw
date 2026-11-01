@@ -140,7 +140,10 @@ func (s *Service) SaveRoom(ctx context.Context, tenantID, userID, id string, in 
 		seen := map[string]bool{}
 		members := []string{}
 		for _, m := range in.Members {
-			id := resolveParticipant(rec, userID, strings.TrimSpace(m))
+			id, rerr := resolveParticipantErr(rec, userID, strings.TrimSpace(m))
+			if rerr != nil {
+				return BotRoom{}, rerr
+			}
 			if id == "" || !botOwned(rec.Bots, userID, id) {
 				return BotRoom{}, ErrNoSuchBot
 			}
@@ -158,7 +161,10 @@ func (s *Service) SaveRoom(ctx context.Context, tenantID, userID, id string, in 
 		return BotRoom{}, ErrInvalidInput
 	}
 	for k, v := range in.Attention {
-		id := resolveParticipant(rec, userID, strings.TrimSpace(k))
+		id, rerr := resolveParticipantErr(rec, userID, strings.TrimSpace(k))
+		if rerr != nil {
+			return BotRoom{}, rerr
+		}
 		v = strings.ToLower(strings.TrimSpace(v))
 		if !r.hasMember(id) || !roomAttention[v] {
 			return BotRoom{}, ErrInvalidInput

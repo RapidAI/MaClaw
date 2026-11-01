@@ -504,7 +504,11 @@ func (s *Service) PostBotDelegateFromInstance(ctx context.Context, tenantID, use
 	if from == "" {
 		return BotCrossNote{}, ErrNotFound
 	}
-	in.Target = resolveParticipant(rec, userID, in.Target)
+	id, rerr := resolveParticipantErr(rec, userID, in.Target)
+	if rerr != nil {
+		return BotCrossNote{}, rerr
+	}
+	in.Target = id
 	in.Kind = "delegate"
 	return s.PostBotCrossTalk(ctx, tenantID, userID, from, in)
 }
