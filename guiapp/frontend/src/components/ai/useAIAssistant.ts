@@ -3057,6 +3057,15 @@ export function terminalAssistantResultStatus(message: ChatMessage, response: an
     return "completed";
 }
 
+/** A queued next round. Empty reply or the short "接着做" note is not a finish. */
+export function responseIsQuietContinuation(response: any): boolean {
+    if (resolveResponseSource(response) !== 'session_round_continuation') return false;
+    const err = String(response?.error || response?.Error || '').trim();
+    if (err) return false;
+    const text = String(response?.text || response?.Text || '').trim();
+    return text === '' || text === '接着做。' || text === 'Continuing.';
+}
+
 function selectFinalRoundContent(message: ChatMessage, response: any): string {
     const rawFinalText = typeof response?.text === 'string' ? response.text : '';
     const rawStreamedContent = message.content || '';
@@ -6044,15 +6053,22 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             clearPendingTaskForRequest(effectiveRequestId);
             stopResponseTimeout(effectiveRequestId);
             resetStreamTokenBuffer(effectiveRequestId);
-            clearTransientProgress(round.sessionKey || 'desktop-user');
+            const quietContinuation = responseIsQuietContinuation(normalized);
+            if (!quietContinuation) clearTransientProgress(round.sessionKey || 'desktop-user');
             forgetInFlightRound(effectiveRequestId);
             if (activeMatch) {
-                finalizeRound(round.generation);
+                if (quietContinuation) {
+                    // The next round is already queued. Done frame and an empty
+                    // trail read as the task stopping.
+                    if (activeRoundRef.current.generation === round.generation) resetActiveRound();
+                } else {
+                    finalizeRound(round.generation);
+                }
             }
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);
         return () => { off(); };
-    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, forgetOffscreenLiveRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
+    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, forgetOffscreenLiveRound, preferences, recoverGoalContinuationRound, resetActiveRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
 
     // P0-1 (0b-i) degraded-turn recovery channel. When a degraded write turn
     // self-recovers, the backend re-runs it and streams the result on

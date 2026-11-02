@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveFinalRoundContent, terminalAssistantResult, terminalAssistantResultStatus, type ChatMessage } from '../useAIAssistant';
+import { resolveFinalRoundContent, responseIsQuietContinuation, terminalAssistantResult, terminalAssistantResultStatus, type ChatMessage } from '../useAIAssistant';
 
 /**
  * Reasoning-trail collapse: when a turn carries a reasoning trail (the
@@ -52,6 +52,9 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
             error: 'max iterations reached',
         })).toBeUndefined();
         expect(terminalAssistantResultStatus(message, response)).toBeUndefined();
+        expect(responseIsQuietContinuation(response)).toBe(true);
+        expect(responseIsQuietContinuation({ ...response, text: '接着做。' })).toBe(true);
+        expect(responseIsQuietContinuation({ ...response, text: '编译失败' })).toBe(false);
     });
 
     it('keeps the host handoff note when the same turn also delivers a file', () => {
