@@ -2428,6 +2428,37 @@ func TestRemoteCodingStepToRunResultAndSkippedRemainder(t *testing.T) {
 	}
 }
 
+func TestOpenPlanStepsAreNotReportedAsPriorStepFailures(t *testing.T) {
+	results := appendCodingWorkbenchSkippedResults([]v2.TaskRunResult{{
+		TaskIndex: 1,
+		Title:     "探索构建与烧录入口",
+		Status:    v2.TaskFailed,
+		Error:     "max iterations reached",
+	}}, []*v2.TaskItem{
+		{Index: 1, Title: "探索构建与烧录入口"},
+		{Index: 2, Title: "更新到最新代码与依赖"},
+		{Index: 4, Title: "确认设备连接并烧录"},
+		{Index: 5, Title: "验证运行并汇报结果"},
+	}, []codingWorkbenchStepStatus{
+		{Index: 2, Status: codingStepPending},
+		{Index: 4, Status: codingStepRunning},
+		{Index: 5, Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+	})
+	if len(results) != 2 {
+		t.Fatalf("results = %#v, want the capped step and the step that was actually skipped", results)
+	}
+	if results[1].TaskIndex != 5 || results[1].Status != v2.TaskSkipped {
+		t.Fatalf("skipped row = %#v", results[1])
+	}
+	shown := formatCodingAgentUserFinish(results, false)
+	if strings.Contains(shown, "更新到最新代码") || strings.Contains(shown, "确认设备连接") {
+		t.Fatalf("open steps were reported as failures: %q", shown)
+	}
+	if !strings.Contains(shown, "验证运行并汇报结果") {
+		t.Fatalf("a real skip disappeared: %q", shown)
+	}
+}
+
 func TestEmitCodingAgentFinishTokenAlwaysStreamsVisibleAnswer(t *testing.T) {
 	var got string
 	emitCodingAgentFinishToken(func(s string) { got = s }, "Created foo.", []v2.TaskRunResult{{Status: v2.TaskPassed, Summary: "Created foo."}}, false)

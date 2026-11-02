@@ -440,7 +440,10 @@ func appendCodingWorkbenchSkippedResults(results []v2.TaskRunResult, tasks []*v2
 			continue
 		}
 		st := statusByIndex[task.Index]
-		if st.Status != "" && st.Status != codingStepSkipped && st.Status != codingStepPending && st.Status != codingStepRunning {
+		// Pending and running steps are still open. Only a step the plan
+		// actually skipped belongs in the report. An iteration cap used to
+		// leave the rest pending and this loop then called that a failure.
+		if st.Status != codingStepSkipped {
 			continue
 		}
 		summary := strings.TrimSpace(st.Summary)

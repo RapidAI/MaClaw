@@ -4774,9 +4774,12 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 				setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, stepResult.Status, sum)
 			}
 			runResults = append(runResults, remoteCodingStepToRunResult(step, stepResult))
-			// Sequential plans: stop on first hard failure (matches TaskRunner depends_on skip).
+			// Sequential plans stop on a real failure. An iteration cap ends
+			// this round too, but the later steps are still open.
 			if stepResult.Status != "success" {
-				h.skipRemainingOrchestratedCodingSteps(planned, userID, step.Index, "skipped: prior step failed")
+				if !codingLoopIterationExhausted(stepResult.Error) {
+					h.skipRemainingOrchestratedCodingSteps(planned, userID, step.Index, "skipped: prior step failed")
+				}
 				break
 			}
 		} else {
