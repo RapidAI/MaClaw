@@ -220,7 +220,7 @@ func TestCoversHoldTogetherOnB5(t *testing.T) {
 			coverText.WriteString(item.Text)
 		}
 		compact := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '�' {
+			if r == ' ' || r == '\uFFFD' {
 				return -1
 			}
 			return r
@@ -306,7 +306,7 @@ func TestStressManyDecoratedBlocksPaginate(t *testing.T) {
 			pageText.WriteString(item.Text)
 		}
 		compact := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '�' {
+			if r == ' ' || r == '\uFFFD' {
 				return -1
 			}
 			return r
