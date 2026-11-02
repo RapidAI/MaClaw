@@ -393,3 +393,6 @@ buddy/firmware/tools/host_tests/*.exe
 
 # i18n 抽取过程产生的日志（含 NUL 字节，不能作为源码提交）。
 hubcenter/web/i18n/_extract_log.txt
+
+# 运行时诊断日志与轨迹（本地排查用，不入库）。
+.diag/

@@ -1,1 +1,0 @@
-2026-11-02T10:07:20.4093182+08:00 stage=gui.hub bot=pending method=GET path=/api/v1/bots/pending hub=hub.maclaw.top status=403 dur_ms=870 err="服务器没有开通bot功能 body={\"code\":\"BOT_DISABLED\",\"error\":{\"code\":\"BOT_DISABLED\",\"message\":\"服务器没有开通bot功能\",\"type\":\"invalid_request_error\"},\"message\":\"服务器没有开通bot功能\",\"ok\":false}"
