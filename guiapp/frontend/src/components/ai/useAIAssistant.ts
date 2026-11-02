@@ -3066,6 +3066,10 @@ export function responseIsQuietContinuation(response: any): boolean {
     return text === '' || text === '接着做。' || text === 'Continuing.';
 }
 
+// How long the composer stays busy after a quiet handoff. The next wave waits
+// out the cooldown and the previous turn's lock; idling in that gap looks stopped.
+const QUIET_CONTINUATION_HOLD_MS = 4000;
+
 function selectFinalRoundContent(message: ChatMessage, response: any): string {
     const rawFinalText = typeof response?.text === 'string' ? response.text : '';
     const rawStreamedContent = message.content || '';
@@ -4126,6 +4130,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const foregroundSendTailRef = useRef<Promise<boolean>>(Promise.resolve(true));
     const foregroundSendTailsBySessionRef = useRef<Map<string, Promise<boolean>>>(new Map());
     const inFlightRoundsByRequestRef = useRef<Map<string, ActiveRound>>(new Map());
+    const quietContinuationHoldTimersRef = useRef<number[]>([]);
+    useEffect(() => () => {
+        for (const timer of quietContinuationHoldTimersRef.current) window.clearTimeout(timer);
+        quietContinuationHoldTimersRef.current = [];
+    }, []);
     /**
      * Backend-started rounds of sessions that are not on screen (goal and
      * session-round continuations). They keep running without owning the
@@ -6054,16 +6063,23 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             stopResponseTimeout(effectiveRequestId);
             resetStreamTokenBuffer(effectiveRequestId);
             const quietContinuation = responseIsQuietContinuation(normalized);
-            if (!quietContinuation) clearTransientProgress(round.sessionKey || 'desktop-user');
-            forgetInFlightRound(effectiveRequestId);
-            if (activeMatch) {
-                if (quietContinuation) {
-                    // The next round is already queued. Done frame and an empty
-                    // trail read as the task stopping.
-                    if (activeRoundRef.current.generation === round.generation) resetActiveRound();
-                } else {
-                    finalizeRound(round.generation);
-                }
+            if (quietContinuation && round) {
+                // Stay busy until the next wave owns the session. If it never
+                // starts, drop back to idle without an error.
+                const generation = round.generation;
+                const requestId = effectiveRequestId;
+                const timer = window.setTimeout(() => {
+                    forgetInFlightRound(requestId);
+                    const current = activeRoundRef.current;
+                    if (current.generation === generation && current.requestId === requestId) {
+                        resetActiveRound();
+                    }
+                }, QUIET_CONTINUATION_HOLD_MS);
+                quietContinuationHoldTimersRef.current.push(timer);
+            } else {
+                if (!quietContinuation) clearTransientProgress(round.sessionKey || 'desktop-user');
+                forgetInFlightRound(effectiveRequestId);
+                if (activeMatch) finalizeRound(round.generation);
             }
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);

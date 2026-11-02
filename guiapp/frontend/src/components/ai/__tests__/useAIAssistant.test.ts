@@ -2644,6 +2644,42 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].content).toBe('');
     });
 
+    it('stays busy across a quiet continuation until the next round or the hold expires', async () => {
+        vi.useFakeTimers();
+        try {
+            const session = 'desktop-user:C:/work/tasks/visible';
+            const requestId = 'req-quiet-handoff';
+            const { result } = renderAssistantHook({ activeSessionKey: session });
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                    request_id: requestId,
+                    session_key: session,
+                    text: '继续优化',
+                    display_text: '继续优化',
+                });
+            });
+            expect(result.current.sending).toBe(true);
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-response', {
+                    request_id: requestId,
+                    session_key: session,
+                    text: '',
+                    error: '',
+                    response_source: 'session_round_continuation',
+                });
+            });
+            expect(result.current.sending).toBe(true);
+
+            await act(async () => { await vi.advanceTimersByTimeAsync(3999); });
+            expect(result.current.sending).toBe(true);
+            await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+            expect(result.current.sending).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('adopts a session-round continuation that started while another tab was visible', async () => {
         const session = 'desktop-user:C:/work/tasks/session-round';
         const requestId = 'session-round-1700000000001';
