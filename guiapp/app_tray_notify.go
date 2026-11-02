@@ -33,10 +33,24 @@ func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
 	if resp == nil || ShowNotification == nil {
 		return
 	}
-	// An iteration-cap handoff already queued the next round. It is not a
-	// finished task, and an empty reply must not balloon "任务完成了".
-	if resp.sessionRoundContinue || strings.TrimSpace(resp.ResponseSource) == sessionRoundContinuationSource {
-		return
+	// A quiet iteration-cap handoff already queued the next round. An empty
+	// reply must not balloon "任务完成了". A handoff that also carries a real
+	// failure still has to say so, or a hidden window looks finished.
+	if sessionRoundHandoff(resp) {
+		if sessionRoundHandoffIsQuiet(resp) {
+			return
+		}
+		if strings.TrimSpace(resp.Error) == "" {
+			msg := trayBalloonBody(resp.Text)
+			if msg == "" {
+				msg = "任务出现异常，请返回窗口查看"
+			}
+			if FlashAndBeep != nil {
+				FlashAndBeep()
+			}
+			ShowNotification("任务异常", msg, 3)
+			return
+		}
 	}
 	source := canonicalIMResponseSourceKind(resp.ResponseSource)
 	if source == imResponseSourceCancel {
@@ -167,6 +181,28 @@ func desktopBotTrayAsk(resp *IMAgentResponse) bool {
 	}
 	question := strings.TrimSpace(resp.AskUserQuestion)
 	return question != "" && !desktopbot.Filler(question)
+}
+
+// sessionRoundHandoff is a round whose next wave is already queued.
+func sessionRoundHandoff(resp *IMAgentResponse) bool {
+	if resp == nil {
+		return false
+	}
+	return resp.sessionRoundContinue || strings.TrimSpace(resp.ResponseSource) == sessionRoundContinuationSource
+}
+
+// sessionRoundHandoffIsQuiet is that handoff with nothing for the person to
+// read. The short continue note is not a result.
+func sessionRoundHandoffIsQuiet(resp *IMAgentResponse) bool {
+	if !sessionRoundHandoff(resp) || strings.TrimSpace(resp.Error) != "" {
+		return false
+	}
+	switch strings.TrimSpace(resp.Text) {
+	case "", "接着做。", "Continuing.":
+		return true
+	default:
+		return false
+	}
 }
 
 // trayResponseIsCompletion is a finished turn, not an error or a pause for the person.

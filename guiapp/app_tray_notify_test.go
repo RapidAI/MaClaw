@@ -116,6 +116,18 @@ func TestNotifyTaskResponseTrayRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("iteration handoff with a real failure is not completion", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			Text:                 "编译失败",
+			ResponseSource:       sessionRoundContinuationSource,
+			sessionRoundContinue: true,
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "任务异常" || (*notifs)[0].msg != "编译失败" || (*notifs)[0].icon != 3 {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
 	t.Run("completion names the task", func(t *testing.T) {
 		reset()
 		a.notifyTaskResponseTray(&IMAgentResponse{
