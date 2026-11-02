@@ -3495,6 +3495,9 @@ func localCodingTurnOutcome(results []v2.TaskRunResult, ctx context.Context) str
 	for _, rr := range results {
 		switch rr.Status {
 		case v2.TaskFailed:
+			if codingLoopIterationExhausted(rr.Error) {
+				continue
+			}
 			failed++
 		case v2.TaskPassed:
 			passed++
@@ -3953,6 +3956,13 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			stepStatus = codingStepSkipped
 		}
 		summary := v1Result.Summary
+		stepSummary := summary
+		if status == v2.TaskFailed && codingLoopIterationExhausted(v1Result.Error) {
+			// The step is still open. Recording it failed paints a failure
+			// the person did not hit.
+			stepStatus = codingStepRunning
+			stepSummary = ""
+		}
 		// Step verification gate after successful implement/verify-style steps.
 		// Always verify on the main project path (post-merge).
 		if status == v2.TaskPassed && planned && stepNeedsVerifyGate(t.Title, t.Description, t.Index, planStepTotal) {
@@ -3969,7 +3979,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 				} else {
 					summary = gateSum
 				}
-				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, summary)
+				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, stepSummary)
 				_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
 				return &v2.TaskRunResult{
 					TaskIndex:     t.Index,
@@ -4032,10 +4042,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 						summary = gateSum
 					}
 				}
-				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, summary)
+				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, stepSummary)
 			}
 		} else {
-			h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, summary)
+			h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, stepSummary)
 		}
 		_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
 		return &v2.TaskRunResult{
@@ -4105,22 +4115,11 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			h.recordOrchestratedCodingStepStatus(planned, userID, rr.TaskIndex, codingStepSkipped, rr.Error)
 		}
 	}
-	report := formatCodingWorkbenchUserAnswer(requestKind, runResults, runCtx.Err() != nil)
-	// A step that spent its iteration budget is unfinished, not failed for
-	// good. Arm the same session-round wave the chat loop uses so the next
-	// round resumes the open plan step instead of waiting for the user to
-	// send another message. A goal turn already has its own continuation.
-	continuing := false
-	if note, ok := h.continueCodingWorkbenchAfterIterationBudget(loopCtx, userID, userText, runResults, totalToolCalls); ok {
-		// Lead with the continuation: the failure detail below explains the
-		// step, but this round is not the end of the task.
-		if strings.TrimSpace(report) == "" {
-			report = note
-		} else {
-			report = note + "\n\n" + strings.TrimSpace(report)
-		}
-		continuing = true
-	}
+	// A step that spent its iteration budget is unfinished, not a failure.
+	// The next round is already queued, so the transcript does not get a
+	// closing error or a quota notice. A real failure in the same turn stays.
+	_, continuing := h.continueCodingWorkbenchAfterIterationBudget(loopCtx, userID, userText, runResults, totalToolCalls)
+	report := formatCodingWorkbenchUserAnswer(requestKind, codingWorkbenchResultsForReport(runResults, continuing), runCtx.Err() != nil)
 	if lastCodingResult != nil {
 		// Aggregate file audit across multi-step runs for sticky memory.
 		lastCodingResult.FilesModified = uniqueSortedSubAgentStrings(append(lastCodingResult.FilesModified, mergedModified...))
@@ -4165,7 +4164,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		log.Printf("[coding-hooks] post_turn: %s", truncateRunesV2(postTurn.Report, 200))
 	}
 
-	if onToken != nil && codingAgentFinishNeedsToken(report, lastCodingResult, runResults, runCtx.Err() != nil) {
+	if onToken != nil && strings.TrimSpace(report) != "" && codingAgentFinishNeedsToken(report, lastCodingResult, runResults, runCtx.Err() != nil) {
 		onToken("\n\n" + report)
 	}
 
@@ -4176,7 +4175,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// two pure-coding turns (no-tool suppression uses TraceEventCount as proxy).
 	memAfter := h.getStickyCodingWorkbenchMemory(userID)
 	body := report
-	if strings.TrimSpace(body) == "" {
+	if strings.TrimSpace(body) == "" && !continuing {
 		body = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
 	}
 	resp := &IMAgentResponse{Text: body}
@@ -4693,6 +4692,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			if stepResult.Status == "success" {
 				stepStatus = codingStepPassed
 			}
+			if stepStatus == codingStepFailed && codingLoopIterationExhausted(stepResult.Error) {
+				stepStatus = codingStepRunning
+				sum = ""
+			}
 			// Remote step verification gate (parity with local pure-coding).
 			if stepResult.Status == "success" && planned &&
 				stepNeedsVerifyGate(step.Title, step.Description, step.Index, planStepTotal) {
@@ -4815,17 +4818,12 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		codingWorkbenchTurnOutcomeFromPlan(codingWorkbenchTurnOutcomeRemote(resultStatus), failedSteps, cancelled))
 	statusText := formatRemoteCodingPlanStatusText(planned, resultStatus, totalSteps, passedSteps, failedSteps, skippedSteps, remoteCtx.Maintenance)
 	log.Printf("[workflow-v2] remote coding complete: %s", statusText)
-	report := formatCodingWorkbenchUserAnswer(decision.Kind, runResults, cancelled)
-	if strings.TrimSpace(report) == "" {
+	// The next round is already queued. Do not close the transcript with a
+	// limit notice or a task-error paragraph. A real failure still shows.
+	_, continuing := h.continueCodingWorkbenchAfterIterationBudget(loopCtx, userID, userText, runResults, totalTools)
+	report := formatCodingWorkbenchUserAnswer(decision.Kind, codingWorkbenchResultsForReport(runResults, continuing), cancelled)
+	if strings.TrimSpace(report) == "" && !continuing {
 		report = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
-	}
-	// A remote step that spent its iteration budget keeps its plan row open.
-	// Continue the same session in another round instead of asking the user
-	// to send another message. A goal turn has its own continuation.
-	continuing := false
-	if note, ok := h.continueCodingWorkbenchAfterIterationBudget(loopCtx, userID, userText, runResults, totalTools); ok {
-		report = note + "\n\n" + strings.TrimSpace(report)
-		continuing = true
 	}
 	// A round that ended early (failed step, nil result) may never have reached
 	// an iteration boundary, leaving the user's mid-run steering queued. Surface
@@ -4833,7 +4831,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if note := h.pendingSteerInjectionNote(userID); note != "" {
 		report = strings.TrimRight(report, "\n") + "\n\n" + note
 	}
-	if onToken != nil && codingAgentFinishNeedsToken(report, nil, runResults, cancelled) {
+	if onToken != nil && strings.TrimSpace(report) != "" && codingAgentFinishNeedsToken(report, nil, runResults, cancelled) {
 		onToken("\n\n" + report)
 	}
 	resp := &IMAgentResponse{

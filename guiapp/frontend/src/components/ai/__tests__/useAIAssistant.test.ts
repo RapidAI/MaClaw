@@ -2626,6 +2626,24 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.sending).toBe(false);
     });
 
+    it('continues the same task without a user line or an error close', async () => {
+        const session = 'desktop-user:C:/work/tasks/visible';
+        const { result } = renderAssistantHook({ activeSessionKey: session });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: 'session-round-1700000000099',
+                session_key: session,
+                text: '[系统续轮] 继续完成同一任务。',
+                display_text: '这轮推理额度已用完',
+            });
+        });
+
+        expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('');
+    });
+
     it('adopts a session-round continuation that started while another tab was visible', async () => {
         const session = 'desktop-user:C:/work/tasks/session-round';
         const requestId = 'session-round-1700000000001';

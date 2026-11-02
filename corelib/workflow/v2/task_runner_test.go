@@ -288,6 +288,23 @@ func TestTaskRunner_Cancel(t *testing.T) {
 	}
 }
 
+func TestTaskRunProgressLineDoesNotCallTheIterationCapAFailure(t *testing.T) {
+	line := taskRunProgressLine(&TaskItem{Index: 1, Title: "继续优化"}, TaskRunResult{
+		Status: TaskFailed,
+		Error:  "max iterations reached",
+	})
+	if line != "" {
+		t.Fatalf("iteration cap progress = %q, want no status row", line)
+	}
+	failed := taskRunProgressLine(&TaskItem{Index: 2, Title: "编译"}, TaskRunResult{
+		Status: TaskFailed,
+		Error:  "compile error",
+	})
+	if !strings.Contains(failed, "[ERR]") || !strings.Contains(failed, "failed") {
+		t.Fatalf("real failure progress = %q", failed)
+	}
+}
+
 func TestTaskRunner_FinalReport(t *testing.T) {
 	tasks := []*TaskItem{
 		{Index: 1, Title: "Good"},

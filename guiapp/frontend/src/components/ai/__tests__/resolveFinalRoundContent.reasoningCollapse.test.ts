@@ -27,6 +27,33 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         expect(resolveFinalRoundContent(message, { text: note, response_source: 'chat_task_handoff' })).toBe(note);
     });
 
+    it('does not close an automatic continuation with a failure sentence', () => {
+        const message = {
+            ...makeMessage(''),
+            codingTimeline: [{
+                id: 'row-1',
+                sequence: 1,
+                kind: 'progress' as const,
+                content: 'edit source/qmsrcdet_msa.cpp',
+                timestamp: Date.now(),
+            }],
+            toolCalls: [{ id: 'call-1', name: 'edit_file', action: '修改文件', detail: 'qmsrcdet_msa.cpp' }],
+        };
+        const response = {
+            text: '',
+            error: '',
+            response_source: 'session_round_continuation',
+            trace_status: 'failed',
+        };
+        expect(resolveFinalRoundContent(message, response)).toBe('');
+        expect(terminalAssistantResult(message, {
+            ...response,
+            text: '任务运行错误 T1，300 轮迭代，322 次工具调用\n\nmax iterations reached',
+            error: 'max iterations reached',
+        })).toBeUndefined();
+        expect(terminalAssistantResultStatus(message, response)).toBeUndefined();
+    });
+
     it('keeps the host handoff note when the same turn also delivers a file', () => {
         const note = '剩余工作已继续处理，完成后会发到这个对话。';
         const streamed = '后台执行通道没有启动成功。\n\n<!--maclaw-tool:call-1-->\n\n配图还没准备好。';

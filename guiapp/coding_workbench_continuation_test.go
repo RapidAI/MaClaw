@@ -118,6 +118,52 @@ func TestCodingWorkbenchSessionRoundKeepsTheOriginalTask(t *testing.T) {
 	}
 }
 
+func TestIterationLimitIsNotShownAsATaskError(t *testing.T) {
+	prev, _ := agentViewCurrentLang.Load().(string)
+	agentViewCurrentLang.Store("zh-Hans")
+	t.Cleanup(func() { agentViewCurrentLang.Store(prev) })
+
+	handoff := v2.TaskRunResult{
+		TaskIndex: 1,
+		Title:     "继续优化",
+		Status:    v2.TaskFailed,
+		Summary:   "任务运行错误 T1，300 轮迭代，322 次工具调用",
+		Error:     "max iterations reached",
+	}
+	real := v2.TaskRunResult{
+		TaskIndex: 2,
+		Title:     "编译",
+		Status:    v2.TaskFailed,
+		Summary:   "任务运行错误 T2，12 轮迭代，4 次工具调用",
+		Error:     "编译失败",
+	}
+
+	shown := formatCodingAgentResultParagraph(handoff)
+	if strings.Contains(shown, "任务运行错误") || strings.Contains(shown, "max iterations reached") || strings.Contains(shown, "额度") || strings.Contains(shown, "异常") {
+		t.Fatalf("iteration cap shown as a task error: %q", shown)
+	}
+	if !strings.Contains(shown, "迭代上限") {
+		t.Fatalf("manual stop should say the round can continue: %q", shown)
+	}
+
+	continued := formatCodingWorkbenchUserAnswer(codingRequestImplementation, codingWorkbenchResultsForReport([]v2.TaskRunResult{handoff}, true), false)
+	if strings.TrimSpace(continued) != "" {
+		t.Fatalf("an automatic next round should not close the transcript: %q", continued)
+	}
+	withFailure := formatCodingWorkbenchUserAnswer(codingRequestImplementation, codingWorkbenchResultsForReport([]v2.TaskRunResult{handoff, real}, true), false)
+	if strings.Contains(withFailure, "迭代上限") || strings.Contains(withFailure, "max iterations reached") || strings.Contains(withFailure, "额度") {
+		t.Fatalf("queued continuation still showed the cap: %q", withFailure)
+	}
+	if !strings.Contains(withFailure, "编译失败") {
+		t.Fatalf("a real failure was dropped from the continued report: %q", withFailure)
+	}
+
+	note := sessionRoundContinuationNote("继续优化")
+	if note != "接着做。" || strings.Contains(note, "额度") || strings.Contains(note, "错误") {
+		t.Fatalf("continuation note = %q", note)
+	}
+}
+
 func TestCodingWorkbenchIterationExhaustionArmsSessionRound(t *testing.T) {
 	h := newCodingWorkbenchContinuationHandler(t)
 	userID := "desktop-user:coding-continuation"

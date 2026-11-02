@@ -144,14 +144,13 @@ func (r *TaskRunner) runAllSequential(ctx context.Context, tasks []*TaskItem, on
 		r.results[i] = result
 
 		if onProgress != nil {
-			mark := "[OK]"
-			if result.Status == TaskFailed {
-				mark = "[ERR]"
+			if line := taskRunProgressLine(task, result); line != "" {
+				onProgress(line)
 			}
-			onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
 		}
 		// A failed step ends the sequence. Later steps have no license to run
-		// just because they forgot depends_on.
+		// just because they forgot depends_on. An iteration-cap handoff is
+		// still a stop for this round: the host queues the next round.
 		if result.Status == TaskFailed {
 			r.skipUnstartedAfterFailure(tasks)
 			return r.results
@@ -262,11 +261,9 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 			done[i] = true
 			remaining--
 			if onProgress != nil {
-				mark := "[OK]"
-				if result.Status == TaskFailed {
-					mark = "[ERR]"
+				if line := taskRunProgressLine(task, result); line != "" {
+					onProgress(line)
 				}
-				onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
 			}
 			if result.Status == TaskFailed {
 				r.skipUnstartedAfterFailure(tasks)
@@ -323,11 +320,9 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 				// Progress can emit UI work. Keep it off the result lock so it
 				// cannot re-enter safeToken while this wave still holds mu.
 				if safeProgress != nil {
-					mark := "[OK]"
-					if result.Status == TaskFailed {
-						mark = "[ERR]"
+					if line := taskRunProgressLine(task, result); line != "" {
+						safeProgress(line)
 					}
-					safeProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
 				}
 			}()
 		}
@@ -340,6 +335,31 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 		}
 	}
 	return r.results
+}
+
+// taskRunProgressLine is the one status row for a finished step.
+// An iteration-cap handoff is not a failure the person should see. The next
+// round is already queued, so this row stays quiet.
+func taskRunProgressLine(task *TaskItem, result TaskRunResult) string {
+	if result.Status == TaskFailed && iterationBudgetSpent(result.Error) {
+		return ""
+	}
+	index := 0
+	title := ""
+	if task != nil {
+		index = task.Index
+		title = task.Title
+	}
+	mark := "[OK]"
+	label := string(result.Status)
+	if result.Status == TaskFailed {
+		mark = "[ERR]"
+	}
+	return fmt.Sprintf("%s T%d: %s — %s", mark, index, title, label)
+}
+
+func iterationBudgetSpent(errText string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(errText)), "max iterations reached")
 }
 
 // skipUnstartedAfterFailure marks every step that has not already finished.

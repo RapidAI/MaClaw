@@ -387,19 +387,19 @@ func sessionRoundContinuationPrompt(task string) string {
 }
 
 func sessionRoundContinuationNote(task string) string {
-	minimal := "Round used up; continuing."
+	// The next round is already queued. This is not an error and not a quota.
+	// A model rewrite of "reasoning budget" was shown as "推理额度已用完".
 	if sessionRoundTextHasHan(task) {
-		minimal = "这轮用完了，接着做。"
+		return "接着做。"
 	}
-	return botNotice("session-round-note", "notice", "This round's reasoning budget is used up; the same task continues automatically in a new round.", truncateRunes(task, 200), botNoticeLang(task), minimal, 3*time.Second)
+	return "Continuing."
 }
 
 func sessionRoundContinuationDisplay(task string) string {
-	minimal := "Continuing"
 	if sessionRoundTextHasHan(task) {
-		minimal = "接着做"
+		return "接着做"
 	}
-	return botNotice("session-round-display", "notice", "A short status label: still continuing the same task.", truncateRunes(task, 200), botNoticeLang(task), minimal, 2*time.Second)
+	return "Continuing"
 }
 
 func sessionRoundTextHasHan(text string) bool {

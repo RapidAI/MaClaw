@@ -65,6 +65,12 @@ func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 	files := formatCodingAgentTouchedFiles(result.FilesCreated, result.FilesModified)
 	switch result.Status {
 	case v2.TaskFailed:
+		if codingLoopIterationExhausted(result.Error) {
+			if summary != "" && !codingAgentSummaryIsIterationFallback(summary) && !codingAgentSummaryLooksSuccessful(summary) {
+				return summary
+			}
+			return codingIterationLimitParagraph()
+		}
 		if err != "" && codingAgentSummaryLooksSuccessful(summary) {
 			if files != "" {
 				return files + "\n\n" + err
@@ -141,6 +147,36 @@ func emitCodingAgentFinishToken(onToken func(string), report string, results []v
 		return
 	}
 	onToken("\n\n" + report)
+}
+
+func codingAgentSummaryIsIterationFallback(summary string) bool {
+	summary = strings.TrimSpace(summary)
+	return strings.HasPrefix(summary, "任务运行错误") || strings.Contains(strings.ToLower(summary), "max iterations reached")
+}
+
+func codingIterationLimitParagraph() string {
+	return codingExecText(
+		"This round hit the iteration limit. Send another message to continue.",
+		"这一轮到了迭代上限。再发一条消息可以接着做。",
+		"這一輪到了迭代上限。再發一條消息可以接著做。",
+	)
+}
+
+// codingWorkbenchResultsForReport drops an iteration-cap handoff from the
+// visible answer once the next round is already queued. A real failure in
+// the same turn stays.
+func codingWorkbenchResultsForReport(results []v2.TaskRunResult, continuing bool) []v2.TaskRunResult {
+	if !continuing {
+		return results
+	}
+	kept := make([]v2.TaskRunResult, 0, len(results))
+	for _, result := range results {
+		if result.Status == v2.TaskFailed && codingLoopIterationExhausted(result.Error) {
+			continue
+		}
+		kept = append(kept, result)
+	}
+	return kept
 }
 
 func formatCodingAgentVisibleError(err string) string {

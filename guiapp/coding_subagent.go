@@ -1008,7 +1008,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	log.Printf("[coding-subagent] task T%d finished: status=%s iterations=%d tools=%d err=%q",
 		taskDisplayNumber(task), status, result.Iterations, result.ToolCalls, errMsg)
-	if s.onProgress != nil {
+	if s.onProgress != nil && !(status == TaskExecFailed && codingLoopIterationExhausted(errMsg)) {
 		event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, task, taskTitle, "")
 		event.Detail = string(status)
 		emitCodingAgentEvent(s.onProgress, event)

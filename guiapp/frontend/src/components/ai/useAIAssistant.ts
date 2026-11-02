@@ -3032,6 +3032,7 @@ export function isTerminalClassCode(error: string): boolean {
 /** The model's final message. Independent of the live tool transcript in content. */
 export function terminalAssistantResult(message: ChatMessage, response: any): string | undefined {
     if (!message.toolCalls?.length) return undefined;
+    if (resolveResponseSource(response) === 'session_round_continuation') return undefined;
     const raw = typeof response?.text === "string" ? response.text : "";
     let text = stripAssistantToolCallMarkers(stripRolePrefixFrontend(raw)).trim();
     const err = typeof response?.error === "string" ? response.error.trim() : "";
@@ -3051,6 +3052,7 @@ export function terminalAssistantResultStatus(message: ChatMessage, response: an
         return "incomplete";
     }
     if (typeof response?.error === "string" && response.error.trim()) return "incomplete";
+    if (resolveResponseSource(response) === 'session_round_continuation') return undefined;
     if (isFailedTerminalTraceStatus(response?.trace_status)) return "incomplete";
     return "completed";
 }
@@ -3091,6 +3093,12 @@ function selectFinalRoundContent(message: ChatMessage, response: any): string {
     // The bubble is the official finish report, even when the stream is longer.
     if (finalText && ((message.codingTimeline?.length ?? 0) > 0 || (message.pendingCodingThoughts?.length ?? 0) > 0)) {
         return finalText;
+    }
+
+    // An automatic next round is not a finished answer. Keep the working
+    // trail and do not invent "任务已结束" or "任务未完成".
+    if (resolveResponseSource(response) === 'session_round_continuation' && !finalText) {
+        return streamedContent ? stripRolePrefixFrontend(streamedContent) : '';
     }
 
     // --- Layer 2: Length comparison ---
@@ -5025,11 +5033,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         forgetOffscreenLiveRound(requestId);
         setRoundState(nextRound);
         emitPetStateForAssistant('thinking', 'ai:event-round-start', 15000);
+        const sessionRound = requestId.startsWith('session-round-');
         const goalRound = requestId.startsWith('goal-cont-');
         setMessages(prev => {
             // An adopted offscreen round already passed its start event. It has
             // no display row to add now; only the placeholder its tokens need.
-            if (startOptions?.silent) {
+            // A session-round is the same task continuing. It does not insert
+            // a user line the person did not send.
+            if (startOptions?.silent || sessionRound) {
                 return [...prev, {
                     id: assistantMessageId,
                     role: 'assistant' as const,
