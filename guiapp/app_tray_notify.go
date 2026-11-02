@@ -33,6 +33,11 @@ func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
 	if resp == nil || ShowNotification == nil {
 		return
 	}
+	// An iteration-cap handoff already queued the next round. It is not a
+	// finished task, and an empty reply must not balloon "任务完成了".
+	if resp.sessionRoundContinue || strings.TrimSpace(resp.ResponseSource) == sessionRoundContinuationSource {
+		return
+	}
 	source := canonicalIMResponseSourceKind(resp.ResponseSource)
 	if source == imResponseSourceCancel {
 		// User-initiated cancellation; the user already knows.

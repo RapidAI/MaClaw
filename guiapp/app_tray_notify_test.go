@@ -108,6 +108,14 @@ func TestNotifyTaskResponseTrayRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("iteration handoff is silent", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{ResponseSource: sessionRoundContinuationSource, sessionRoundContinue: true})
+		if len(*notifs) != 0 || *flashes != 0 {
+			t.Fatalf("continuation notified %+v flashes=%d", *notifs, *flashes)
+		}
+	})
+
 	t.Run("completion names the task", func(t *testing.T) {
 		reset()
 		a.notifyTaskResponseTray(&IMAgentResponse{
