@@ -2026,11 +2026,16 @@ func TestConsumePendingTemplateRemoteCodingExecutionShowsFailureReason(t *testin
 		nil,
 		false,
 	)
-	// The failure summary now surfaces the runner's own wording plus the raw
-	// error instead of the older templated "远程编程未完成…失败原因：…" banner;
-	// the invariant is that the failure reason is never swallowed.
-	if !handled || resp == nil || !strings.Contains(resp.Text, "max iterations reached") {
-		t.Fatalf("failed remote template response should retain the failure reason, handled=%v resp=%#v", handled, resp)
+	text := ""
+	if resp != nil {
+		text = resp.Text
+	}
+	// The cap is explained in the reply. The raw loop error is not a task failure.
+	if !handled || resp == nil || !strings.Contains(text, "已完成远程检查") || !strings.Contains(text, "iteration limit") {
+		t.Fatalf("failed remote template response should explain the iteration cap, handled=%v text=%q", handled, text)
+	}
+	if strings.Contains(text, "max iterations reached") {
+		t.Fatalf("raw loop error leaked into the reply: %q", text)
 	}
 }
 
