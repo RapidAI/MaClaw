@@ -1,0 +1,93 @@
+2026/11/01 06:25:22 [browser-search] engine=google hits=6
+2026/11/01 07:10:34 [browser-search] engine=google hits=6
+2026/11/01 07:55:40 [browser-search] engine=google hits=6
+2026/11/01 08:40:48 [browser-search] engine=google hits=6
+2026/11/01 09:26:03 [browser-search] engine=google hits=6
+2026/11/01 10:11:08 [browser-search] engine=google hits=6
+2026/11/01 10:56:16 [browser-search] engine=google hits=6
+2026/11/01 11:41:19 [browser-search] waiting for manual verification engine=google
+2026/11/01 11:46:55 [browser-search] waiting for manual verification engine=google
+2026/11/01 11:52:31 [browser-search] waiting for manual verification engine=google
+2026/11/01 11:58:08 [browser-search] waiting for manual verification engine=google
+2026/11/01 12:03:45 [browser-search] waiting for manual verification engine=google
+2026/11/01 12:09:22 [browser-search] waiting for manual verification engine=google
+2026/11/01 12:14:57 [browser-search] engine=google hits=6
+2026/11/01 13:00:04 [browser-search] engine=google hits=6
+2026/11/01 13:30:51 [browser-search] engine=google hits=6
+2026/11/01 13:36:49 [browser-search] engine=google hits=6
+2026/11/01 13:39:22 [browser-search] engine=google hits=6
+2026/11/01 13:41:17 [browser-search] engine=google hits=6
+2026/11/01 13:42:00 [browser-search] engine=google hits=6
+2026/11/01 13:45:09 [browser-search] engine=google hits=6
+2026/11/01 14:30:14 [browser-search] engine=google hits=6
+2026/11/01 14:49:53 [browser-search] engine=google hits=6
+2026/11/01 15:15:20 [browser-search] engine=google hits=6
+2026/11/01 16:00:24 [browser-search] engine=google hits=6
+2026/11/01 16:45:29 [browser-search] waiting for manual verification engine=google
+2026/11/01 16:51:06 [browser-search] waiting for manual verification engine=google
+2026/11/01 16:56:42 [browser-search] waiting for manual verification engine=google
+2026/11/01 17:02:17 [browser-search] waiting for manual verification engine=google
+2026/11/01 17:07:52 [browser-search] waiting for manual verification engine=google
+2026/11/01 17:13:27 [browser-search] engine=google hits=6
+2026/11/01 17:58:32 [browser-search] engine=google hits=6
+2026/11/01 18:43:39 [browser-search] engine=google hits=6
+2026/11/01 19:28:45 [browser-search] engine=google hits=6
+2026/11/01 19:55:03 [browser-search] engine=google hits=6
+2026/11/01 20:14:03 [browser-search] engine=google hits=6
+2026/11/01 20:59:10 [browser-search] engine=google hits=6
+2026/11/01 21:44:17 [browser-search] engine=google hits=6
+2026/11/01 21:57:43 [browser-search] engine=google hits=6
+2026/11/01 22:29:24 [browser-search] engine=google hits=6
+2026/11/01 23:14:28 [browser-search] engine=google hits=6
+2026/11/01 23:59:34 [browser-search] engine=google hits=6
+2026/11/02 00:20:09 [browser-search] engine=google hits=6
+2026/11/02 00:44:40 [browser-search] engine=google hits=6
+2026/11/02 01:29:46 [browser-search] engine=google hits=6
+2026/11/02 02:14:53 [browser-search] engine=google hits=6
+2026/11/02 02:59:58 [browser-search] engine=google hits=6
+2026/11/02 03:45:06 [browser-search] engine=google hits=6
+2026/11/02 04:30:12 [browser-search] engine=google hits=6
+2026/11/02 04:52:04 [browser-search] engine=google hits=6
+2026/11/02 05:15:18 [browser-search] engine=google hits=6
+2026/11/02 06:00:25 [browser-search] engine=google hits=6
+2026/11/02 06:45:41 [browser-search] engine=google hits=6
+2026/11/02 07:30:49 [browser-search] engine=google hits=6
+2026/11/02 08:16:13 [browser-search] engine=google hits=6
+2026/11/02 09:01:17 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:06:53 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:12:29 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:18:04 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:23:40 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:29:15 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:34:51 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:40:05 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:40:40 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:46:02 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:51:37 [browser-search] waiting for manual verification engine=google
+2026/11/02 09:57:13 [browser-search] waiting for manual verification engine=google
+2026/11/02 10:02:49 [browser-search] waiting for manual verification engine=google
+2026/11/02 10:07:24 [browser-search] waiting for manual verification engine=google
+2026/11/02 10:13:01 [browser-search] engine=google hits=6
+2026/11/02 10:23:29 [fetch] start url="https://opencode.ai/docs/zen/" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:23:30 [fetch] success url="https://opencode.ai/docs/zen/" final="https://opencode.ai/v2/docs/console/models/" bytes=57151 dur=1.108s speed=50.4 KB/s saved="" attempts=1 level=0
+2026/11/02 10:23:32 [fetch] start url="https://opencode.ai/docs/go/" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:23:32 [fetch] success url="https://opencode.ai/docs/go/" final="https://opencode.ai/v2/docs/console/go/" bytes=67319 dur=467ms speed=140.8 KB/s saved="" attempts=1 level=0
+2026/11/02 10:23:32 [fetch] start url="https://opencode.ai/pricing" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:23:33 [fetch] success url="https://opencode.ai/pricing" final="https://opencode.ai/console/go" bytes=81262 dur=490ms speed=162.1 KB/s saved="" attempts=1 level=0
+2026/11/02 10:23:36 [fetch] start url="https://ollama.com/pricing" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:23:38 [fetch] success url="https://ollama.com/pricing" final="https://ollama.com/pricing" bytes=50984 dur=1.495s speed=33.3 KB/s saved="" attempts=1 level=0
+2026/11/02 10:23:41 [fetch] start url="https://opencode.ai/docs/go/" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:23:42 [fetch] success url="https://opencode.ai/docs/go/" final="https://opencode.ai/v2/docs/console/go/" bytes=67319 dur=470ms speed=140.0 KB/s saved="" attempts=1 level=0
+2026/11/02 10:27:21 [browser-search] engine=google hits=6
+2026/11/02 10:36:23 [fetch] start url="https://github.com/tibrezus/FastFlowLM/blob/docs/xdna1-feasibility/docs/XDNA1-FEASIBILITY.md" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:36:24 [fetch] success url="https://github.com/tibrezus/FastFlowLM/blob/docs/xdna1-feasibility/docs/XDNA1-FEASIBILITY.md" final="https://github.com/tibrezus/FastFlowLM/blob/docs/xdna1-feasibility/docs/XDNA1-FEASIBILITY.md" bytes=277769 dur=1.181s speed=229.7 KB/s saved="" attempts=1 level=0
+2026/11/02 10:47:53 [fetch] start url="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/example_c.html" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:47:54 [fetch] success url="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/example_c.html" final="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/example_c.html" bytes=35711 dur=909ms speed=38.4 KB/s saved="" attempts=1 level=0
+2026/11/02 10:48:08 [fetch] start url="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/api/rmlgetmodelinputinfo.html" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:48:08 [fetch] success url="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/api/rmlgetmodelinputinfo.html" final="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/api/rmlgetmodelinputinfo.html" bytes=15631 dur=326ms speed=46.8 KB/s saved="" attempts=1 level=0
+2026/11/02 10:48:14 [fetch] start url="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/data_structs/rml_tensor_info.html" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:48:14 [fetch] success url="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/data_structs/rml_tensor_info.html" final="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/data_structs/rml_tensor_info.html" bytes=14036 dur=304ms speed=45.1 KB/s saved="" attempts=1 level=0
+2026/11/02 10:48:14 [fetch] start url="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/info_setting_types/rml_dtype.html" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:48:15 [fetch] success url="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/info_setting_types/rml_dtype.html" final="https://radeon-pro.github.io/RadeonProRenderDocs/en/rml/info_setting_types/rml_dtype.html" bytes=9335 dur=319ms speed=28.6 KB/s saved="" attempts=1 level=0
+2026/11/02 10:48:22 [fetch] start url="https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/RadeonML/master/include/rml/RadeonML.h" save_path="" max_bytes=2097152 timeout=600s custom_headers=
+2026/11/02 10:48:22 [fetch] success url="https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/RadeonML/master/include/rml/RadeonML.h" final="https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/RadeonML/master/include/rml/RadeonML.h" bytes=22584 dur=441ms speed=50.1 KB/s saved="" attempts=1 level=0

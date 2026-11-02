@@ -599,6 +599,32 @@ describe('UtilitiesPage AI expert section', () => {
         expect(screen.getByTestId('utilities-expert-new-card')).toBeTruthy();
     });
 
+    it('shows four rows of expert cards per page', async () => {
+        const many = Array.from({ length: 17 }, (_, index) => ({
+            ...userExpert,
+            id: `user-exp-${index + 1}`,
+            name: `专家 ${index + 1}`,
+            builtin: false,
+        }));
+        installAppSpies(many);
+        render(<UtilitiesPage lang="zh-Hans" mode="experts" />);
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy());
+        expect(screen.getByTestId('utilities-expert-card-user-exp-16')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-expert-card-user-exp-17')).toBeNull();
+        expect(screen.getByRole('navigation', { name: '专家列表分页' }).textContent).toContain('第 1 / 2 页');
+        expect(screen.getByTestId('utilities-expert-new-card')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+        expect(await screen.findByTestId('utilities-expert-card-user-exp-17')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-expert-card-user-exp-1')).toBeNull();
+        expect(screen.getByRole('navigation', { name: '专家列表分页' }).textContent).toContain('第 2 / 2 页');
+
+        fireEvent.change(screen.getByTestId('utilities-expert-search'), { target: { value: '专家' } });
+        expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-expert-card-user-exp-17')).toBeNull();
+        expect(screen.getByRole('navigation', { name: '专家列表分页' }).textContent).toContain('第 1 / 2 页');
+    });
+
     it('filter chips split system defaults from user-created experts', async () => {
         render(<UtilitiesPage lang="zh-Hans" />);
         await waitFor(() => expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy());

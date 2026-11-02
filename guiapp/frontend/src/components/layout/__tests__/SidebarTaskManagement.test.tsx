@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
-import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksByWorkingDirectory, groupTasksIntoFolders, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskBlocks, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_ARCHIVE_EXPANDED_STORAGE_KEY, TASK_ARCHIVE_STORAGE_KEY, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, TASK_WORKDIR_COLLAPSE_STORAGE_KEY, taskCreationLabel, taskHomeFolderKind, taskListFolderKind, taskListStatusKind, taskOrderKey, taskSecondaryLabelFor, taskStatusBucketFor, taskWorkdirCollapseKey, taskWorkingDirectoryIdentity, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksByWorkingDirectory, groupTasksIntoFolders, layoutWorkdirEntries, moveTaskKeysToFront, placeTaskOrderKeyAmong, TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY, TASK_WORKDIR_PIN_STORAGE_KEY, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskBlocks, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_ARCHIVE_EXPANDED_STORAGE_KEY, TASK_ARCHIVE_STORAGE_KEY, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, TASK_WORKDIR_COLLAPSE_STORAGE_KEY, taskCreationLabel, taskHomeFolderKind, taskListFolderKind, taskListStatusKind, taskOrderKey, taskSecondaryLabelFor, taskStatusBucketFor, taskWorkdirCollapseKey, taskWorkingDirectoryIdentity, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -6351,11 +6351,34 @@ describe('task list folders', () => {
             { ...source, id: 's4', project_path: 'D:/work/tasks/s4', working_dir: 'E:/work/src' },
         ]);
         expect(sameParent.map(entry => entry.kind === 'folder' ? entry.folder.label : '')).toEqual(['D:/work/src', 'E:/work/src']);
-        const pinnedApart = groupTasksByWorkingDirectory([
-            { ...source, id: 'pin', project_path: 'D:/work/tasks/pin', pinned: true },
+        const pinnedTogether = layoutWorkdirEntries([
+            { ...source, id: 'solo', project_path: 'D:/work/tasks/solo', working_dir: 'D:/solo', pinned: false },
             { ...source, id: 'plain', project_path: 'D:/work/tasks/plain', pinned: false },
+            { ...source, id: 'pin', project_path: 'D:/work/tasks/pin', pinned: true },
+        ], 'coding', new Set());
+        expect(pinnedTogether.map(entry => entry.kind === 'folder' ? 'folder' : entry.task.id)).toEqual(['solo', 'folder']);
+        expect(pinnedTogether[1].kind === 'folder' && pinnedTogether[1].folder.tasks.map(task => task.id)).toEqual(['pin', 'plain']);
+        const folderKey = taskWorkdirCollapseKey('coding', 'local:f:/test-prog');
+        const lifted = layoutWorkdirEntries([
+            { ...source, id: 'plain', project_path: 'D:/work/tasks/plain', pinned: false },
+            { ...source, id: 'pin', project_path: 'D:/work/tasks/pin', pinned: true },
+            { ...source, id: 'solo', project_path: 'D:/work/tasks/solo', working_dir: 'D:/solo', pinned: true },
+        ], 'coding', new Set([folderKey]));
+        expect(lifted.map(entry => entry.kind)).toEqual(['folder', 'task']);
+        const split = layoutWorkdirEntries([
+            { ...source, id: 'pin', project_path: 'D:/work/tasks/pin', pinned: true },
+            { ...source, id: 'solo', project_path: 'D:/work/tasks/solo', working_dir: 'D:/solo', pinned: false },
+            { ...source, id: 'plain', project_path: 'D:/work/tasks/plain', pinned: false },
+        ], 'coding', new Set(), [
+            taskOrderKey({ ...source, project_path: 'D:/work/tasks/pin' }),
+            taskOrderKey({ ...source, project_path: 'D:/work/tasks/solo', working_dir: 'D:/solo' }),
+            taskOrderKey({ ...source, project_path: 'D:/work/tasks/plain' }),
         ]);
-        expect(pinnedApart.every(entry => entry.kind === 'task')).toBe(true);
+        expect(split.map(entry => entry.kind === 'folder' ? 'folder' : entry.task.id)).toEqual(['solo', 'folder']);
+        expect(split[1].kind === 'folder' && split[1].folder.tasks.map(task => task.id)).toEqual(['pin', 'plain']);
+        expect(placeTaskOrderKeyAmong(['solo', 'a', 'b', 'c'], 'c', true, new Set(['a', 'b', 'c']), new Set())).toEqual(['solo', 'c', 'a', 'b']);
+        expect(placeTaskOrderKeyAmong(['solo', 'a', 'b', 'c'], 'a', false, new Set(['a', 'b', 'c']), new Set(['b']))).toEqual(['solo', 'b', 'a', 'c']);
+        expect(moveTaskKeysToFront(['s', 'a', 't', 'b'], ['b', 'a'])).toEqual(['a', 'b', 's', 't']);
         expect(reorderTaskBlocks(['a1', 'a2', 'c'], ['a1', 'a2', 'c'], ['c'], ['a1', 'a2'])).toEqual(['c', 'a1', 'a2']);
         expect(reorderTaskBlocks(['a1', 'a2', 'c'], ['a1', 'a2', 'c'], ['a1', 'a2'], ['c'])).toEqual(['c', 'a1', 'a2']);
 
@@ -6382,10 +6405,102 @@ describe('task list folders', () => {
         expect(workdir.getAttribute('data-expanded')).toBe('false');
         expect(within(workdir).queryByText('编程开发测试')).toBeNull();
         expect(within(codingFolder).getByText('图形界面')).toBeTruthy();
-        expect(JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]')).toEqual(['coding:0:local:f:/test-prog']);
+        expect(JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]')).toEqual(['coding:local:f:/test-prog']);
 
         fireEvent.click(within(workdir).getByTestId('task-workdir-toggle'));
         expect(within(workdir).getByText('编程开发测试')).toBeTruthy();
+    });
+
+    it('pins a directory folder from its menu without pulling a pinned task out of it', () => {
+        localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        localStorage.removeItem(TASK_WORKDIR_PIN_STORAGE_KEY);
+        localStorage.removeItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY);
+        try {
+            const source = { ...baseProject, tags: ['coding_dev'] as string[], working_dir: 'F:/test-prog' };
+            const older = { ...source, id: 'a', name: '文件夹甲', project_path: 'D:/work/tasks/a', created_at: '2026-10-01T00:00:00Z' };
+            const newer = { ...source, id: 'b', name: '文件夹乙', project_path: 'D:/work/tasks/b', created_at: '2026-10-02T00:00:00Z', pinned: true };
+            const solo = { ...baseProject, id: 'solo', name: '单独置顶', project_path: 'D:/work/tasks/solo', tags: ['coding_dev'], working_dir: 'D:/solo', pinned: true, created_at: '2026-10-03T00:00:00Z' };
+            renderTaskManagement({ lang: 'zh', tasks: [older, newer, solo] });
+
+            const codingFolder = screen.getByTestId('task-folder-coding');
+            const workdir = within(codingFolder).getByTestId('task-workdir-folder');
+            expect(workdir.getAttribute('data-pinned')).toBe('false');
+            expect(within(workdir).getByTestId('task-workdir-toggle').getAttribute('title')).toContain('右键置顶');
+            expect(within(workdir).getByText('文件夹乙')).toBeTruthy();
+            expect(within(workdir).getByText('文件夹甲')).toBeTruthy();
+            expect((codingFolder.textContent || '').indexOf('单独置顶')).toBeLessThan((codingFolder.textContent || '').indexOf('文件夹乙'));
+            expect((workdir.textContent || '').indexOf('文件夹乙')).toBeLessThan((workdir.textContent || '').indexOf('文件夹甲'));
+
+            fireEvent.contextMenu(within(workdir).getByTestId('task-workdir-toggle'));
+            expect(screen.getByTestId('task-workdir-context-menu').textContent).toContain('置顶');
+            fireEvent.click(screen.getByTestId('task-workdir-context-pin'));
+
+            const pinnedFolder = screen.getByTestId('task-workdir-folder');
+            expect(pinnedFolder.getAttribute('data-pinned')).toBe('true');
+            expect(within(pinnedFolder).getByTestId('task-workdir-toggle').getAttribute('title')).toContain('右键取消置顶');
+            expect(within(pinnedFolder).getByTestId('task-workdir-pinned').textContent).toContain('置顶');
+            const pinnedText = screen.getByTestId('task-folder-coding').textContent || '';
+            expect(pinnedText.indexOf('test-prog')).toBeLessThan(pinnedText.indexOf('单独置顶'));
+            expect(within(pinnedFolder).getByText('文件夹乙')).toBeTruthy();
+
+            fireEvent.contextMenu(screen.getByTestId('task-workdir-toggle'));
+            expect(screen.getByTestId('task-workdir-context-menu').textContent).toContain('取消置顶');
+            fireEvent.click(screen.getByTestId('task-workdir-context-pin'));
+            expect(screen.getByTestId('task-workdir-folder').getAttribute('data-pinned')).toBe('false');
+            expect(JSON.parse(localStorage.getItem(TASK_WORKDIR_PIN_STORAGE_KEY) || '[]')).toEqual([]);
+            const restored = screen.getByTestId('task-folder-coding').textContent || '';
+            expect(restored.indexOf('单独置顶')).toBeLessThan(restored.indexOf('文件夹乙'));
+            expect(localStorage.getItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY)).toBeNull();
+        } finally {
+            localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+            localStorage.removeItem(TASK_WORKDIR_PIN_STORAGE_KEY);
+            localStorage.removeItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY);
+        }
+    });
+
+    it('keeps a newer unpinned task above older ones when a folder is pinned', () => {
+        localStorage.removeItem(TASK_WORKDIR_PIN_STORAGE_KEY);
+        localStorage.removeItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY);
+        const source = { ...baseProject, tags: ['coding_dev'] as string[], working_dir: 'F:/maclaw' };
+        const older = { ...source, id: 'a', name: '目录甲', project_path: 'D:/work/tasks/a', created_at: '2026-10-01T00:00:00Z' };
+        const newer = { ...source, id: 'b', name: '目录乙', project_path: 'D:/work/tasks/b', created_at: '2026-10-02T00:00:00Z' };
+        const kept = { ...baseProject, id: 'kept', name: '较早单独', project_path: 'D:/work/tasks/kept', tags: ['coding_dev'], working_dir: 'D:/kept', created_at: '2026-09-01T00:00:00Z' };
+        const fresh = { ...baseProject, id: 'fresh', name: '新的单独', project_path: 'D:/work/tasks/fresh', tags: ['coding_dev'], working_dir: 'D:/fresh', created_at: '2026-10-20T00:00:00Z' };
+        localStorage.setItem(TASK_LIST_ORDER_STORAGE_KEY, JSON.stringify([taskOrderKey(kept), taskOrderKey(older), taskOrderKey(newer)]));
+        try {
+            renderTaskManagement({ lang: 'zh', tasks: [older, newer, kept, fresh] });
+            const before = screen.getByTestId('task-folder-coding').textContent || '';
+            expect(before.indexOf('新的单独')).toBeLessThan(before.indexOf('较早单独'));
+
+            fireEvent.contextMenu(screen.getByTestId('task-workdir-toggle'));
+            fireEvent.click(screen.getByTestId('task-workdir-context-pin'));
+
+            const after = screen.getByTestId('task-folder-coding').textContent || '';
+            expect(after.indexOf('maclaw')).toBeLessThan(after.indexOf('新的单独'));
+            expect(after.indexOf('新的单独')).toBeLessThan(after.indexOf('较早单独'));
+            expect(screen.getByTestId('task-workdir-folder').getAttribute('data-expanded')).toBe('true');
+
+            const toggle = screen.getByTestId('task-workdir-toggle');
+            fireEvent.mouseDown(toggle, { button: 2 });
+            fireEvent.click(toggle);
+            expect(screen.getByTestId('task-workdir-folder').getAttribute('data-expanded')).toBe('true');
+            fireEvent.mouseDown(toggle, { button: 0 });
+            fireEvent.click(toggle);
+            expect(screen.getByTestId('task-workdir-folder').getAttribute('data-expanded')).toBe('false');
+
+            fireEvent.contextMenu(screen.getByTestId('task-workdir-toggle'));
+            fireEvent.click(screen.getByTestId('task-workdir-context-pin'));
+            const restored = screen.getByTestId('task-folder-coding').textContent || '';
+            expect(restored.indexOf('新的单独')).toBeLessThan(restored.indexOf('较早单独'));
+            expect(restored.indexOf('较早单独')).toBeLessThan(restored.indexOf('maclaw'));
+            expect(JSON.parse(localStorage.getItem(TASK_LIST_ORDER_STORAGE_KEY) || '[]')).toEqual([
+                taskOrderKey(kept), taskOrderKey(older), taskOrderKey(newer),
+            ]);
+        } finally {
+            localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+            localStorage.removeItem(TASK_WORKDIR_PIN_STORAGE_KEY);
+            localStorage.removeItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY);
+        }
     });
 
     it('groups remote tasks by the remote working directory', () => {
@@ -6563,7 +6678,7 @@ describe('task list folders', () => {
         const archivedChat = { ...chat, working_dir: 'D:/work/site' };
         const extra = { ...chat, id: 'chat-2', name: 'Notes', project_path: 'D:/work/tasks/notes', working_dir: 'D:/work/site' };
         const identity = taskWorkingDirectoryIdentity(archivedChat);
-        const collapseKey = taskWorkdirCollapseKey('session', false, identity?.key || '');
+        const collapseKey = taskWorkdirCollapseKey('session', identity?.key || '');
         localStorage.setItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY, JSON.stringify([collapseKey]));
         localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(archivedChat)]));
         renderTaskManagement({

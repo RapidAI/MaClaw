@@ -763,7 +763,15 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		} else if verifyCmd := ensureProjectVerifyCommand(context.Background(), s.projectPath); verifyCmd != "" {
 			// Check if model already ran a verification command during the loop
 			if !hasSubAgentSelfVerified(cb) {
-				s.runPostLoopVerifyFixCycle(cb, &result, verifyCmd, traj)
+				taskFiles := append(append([]string{}, cb.getFilesModified()...), cb.getFilesCreated()...)
+				scoped, skip, reason := scopeGoVerifyToTaskAt(verifyCmd, s.projectPath, taskFiles, localVerifyBuildOutDir())
+				if skip {
+					// Untouched packages can already fail go vet. That history
+					// is not this task, so don't spend a fix round on it.
+					log.Printf("[coding-subagent-verify] skip: %s", reason)
+				} else {
+					s.runPostLoopVerifyFixCycle(cb, &result, scoped, traj, taskFiles)
+				}
 			}
 		}
 	}
@@ -5684,6 +5692,31 @@ func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}
 		if c.firstSearchSeq == 0 && !subAgentSearchSuccessLooksEmpty(search) {
 			c.firstSearchSeq = seq
 		}
+	}
+}
+
+// acceptHistoricalVerify records that a non-zero Go verify exited only on
+// findings outside this task. Quality accounting treats that command as
+// passed so a later gate does not reopen the same historical vet.
+func (c *codingSubAgentCallbacks) acceptHistoricalVerify(command string) {
+	if c == nil {
+		return
+	}
+	want := normalizedSubAgentVerificationCommand(command)
+	if want == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := len(c.commandsRun) - 1; i >= 0; i-- {
+		if normalizedSubAgentVerificationCommand(c.commandsRun[i].Command) != want || c.commandsRun[i].Succeeded {
+			continue
+		}
+		c.commandsRun[i].Succeeded = true
+		if !strings.Contains(c.commandsRun[i].Summary, "ignored unrelated historical findings") {
+			c.commandsRun[i].Summary = "ignored unrelated historical findings\n" + c.commandsRun[i].Summary
+		}
+		return
 	}
 }
 

@@ -246,7 +246,8 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	err := coretool.WaitCommandWithContext(ctx, cmd)
 	close(done)
 
-	output := formatCodingCommandOutput(stdout.String(), stderr.String())
+	stderrLimit := codingBashStderrLimit(command, args)
+	output := formatCodingCommandOutputLimited(stdout.String(), stderr.String(), 8192, stderrLimit)
 	if err == nil {
 		output = codingEmptySearchOutput(command, output, 0)
 		if output == "" {
@@ -632,17 +633,55 @@ func resolveCodingCommandTimeout(args map[string]interface{}, command string) in
 	return timeout
 }
 
+// codingBashStderrLimit keeps a long go build/vet/test log when the caller
+// asks for it. Other commands stay on the ordinary 4KB cap so a model cannot
+// use the verify budget to dump an unrelated command.
+func codingBashStderrLimit(command string, args map[string]interface{}) int {
+	const defaultLimit = 4096
+	if args == nil {
+		return defaultLimit
+	}
+	if _, ok := args["stderr_limit"]; !ok {
+		return defaultLimit
+	}
+	if !commandKeepsVerifyDiagnostics(command) {
+		return defaultLimit
+	}
+	return boundedIntArg(args, "stderr_limit", defaultLimit, 1, verifyGateStderrBytes)
+}
+
+func commandKeepsVerifyDiagnostics(command string) bool {
+	fields := strings.Fields(command)
+	for i := 0; i < len(fields); i++ {
+		if fields[i] != "go" && !strings.HasSuffix(strings.ToLower(fields[i]), "/go") && !strings.HasSuffix(strings.ToLower(fields[i]), `\go`) && !strings.EqualFold(fields[i], "go.exe") {
+			continue
+		}
+		j := i + 1
+		if j < len(fields) && fields[j] == "-C" {
+			j += 2
+		}
+		if j < len(fields) && (fields[j] == "build" || fields[j] == "vet" || fields[j] == "test") {
+			return true
+		}
+	}
+	return false
+}
+
 func formatCodingCommandOutput(stdoutText, stderrText string) string {
+	return formatCodingCommandOutputLimited(stdoutText, stderrText, 8192, 4096)
+}
+
+func formatCodingCommandOutputLimited(stdoutText, stderrText string, stdoutLimit, stderrLimit int) string {
 	var b strings.Builder
 	if stdoutText != "" {
-		if len(stdoutText) > 8192 {
-			stdoutText = truncateCodingCommandOutputText(stdoutText, 8192, "\n... (output truncated)")
+		if stdoutLimit > 0 && len(stdoutText) > stdoutLimit {
+			stdoutText = truncateCodingCommandOutputText(stdoutText, stdoutLimit, "\n... (output truncated)")
 		}
 		b.WriteString(stdoutText)
 	}
 	if stderrText != "" {
-		if len(stderrText) > 4096 {
-			stderrText = truncateCodingCommandOutputText(stderrText, 4096, "\n... (stderr truncated)")
+		if stderrLimit > 0 && len(stderrText) > stderrLimit {
+			stderrText = truncateCodingCommandOutputText(stderrText, stderrLimit, "\n... (stderr truncated)")
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")

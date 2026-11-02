@@ -95,9 +95,29 @@ func extractRemoteProbeMarker(sshOutput string) string {
 }
 
 // runCodingWorkbenchRemoteStepVerify runs project verification over SSH.
+// An explicit /bg test has no task file boundary and verifies the whole project.
 func runCodingWorkbenchRemoteStepVerify(
 	h *IMMessageHandler,
 	sessionID, projectDir string,
+) (ok bool, cmd, output string, skipped bool) {
+	return runCodingWorkbenchRemoteStepVerifyScoped(h, sessionID, projectDir, nil, false)
+}
+
+// runCodingWorkbenchRemoteStepVerifyForTask verifies only packages this task
+// changed. Historical findings in other packages do not fail the step.
+func runCodingWorkbenchRemoteStepVerifyForTask(
+	h *IMMessageHandler,
+	sessionID, projectDir string,
+	taskFiles []string,
+) (ok bool, cmd, output string, skipped bool) {
+	return runCodingWorkbenchRemoteStepVerifyScoped(h, sessionID, projectDir, taskFiles, true)
+}
+
+func runCodingWorkbenchRemoteStepVerifyScoped(
+	h *IMMessageHandler,
+	sessionID, projectDir string,
+	taskFiles []string,
+	taskScoped bool,
 ) (ok bool, cmd, output string, skipped bool) {
 	if h == nil {
 		return true, "", "", true
@@ -110,6 +130,15 @@ func runCodingWorkbenchRemoteStepVerify(
 	cmd = detectRemoteProjectVerifyCommand(h, sessionID, projectDir)
 	if strings.TrimSpace(cmd) == "" {
 		return true, "", "", true
+	}
+	if taskScoped {
+		// projectDir is on the remote host. Package paths still come from the
+		// task's relative files; a missing local tree keeps the root module.
+		scoped, scopeSkip, scopeReason := scopeGoVerifyToTaskAt(cmd, projectDir, taskFiles, remoteVerifyBuildOutDir)
+		if scopeSkip {
+			return true, "", scopeReason, true
+		}
+		cmd = scoped
 	}
 	// Capture exit code in output so we can parse success without relying on
 	// sshExec's soft success heuristics alone.
@@ -124,23 +153,31 @@ func runCodingWorkbenchRemoteStepVerify(
 		"wait_seconds": float64(180),
 	})
 	out = strings.TrimSpace(out)
-	if utf8.RuneCountInString(out) > 2000 {
-		out = truncateRunesForSubAgent(out, 2000)
-	}
-	// Tool-level hard failure.
+	// The exit marker is at the end. Truncating first deletes it and a long
+	// failing log then looks like success.
 	if remoteCodingToolOutcome(out) != "success" && !strings.Contains(out, "__MACLAW_VERIFY_EXIT:") {
-		return false, cmd, out, false
+		return false, cmd, truncateVerifyOutput(out), false
 	}
 	exitCode := parseRemoteVerifyExitCode(out)
-	// Strip marker from user-facing output.
 	clean := strings.TrimSpace(stripRemoteVerifyExitMarker(out))
 	if clean == "" {
 		clean = "(remote verify completed with no output)"
 	}
 	if exitCode != 0 {
-		return false, cmd, clean, false
+		ok, cmd, clean, skipped = acceptTaskVerifyResult(false, cmd, clean, projectDir, taskFiles, taskScoped)
+		if taskScoped && !ok {
+			clean = promoteRelatedGoDiagnostics(clean, projectDir, taskFiles)
+		}
+		return ok, cmd, truncateVerifyOutput(clean), skipped
 	}
-	return true, cmd, clean, false
+	return true, cmd, truncateVerifyOutput(clean), false
+}
+
+func truncateVerifyOutput(out string) string {
+	if utf8.RuneCountInString(out) > 2000 {
+		return truncateRunesForSubAgent(out, 2000)
+	}
+	return out
 }
 
 func parseRemoteVerifyExitCode(out string) int {

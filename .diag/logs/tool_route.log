@@ -1,0 +1,4466 @@
+
+=== Tool Route [2026-11-02 10:23:29] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 web_fetch = 0.3512
+  #5 read_tool_result = 0.3224
+  #6 write_file = 0.3204
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2803
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - write_file
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:23:29] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 web_fetch = 0.3512
+  #5 read_tool_result = 0.3224
+  #6 write_file = 0.3204
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2803
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - write_file
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:23:32] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 web_fetch = 0.3512
+  #5 read_tool_result = 0.3224
+  #6 write_file = 0.3204
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2803
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - write_file
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:23:37] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 web_fetch = 0.3512
+  #5 read_tool_result = 0.3224
+  #6 write_file = 0.3204
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2803
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - write_file
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:23:41] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 web_fetch = 0.3512
+  #5 read_tool_result = 0.3224
+  #6 write_file = 0.3204
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2803
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - write_file
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:31:13] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 web_fetch = 0.3512
+  #5 write_file = 0.3337
+  #6 read_tool_result = 0.3241
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2802
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:31:16] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 web_fetch = 0.3512
+  #5 write_file = 0.3337
+  #6 read_tool_result = 0.3241
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2802
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:32:59] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 write_file = 0.3642
+  #5 web_fetch = 0.3512
+  #6 read_tool_result = 0.3241
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2802
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - web_fetch
+  - read_tool_result
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:33:06] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 write_file = 0.3642
+  #5 web_fetch = 0.3512
+  #6 read_tool_result = 0.3241
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2802
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - web_fetch
+  - read_tool_result
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:33:14] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 write_file = 0.3642
+  #5 web_fetch = 0.3512
+  #6 read_tool_result = 0.3241
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2802
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - web_fetch
+  - read_tool_result
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:33:17] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 write_file = 0.3642
+  #5 web_fetch = 0.3512
+  #6 read_tool_result = 0.3241
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2802
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - web_fetch
+  - read_tool_result
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:33:34] ===
+Message: 继续上次未完成任务
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5931
+  #2 delegate_task = 0.5000
+  #3 web_search = 0.3755
+  #4 write_file = 0.3642
+  #5 web_fetch = 0.3512
+  #6 read_tool_result = 0.3241
+  #7 list_directory = 0.2892
+  #8 edit_lines = 0.2844
+  #9 schedule_administer = 0.2837
+  #10 Glob = 0.2802
+  #11 set_max_iterations = 0.2670
+  #12 passthrough_task = 0.2668
+  #13 current_datetime = 0.2581
+  #14 knowledge_context_pack = 0.2226
+  #15 knowledge_image_search = 0.2223
+  #16 knowledge_search = 0.2149
+  #17 mailbox_send = 0.2107
+  #18 group_discussion = 0.2058
+  #19 knowledge_fact_graph = 0.1830
+  #20 knowledge_topic_relevance = 0.1822
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - web_fetch
+  - read_tool_result
+  - list_directory
+  - edit_lines
+  - schedule_administer
+  - Glob
+  - set_max_iterations
+  - passthrough_task
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - mailbox_send
+  - group_discussion
+  - knowledge_fact_graph
+  - search_and_install_skill
+---
+
+=== Tool Route [2026-11-02 10:34:26] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5717
+  #2 delegate_task = 0.5000
+  #3 set_max_iterations = 0.4723
+  #4 write_file = 0.3002
+  #5 read_tool_result = 0.2878
+  #6 Glob = 0.2757
+  #7 edit_lines = 0.2628
+  #8 list_directory = 0.2623
+  #9 web_fetch = 0.2605
+  #10 web_search = 0.2545
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - set_max_iterations
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - web_search
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:34:29] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 goal = 0.5717
+  #2 delegate_task = 0.5000
+  #3 set_max_iterations = 0.4723
+  #4 write_file = 0.3002
+  #5 read_tool_result = 0.2878
+  #6 Glob = 0.2757
+  #7 edit_lines = 0.2628
+  #8 list_directory = 0.2623
+  #9 web_fetch = 0.2605
+  #10 web_search = 0.2545
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - goal
+  - delegate_task
+  - set_max_iterations
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - web_search
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:34:38] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3002
+  #5 read_tool_result = 0.2878
+  #6 Glob = 0.2757
+  #7 edit_lines = 0.2628
+  #8 list_directory = 0.2623
+  #9 web_fetch = 0.2605
+  #10 web_search = 0.2545
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - web_search
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:34:50] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3002
+  #5 read_tool_result = 0.2878
+  #6 Glob = 0.2757
+  #7 edit_lines = 0.2628
+  #8 list_directory = 0.2623
+  #9 web_fetch = 0.2605
+  #10 web_search = 0.2545
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - web_search
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:35:18] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3002
+  #5 read_tool_result = 0.2878
+  #6 Glob = 0.2757
+  #7 edit_lines = 0.2628
+  #8 list_directory = 0.2623
+  #9 web_fetch = 0.2605
+  #10 web_search = 0.2545
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - web_search
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:35:29] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3075
+  #5 write_file = 0.3002
+  #6 read_tool_result = 0.2878
+  #7 Glob = 0.2757
+  #8 edit_lines = 0.2628
+  #9 list_directory = 0.2623
+  #10 web_fetch = 0.2605
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:35:54] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3075
+  #5 write_file = 0.3002
+  #6 read_tool_result = 0.2878
+  #7 Glob = 0.2757
+  #8 edit_lines = 0.2628
+  #9 list_directory = 0.2623
+  #10 web_fetch = 0.2605
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:36:06] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3075
+  #5 write_file = 0.3002
+  #6 read_tool_result = 0.2878
+  #7 Glob = 0.2757
+  #8 edit_lines = 0.2628
+  #9 list_directory = 0.2623
+  #10 web_fetch = 0.2605
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:36:20] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 write_file = 0.3002
+  #6 read_tool_result = 0.2878
+  #7 Glob = 0.2757
+  #8 edit_lines = 0.2628
+  #9 list_directory = 0.2623
+  #10 web_fetch = 0.2605
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - web_fetch
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:36:25] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 web_fetch = 0.3135
+  #6 write_file = 0.3002
+  #7 read_tool_result = 0.2878
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2628
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:37:27] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 web_fetch = 0.3135
+  #6 write_file = 0.3002
+  #7 read_tool_result = 0.2878
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2628
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:40:26] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 web_fetch = 0.3135
+  #6 write_file = 0.3002
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2628
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:40:39] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 web_fetch = 0.3135
+  #6 write_file = 0.3002
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2628
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:40:50] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 web_fetch = 0.3135
+  #6 write_file = 0.3002
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2679
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:40:58] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 web_fetch = 0.3135
+  #6 write_file = 0.3002
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2677
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:41:08] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 web_fetch = 0.3135
+  #6 write_file = 0.3002
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2677
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:41:30] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 web_search = 0.3492
+  #5 web_fetch = 0.3134
+  #6 write_file = 0.3002
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2671
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - web_search
+  - web_fetch
+  - write_file
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:41:40] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3515
+  #5 web_search = 0.3492
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2671
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:41:44] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3515
+  #5 web_search = 0.3492
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2671
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:41:49] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6753
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3515
+  #5 web_search = 0.3492
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2671
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:43:38] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3515
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:44:05] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3920
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:44:09] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3920
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:44:36] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.3920
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:44:45] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:44:51] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:45:19] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:45:40] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:45:45] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:45:51] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:45:59] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:46:03] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:46:19] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:46:37] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:46:44] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4554 (routing_hint +0.0315)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:47:04] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4880 (routing_hint +0.0389)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:47:12] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 delegate_task = 0.5000
+  #4 write_file = 0.4880 (routing_hint +0.0389)
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2664
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - delegate_task
+  - write_file
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:47:25] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5141 (routing_hint +0.0452)
+  #4 delegate_task = 0.5000
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2660
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:47:30] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5141 (routing_hint +0.0452)
+  #4 delegate_task = 0.5000
+  #5 web_search = 0.3491
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2656
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:47:50] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5351 (routing_hint +0.0506)
+  #4 delegate_task = 0.5000
+  #5 web_search = 0.4135 (routing_hint +0.0315)
+  #6 web_fetch = 0.3134
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2645
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:47:57] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5351 (routing_hint +0.0506)
+  #4 delegate_task = 0.5000
+  #5 web_search = 0.4135 (routing_hint +0.0315)
+  #6 web_fetch = 0.3552
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:48:11] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5351 (routing_hint +0.0506)
+  #4 delegate_task = 0.5000
+  #5 web_search = 0.4469 (routing_hint +0.0389)
+  #6 web_fetch = 0.4196 (routing_hint +0.0315)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - delegate_task
+  - web_search
+  - web_fetch
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:48:17] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5351 (routing_hint +0.0506)
+  #4 delegate_task = 0.5000
+  #5 web_fetch = 0.4797 (routing_hint +0.0452)
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - delegate_task
+  - web_fetch
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:48:24] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5351 (routing_hint +0.0506)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:48:50] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5519 (routing_hint +0.0551)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:48:57] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5519 (routing_hint +0.0551)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:49:08] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5519 (routing_hint +0.0551)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:49:24] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5519 (routing_hint +0.0551)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:49:42] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5519 (routing_hint +0.0551)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:49:50] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5519 (routing_hint +0.0551)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:50:05] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5655 (routing_hint +0.0589)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:50:16] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5655 (routing_hint +0.0589)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:50:28] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5655 (routing_hint +0.0589)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:50:48] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5655 (routing_hint +0.0589)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:50:59] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5655 (routing_hint +0.0589)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:51:16] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5655 (routing_hint +0.0589)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:51:24] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 goal = 0.5717
+  #3 write_file = 0.5655 (routing_hint +0.0589)
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - goal
+  - write_file
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:51:44] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 write_file = 0.5763 (routing_hint +0.0621)
+  #3 goal = 0.5717
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4469 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - write_file
+  - goal
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:51:52] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 write_file = 0.5763 (routing_hint +0.0621)
+  #3 goal = 0.5717
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4468 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - write_file
+  - goal
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:52:04] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 write_file = 0.5763 (routing_hint +0.0621)
+  #3 goal = 0.5717
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4468 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - write_file
+  - goal
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:52:11] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 write_file = 0.5763 (routing_hint +0.0621)
+  #3 goal = 0.5717
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4468 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - write_file
+  - goal
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:52:21] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 write_file = 0.5763 (routing_hint +0.0621)
+  #3 goal = 0.5717
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4468 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - write_file
+  - goal
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:52:31] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 write_file = 0.5763 (routing_hint +0.0621)
+  #3 goal = 0.5717
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4468 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - write_file
+  - goal
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:52:49] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 write_file = 0.5763 (routing_hint +0.0621)
+  #3 goal = 0.5717
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4468 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - write_file
+  - goal
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---
+
+=== Tool Route [2026-11-02 10:52:56] ===
+Message: 完成NPU推理代码
+Total tools: 156 | Core: 8 | Candidates: 118 | Hybrid: true
+Body-aware: true
+Execution affordances: browser_publish=false explicit_screenshot=false semantic_screenshot=false screenshot_requested=false
+Suppressed tools (3): [git_commit git_push screenshot]
+Top-20 candidates by fused score:
+  #1 set_max_iterations = 0.6752
+  #2 write_file = 0.5763 (routing_hint +0.0621)
+  #3 goal = 0.5717
+  #4 web_fetch = 0.5011 (routing_hint +0.0506)
+  #5 delegate_task = 0.5000
+  #6 web_search = 0.4468 (routing_hint +0.0389)
+  #7 read_tool_result = 0.2880
+  #8 Glob = 0.2757
+  #9 edit_lines = 0.2639
+  #10 list_directory = 0.2623
+  #11 current_datetime = 0.2480
+  #12 knowledge_context_pack = 0.2231
+  #13 knowledge_image_search = 0.2197
+  #14 knowledge_search = 0.2171
+  #15 group_discussion = 0.2026
+  #16 knowledge_fact_graph = 0.1878
+  #17 knowledge_fact_index = 0.1818
+  #18 knowledge_suggest = 0.1816
+  #19 knowledge_topic_relevance = 0.1810
+  #20 knowledge_entity_profile = 0.1794
+Selected tools (28):
+  - async_wait
+  - bash
+  - compress_context
+  - discover_tool
+  - edit_file
+  - read_file
+  - ripgrep
+  - task
+  - set_max_iterations
+  - write_file
+  - goal
+  - web_fetch
+  - delegate_task
+  - web_search
+  - read_tool_result
+  - Glob
+  - edit_lines
+  - list_directory
+  - current_datetime
+  - knowledge_context_pack
+  - knowledge_image_search
+  - knowledge_search
+  - group_discussion
+  - knowledge_fact_graph
+  - knowledge_fact_index
+  - knowledge_suggest
+  - knowledge_topic_relevance
+  - knowledge_entity_profile
+---

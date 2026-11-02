@@ -2,6 +2,10 @@
     height: 100%;
     min-height: 0;
     overflow: auto;
+    /* Keep the expert grid width stable when a page of cards makes this
+       scroller show or hide its bar. Otherwise the column count flips and
+       the page size flickers. */
+    scrollbar-gutter: stable;
     padding: 28px 32px 48px;
     box-sizing: border-box;
     background: var(--theme-page-bg, #ffffff);
@@ -15,6 +19,7 @@
     padding: 4px 2px 12px;
     background: transparent;
     overflow: visible;
+    scrollbar-gutter: auto;
 }
 
 .utilities-page--compact .utilities-page__header {

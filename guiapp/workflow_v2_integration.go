@@ -3981,7 +3981,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					Error:         "pre_verify hook failed",
 				}
 			}
-			ok, vcmd, vout, skipped := runCodingWorkbenchStepVerify(ctx, projectPath)
+			usageMu.Lock()
+			taskFiles := append(append([]string{}, mergedModified...), mergedCreated...)
+			usageMu.Unlock()
+			ok, vcmd, vout, skipped := runCodingWorkbenchStepVerifyForTask(ctx, projectPath, taskFiles)
 			gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
 			if !skipped {
 				if ok {
@@ -4714,7 +4717,8 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 					h.skipRemainingOrchestratedCodingSteps(planned, userID, step.Index, "skipped: prior step failed")
 					break
 				}
-				ok, vcmd, vout, skipped := runCodingWorkbenchRemoteStepVerify(h, remoteCtx.SessionID, remoteCtx.ProjectDir)
+				taskFiles := append(append([]string{}, turnFilesModified...), turnFilesCreated...)
+				ok, vcmd, vout, skipped := runCodingWorkbenchRemoteStepVerifyForTask(h, remoteCtx.SessionID, remoteCtx.ProjectDir, taskFiles)
 				gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
 				if !skipped {
 					if ok {
@@ -4748,6 +4752,14 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 						sum = gateSum
 					}
 				} else {
+					if strings.TrimSpace(vout) != "" {
+						if sum != "" {
+							sum = sum + "\n\n" + gateSum
+						} else {
+							sum = gateSum
+						}
+						stepResult.Summary = sum
+					}
 					h.recordOrchestratedCodingStepStatus(planned, userID, step.Index, stepStatus, sum)
 				}
 			} else {

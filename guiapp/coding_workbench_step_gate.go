@@ -41,8 +41,19 @@ func stepNeedsVerifyGate(title, description string, stepIndex, stepTotal int) bo
 
 // runCodingWorkbenchStepVerify runs the project verify command for a step gate.
 // Returns ok=true when command exits 0, or when no verify command is detected
-// (skip = not a hard fail).
+// (skip = not a hard fail). An explicit /test has no task file boundary and
+// still verifies the whole project.
 func runCodingWorkbenchStepVerify(ctx context.Context, projectPath string) (ok bool, cmd, output string, skipped bool) {
+	return runCodingWorkbenchStepVerifyScoped(ctx, projectPath, nil, false)
+}
+
+// runCodingWorkbenchStepVerifyForTask verifies only packages this task
+// changed. Findings in other packages are historical and do not fail the step.
+func runCodingWorkbenchStepVerifyForTask(ctx context.Context, projectPath string, taskFiles []string) (ok bool, cmd, output string, skipped bool) {
+	return runCodingWorkbenchStepVerifyScoped(ctx, projectPath, taskFiles, true)
+}
+
+func runCodingWorkbenchStepVerifyScoped(ctx context.Context, projectPath string, taskFiles []string, taskScoped bool) (ok bool, cmd, output string, skipped bool) {
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" {
 		return true, "", "", true
@@ -55,20 +66,34 @@ func runCodingWorkbenchStepVerify(ctx context.Context, projectPath string) (ok b
 		}
 		return true, "", reason, true
 	}
+	if taskScoped {
+		scoped, scopeSkip, scopeReason := scopeGoVerifyToTaskAt(cmd, projectPath, taskFiles, localVerifyBuildOutDir())
+		if scopeSkip {
+			return true, "", scopeReason, true
+		}
+		cmd = scoped
+	}
 	// Same launcher as the coding agent's bash tool: absolute PowerShell,
 	// UTF-8, and the MSVC/MinGW/CMake PATH repair. A bare "powershell" fails
 	// when the GUI process inherits a stripped PATH, so cmake, cl, and g++
 	// are resolved from the injected toolchain directories.
 	res := executeCodingBashWithContext(ctx, map[string]interface{}{
-		"command":     cmd,
-		"working_dir": projectPath,
-		"timeout":     corelib.DefaultAgentTimeoutSec,
+		"command":      cmd,
+		"working_dir":  projectPath,
+		"timeout":      corelib.DefaultAgentTimeoutSec,
+		"stderr_limit": verifyGateStderrBytes,
 	}, nil)
 	out := strings.TrimSpace(res.Text)
+	// Judge the full log. Truncating first can drop the related diagnostic
+	// and leave only a historical vet nit in the kept prefix.
+	ok, cmd, out, skipped = acceptTaskVerifyResult(res.succeeded(), cmd, out, projectPath, taskFiles, taskScoped)
+	if taskScoped && !ok {
+		out = promoteRelatedGoDiagnostics(out, projectPath, taskFiles)
+	}
 	if utf8.RuneCountInString(out) > 2000 {
 		out = truncateRunesForSubAgent(out, 2000)
 	}
-	return res.succeeded(), cmd, out, false
+	return ok, cmd, out, skipped
 }
 
 // codingWorkbenchStepGateSummary formats verify result for step status / report.

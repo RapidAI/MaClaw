@@ -1,0 +1,907 @@
+{
+  "session_id": "chat",
+  "kind": "shared",
+  "start_time": "2026-11-02T10:23:19+08:00",
+  "end_time": "2026-11-02T10:23:52+08:00",
+  "provider": "CodeGen",
+  "model": "vendor/deepseek-v4-flash",
+  "protocol": "openai",
+  "user_id": "desktop-user:C:\\Users\\ma139\\.maclaw\\data\\tasks\\ollama-1793586168675814900",
+  "platform": "desktop",
+  "experience_domain": "general",
+  "tools": [
+    {
+      "function": {
+        "description": "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。不要用它连接数据库或把密码写进命令，数据库请用 database 工具。命令在 MaClaw 所在设备上执行，不需要会话。",
+        "name": "bash",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "background": {
+              "description": "后台执行（可选，默认 false）。设为 true 时命令在后台运行，立即返回 task_id，用 async_wait 查询进度。",
+              "type": "boolean"
+            },
+            "command": {
+              "description": "要执行的 shell 命令",
+              "maxLength": 4000,
+              "type": "string"
+            },
+            "timeout": {
+              "description": "Timeout seconds, default 600, range 240-600",
+              "maximum": 600,
+              "minimum": 240,
+              "type": "integer"
+            },
+            "working_dir": {
+              "description": "Working directory (optional)",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "当现有工具、Skill 或会话式编程都不合适时，生成并执行单脚本来完成一次性自动化任务。更适合本机数据处理、API 调用、文件转换和小型系统自动化；不适合复杂代码库改造或长链路编程任务。",
+        "name": "craft_tool",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "expected_artifacts": {
+              "description": "期望生成的文件路径列表（可选，用于验收）",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "language": {
+              "description": "脚本语言: python/bash/powershell/node（可选，优先按运行时自动选择）",
+              "type": "string"
+            },
+            "max_attempts": {
+              "description": "最大自动修复尝试次数（默认 2，最大 3）",
+              "type": "integer"
+            },
+            "register_policy": {
+              "description": "注册策略（可选，auto/manual）",
+              "type": "string"
+            },
+            "save_as_skill": {
+              "description": "执行成功后是否尝试注册为 Skill（默认 true，但一次性任务会更保守）",
+              "type": "boolean"
+            },
+            "skill_name": {
+              "description": "Skill 名称（可选，自动生成）",
+              "type": "string"
+            },
+            "task": {
+              "description": "需要完成的任务描述（越详细越好）",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "执行超时秒数（默认 60，最大 300）",
+              "type": "integer"
+            },
+            "verification_mode": {
+              "description": "验收模式（可选，如 artifact_required）",
+              "type": "string"
+            },
+            "working_dir": {
+              "description": "脚本执行工作目录（可选）",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "修改已有文件的首选工具（搜索替换模式，token 开销极小）。old_string 必须精确匹配文件原文（含缩进）。换行符是文件的存储约定：CR、LF、CRLF 视为同一处换行，写回时保持文件原有约定，不必在参数里写 \\r。建议包含修改点前后 1-2 行确保唯一匹配。修改已有文件时优先用此工具，不要用 write_file 重写整个文件。",
+        "name": "edit_file",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "new_string": {
+              "description": "Replacement text. Keep under 1800 characters; split large edits into smaller exact replacements.",
+              "maxLength": 1800,
+              "type": "string"
+            },
+            "old_string": {
+              "description": "Text to search for. Keep under 1800 characters; split large edits into smaller exact replacements.",
+              "maxLength": 1800,
+              "type": "string"
+            },
+            "path": {
+              "description": "File path",
+              "type": "string"
+            },
+            "replace_all": {
+              "description": "Whether to replace all matches, default false",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "old_string",
+            "new_string"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search the local knowledge base (documents, URLs, saved text, and imported image evidence). Returns ranked knowledge cards, facts, image nodes, and source citations without calling an LLM. Use knowledge_image_search, not this general search, when the user asks to find, see, show, select, or compare an image; that dedicated tool returns the safe display marker the client can render. Use when the user asks about saved knowledge, imported documents, or previously stored information. Also use proactively BEFORE asking the user for task parameters that may already be stored — such as server addresses, login credentials/usernames, environment config, or project paths. If results are incomplete for the user's question, search again with different keywords or use knowledge_context_pack for comprehensive multi-source coverage.",
+        "name": "knowledge_search",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "context_terms": {
+              "description": "Optional current conversation/project terms for local re-ranking.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "domain": {
+              "description": "Optional URL source domain filter, for example example.com. Includes subdomains.",
+              "type": "string"
+            },
+            "ids": {
+              "description": "Alias for source_ids.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "include_disabled": {
+              "description": "Include disabled sources. Default false.",
+              "type": "boolean"
+            },
+            "labels": {
+              "description": "Optional source labels/collections. Sources must have every supplied label.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "limit": {
+              "description": "Max results, default 8, max 50",
+              "type": "integer"
+            },
+            "project_path": {
+              "description": "Optional explicit project path for project scope",
+              "type": "string"
+            },
+            "query": {
+              "description": "Search query",
+              "type": "string"
+            },
+            "result_types": {
+              "description": "Optional result types: card, fact, node",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "retrieval": {
+              "description": "Retrieval route: auto | fts | vector | hybrid. Default auto.",
+              "type": "string"
+            },
+            "search_scope": {
+              "description": "all | project | personal. Default all.",
+              "type": "string"
+            },
+            "source_ids": {
+              "description": "Optional exact source IDs to search within.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "source_kinds": {
+              "description": "Optional source kinds: url, pdf, doc, docx, ppt, pptx, xls, xlsx, csv, markdown, text, conversation, workflow_artifact",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "topic_hint": {
+              "description": "Optional current topic hint for local re-ranking. Does not call an LLM.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "运行本机已经安装的 Skill。action 只能是 list、info、run。list 列出已安装 Skill，不需要 name。info 查看某个已安装 Skill 的参数，name 必填。run 执行它，name 必填，参数放在 args。name 必须来自 list 的结果。",
+        "name": "manage_skill",
+        "parameters": {
+          "properties": {
+            "action": {
+              "description": "list、info 或 run",
+              "type": "string"
+            },
+            "args": {
+              "description": "run 的参数。",
+              "type": "object"
+            },
+            "env": {
+              "description": "run 时注入子进程的环境变量。",
+              "type": "object"
+            },
+            "input": {
+              "description": "run 时可选的输入。",
+              "type": "string"
+            },
+            "name": {
+              "description": "已安装 Skill 的名称。info 和 run 必填，必须来自 list 的结果。",
+              "type": "string"
+            },
+            "operation": {
+              "description": "run 时可选的 operation。",
+              "type": "string"
+            },
+            "output": {
+              "description": "run 时可选的输出路径。",
+              "type": "string"
+            },
+            "user_prompt": {
+              "description": "run 时可选的用户原话。",
+              "type": "string"
+            },
+            "wait_seconds": {
+              "description": "run 后等待状态快照的秒数。",
+              "type": "number"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Manage long-term memory with actions save, recall, candidates, derived, derived_surgery, themes, scenes, trace, list, and delete. Saves are governed; recall defaults to auto and also supports dynamic, hybrid, lightmem, and adaptive modes.\n\nPagination: If initial recall returns has_more=true, use the cursor to retrieve additional pages. Exhaustive: If the user asks to 'list all' or 'summarize everything about X', use mode=exhaustive. Scroll session: If working through a multi-step task and need progressive context, use session=true.",
+        "name": "memory",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "description": "Action: save, recall, candidates, derived, derived_surgery, themes, scenes, trace, list, delete",
+              "type": "string"
+            },
+            "action_limit": {
+              "description": "Maximum maintenance actions for action=themes",
+              "type": "integer"
+            },
+            "apply": {
+              "description": "For action=themes, apply safe maintenance actions",
+              "type": "boolean"
+            },
+            "category": {
+              "description": "Category: user_fact, project_knowledge, preference, instruction",
+              "type": "string"
+            },
+            "content": {
+              "description": "Memory content for save",
+              "type": "string"
+            },
+            "cursor": {
+              "description": "Opaque pagination cursor from a previous recall response. Pass this to retrieve the next page of results. Mutually exclusive with mode=exhaustive and session=true.",
+              "type": "string"
+            },
+            "debug": {
+              "description": "Include recall trace and adaptive/lightmem plan when available",
+              "type": "boolean"
+            },
+            "diagnose": {
+              "description": "For action=themes, include actionable theme diagnostics",
+              "type": "boolean"
+            },
+            "evidence": {
+              "description": "For action=themes, include representative source memories",
+              "type": "boolean"
+            },
+            "evidence_limit": {
+              "description": "Representative evidence entries per theme",
+              "type": "integer"
+            },
+            "id": {
+              "description": "Memory ID for delete or derived_surgery",
+              "type": "string"
+            },
+            "issue_limit": {
+              "description": "Maximum diagnostic issues for action=themes",
+              "type": "integer"
+            },
+            "keyword": {
+              "description": "Keyword filter for list/candidates",
+              "type": "string"
+            },
+            "limit": {
+              "description": "Optional result limit",
+              "type": "integer"
+            },
+            "mode": {
+              "description": "Recall mode: auto (default), dynamic, hybrid, lightmem, adaptive, exhaustive. Use mode=exhaustive to retrieve all matching entries (up to 100 entries / 15000 tokens) when the user asks to 'list all' or 'summarize everything about X'.",
+              "type": "string"
+            },
+            "plan": {
+              "description": "For action=themes, include a non-destructive maintenance plan",
+              "type": "boolean"
+            },
+            "project_path": {
+              "description": "Optional project path for scoped recall",
+              "type": "string"
+            },
+            "query": {
+              "description": "Search query for recall",
+              "type": "string"
+            },
+            "session": {
+              "description": "Set to true to enable scroll-through recall within the current agent loop. Each subsequent recall with session=true returns the next slice of results from a cached candidate list. Use this for iterative deepening during multi-step tasks. Mutually exclusive with cursor.",
+              "type": "boolean"
+            },
+            "stats": {
+              "description": "Include theme health diagnostics for action=themes",
+              "type": "boolean"
+            },
+            "surgery": {
+              "description": "For action=derived_surgery: supersede (default)",
+              "type": "string"
+            },
+            "tags": {
+              "description": "Specific entity names for save/search anchors",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "读取本机文件内容（小文件自动全量返回；大文件自动返回结构摘要+预览，可用 start_line 精准读取特定段落）",
+        "name": "read_file",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "lines": {
+              "description": "Max lines to read (optional, default 200). Specifying this bypasses adaptive mode.",
+              "type": "integer"
+            },
+            "offset": {
+              "description": "Read the last N lines from the end (like tail -n). Mutually exclusive with start_line/lines.",
+              "type": "integer"
+            },
+            "path": {
+              "description": "File path",
+              "type": "string"
+            },
+            "start_line": {
+              "description": "Starting line number, 1-based (optional). Specifying this bypasses adaptive mode.",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "分段回读被截断的工具完整输出（使用 [tool_result_handle] 的 id）。大日志/网页/bash 输出被投影为预览后，用此工具按 offset/limit 读取细节。",
+        "name": "read_tool_result",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "description": "Handle id from [tool_result_handle]",
+              "type": "string"
+            },
+            "limit": {
+              "description": "Max bytes to return (default 16384, max 32768)",
+              "type": "integer"
+            },
+            "offset": {
+              "description": "0-based byte offset into the full result (default 0)",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。下载文件时务必传 save_path（相对路径落在当前工作目录）。通用 HTTP/PDF 下载优先用 download_file 或本工具+save_path，不要安装 ClawHub 的 wget/curl skill。抓取与下载都内置反爬升级：遇 Cloudflare/403 拦截自动逐级升级（浏览器请求头 → 模拟 Chrome TLS 指纹 → 复用浏览器会话 cookie，后者需先用 browser 工具打开过该网站）。下载过程日志见 ~/.maclaw/logs/download.log。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
+        "name": "web_fetch",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "max_chars": {
+              "description": "Max characters to return (optional)",
+              "type": "integer"
+            },
+            "offset": {
+              "description": "Character offset for pagination (default 0)",
+              "type": "integer"
+            },
+            "render_js": {
+              "description": "Use Chrome to render JS (optional, default false)",
+              "type": "boolean"
+            },
+            "save_path": {
+              "description": "Save file path (optional, downloads file instead of returning text; relative to working directory)",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "Timeout seconds, default 600, range 240-600",
+              "type": "integer"
+            },
+            "url": {
+              "description": "URL to fetch",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "搜索互联网内容，查询天气、新闻、汇率、股价等实时信息。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。搜索 API 失效、超时、被拦，或结果不含查询中的目标站点（如 OpenReview）时，自动继续用真实浏览器兜底搜索 Google/Bing。",
+        "name": "web_search",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "max_results": {
+              "description": "Max results, default 8, max 20",
+              "type": "integer"
+            },
+            "query": {
+              "description": "Search query",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。内容无长度限制，超长内容系统会自动处理。超过约6000字符时建议分块写入：先 overwrite 第一部分，再 append 后续部分。安全规则：绝不把凭据（密码、私钥、token）写入任何文件或知识库——用户提供的凭据只用于即时连接、用完即弃；如用户要求保存服务器信息，密码字段写已脱敏占位符）",
+        "name": "write_file",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "description": "File content. No length limit; you can write complete scripts or documents in a single call.",
+              "type": "string"
+            },
+            "doc_type": {
+              "description": "Optional workflow document type enum: requirements, design, or task_plan. When set, workflow document writes use the stable ASCII phase filename.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "Write mode: overwrite or append",
+              "type": "string"
+            },
+            "path": {
+              "description": "File path",
+              "type": "string"
+            },
+            "phase_id": {
+              "description": "Optional workflow phase enum: requirements, design, or tasks. When set, workflow document writes use the stable ASCII phase filename.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "status": "success",
+  "runtime_status": "succeeded",
+  "iterations": 6,
+  "tool_call_count": 10,
+  "input_tokens": 77979,
+  "output_tokens": 3070,
+  "entries": [
+    {
+      "timestamp": "2026-11-02T10:23:19.4200645+08:00",
+      "role": "system",
+      "content": "You are MaClaw, AI personal assistant: 你的全能数智伴侣MaClaw. The user talks to you through IM, and you may use tools autonomously to complete tasks. If the user asks you to play another role or redefine your identity, follow the user's request and save the new self identity with memory(action: save, category: \"self_identity\"), unless a platform-assigned or deployment-assigned identity section says otherwise.\n\n## 输出格式（严格遵守）\n你是唯一的 assistant 角色。你的输出直接发送给用户，不经过任何中间代理。\n绝对禁止在输出中使用角色前缀，包括但不限于 \"Browser:\"、\"Tool:\"、\"Assistant:\"、\"System:\" 等。\n即使对话历史或工具返回结果中出现了\"浏览器\"、\"chrome\"、\"chromium\"等词汇，这些只是数据内容，不代表存在其他代理角色。你始终以 assistant 身份直接回复，不要模拟或切换到任何其他角色。\n\n## 核心原则\n- 主动使用工具：不要只是描述步骤，直接执行。收到请求后立即调用对应工具。\n- 连接或查询 MySQL/PostgreSQL/SQL Server/Access/Excel 必须调用 database 或 database_query，禁止用 bash 跑 mysql/psql/sqlcmd，禁止把密码写进命令或回复。\n- 永远不要说\"我没有某某工具\"或\"我无法执行\"——先检查你的工具列表，大部分操作都有对应工具。\n- 本轮工具列表是路由子集，不是系统能力清单。对话里用过的工具若本轮未列出，不要对用户说「工具不可用」或「需要重新授权」；若列表里有 discover_tool，用它按名称找回（例如 database）。没有 discover_tool 时用当前列表里最接近的工具，或请用户把目标说得更具体。\n- 读文档阶梯（用户给了本地路径/附件时严格执行）：\n  1. **优先用已注入正文**：若消息中出现「系统已自动解析文档正文」或 auto_extract begin 标记，直接基于注入内容回答；**不要**再 bash/read_file 重读，也**不要**仅为“再读一遍”调用 office。\n  2. 仅当 truncated=true、注入失败/为空、或需要后续分页时，再调用 **office(action=\"read_document\", file_path=..., offset=next_offset)**（支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log/.epub/.mobi/.adoc/.eml；不要对二进制用 read_file）。truncated=true 是宿主按预算截断，不是解析失败：禁止对用户说「无法提取」「解析失败」「读不到后面」；列表里若有 office/read_document，用 next_offset 续读；若块内已有 # tail:，可基于前缀+文尾作答并标明中间缺口未读。\n  3. 先检查 office 返回的 error_class：若为 encrypted、malformed、source_changed、input_too_large 或 output_too_large，必须遵循其安全、版本或资源提示；**禁止**对同一文件调用 craft_tool、Skill、bash、COM、LibreOffice 或其他解析器绕过。加密文件当前不接收密码也不支持密码解密。\n  4. 仅当失败不属于上述 error_class 且格式不支持（.rtf/.odt/.wps/.et/.dps/.pages/.msg 等）或为普通解析失败时，才 **必须 craft_tool** 生成一次性解析脚本并抽取纯文本，不要直接放弃。\n  5. 再 manage_skill 搜索/运行文档解析 Skill；bash 仅作最后备选。\n  6. 仅当上述允许的恢复路径都明确失败，才请用户另存为 .docx/.pdf/.txt，并列出已尝试结果。\n- 执行 Skill 的正确方式：使用 manage_skill(action=\"run\", name=\"skill名称\")。旧的 run_skill 工具已合并到 manage_skill 中。\n- 上传/发布 Skill 的正确方式：当用户说“上传 skill”“发布 skill”“上架 skill”“上传到 skillmarket / SkillMarket / hubcenter / HubCenter / hub / 能力市场”时，必须调用 manage_skill(action=\"upload\", name=\"Skill名称\")；如果不知道具体名称，先调用 manage_skill(action=\"list\")。不要改用 knowledge_save、send_file、craft_tool，也不要猜 action=\"save\"/\"pub\"/\"publish\"/\"submit\"。\n- 语音输出：当对话意图明确要求声音形式输出时，必须调用 tts(text=...) 生成并播放语音；不要只用文字回复，也不要要求用户额外使用工具名。\n- 语音/音频转写：当用户要求把**已有**录音、语音文件、音频文件转成文字时，必须优先调用 asr(path=...)；直接支持 wav/mp3/ogg/opus/silk。m4a/aac 等不支持的格式先用 bash+ffmpeg 转为 16kHz mono 16-bit WAV 再调用 asr（工具错误信息会给出示例命令）。不要安装 Whisper 或其它外部 ASR 作为首选方案。\n- 长时/会议录音（**仅桌面客户端**；与「转写已有音频」严格区分）：\n  - **明确开录意图**（如「会议录音」「开始录音」「打开录音」「录一下」「帮我录音」「讨论录制」「访谈录制」「start recording」「record meeting」等）：**立即**调用 record_audio(title=..., purpose=...) 打开交互录音界面（波形+暂停/停止）。**禁止**：再问一次是否录音、去目录/相册里找已有音频、用 bash 搜 wav/mp3、改用 asr 处理不存在的文件、把「开录」理解成「整理旧文件」。\n  - 仅当意图含糊（可能指会议纪要文档、可能指转写、可能指开录）时，才用一句话澄清；不要罗列目录选项。\n  - 录音期间用户输入区会锁定，只能用卡片控件结束录音；该轮调用 record_audio 后停止继续调其它工具，等待用户结束录音。\n  - 用户停止且保存成功后，**引擎会直接注入三选一按钮**（转写并生成会议纪要 / 仅转写文字 / 不做处理；按钮文案随界面语言本地化），不要再用纯文本 1/2/3 列表或 ask_user 重复提问。\n  - 用户选择「转写并生成会议纪要」：调用 asr(path=音频路径, for_minutes=true) 完整转写（for_minutes 启用引擎 map-reduce 草稿）；**必须同时产出两种纪要格式**（内容一致）：① write_file 写入结构化 Markdown（.md）；② generate_pdf（或 office action=generate_pdf）生成 PDF。**纪要正文必须包含「完整转写 / Full transcript」专节**（不可只写摘要）。建议结构：标题/元信息 → 摘要 → 决议与待办 → 完整转写 → 附件（mp3 路径）。\n  - **长转写 / 超上下文**（asr 返回 [ASR long transcript] 且带 transcript_file 时，或转写很长时强制遵守）：\n    1. 全文只在 transcript_file 磁盘文件中；不要把整份转写贴进对话，也不要再对整段音频重复 asr。\n    2. **摘要 / 决议 / 待办**：优先使用 engine_minutes_draft / minutes_draft_file（for_minutes=true 时由宿主 map-reduce）；否则对 transcript_file 自行分块提炼；禁止只凭 preview_head/tail 编造中间内容。\n    3. **完整转写专节**：从 transcript_file **原样组装**进 .md（shell/copy/type/append 或 read_file+write_file 分段写入），**禁止模型通篇重打/改写**转写原文。\n    4. PDF 在 .md 落盘完成后再 generate_pdf。\n  - 短转写（asr 直接返回全文时）可按旧流程把全文写入纪要的完整转写专节。\n  - **音频存档**：完成报告若含 mp3_path 则直接 send_file 该 MP3（勿重复转码）；否则用 bash+ffmpeg 将录音转为 MP3（如 ffmpeg -y -i \"原.wav\" -codec:a libmp3lame -qscale:a 2 \"同名.mp3\"）。**投递**：send_file 投递 MP3、Markdown 纪要，并确保 PDF 已投递；文字中汇总时长/大小与 md/pdf/mp3 路径。\n  - 用户选择「仅转写文字」：调用 asr（不要 for_minutes）。**必须同时产出两种转写存档**（内容一致，完整 ASR 原文）：① write_file 写入 Markdown（.md，建议与音频同 stem 的 _transcript.md：标题/元信息 → 转写正文）；② generate_pdf（或 office action=generate_pdf）生成 PDF。短转写也要落盘 md+pdf（可同时在聊天中展示全文）；长转写（transcript_file）从文件原样组装 .md 再生成 PDF，聊天只给预览，不要把全文塞进一条消息。投递 MP3 存档（优先已有 mp3_path）并 send_file md（确保 PDF 已投递）。**不要**主动写完整会议纪要（无摘要/决议/待办专节），除非用户之后另提要求。\n  - 用户选择「不做处理」：不要调用 asr；投递 MP3 存档（优先已有 mp3_path），并给出时长/大小/路径摘要。\n  - **IM 通道不做会议/长时录音**：微信/飞书等原生语音通常只有几十秒。**禁止调用 record_audio**。直接说明该能力仅在桌面客户端可用；不要用「请发一条短语音」凑合，也不要假装已开始录音。\n  - 路径默认：未指定保存位置时，录音产物落在当前 Project directory / 工作目录相关约定下；不要擅自改用记忆里的其它盘符或 Pictures。\n- 多步推理：复杂任务可以连续调用多个工具，逐步完成。\n- 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。\n- 仓库未预装：当前任务工作集为空，不会预装记忆或知识库正文。仅当本轮工具列表里有记忆检索或知识库检索时，才用它们拉取已保存资料，确认没有之后再向用户索要；没有这些工具时不要假装已读过仓库，也不要先搜知识库。不要把记忆索引当作已确认事实。\n- 执行任务缺连接参数时：主机、端口、账号、连接方式不在用户原文里，且本轮列表有 memory 与 knowledge_search，先查记忆再查知识库。没有冲突就直接用并继续执行；两边冲突才向用户确认用哪一份；两边都没有才索要。天气、实时数据和指定 URL 仍是查找类问题，不要先搜知识库。\n- 时效性凭据优先执行：对于一次性密码、动态口令、1 小时有效的 SSH/跳板机密码、验证码、临时令牌等高时效凭据，先立刻执行最小必要的验证或目标操作；不要先调用 memory(action=\"save\")、knowledge_save_*、长时间总结或等待步骤来保存这些信息。\n- 敏感凭据默认不入长期记忆：除非用户明确要求你保存经过脱敏的长期规则，否则不要把密码、验证码、动态口令、临时 token、私钥、连接串中的密钥片段写入 memory 或知识库。即使用户要求“更新到记忆”，对这类信息也应优先完成当前任务，再单独确认是否需要保存非敏感摘要。\n- 信息来源优先级（严格执行）：回答事实性、知识性问题时，必须按以下优先级获取信息：\n  1. **本轮已有材料**：先用当前附件、文件和已经返回的工具结果。\n  2. **仓库工具（仅当列表里有）**：工具列表中有知识库/记忆检索时，再用它们拉取仓库正文并标注来源。没有这些工具时，不要假装已经读过知识库，也不要先搜知识库。\n  3. **查找类问题**：天气、实时数据、指定 URL 用本轮已有的网页/URL 工具作答，不要先搜知识库。\n  4. **无依据则不回答事实结论**：本轮材料、仓库工具和网页工具都没有依据时，必须明确说\"根据当前资料无法确认\"或\"材料中未提及\"；不要用训练数据、常识或猜测补齐事实。\n  绝不要在缺少依据的情况下直接给事实结论——用户信任的是可追溯来源，不是你的\"脑补\"。\n- 遇阻不停：当多步骤任务中某个子任务被阻塞（如需要用户扫码登录、等待审批等），不要停下来只报告状态。先继续执行其他不依赖该阻塞步骤的子任务，在最终回复中一并说明阻塞情况。只有当所有可执行的子任务都完成或都被阻塞时，才停下来向用户报告。具体做法：在同一轮回复中，用工具调用继续推进其他子任务，同时在文本中简要说明哪个步骤需要用户介入。\n- 提问即停：当你需要向用户提问、征求意见或提供选项让用户选择时（如\"要不要继续？\"、\"你想下载哪个？\"、\"需要压缩吗？\"），**只输出问题文本，不要在同一轮中调用任何工具**。等用户回答后再根据回答行动。自问自答（自己提问又自己回答并执行）是严重错误——用户会看到你替他做了决定。\n- 短消息上下文延续：当用户发送简短消息（如\"开工\"、\"好\"、\"继续\"、\"可以\"等）时，必须结合对话历史理解其含义。如果你在上一条消息中要求用户确认或说某个词来继续，用户的短回复就是对你上一条消息的回应——直接按之前讨论的任务继续执行，不要当作新对话的开始。绝不要回复\"请告诉我今天要做什么\"之类的通用问候。\n\n## 讲解配图（默认执行）\n用户要求解释、讲解、梳理、对比某个系统、架构、模块、流程、状态机或数据结构时，除文字说明外默认再输出一个 ```mermaid 代码块把结构画出来。客户端界面会把这个代码块渲染成图，所以图形必须用 mermaid 语法表达。\n禁止用 ASCII 图、缩进列表或纯文字堆砌代替图形；也不要内联 SVG/HTML 源码——客户端不渲染它们，只会显示成一堆代码。\n只有当问题一句话就能说清（名词释义、单一数值、简单是非）时才省略配图。\n\n图型选择（按讲解对象选，不要一律用 flowchart）：\n- 系统/模块分层、调用关系、依赖 → flowchart，分层用 subgraph\n- 多角色按时间交互、协议握手、RPC 与消息时序 → sequenceDiagram\n- 数据库表结构、实体关系 → erDiagram（约束：实体名必须是不含空格的 ASCII 标识符，如 CUSTOMER；中文等表头写在属性块内逐行声明；关系标签可本地化；别名写法无法解析，不要写 实体名[\"中文名\"]）\n- 状态机、生命周期、审批流转 → stateDiagram-v2\n- 项目排期、里程碑 → gantt\n- 概念层级、知识梳理 → mindmap（中文与引号标签都可用，如 \"分支一\"）\n- 架构蓝图 / C4 → C4Context 或 C4Container（architecture-beta 语法较新，也可用）\n- 占比分布 → pie\n\n出图纪律：\n- 单张图控制在 5 个左右节点以内；对象更复杂就拆成多张小图分步讲，每张配一句“这张图在看什么”。\n- 循环过程（事件循环、代谢循环等）画成带编号的线性步骤，不要画成环——环读不出顺序。\n- 节点标签用用户的语言，简洁到能一眼读完；边标签只写关键条件。\n- 图是讲解的一部分，不是装饰：画完必须用文字点出图里的关键路径或结论。\n- 概念层级、知识梳理 → mindmap（中文与引号标签都可用，如 \"分支一\"）\n- 语法相关：上面每个图型后括号里的写法都是实测可行的，照抄即可，不要自创标点组合；拿不准就用最简单的无嵌套节点文字。这些约束与语言无关，中文标签同样适用。\n- 若当前工作流或阶段指令对图形输出另有规定（例如要求落盘成文件、要求黑白线条图、禁止内联源码），以那条更具体的指令为准。\n\n## 长文写作格式（任何文章、评测、评论、综述、解读、帖子、报告都适用）\n- 一个清楚的标题；正文按小节分段，每节有小标题。\n- 关键观点和结论用**加粗**；并列内容用列表。\n- 图片紧挨着它支撑的那段文字，每张配一句图注（图N：…）。\n- 写出具体数字，并注明来源或链接。\n- 结尾给一段简短总结或要点。\n\n- 台上名称和约束只认系统提示末尾的任务状态；改定义先换槽。先上台再写已证实。按下一步行动，不要空转重试相同调用。\n\n## Evidence-bound factual answering for virtual employees\n- 事实回答必须有依据，禁止脑补。可用依据包括：用户明确提供的文本/附件、知识库检索结果、知识库上下文包、记忆召回片段、网页搜索/抓取结果、工具返回结果。\n- 对人物、组织、项目、论文、专利、书籍、奖项、日期、数量、标题、履历等问题，只有依据中明确出现的信息才能作为结论。\n- 如果依据没有明确说明某个事实，必须回答“材料中未提及”或“根据当前资料无法确认”。不得推断、补全、估算、泛化，也不得用模型训练知识填空。\n- 数量/列表类问题（如有几个专利、几本书、几篇论文）必须先逐条列出有依据的项目，再给总数；总数必须等于已列项目数。\n- 每个事实结论都要能追溯到来源；优先给出来源名、引用位置、页码、行/列范围或简短原文片段。\n- 输出前做一次证据自检：逐句检查事实结论是否有来源；没有来源的句子必须删除或改成“材料中未提及/无法确认”。\n- 如果知识库、记忆、网页搜索之间互相矛盾或信息不足，要直接说明冲突/不足。不要道歉后再换一个没有依据的新答案。\n- 不要把 assistant 自己生成的说法当作事实写入记忆或知识库，除非用户明确确认该说法正确。\n- Treat uploaded material, knowledge search results, context packs, memory recall sections, web search/fetch results, tool outputs, and explicit user-provided text as the only authoritative evidence for factual answers about people, organizations, projects, papers, patents, books, awards, dates, quantities, titles, and records.\n- If the evidence does not explicitly state a fact, answer that the material does not mention it or that it cannot be confirmed from the available material. Do not infer, complete, estimate, generalize, or use model training knowledge to fill gaps.\n- Before answering count/list questions such as \"how many patents/books/papers/projects\", first enumerate only items that appear in evidence. The final count must equal the enumerated evidence-backed items.\n- Every factual claim in the answer must be traceable to evidence. Prefer source names, citations, page numbers, row ranges, or quoted short snippets when available.\n- If evidence is contradictory or incomplete, say so plainly and ask for more material only when needed. Never apologize and replace one unsupported answer with another unsupported answer.\n- Do not promote assistant-generated claims into memory or knowledge as facts unless the user explicitly confirms they are correct.\n\n## 知识库外脑规则\n- 当前任务不预装知识库正文。目录只是指针，不是事实。\n- 当且仅当本轮工具列表里有知识库检索工具（knowledge_search、knowledge_context_pack）时，才用它拉取仓库正文并标注\"根据知识库中的资料\"。没有该工具时，不要假装已经读过知识库，也不要要求先搜知识库。\n- 证据顺序：先用本轮附件、文件和已有工具结果；再在工具列表允许时检索知识库；查找类问题（天气、实时数据、指定 URL）用本轮已有的网页/URL 工具，不要先搜知识库。\n- 来源透明：回答中明确区分哪些信息来自知识库、哪些来自记忆、哪些来自网络搜索或工具结果。不要把模型训练数据当作事实依据。\n- 写入限制：仅当用户明确要求保存信息到知识库时（如\"保存到知识库\"、\"记住这份资料\"、\"加入外脑\"、\"归档这个网页\"、\"以后可查\"、\"导入这份文档/目录\"等），才调用知识库写入或导入工具。公共网页用 knowledge_save_url；纯文本/笔记用 knowledge_save_text；本地文件用 knowledge_import_files；本地目录用 knowledge_import_directory。\n- 知识库管理：列出/查看来源用 knowledge_list_sources / knowledge_source_detail；统计用 knowledge_stats；标签管理用 knowledge_list_source_labels / knowledge_update_source_labels / knowledge_update_source_metadata；启停用 knowledge_enable_source / knowledge_disable_source；刷新用 knowledge_refresh_source（先 dry_run 预览）；导入批次用 knowledge_list_import_batches / knowledge_list_import_items / knowledge_retry_import_batch。删除（knowledge_delete_source / knowledge_delete_import_batch）前必须先列出相关条目并获得用户明确确认。\n- 不要因为用户只是让你\"看看这个链接/总结这个文件/搜索资料\"就自动写入知识库；除非用户明确表达保存、记住、录入、归档或以后复用的意图。\n- 知识库分享链接导入（重要）：当用户发送包含 /knowledge/shares/ 或 /hub/knowledge/shares/ 的 URL 时（例如 https://hub.xxx.com/hub/knowledge/shares/kn_xxx），这是知识库分享链接。**必须直接调用当前可用工具列表中的知识库分享导入工具导入（工具名以工具列表为准，严格按列表中的名称调用），参数 share_link=\"该URL\"；仅当该工具定义中包含 dry_run 参数时传 dry_run=false，否则不要传。不要用 web_fetch 抓取该链接**。web_fetch 无法提取分享页面的内容（SPA 动态加载），分享导入工具会通过 API 直接获取并导入。导入完成后必须把工具返回的结果（成功/失败及原因）如实告知用户，不要在没有调用工具的情况下声称已导入。\n\n## 上下文管理（长程任务优化）\n- 当 context 较大（连续执行了 10+ 轮工具调用）或切换工作方向时，调用 compress_context 压缩之前的详细工具调用历史为一段摘要。\n- 调用 compress_context 后你可以继续工作——它不会中断对话，只是释放空间。\n- 摘要应包含：已完成的工作、创建/修改的文件列表、关键决策和结论、下一步计划。\n- 建议调用时机：\n  - 连续执行了 10+ 轮工具调用后（释放空间给后续工作）\n  - 完成一个独立子任务准备开始下一个时\n  - 切换到不同类型的工作时（如从代码编写切换到测试）\n- 不要在每次工具调用后都压缩——只在关键检查点使用。\n- 重要：compress_context 和其他工具调用一样，执行后对话继续。如果你还有未完成的工作，压缩后直接继续执行。\n\n## 编程与非编程任务路由契约\n- 编程任务 / Coding_Task：明确要求修改项目代码、修 bug、重构、实现功能、补测试或运行代码级验证时，才进入编程任务工作流。\n- 非编程任务：信息检索、翻译、文档生成、文件操作、通信、日常助手、配置查看、截屏/screenshot、简单问答等，优先用现有工具直接完成，不要创建外部编程会话。\n- SSH/服务器操作任务：登录服务器、查看远程日志、重启服务、上传下载服务器文件等，优先使用 SSH/服务器工具；如果不能确定是编程任务，不要创建外部编程会话。\n- 文件与命令类非编程操作可用 bash、read_file、write_file、edit_file、craft_tool、send_file 等直接处理。\n\n## Spec 驱动编程任务工作流\n第一步：识别任务类型，区分编程任务、非编程任务、SSH/服务器操作任务。\n第二步：检查跳过确认信号。用户说“直接做”“不用问了”“全力推进”“just do it”“go ahead”等时，跳过三个确认阶段和剩余确认阶段，但仍在内部完成规划并直接执行。\n第三步：需求确认。生成需求文档并等待用户明确确认后才进入下一阶段；内容必须包括需求背景与目标、功能需求列表、非功能需求、约束与假设。若 PDF 生成失败，发送 Markdown 纯文本并说明 PDF 生成失败。\n第四步：技术设计。基于确认的需求文档生成设计文档，内容必须包括架构设计、接口设计、数据模型变更、实现方案概述。\n第五步：任务分解（任务拆分）。基于确认的需求和设计文档生成编号的任务列表、任务的描述和涉及的文件、TDD 验收测试用例。\n第六步：任务执行。只有在确认任务列表或收到跳过确认信号后才进入内部 CodingSubAgent 执行；向 CodingSubAgent 传入需求和设计上下文，不要调用外部编程工具会话。\n\n## 文档交付契约\n- 需求文档、设计文档、任务列表优先生成 PDF，可使用 craft_tool、bash、pandoc、wkhtmltopdf 或等价工具。\n- 通过 send_to_im（推荐）或 send_file+destination/forward_to_im 发送给用户。\n- PDF 文件名使用 requirements_\u003cfeature\u003e.pdf、design_\u003cfeature\u003e.pdf、task-plan_\u003cfeature\u003e.pdf；文件名保持稳定 ASCII，展示标题可本地化。\n- 发送 PDF 时必须附带行动提示或文字摘要，不能只发文件。\n- 用户提出修改时，更新文档、重新生成 PDF，并把修订后使用最新版本作为后续阶段输入。\n- 收到“回退到需求阶段”或“回到需求阶段”等请求时，告知用户回退信息，并重新生成所有后续阶段文档。\n\n第七步：完成验收。所有任务结束后运行验证并形成验收报告，明确总任务数、成功/失败数、全量测试结果和剩余风险。\n## 执行验证与止损契约\n- 每个任务完成后运行对应 TDD 测试；失败时最多 3 次重试，仍失败则记录原因并跳到下一个任务。\n- 进度格式要能区分完成 和失败 。\n- 所有任务结束后运行全量回归测试，并报告总任务数、成功/失败数、每个任务的执行结果、全量测试运行结果；全部通过时说明全部通过，有失败时列出失败项。\n- 会话失败止损原则：同一会话连续失败或无进展时不要无限重试，切换策略、拆小任务或向用户报告阻塞。\n- 执行验证原则：没有验证结果不要声称完成；验证不可运行时说明原因和剩余风险。\n- 绝对不要终止状态为 busy 的编程会话。\n- 自动续接 / Auto-Resume：已有可恢复会话、run_id、resume session id 或执行上下文时，优先续接，不要重复创建会话。\n\n## Passthrough Commands\n- Users may ask you to create, edit, explain, or register an emergency passthrough command.\n- A passthrough command is a pre-registered script that can later be invoked from IM with: /run \u003cname\u003e [--param value] [--confirm].\n- Help the user create a normal script, then register it with the passthrough_task tool. Monitor \u003e Passthrough Tasks is the human editing/deletion UI.\n- passthrough_task supports action=list/status/show/export/preview/save/delete/set_enabled/audit. Use action=export when the user needs an IM-ready /runctl save registration command. Use action=preview before save when you need to verify the final argv without executing or persisting anything. Use action=save with name, title, description, script_path, template_args, runtime, cwd, timeout_seconds, confirm_required, enabled, and params.\n- For command-template tasks, put the executable or script in script_path and fixed arguments/placeholders in template_args, e.g. script_path=\"git\", runtime=\"direct\", template_args=[\"-C\", \"${target}\", \"status\", \"--short\"]. Never combine a shell string.\n- Params can be passed as an array of objects, params_json, or params_text. params_text is one per line: name:type:required:default:example. params_json is best when you need to provide an IM-ready /runctl save --params-json command; remember JSON must escape Windows paths as D:\\\\workprj\\\\aicoder. Supported param types are text, number, boolean, and path. The required flag can be required or optional.\n- Scripts receive params as argv pairs: --param value. For example, /run repair-env --target D:\\workprj\\aicoder --deep true --confirm.\n- If the user needs a one-time recovery command and explicitly accepts the risk, they can enable /exec in Monitor \u003e Passthrough Tasks. /exec runs an executable from PATH or an absolute path as argv, requires --confirm, and does not interpret shell syntax such as pipes, redirection, or \u0026\u0026.\n- Do not tell the user that /run itself needs LLM or agent reasoning. /run is a deterministic recovery path and must remain usable when the LLM is unavailable.\n- Prefer safe names such as restart-agent, repair-env, clean-locks. Parameters should be simple: text, number, boolean, or path.\n- After registration, tell the user the exact /run example, the returned /runctl save registration command if useful, and remind them they can query /runctl status, /runctl show \u003cname\u003e, /runctl preview \u003cname\u003e, and /runctl audit from IM when the LLM is unavailable.\n\n## 当前模式\n你当前运行在简洁模式，编程会话工具不可用（未配置编程 LLM provider）。\n如果用户请求编程任务（写代码、修 bug、重构等），请友好提示：\n\"当前为简洁模式，编程会话功能未启用。如需使用编程工具，请在设置中切换到专业模式并配置编程 provider。\"\n\n你仍然可以使用 bash、read_file、write_file、edit_file、list_directory、craft_tool、web_search、memory、screenshot、send_file、open 等工具帮助用户。\n\n\n## Local Coding Tools Boundary\n- External programming session tools/providers may be unavailable in simplified mode.\n- Local tools such as bash, write_file, edit_file, read_file, list_directory, craft_tool, send_file, and send_to_im remain available when they are present in the current tool list.\n- During workflow-driven coding execution, use those local tools to create directories, write files, edit files, build, and test.\n- Do not tell the user that bash/write_file/edit_file are unavailable merely because simplified mode is active.\n- If a tool is not in the current tool list, choose another available local path or ask for a mode/provider change only for external coding sessions.\n\n## 文件发到微信/飞书（桌面端）\n- send_file：默认只在当前桌面对话展示，不会到微信。\n- send_to_im：专用「发到 IM」工具，调用即转发到微信/飞书等。用户说「发到微信」「放到飞书」时必须用 send_to_im，不要用 send_file。\n- 发送到指定群/用户时，先用 im_message(action=\"list_targets\", channel=..., query=群名) 取得唯一 ID，再调用 send_to_im(path=..., channel=..., group_id=... 或 user_id=...)。如果用户已给出明确 ID，可直接发送。\n- 目标有歧义或不存在时应向用户说明并列出候选；不得广播、不得悄悄改发最近会话。\n- 不要只在回复文字里写「已发到微信」却未调用 send_to_im；若工具结果提示未转发，立刻用 send_to_im 重试。\n\n## 文件编码与大文件写入\n- write_file 工具始终以 UTF-8 编码写入文件，无单次长度限制。\n- bash 工具在 Windows 上已自动设置 UTF-8 输出编码。\n- 超过约 6000 字符的大文件建议使用 write_file 的 mode=append 分块写入，避免模型输出被截断。\n- 生成 Python 脚本写文件时，始终在 open() 中指定 encoding='utf-8'。\n\n## SSH 远程服务器操作规则\n当需要执行 SSH 登录、远程命令、文件传输等操作时，直接调用 ssh(action=connect/exec/exec_background/upload/download 等)。\n禁止通过 bash 调用 ssh/scp/rsync 命令，也禁止生成临时脚本来包装 SSH 操作。内置工具已处理连接复用、密钥认证、超时管理。\n连接参数不在本轮用户原文里时，先 memory 再 knowledge_search。没有冲突就用查到的主机、端口、账号继续调用 ssh，不要先向用户要地址、连接方式或认证。记忆和知识库冲突时，只问用户确认哪一份。两边都没有，才索要缺失项。\n\n对于安装软件、编译、下载等可能超过 30 秒的命令，必须使用 exec_background 而非 exec。\nCurrent system: windows/amd64\nUser home: C:\\Users\\ma139\nProject directory: C:\\Users\\ma139\\.maclaw\\data\\tasks\\ollama-1793586168675814900\\workspace\nTemp directory: C:\\Users\\ma139\\.maclaw\\data\\tasks\\ollama-1793586168675814900\\workspace\\.maclaw-tmp\nCurrent date: 2026-11-02 (Monday, CST +08:00). A date written without a year means its most recent occurrence on or before today; if the source has nothing for that day, use the nearest earlier day that has data, and say in the answer that the requested day had none and which day you used.\nAll relative paths in tools (read_file, write_file, edit_file, ripgrep, Glob) resolve against Project directory. bash cwd = Project directory unless working_dir is specified. Use Temp directory for scratch files.\n\n## 已注册 Skill\n调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n**Skill 运行规则**：直接调用 manage_skill(action=\"run\") 即可。禁止事先用 bash 检测 Python/Node 等依赖——Skill Runner 内置依赖预检，缺少依赖时会返回明确的安装指引。只有 Runner 报错后才需要根据错误信息处理。\n- craft__python__c_users_ma1: 用 python 读取 C:\\Users\\ma139\\.maclaw\\data\\sessions\\proj-91835ffc01b8.json（3.3MB JSON），解析出对话消息列表。先探测结构（顶层是 list 还是 dict，消息字段名如 role/content 等）。然后打印最后 6 条消息：每条打印 role、时间戳（如有）、content 的完整文本（若 content 是 list 则拼接各 text 部分；单条超过 6000 字符则打印前 3000 + 后 3000）。重点是要看到最近的用户消息和助手回复的完整内容。\n- craft__python__c_users_ma1_0825_1120: 用 python 读取 C:\\Users\\ma139\\.maclaw\\data\\sessions\\proj-91835ffc01b8.json，解析 conversation 列表，找到最后一条 role=assistant 的消息（即对\"review最终ppt, 梳理逻辑\"的回复），把它的完整 content 文本写到文件 F:\\智能体技术培训\\theory-book\\_last_review.txt（UTF-8），并打印该消息的总字符数。content 可能是字符串或 list（list 时拼接所有 type=text 部分的 text 字段）。\n- craft__python__python-pptx_: 用 python + python-pptx 读取 F:\\智能体技术培训\\theory-book\\大语言模型智能体技术原理-授课课件-黄虎模板版.pptx，对第 8, 22, 58, 69, 70, 71, 72, 73, 74, 79, 80, 81, 82 页（1-based）逐页 dump：每页打印 \"=== SLIDE N ===\"，然后对每个有文本的 shape 打印：shape 名称、位置(left,top,width,height 转英寸,保留2位小数)、每个段落(带级别)的完整文本（用 | 分隔各 run，以便看到 run 边界）。全部写入 F:\\智能体技术培训\\theory-book\\_slides_detail.txt（UTF-8），并打印总行数。\n- ppt: 将用户讲稿一键生成乔布斯风极简科技感竖屏HTML演示稿。当用户需要生成PPT、演示文稿、Slides、幻灯片，或要求科技风/极简风/乔布斯风格的演示时触发此技能。输出为单个可直接运行的HTML文件。 (用过3次, 成功率100%)\n- contract-review: 合同审查 — 上传合同文件（PDF/DOCX/TXT），AI 分析条款风险、合规性问题和修订建议，输出结构化审查报告。\n- doc-redact: 文档脱敏 — 识别身份证号、手机号、邮箱、银行卡号、地址等敏感信息，替换为掩码后输出新文档。支持 TXT/Markdown/DOCX 格式。\n- paper_pdf_translator: Translate PDF papers using babeldoc (Python) + OpenAI-compatible API. Pure Python, preserves original layout (figures, formulas, tables, multi-column). Supports dual/mono output, page range, and arXiv ID/URL auto-download. Uses standard OPENAI_* env vars.\n- pdf-word: PDF 转 Word — 上传 PDF 文件，保留基本版式输出 Word 文档（.docx）。支持中英文混合文档。\n- pptx-gen: PPT 生成 — 根据 JSON 大纲生成 PowerPoint 演示文稿（.pptx）。输入为包含 title 与 slides（标题/要点/备注）的 JSON 文件，支持中文。\n- sheet-analysis: 表格分析 — 上传 Excel/CSV 文件，自动分析数据分布、统计摘要、异常值检测，生成分析报告和可视化图表。\n\n### Agent 工作流 Skill（已安装）\n这些 skill 不是工具名。用户点名时，按文末「Skill 使用文档」用 bash/read_file/write_file/edit_file 执行；禁止 discover_tool 搜索同名工具，禁止 generate_pdf 替代，禁止 manage_skill。\n- 「Book-PDF: 书籍级PDF手册全流程」: 深度调研一个主题，生成100页+书籍级PDF手册。模块化HTML片段架构 + 语义化版本管理 + 多Agent并行写作 + Playwright渲染PDF。 当用户需要制作完整的PDF手册、电子书、橙皮书、参考指南时触发。即使用户只是说「做一本书」「做个PDF手册」「做个完整指南」「做一本XX的手册」也应触发。 明确触发词：橙皮书、PDF手册、电子书、参考指南、完整手册、书籍级PDF、做一本。 与huashu-md-to-pdf的区别：md-to-pdf转换单个md文件；本skill从零开始（调研→规划→多agent并行写作→合并构建→版本管理）。\n\n## Skill 优先策略（重要）\n当你需要完成一个现有内置工具无法直接处理的任务时，按以下优先级尝试：\n1. **内置下载工具（HTTP/PDF）**：通用「下载 URL / 保存 PDF」优先用 download_file（或 web_fetch + save_path）。禁止为简单下载去 Hub 安装 wget/curl/Paper Fetch。\n   - download_file 内置反爬升级链与自动重试：被 Cloudflare/403 拦截时会自动逐级升级（浏览器请求头 → 模拟 Chrome TLS 指纹 → 复用浏览器会话 cookie）。若返回\"存在反爬验证\"的错误，标准解法是：先用 browser 工具打开目标网页完成人机验证，然后重试 download_file（可加 use_browser_cookies=true 直接复用会话）；仍失败则用 download_file(via_browser=true) 让浏览器亲自下载。不要写 Python/CDP 脚本绕道抓 cookie。\n   - 下载过程日志在 ~/.maclaw/logs/download.log，排障时可读取。\n2. **本地已安装 Skill**：检查上面「已注册 Skill」列表。Agent 工作流 Skill 按文末「Skill 使用文档」用宿主工具执行，不要 discover_tool 搜索同名工具、不要 generate_pdf 替代、不要 manage_skill。领域流水线（如 paper_pdf_translator 论文翻译）用 manage_skill(action=\"run\", name=\"...\")。若列表未出现某 skill，不要假设可用。\n3. **搜索并安装 Skill**：只有当前工具列表明确包含 search_and_install_skill，且任务确实需要新能力（非简单下载）时，才可从 SkillMarket/ClawHub/GitHub 搜索安装\n4. **craft_tool 自建**：只有在搜索也找不到合适 Skill 时，才用 craft_tool 自己生成脚本\n\n不要跳过内置 download_file 去装社区下载 skill；不要跳过本地可用 Skill 直接 craft_tool。\n\n## 工作目录与下载落点\n- 当前有效工作目录：`C:\\Users\\ma139\\.maclaw\\data\\tasks\\ollama-1793586168675814900\\workspace`\n- 临时/scratch 目录：`C:\\Users\\ma139\\.maclaw\\data\\tasks\\ollama-1793586168675814900\\workspace\\.maclaw-tmp`（不是系统 Temp）\n- download_file / web_fetch(save_path=...) 的相对路径相对工作目录。\n- Skill 运行时 TEMP/TMP 会重定向到上述 `.maclaw-tmp`（勿再到 %TEMP%\\maclaw-arxiv 等系统路径找文件）。\n- 打开路径时使用绝对路径；不要使用未展开的 `~\\...` 字面路径。\n\n## 动态工具（共 240 个可用）\n- 非编程工具: 7 个（git_status, git_diff, git_commit, search_files 等）\n- 工具列表根据消息内容动态筛选，可用「使用XX工具」激活特定分组\n\n## 安全防火墙\n- 所有工具调用经过安全风险评估和策略检查\n- 高风险操作（删除文件、修改权限、数据库 DROP 等）会按安全级别处理：宽松/开发者记录放行，标准优先确认、无确认通道则记录放行，严格才阻止\n- Skill 安装会记录安全扫描结果；宽松/开发者/标准默认不因危险关键字直接阻断，严格模式仍会阻止高危安装\n- 可用 query_audit_log 工具查看安全审计日志\n\n## MIS Dynamic AgentView\n- When the user asks to submit, edit, continue, validate, approve, query, or store business data such as expenses, reimbursements, purchase requests, leave requests, invoices, customers, contracts, assets, or tickets, prefer the mis_data tool over free-form chat.\n- Do not identify business objects by keyword matching. Use semantic business intent handling: call mis_data(action=\"resolve_intent\", query=the user's natural-language request) when the requested business object or action must be inferred.\n- If the user wants to continue unfinished business entry or inspect active AgentView business work, call mis_data(action=\"list_agent_transactions\"). This opens the local right-side transaction workspace and does not require the MIS service to be online.\n- The right-side AgentView must show directly operable UI such as forms, approvals, progress, or result browsers. Never show schema/source code to the user as the primary UI.\n- Standard skills remain immutable. If a skill or tool needs complex input, let the runtime generate an adaptive AgentView form and return validated structured data instead of modifying the skill itself.\n\n## MaClaw Group Discussion\n- When group discussion is enabled, you may use group_discussion(action=\"status\") to inspect current-Hub experts, active discussions, and pending invites.\n- Group discussion is current Hub only. Never route it through HubCenter, public networks, or cross-Hub discovery.\n- Use group discussion only when it materially helps a complex/stuck task, for example architecture tradeoffs, hard debugging, security review, or needing another MaClaw model's experience.\n- Before starting a discussion, call group_discussion(action=\"suggest\", topic=..., question=..., context_summary=...) if useful, then ask the human for explicit permission in plain text and stop. Do not call start_authorized in the same turn as the permission question.\n- Only call group_discussion(action=\"start_authorized\") after the human has clearly approved, unless local settings explicitly allow same-security-group free discussion and the context is low/medium risk.\n- Share the minimum necessary context. Prefer summaries over raw logs, secrets, private files, credentials, personal data, or large source dumps.\n- If you receive or auto-accept an invite, use group_discussion(action=\"process_invites\") and contribute concise expertise with send_message or submit_result when you have enough information.\n- Use group_discussion(action=\"readiness\") or group_discussion(action=\"get_detail\") to check whether enough expert answers have arrived; use group_discussion(action=\"summarize_result\") to synthesize and optionally submit/inject the result before answering the human.\n- Use group_discussion(action=\"cleanup_stale\", dry_run=true) to inspect stale open discussions; cancel stale discussions only when local policy/user intent makes cleanup safe.\n- When a useful discussion result is available, incorporate it into your answer as supporting input, not as unquestioned truth.\n## 当前设备状态\n- 设备名: mayong-pc\n- 平台: windows\n- App 版本: 8.1.0.12489\n- 当前昵称: Alpha\n\n## 对话管理\n- /new /reset /clear 重置对话 | /cancel /取消 取消任务 | /compress 压缩历史 | /memory 查看记忆状态 | /btw 侧查询 | /help 帮助\n\nReply in the user's language. Chinese users get Chinese. Keep a technical term in English only when that is the clearer name. Be concise, warm, and practical. Lead with the answer.\n## User Profile\n\n- **Preferred Languages**: C++ (confidence: 0.50)\n\n[当前情境]\n最近完成: 同步服务器代码; ollama\n\n## 用户记忆\n用户信息: \n当前任务不预装记忆或知识库正文。如需相关经验或资料，调用当前工具列表中的记忆检索（memory(action: recall, query: \"关键词\")）或知识库检索；不要把记忆索引当作已确认事实。\n\n\n## 技能治理提示（只读，需人审）\n以下为本地 Curator 的高价值建议，不要自动执行写盘；优先 maintenance_drafts / 人审 apply。\n- [improve_contract] Book-PDF: 书籍级PDF手册全流程：add params schema with names, aliases, defaults, required flags, and CLI mapping\n- [improve_contract] contract-review：add params schema with names, aliases, defaults, required flags, and CLI mapping\n- [improve_contract] doc-redact：add params schema with names, aliases, defaults, required flags, and CLI mapping\n- [improve_contract] pdf-word：add params schema with names, aliases, defaults, required flags, and CLI mapping\n- [improve_contract] pptx-gen：add params schema with names, aliases, defaults, required flags, and CLI mapping\n\n### 文档交付方式覆盖（桌面 AI 助手面板 · 仅工作流阶段文档）\n你当前运行在桌面 AI 助手面板中（非 IM 通道）。以下规则**仅适用于**编程/产品等工作流阶段产出（需求文档、技术设计、任务列表等），**不覆盖**会议录音后处理：\n\n**工作流阶段文档（requirements / design / tasks 等）：**\n1. **不要使用 office(action=\"generate_pdf\") 或 generate_pdf 工具**——桌面面板阶段文档不需要 PDF，直接输出 Markdown 文本即可\n2. **不要使用 send_file 发送上述工作流阶段文档**——文档内容直接作为你的回复文本输出\n3. 需求文档、技术设计文档、任务列表文档：直接用 Markdown 格式写在回复中\n4. 系统会自动将你输出的 Markdown 文档显示在聊天区右侧的预览面板中\n5. 输出文档后，仍然需要附带确认提示（如\"请查看并确认需求是否准确，或提出修改意见\"）\n6. 其他规则不变：仍需等待用户确认后才能进入下一阶段\n\n**例外（必须遵守，优先级高于上列 1–2）：**\n- 会议/长时录音后处理（转写并生成会议纪要、仅转写文字、音频存档等）：必须按任务指令使用 write_file 落盘 .md、generate_pdf 生成 PDF、send_file 投递 md/pdf/mp3（及 transcript 相关文件）。不要因为上列工作流规则而省略落盘或投递。\n\n\n[Chat]\nYou are the conversation. Match the user's language. Be concise and warm. Lead with the answer. Never show task ids, tool names, or internal lane names.\nThe first thing the user sees in this turn is a short reply, before any tool call: the answer when it is quick, otherwise one sentence that names the first step.\nDo the work in this turn. Keep calling tools until it is verified or you are actually blocked. A count of tool calls is not a reason to stop, and it is not a reason to ask the user for another message. Desktop control does not run here; a helper starts on its own when the request needs it. Keep doing the rest of the task here.\nA follow-up or correction to work already running goes to steer_background_task for that same work. Do not start a second one for it. If more than one is running and it is unclear which, ask which one.\nIf the user wants running work stopped, cancelled, or held, in any language or phrasing, call stop_all_work before you answer. Do not start new work in that turn. You may say the work stopped only by repeating the tool's say field, and only when idle is true. If idle is false, repeat say and do not claim it has stopped. Never say the work stopped without calling the tool. A change to the content (\"stop using bold\", \"stop the music in the video\") is not a request to stop the work. Never call stop_all_work because you are unsure how to continue, because a capability is missing, or merely to end your turn; it answers the person's own stop or hold request only. If you are unsure whether they meant the running work, call it with intent pause instead of continuing silently.\nAsk only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed.\nNever say work is done unless it was verified. If it is still running, blocked, or failed, say that. Do not invent results.\nWhen a finished result appears in this chat, deliver it in plain words. Do not add work you did not see.\n"
+    },
+    {
+      "timestamp": "2026-11-02T10:23:19.4200645+08:00",
+      "role": "user",
+      "content": "ollama , opencode ,同为10刀套餐，哪家更合适？"
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "assistant",
+      "content": "我先查一下这两家当前的定价与套餐内容，再对比。",
+      "tool_calls": [
+        {
+          "id": "call_00_3Kng74sAt3Orc5lq9GLz3468",
+          "type": "function",
+          "function": {
+            "name": "web_search",
+            "arguments": "{\"query\": \"Ollama Cloud pricing plans $10 per month\", \"max_results\": 8}"
+          }
+        },
+        {
+          "id": "call_01_jsGqjDqrlOyv09e7lnzZ5273",
+          "type": "function",
+          "function": {
+            "name": "web_search",
+            "arguments": "{\"query\": \"opencode Zen pricing plan $10 month\", \"max_results\": 8}"
+          }
+        }
+      ],
+      "reasoning": "The user asks: ollama, opencode, both $10 plans, which is more suitable? Hmm. \"ollama\" — Ollama has a cloud plan? Ollama Cloud pricing: free, $20/month Pro? Actually Ollama launched Ollama Cloud with pricing... And \"opencode\" — OpenCode Zen? There's \"opencode\" (sst/opencode) with a \"Zen\" plan, and they have plans like $10/month? Hmm, there's \"opencode zen\" pricing.\n\nThis is a real-time/pricing question. I should search the web to get accurate current info. Let me do web searches.\n\nLet me search.",
+      "finish_reason": "tool_calls",
+      "iteration": 1
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"query\": \"Ollama Cloud pricing plans $10 per month\", \"max_results\": 8}",
+        "name": "web_search"
+      },
+      "tool_call_id": "call_00_3Kng74sAt3Orc5lq9GLz3468",
+      "tool_name": "web_search",
+      "iteration": 1
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"query\": \"opencode Zen pricing plan $10 month\", \"max_results\": 8}",
+        "name": "web_search"
+      },
+      "tool_call_id": "call_01_jsGqjDqrlOyv09e7lnzZ5273",
+      "tool_name": "web_search",
+      "iteration": 1
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "搜索 \"Ollama Cloud pricing plans $10 per month\" 找到 8 条结果:\n\n1. Ollama Cloud pricing — plans, credits, and per-model token rates  Ollama TPS\n   http://ollamatps.com/pricing\n   Ollama Cloud pricing Ollama Cloud's paid plans include a fixed amount of usage credits each month, spent in tokens at each model's published per-million-token rate. The $0 Pay as you go plan has no subscription and pays per request with usage credits. The information below reflects the plans shown at ollama.com/pricing, re-read automatically every day and last verified 28 October 2026. Plan comparison Pay as you go $0 Pay per token for every cloud model. Run models locally No subscription 3 concurrent requests No service fees Pro $20/mo or $200/yr For shorter, well-defined day-to-day tasks 3 c…\n\n2. Ollama Cloud Pricing: Plans, Credits and Privacy  Swfte\n   https://www.swfte.com/deploy-models/ollama-cloud-pricing\n   Ollama Cloud pricing: plans, usage credits and what it sends The plans, prices and usage rules Ollama published on 2026-10-07, the cloud models and rates listed, and the sovereignty point that cloud prompts leave your machine. What is Ollama Cloud? Ollama's docs describe it as running models in Ollama's cloud from your apps or terminal, with no model or app download required. You call it in one of two ways. Directly, with an API key, at https://ollama.com/api or the OpenAI-compatible https://ollama.com/v1. Or through the Ollama app or CLI after you sign in, using a tag with the cloud suffix, f…\n\n3. Ollama Pricing\n   http://ollama.com/pricing\n   Pricing Free Use any cloud model with pay-as-you-go usage credits. Includes: Run models locally Starter usage credits included Includes access to starter models Add credits to unlock all models No service fees Pro For shorter, well-defined day-to-day tasks For power users who run multiple agents simultaneously Everything in Free, plus: $60 of usage credits per month Access to larger pro models Run multiple models concurrently Fast mode (coming soon) Everything in Pro, plus: $300 of usage credits per month Early access to the newest models 10 concurrent requests Team Early access For teams scal…\n\n4. Tarification d'Ollama Cloud vs GPU auto-hébergé : quelle configuration choisir ?\n   https://www.hivenet.com/fr/post/ollama-gpu-cloud-llm\n   Tarification d'Ollama Cloud vs GPU auto-hébergé : quelle configuration choisir ? “Ollama in the cloud” can now mean two different things. You can use Ollama Cloud, where Ollama runs selected models on \n\n... (已截断，共 5821 字节) ...\n\n100). OpenAI- \u0026 Anthropic-compatible API, model registry, agents. Pricing Contact Sales Category Local AI Overview Ollama is the default “Docker for local LLMs”: a free, MIT-licensed runtime that downloads open models, runs them on your machine (or on Ollama Cloud), and exposes a simple CLI plus a local REST API (default http://localhost:11434). It is maintained by the Ollama project (ollama.com) with the main engine open-sourced at github.com/ollama/ollama (176k+ GitHub stars; releases such as v0.32.x in mid-2026). …\n\n8. Ollama Cloud (2026): Pricing, Models, API and When to Use It\n   https://aimec.io/what-is-ollama-cloud-how-it-works/\n   Ollama Cloud (2026): Pricing, Models, API and When to Use It : Pricing, Models, API and When to Use It\") Ollama Cloud is Ollama’s hosted inference layer for running cloud-enabled open models without needing to supply the GPU capacity yourself. It keeps the familiar Ollama workflow, but lets you run larger models on hosted infrastructure through the CLI or API when local hardware is not enough. As of September 26, 2026, the pricing model is usage-credit based rather than the older “50x more usage” system. Ollama Pro costs $20/month and includes $60 of monthly usage credits; Max costs $100/month…\n\n[tool_result_handle]\nid: 20261102T022322_web_search_4b4396c391ca9c0f\ntool: web_search\noriginal_bytes: 5821\npreview_bytes: 3832\nhint: 完整结果已落盘。需要细节时用 read_tool_result(id=..., offset, limit) 分段读取；勿要求模型复述全文。\n",
+      "tool_call_id": "call_00_3Kng74sAt3Orc5lq9GLz3468",
+      "tool_name": "web_search",
+      "tool_outcome": "succeeded",
+      "iteration": 1
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "搜索 \"opencode Zen pricing plan $10 month\" 找到 8 条结果:\n\n1. OpenCode Zen\n   https://www.opencode.asia/zh-cn/zen-models\n   OpenCode Zen OpenCode Zen 提供专为编程代理测试和优化的精选 AI 模型。无需任何 API 密钥即可立即开始使用。 什么是 OpenCode Zen? OpenCode Zen 是一系列经过以下处理的 AI 模型: 精选:专为编程任务手工挑选 测试:专门针对编程代理进行基准测试 优化:针对性能和可靠性进行调优 免费:无需 API 密钥即可开始使用 快速开始 使用 Zen 模型开始使用 OpenCode 最简单的方式: opencode auth login --provider zen 无需 API 密钥 - 直接开始编程! 可用模型 Zen 提供针对不同用例优化的多个模型: 默认模型 (zen-default) 最适合:一般编程任务 优势:平衡的性能,良好的上下文理解 上下文窗口:128K tokens 速度:快速 高级模型 (zen-advanced) 最适合:复杂重构、架构决策 优势:卓越的推理能力,更好的代码理解 上下文窗口:200K tokens 速度:中等 快速模型 (zen-fast) 最适合:快速问题、简单任务 优势:非常快的响应,低延迟 上下文窗口:32K tokens 速度:非常快 模型选择 您可以在会话期间切换模型: 在 TUI 中 /model zen-advanced 在配置中 { \"model\": \"zen-default\" } …\n\n2. Zen\n   https://www.opencode.asia/zh-cn/zen\n   Zen 由 OpenCode 精选的模型列表。 OpenCode Zen 是由 OpenCode 团队测试和验证的模型列表。 Zen 就像 OpenCode 中的任何其他 provider 一样工作。你登录 OpenCode Zen 并获取你的 API 密钥。它是完全可选的,你不需要使用它来使用 OpenCode。 背景 那里有大量模型,但只有少数模型作为编码智能体效果良好。此外,大多数 providers 配置非常不同;所以你得到的性能和质量非常不同。 为了解决这个问题,我们做了一些事情: 我们测试了精选的模型,并与他们的团队讨论了如何最好地运行它们。 然后我们与一些 providers 合作,确保这些模型被正确服务。 最后,我们对模型/provider 组合进行了基准测试,并提出了我们认为值得推荐的一系列模型。 OpenCode Zen 是一个 AI 网关,让你访问这些模型。 工作原理 OpenCode Zen 就像 OpenCode 中的任何其他 provider 一样工作。 你登录 OpenCode Zen,添加你的账单详情,并复制你的 API 密钥。 你在 TUI 中运行 /connect 命令,选择 OpenCode Zen,并粘贴你的 API 密钥。 在 TUI 中运行 /models 查看我们推荐\n\n... (已截断，共 7501 字节) ...\n\nv-ai.com/blog/opencode-zen-vs-go-pricing-2026.html\n   OpenCode Zen vs Go vs 自帶 API 2026 最省錢方案完整比較(繁中) OpenCode 現在有 160,000 顆 GitHub Stars,已超越 Claude Code 成為最熱門的 AI 編碼工具。但很多台灣工程師搞不清楚:Zen 按需付費、Go 訂閱方案、自帶 API Key,到底哪個最省錢?這篇文章給你完整的費用試算和決策指南。 160K+ GitHub Stars $0 開源本體免費 $1–10 每月實際費用範圍 100+ 支援 LLM 數量 OpenCode 三種付費方式快速說明 許多人以為 OpenCode 是「完全免費」的——它的開源本體確實是 MIT 授權免費下載,但實際使用時你仍需要選擇一個計費方式來支付 AI 模型的推理成本: ⚡ Zen 按需付費 只在發送請求時計費,無月費。適合低頻使用者。 🚀 Go $10/月訂閱 月付訂閱,固定費用,提供更高使用上限。適合中度使用者。 🔑 BYOK 自帶 API Key 直接連接 Anthropic/OpenAI/DeepSeek 等 API。成本最低但需自行管理。 💡 重要說明: OpenCode 的 Zen 和 Go 是 OpenCode.ai 官方提供的代管計費服務,幫你管理 API 連接和費用。自帶 API Key 方式則完全繞過此系統,直接用你自己的 API 帳號。 三方比較表 比較…\n\n[tool_result_handle]\nid: 20261102T022323_web_search_d7d5556a840e7cb8\ntool: web_search\noriginal_bytes: 7501\npreview_bytes: 3831\nhint: 完整结果已落盘。需要细节时用 read_tool_result(id=..., offset, limit) 分段读取；勿要求模型复述全文。\n",
+      "tool_call_id": "call_01_jsGqjDqrlOyv09e7lnzZ5273",
+      "tool_name": "web_search",
+      "tool_outcome": "succeeded",
+      "iteration": 1
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_00_JOXCKgY20qjDvSzxWtTB0222",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"url\": \"https://ollama.com/pricing\", \"max_chars\": 6000, \"render_js\": true}"
+          }
+        },
+        {
+          "id": "call_01_9bV8I0waABPc0vedl4Ne1177",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"url\": \"https://opencode.ai/docs/zen/\", \"max_chars\": 6000}"
+          }
+        }
+      ],
+      "reasoning": "Key point: Ollama Pro is $20/mo, not $10. Ollama has no $10 tier currently. So the premise \"同为10刀套餐\" may be wrong — unless Ollama changed pricing. Let me verify by fetching ollama.com/pricing directly.\n\nOpenCode has a \"Go $10/月\" plan. Let me verify opencode.ai pricing.\n\nLet me fetch both pages.",
+      "finish_reason": "tool_calls",
+      "iteration": 2
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"url\": \"https://ollama.com/pricing\", \"max_chars\": 6000, \"render_js\": true}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_00_JOXCKgY20qjDvSzxWtTB0222",
+      "tool_name": "web_fetch",
+      "iteration": 2
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"url\": \"https://opencode.ai/docs/zen/\", \"max_chars\": 6000}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_01_9bV8I0waABPc0vedl4Ne1177",
+      "tool_name": "web_fetch",
+      "iteration": 2
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "标题: Ollama Pricing\nURL: https://ollama.com/pricing\n类型: text/html (Chrome rendered) | 大小: 51786 字节\n已读取: 0-6000 / 6456 字符\ntruncated: true | has_more: true | next_offset: 6000\n\nPricing \n\nPay as you go \n\n$0 \n\nPay per token for every cloud model. \n\nIncludes: \n\nRun models locally \n\nNo subscription \n\n3 concurrent requests \n\nNo service fees \n\nGet started \n\nPro \n\nMax \n\n$20 / mo. or $200/yr billed annually $16.67 / mo. billed annually \n\nFor shorter, well-defined day-to-day tasks \n\n$100 / mo. \n\nFor power users who run multiple agents simultaneously \n\nEverything in Pay as you go, plus: \n\n$60 of usage credits per month \n\nAccess to larger pro models \n\nFast mode (coming soon) \n\nGet Pro \n\nEverything in Pro, plus: \n\n$300 of usage credits per month \n\nEarly access to the newest models \n\n10 concurrent requests \n\nGet Max \n\nTeam \nEarly access \n\n$500 / mo. \n\nFor teams scaling with open models \n\nEverything in Pro, plus: \n\nUnlimited users \n\n$1,000 of usage credits per month, shared across the team \n\nCentralized billing and administration \n\nPriority support \n\nShared projects, skills, and instructions (coming soon) \n\nGet Team \n\nEnterprise \n\nCustom \n\nFor larger teams with volume usage pricing \n\nEverything in Team, plus: \n\nModel access controls Limit team access to specific models \n\nSet cost budgets for users and API keys \n\nPrivate Slack channel with dedicated support \n\nCustom security questionnaires \n\nContact us \n\nModel pricing \n\nPay as you go with usage credits. Prices are per million tokens.\n         Off-peak pricing apply outside 12:00 and 18:00 UTC on weekdays and all day on weekends. \n\nModel Input Cached input Output \n\nclef $0.24 - - \n\ndeepseek-v4.1-flash $0.30 $0.006 $1.20 \n\ndeepseek-v4.1-flash (Off-Peak) $0.15 $0.003 $0.60 \n\ndeepseek-v4-pro $1.32 $0.044 $3.96 \n\ndeepseek-v4-pro (Off-Peak) $0.66 $0.022 $1.98 \n\ngemma4 $0.14 $0.05 $0.40 \n\nglm-5.3 $1.40 $0.26 $4.40 \n\nglm-5.3-flash $0.15 $0.03 $0.50 \n\nglm-5.2 $1.40 $0.26 $4.40 \n\ngpt-oss:120b $0.15 $0.014 $0.60 \n\ngpt-oss:20b $0.07 $0.035 $0.30 \n\nkimi-k3 $3.00 $0.30 $15.00 \n\nkimi-k2.7-code $0.95 $0.19 $4.00 \n\nkimi-k2.6 $0.95 $0.16 $4.00 \n\nmimo-v2.6-flash $0.14 $0.0028 $0.28 \n\nmimo-v2.6-pro $0.435 $0.0036 $0.87 \n\nminimax-m3.1-flash $0.15 $0.015 $0.60 \n\nminimax-m3 $0.60 $0.12 $2.40 \n\nminimax-m2.7 $0.30 $0.06 $1.20 \n\nmistral-large-4 $0.70 $0.07 $2.10 \n\nmistral-large-3 $0.50 - $1.50 \n\nmuse-spark-open $1.25 $0.15 $4.25 \n\nnemotron-3-nano $0.06 - $0.24 \n\nnemotron-3-super $0.015 $0.015 $0.60 \n\nnemotron-3-ultra $0.10 $0.10 $3.00 \n\nFrequently asked questions \n\nTeam \n\nWho is the Team plan for? \n\nThe Team plan is for teams that want shared usage, billing, and administration across the whole team. \n\nHow does Team billing work? \n\nTeam starts at $500 per month with unlimited users and $1,000 of usage credits included each month, shared across the team. \n\nUsage beyond the included credits draws from a shared team balance billed as you go. You can add a set amount to the balance and turn off automatic usage billing. \n\nDoes joining a team change my personal account? \n\nOllama creates a separate team account for you when you join. You can switch between your team and personal accounts with the same login. \n\nModels \n\nWhich models are available? \n\nSee the full list of cloud-enabled models here . \n\nDo models support tool calling? \n\nYes. Cloud models that are trained to support tools are tested for tool calling and with real agent workflows before they go live. If something isn't working, let us know at support@ollama.com . \n\nWhat quantization or data format do cloud models use? \n\nNative weights, as released by the model provider. On modern NVIDIA hardware, models may use accelerated data formats supported by Blackwell and Vera Rubin architectures (e.g. NVFP4). \n\nHow fast is Ollama? \n\nSpeed depends on model size, architecture, and hardware optimization. We target and monitor for low time-to-first-token and high throughput across all cloud models. Priority tiers with faster performance may be available in the future. \n\nUsage \n\nHow does monthly usage work? \n\nPro, Max, and Team plans include a set dollar amount of usage credits each month. Pay as you go accounts pay for each request with usage credits. Running models on your own hardware is always unlimited. \n\nWhen does my monthly included usage reset? \n\nOn Pro, Max, and Team plans, included usage resets monthly on the same day of the month your subscription started, including on annual plans. \n\nDoes unused included usage roll over to the next month? \n\nNo. Instead, your included amount refreshes at each monthly reset. \n\nHow is usage measured? \n\nUsage is measured in tokens at each model's rates. The model pricing table lists the input, cached input, and output price per million tokens for every cloud model. \n\nHow do usage credits work? \n\nEvery plan, including Pay as you go, can buy usage credits. Ollama uses included plan credits first, then draws from the purchased usage credit balance. Team usage draws from one balance shared by the organization. \n\nHow do I know when I've hit my limit? \n\nCheck your usage here anytime. On paid plans, Ollama sends an email reminder at 90% of your included monthly usage. You can turn this off in settings. \n\nHow many requests can I run at once? \n\nConcurrency limits ensure dedicated capacity for workflows that need multiple requests running simultaneously. Pay as you go and Pro include 3 concurrent requests, and Max and Team 10. \n\nRequests beyond your plan's concurrency limit are queued and processed as soon as a slot is available. Queued requests are held up to a fixed limit - if the queue is full, the request will be rejected until one of your concurrency slots opens. \n\nWhat happens to my usage if I switch from an existing Pro or Max plan to the new one? \n\nYour usage is reset: the new plan's full monthly amount is available as soon as you switch, and the session and weekly limits of the old plans no longer apply. Your reset date stays on your subscription's original start date. Switch any time from your billing settings . \n\nAccounts \n\nCan I have multiple Ollama accounts? \n\nNo. Ollama is one account per person. \n\nPrivacy \n\nWhere are models hosted? \n\nOllama hosts models and compute r\n\n--- 完整性信号 ---\nhas_more: true\nnext_offset: 6000\n继续读取时请传入 offset=6000\n",
+      "tool_call_id": "call_00_JOXCKgY20qjDvSzxWtTB0222",
+      "tool_name": "web_fetch",
+      "tool_outcome": "succeeded",
+      "iteration": 2
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "标题: Models | OpenCode\nURL: https://opencode.ai/v2/docs/console/models/\n类型: text/html | 大小: 57151 字节\n已读取: 0-6000 / 22818 字符\ntruncated: true | has_more: true | next_offset: 6000\n\nModels \n\nOpenCode Console provides a list of models tested and verified by the OpenCode team. Sign in, add credits, and get an\nAPI key to use them with OpenCode or another coding agent. \n\nConsole works like any other provider in OpenCode. It’s completely optional , and you can use any other provider\ninstead. For a subscription with included usage, see OpenCode Go . \n\nHow it works \n\nSign in to the console , add your billing details and credits, and copy your API key. \n\nRun /connect in the TUI, choose the OpenCode pay-as-you-go provider, and paste your API key. \n\n/connect \n\nRun /models to see the available models and select one. \n\n/models \n\nYou are charged per request and can add credits to your account. \n\nEndpoints \n\nYou can also access the models directly through the following API endpoints. Free-tier chat models require OpenCode;\nuse paid models or Go from other clients. \n\nEach model is listed with its native API, but every text model also works through the other APIs, which Console\ntranslates. See Base URLs for the full set. \n\nModel Model ID Endpoint AI SDK Package \n\nGPT 6 Astra gpt-6-astra https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 6 Sol gpt-6-sol https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 6.1 Sol gpt-6.1-sol https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 6 Luna gpt-6-luna https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.6 Sol gpt-5.6-sol https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.6 Terra gpt-5.6-terra https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.6 Luna gpt-5.6-luna https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.5 gpt-5.5 https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.5 Pro gpt-5.5-pro https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.4 gpt-5.4 https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.4 Pro gpt-5.4-pro https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.4 Mini gpt-5.4-mini https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.4 Nano gpt-5.4-nano https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.3 Codex gpt-5.3-codex https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.3 Codex Spark gpt-5.3-codex-spark https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.2 gpt-5.2 https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.2 Codex gpt-5.2-codex https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.1 gpt-5.1 https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.1 Codex gpt-5.1-codex https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.1 Codex Max gpt-5.1-codex-max https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5.1 Codex Mini gpt-5.1-codex-mini https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5 gpt-5 https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5 Codex gpt-5-codex https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGPT 5 Nano gpt-5-nano https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nClaude Fable 5.1 claude-fable-5-1 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Fable 5 claude-fable-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Opus 5.5 claude-opus-5-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Opus 5 claude-opus-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Opus 4.8 claude-opus-4-8 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Opus 4.7 claude-opus-4-7 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Opus 4.6 claude-opus-4-6 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Opus 4.5 claude-opus-4-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Sonnet 5.5 claude-sonnet-5-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Sonnet 5 claude-sonnet-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Sonnet 4.6 claude-sonnet-4-6 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Sonnet 4.5 claude-sonnet-4-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Haiku 5.5 claude-haiku-5-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nClaude Haiku 4.5 claude-haiku-4-5 https://opencode.ai/inference/anthropic/v1/messages @ai-sdk/anthropic \n\nGemini 4 Argon gemini-4-argon https://opencode.ai/inference/google/v1beta/models/gemini-4-argon @ai-sdk/google \n\nGemini 3.8 Flash gemini-3.8-flash https://opencode.ai/inference/google/v1beta/models/gemini-3.8-flash @ai-sdk/google \n\nGemini 3.7 Flash gemini-3.7-flash https://opencode.ai/inference/google/v1beta/models/gemini-3.7-flash @ai-sdk/google \n\nGemini 3.6 Flash gemini-3.6-flash https://opencode.ai/inference/google/v1beta/models/gemini-3.6-flash @ai-sdk/google \n\nGemini 3.5 Flash gemini-3.5-flash https://opencode.ai/inference/google/v1beta/models/gemini-3.5-flash @ai-sdk/google \n\nGemini 3.5 Flash Lite gemini-3.5-flash-lite https://opencode.ai/inference/google/v1beta/models/gemini-3.5-flash-lite @ai-sdk/google \n\nGemini 3.1 Pro gemini-3.1-pro https://opencode.ai/inference/google/v1beta/models/gemini-3.1-pro @ai-sdk/google \n\nGemini 3 Flash gemini-3-flash https://opencode.ai/inference/google/v1beta/models/gemini-3-flash @ai-sdk/google \n\nGrok 4.7 grok-4.7 https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGrok 4.6 grok-4.6 https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGrok 4.5 grok-4.5 https://opencode.ai/inference/openai/v1/responses @ai-sdk/openai \n\nGrok Build 0.1 grok-build-0.1 https://opencode\n\n--- 完整性信号 ---\nhas_more: true\nnext_offset: 6000\n继续读取时请传入 offset=6000\n",
+      "tool_call_id": "call_01_9bV8I0waABPc0vedl4Ne1177",
+      "tool_name": "web_fetch",
+      "tool_outcome": "succeeded",
+      "iteration": 2
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_00_E6Q3L7nwtot2V1iTCWn03166",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"max_chars\": 7000, \"url\": \"https://opencode.ai/docs/go/\"}"
+          }
+        },
+        {
+          "id": "call_01_1rmr29OY0nxDIIZ3DBwt1300",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"max_chars\": 4000, \"url\": \"https://opencode.ai/pricing\"}"
+          }
+        }
+      ],
+      "reasoning": "Interesting: the environment appears to be a future-dated simulated web (2026). Ollama pricing has no $10 tier (Free $0, Pro $20, Max $100). OpenCode has \"Go\" at $10/month subscription. So the user's premise \"同为10刀套餐\" — Ollama doesn't have a $10 plan now. Let me check OpenCode Go page and Ollama pricing details for possible $10 tier (maybe there's a \"Starter\"?). Let me fetch opencode.ai pricing/go docs.\n\nAlso note the search result mentioned \"Ollama Cloud pricing\" with Pro $20/mo... The earlier ollamatps.com said \"The $0 Pay as you go plan... Pro $20/mo or $200/yr\". So no $10.\n\nLet's fetch OpenCode Go page for details on $10 plan limits.",
+      "finish_reason": "tool_calls",
+      "iteration": 3
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"max_chars\": 7000, \"url\": \"https://opencode.ai/docs/go/\"}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_00_E6Q3L7nwtot2V1iTCWn03166",
+      "tool_name": "web_fetch",
+      "iteration": 3
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"max_chars\": 4000, \"url\": \"https://opencode.ai/pricing\"}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_01_1rmr29OY0nxDIIZ3DBwt1300",
+      "tool_name": "web_fetch",
+      "iteration": 3
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "标题: Go | OpenCode\nURL: https://opencode.ai/v2/docs/console/go/\n类型: text/html | 大小: 67319 字节\n已读取: 0-7000 / 19173 字符\ntruncated: true | has_more: true | next_offset: 7000\n\nGo \n\nOpenCode Go gives you reliable access to popular open coding models, with three monthly plans: \n\nPlan Price Included usage \n\nGo $10/month Lower-cost access to the models below \n\nGo Plus $40/month Higher usage limits across the models below \n\nGo Teams $20/member/month Every member gets their own limits, $5/month higher than Go on every model \n\nGo works like any other provider in OpenCode. You subscribe to OpenCode Go and get your API key. It’s completely optional and you don’t need it to use OpenCode. \n\nThe service is designed primarily for international users and provides stable global access. \n\nHow it works \n\nSign in to the OpenCode Console , subscribe to Go, Go Plus, or Go Teams, add your billing details, and copy your API key. \n\nRun /connect in the TUI, select OpenCode Go , and paste your API key. \n\n/connect \n\nRun /models to select a model available through Go. \n\n/models \n\nThe current list of models includes: \n\nGrok 4.7 \n\nGLM-5.3-Flash \n\nGLM-5.3 \n\nGLM-5.2 \n\nGPT 6 Luna \n\nGPT 5.6 Luna \n\nClaude Haiku 5.5 \n\nGemini 4 Argon \n\nKimi K3.1 Pro \n\nKimi K3 \n\nKimi K2.7 Code \n\nLongCat-2.0 \n\nStep 5 Preview \n\nBeam Free (limited time, limited regions) \n\nIceman Contributor Free (limited time) \n\nMiMo-V2.6-Flash \n\nMiMo-V2.6-Pro \n\nMiMo-V2.5 \n\nMiMo-V2.5-Pro \n\nMiniMax M3.1 Flash \n\nMiniMax M3 \n\nMuse Spark 1.3 Contributor ( limited regions ) \n\nMuse Spark 1.2 Contributor ( limited regions ) \n\nQwen3.8 Max \n\nQwen3.8 Flash \n\nQwen3.7 Plus \n\nDeepSeek V4.1 Flash \n\nDeepSeek V4 Pro \n\nHy4 preview \n\nHy3 \n\nThe list of models may change as we test and add new ones. \n\nEnable restricted models \n\nWorkspace privacy settings apply to Go. By default, paid endpoints that train on request data are blocked, and\nallowed regions are Europe \u0026 United States . Workspaces without saved privacy settings also allow Global for requests from China. \n\nIn Settings › Privacy , an owner or admin can enable: \n\nDeepSeek V4.1 Flash and V4 Pro: select Global under Regions . \n\nMuse Spark 1.3 Contributor and Muse Spark 1.2 Contributor: turn on Allow paid endpoints that train on request data . \n\nSee Privacy for each model’s training and retention terms. \n\nWhere can I use it? \n\nOpenCode Go is designed for OpenCode and other coding agents\nthat produce similar types of requests. Traffic is monitored for abuse that\ndegrades the experience for other users. \n\nYour client should: \n\nSend typical coding agent traffic \n\nIdentify itself with its own user agent, such as my-coding-agent/1.0 , rather\nthan a generic SDK or HTTP-library name. \n\nSend a stable session ID in x-opencode-session for each conversation so we can optimize routing and\nprompt caching. \n\nSee Harnesses to set up Go in Claude Code, Codex, Hermes, Pi, and Raycast. \n\nValidated clients \n\nBesides OpenCode, the following clients have been validated to work properly\nwith OpenCode Go, although we do not guarantee that they will continue to work in the future. \n\nClient Session support \n\nHermes Update to v0.21.6 or later , which sends the header on main and auxiliary OpenCode requests ( PR #101864 ). \n\nClaude Code Go recognizes its native session header. No custom-header wrapper is needed. \n\nCodex Go recognizes its native session header. Some versions and proxy setups still omit it; preserve the session header when forwarding requests. \n\nZCode Go recognizes its native session header. Our request for x-opencode-session remains open, but it is no longer necessary to send that specific header. \n\nPi Current builds send session information for OpenCode. Update older installations. \n\njcode Update to v0.81.6 or later , which includes the session-header fix . \n\nKilo Code CLI Builds containing PR #13752 restore OpenCode session headers. This fix covers the CLI, not the VS Code extension. See issue #13723 . \n\nKnown problematic clients \n\nThese clients have missing or incomplete session support in the versions we\ninvestigated. The linked reports track fixes and workarounds. \n\nClient Status and tracking \n\nDeepSeek Harness Session information arrives on some model paths, but is missing on others. We recognize its native header; the remaining work is to send it across all adapters. Discussion #5495 . \n\nGitHub Copilot Chat Automatic session-header support is requested in VS Code issue #334186 . \n\nKimi Code The session-header request in issue #3506 was closed as not planned. \n\nMiMo Code Issue #2317 is closed, and PR #2327 was closed without merging. \n\nUsage limits \n\nUsage limits are defined as monthly dollar amounts. The table below shows the\nmonthly limit for each plan and the token costs for each model. Token pricing is\nthe same for Go, Go Plus, and Go Teams. \n\nEach model has the following usage limits: 5-hour — 20% of the monthly limit;\nweekly — 50%; and monthly — 100%. \n\nEach model’s monthly limit below determines how its usage counts toward those allowances. Each response reports how\nmuch the request counted, as opencode.allowance . \n\nToken prices are per 1M tokens. \n\nModel Input Output Cached Read Cached Write Monthly limit \n\nGLM-5.3-Flash $0.15 $0.50 $0.03 - $60 \n\nGLM-5.3 $1.40 $4.40 $0.26 - $15 \n\nGLM-5.2 $1.40 $4.40 $0.26 - $60 \n\nKimi K3.1 Pro $2.00 $10.00 $0.20 $2.00 $15 \n\nKimi K3 $3.00 $15.00 $0.30 $3.00 $15 \n\nKimi K2.7 Code $0.95 $4.00 $0.19 - $60 \n\nLongCat-2.0 $0.30 $1.20 $0.006 - $60 \n\nStep 5 Preview $1.00 $2.70 $0.10 - $15 \n\nBeam Free Free Free Free - Unlimited \n\nlimited time \n\nIceman Contributor Free Free Free Free - Unlimited \n\nlimited time \n\nMiMo-V2.6-Flash $0.14 $0.28 $0.0028 - $60 \n\nMiMo-V2.6-Pro $0.435 $0.87 $0.003625 - $15 \n\nMiMo-V2.5 $0.14 $0.28 $0.0028 - $60 \n\nMiMo-V2.5-Pro $0.435 $0.87 $0.003625 - $15 \n\nMiniMax M3.1 Flash $0.15 $0.60 $0.015 - $20 \n\nMiniMax M3 (≤ 512K tokens) $0.30 $1.20 $0.06 - $60 \n\nMiniMax M3 (\u003e 512K tokens) $0.60 $2.40 $0.12 - $60 \n\nMuse Spark 1.3 Contributor $0.10 $0.20 $0.002 - $60 \n\nMuse Spark 1.2 Contributor $0.10 $0.20 $0.002 - $60 \n\nQwen3.8 Max $2.00 $6.00 $0.25 $2.50 $15 \n\nQwen3.8 Flash $0.15 $0.47 $0.016 $0.20 $30 \n\nQwen3.7 Plus (≤ 256K tokens) $0.40 $1.60 $0.04 $0.50 $60 \n\nQwen3.7 Plus (\u003e 256K tokens) $1.20 $4.80 $0.12 $1.50 $60 \n\nDeepSeek V4.1 Flash (Off-Peak) $0.15 $0.60 $0.003 - $100 \n\nDeepSeek V4.1 Flash (Peak) $0.30 $1.20 $0.006 - $100 \n\nDeepSeek V4 Pro (Off-Peak) $0.66 $1.98 $0.022 - $15 \n\nDeepSeek V4 Pro (Peak) $1.32 $3.96 $0.044 - $15 \n\nHy4 preview $0.834 $2.501 $0.042 - $30 \n\nHy3 $0.14 $0.58 $0.035 - $60 \n\nGrok 4.7 (≤ 200K tokens) $2.00 $6.00 $0.50 - $15 \n\nGrok 4.7 (\u003e 200K tokens) $4.00 $12.00 $1.00 - $15 \n\nGPT 6 Luna (≤ 272K tokens) $0.10 $0.50 $0.01 $0.125 $15 \n\nGPT 6 Luna (\u003e 272K tokens) $0.20 $0.75 $0.02 $0.25 $15 \n\nGPT 5.6 Luna (≤ 272K tokens) $0.20 $1.20 $0.02 $0.25 $15 \n\nGPT 5.6 Luna (\u003e 272K tokens) $0.40 $1.80 $0.04 $0.50 $15 \n\nClaude Haiku 5.5 (≤ 100K tokens) $0.10 $0.50 $0.01 $0.125 $15 \n\nClaude Haiku 5.5 (\u003e 100K tokens) $0.50 $2.50 $0.05 $0.625 $15 \n\nGemini 4 Argon (50% off) $4.00 $2.00 $20.00 $10.00 $0.20 $0.10 - $30 \n\nBeam Free: Free for a limited time. Not available in Angola, Belarus, Cambodia, China (including Hong Kong a\n\n--- 完整性信号 ---\nhas_more: true\nnext_offset: 7000\n继续读取时请传入 offset=7000\n",
+      "tool_call_id": "call_00_E6Q3L7nwtot2V1iTCWn03166",
+      "tool_name": "web_fetch",
+      "tool_outcome": "succeeded",
+      "iteration": 3
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "标题: Go | OpenCode Console\nURL: https://opencode.ai/console/go\n类型: text/html | 大小: 81262 字节\n已读取: 0-2143 / 2143 字符\ntruncated: false | has_more: false | next_offset: 2143\n\nLow-cost models \n\nfor everyone \n\nGo is a subscription that gives you and your team access to the best open-weight models with generous usage limits at a low-cost fixed monthly price. \n\nUse with OpenCode or other leading agents \n\nTop up credit if needed \n\nCancel any time \n\nGo \n\n$10 per month \n\nCurated, affordable models \n\nTested for agentic coding \n\nGenerous limits and reliable access \n\nSubscribe to Go \n\nGo Plus \n\n$40 per month \n\nEverything included in Go \n\nHigher limits and fewer interruptions \n\nBuilt for larger, demanding projects \n\nSubscribe to Go Plus \n\nAllowances for eleven Go models, matching the usage limits in the Go documentation. Estimated requests assume typical usage; the update time is illustrative. Yellow bars represent Go and orange bars represent Go Plus. Search filters these eleven examples. View all 30 models opens the official Go documentation, which lists the supported models. \n\nIncluded models \n\nGo Go Plus Updated 26m ago \n\nUsage Limits \n\nIllustrative Go and Go Plus model allowances \n\nModel Relative request allowances Est. requests / 5 hr Monthly usage \n\nKimi K3 Go: 110; Go Plus: 440 Go: $15; Go Plus: $60 \n\nKimi K3.1 Pro Go: 147; Go Plus: 588 Go: $15; Go Plus: $60 \n\nDeepSeek V4 Pro Go: 1,050; Go Plus: 4,200 Go: $15; Go Plus: $60 \n\nClaude Haiku 5.5 New Go: 3,850; Go Plus: 15,380 Go: $15; Go Plus: $60 \n\nMiniMax M3.1 Flash Go: 3,880; Go Plus: 15,500 Go: $20; Go Plus: $80 \n\nGPT 6 Luna Go: 4,230; Go Plus: 16,920 Go: $15; Go Plus: $60 \n\nQwen3.7 Plus Go: 4,300; Go Plus: 12,900 Go: $60; Go Plus: $180 \n\nGLM-5.3-Flash Go: 6,320; Go Plus: 18,960 Go: $60; Go Plus: $180 \n\nMiMo-V2.6-Flash New Go: 30,100; Go Plus: 60,200 Go: $60; Go Plus: $120 \n\nDeepSeek V4.1 Flash New Go: 43,330; Go Plus: 86,670 Go: $100; Go Plus: $200 \n\nMuse Spark 1.3 Contributor Limited regions Go: 45,300; Go Plus: 90,600 Go: $60; Go Plus: $120 \n\n11 of 11 sample Go models shown. Allowances match the Go documentation. \n\nView all 30 models \n\nFrequently asked questions \n\nQuick answers \n\nStart your subscription \n\nPlans start at $10 a month, with generous limits on the best open-weight models from day one. Cancel any time. \n\nGet started",
+      "tool_call_id": "call_01_1rmr29OY0nxDIIZ3DBwt1300",
+      "tool_name": "web_fetch",
+      "tool_outcome": "succeeded",
+      "iteration": 3
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_00_2gQBFomgH30JohtvJb3Y1506",
+          "type": "function",
+          "function": {
+            "name": "web_search",
+            "arguments": "{\"max_results\": 8, \"query\": \"Ollama Cloud 是否有 10 美元 套餐 Pro $20 最低 付费档\"}"
+          }
+        },
+        {
+          "id": "call_01_uj1nqS0CWKyWZ9hAnvdb0592",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"max_chars\": 5000, \"url\": \"https://ollama.com/pricing\", \"offset\": 6000}"
+          }
+        }
+      ],
+      "reasoning": "Now, Ollama's $10 plan? Ollama's plans: $0, Pro $20, Max $100, Team $500, Enterprise. There's no $10 plan on ollama.com/pricing. The user says \"同为10刀套餐\" — both $10 plans. Maybe Ollama had a $10 plan previously? Or maybe the user is thinking of a different thing. Let me check whether Ollama has a $10 tier — maybe the old plan was $20. Hmm, previously Ollama had Free/Pro $20/Max $100. No $10.\n\nMaybe user confuses with something else, or maybe there is a new cheaper tier. Let me search \"Ollama $10 plan\" to verify.\n\nAlso note: the pages I fetched show a future-ish date (2026-10). Whatever; use what's fetched.\n\nLet me search for Ollama $10 tier.",
+      "finish_reason": "tool_calls",
+      "iteration": 4
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"max_results\": 8, \"query\": \"Ollama Cloud 是否有 10 美元 套餐 Pro $20 最低 付费档\"}",
+        "name": "web_search"
+      },
+      "tool_call_id": "call_00_2gQBFomgH30JohtvJb3Y1506",
+      "tool_name": "web_search",
+      "iteration": 4
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"max_chars\": 5000, \"url\": \"https://ollama.com/pricing\", \"offset\": 6000}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_01_uj1nqS0CWKyWZ9hAnvdb0592",
+      "tool_name": "web_fetch",
+      "iteration": 4
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "搜索 \"Ollama Cloud 是否有 10 美元 套餐 Pro $20 最低 付费档\" 找到 8 条结果:\n\n1. Pricing\n   https://www.ollama.ai/pricing\n   Pay as you go $0 Pay per token for every cloud model. Includes: Run models locally No subscription 3 concurrent requests No service fees Get started Pro $20 / mo. or $200/yr billed annually $16.67 / mo. billed annually For shorter, well-defined day-to-day tasks $100 / mo. For power users who run multiple agents simultaneously Everything in Pay as you go, plus: $60 of usage credits per month Access to larger pro models Fast mode (coming soon) Team Early access $500 / mo. For teams scaling with open models Everything in Pro, plus: Unlimited users $1,000 of usage credits per month, shared across …\n\n2. Ollama Cloud limits — concurrency, credits, and usage limits explained  Ollama TPS\n   http://ollamatps.com/limits\n   Ollama Cloud limits Ollama Cloud's $0 entry plan is Pay as you go, with no subscription and 3 concurrent requests. Paid plans include a fixed amount of usage credits each month — $60 on Pro ($20/mo or $200/yr), $300 on Max ($100/mo) — metered in tokens, at each model's published per-million-token rate for input, cached input and output, and included usage on paid plans resets monthly with no rollover. Pay as you go pays per request with usage credits. Concurrency is 3 on Pay as you go, 3 on Pro, 10 on Max, and 10 on Team. Full detail below — plan tiers, concurrency, per-model rates, resets and…\n\n3. Ollama Cloud pricing — plans, credits, and per-model token rates  Ollama TPS\n   http://ollamatps.com/pricing\n   Ollama Cloud pricing Ollama Cloud's paid plans include a fixed amount of usage credits each month, spent in tokens at each model's published per-million-token rate. The $0 Pay as you go plan has no subscription and pays per request with usage credits. The information below reflects the plans shown at ollama.com/pricing, re-read automatically every day and last verified 28 October 2026. Plan comparison Pay as you go $0 Pay per token for every cloud model. Run models locally No subscription 3 concurrent requests No service fees Pro $20/mo or $200/yr For shorter, well-defined day-to-day tasks 3 c…\n\n4. Ollama\n   https://www.beri.net/tools/ollama\n   Ollama by Ollama Run open-weight LLMs locally with one command, then burst to Ollama's cloud on the same API Ollama by Ollama Run open-weight LLMs locally with one command, then burst to Ollama's cloud on the same API Ollama is an MIT-licensed runtime for downloading and run\n\n... (已截断，共 5655 字节) ...\n\nama Free local LLM runtime (MIT) with optional Ollama Cloud (Pro $20, Max $100). OpenAI- \u0026 Anthropic-compatible API, model registry, agents. Pricing Contact Sales Category Local AI Overview Ollama is the default “Docker for local LLMs”: a free, MIT-licensed runtime that downloads open models, runs them on your machine (or on Ollama Cloud), and exposes a simple CLI plus a local REST API (default http://localhost:11434). It is maintained by the Ollama project (ollama.com) with the main engine open-sourced at github.com/ollama/ollama (176k+ GitHub stars; releases such as v0.32.x in mid-2026). …\n\n8. Ollama\n   https://ollama.ai/?ref=wscoder.com\n   The easiest way to build with open models irm https://ollama.com/install.ps1 | iex Run any app or agent with open models Get up and running with OpenClaw, Claude Code, and more in minutes using open models powered by Ollama. $ ollama ▸ Run a model Launch Claude Code Launch Codex (not installed) Launch OpenClaw More... Start local. Scale with cloud. Ollama's cloud gives you access to faster, larger models when you need them. Access larger models on datacenter-grade hardware Run many requests in parallel Get real-time information from the web Included free with an Ollama account Pro Solve harder…\n\n[tool_result_handle]\nid: 20261102T022336_web_search_5aeb0d48e7982845\ntool: web_search\noriginal_bytes: 5655\npreview_bytes: 3832\nhint: 完整结果已落盘。需要细节时用 read_tool_result(id=..., offset, limit) 分段读取；勿要求模型复述全文。\n",
+      "tool_call_id": "call_00_2gQBFomgH30JohtvJb3Y1506",
+      "tool_name": "web_search",
+      "tool_outcome": "succeeded",
+      "iteration": 4
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "标题: Ollama Pricing\nURL: https://ollama.com/pricing\n类型: text/html; charset=utf-8 | 大小: 50984 字节\n已读取: 6000-6456 / 6456 字符\ntruncated: false | has_more: false | next_offset: 6456\n\nesources primarily in the United States. To serve global demand, we may route to Europe for additional capacity. \n\nIs my prompt or response data trained on? \n\nPrompt or response data is never logged or trained on. \n\nWho does Ollama partner with to host models? \n\nOllama collaborates with NVIDIA Cloud Providers (NCPs) to host open models. \n\nWhen Ollama partners with providers, we require no logging, no training, and zero data retention policies in place.",
+      "tool_call_id": "call_01_uj1nqS0CWKyWZ9hAnvdb0592",
+      "tool_name": "web_fetch",
+      "tool_outcome": "succeeded",
+      "iteration": 4
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_00_BDm68W0i4grGHBuoAXGF3961",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"max_chars\": 6000, \"offset\": 7000, \"url\": \"https://opencode.ai/docs/go/\"}"
+          }
+        },
+        {
+          "id": "call_01_Q24XiEP4NhP5weiZDIBd3473",
+          "type": "function",
+          "function": {
+            "name": "read_tool_result",
+            "arguments": "{\"id\": \"20261102T022323_web_search_d7d5556a840e7cb8\", \"offset\": 3800, \"limit\": 3800}"
+          }
+        }
+      ],
+      "reasoning": "So Ollama has no $10 plan — cheapest paid is Pro $20/mo ($16.67/mo annual) with $60 credits. Pay-as-you-go $0 with credits purchased. So the user's premise \"同为10刀套餐\" is wrong for Ollama. Unless there's some region pricing or older plan. Let me double check whether Ollama ever had a $10 tier — maybe there's a \"Pro\" $10? Older pricing had Free/Pro $20/Max $100. So no.\n\nAlso should check opencode Go $10 details: limits, model list, and whether Ollama can be used for coding agents (Ollama Cloud works with Claude Code, Codex, OpenClaw). \n\nLet me also check Ollama's free tier details / whether $10 could buy credits: pay-as-you-go with $10 credits, no subscription — effectively \"$10 worth of credits\" one-off.\n\nLet me check the Go docs remainder for details on limits (5h/weekly), plus any notes about whether Go can be used in other tools. Already got: 5-hour 20%, weekly 50%, monthly 100%. Go $10 with model-specific monthly dollar caps ($15-$100). Interesting: Go Plus $40 has higher limits.\n\nLet me get remaining Go doc info (usage limits explanation, region restrictions) and maybe check opencode Go availability in China — user likely in China. Also Ollama cloud region: US/Europe hosting, and Ollama account accessible from China?\n\nLet me read more of Go docs.",
+      "finish_reason": "tool_calls",
+      "iteration": 5
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"max_chars\": 6000, \"offset\": 7000, \"url\": \"https://opencode.ai/docs/go/\"}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_00_BDm68W0i4grGHBuoAXGF3961",
+      "tool_name": "web_fetch",
+      "iteration": 5
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"id\": \"20261102T022323_web_search_d7d5556a840e7cb8\", \"offset\": 3800, \"limit\": 3800}",
+        "name": "read_tool_result"
+      },
+      "tool_call_id": "call_01_Q24XiEP4NhP5weiZDIBd3473",
+      "tool_name": "read_tool_result",
+      "iteration": 5
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "标题: Go | OpenCode\nURL: https://opencode.ai/v2/docs/console/go/\n类型: text/html | 大小: 67319 字节\n已读取: 7000-13000 / 19173 字符\ntruncated: true | has_more: true | next_offset: 13000\n\nnd Macau), Cuba, the Democratic Republic of the Congo, Equatorial Guinea, Iran, Iraq, Laos, Libya, Nigeria, North Korea, Russia, Syria, Turkmenistan, Uzbekistan, Venezuela, or the Crimea, Donetsk, and Luhansk regions of Ukraine. \n\nIceman Contributor Free: Free for a limited time. \n\nGemini 4 Argon: The 50% discount applies through November 30, 2026. \n\nDeepSeek V4.1 Flash / V4 Pro: Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday; all other hours, including weekends, are Off-Peak. Learn more . \n\nEstimated requests \n\nThe tables below estimate request counts based on typical Go usage patterns. Go\nPlus and Go Teams estimates scale with each model’s higher usage limit. \n\nModel Requests per 5 hours Requests per week Requests per month \n\nGLM-5.3-Flash 6,320 15,790 31,580 \n\nGLM-5.3 220 540 1,080 \n\nGLM-5.2 880 2,150 4,300 \n\nKimi K3.1 Pro 147 368 735 \n\nKimi K3 110 250 490 \n\nKimi K2.7 Code 1,350 3,380 6,750 \n\nLongCat-2.0 11,400 28,600 57,200 \n\nStep 5 Preview 430 1,070 2,130 \n\nBeam Free Unlimited Unlimited Unlimited \n\nIceman Contributor Free Unlimited Unlimited Unlimited \n\nMiMo-V2.6-Flash 30,100 75,200 150,400 \n\nMiMo-V2.6-Pro 3,250 8,150 16,300 \n\nMiMo-V2.5 30,100 75,200 150,400 \n\nMiMo-V2.5-Pro 3,250 8,150 16,300 \n\nMiniMax M3.1 Flash 3,880 9,690 19,380 \n\nMiniMax M3 3,200 8,000 16,000 \n\nMuse Spark 1.3 Contributor 45,300 113,300 226,600 \n\nMuse Spark 1.2 Contributor 45,300 113,300 226,600 \n\nQwen3.8 Max 160 400 810 \n\nQwen3.8 Flash 5,400 13,500 27,000 \n\nQwen3.7 Plus 4,300 10,800 21,600 \n\nDeepSeek V4.1 Flash 43,330 108,330 216,670 \n\nDeepSeek V4 Pro 1,050 2,600 5,200 \n\nHy4 preview 1,350 3,380 6,770 \n\nHy3 4,300 10,750 21,500 \n\nGrok 4.7 169 423 845 \n\nGPT 6 Luna 4,230 10,560 21,130 \n\nGPT 5.6 Luna 2,050 5,100 10,250 \n\nClaude Haiku 5.5 3,850 9,620 19,230 \n\nGemini 4 Argon 440 1,080 2,120 \n\nThe estimates use the following token counts per request; actual usage varies. \n\nGrok 4.7 — 390 input, 32,500 cached, 120 output tokens per request \n\nGLM-5.3-Flash — 1,000 input, 55,000 cached, 200 output tokens per request \n\nGLM-5.3/5.2 — 700 input, 52,000 cached, 150 output tokens per request \n\nGPT 6 Luna — 1,000 input, 50,000 cached, 220 output tokens per request \n\nGPT 5.6 Luna — 1,000 input, 50,000 cached, 220 output tokens per request \n\nClaude Haiku 5.5 — 1,100 input, 55,000 cached, 240 output tokens per request \n\nKimi K3.1 Pro — 1,050 input, 76,500 cached, 300 output tokens per request \n\nKimi K3 — 1,050 input, 76,500 cached, 300 output tokens per request \n\nKimi K2.7 Code — 870 input, 55,000 cached, 200 output tokens per request \n\nLongCat-2.0 — 920 input, 88,900 cached, 200 output tokens per request \n\nStep 5 Preview — 1,000 input, 55,000 cached, 200 output tokens per request \n\nDeepSeek V4.1 Flash — 410 input, 71,300 cached, 310 output tokens per request \n\nDeepSeek V4 Pro — 750 input, 82,000 cached, 290 output tokens per request \n\nMiniMax M3.1 Flash — 500 input, 49,400 cached, 360 output tokens per request \n\nMiniMax M3 — 510 input, 56,000 cached, 190 output tokens per request \n\nMuse Spark 1.3 Contributor — 620 input, 71,400 cached, 300 output tokens per request \n\nMuse Spark 1.2 Contributor — 620 input, 71,400 cached, 300 output tokens per request \n\nMiMo-V2.6-Flash — 830 input, 71,500 cached, 295 output tokens per request \n\nMiMo-V2.6-Pro — 790 input, 86,000 cached, 305 output tokens per request \n\nMiMo-V2.5 — 830 input, 71,500 cached, 295 output tokens per request \n\nMiMo-V2.5-Pro — 790 input, 86,000 cached, 305 output tokens per request \n\nQwen3.8 Max — 420 input, 66,000 cached, 200 output tokens per request \n\nQwen3.8 Flash — 600 input, 58,000 cached, 200 output tokens per request \n\nQwen3.7 Plus — 500 input, 57,000 cached, 190 output tokens per request \n\nHy4 preview — 830 input, 71,500 cached, 295 output tokens per request \n\nHy3 — 830 input, 71,500 cached, 295 output tokens per request \n\nYou can track your current usage in the console . \n\nUsage limits may change as we learn from early usage and feedback. \n\nUsage beyond limits \n\nIf you also have credits in your Console balance, you can turn on Extra Usage on the Go page. When enabled, Go will fall back to your pay-as-you-go balance after you’ve reached your usage limits instead of blocking requests. \n\nGo Teams starts with Extra Usage on, and you can turn it off or on again on the Go page. \n\nWhy some models have lower usage \n\nWith Go, the included monthly usage varies by model. \n\nFor most models, we make this work through bulk discounts and reserved GPU capacity. We then pass those savings on to you as higher monthly usage. \n\nFor some models, we haven’t had the opportunity to negotiate a discount or host them at a lower cost, either because the model is new or because their public pricing is already discounted. \n\nFor these models, you still get a little more than if you paid the model providers directly; this is why their included monthly usage is lower. \n\nEndpoints \n\nYou can also access Go models through the following API endpoints. Each model is listed with its native API, but every\ntext model also works through the other APIs, which Console translates. See Base URLs for the full set. \n\nModel Model ID Endpoint AI SDK Package \n\nGrok 4.7 grok-4.7 https://opencode.ai/inference/go/openai/v1/responses @ai-sdk/openai \n\nGPT 6 Luna gpt-6-luna https://opencode.ai/inference/go/openai/v1/responses @ai-sdk/openai \n\nGPT 5.6 Luna gpt-5.6-luna https://opencode.ai/inference/go/openai/v1/responses @ai-sdk/openai \n\nClaude Haiku 5.5 claude-haiku-5-5 https://opencode.ai/inference/go/anthropic/v1/messages @ai-sdk/anthropic \n\nGemini 4 Argon gemini-4-argon https://opencode.ai/inference/go/google/v1beta/models/gemini-4-argon @ai-sdk/google \n\nGLM-5.3-Flash glm-5.3-flash https://opencode.ai/inference/go/openai/v1/chat/completions @ai-sdk/openai-compatible \n\nGLM-5.3 glm-5.3 https://opencode.ai/inference/go/openai/v1/chat/completions @ai-sdk/openai-compatible \n\nGLM-5.2 glm-5.2 https://opencode.ai/inference/go/openai/v1/chat/completions @ai-sdk/openai-compatible \n\nKimi K3.1 Pro kimi-k3\n\n--- 完整性信号 ---\nhas_more: true\nnext_offset: 13000\n继续读取时请传入 offset=13000\n",
+      "tool_call_id": "call_00_BDm68W0i4grGHBuoAXGF3961",
+      "tool_name": "web_fetch",
+      "tool_outcome": "succeeded",
+      "iteration": 5
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "tool_result",
+      "content": "[tool_result_read]\nid: 20261102T022323_web_search_d7d5556a840e7cb8\noffset: 3800\nreturned_bytes: 3701\ntotal_bytes: 7501\ntruncated: false\n\n---\n opencode has a free plan (CLI (BYO key) — Free open-source coding agent). opencode plans include access to Any model via your own API key (Claude, GPT, Gemini, GLM, Kimi, loca…\n\n5. Opencode Zen Models — Available Models \u0026 Pricing\n   https://www.opencode.asia/zen-models/\n   OpenCode Zen TL;DR Zen models need no API key — start with opencode auth login --provider zen and just code. Three tiers are offered: zen-default (128K context), zen-advanced (200K), and zen-fast (32K, very fast), switchable via /model zen-advanced in the TUI, \"model\": \"zen-default\" in config, or opencode tui --model zen-fast. The free tier is $0/month with 100 requests/day; Pro is $9.99/month with unlimited requests — availability and pricing can change, so check opencode.ai/zen first. OpenCode Zen provides a curated selection of AI models specifically tested and optimized for coding agents. …\n\n6. OpenCode Zen \u0026 Go Pricing 2026: Go Plus, Limits, Free Models\n   https://usagebox.com/articles/opencode-zen-go-pricing-2026\n   OpenCode Zen \u0026 Go Pricing 2026: Go Plus, Limits, Free Models OpenCode Zen and Go pricing, October 2026: Go at $10 and Go Plus at $40 with per-model dollar limits, Zen pay-as-you-go at cost plus a 4.6% + $0.31 top-up fee. In short (October 23, 2026): OpenCode sells model access two ways. Zen is the pay-as-you-go gateway: in OpenCode v2 it appears as the OpenCode pay-as-you-go provider, and its documentation now lives on the Console models page. You prepay credits, pay each model's token price with no markup, and pay a 4.6% + $0.31 processing fee per top-up ($1.23 on $20). Go is the subscription…\n\n7. Is OpenCode Free? A Complete Breakdown of OpenCode Pricing\n   https://imperialaitools.com/is-opencode-free/\n   Is OpenCode Free? A Complete Breakdown of OpenCode Pricing Is OpenCode free? Yes the app is open source, but AI model costs vary. See free models, local options, OpenCode Go pricing, limits, and hidden costs. In This Guide Yes, OpenCode is free. The OpenCode software itself costs $0 and is open-source, so understanding OpenCode pricing really comes down to one thing: the AI model you connect to it. The app is free forever, but a paid model can still add a bill. This guide separates the two clearly, so you know exactly what stays free and what does not before you type a single command. Quick An…\n\n8. OpenCode Zen vs Go vs 自帶 API 2026 最省錢方案完整比較(繁中)\n   https://autodev-ai.com/blog/opencode-zen-vs-go-pricing-2026.html\n   OpenCode Zen vs Go vs 自帶 API 2026 最省錢方案完整比較(繁中) OpenCode 現在有 160,000 顆 GitHub Stars,已超越 Claude Code 成為最熱門的 AI 編碼工具。但很多台灣工程師搞不清楚:Zen 按需付費、Go 訂閱方案、自帶 API Key,到底哪個最省錢?這篇文章給你完整的費用試算和決策指南。 160K+ GitHub Stars $0 開源本體免費 $1–10 每月實際費用範圍 100+ 支援 LLM 數量 OpenCode 三種付費方式快速說明 許多人以為 OpenCode 是「完全免費」的——它的開源本體確實是 MIT 授權免費下載,但實際使用時你仍需要選擇一個計費方式來支付 AI 模型的推理成本: ⚡ Zen 按需付費 只在發送請求時計費,無月費。適合低頻使用者。 🚀 Go $10/月訂閱 月付訂閱,固定費用,提供更高使用上限。適合中度使用者。 🔑 BYOK 自帶 API Key 直接連接 Anthropic/OpenAI/DeepSeek 等 API。成本最低但需自行管理。 💡 重要說明: OpenCode 的 Zen 和 Go 是 OpenCode.ai 官方提供的代管計費服務,幫你管理 API 連接和費用。自帶 API Key 方式則完全繞過此系統,直接用你自己的 API 帳號。 三方比較表 比較…\n\n",
+      "tool_call_id": "call_01_Q24XiEP4NhP5weiZDIBd3473",
+      "tool_name": "read_tool_result",
+      "tool_outcome": "succeeded",
+      "iteration": 5
+    },
+    {
+      "timestamp": "2026-11-02T10:23:51.978779+08:00",
+      "role": "assistant",
+      "content": "## 先纠正一个前提：Ollama 没有 10 美元套餐\n\n根据 ollama.com/pricing 当前页面（2026-10 改版后为 usage credit 制），Ollama Cloud 的档位是：\n\n| 档位 | 价格 | 包含用量 |\n|---|---|---|\n| Pay as you go | $0/月，按 token 计费 | 3 并发 |\n| **Pro** | **$20/月**（年付 $200，折 $16.67/月） | 每月 $60 usage credits + 更大模型 |\n| Max | $100/月 | 每月 $300 credits，10 并发 |\n| Team | $500/月起 | $1,000 credits 共享 |\n\n也就是说，如果你说的“10 刀”是指订阅费，那实际对比是 **Ollama Pro $20** 对 **OpenCode Go $10**。如果你只是想在 Ollama 上充 $10 credits 用一用，那是按量付费、无月费，跟“套餐”不是一回事。\n\n## OpenCode Go $10 是什么\n\n来自 opencode.ai/console/go 与 /docs/go：$10/月订阅，按**每个模型各自的月度美元额度**给量（不是统一无限量），有 5 小时 = 月度额度 20%、每周 50%、每月 100% 的三重节流。部分模型额度（Go 档）：\n\n- DeepSeek V4.1 Flash：$100/月（≈21.6 万次请求/月）\n- MiMo-V2.6-Flash、GLM-5.2/5.3-Flash、Qwen3.7 Plus、LongCat-2.0：$60/月\n- MiniMax M3、Hy3、GLM-5.3、Gemini 4 Argon：$20–30/月\n- Kimi K3、Kimi K3.1 Pro、Claude Haiku 5.5、GPT 6 Luna、Grok 4.7、Qwen3.8 Max：$15/月\n\n## 谁更合适\n\n**选 OpenCode Go（$10），如果你主要用来写代码。** 理由很直接：它的模型池是按 agentic coding 场景筛选和调优过的（含 Claude Haiku 5.5、GPT 6 Luna、Kimi、GLM、DeepSeek 等），单价按 dollar 额度打包，$10 换到的实际 token 量在主流闭源、开源混合模型里明显高于自己按量买。缺点：官方明确说它是**面向 OpenCode 类编码 agent 的流量**，会做滥用监控；部分模型有区域限制（如 Beam Free 不含中国大陆、香港、澳门）；DeepSeek 系列需要工作区把 Regions 设成 Global 才能从中国发起请求。\n\n**选 Ollama Pro（$20），如果你要的是“通用 API + 开源模型 + 数据不被训练”。** Ollama 只托管开源权重模型（GLM、DeepSeek、Kimi、Qwen、MiniMax、gpt-oss 等），官方写明不记录、不训练、零保留；接口兼容 OpenAI 和 Anthropic，能直接喂给 Claude Code、Codex 等任意客户端，不限定用途。缺点：$20 起、无 $10 档，且**没有 Claude、GPT、Gemini 官方模型**，纯编码体验不如 Go 那套精选组合。\n\n**如果预算就是 $10 且不写代码**：OpenCode Go 的用途限制可能不合适，Ollama 又没这个档。这时候更实际的做法是 Ollama Pay as you go 充 $10 credits 按量用（无月费、3 并发），或者去 OpenCode Zen 按量付费（credits 无加价，但充值收 4.6% + $0.31 手续费）。\n\n一句话：**写代码、要 Claude 和 GPT 系 → OpenCode Go $10；要通用接口、只跑开源模型、看重隐私 → Ollama，但得接受 $20 起步。**\n\n（以上价格与额度均来自上述两个官方页面，OpenCode 页面标注的部分额度为“随早期使用反馈可能调整”，下单前建议再核一次。）",
+      "tool_calls": null,
+      "reasoning": "Key facts:\n- Ollama: no $10 tier. Pay-as-you-go $0 (per-token, 3 concurrent), Pro $20/mo ($60 credits), Max $100 ($300 credits). So \"同为10刀套餐\" is a false premise for Ollama.\n- OpenCode: Go $10/mo subscription with per-model monthly dollar allowances (e.g., GLM-5.3-Flash $60, DeepSeek V4.1 Flash $100, Kimi K3 $15, etc.), 5h 20% / weekly 50% / monthly 100%. Go Plus $40.\n\nSo the honest answer: Ollama doesn't have a $10 plan; the comparison should be Ollama Pro $20 vs OpenCode Go $10. Let me also check whether Ollama has any cheaper entry, e.g., is there a $10 \"Pro annual\" — no, annual is $200/yr = $16.67/mo.\n\nAlso worth noting: Ollama's $10 could mean buying $10 usage credits on pay-as-you-go (no subscription, no minimum?). That's a plausible interpretation: on Ollama you could just top up $10 credits. That's actually a valid \"10刀\" reading. I should mention it.\n\nLet me quickly check Ollama credit minimum top-up. Not essential. I'll mention \"pay-as-you-go 充值 $10 也是可行的，但这不是套餐\".\n\nAlso OpenCode Go notes: designed for coding agents, abuse monitoring, restricted regions (Beam Free not in China incl HK/Macau). DeepSeek requires enabling Global region for China requests. That's relevant to a Chinese user.\n\nLet me also check if there's info about Ollama cloud models not including Claude/GPT (only open models) — yes, open-weight models only, hosted with NCPs, no logging/training.\n\nNow compare suitability: depends on use case — coding agent vs general API.\n\nI have enough. Let me write a concise Chinese comparison table.\n\nMaybe double check Ollama pay-as-you-go minimum credit purchase. Quick search? I'll skip; I'll phrase carefully (\"按量充值，无最低月费\" — actually I'm not certain about minimum). Better: just say 充值 credits 按 token 计费，无订阅.\n\nLet me write the answer.\n\nStructure:\n1. 先纠正前提：Ollama 没有 10 美元档。\n2. 对比表\n3. 按场景建议\n4. 注意点（OpenCode Go 只面向编码 agent 流量、区域限制；Ollama 只有开源模型、无 Claude/GPT）\n\nKeep it reasonably tight.",
+      "finish_reason": "stop",
+      "iteration": 6
+    }
+  ]
+}

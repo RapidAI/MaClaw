@@ -552,8 +552,13 @@ func lookupModelMap(provider *llmpool.ProviderConfig, name string) string {
 }
 
 // UpstreamModelForMember rewrites a public model name through the member map.
+// A name that is already in the member's model list is the upstream id the
+// admin saved. The map must not send that id back to an older upstream model.
 func UpstreamModelForMember(provider *llmpool.ProviderConfig, publicModel string) string {
 	publicModel = strings.TrimSpace(publicModel)
+	if configured := configuredModel(memberConfiguredModels(provider), publicModel); configured != "" {
+		return configured
+	}
 	if mapped := lookupModelMap(provider, publicModel); mapped != "" {
 		return mapped
 	}
@@ -563,8 +568,8 @@ func UpstreamModelForMember(provider *llmpool.ProviderConfig, publicModel string
 // chatTestUpstreamModel is the model name an admin status test sends.
 // A service-group test passes the route name and the client band separately.
 // auto and official-* only choose a price. A provider Test Status call leaves
-// both empty and passes the catalog model it selected. That name is kept,
-// after the member model_map, so the button still dials the model it shows.
+// both empty and passes the catalog model it selected. A name in that catalog
+// is dialed as saved. The map rewrites only names that are not catalog ids.
 func chatTestUpstreamModel(member *llmpool.ProviderConfig, routeModel, logicalModel, requestedModel string) string {
 	routeModel = strings.TrimSpace(routeModel)
 	logicalModel = strings.TrimSpace(logicalModel)
@@ -607,7 +612,7 @@ func memberUpstreamModel(member *llmpool.ProviderConfig, routeModel, logicalMode
 		return mapped
 	}
 	if !isBillingBandName(logicalModel) && routeModel != "" && !strings.EqualFold(routeModel, logicalModel) {
-		if mapped := lookupModelMap(member, routeModel); mapped != "" && !isBillingBandName(mapped) {
+		if mapped := nonBandMappedModel(member, routeModel); mapped != "" {
 			return mapped
 		}
 	}
@@ -699,11 +704,44 @@ func lookupMemberBandModel(member *llmpool.ProviderConfig, name string) string {
 }
 
 func nonBandMappedModel(member *llmpool.ProviderConfig, name string) string {
+	if configured := configuredModel(memberConfiguredModels(member), name); configured != "" {
+		return configured
+	}
 	mapped := lookupModelMap(member, name)
 	if mapped == "" || isBillingBandName(mapped) {
 		return ""
 	}
 	return mapped
+}
+
+// retargetModelMap points preserved aliases at the new catalog model. The
+// provider editor saves models without sending model_map, so a switch from
+// deepseek-v4.1-flash to glm-5.3-flash would otherwise keep dialing the old id.
+// Values that name some other upstream model are left alone.
+func retargetModelMap(modelMap map[string]string, previousModels, nextModels []string) {
+	if len(modelMap) == 0 {
+		return
+	}
+	previous := memberConfiguredModels(&llmpool.ProviderConfig{Models: previousModels})
+	next := memberConfiguredModels(&llmpool.ProviderConfig{Models: nextModels})
+	if len(previous) == 0 || len(next) == 0 {
+		return
+	}
+	oldPrimary := previous[0]
+	newPrimary := next[0]
+	if strings.EqualFold(oldPrimary, newPrimary) || configuredModel(next, oldPrimary) != "" {
+		return
+	}
+	for key, value := range modelMap {
+		if !strings.EqualFold(strings.TrimSpace(value), oldPrimary) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(key), newPrimary) {
+			delete(modelMap, key)
+			continue
+		}
+		modelMap[key] = newPrimary
+	}
 }
 
 func billingBandAliases(canon string) []string {

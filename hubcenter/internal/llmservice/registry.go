@@ -1090,6 +1090,7 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	}
 	if incoming.ModelMap == nil {
 		incoming.ModelMap = cloneStringMap(existing.ModelMap)
+		retargetModelMap(incoming.ModelMap, existing.Models, incoming.Models)
 	}
 	// A nil extra body or drop list was omitted. {} and [] clear. An empty
 	// priority was omitted, so an explicit "member" is what switches

@@ -405,6 +405,26 @@ describe('ExpertMarketDialog', () => {
         expect(screen.queryByText('Received expert 1')).toBeNull();
     });
 
+    it('returns to the last catalogue page instead of leaving the grid empty', async () => {
+        let requests = 0;
+        vi.mocked(AppAPI.ListExpertMarketListings).mockImplementation(async (_query, _sort, page) => {
+            requests += 1;
+            if (requests === 1) return { experts: [{ ...listing, name: 'First page expert' }], total_pages: 2 };
+            if (Number(page) > 1) return { experts: [], total_pages: 1 };
+            return { experts: [{ ...listing, name: 'First page expert' }], total_pages: 1 };
+        });
+        render(<DialogProvider><ExpertMarketDialog lang="en" onClose={vi.fn()} /></DialogProvider>);
+        expect(await screen.findByText('First page expert')).toBeTruthy();
+        fireEvent.click(within(screen.getByRole('navigation', { name: 'Expert market pages' })).getByRole('button', { name: 'Next' }));
+        await waitFor(() => {
+            const calls = vi.mocked(AppAPI.ListExpertMarketListings).mock.calls;
+            expect(calls.length).toBeGreaterThanOrEqual(3);
+            expect(calls.at(-1)?.[2]).toBe(1);
+        });
+        expect(screen.getByText('First page expert')).toBeTruthy();
+        expect(screen.queryByText('No AI experts match your search.')).toBeNull();
+    });
+
     it('returns to the last valid submissions page after account reconciliation shrinks the list', async () => {
         const nineUploads = Array.from({ length: 13 }, (_, index) => ({
             ...listing,

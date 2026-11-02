@@ -623,6 +623,33 @@ export const UtilitiesPage = ({
     const expertPageCount = Math.max(1, Math.ceil(expertLibraryCount / expertPageSize));
     const expertPageIndex = Math.min(expertPage, expertPageCount);
     const expertPageStart = (expertPageIndex - 1) * expertPageSize;
+    // Column count follows the window. Keep the expert at the top of the
+    // current page in view, instead of staying on the same page number and
+    // jumping to a different slice.
+    const expertPageAnchorRef = useRef(0);
+    const [trackedExpertPageSize, setTrackedExpertPageSize] = useState(expertPageSize);
+    const [trackedExpertQuery, setTrackedExpertQuery] = useState({ search: expertSearch, filter: expertFilter });
+    const expertQueryChanged = trackedExpertQuery.search !== expertSearch || trackedExpertQuery.filter !== expertFilter;
+    if (trackedExpertPageSize !== expertPageSize || expertQueryChanged) {
+        if (trackedExpertPageSize !== expertPageSize) {
+            setTrackedExpertPageSize(expertPageSize);
+            if (!expertQueryChanged) {
+                const nextPage = Math.min(expertPageCount, Math.max(1, Math.floor(expertPageAnchorRef.current / Math.max(1, expertPageSize)) + 1));
+                const start = (nextPage - 1) * expertPageSize;
+                const stored = expertPageAnchorRef.current;
+                expertPageAnchorRef.current = stored >= start && stored < start + expertPageSize ? stored : start;
+                setExpertPage(nextPage);
+            }
+        }
+        if (expertQueryChanged) {
+            setTrackedExpertQuery({ search: expertSearch, filter: expertFilter });
+            expertPageAnchorRef.current = 0;
+            setExpertPage(1);
+        }
+    } else {
+        const stored = expertPageAnchorRef.current;
+        expertPageAnchorRef.current = stored >= expertPageStart && stored < expertPageStart + expertPageSize ? stored : expertPageStart;
+    }
     const pageIndustry = visibleExperts.industry.slice(expertPageStart, expertPageStart + expertPageSize);
     const pageLocalSkip = Math.max(0, expertPageStart - visibleExperts.industry.length);
     const pageLocal = visibleExperts.local.slice(pageLocalSkip, pageLocalSkip + expertPageSize - pageIndustry.length);
@@ -674,15 +701,15 @@ export const UtilitiesPage = ({
         void loadExpertMarketUploads();
     }, [active, view, loadExpertMarketUploads, showExpertSurface]);
 
-    useEffect(() => { setExpertPage(1); }, [expertSearch, expertFilter]);
     useEffect(() => { setExpertPage(page => Math.min(page, expertPageCount)); }, [expertPageCount]);
     useEffect(() => {
         const node = expertGridRef.current;
         if (!node) return;
+        let narrow: MediaQueryList | null = null;
         const measure = () => {
             let columns = 4;
             try {
-                if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 560px)').matches) {
+                if (narrow?.matches) {
                     columns = 1;
                 } else {
                     const width = node.clientWidth;
@@ -695,12 +722,31 @@ export const UtilitiesPage = ({
             }
             setExpertColumns(current => current === columns ? current : columns);
         };
+        try {
+            if (typeof window.matchMedia === 'function') narrow = window.matchMedia('(max-width: 560px)');
+        } catch {
+            narrow = null;
+        }
         measure();
-        if (typeof ResizeObserver === 'undefined') return;
+        narrow?.addEventListener?.('change', measure);
+        if (typeof ResizeObserver === 'undefined') {
+            return () => narrow?.removeEventListener?.('change', measure);
+        }
         const observer = new ResizeObserver(measure);
         observer.observe(node);
-        return () => observer.disconnect();
-    }, [showExpertSurface, view]);
+        return () => {
+            narrow?.removeEventListener?.('change', measure);
+            observer.disconnect();
+        };
+    }, [active, showExpertSurface, view]);
+
+    const revealExpertGrid = () => {
+        const grid = expertGridRef.current;
+        const page = grid?.closest('.utilities-page');
+        if (!grid || !(page instanceof HTMLElement) || typeof page.scrollTo !== 'function') return;
+        const top = grid.getBoundingClientRect().top - page.getBoundingClientRect().top + page.scrollTop;
+        page.scrollTo({ top: Math.max(0, top - 8) });
+    };
 
     const handleWithdrawExpertMarketListing = useCallback(async (expert: ExpertDefinition) => {
         const listing = expertMarketUploads[expert.id];
@@ -2211,12 +2257,12 @@ export const UtilitiesPage = ({
                         {expertLibraryEmpty ? <div className="utilities-experts__empty" data-testid="utilities-experts-empty">{t.expertFilterEmpty}</div> : null}
                         {expertEntriesInGrid ? expertEntryCards : null}
                     </div>
-                    {expertPageCount > 1 ? <nav className="utilities-experts__pager" aria-label={t.expertPageLabel}>
-                        <button type="button" disabled={expertPageIndex <= 1} onClick={() => setExpertPage(page => Math.max(1, page - 1))}>{t.expertPagePrev}</button>
-                        <span>{t.expertPageStatus(expertPageIndex, expertPageCount)}</span>
-                        <button type="button" disabled={expertPageIndex >= expertPageCount} onClick={() => setExpertPage(page => Math.min(expertPageCount, page + 1))}>{t.expertPageNext}</button>
-                    </nav> : null}
                     {expertEntriesInGrid ? null : <div className="utilities-experts__grid utilities-experts__entries">{expertEntryCards}</div>}
+                    {expertPageCount > 1 ? <nav className="utilities-experts__pager" aria-label={t.expertPageLabel}>
+                        <button type="button" disabled={expertPageIndex <= 1} onClick={() => { setExpertPage(Math.max(1, expertPageIndex - 1)); revealExpertGrid(); }}>{t.expertPagePrev}</button>
+                        <span aria-live="polite">{t.expertPageStatus(expertPageIndex, expertPageCount)}</span>
+                        <button type="button" disabled={expertPageIndex >= expertPageCount} onClick={() => { setExpertPage(Math.min(expertPageCount, expertPageIndex + 1)); revealExpertGrid(); }}>{t.expertPageNext}</button>
+                    </nav> : null}
                 </div> : null}
                 {expertDeleteTarget ? (
                     <ConfirmDialog

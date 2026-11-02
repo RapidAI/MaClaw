@@ -41,19 +41,27 @@ const contactLabel = (value: unknown) => {
 };
 const number = (value: unknown) => Number(value || 0).toLocaleString();
 
-function ExpertMarketPager({ lang, label, page, pageCount, onPage }: {
+function ExpertMarketPager({ lang, label, page, pageCount, busy = false, onPage }: {
     lang: Lang;
     label: string;
     page: number;
     pageCount: number;
+    busy?: boolean;
     onPage: (page: number) => void;
 }) {
     if (pageCount <= 1) return null;
     return <nav className="expert-market-pagination" aria-label={label}>
-        <button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>{t(lang, '上一页', 'Previous')}</button>
+        <button type="button" disabled={busy || page <= 1} onClick={() => onPage(page - 1)}>{t(lang, '上一页', 'Previous')}</button>
         <span>{t(lang, `第 ${page} / ${pageCount} 页`, `Page ${page} of ${pageCount}`)}</span>
-        <button type="button" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>{t(lang, '下一页', 'Next')}</button>
+        <button type="button" disabled={busy || page >= pageCount} onClick={() => onPage(page + 1)}>{t(lang, '下一页', 'Next')}</button>
     </nav>;
+}
+
+function revealInMarketBody(target: HTMLElement | null) {
+    const scroller = target?.closest('.expert-market-body');
+    if (!target || !(scroller instanceof HTMLElement) || typeof scroller.scrollTo !== 'function') return;
+    const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    scroller.scrollTo({ top: Math.max(0, top - 8) });
 }
 const message = (err: unknown) => err instanceof Error ? err.message : String(err || 'Unknown error');
 const marketErrorText = (lang: Lang, err: unknown) => {
@@ -112,6 +120,10 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     const [columns, setColumns] = useState(libraryColumnCount);
     const [cataloguePage, setCataloguePage] = useState(1);
     const [cataloguePageCount, setCataloguePageCount] = useState(1);
+    const [catalogueFetch, setCatalogueFetch] = useState(0);
+    const cataloguePageRef = useRef(1);
+    const catalogueShownRef = useRef(1);
+    catalogueShownRef.current = cataloguePage;
     const [receivedPage, setReceivedPage] = useState(1);
     const [purchasesPage, setPurchasesPage] = useState(1);
     const [uploadsPage, setUploadsPage] = useState(1);
@@ -121,6 +133,11 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     const libraryTabRef = useRef<HTMLButtonElement | null>(null);
     const closeRef = useRef(onClose);
     const catalogueRequestRef = useRef(0);
+    const catalogueBrowseRef = useRef('');
+    const marketBodyRef = useRef<HTMLElement | null>(null);
+    const receivedHeadingRef = useRef<HTMLDivElement | null>(null);
+    const purchasesHeadingRef = useRef<HTMLDivElement | null>(null);
+    const uploadsHeadingRef = useRef<HTMLDivElement | null>(null);
     const accountRequestRef = useRef(0);
     const submissionOverridesRef = useRef<Record<string, string>>({});
     const confirmingRef = useRef('');
@@ -147,6 +164,42 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     const currentUploadsPage = Math.min(uploadsPage, uploadPageCount);
     const currentReceivedPage = Math.min(receivedPage, receivedPageCount);
     const currentPurchasesPage = Math.min(purchasesPage, purchasesPageCount);
+    const libraryPageSizeRef = useRef(pageSize);
+    const libraryPageAnchorsRef = useRef({ catalogue: 0, received: 0, purchases: 0, uploads: 0 });
+    const keepPageAnchor = (anchor: number, page: number) => {
+        const start = (page - 1) * pageSize;
+        return anchor >= start && anchor < start + pageSize ? anchor : start;
+    };
+    if (libraryPageSizeRef.current !== pageSize) {
+        const pageFor = (anchor: number, count: number) => Math.min(Math.max(1, count), Math.max(1, Math.floor(anchor / pageSize) + 1));
+        const anchors = libraryPageAnchorsRef.current;
+        const next = {
+            catalogue: Math.max(1, Math.floor(anchors.catalogue / pageSize) + 1),
+            received: pageFor(anchors.received, receivedPageCount),
+            purchases: pageFor(anchors.purchases, purchasesPageCount),
+            uploads: pageFor(anchors.uploads, uploadPageCount),
+        };
+        libraryPageSizeRef.current = pageSize;
+        libraryPageAnchorsRef.current = {
+            catalogue: keepPageAnchor(anchors.catalogue, next.catalogue),
+            received: keepPageAnchor(anchors.received, next.received),
+            purchases: keepPageAnchor(anchors.purchases, next.purchases),
+            uploads: keepPageAnchor(anchors.uploads, next.uploads),
+        };
+        cataloguePageRef.current = next.catalogue;
+        setCatalogueFetch(count => count + 1);
+        setReceivedPage(next.received);
+        setPurchasesPage(next.purchases);
+        setUploadsPage(next.uploads);
+    } else {
+        const anchors = libraryPageAnchorsRef.current;
+        libraryPageAnchorsRef.current = {
+            catalogue: keepPageAnchor(anchors.catalogue, cataloguePageRef.current),
+            received: keepPageAnchor(anchors.received, currentReceivedPage),
+            purchases: keepPageAnchor(anchors.purchases, currentPurchasesPage),
+            uploads: keepPageAnchor(anchors.uploads, currentUploadsPage),
+        };
+    }
     // Account reconciliation can reduce a list while the user is reading a
     // later page. Persist the clamped page so a subsequent refresh cannot
     // unexpectedly return them to a formerly selected page.
@@ -233,19 +286,41 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     // separate avoids an account round-trip for every search or sort change.
     const loadCatalogue = useCallback(async () => {
         const requestID = ++catalogueRequestRef.current;
+        const page = cataloguePageRef.current;
+        const browse = `${submittedQuery}\0${sort}`;
+        if (catalogueBrowseRef.current && catalogueBrowseRef.current !== browse) setListings([]);
+        catalogueBrowseRef.current = browse;
         setLoading(true); setError('');
+        let snapped = false;
         try {
-            const catalogue = await ListExpertMarketListings(submittedQuery, sort, cataloguePage, pageSize);
+            const catalogue = await ListExpertMarketListings(submittedQuery, sort, page, pageSize);
             if (!mountedRef.current || requestID !== catalogueRequestRef.current) return;
-            setCataloguePageCount(Math.max(1, Number(catalogue?.total_pages) || 1));
+            const pages = Math.max(1, Number(catalogue?.total_pages) || 1);
+            // A narrower window or a shorter result can leave the request on a
+            // page that no longer exists. Keep the visible page on the cards
+            // already shown until the corrected page arrives.
+            if (page > pages) {
+                snapped = true;
+                cataloguePageRef.current = pages;
+                setCatalogueFetch(count => count + 1);
+                return;
+            }
+            setCataloguePageCount(pages);
+            setCataloguePage(current => current === page ? current : page);
             setListings(Array.isArray(catalogue?.experts) ? catalogue.experts : []);
         } catch (err) {
             if (!mountedRef.current || requestID !== catalogueRequestRef.current) return;
+            cataloguePageRef.current = catalogueShownRef.current;
             setError(marketErrorText(lang, err));
         } finally {
-            if (mountedRef.current && requestID === catalogueRequestRef.current) setLoading(false);
+            if (mountedRef.current && requestID === catalogueRequestRef.current && !snapped) setLoading(false);
         }
-    }, [cataloguePage, lang, pageSize, sort, submittedQuery]);
+    }, [catalogueFetch, lang, pageSize, sort, submittedQuery]);
+
+    const goToCataloguePage = (page: number) => {
+        cataloguePageRef.current = page;
+        setCatalogueFetch(count => count + 1);
+    };
 
     const refreshAccount = useCallback(async () => {
         const requestID = ++accountRequestRef.current;
@@ -538,7 +613,6 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
 
     const selectTab = (nextTab: 'market' | 'library') => {
         setTab(nextTab);
-        if (nextTab === 'library') setUploadsPage(1);
     };
 
     const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, currentTab: 'market' | 'library') => {
@@ -573,30 +647,30 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
                     <button className="expert-market-assets-button" type="button" onClick={openAssetManagement}>{t(lang, '资产管理', 'Asset Management')}</button>
                 </div>
             </div>
-            {tab === 'market' ? <main id="expert-market-panel-market" className="expert-market-body" role="tabpanel" aria-labelledby="expert-market-tab-market">
-                <div className="expert-market-toolbar"><input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { setCataloguePage(1); setSubmittedQuery(query); } }} placeholder={t(lang, '搜索专家或任务', 'Search experts or tasks')} aria-label={t(lang, '搜索专家', 'Search experts')} /><select value={sort} onChange={event => { setCataloguePage(1); setSort(event.target.value); }} aria-label={t(lang, '排序', 'Sort')}><option value="published">{t(lang, '最新发布', 'Newest')}</option><option value="downloads">{t(lang, '下载最多', 'Most downloads')}</option><option value="sales">{t(lang, '销售最高', 'Top sales')}</option></select><button type="button" onClick={() => { setCataloguePage(1); setSubmittedQuery(query); }}>{t(lang, '搜索', 'Search')}</button></div>
+            {tab === 'market' ? <main ref={marketBodyRef} id="expert-market-panel-market" className="expert-market-body" role="tabpanel" aria-labelledby="expert-market-tab-market">
+                <div className="expert-market-toolbar"><input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { cataloguePageRef.current = 1; setCataloguePage(1); setSubmittedQuery(query); } }} placeholder={t(lang, '搜索专家或任务', 'Search experts or tasks')} aria-label={t(lang, '搜索专家', 'Search experts')} /><select value={sort} onChange={event => { cataloguePageRef.current = 1; setCataloguePage(1); setSort(event.target.value); }} aria-label={t(lang, '排序', 'Sort')}><option value="published">{t(lang, '最新发布', 'Newest')}</option><option value="downloads">{t(lang, '下载最多', 'Most downloads')}</option><option value="sales">{t(lang, '销售最高', 'Top sales')}</option></select><button type="button" onClick={() => { cataloguePageRef.current = 1; setCataloguePage(1); setSubmittedQuery(query); }}>{t(lang, '搜索', 'Search')}</button></div>
                 {error ? <div className="expert-market-message" role="alert">{error}<button type="button" onClick={() => void loadCatalogue()}>{t(lang, '重试', 'Retry')}</button></div> : null}
-                {loading ? <div className="expert-market-grid" role="status" aria-label={t(lang, '正在加载专家市场', 'Loading AI Expert Market')}><div className="expert-market-card expert-market-card--skeleton" aria-hidden="true"><div className="expert-market-card-head"><i className="expert-market-skeleton expert-market-skeleton--icon" /><div><i className="expert-market-skeleton expert-market-skeleton--title" /><i className="expert-market-skeleton expert-market-skeleton--version" /></div></div><i className="expert-market-skeleton expert-market-skeleton--description" /><i className="expert-market-skeleton expert-market-skeleton--description expert-market-skeleton--short" /><footer><i className="expert-market-skeleton expert-market-skeleton--price" /><i className="expert-market-skeleton expert-market-skeleton--action" /></footer></div><span className="sr-only">{t(lang, '正在加载专家市场…', 'Loading Expert Market…')}</span></div> : <div className="expert-market-grid">{listings.map(listing => { const id = String(listing.id); const isInstalled = installed.has(id); return <article className="expert-market-card" key={id}><div className="expert-market-card-head"><div className="expert-market-card-icon" aria-hidden>{listing.icon || '🤖'}</div><div className="expert-market-card-copy"><h3 title={String(listing.name || '')}>{listing.name}</h3><span>v{listing.version}</span></div></div><p>{listing.description || t(lang, '暂无介绍', 'No description')}</p><footer><span className={Number(listing.price) > 0 ? 'expert-market-price' : 'expert-market-free'}>{Number(listing.price) > 0 ? `${number(listing.price)} Credits` : t(lang, '免费', 'Free')}</span><button className={isInstalled ? 'expert-market-uninstall' : 'btn-primary'} type="button" disabled={!!busyID || !!confirmingID} onClick={() => void (isInstalled ? uninstall(listing) : owned.has(id) ? install(listing) : purchase(listing))}>{busyID === id ? t(lang, '处理中…', 'Working…') : isInstalled ? t(lang, '卸载', 'Uninstall') : owned.has(id) ? t(lang, '安装', 'Install') : t(lang, '获取', 'Get')}</button></footer></article>; })}</div>}
-                {!loading && !error && cataloguePageCount > 1 ? <ExpertMarketPager lang={lang} label={t(lang, '专家市场分页', 'Expert market pages')} page={cataloguePage} pageCount={cataloguePageCount} onPage={setCataloguePage} /> : null}
+                {loading && listings.length === 0 ? <div className="expert-market-grid" role="status" aria-label={t(lang, '正在加载专家市场', 'Loading AI Expert Market')}><div className="expert-market-card expert-market-card--skeleton" aria-hidden="true"><div className="expert-market-card-head"><i className="expert-market-skeleton expert-market-skeleton--icon" /><div><i className="expert-market-skeleton expert-market-skeleton--title" /><i className="expert-market-skeleton expert-market-skeleton--version" /></div></div><i className="expert-market-skeleton expert-market-skeleton--description" /><i className="expert-market-skeleton expert-market-skeleton--description expert-market-skeleton--short" /><footer><i className="expert-market-skeleton expert-market-skeleton--price" /><i className="expert-market-skeleton expert-market-skeleton--action" /></footer></div><span className="sr-only">{t(lang, '正在加载专家市场…', 'Loading Expert Market…')}</span></div> : <div className="expert-market-grid" aria-busy={loading || undefined}>{(loading ? listings.slice(0, pageSize) : listings).map(listing => { const id = String(listing.id); const isInstalled = installed.has(id); return <article className="expert-market-card" key={id}><div className="expert-market-card-head"><div className="expert-market-card-icon" aria-hidden>{listing.icon || '🤖'}</div><div className="expert-market-card-copy"><h3 title={String(listing.name || '')}>{listing.name}</h3><span>v{listing.version}</span></div></div><p>{listing.description || t(lang, '暂无介绍', 'No description')}</p><footer><span className={Number(listing.price) > 0 ? 'expert-market-price' : 'expert-market-free'}>{Number(listing.price) > 0 ? `${number(listing.price)} Credits` : t(lang, '免费', 'Free')}</span><button className={isInstalled ? 'expert-market-uninstall' : 'btn-primary'} type="button" disabled={!!busyID || !!confirmingID || loading} onClick={() => void (isInstalled ? uninstall(listing) : owned.has(id) ? install(listing) : purchase(listing))}>{busyID === id ? t(lang, '处理中…', 'Working…') : isInstalled ? t(lang, '卸载', 'Uninstall') : owned.has(id) ? t(lang, '安装', 'Install') : t(lang, '获取', 'Get')}</button></footer></article>; })}</div>}
+                {!error && cataloguePageCount > 1 ? <ExpertMarketPager lang={lang} label={t(lang, '专家市场分页', 'Expert market pages')} page={cataloguePage} pageCount={cataloguePageCount} busy={loading} onPage={page => { goToCataloguePage(page); marketBodyRef.current?.scrollTo?.({ top: 0 }); }} /> : null}
                 {!loading && !error && listings.length === 0 ? <div className="expert-market-empty">{t(lang, '还没有符合条件的 AI 专家。', 'No AI experts match your search.')}</div> : null}
             </main> : null}
             {tab === 'library' ? <main id="expert-market-panel-library" className="expert-market-body expert-market-library" role="tabpanel" aria-labelledby="expert-market-tab-library">
                 {accountLoading && !account ? <div className="expert-market-empty" role="status" aria-label={t(lang, '正在加载我的专家库', 'Loading my expert library')}>{t(lang, '正在加载我的专家库…', 'Loading your expert library…')}</div> : accountError && !account ? <div className="expert-market-message" role="alert"><span>{t(lang, '无法加载我的专家库：', 'Could not load your expert library: ')}{accountError}</span><button type="button" onClick={() => void refreshAccount()}>{t(lang, '重试', 'Retry')}</button></div> : <>
                     {received.length ? <>
-                        <div className="expert-market-library-heading"><h3>{t(lang, '分享给我的专家', 'Shared with me')}</h3><span>{t(lang, `共 ${received.length} 个`, `${received.length} total`)}</span></div>
+                        <div className="expert-market-library-heading" ref={receivedHeadingRef}><h3>{t(lang, '分享给我的专家', 'Shared with me')}</h3><span>{t(lang, `共 ${received.length} 个`, `${received.length} total`)}</span></div>
                         <div className="expert-market-grid">{visibleReceived.map(listing => {
                             const from = contactLabel(listing.owner_email);
                             return renderLibraryCard(listing, from ? t(lang, `来自 ${from}`, `From ${from}`) : t(lang, '指定用户分享', 'Shared with you'));
                         })}</div>
-                        <ExpertMarketPager lang={lang} label={t(lang, '分享给我的专家分页', 'Shared with me pages')} page={currentReceivedPage} pageCount={receivedPageCount} onPage={setReceivedPage} />
+                        <ExpertMarketPager lang={lang} label={t(lang, '分享给我的专家分页', 'Shared with me pages')} page={currentReceivedPage} pageCount={receivedPageCount} onPage={page => { setReceivedPage(page); revealInMarketBody(receivedHeadingRef.current); }} />
                     </> : null}
-                    <div className="expert-market-library-heading"><h3>{t(lang, '我的已购专家', 'My acquired experts')}</h3>{purchases.length ? <span>{t(lang, `共 ${purchases.length} 个`, `${purchases.length} total`)}</span> : null}</div>
+                    <div className="expert-market-library-heading" ref={purchasesHeadingRef}><h3>{t(lang, '我的已购专家', 'My acquired experts')}</h3>{purchases.length ? <span>{t(lang, `共 ${purchases.length} 个`, `${purchases.length} total`)}</span> : null}</div>
                     {purchases.length ? <>
                         <div className="expert-market-grid">{visiblePurchases.map(listing => renderLibraryCard(listing, t(lang, '永久授权', 'Lifetime entitlement')))}</div>
-                        <ExpertMarketPager lang={lang} label={t(lang, '我的已购专家分页', 'My acquired experts pages')} page={currentPurchasesPage} pageCount={purchasesPageCount} onPage={setPurchasesPage} />
+                        <ExpertMarketPager lang={lang} label={t(lang, '我的已购专家分页', 'My acquired experts pages')} page={currentPurchasesPage} pageCount={purchasesPageCount} onPage={page => { setPurchasesPage(page); revealInMarketBody(purchasesHeadingRef.current); }} />
                     </> : <div className="expert-market-empty">{t(lang, '还没有已购专家。', 'No acquired experts yet.')}</div>}
                     <section className="expert-market-submissions" aria-labelledby="expert-market-submissions-title">
-                        <div className="expert-market-library-heading"><h3 id="expert-market-submissions-title">{t(lang, '我的提交', 'My submissions')}</h3>{uploads.length ? <span>{t(lang, `共 ${uploads.length} 个`, `${uploads.length} total`)}</span> : null}</div>
+                        <div className="expert-market-library-heading" ref={uploadsHeadingRef}><h3 id="expert-market-submissions-title">{t(lang, '我的提交', 'My submissions')}</h3>{uploads.length ? <span>{t(lang, `共 ${uploads.length} 个`, `${uploads.length} total`)}</span> : null}</div>
                         {uploads.length ? <>
                             <div className="expert-market-submission-grid">{visibleUploads.map(listing => {
                                 const id = String(listing.id || '');
@@ -613,7 +687,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
                                     </div>
                                 </article>;
                             })}</div>
-                            <ExpertMarketPager lang={lang} label={t(lang, '我的提交分页', 'My submissions pages')} page={currentUploadsPage} pageCount={uploadPageCount} onPage={setUploadsPage} />
+                            <ExpertMarketPager lang={lang} label={t(lang, '我的提交分页', 'My submissions pages')} page={currentUploadsPage} pageCount={uploadPageCount} onPage={page => { setUploadsPage(page); revealInMarketBody(uploadsHeadingRef.current); }} />
                         </> : <div className="expert-market-empty">{t(lang, '还没有提交的专家。', 'No expert submissions yet.')}</div>}
                     </section>
                 </>}

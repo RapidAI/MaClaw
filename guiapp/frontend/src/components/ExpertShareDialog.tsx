@@ -122,7 +122,9 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
             window.removeEventListener('keydown', onKeyDown, true);
             if (previousFocus?.isConnected) previousFocus.focus();
         };
-    }, [submitting]);
+        // Escape reads submittingRef. Re-running this effect when submission
+        // starts would move focus out of the dialog and back again.
+    }, []);
 
     const submit = async () => {
         const parsedPrice = Number(price);
@@ -175,7 +177,7 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
         <section ref={dialogRef} className="expert-share-shell" role="dialog" aria-modal="true" aria-label={t(lang, '分享 AI 专家', 'Share AI expert')} aria-describedby="expert-share-description">
             <header className="expert-share-header">
                 <div><h2>{t(lang, '分享 AI 专家', 'Share AI expert')}</h2><p id="expert-share-description">{visibility === 'public' ? t(lang, '公开分享默认需要 HubCenter 审核，审核通过后会在市场展示。', 'Public sharing is the default and requires HubCenter review before market listing.') : visibility === 'private' ? t(lang, '私有分享无需审核，只有上传该专家的用户可以看到。', 'Private sharing skips review and is visible only to the uploader.') : t(lang, '指定用户无需审核。用手机号或邮箱标识对方，可一次分享给多人，不限 Hub 或租户。', 'Sharing with selected users skips review. Identify each person by phone number or email. You can share with several people, and this is not limited to a Hub or tenant.')}</p></div>
-                <button className="expert-share-close" type="button" disabled={submitting} aria-label={t(lang, '关闭', 'Close')} onClick={onClose}>×</button>
+                <button className="expert-share-close" type="button" disabled={submitting} aria-label={t(lang, '关闭', 'Close')} onClick={() => { if (!submittingRef.current) onClose(); }}>×</button>
             </header>
             <main className="expert-share-body">
                 <section className="expert-share-preview" aria-label={t(lang, '专家信息预览', 'Expert details preview')}>
@@ -206,7 +208,7 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
                     </div>
                 </div>
             </main>
-            <footer className="expert-share-footer"><button type="button" className="btn-secondary" disabled={submitting} onClick={onClose}>{t(lang, '取消', 'Cancel')}</button><button className="btn-primary" type="button" disabled={submitting} aria-busy={submitting || undefined} onClick={() => void submit()}>{submitting ? t(lang, '提交中…', 'Submitting…') : visibility === 'users' ? t(lang, '分享给指定用户', 'Share with selected users') : t(lang, '提交到 AI 专家市场', 'Submit to AI Expert Market')}</button></footer>
+            <footer className="expert-share-footer"><button type="button" className="btn-secondary" disabled={submitting} onClick={() => { if (!submittingRef.current) onClose(); }}>{t(lang, '取消', 'Cancel')}</button><button className="btn-primary" type="button" disabled={submitting} aria-busy={submitting || undefined} onClick={() => void submit()}>{submitting ? t(lang, '提交中…', 'Submitting…') : visibility === 'users' ? t(lang, '分享给指定用户', 'Share with selected users') : t(lang, '提交到 AI 专家市场', 'Submit to AI Expert Market')}</button></footer>
         </section>
     </div>;
 }

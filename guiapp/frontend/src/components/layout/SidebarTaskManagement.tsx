@@ -89,6 +89,15 @@ export type TaskContextMenu = {
     archived?: boolean;
 } | null;
 
+type WorkdirFolderContextMenu = {
+    x: number;
+    y: number;
+    kind: TaskListFolderKind;
+    directoryKey: string;
+    label: string;
+    pinned: boolean;
+};
+
 /** Re-export for task sidebar consumers that already import from this module. */
 export { expertIDFromTaskTags };
 
@@ -638,10 +647,12 @@ export function isProjectTabOpen(
     return false;
 }
 
-/** Stable ordering used by the task sidebar and its persisted-list tests. */
-export function sortTaskManagementItems(items: TaskManagementItem[]): TaskManagementItem[] {
+/** Stable ordering used by the task sidebar and its persisted-list tests.
+ * `pin: false` keeps creation order so a directory folder can apply pin itself. */
+export function sortTaskManagementItems(items: TaskManagementItem[], options?: { pin?: boolean }): TaskManagementItem[] {
+    const respectPin = options?.pin !== false;
     return [...items].sort((a, b) => {
-        if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+        if (respectPin && !!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
         // Keep the list anchored to creation order. Opening an older task may
         // update last_activity, but should not make that task jump above newer
         // work. Rows without created_at use their stable id instead of the
@@ -702,8 +713,13 @@ export function writeTaskListOrder(keys: string[]) {
     }
 }
 
-/** User drag order wins. Tasks the user has not placed yet keep the default sort. */
-export function applyTaskListOrder<T extends TaskManagementItem>(items: T[], order: string[]): T[] {
+/** User drag order wins. Tasks the user has not placed yet keep the default sort.
+ * The sidebar turns pin hoisting off and lifts pins after directory folders are formed. */
+export function applyTaskListOrder<T extends TaskManagementItem>(
+    items: T[],
+    order: string[],
+    options?: { hoistPinned?: boolean },
+): T[] {
     if (!order.length) return items;
     const byKey = new Map<string, T>();
     for (const item of items) {
@@ -723,11 +739,54 @@ export function applyTaskListOrder<T extends TaskManagementItem>(items: T[], ord
     // the middle of the arrangement.
     const fresh = items.filter(item => !used.has(taskOrderKey(item)));
     // Pin stays a "keep at top" action after the user has dragged. Relative
-    // order inside each group is the saved drag order.
+    // order inside each group is the saved drag order. Callers that lay pins
+    // out per folder pass hoistPinned: false so a pinned row stays inside it.
     const ordered = [...fresh, ...placed];
+    if (options?.hoistPinned === false) return ordered;
     const pins = ordered.filter(item => item.pinned);
     const rest = ordered.filter(item => !item.pinned);
     return [...pins, ...rest];
+}
+
+/** Move `key` to the first of `siblings`, or, when unpinning, to just after the
+ * siblings that stay pinned. Keys outside the sibling set are left where they are. */
+export function placeTaskOrderKeyAmong(
+    order: string[],
+    key: string,
+    pinned: boolean,
+    siblings: ReadonlySet<string>,
+    pinnedSiblings: ReadonlySet<string>,
+): string[] {
+    if (!siblings.has(key)) return order;
+    const without = order.filter(item => item !== key);
+    let insertAt = without.findIndex(item => siblings.has(item));
+    if (insertAt < 0) return order;
+    if (!pinned) {
+        let cursor = insertAt;
+        while (cursor < without.length && siblings.has(without[cursor]) && pinnedSiblings.has(without[cursor])) cursor += 1;
+        insertAt = cursor;
+    }
+    return [...without.slice(0, insertAt), key, ...without.slice(insertAt)];
+}
+
+/** Pull these keys to the front, keeping their relative order. */
+export function moveTaskKeysToFront(order: string[], keys: readonly string[]): string[] {
+    if (!keys.length) return order;
+    const moving = new Set(keys);
+    const seen = new Set<string>();
+    const block: string[] = [];
+    for (const key of order) {
+        if (!moving.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        block.push(key);
+    }
+    for (const key of keys) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+        block.push(key);
+    }
+    if (!block.length) return order;
+    return [...block, ...order.filter(key => !moving.has(key))];
 }
 
 /** Move a pinned row to the front of a saved order, or an unpinned row to just after the pins. */
@@ -1302,29 +1361,124 @@ function groupDirectoryBand<T extends TaskDirectorySource>(tasks: T[]): TaskWork
 
 /** Pull tasks that share a working directory into one folder, placed where
  * the first of them already sits. A directory with a single task stays a row.
- * Pinned and unpinned rows stay in separate bands, matching the list order. */
-export function groupTasksByWorkingDirectory<T extends TaskDirectorySource & { pinned?: boolean }>(tasks: T[]): TaskWorkdirEntry<T>[] {
-    const entries: TaskWorkdirEntry<T>[] = [];
-    let band: T[] = [];
-    let bandPinned = false;
-    const flush = () => {
-        if (band.length) entries.push(...groupDirectoryBand(band));
-        band = [];
-    };
-    for (const task of tasks) {
-        const pinned = !!task.pinned;
-        if (band.length && pinned !== bandPinned) flush();
-        bandPinned = pinned;
-        band.push(task);
-    }
-    flush();
-    return entries;
+ * Pin does not split the folder; layoutWorkdirEntries orders pins inside it. */
+export function groupTasksByWorkingDirectory<T extends TaskDirectorySource>(tasks: T[]): TaskWorkdirEntry<T>[] {
+    return groupDirectoryBand(tasks);
 }
 
-/** Collapse storage distinguishes type and pin, so two folders with the same
- * directory do not open and close as one. */
-export function taskWorkdirCollapseKey(kind: TaskListFolderKind, pinned: boolean, directoryKey: string): string {
-    return `${kind}:${pinned ? '1' : '0'}:${directoryKey}`;
+type WorkdirLayoutTask = TaskDirectorySource & {
+    pinned?: boolean;
+    id?: string;
+    name?: string;
+    preview?: string;
+};
+
+/** Older collapse entries split one directory into a pinned band and an unpinned band. */
+const LEGACY_WORKDIR_SCOPE = /^(session|coding|archive):[01]:([\s\S]+)$/;
+
+export function normalizeWorkdirScopeKey(key: string): string {
+    const legacy = LEGACY_WORKDIR_SCOPE.exec(key);
+    return legacy ? `${legacy[1]}:${legacy[2]}` : key;
+}
+
+/** Identifies one directory folder inside 会话, 编程, or 归档. Pin uses the same key. */
+export function taskWorkdirCollapseKey(kind: TaskListFolderKind, directoryKey: string): string {
+    return `${kind}:${directoryKey}`;
+}
+
+function orderTasksInsideWorkdir<T extends WorkdirLayoutTask>(tasks: T[], saved: ReadonlySet<string> | null): T[] {
+    const fresh = (task: T) => !!saved && saved.size > 0 && !saved.has(taskOrderKey(task));
+    // Pinned rows lead. A task created after the saved order leads its own band.
+    const rank = (task: T) => (task.pinned ? 0 : 2) + (fresh(task) ? 0 : 1);
+    return tasks
+        .map((task, index) => ({ task, index, rank: rank(task) }))
+        .sort((a, b) => a.rank - b.rank || a.index - b.index)
+        .map(item => item.task);
+}
+
+/** Put each directory's tasks back into one block at the member that decides
+ * the folder's place. A pinned member, or a task created after the saved
+ * order, does not drag the folder up. */
+function coalesceWorkdirTasks<T extends WorkdirLayoutTask>(tasks: T[], saved: ReadonlySet<string>): T[] {
+    const identities = tasks.map(task => taskWorkingDirectoryIdentity(task));
+    const counts = new Map<string, number>();
+    for (const identity of identities) {
+        if (identity) counts.set(identity.key, (counts.get(identity.key) || 0) + 1);
+    }
+    const members = new Map<string, T[]>();
+    tasks.forEach((task, index) => {
+        const identity = identities[index];
+        if (!identity || (counts.get(identity.key) || 0) < 2) return;
+        const list = members.get(identity.key);
+        if (list) list.push(task);
+        else members.set(identity.key, [task]);
+    });
+    const anchorKey = new Map<string, string>();
+    for (const [dir, list] of members) {
+        const known = list.filter(task => saved.has(taskOrderKey(task)));
+        const pool = known.length ? known : list;
+        const anchor = pool.find(task => !task.pinned) || pool[0];
+        anchorKey.set(dir, taskOrderKey(anchor));
+    }
+    const emitted = new Set<string>();
+    const coalesced: T[] = [];
+    tasks.forEach((task, index) => {
+        const identity = identities[index];
+        if (!identity || (counts.get(identity.key) || 0) < 2) {
+            coalesced.push(task);
+            return;
+        }
+        if (emitted.has(identity.key)) return;
+        if (taskOrderKey(task) !== anchorKey.get(identity.key)) return;
+        emitted.add(identity.key);
+        coalesced.push(...(members.get(identity.key) || []));
+    });
+    for (const [dir, list] of members) {
+        if (!emitted.has(dir)) coalesced.push(...list);
+    }
+    return coalesced;
+}
+
+/** Group a category, then lift pins. A pinned task inside a directory folder
+ * stays there. A pinned folder shares the top band with pinned tasks that are
+ * not in a folder. When `savedOrder` is set, a new task does not drag its folder
+ * up with it; the folder stays on the member the user already placed. */
+export function layoutWorkdirEntries<T extends WorkdirLayoutTask>(
+    tasks: T[],
+    kind: TaskListFolderKind,
+    pinnedFolderKeys: ReadonlySet<string>,
+    savedOrder?: readonly string[],
+): TaskWorkdirEntry<T>[] {
+    const saved = savedOrder && savedOrder.length ? new Set(savedOrder) : null;
+    const grouped = groupTasksByWorkingDirectory(saved ? coalesceWorkdirTasks(tasks, saved) : tasks);
+    const ordered = grouped.map(entry => {
+        if (entry.kind !== 'folder') return entry;
+        return {
+            ...entry,
+            folder: { ...entry.folder, tasks: orderTasksInsideWorkdir(entry.folder.tasks, saved) },
+        };
+    });
+    const topPinned = (entry: TaskWorkdirEntry<T>) => entry.kind === 'folder'
+        ? pinnedFolderKeys.has(taskWorkdirCollapseKey(kind, entry.folder.key))
+        : !!entry.task.pinned;
+    const pins = ordered.filter(topPinned);
+    if (!pins.length) return ordered;
+    return [...pins, ...ordered.filter(entry => !topPinned(entry))];
+}
+
+/** Flat task keys in the order the sidebar actually shows. */
+export function flattenLayoutTaskKeys<T extends WorkdirLayoutTask>(
+    tasks: T[],
+    folderOrder: readonly TaskListFolderKind[],
+    archivedKeys: ReadonlySet<string> | undefined,
+    pinnedFolderKeys: ReadonlySet<string>,
+    savedOrder?: readonly string[],
+): string[] {
+    return groupTasksIntoFolders(tasks, folderOrder, archivedKeys).flatMap(folder => (
+        layoutWorkdirEntries(folder.tasks, folder.kind, pinnedFolderKeys, savedOrder).flatMap(entry => (
+            entry.kind === 'folder' ? entry.folder.tasks.map(task => taskOrderKey(task)) : [taskOrderKey(entry.task)]
+        ))
+    ));
 }
 
 export function taskWorkdirFolderLabel(
@@ -1347,7 +1501,7 @@ export function readCollapsedWorkdirFolders(): Set<string> {
     try {
         const parsed = JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]');
         if (!Array.isArray(parsed)) return new Set();
-        return new Set(parsed.filter((item): item is string => typeof item === 'string' && item.length > 0));
+        return new Set(parsed.filter((item): item is string => typeof item === 'string' && item.length > 0).map(normalizeWorkdirScopeKey));
     } catch {
         return new Set();
     }
@@ -1358,6 +1512,72 @@ export function writeCollapsedWorkdirFolders(keys: ReadonlySet<string>) {
         localStorage.setItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY, JSON.stringify([...keys]));
     } catch {
         // Private mode or a full quota should not block the in-memory collapse.
+    }
+}
+
+export const TASK_WORKDIR_PIN_STORAGE_KEY = 'maclaw.sidebar-task-workdir-pins.v1';
+export const TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY = 'maclaw.sidebar-task-workdir-pin-restore.v1';
+
+type WorkdirPinRestore = { before: string[]; after: string[] };
+
+function taskOrderKeysFrom(value: unknown): string[] | null {
+    if (!Array.isArray(value)) return null;
+    return value.filter((key): key is string => typeof key === 'string');
+}
+
+function sameTaskOrder(left: readonly string[], right: readonly string[]): boolean {
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i += 1) {
+        if (left[i] !== right[i]) return false;
+    }
+    return true;
+}
+
+function readWorkdirPinRestore(): Record<string, WorkdirPinRestore> {
+    if (typeof localStorage === 'undefined') return {};
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY) || '{}');
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        const restore: Record<string, WorkdirPinRestore> = {};
+        for (const [scope, entry] of Object.entries(parsed as Record<string, unknown>)) {
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+            const record = entry as { before?: unknown; after?: unknown };
+            const before = taskOrderKeysFrom(record.before);
+            const after = taskOrderKeysFrom(record.after);
+            if (!before || !after) continue;
+            restore[scope] = { before, after };
+        }
+        return restore;
+    } catch {
+        return {};
+    }
+}
+
+function writeWorkdirPinRestore(value: Record<string, WorkdirPinRestore>) {
+    try {
+        if (!Object.keys(value).length) localStorage.removeItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY);
+        else localStorage.setItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY, JSON.stringify(value));
+    } catch {
+        // Private mode or a full quota should not block unpin.
+    }
+}
+
+export function readPinnedWorkdirFolders(): Set<string> {
+    if (typeof localStorage === 'undefined') return new Set();
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_WORKDIR_PIN_STORAGE_KEY) || '[]');
+        if (!Array.isArray(parsed)) return new Set();
+        return new Set(parsed.filter((item): item is string => typeof item === 'string' && item.length > 0).map(normalizeWorkdirScopeKey));
+    } catch {
+        return new Set();
+    }
+}
+
+export function writePinnedWorkdirFolders(keys: ReadonlySet<string>) {
+    try {
+        localStorage.setItem(TASK_WORKDIR_PIN_STORAGE_KEY, JSON.stringify([...keys]));
+    } catch {
+        // Private mode or a full quota should not block the in-memory pin.
     }
 }
 
@@ -2678,6 +2898,8 @@ export const SidebarTaskManagement = ({
     const [taskListOrder, setTaskListOrder] = useState<string[]>(readTaskListOrder);
     const [collapsedTaskFolders, setCollapsedTaskFolders] = useState<ReadonlySet<TaskListFolderKind>>(readCollapsedTaskFolders);
     const [collapsedWorkdirFolders, setCollapsedWorkdirFolders] = useState<ReadonlySet<string>>(readCollapsedWorkdirFolders);
+    const [pinnedWorkdirFolders, setPinnedWorkdirFolders] = useState<ReadonlySet<string>>(readPinnedWorkdirFolders);
+    const [workdirContextMenu, setWorkdirContextMenu] = useState<WorkdirFolderContextMenu | null>(null);
     const [taskFolderOrder, setTaskFolderOrder] = useState<MovableTaskListFolderKind[]>(readTaskFolderOrder);
     const [archivedTaskKeys, setArchivedTaskKeys] = useState<ReadonlySet<string>>(readArchivedTaskKeys);
     const archivedTaskKeysRef = useRef(archivedTaskKeys);
@@ -2721,13 +2943,11 @@ export const SidebarTaskManagement = ({
     const revealTaskWorkdir = (kind: MovableTaskListFolderKind, task: TaskDirectorySource & { pinned?: boolean }) => {
         const identity = taskWorkingDirectoryIdentity(task);
         if (!identity) return;
-        const pinned = !!task.pinned;
         const sharesDirectory = tasks.some(item => item !== task
-            && !!item.pinned === pinned
             && taskListFolderKind(item, archivedTaskKeys) === kind
             && taskWorkingDirectoryIdentity(item)?.key === identity.key);
         if (!sharesDirectory) return;
-        const collapseKey = taskWorkdirCollapseKey(kind, pinned, identity.key);
+        const collapseKey = taskWorkdirCollapseKey(kind, identity.key);
         setCollapsedWorkdirFolders(prev => {
             if (!prev.has(collapseKey)) return prev;
             const next = new Set(prev);
@@ -2803,10 +3023,15 @@ export const SidebarTaskManagement = ({
     const visibleTasks = useMemo(
         // The backend list is recency-ordered. Opening a task rewrites
         // last_activity and would otherwise move that row. Default order is
-        // pin, then creation time. A drag order, once saved, replaces that.
+        // creation time. Pin is applied after directory folders are formed, so
+        // a pinned task inside a folder does not pull that folder to the top.
         () => applyTaskListOrder(
-            sortTaskManagementItems(visibleTaskRows(tasks).filter(task => !suppressedTaskKeys.has(taskOrderKey(task)))),
+            sortTaskManagementItems(
+                visibleTaskRows(tasks).filter(task => !suppressedTaskKeys.has(taskOrderKey(task))),
+                { pin: false },
+            ),
             taskListOrder,
+            { hoistPinned: false },
         ),
         [tasks, taskListOrder, suppressedTaskKeys],
     );
@@ -2941,9 +3166,9 @@ export const SidebarTaskManagement = ({
     const taskFolders = useMemo(
         () => groupTasksIntoFolders(filteredTasks, taskFolderOrder, archivedTaskKeys).map(folder => ({
             ...folder,
-            entries: groupTasksByWorkingDirectory(folder.tasks),
+            entries: layoutWorkdirEntries(folder.tasks, folder.kind, pinnedWorkdirFolders, taskListOrder),
         })),
-        [filteredTasks, taskFolderOrder, archivedTaskKeys],
+        [filteredTasks, taskFolderOrder, archivedTaskKeys, pinnedWorkdirFolders, taskListOrder],
     );
     const workdirGroupIdByTaskKey = useMemo(() => {
         const map = new Map<string, string>();
@@ -2951,7 +3176,7 @@ export const SidebarTaskManagement = ({
             for (const entry of folder.entries) {
                 const groupedTasks = entry.kind === 'folder' ? entry.folder.tasks : [entry.task];
                 const groupId = entry.kind === 'folder'
-                    ? taskWorkdirCollapseKey(folder.kind, !!groupedTasks[0]?.pinned, entry.folder.key)
+                    ? taskWorkdirCollapseKey(folder.kind, entry.folder.key)
                     : '';
                 for (const task of groupedTasks) map.set(taskOrderKey(task), groupId);
             }
@@ -2961,6 +3186,8 @@ export const SidebarTaskManagement = ({
     const taskDragKeyRef = useRef<string | null>(null);
     const taskDragFolderRef = useRef<TaskListFolderKind | null>(null);
     const taskDragPinnedRef = useRef<boolean | null>(null);
+    const taskDragEntryPinnedRef = useRef<boolean | null>(null);
+    const workdirContextClickRef = useRef(false);
     const taskDropTargetRef = useRef<HTMLElement | null>(null);
     const folderDragKindRef = useRef<TaskListFolderKind | null>(null);
     const folderDidDragRef = useRef(false);
@@ -2977,15 +3204,22 @@ export const SidebarTaskManagement = ({
         row.setAttribute('data-task-drop-target', 'true');
         taskDropTargetRef.current = row;
     };
+    const entryPinned = (proj: TaskManagementItem) => {
+        const group = workdirGroupIdByTaskKey.get(taskOrderKey(proj)) || '';
+        if (group) return pinnedWorkdirFolders.has(group);
+        return !!proj.pinned;
+    };
     const rememberTaskDrag = (proj: TaskManagementItem) => {
         taskDragKeyRef.current = taskOrderKey(proj);
         taskDragFolderRef.current = taskListFolderKind(proj, archivedTaskKeys);
         taskDragPinnedRef.current = !!proj.pinned;
+        taskDragEntryPinnedRef.current = entryPinned(proj);
     };
     const forgetTaskDrag = () => {
         taskDragKeyRef.current = null;
         taskDragFolderRef.current = null;
         taskDragPinnedRef.current = null;
+        taskDragEntryPinnedRef.current = null;
     };
     // A highlighted row must be a drop that commitTaskDrag will keep.
     // Cross-folder and pin-boundary drops are rejected there, so they must
@@ -2993,8 +3227,12 @@ export const SidebarTaskManagement = ({
     const canDropTaskOn = (target: TaskManagementItem) => {
         if (!taskDragKeyRef.current || taskDragKeyRef.current === taskOrderKey(target)) return false;
         if (taskDragFolderRef.current !== taskListFolderKind(target, archivedTaskKeys)) return false;
-        if (taskDragPinnedRef.current !== !!target.pinned) return false;
-        return true;
+        const fromGroup = workdirGroupIdByTaskKey.get(taskDragKeyRef.current) || '';
+        const toGroup = workdirGroupIdByTaskKey.get(taskOrderKey(target)) || '';
+        // Inside one directory folder the task's own pin is the boundary.
+        // Outside it, the folder pin and a standalone task pin share one boundary.
+        if (fromGroup && fromGroup === toGroup) return taskDragPinnedRef.current === !!target.pinned;
+        return taskDragEntryPinnedRef.current === entryPinned(target);
     };
     const folderDropTargetRef = useRef<HTMLElement | null>(null);
     const clearFolderDropMarks = () => {
@@ -3021,21 +3259,27 @@ export const SidebarTaskManagement = ({
         const toTask = filteredTasks.find(task => taskOrderKey(task) === toKey);
         // Pinned rows stay above the rest, so a drop across that boundary
         // would snap back. Ignore it instead of saving an order that cannot stick.
-        if (!fromTask || !toTask || !!fromTask.pinned !== !!toTask.pinned) return;
+        if (!fromTask || !toTask) return;
+        const fromGroup = workdirGroupIdByTaskKey.get(fromKey) || '';
+        const toGroup = workdirGroupIdByTaskKey.get(toKey) || '';
+        const sameDirectory = !!fromGroup && fromGroup === toGroup;
+        if (sameDirectory) {
+            if (!!fromTask.pinned !== !!toTask.pinned) return;
+        } else if (entryPinned(fromTask) !== entryPinned(toTask)) return;
         // A drop cannot change a task's folder. Session and coding rows stay
         // in the folder their tags decide, so a cross-folder drop is ignored.
         if (taskListFolderKind(fromTask, archivedTaskKeys) !== taskListFolderKind(toTask, archivedTaskKeys)) return;
         const visibleKeys = filteredTasks.map(taskOrderKey);
-        // Start from the list the user is looking at. A task created after the
-        // last drag is shown at the top but is not in the saved keys yet;
-        // appending it here would throw it to the bottom on this drop.
-        const visualKeys = visibleTasks.map(taskOrderKey);
-        const fromGroup = workdirGroupIdByTaskKey.get(fromKey) || '';
-        const toGroup = workdirGroupIdByTaskKey.get(toKey) || '';
+        // Seed from the order on screen, including pins inside a directory folder.
+        // A fresh task then stays in that folder instead of becoming its anchor.
+        const visualKeys = flattenLayoutTaskKeys(visibleTasks, taskFolderOrder, archivedTaskKeys, pinnedWorkdirFolders, taskListOrder);
+        const visibleKeySet = new Set(visibleKeys);
         const blockFor = (key: string) => {
             const groupId = workdirGroupIdByTaskKey.get(key) || '';
             if (!groupId) return [key];
-            return visibleKeys.filter(item => (workdirGroupIdByTaskKey.get(item) || '') === groupId);
+            // Screen order, so the block starts on the row the user is dragging.
+            const block = visualKeys.filter(item => visibleKeySet.has(item) && (workdirGroupIdByTaskKey.get(item) || '') === groupId);
+            return block.length ? block : [key];
         };
         setTaskListOrder(prev => {
             const seen = new Set(visualKeys);
@@ -3049,12 +3293,93 @@ export const SidebarTaskManagement = ({
             return next;
         });
     };
+    const topLevelPinnedKeys = (except: string) => {
+        const counts = new Map<string, number>();
+        const metas = visibleTasks.map(task => {
+            const folderKind = taskListFolderKind(task, archivedTaskKeys);
+            const directoryKey = taskWorkingDirectoryIdentity(task)?.key || '';
+            const scope = directoryKey ? taskWorkdirCollapseKey(folderKind, directoryKey) : '';
+            return { task, scope };
+        });
+        for (const meta of metas) {
+            if (meta.scope) counts.set(meta.scope, (counts.get(meta.scope) || 0) + 1);
+        }
+        const keys = new Set<string>();
+        for (const meta of metas) {
+            const itemKey = taskOrderKey(meta.task);
+            if (itemKey === except) continue;
+            const inFolder = !!meta.scope && (counts.get(meta.scope) || 0) >= 2;
+            // A pin inside a folder is not a top-level pin. A pinned folder is.
+            if (inFolder) {
+                if (pinnedWorkdirFolders.has(meta.scope)) keys.add(itemKey);
+            } else if (meta.task.pinned) keys.add(itemKey);
+        }
+        return keys;
+    };
     const placePinnedTaskOrder = (key: string, pinned: boolean) => {
         if (!key) return;
         setTaskListOrder(prev => {
             if (!prev.length) return prev;
-            const pinnedKeys = new Set(tasks.filter(item => item.pinned && taskOrderKey(item) !== key).map(taskOrderKey));
-            const next = placeTaskOrderKey(prev, key, pinned, pinnedKeys);
+            const next = placeTaskOrderKey(prev, key, pinned, topLevelPinnedKeys(key));
+            writeTaskListOrder(next);
+            return next;
+        });
+    };
+    const directoryTaskKeys = (kind: TaskListFolderKind, directoryKey: string) => visibleTasks
+        .filter(task => taskListFolderKind(task, archivedTaskKeys) === kind && taskWorkingDirectoryIdentity(task)?.key === directoryKey)
+        .map(taskOrderKey);
+    const placePinnedTaskInsideFolder = (key: string, pinned: boolean, siblingKeys: string[]) => {
+        if (!key) return;
+        setTaskListOrder(prev => {
+            if (!prev.length) return prev;
+            const siblings = new Set(siblingKeys);
+            const pinnedSiblings = new Set<string>();
+            for (const sibling of siblingKeys) {
+                if (sibling === key) continue;
+                const task = tasks.find(item => taskOrderKey(item) === sibling);
+                if (task?.pinned) pinnedSiblings.add(sibling);
+            }
+            const next = placeTaskOrderKeyAmong(prev, key, pinned, siblings, pinnedSiblings);
+            if (next === prev) return prev;
+            writeTaskListOrder(next);
+            return next;
+        });
+    };
+    const pinWorkdirFolder = (kind: TaskListFolderKind, directoryKey: string) => {
+        const scope = taskWorkdirCollapseKey(kind, directoryKey);
+        const willPin = !pinnedWorkdirFolders.has(scope);
+        setPinnedWorkdirFolders(prev => {
+            const next = new Set(prev);
+            if (willPin) next.add(scope);
+            else next.delete(scope);
+            writePinnedWorkdirFolders(next);
+            return next;
+        });
+        setWorkdirContextMenu(null);
+        const block = directoryTaskKeys(kind, directoryKey);
+        if (!willPin) {
+            const restores = readWorkdirPinRestore();
+            const snapshot = restores[scope];
+            delete restores[scope];
+            writeWorkdirPinRestore(restores);
+            // Pin moved this block to the front. Put that order back only when
+            // nothing has been dragged since, so a later drag is kept.
+            if (!snapshot || !sameTaskOrder(taskListOrder, snapshot.after)) return;
+            setTaskListOrder(snapshot.before);
+            writeTaskListOrder(snapshot.before);
+            return;
+        }
+        if (!block.length) return;
+        setTaskListOrder(prev => {
+            // Start from the list on screen. Appending tasks that are not in
+            // the saved order would drop a newly created row to the bottom.
+            const screen = flattenLayoutTaskKeys(visibleTasks, taskFolderOrder, archivedTaskKeys, pinnedWorkdirFolders, prev);
+            const known = new Set(screen);
+            const seeded = [...screen, ...prev.filter(key => !known.has(key))];
+            const next = moveTaskKeysToFront(seeded, block);
+            const restores = readWorkdirPinRestore();
+            restores[scope] = { before: prev, after: next };
+            writeWorkdirPinRestore(restores);
             writeTaskListOrder(next);
             return next;
         });
@@ -3320,6 +3645,7 @@ export const SidebarTaskManagement = ({
         if (!opts?.force && creatingTaskRef.current) return;
         if ((prefill?.cloud || prefill?.cloudWorkspaceId) && !showCloudWorkspaceCreation) return;
         if (taskContextMenu) setTaskContextMenu(null);
+        setWorkdirContextMenu(null);
         closeCloudOverview();
         // Avoid stacking create + edit modals.
         if (editRemoteOpen) {
@@ -3898,6 +4224,7 @@ export const SidebarTaskManagement = ({
     const openCloudOverview = () => {
         if (creatingTaskRef.current) return;
         if (taskContextMenu) setTaskContextMenu(null);
+        setWorkdirContextMenu(null);
         if (createDialogOpen) closeCreateDialog();
         if (editRemoteOpen) closeEditRemoteDialog();
         setCreateError('');
@@ -3988,6 +4315,25 @@ export const SidebarTaskManagement = ({
             window.removeEventListener('resize', close);
         };
     }, [setTaskContextMenu, taskContextMenu]);
+
+    useEffect(() => {
+        if (!workdirContextMenu) return;
+        const close = () => setWorkdirContextMenu(null);
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        window.addEventListener('scroll', close, true);
+        window.addEventListener('resize', close);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown, true);
+            window.removeEventListener('scroll', close, true);
+            window.removeEventListener('resize', close);
+        };
+    }, [workdirContextMenu]);
 
     useEffect(() => {
         if (!cloudCreateSelected) return;
@@ -5315,7 +5661,7 @@ export const SidebarTaskManagement = ({
             <div id={`task-folder-items-${folder.kind}`} className="stsm-task-folder__items">
             {folder.entries.map(entry => {
             const workdirCollapseKey = entry.kind === 'folder'
-                ? taskWorkdirCollapseKey(folder.kind, !!entry.folder.tasks[0]?.pinned, entry.folder.key)
+                ? taskWorkdirCollapseKey(folder.kind, entry.folder.key)
                 : '';
             const workdirExpanded = entry.kind !== 'folder' || !collapsedWorkdirFolders.has(workdirCollapseKey);
             const rowTasks = entry.kind === 'folder'
@@ -5425,7 +5771,7 @@ export const SidebarTaskManagement = ({
             };
             const orderKey = taskOrderKey(proj);
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, archived: archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, archived: archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
                     <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
                     <span className="stsm-row-body">
@@ -5517,6 +5863,10 @@ export const SidebarTaskManagement = ({
             const workdirToggleLabel = workdirExpanded
                 ? textForLang(lang, `Collapse ${entry.folder.label}`, `折叠${entry.folder.label}`, `摺疊${entry.folder.label}`)
                 : textForLang(lang, `Expand ${entry.folder.label}`, `展开${entry.folder.label}`, `展開${entry.folder.label}`);
+            const folderPinned = pinnedWorkdirFolders.has(workdirCollapseKey);
+            const workdirPinLabel = folderPinned
+                ? textForLang(lang, 'Unpin', '取消置顶', '取消置頂')
+                : textForLang(lang, 'Pin', '置顶', '置頂');
             return (
             <section
                 key={workdirCollapseKey}
@@ -5524,16 +5874,47 @@ export const SidebarTaskManagement = ({
                 data-testid="task-workdir-folder"
                 data-workdir-key={entry.folder.key}
                 data-expanded={workdirExpanded ? 'true' : 'false'}
+                data-pinned={folderPinned ? 'true' : 'false'}
                 aria-label={workdirTitle}
             >
-            <div className="stsm-task-workdir__head" onClick={() => toggleWorkdirFolder(workdirCollapseKey)}>
+            <div
+                className="stsm-task-workdir__head"
+                onMouseDown={event => {
+                    // Right-click and ctrl+click open the menu. A primary click
+                    // that follows that gesture must not also collapse the folder.
+                    workdirContextClickRef.current = event.button !== 0 || event.ctrlKey;
+                }}
+                onClick={() => {
+                    if (workdirContextClickRef.current) {
+                        workdirContextClickRef.current = false;
+                        return;
+                    }
+                    toggleWorkdirFolder(workdirCollapseKey);
+                }}
+                onContextMenu={event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    workdirContextClickRef.current = true;
+                    setTaskContextMenu(null);
+                    setWorkdirContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        kind: folder.kind,
+                        directoryKey: entry.folder.key,
+                        label: workdirLabel,
+                        pinned: folderPinned,
+                    });
+                }}
+            >
             <div
                 role="button"
                 tabIndex={0}
                 className="stsm-task-folder__toggle"
                 data-testid="task-workdir-toggle"
                 aria-expanded={workdirExpanded}
-                title={joinHoverLines(workdirTitle, workdirToggleLabel)}
+                title={joinHoverLines(workdirTitle, workdirToggleLabel, folderPinned
+                    ? textForLang(lang, 'Right-click to unpin', '右键取消置顶', '右鍵取消置頂')
+                    : textForLang(lang, 'Right-click to pin', '右键置顶', '右鍵置頂'))}
                 onKeyDown={e => {
                     if (e.key !== 'Enter' && e.key !== ' ') return;
                     e.preventDefault();
@@ -5543,6 +5924,7 @@ export const SidebarTaskManagement = ({
                 <TaskFolderChevron />
                 <TaskFolderIcon open={workdirExpanded} />
                 <span className="stsm-task-folder__label">{workdirLabel}</span>
+                {folderPinned ? <span data-testid="task-workdir-pinned" className="stsm-badge-pinned" title={workdirPinLabel}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span> : null}
                 <span className="stsm-task-folder__count">{entry.folder.tasks.length}</span>
             </div>
             </div>
@@ -6330,12 +6712,19 @@ export const SidebarTaskManagement = ({
                 onDuplicateTask: duplicateTask,
                 pinTask: async (projectPath, pinned) => {
                     await pinTask(projectPath, pinned);
-                    placePinnedTaskOrder(menu.orderKey || taskOrderKey({
+                    const key = menu.orderKey || taskOrderKey({
                         project_path: menu.projectPath,
                         name: menu.name,
                         tags: menu.tags,
                         working_dir: menu.workingDir,
-                    }), pinned);
+                    });
+                    const scope = workdirGroupIdByTaskKey.get(key) || '';
+                    const parsed = /^(session|coding|archive):(.*)$/.exec(scope);
+                    if (parsed) {
+                        placePinnedTaskInsideFolder(key, pinned, directoryTaskKeys(parsed[1] as TaskListFolderKind, parsed[2]));
+                        return;
+                    }
+                    placePinnedTaskOrder(key, pinned);
                 },
                 confirmRemoveTask,
                 refreshTasks,
@@ -6401,6 +6790,37 @@ export const SidebarTaskManagement = ({
             </div>
             </>;
         })()}
+
+        {workdirContextMenu && (
+            <>
+            <div
+                className="stsm-menu-scrim"
+                onClick={() => setWorkdirContextMenu(null)}
+                onContextMenu={event => { event.preventDefault(); setWorkdirContextMenu(null); }}
+            />
+            <div
+                data-testid="task-workdir-context-menu"
+                role="menu"
+                onContextMenu={event => event.preventDefault()}
+                style={{ position: 'fixed', ...contextMenuPosition(workdirContextMenu.x, workdirContextMenu.y, 1), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
+            >
+                <div
+                    data-testid="task-workdir-context-pin"
+                    role="menuitem"
+                    title={workdirContextMenu.label}
+                    onClick={() => pinWorkdirFolder(workdirContextMenu.kind, workdirContextMenu.directoryKey)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--theme-text-primary)' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 8%, transparent)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                    <span className="stsm-menu-icon" aria-hidden="true"><TaskContextMenuIcon name="pin" /></span>
+                    <span>{workdirContextMenu.pinned
+                        ? textForLang(lang, 'Unpin', '取消置顶', '取消置頂')
+                        : textForLang(lang, 'Pin', '置顶', '置頂')}</span>
+                </div>
+            </div>
+            </>
+        )}
 
         {editRemoteOpen && createPortal(
             <div

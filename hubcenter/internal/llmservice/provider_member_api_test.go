@@ -523,6 +523,47 @@ func TestMemberUpstreamModelUsesOwnModelWhenRouteNameIsForeign(t *testing.T) {
 	}
 }
 
+func TestCatalogModelChangeReplacesStaleModelMap(t *testing.T) {
+	member := &llmpool.ProviderConfig{
+		Models: []string{"glm-5.3-flash"},
+		ModelMap: map[string]string{
+			"glm-5.3-flash": "deepseek-v4.1-flash",
+			"official-mid":  "deepseek-v4.1-flash",
+			"low":           "other-model",
+		},
+	}
+	if got := chatTestUpstreamModel(member, "", "", "glm-5.3-flash"); got != "glm-5.3-flash" {
+		t.Fatalf("status test = %q", got)
+	}
+	if got := memberUpstreamModel(member, "", "glm-5.3-flash", ""); got != "glm-5.3-flash" {
+		t.Fatalf("configured model = %q", got)
+	}
+	if got := memberUpstreamModel(member, "glm-5.3-flash", "qwen-plus", ""); got != "glm-5.3-flash" {
+		t.Fatalf("route catalog model = %q", got)
+	}
+	existing := llmpool.ProviderConfig{
+		Models:   []string{"deepseek-v4.1-flash"},
+		ModelMap: member.ModelMap,
+	}
+	saved := mergeUnspecifiedProviderFields(existing, llmpool.ProviderConfig{Models: []string{"glm-5.3-flash"}})
+	if _, ok := saved.ModelMap["glm-5.3-flash"]; ok || saved.ModelMap["official-mid"] != "glm-5.3-flash" || saved.ModelMap["low"] != "other-model" {
+		t.Fatalf("saved map = %#v", saved.ModelMap)
+	}
+	if existing.ModelMap["official-mid"] != "deepseek-v4.1-flash" {
+		t.Fatalf("existing map was mutated: %#v", existing.ModelMap)
+	}
+	if got := memberUpstreamModel(&llmpool.ProviderConfig{Models: saved.Models, ModelMap: saved.ModelMap}, "", "official-mid", ""); got != "glm-5.3-flash" {
+		t.Fatalf("band after save = %q", got)
+	}
+	explicit := mergeUnspecifiedProviderFields(existing, llmpool.ProviderConfig{
+		Models:   []string{"glm-5.3-flash"},
+		ModelMap: map[string]string{"official-mid": "deepseek-v4.1-flash"},
+	})
+	if explicit.ModelMap["official-mid"] != "deepseek-v4.1-flash" {
+		t.Fatalf("explicit map = %#v", explicit.ModelMap)
+	}
+}
+
 func TestModelMapRejectsCaseDuplicate(t *testing.T) {
 	provider := &llmpool.ProviderConfig{ModelMap: map[string]string{"Llama": "a", " llama ": "b"}}
 	if err := validateMemberPolicy(provider); err == nil || !strings.Contains(err.Error(), "duplicated") {

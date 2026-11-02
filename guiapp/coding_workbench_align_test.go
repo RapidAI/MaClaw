@@ -181,6 +181,350 @@ func TestWindowsPowerShellWrapperStopsAfterNativeFailure(t *testing.T) {
 	}
 }
 
+func TestScopeGoVerifyToTaskIgnoresUnrelatedHistory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	datasrv := filepath.Join(root, "datasrv", "cmd", "srv")
+	if err := os.MkdirAll(datasrv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "datasrv", "go.mod"), []byte("module example.com/datasrv\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	full := goVerifyCommand()
+
+	scoped, skip, reason := scopeGoVerifyToTask(full, root, []string{"docs/go-toolchain-local.md"})
+	if !skip || scoped != "" || !strings.Contains(reason, "historical") {
+		t.Fatalf("docs-only cmd=%q skip=%v reason=%q", scoped, skip, reason)
+	}
+
+	scoped, skip, reason = scopeGoVerifyToTask(full, root, []string{
+		filepath.Join(root, "corelib", "embedding", "runtime.go"),
+		`corelib\embedding\runtime.go`,
+	})
+	if skip || reason != "" || scoped != vetAfterBuild("", "go vet ./corelib/embedding") {
+		t.Fatalf("embedding cmd=%q skip=%v reason=%q", scoped, skip, reason)
+	}
+	if strings.Contains(scoped, "./...") || strings.Contains(scoped, "opus") {
+		t.Fatalf("unrelated module vet leaked into task scope: %q", scoped)
+	}
+
+	scoped, skip, _ = scopeGoVerifyToTask(full, root, []string{
+		"corelib/embedding/runtime.go",
+		"corelib/opus/entcode/encoder.go",
+	})
+	if skip || scoped != vetAfterBuild("", "go vet ./corelib/embedding ./corelib/opus/entcode") {
+		t.Fatalf("changed opus is related: %q skip=%v", scoped, skip)
+	}
+
+	got, skip, _ := scopeGoVerifyToTask("cargo check", root, []string{"docs/a.md"})
+	if skip || got != "cargo check" {
+		t.Fatalf("non-go cmd=%q skip=%v", got, skip)
+	}
+
+	scoped, skip, _ = scopeGoVerifyToTask(full, root, []string{"go.mod"})
+	if skip || scoped != "go build ./..." || strings.Contains(scoped, "vet") {
+		t.Fatalf("go.mod cmd=%q skip=%v", scoped, skip)
+	}
+
+	scoped, skip, _ = scopeGoVerifyToTask(full, root, []string{"go.sum", "corelib/embedding/runtime.go"})
+	if skip || scoped != vetAfterBuild("", "go vet ./corelib/embedding") {
+		t.Fatalf("module meta plus package cmd=%q skip=%v", scoped, skip)
+	}
+
+	scoped, skip, _ = scopeGoVerifyToTask(full, root, []string{"datasrv/cmd/srv/main.go"})
+	if skip || scoped != vetAfterBuild("", "go -C datasrv vet ./cmd/srv") {
+		t.Fatalf("nested module cmd=%q skip=%v", scoped, skip)
+	}
+
+	vk := filepath.Join(root, "corelib", "vk")
+	if err := os.MkdirAll(vk, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vk, "doc.go"), []byte("package vk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scoped, skip, _ = scopeGoVerifyToTask(full, root, []string{"corelib/vk/native.c"})
+	if skip || scoped != vetAfterBuild("go build ./corelib/vk", "go vet ./corelib/vk") {
+		t.Fatalf("cgo input cmd=%q skip=%v", scoped, skip)
+	}
+	scoped, skip, reason = scopeGoVerifyToTask(full, root, []string{"docs/readme.h"})
+	if !skip || scoped != "" {
+		t.Fatalf("header outside a Go package cmd=%q skip=%v reason=%q", scoped, skip, reason)
+	}
+
+	if runtime.GOOS == "windows" {
+		rel := taskRelativePath(root, strings.ToUpper(filepath.Join(root, "corelib", "embedding", "runtime.go")))
+		if rel != "corelib/embedding/runtime.go" && rel != "CORELIB/EMBEDDING/RUNTIME.GO" {
+			// EqualFold keeps the caller's spelling. Either spelling is inside the project.
+			if !strings.EqualFold(rel, "corelib/embedding/runtime.go") {
+				t.Fatalf("case-folded path = %q", rel)
+			}
+		}
+	}
+}
+
+func TestHistoricalGoVerifyIgnoresUntouchedVet(t *testing.T) {
+	opus := "" +
+		"# github.com/RapidAI/CodeClaw/corelib/opus/entcode\n" +
+		"corelib\\opus\\entcode\\encoder.go:65:20: method WriteByte(_value uint) int should have signature WriteByte(byte) error\n" +
+		"corelib\\opus\\celt\\pitch.go:163:4: self-assignment of Syy to Syy\n"
+	files := []string{"corelib/embedding/runtime.go", "docs/go-toolchain-local.md"}
+	if !historicalGoVerifyOnly(opus, "", files) {
+		t.Fatal("opus vet was treated as related to an embedding edit")
+	}
+	sibling := "corelib/embedding/legacy.go:10:2: self-assignment of x to x\n"
+	if !historicalGoVerifyOnly(sibling, "", files) {
+		t.Fatal("sibling vet nit was treated as related")
+	}
+	broken := "corelib/embedding/legacy.go:10:2: undefined: NewDevice\n"
+	if historicalGoVerifyOnly(broken, "", files) {
+		t.Fatal("compiler error in the edited package was ignored")
+	}
+	own := "corelib/embedding/runtime.go:4:2: self-assignment of x to x\n"
+	if historicalGoVerifyOnly(own, "", files) {
+		t.Fatal("vet in a file this task changed was ignored")
+	}
+	if historicalGoVerifyOnly("go: cannot find main module", "", files) {
+		t.Fatal("unparsed failure was ignored")
+	}
+	if !historicalGoVerifyOnly(opus, "", []string{"go.mod"}) {
+		t.Fatal("historical vet was treated as caused by a go.mod edit")
+	}
+	compileElsewhere := "corelib/opus/entcode/encoder.go:3:1: undefined: Foo\n"
+	if historicalGoVerifyOnly(compileElsewhere, "", []string{"go.mod"}) {
+		t.Fatal("compile error after a go.mod edit was ignored")
+	}
+	nestedRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(nestedRoot, "datasrv", "cmd", "srv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedRoot, "datasrv", "go.mod"), []byte("module example.com/datasrv\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nestedFiles := []string{"datasrv/cmd/srv/main.go"}
+	if historicalGoVerifyOnly("cmd/srv/main.go:8:2: undefined: Start\n", nestedRoot, nestedFiles) {
+		t.Fatal("nested-module compiler error in the edited file was ignored")
+	}
+	if historicalGoVerifyOnly("cmd/srv/other.go:3:2: undefined: Start\n", nestedRoot, nestedFiles) {
+		t.Fatal("compiler error in the edited nested package was ignored")
+	}
+	if !historicalGoVerifyOnly("cmd/srv/other.go:3:2: self-assignment of x to x\n", nestedRoot, nestedFiles) {
+		t.Fatal("sibling vet in a nested module was treated as related")
+	}
+	if historicalGoVerifyOnly("corelib/vk/device.go:4:2: undefined: Queue\n", nestedRoot, nestedFiles) {
+		t.Fatal("a dependency compile error was ignored, so the task package was not shown to build")
+	}
+	prefixed := "[stderr] corelib/opus/entcode/encoder.go:65:20: self-assignment of x to x\ncommand exited with code 1\n"
+	if !historicalGoVerifyOnly(prefixed, "", files) {
+		t.Fatal("a one-line stderr vet nit was not recognized")
+	}
+	mixed := "go: cannot find main module\ncorelib/opus/entcode/encoder.go:65:20: self-assignment of x to x\n"
+	if historicalGoVerifyOnly(mixed, "", files) {
+		t.Fatal("toolchain failure was hidden by a historical vet nit")
+	}
+	if runtime.GOOS == "windows" {
+		cased := "corelib\\Embedding\\runtime.go:4:2: self-assignment of x to x\n"
+		if historicalGoVerifyOnly(cased, "", files) {
+			t.Fatal("case-differing path in a changed file was ignored")
+		}
+	}
+	truncated := "corelib/opus/entcode/encoder.go:65:20: self-assignment of x to x\n... (stderr truncated)\n"
+	if historicalGoVerifyOnly(truncated, "", files) {
+		t.Fatal("truncated verify log was treated as purely historical")
+	}
+	promoted := promoteRelatedGoDiagnostics(
+		"corelib/opus/entcode/encoder.go:65:20: self-assignment of x to x\ncorelib/embedding/runtime.go:4:2: undefined: New\n",
+		"", files)
+	if !strings.HasPrefix(promoted, "corelib/embedding/runtime.go:4:2: undefined: New\n") {
+		t.Fatalf("related diagnostic was not moved first:\n%s", promoted)
+	}
+	printf := "corelib/opus/entcode/encoder.go:3:2: fmt.Printf format %s reads arg #1, but call has 0 args\n"
+	if historicalGoVerifyOnly(printf, "", files) {
+		t.Fatal("unmarked analyzer output was ignored")
+	}
+	if !historicalGoVerifyOnly(verifyBuildOKMarker+"\n"+printf, "", files) {
+		t.Fatal("vet-phase printf nit was treated as related")
+	}
+	windowsVet := "vet.exe: corelib/opus/entcode/encoder.go:2:2: self-assignment of x to x\n"
+	if historicalGoVerifyOnly(windowsVet, "", files) {
+		t.Fatal("a vet tool error was treated as a historical nit")
+	}
+	typecheck := verifyBuildOKMarker + "\nvet.exe: corelib/opus/entcode/encoder_test.go:2:2: not enough return values\n"
+	if historicalGoVerifyOnly(typecheck, "", files) {
+		t.Fatal("a test compile error was ignored after the build marker")
+	}
+	nit := "corelib/opus/entcode/encoder.go:3:2: self-assignment of x to x\n"
+	if !strings.HasPrefix(promoteRelatedGoDiagnostics(nit+typecheck, "", files), "vet.exe:") {
+		t.Fatal("vet typecheck error was left behind an analyzer nit")
+	}
+	returns := verifyBuildOKMarker + "\ncorelib/opus/entcode/encoder_test.go:2:2: not enough return values\n"
+	if historicalGoVerifyOnly(returns, "", files) {
+		t.Fatal("an unprefixed return-count error was ignored")
+	}
+	order := verifyBuildOKMarker + "\n" +
+		"corelib/opus/entcode/encoder.go:3:2: fmt.Printf format %s reads arg #1, but call has 0 args\n" +
+		"corelib/embedding/runtime.go:4:2: self-assignment of x to x\n"
+	if !strings.HasPrefix(promoteRelatedGoDiagnostics(order, "", files), "corelib/embedding/runtime.go:4:2: self-assignment") {
+		t.Fatal("a historical printf nit was placed ahead of the task file")
+	}
+}
+
+func vetAfterBuild(build, vet string) string {
+	if strings.TrimSpace(build) == "" {
+		return "echo " + verifyBuildOKMarker + " && " + vet + " && echo " + verifyVetOKMarker
+	}
+	return build + " && echo " + verifyBuildOKMarker + " && " + vet + " && echo " + verifyVetOKMarker
+}
+
+func TestScopeGoVerifyMainPackageWritesOutsideRepo(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmdDir := filepath.Join(root, "cmd", "tool")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmdDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	libDir := filepath.Join(root, "corelib", "embedding")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(libDir, "runtime.go"), []byte("package embedding\nfunc F() int { return 1 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	datasrv := filepath.Join(root, "datasrv", "cmd", "srv")
+	if err := os.MkdirAll(datasrv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "datasrv", "go.mod"), []byte("module example.com/datasrv\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(datasrv, "main.go"), []byte("/* generated */\npackage main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.ToSlash(filepath.Join(t.TempDir(), "bins")) + "/"
+	full := goVerifyCommand()
+
+	lib, skip, _ := scopeGoVerifyToTaskAt(full, root, []string{"corelib/embedding/runtime.go"}, out)
+	if skip || lib != vetAfterBuild("", "go vet ./corelib/embedding") || strings.Contains(lib, "go build") {
+		t.Fatalf("pure library must not go build: %q skip=%v", lib, skip)
+	}
+
+	got, skip, _ := scopeGoVerifyToTaskAt(full, root, []string{"cmd/tool/main.go"}, out)
+	want := vetAfterBuild("go build -o "+quoteGoArg(out)+" ./cmd/tool", "go vet ./cmd/tool")
+	if skip || got != want {
+		t.Fatalf("main cmd=%q want %q", got, want)
+	}
+	plain, skip, _ := scopeGoVerifyToTask(full, root, []string{"cmd/tool/main.go"})
+	if skip || plain != vetAfterBuild("go build ./cmd/tool", "go vet ./cmd/tool") {
+		t.Fatalf("empty out dir cmd=%q skip=%v", plain, skip)
+	}
+
+	build := strings.Split(got, " && ")[0]
+	var shell string
+	var args []string
+	if runtime.GOOS == "windows" {
+		shell, args = windowsCodingBashInvocation(build)
+	} else {
+		shell, args = "sh", []string{"-c", build}
+	}
+	cmd := exec.Command(shell, args...)
+	cmd.Dir = root
+	hideCommandWindow(cmd)
+	outBytes, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build failed: %v\n%s", err, outBytes)
+	}
+	for _, name := range []string{"tool", "tool.exe"} {
+		if _, statErr := os.Stat(filepath.Join(root, name)); statErr == nil {
+			t.Fatalf("go build dropped %s in the repo", name)
+		}
+	}
+	bins, _ := filepath.Glob(filepath.Join(filepath.FromSlash(strings.TrimRight(out, "/")), "*"))
+	if len(bins) == 0 {
+		t.Fatalf("no executable in %s\n%s", out, outBytes)
+	}
+
+	if err := os.WriteFile(filepath.Join(cmdDir, "main_test.go"), []byte("package main_test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testOnly, skip, _ := scopeGoVerifyToTaskAt(full, root, []string{"cmd/tool/main_test.go"}, out)
+	if skip || testOnly != want {
+		t.Fatalf("external test of a main package cmd=%q want %q", testOnly, want)
+	}
+	if err := os.WriteFile(filepath.Join(libDir, "gen.go"), []byte("//go:build ignore\n\npackage main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ignored, skip, _ := scopeGoVerifyToTaskAt(full, root, []string{"corelib/embedding/runtime.go"}, out)
+	if skip || ignored != vetAfterBuild("", "go vet ./corelib/embedding") {
+		t.Fatalf("ignored package main flipped the library: %q skip=%v", ignored, skip)
+	}
+
+	if err := os.WriteFile(filepath.Join(cmdDir, "native.c"), []byte("int n;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cgoCmd, skip, _ := scopeGoVerifyToTaskAt(full, root, []string{"cmd/tool/native.c"}, out)
+	if skip || cgoCmd != want {
+		t.Fatalf("cgo main cmd=%q want %q", cgoCmd, want)
+	}
+
+	both, skip, _ := scopeGoVerifyToTaskAt(full, root, []string{
+		"cmd/tool/main.go",
+		"corelib/embedding/runtime.go",
+	}, out)
+	wantBoth := vetAfterBuild("go build -o "+quoteGoArg(out)+" ./cmd/tool", "go vet ./cmd/tool ./corelib/embedding")
+	if skip || both != wantBoth {
+		t.Fatalf("mixed cmd=%q want %q", both, wantBoth)
+	}
+
+	nested, skip, _ := scopeGoVerifyToTaskAt(full, root, []string{"datasrv/cmd/srv/main.go"}, out)
+	wantNested := vetAfterBuild("go -C datasrv build -o "+quoteGoArg(out)+" ./cmd/srv", "go -C datasrv vet ./cmd/srv")
+	if skip || nested != wantNested {
+		t.Fatalf("nested main cmd=%q want %q", nested, wantNested)
+	}
+
+	spaced, skip, _ := scopeGoVerifyToTaskAt(full, root, []string{"cmd/tool/main.go"}, "C:/Program Files/maclaw-verify")
+	wantSpaced := vetAfterBuild(`go build -o "C:/Program Files/maclaw-verify/" ./cmd/tool`, "go vet ./cmd/tool")
+	if skip || spaced != wantSpaced {
+		t.Fatalf("spaced out dir cmd=%q", spaced)
+	}
+}
+
+func TestCodingBashStderrLimitStaysSmallForNonGo(t *testing.T) {
+	if got := codingBashStderrLimit("ls -la", map[string]interface{}{"stderr_limit": float64(999999)}); got != 4096 {
+		t.Fatalf("non-go limit = %d", got)
+	}
+	if got := codingBashStderrLimit("go vet ./pkg", map[string]interface{}{"stderr_limit": float64(8000)}); got != 8000 {
+		t.Fatalf("vet limit = %d", got)
+	}
+	if got := codingBashStderrLimit("go -C datasrv build ./cmd/srv", map[string]interface{}{"stderr_limit": float64(1 << 30)}); got != verifyGateStderrBytes {
+		t.Fatalf("capped limit = %d", got)
+	}
+	long := strings.Repeat("x", 5000)
+	out := formatCodingCommandOutputLimited("", long, 8192, 8000)
+	if strings.Contains(out, "... (stderr truncated)") || !strings.Contains(out, long) {
+		t.Fatalf("raised stderr limit still dropped the log: %s", out[len(out)-40:])
+	}
+}
+
+func TestScopeGoVerifyQuotesPackagePaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, skip, _ := scopeGoVerifyToTask(goVerifyCommand(), root, []string{"corelib/my pkg/runtime.go"})
+	want := vetAfterBuild("", `go vet "./corelib/my pkg"`)
+	if skip || got != want {
+		t.Fatalf("quoted cmd=%q skip=%v", got, skip)
+	}
+}
+
 func TestGoVerifyCommandShortCircuits(t *testing.T) {
 	got := goVerifyCommand()
 	if strings.Contains(got, ";") || !strings.Contains(got, "&&") {
