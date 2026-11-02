@@ -2088,7 +2088,7 @@ func TestTokenBankSubViewsLeaveHiddenClass(t *testing.T) {
 		`#tab-tokenbank .tbk-gift-card.item{margin:0;min-width:0;min-height:0;padding:10px 12px;gap:4px;border-radius:12px;background:#fff!important;border:1px solid #e6e8ef;box-shadow:none!important`,
 		`#tab-tokenbank .tbk-model-card.item .inline-actions button{height:22px;min-height:22px!important;min-width:0!important`,
 		`#tab-tokenbank .tbk-model-card.item{margin:0;min-width:0;padding:6px 8px;gap:3px;border-radius:8px;background:#f7f8fb!important`,
-		`admin/assets/js/token-bank-tab.js?v=token-bank-admin-20261004-overview-refresh`,
+		`admin/assets/js/token-bank-tab.js?v=token-bank-admin-20261102-live-model-count`,
 	} {
 		if !strings.Contains(css, must) && !strings.Contains(html, must) {
 			t.Fatalf("token bank compact layout missing %q", must)
@@ -2099,6 +2099,9 @@ func TestTokenBankSubViewsLeaveHiddenClass(t *testing.T) {
 		`class="item tbk-model-card"`,
 		`tbk-model-facts`,
 		`yesNo(m.Available)`,
+		`m.Enabled !== false`,
+		`Models still shared. Ones the owner removed are not counted.`,
+		`仍在分享的模型。分享者已拿掉的不计入。`,
 	} {
 		if !strings.Contains(js, must) {
 			t.Fatalf("token bank model cards missing %q", must)

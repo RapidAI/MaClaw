@@ -5,9 +5,11 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -713,6 +715,150 @@ func TestCompletionBudgetIsMaxTokens(t *testing.T) {
 	if !ok || newlines != maxChatNewlines || newlines == got {
 		t.Fatalf("max newlines = %d tokens = %d", newlines, got)
 	}
+}
+
+func TestCompletionConfigKeepsTemperatureAndTopPOnTheirFields(t *testing.T) {
+	zero := 0.0
+	negative := -0.5
+	asked := 0.2
+	topP := 0.8
+	emptyNucleus := 0.0
+	omitted, err := iterFields(encodeCompletion(chatRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := completionDouble(t, omitted, 5); !ok || got != 0.4 {
+		t.Fatalf("omitted temperature = %v ok=%v", got, ok)
+	}
+	if got, ok := fieldVarint(omitted, 7); !ok || got != 50 {
+		t.Fatalf("omitted top_k = %d ok=%v", got, ok)
+	}
+	if _, ok := completionDouble(t, omitted, 6); ok {
+		t.Fatal("omitted request wrote first_temperature")
+	}
+	if got, ok := completionDouble(t, omitted, 8); !ok || got != 0.95 {
+		t.Fatalf("omitted top_p = %v ok=%v", got, ok)
+	}
+	if got := completionTemperature(t, chatRequest{temperature: &asked}); got != 0.2 {
+		t.Fatalf("explicit temperature = %v", got)
+	}
+	negativeFields, err := iterFields(encodeCompletion(chatRequest{temperature: &negative}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := completionDouble(t, negativeFields, 5); !ok || got != 0.4 {
+		t.Fatalf("negative temperature = %v ok=%v", got, ok)
+	}
+	if got, ok := fieldVarint(negativeFields, 7); !ok || got != 50 {
+		t.Fatalf("negative top_k = %d ok=%v", got, ok)
+	}
+	// OpenAI temperature 0 is argmax. Cascade's divisor cannot be 0, so the
+	// mode is top_k 1 and the divisor is the native client's 1.
+	fields, err := iterFields(encodeCompletion(chatRequest{temperature: &zero, topP: &topP}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := completionDouble(t, fields, 5); !ok || got != 1 {
+		t.Fatalf("greedy temperature = %v ok=%v", got, ok)
+	}
+	if got, ok := fieldVarint(fields, 7); !ok || got != 1 {
+		t.Fatalf("greedy top_k = %d ok=%v", got, ok)
+	}
+	if _, ok := completionDouble(t, fields, 6); ok {
+		t.Fatal("field 6 is first_temperature and must stay unset")
+	}
+	if got, ok := completionDouble(t, fields, 8); !ok || got != 0.8 {
+		t.Fatalf("top_p field = %v ok=%v", got, ok)
+	}
+	emptyFields, err := iterFields(encodeCompletion(chatRequest{topP: &emptyNucleus}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := completionDouble(t, emptyFields, 8); !ok || got != 0.95 {
+		t.Fatalf("empty nucleus top_p = %v ok=%v", got, ok)
+	}
+	parsed, err := parseOpenAIChat([]byte(`{"model":"swe-2-high","temperature":0,"max_tokens":64,"messages":[{"role":"user","content":"Reply with exactly: pong"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedFields, err := iterFields(encodeCompletion(parsed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := completionDouble(t, parsedFields, 5); !ok || got != 1 {
+		t.Fatalf("status-check temperature = %v ok=%v", got, ok)
+	}
+	if got, ok := fieldVarint(parsedFields, 7); !ok || got != 1 {
+		t.Fatalf("status-check top_k = %d ok=%v", got, ok)
+	}
+	if _, ok := completionDouble(t, parsedFields, 6); ok {
+		t.Fatal("status-check wrote first_temperature")
+	}
+	if got, ok := completionDouble(t, parsedFields, 8); !ok || got != 0.95 {
+		t.Fatalf("status-check top_p = %v ok=%v", got, ok)
+	}
+	if got, ok := fieldVarint(parsedFields, 2); !ok || got != 64 {
+		t.Fatalf("status-check max tokens = %d ok=%v", got, ok)
+	}
+	both := 0.0
+	bothFields, err := iterFields(encodeCompletion(chatRequest{temperature: &both, topP: &both}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := completionDouble(t, bothFields, 5); !ok || got != 1 {
+		t.Fatalf("zero temperature with empty nucleus = %v ok=%v", got, ok)
+	}
+	if got, ok := fieldVarint(bothFields, 7); !ok || got != 1 {
+		t.Fatalf("zero temperature top_k = %d ok=%v", got, ok)
+	}
+	if got, ok := completionDouble(t, bothFields, 8); !ok || got != 0.95 {
+		t.Fatalf("zero temperature top_p = %v ok=%v", got, ok)
+	}
+	explicit, err := parseOpenAIChat([]byte(`{"model":"swe-2-high","temperature":0.2,"top_p":0.8,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitFields, err := iterFields(encodeCompletion(explicit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := completionDouble(t, explicitFields, 5); !ok || got != 0.2 {
+		t.Fatalf("parsed temperature = %v ok=%v", got, ok)
+	}
+	if got, ok := fieldVarint(explicitFields, 7); !ok || got != 50 {
+		t.Fatalf("parsed top_k = %d ok=%v", got, ok)
+	}
+	if got, ok := completionDouble(t, explicitFields, 8); !ok || got != 0.8 {
+		t.Fatalf("parsed top_p = %v ok=%v", got, ok)
+	}
+}
+
+func completionTemperature(t *testing.T, req chatRequest) float64 {
+	t.Helper()
+	fields, err := iterFields(encodeCompletion(req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := completionDouble(t, fields, 5)
+	if !ok {
+		t.Fatal("completion config has no temperature")
+	}
+	return got
+}
+
+func completionDouble(t *testing.T, fields []protoField, num int) (float64, bool) {
+	t.Helper()
+	for _, field := range fields {
+		if field.num != num || field.wire != 1 {
+			continue
+		}
+		raw, ok := field.value.([]byte)
+		if !ok || len(raw) != 8 {
+			t.Fatalf("field %d = %#v", num, field.value)
+		}
+		return math.Float64frombits(binary.LittleEndian.Uint64(raw)), true
+	}
+	return 0, false
 }
 
 func TestStopReasonIgnoresIncomplete(t *testing.T) {

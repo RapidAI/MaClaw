@@ -35,6 +35,7 @@ type tokenBankAdminRepoView interface {
 	ListShares(ctx context.Context, ownerUserID, status string, limit, offset int) ([]sqlite.TokenBankShare, error)
 	LoadShare(ctx context.Context, shareID, scopeOwner string) (*sqlite.TokenBankShare, error)
 	ListModels(ctx context.Context, shareID string) ([]sqlite.TokenBankShareModel, error)
+	ListEnabledModels(ctx context.Context, shareIDs []string) (map[string][]sqlite.TokenBankShareModel, error)
 	SumSettledNetByShare(ctx context.Context, shareIDs []string) (map[string]int64, map[string]map[string]int64, error)
 	SetSharePaused(ctx context.Context, shareID, scopeOwner, reason string, paused bool, now time.Time) error
 	TakeOutShare(ctx context.Context, shareID, scopeOwner string) (bool, error)
@@ -49,6 +50,10 @@ type tokenBankAdminRepoView interface {
 
 	UsageMargins(ctx context.Context, days int, group sqlite.TokenBankMarginGroup) ([]sqlite.TokenBankMarginRow, error)
 }
+
+// The production repository has to satisfy this view. A missing method would
+// otherwise show up only as a 503 after the process is already running.
+var _ tokenBankAdminRepoView = (*sqlite.TokenBankRepo)(nil)
 
 // tokenBankAdminRepo returns the admin view of the repository, or nil when the
 // LLM module has not been wired. Distinct from tokenBankRepo() so a node that
@@ -415,6 +420,17 @@ func (h *SkillMarketHandlers) TokenBankAdminShares(w http.ResponseWriter, r *htt
 		tbError(w, http.StatusInternalServerError, "token_bank_unavailable", err.Error())
 		return
 	}
+	// One read for the page. Disabled rows stay in the table for earnings
+	// history and are already gone from the service arrays; the grid is the
+	// live share, so they are not loaded.
+	var modelsByShare map[string][]sqlite.TokenBankShareModel
+	if includeModels {
+		modelsByShare, err = repo.ListEnabledModels(r.Context(), shareIDs)
+		if err != nil {
+			tbError(w, http.StatusInternalServerError, "token_bank_unavailable", err.Error())
+			return
+		}
+	}
 	out := make([]tokenBankSharePayload, 0, len(shares))
 	for _, share := range shares {
 		payload := tokenBankSharePayload{
@@ -425,10 +441,9 @@ func (h *SkillMarketHandlers) TokenBankAdminShares(w http.ResponseWriter, r *htt
 		payload.EncryptedKey = "" // never leave the process, even to an admin
 		payload.TotalEarnedMicro = shareNet[share.ID]
 		if includeModels {
-			models, err := repo.ListModels(r.Context(), share.ID)
-			if err != nil {
-				tbError(w, http.StatusInternalServerError, "token_bank_unavailable", err.Error())
-				return
+			models := modelsByShare[share.ID]
+			if models == nil {
+				models = []sqlite.TokenBankShareModel{}
 			}
 			for i := range models {
 				key := strings.ToLower(strings.TrimSpace(models[i].ModelName))

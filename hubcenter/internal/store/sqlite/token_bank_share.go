@@ -399,9 +399,11 @@ func (r *TokenBankRepo) ListShares(ctx context.Context, ownerUserID, status stri
 // deletes the model rows, and calls settled before the counter was maintained
 // never wrote it. Summing the column would show zero for both.
 func (r *TokenBankRepo) ListShareOwners(ctx context.Context, limit, offset int) ([]TokenBankOwnerSummary, error) {
+	// model_count is models still enabled. A narrowed share disables the ones
+	// the owner dropped; those rows keep their token counters in used_tokens.
 	query := `SELECT s.owner_user_id, s.owner_email,
 	                 COUNT(DISTINCT s.id) AS share_count,
-	                 COUNT(DISTINCT m.model_name) AS model_count,
+	                 COUNT(DISTINCT CASE WHEN m.enabled <> 0 THEN m.model_name END) AS model_count,
 	                 COALESCE(SUM(m.used_input_tokens + m.used_output_tokens), 0) AS used_tokens,
 	                 COALESCE((SELECT a.earned_micro FROM token_bank_accounts a
 	                            WHERE a.user_id = s.owner_user_id), 0) AS earned_micro
@@ -470,8 +472,11 @@ func (r *TokenBankRepo) Overview(ctx context.Context) (TokenBankOverview, error)
 		Scan(&out.ShareOwners, &out.ShareCount); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return out, fmt.Errorf("overview shares: %w", err)
 	}
+	// ModelCount is models still enabled on a live share. Disabled rows are
+	// the models a narrowed share dropped; their tokens stay in UsedTokens.
 	if err := r.read.QueryRowContext(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(used_input_tokens + used_output_tokens), 0)
+		`SELECT COALESCE(SUM(CASE WHEN m.enabled <> 0 THEN 1 ELSE 0 END), 0),
+		        COALESCE(SUM(m.used_input_tokens + m.used_output_tokens), 0)
 		   FROM token_bank_models m
 		   JOIN token_bank_shares s ON s.id = m.share_id AND s.status <> ?`,
 		TokenBankShareStatusRevoked).Scan(&out.ModelCount, &out.UsedTokens); err != nil &&
@@ -821,6 +826,51 @@ func (r *TokenBankRepo) ListModels(ctx context.Context, shareID string) ([]Token
 	return out, rows.Err()
 }
 
+// ListEnabledModels returns the models still on the given shares, grouped by
+// share id and ordered by name. A narrowed share disables the models the owner
+// dropped; those rows stay for earnings history and are already absent from
+// the service arrays. Unavailable models stay in this list: the owner still
+// shares them, and the grid shows them as down.
+func (r *TokenBankRepo) ListEnabledModels(ctx context.Context, shareIDs []string) (map[string][]TokenBankShareModel, error) {
+	out := map[string][]TokenBankShareModel{}
+	if r == nil {
+		return out, nil
+	}
+	ids := make([]any, 0, len(shareIDs))
+	seen := make(map[string]struct{}, len(shareIDs))
+	for _, id := range shareIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	rows, err := r.read.QueryContext(ctx,
+		`SELECT `+tokenBankModelColumns+` FROM token_bank_models
+		  WHERE share_id IN (`+placeholders+`) AND enabled <> 0
+		  ORDER BY share_id ASC, model_name ASC`, ids...)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled token bank models: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		m, err := scanTokenBankModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[m.ShareID] = append(out[m.ShareID], *m)
+	}
+	return out, rows.Err()
+}
+
 // SetModelTier re-tiers one model by name within a share. The row write itself
 // does not touch routing. Callers that label a live member also update the
 // registry multiplier and the service-group route.
@@ -925,23 +975,11 @@ func (r *TokenBankRepo) SyncShareModels(ctx context.Context, shareID, scopeOwner
 		}
 	}
 
-	// Retire whatever is no longer in the list. Disabling rather than deleting
-	// keeps the usage counters attached to the model they describe.
-	existing, err := listTokenBankModelNamesTx(ctx, tx, shareID)
+	// One update for every name the new list dropped. Rows already disabled
+	// are left alone, so a repeat of the same list does not rewrite history.
+	retired, err := disableRetiredTokenBankModelsTx(ctx, tx, shareID, keep)
 	if err != nil {
 		return 0, err
-	}
-	retired := 0
-	for _, name := range existing {
-		if _, ok := keep[name]; ok {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE token_bank_models SET enabled = 0 WHERE share_id = ? AND model_name = ?`,
-			shareID, name); err != nil {
-			return 0, fmt.Errorf("disable retired token bank model %q: %w", name, err)
-		}
-		retired++
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -949,24 +987,29 @@ func (r *TokenBankRepo) SyncShareModels(ctx context.Context, shareID, scopeOwner
 	return retired, nil
 }
 
-// listTokenBankModelNamesTx reads the model names of one share inside an open
-// transaction.
-func listTokenBankModelNamesTx(ctx context.Context, tx *sql.Tx, shareID string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx,
-		`SELECT model_name FROM token_bank_models WHERE share_id = ?`, shareID)
-	if err != nil {
-		return nil, fmt.Errorf("list token bank model names: %w", err)
-	}
-	defer rows.Close()
-	out := []string{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
+// disableRetiredTokenBankModelsTx turns off models of this share that are not
+// in keep. Disabling rather than deleting keeps the usage counters on the row.
+func disableRetiredTokenBankModelsTx(ctx context.Context, tx *sql.Tx, shareID string, keep map[string]struct{}) (int, error) {
+	query := `UPDATE token_bank_models SET enabled = 0 WHERE share_id = ? AND enabled <> 0`
+	args := make([]any, 0, 1+len(keep))
+	args = append(args, shareID)
+	if len(keep) > 0 {
+		names := make([]any, 0, len(keep))
+		for name := range keep {
+			names = append(names, name)
 		}
-		out = append(out, name)
+		query += ` AND model_name NOT IN (` + strings.TrimRight(strings.Repeat("?,", len(names)), ",") + `)`
+		args = append(args, names...)
 	}
-	return out, rows.Err()
+	res, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("disable retired token bank models: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 // upsertTokenBankModelTx writes one model row inside an open transaction.

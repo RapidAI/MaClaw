@@ -363,6 +363,13 @@ func TestTokenBankListShareOwnersAggregatesWithoutNPlusOne(t *testing.T) {
 		  WHERE share_id = ? AND model_name = ?`, 100, 50, 1, "share-1", "gpt-4o"); err != nil {
 		t.Fatalf("seed usage: %v", err)
 	}
+	// A model the owner later dropped stays on the row for its token counters,
+	// and leaves the live model count.
+	if _, err := provider.Write.ExecContext(ctx,
+		`UPDATE token_bank_models SET enabled = 0, used_input_tokens = ?, used_output_tokens = ?
+		  WHERE share_id = ? AND model_name = ?`, 20, 5, "share-1", "gpt-4o-mini"); err != nil {
+		t.Fatalf("retire model: %v", err)
+	}
 	if _, err := repo.AppendLedger(ctx, TokenBankLedgerEntry{
 		ID: "earn:grid", UserID: "user-1", Bucket: TokenBankBucketEarned,
 		AmountMicro: 7_000_000, BizKey: "earn:grid", CreatedAt: now,
@@ -384,11 +391,11 @@ func TestTokenBankListShareOwnersAggregatesWithoutNPlusOne(t *testing.T) {
 	if owners[0].ShareCount != 2 {
 		t.Fatalf("user-1 share_count = %d, want 2", owners[0].ShareCount)
 	}
-	if owners[0].ModelCount != 3 {
-		t.Fatalf("user-1 model_count = %d, want 3", owners[0].ModelCount)
+	if owners[0].ModelCount != 2 {
+		t.Fatalf("user-1 model_count = %d, want 2 (retired gpt-4o-mini excluded)", owners[0].ModelCount)
 	}
-	if owners[0].UsedTokens != 150 {
-		t.Fatalf("user-1 used_tokens = %d, want 150", owners[0].UsedTokens)
+	if owners[0].UsedTokens != 175 {
+		t.Fatalf("user-1 used_tokens = %d, want 175 (retired model's tokens still count)", owners[0].UsedTokens)
 	}
 	if owners[0].EarnedMicro != 7_000_000 {
 		t.Fatalf("user-1 earned_micro = %d, want 7000000", owners[0].EarnedMicro)
@@ -422,6 +429,13 @@ func TestTokenBankOverviewCountsSharesModelsAndCredits(t *testing.T) {
 	if _, err := provider.Write.ExecContext(ctx,
 		`UPDATE token_bank_models SET earned_micro = 99 WHERE share_id = ?`, "share-1"); err != nil {
 		t.Fatalf("seed model counter: %v", err)
+	}
+	// Dropping a model from the share keeps its tokens in the served total
+	// and takes it out of the live model count.
+	if _, err := provider.Write.ExecContext(ctx,
+		`UPDATE token_bank_models SET enabled = 0, used_input_tokens = 10, used_output_tokens = 5
+		  WHERE share_id = ? AND model_name = ?`, "share-1", "gpt-4o-mini"); err != nil {
+		t.Fatalf("retire model: %v", err)
 	}
 
 	// Credit totals come from the account cache, which requires ledger rows.
@@ -462,9 +476,12 @@ func TestTokenBankOverviewCountsSharesModelsAndCredits(t *testing.T) {
 	if ov.ShareCount != 2 {
 		t.Fatalf("ShareCount = %d, want 2 (revoked share excluded)", ov.ShareCount)
 	}
-	// The revoked share's model must not be counted either.
-	if ov.ModelCount != 3 {
-		t.Fatalf("ModelCount = %d, want 3 (revoked share's model excluded)", ov.ModelCount)
+	// The revoked share's model and the retired model must not be counted.
+	if ov.ModelCount != 2 {
+		t.Fatalf("ModelCount = %d, want 2 (revoked share and retired model excluded)", ov.ModelCount)
+	}
+	if ov.UsedTokens != 15 {
+		t.Fatalf("UsedTokens = %d, want 15 (retired model's tokens still count)", ov.UsedTokens)
 	}
 	if ov.GrantedMicro != 3_000_000 || ov.WithdrawnMicro != 1_000_000 || ov.FrozenMicro != 500_000 {
 		t.Fatalf("credit totals = granted %d / withdrawn %d / frozen %d, want 3000000/1000000/500000",
@@ -968,6 +985,16 @@ func TestTokenBankSyncShareModelsDisablesRetiredModels(t *testing.T) {
 	}
 	if byName["gpt-4o-mini"].Enabled {
 		t.Fatalf("gpt-4o-mini enabled = true, want disabled after falling out of the list")
+	}
+	live, err := repo.ListEnabledModels(ctx, []string{"share-1", "share-1", " ", "missing"})
+	if err != nil {
+		t.Fatalf("ListEnabledModels() error = %v", err)
+	}
+	if _, ok := live["missing"]; ok {
+		t.Fatalf("ListEnabledModels included a share that has no live models: %+v", live)
+	}
+	if got := live["share-1"]; len(got) != 1 || got[0].ModelName != "gpt-4o" || !got[0].Enabled {
+		t.Fatalf("live models = %+v, want only gpt-4o", got)
 	}
 	// Re-adding it must re-enable the same row rather than create a second one.
 	if _, err := repo.SyncShareModels(ctx, "share-1", "user-1",

@@ -59,6 +59,7 @@ type chatRequest struct {
 	tools           []toolDef
 	maxTokens       int
 	temperature     *float64
+	topP            *float64
 	disableParallel bool
 	forcedTool      string
 }
@@ -273,9 +274,29 @@ func encodeCompletion(req chatRequest) []byte {
 	if maxOut <= 0 {
 		maxOut = 128000
 	}
+	// Field 5 is the softmax divisor. Cascade returns "an internal error
+	// occurred" when it is absent or not positive, because that division is
+	// undefined. The native client sends 1. OpenAI temperature 0 is the
+	// argmax sentinel, which this message expresses as top_k = 1 with that
+	// divisor. A negative value is not that sentinel, so it keeps the
+	// desktop default instead of being relabeled as greedy.
 	temp := 0.4
-	if req.temperature != nil {
-		temp = *req.temperature
+	topK := uint64(50)
+	if req.temperature != nil && !math.IsNaN(*req.temperature) && !math.IsInf(*req.temperature, 0) {
+		switch {
+		case *req.temperature == 0:
+			temp = 1
+			topK = 1
+		case *req.temperature > 0:
+			temp = *req.temperature
+		}
+	}
+	// Field 8 is top_p. Field 6 is first_temperature. The native client
+	// leaves first_temperature unset and puts 0.95 in top_p. A non-positive
+	// nucleus is empty, so it stays on that default.
+	topP := 0.95
+	if req.topP != nil && !math.IsNaN(*req.topP) && !math.IsInf(*req.topP, 0) && *req.topP > 0 {
+		topP = *req.topP
 	}
 	// Field 2 is max_tokens. Field 3 is max_newlines. Leaving it unset makes the
 	// server stop at the first line, which is the autocomplete default.
@@ -284,9 +305,8 @@ func encodeCompletion(req chatRequest) []byte {
 		encodeVarintField(2, uint64(maxOut)),
 		encodeVarintField(3, maxChatNewlines),
 		encodeDouble(5, temp),
-		encodeDouble(6, 0.95),
-		encodeVarintField(7, 50),
-		encodeDouble(8, 1),
+		encodeVarintField(7, topK),
+		encodeDouble(8, topP),
 		encodeDouble(11, 1),
 	}, nil)
 }

@@ -612,6 +612,64 @@ func TestTokenBankAdminEarningsComeFromUsageAndAccounts(t *testing.T) {
 	}
 }
 
+func TestTokenBankAdminSharesOmitModelsDroppedFromTheShare(t *testing.T) {
+	env := newTokenBankAdminTestEnv(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	_, _, err := env.repo.CreateShare(ctx, sqlite.TokenBankShare{
+		ID:             "share-1",
+		OwnerUserID:    "user-1",
+		OwnerEmail:     "user-1@example.com",
+		DisplayName:    "Share share-1",
+		APIURL:         "https://api.example.com/v1",
+		Protocol:       "openai",
+		EncryptedKey:   "enc:fp-1",
+		KeyFingerprint: "fp-1",
+	}, []sqlite.TokenBankShareModel{
+		{ModelName: "gpt-4o", MemberID: "member-gpt-4o", Enabled: true, Available: true, Tier: "mid", TierMultiplier: 1, ArrayID: "token_bank_mid"},
+		{ModelName: "gpt-4o-mini", MemberID: "member-mini", Enabled: true, Available: true, Tier: "mid", TierMultiplier: 1, ArrayID: "token_bank_mid"},
+	}, 0, now)
+	if err != nil {
+		t.Fatalf("CreateShare() error = %v", err)
+	}
+	// The owner narrowed the share to gpt-4o. The retired row stays for
+	// earnings history and is no longer in the service array.
+	if _, err := env.repo.SyncShareModels(ctx, "share-1", "user-1", []sqlite.TokenBankShareModel{
+		{ModelName: "gpt-4o", MemberID: "member-gpt-4o", Enabled: true, Available: true, Tier: "mid", TierMultiplier: 1, ArrayID: "token_bank_mid"},
+	}, now); err != nil {
+		t.Fatalf("SyncShareModels() error = %v", err)
+	}
+	stored, err := env.repo.ListModels(ctx, "share-1")
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored models = %d, want 2 (retired row kept)", len(stored))
+	}
+
+	rec := env.doAdmin(t, "GET", "/api/admin/token-bank/shares", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("shares = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	body := decodeMap(t, rec)
+	shares, _ := body["shares"].([]any)
+	if len(shares) != 1 {
+		t.Fatalf("shares = %d, want 1", len(shares))
+	}
+	share, _ := shares[0].(map[string]any)
+	models, _ := share["models"].([]any)
+	if len(models) != 1 {
+		t.Fatalf("share models = %d, want 1 live model; body %s", len(models), rec.Body.String())
+	}
+	model, _ := models[0].(map[string]any)
+	if model["ModelName"] != "gpt-4o" {
+		t.Fatalf("live model = %v, want gpt-4o", model["ModelName"])
+	}
+	if enabled, _ := model["Enabled"].(bool); !enabled {
+		t.Fatalf("live model Enabled = %v, want true", model["Enabled"])
+	}
+}
+
 func TestTokenBankAdminSharesFilterByUserAndStatus(t *testing.T) {
 	env := newTokenBankAdminTestEnv(t)
 	env.seedShare(t, "share-1", "user-1", "fp-1", "gpt-4o")

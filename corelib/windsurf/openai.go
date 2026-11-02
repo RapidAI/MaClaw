@@ -68,11 +68,12 @@ func parseOpenAIChat(body []byte) (chatRequest, error) {
 		MaxTokens           int             `json:"max_tokens"`
 		MaxCompletionTokens int             `json:"max_completion_tokens"`
 		Temperature         *float64        `json:"temperature"`
+		TopP                *float64        `json:"top_p"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return chatRequest{}, fmt.Errorf("无法解析对话请求")
 	}
-	req := chatRequest{model: strings.TrimSpace(raw.Model), temperature: raw.Temperature}
+	req := chatRequest{model: strings.TrimSpace(raw.Model), temperature: raw.Temperature, topP: raw.TopP}
 	req.maxTokens = raw.MaxCompletionTokens
 	if req.maxTokens <= 0 {
 		req.maxTokens = raw.MaxTokens
