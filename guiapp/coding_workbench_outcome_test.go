@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,6 +197,17 @@ func TestRecordStickyCodingTurnOutcome(t *testing.T) {
 	mem = handler.getStickyCodingWorkbenchMemory(owner)
 	if mem.LastOutcome != "completed" {
 		t.Fatalf("remote success outcome = %q", mem.LastOutcome)
+	}
+
+	handler.recordStickyLocalCodingTurn(owner, projectPath, "继续优化", &CodingSubAgentResult{
+		Status: TaskExecFailed, Error: "max iterations reached", Summary: "任务运行错误 T1，300 轮迭代，322 次工具调用",
+	}, "")
+	mem = handler.getStickyCodingWorkbenchMemory(owner)
+	if mem.LastOutcome != "completed" {
+		t.Fatalf("iteration cap changed the task row to %q", mem.LastOutcome)
+	}
+	if strings.Contains(mem.LastSummary, "任务运行错误") || strings.Contains(mem.LastSummary, "max iterations") {
+		t.Fatalf("iteration cap was carried as the next round's summary: %q", mem.LastSummary)
 	}
 }
 

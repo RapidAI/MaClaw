@@ -4814,8 +4814,13 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 	// Record the turn verdict after the plan counts: a failed step fails the
 	// turn even when the remote executor reports success for the last step.
+	// Spending the iteration budget is not that failure.
+	executorOutcome := codingWorkbenchTurnOutcomeRemote(resultStatus)
+	if result != nil && codingLoopIterationExhausted(result.Error) && failedSteps == 0 {
+		executorOutcome = ""
+	}
 	h.recordStickyRemoteCodingTurn(userID, recordUserText, result,
-		codingWorkbenchTurnOutcomeFromPlan(codingWorkbenchTurnOutcomeRemote(resultStatus), failedSteps, cancelled))
+		codingWorkbenchTurnOutcomeFromPlan(executorOutcome, failedSteps, cancelled))
 	statusText := formatRemoteCodingPlanStatusText(planned, resultStatus, totalSteps, passedSteps, failedSteps, skippedSteps, remoteCtx.Maintenance)
 	log.Printf("[workflow-v2] remote coding complete: %s", statusText)
 	// The next round is already queued. Do not close the transcript with a

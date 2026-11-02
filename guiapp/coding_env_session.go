@@ -601,7 +601,7 @@ func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, user
 	if h == nil {
 		return
 	}
-	if outcome == "" && result != nil {
+	if outcome == "" && result != nil && !codingLoopIterationExhausted(result.Error) {
 		outcome = codingWorkbenchTurnOutcomeLocal(result.Status)
 	}
 	if result == nil && outcome == "" {
@@ -623,11 +623,10 @@ func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, user
 		stickyRememberSessionPlan(mem, userText)
 		if result != nil {
 			mem.TurnCount++
-			summary := strings.TrimSpace(result.Summary)
-			if summary == "" {
-				summary = strings.TrimSpace(result.Error)
+			summary := stickyCodingCarrySummary(result.Summary, result.Error)
+			if summary != "" {
+				mem.LastSummary = summary
 			}
-			mem.LastSummary = summary
 			mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, result.FilesModified...))
 			mem.FilesCreated = uniqueSortedSubAgentStrings(append(mem.FilesCreated, result.FilesCreated...))
 			if len(mem.FilesModified) > 40 {
@@ -647,7 +646,7 @@ func (h *IMMessageHandler) recordStickyRemoteCodingTurn(userID, userText string,
 	if h == nil {
 		return
 	}
-	if outcome == "" && result != nil {
+	if outcome == "" && result != nil && !codingLoopIterationExhausted(result.Error) {
 		outcome = codingWorkbenchTurnOutcomeRemote(result.Status)
 	}
 	if result == nil && outcome == "" {
@@ -659,14 +658,13 @@ func (h *IMMessageHandler) recordStickyRemoteCodingTurn(userID, userText string,
 		stickyRememberSessionPlan(mem, userText)
 		if result != nil {
 			mem.TurnCount++
-			summary := strings.TrimSpace(result.Summary)
-			if summary == "" {
-				summary = strings.TrimSpace(result.Error)
-			}
-			if summary == "" {
+			summary := stickyCodingCarrySummary(result.Summary, result.Error)
+			if summary == "" && !codingLoopIterationExhausted(result.Error) {
 				summary = fmt.Sprintf("status=%s iterations=%d", result.Status, result.Iterations)
 			}
-			mem.LastSummary = summary
+			if summary != "" {
+				mem.LastSummary = summary
+			}
 			if len(result.FilesModified) > 0 {
 				mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, result.FilesModified...))
 			}
@@ -682,6 +680,23 @@ func (h *IMMessageHandler) recordStickyRemoteCodingTurn(userID, userText string,
 		}
 		setStickyCodingTurnOutcome(mem, outcome)
 	})
+}
+
+// stickyCodingCarrySummary is the sentence the next round should read.
+// An iteration-cap handoff is not a failure, so its stock error summary is
+// not carried forward.
+func stickyCodingCarrySummary(summary, errText string) string {
+	summary = strings.TrimSpace(summary)
+	if !codingLoopIterationExhausted(errText) {
+		if summary == "" {
+			return strings.TrimSpace(errText)
+		}
+		return summary
+	}
+	if summary == "" || summary == strings.TrimSpace(errText) || codingAgentSummaryIsIterationFallback(summary) {
+		return ""
+	}
+	return summary
 }
 
 // setStickyCodingTurnOutcome records the finished turn's terminal result. An
