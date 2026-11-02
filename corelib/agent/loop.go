@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/permission"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 // TurnRouter is an optional LoopCallbacks extension for per-turn model routing.
@@ -98,6 +100,32 @@ type LoopCallbacks interface {
 // message is a different turn and drops the tool transcript.
 type IterationBudgetExtender interface {
 	ExtendIterationBudget(usedIterations, toolCalls int) int
+}
+
+// TurnIterationCeilingSource lets a host replace this turn's iteration
+// ceiling. The value is the ceiling itself, not another wave to add.
+// iteration is how many rounds this loop has already started. ok is false
+// when this turn has no explicit ceiling.
+type TurnIterationCeilingSource interface {
+	TurnIterationCeiling(iteration int) (ceiling int, ok bool)
+}
+
+// applyTurnIterationCeiling installs an explicit host ceiling. stop is true
+// when the loop has already run past that ceiling; adding another wave would
+// ignore the cap.
+func applyTurnIterationCeiling(cb LoopCallbacks, iteration, maxIter int) (int, bool) {
+	src, ok := cb.(TurnIterationCeilingSource)
+	if !ok || src == nil {
+		return maxIter, false
+	}
+	n, apply := src.TurnIterationCeiling(iteration)
+	if !apply || n <= 0 {
+		return maxIter, false
+	}
+	if iteration > n {
+		return n, true
+	}
+	return n, false
 }
 
 // extendSameConversationBudget asks the host for more iterations of this
@@ -1387,10 +1415,21 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	succeededToolNames := map[string]struct{}{}
 	const driftWindow = 4 // check last N calls for repetition
 	consecutiveSame := 0
-	// notedCommit is the commit identity we already told the model not to
-	// repeat. The next identical success stops the turn. A different payload
-	// replaces the note so a real revision can proceed.
-	notedCommit := ""
+	// notedCommits are identities already handed back to the model. Each one
+	// stays armed for the turn. A single slot let a rotating set of spilled
+	// pages overwrite the note every batch: inside an eight-call window each
+	// page stayed at two copies, so the turn never reached a hard stop.
+	var notedCommits map[string]struct{}
+	// readContinuations are next pages a truncated read already named. The
+	// drift window keeps eight calls, so the read that printed next_offset
+	// is gone long before a model that has been re-reading offset 0 finally
+	// sends it. A brand-new offset that was never named must not keep that
+	// loop alive. spentReadContinuations are pages already delivered by that
+	// exception. The truncated page prints the same next_offset on every
+	// read, and putting it back would let the old page and that one offset
+	// alternate for the rest of the turn.
+	var readContinuations map[string]struct{}
+	var spentReadContinuations map[string]struct{}
 
 	// Consecutive same-tool failure detection: catches non-repeating failure
 	// loops where the agent keeps trying different approaches with the same
@@ -1505,6 +1544,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	var latestShot *ToolModelImage
 
 	for iteration := 0; ; iteration++ {
+		if next, stop := applyTurnIterationCeiling(cb, iteration, maxIter); stop {
+			maxIter = iteration
+			break
+		} else {
+			maxIter = next
+		}
 		if iteration >= maxIter {
 			extra := extendSameConversationBudget(cb, iteration, totalToolCalls)
 			if extra <= 0 {
@@ -1550,7 +1595,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			consecutiveSame = 0
 			recentCalls = nil
 			clear(landedCommits)
-			notedCommit = ""
+			notedCommits = nil
+			readContinuations = nil
+			spentReadContinuations = nil
 		}
 		// Mid-loop conversation transformation (e.g., compaction).
 		if transformed := h.TransformConversation(conversation); transformed != nil {
@@ -3826,13 +3873,26 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			} else if obs, ok := cb.(RepeatObservation); ok {
 				record.poll = obs.IdenticalSuccessIsPoll(tc.Function.Name)
 			}
+			// A spilled page is a stored blob. The same arguments cannot
+			// observe anything new. Hosts that do not implement
+			// RepeatObservation, and hosts that treat every read as a live
+			// poll, would otherwise leave this success out of the commit
+			// stop. The model then repeats the page until the iteration cap.
+			if ImmutableToolResultRead(tc.Function.Name) {
+				record.poll = false
+			}
+			record.batch = toolBatchSequence
 			recentCalls = append(recentCalls, record)
 			if len(recentCalls) > driftWindow*2 {
 				recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
 			}
+			readContinuations = rememberReadContinuation(readContinuations, spentReadContinuations, record)
 			// Only a dispatcher invocation lands a payload. A skip is not a
 			// second commit, and a poll can be repeated while a job runs.
-			if toolExecuted && record.success && !record.poll {
+			// A spilled page is not landed either: the repeat detector still
+			// stops a tight loop, but a later read must return the bytes
+			// again after the earlier page has left the context.
+			if toolExecuted && record.success && commitLands(tc.Function.Name, record.poll) {
 				if landedCommits == nil {
 					landedCommits = map[string]struct{}{}
 				}
@@ -4065,28 +4125,64 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// told that the result already stands, so the model can take the next
 		// step. The same commit again ends the turn. A user steer that arrived
 		// during the batch wins over that stop.
-		if id, seen := repeatedSuccessfulCommit(recentCalls); seen >= 2 && !llmReplanAlreadyRequested(cb) {
+		id, seen := repeatedSuccessfulCommit(recentCalls)
+		// A rotating set of spilled pages never has to be the last call.
+		// Three handles read in turn used to hide every repeat behind whichever
+		// page happened to finish the batch.
+		if rid, rseen := mostRepeatedImmutableRead(recentCalls, toolBatchSequence); rseen > seen {
+			id, seen = rid, rseen
+		}
+		if seen >= 2 && !llmReplanAlreadyRequested(cb) {
 			// Two identical commits get one warning so the model can move on.
-			// A third, including three in the same batch, is the loop.
+			// A third, including three in the same batch, is the loop. A page
+			// that was already warned stays armed after the model rotates to
+			// another handle; the next time that page is the repeat, stop.
 			// A skip already returned that warning as its tool result. A
 			// second note that says to keep going is what makes the model
 			// call the same payload again.
 			last := recentCalls[len(recentCalls)-1]
-			if notedCommit == id || seen >= 3 {
-				log.Printf("[agent-loop] drift detected: commit %q repeated with the same arguments", last.name)
+			name := commitIdentityName(id)
+			if name == "" {
+				name = last.name
+			}
+			// A repeated page stops the turn. The exception is one batch that
+			// also reads the next_offset a truncated page already named:
+			// those bytes are already in this result, and the model still
+			// has to use them. The named page is spent only when that
+			// exception is used. A later read of the truncated page prints
+			// the same next_offset and must not open the turn again.
+			if spentReadContinuations == nil {
+				spentReadContinuations = map[string]struct{}{}
+			}
+			if repeatedCommitStops(notedCommits, id, seen) &&
+				!(ImmutableToolResultRead(name) && takeFreshReadContinuation(recentCalls, toolBatchSequence, notedCommits, readContinuations, spentReadContinuations)) {
+				log.Printf("[agent-loop] drift detected: commit %q repeated with the same arguments", name)
 				disposeSurface(ToolSurfaceToolBatchSettled)
+				text := "相同参数已经执行成功，停止重复。要改结果，请换参数。"
+				if ImmutableToolResultRead(name) {
+					text = "同一页结果已经返回，停止重复读取。"
+				}
 				return finish(LoopResult{
-					Text:       "相同参数已经执行成功，停止重复。要改结果，请换参数。",
+					Text:       text,
 					Iterations: iteration + 1,
 					ToolCalls:  totalToolCalls,
 					HardExit:   true,
 				})
 			}
-			notedCommit = id
-			if !last.skipped {
-				name := last.name
+			if notedCommits == nil {
+				notedCommits = map[string]struct{}{}
+			}
+			_, alreadyNoted := notedCommits[id]
+			notedCommits[id] = struct{}{}
+			// The first repeat is told once. When the turn stayed open for an
+			// advertised next page, the repeated page was already noted, and
+			// a second "keep going" note would send the model back to it.
+			if !alreadyNoted && (ImmutableToolResultRead(name) || !last.skipped) {
 				log.Printf("[agent-loop] commit %q repeated with the same arguments; telling the model the result stands", name)
 				note := fmt.Sprintf("[系统] 工具 %s 已用相同参数成功执行，该结果仍然有效。不要用相同参数再调用它。若任务还要继续，改参数或做下一步；若已经完成，直接回答。", name)
+				if ImmutableToolResultRead(name) {
+					note = "[系统] read_tool_result 这一页已经返回。不要用相同的 id 和 offset 再读。结果里 truncated 为 false 时，用已有内容继续任务。为 true 时，把 offset 设成结果里 next_offset 那一行的整数，并省略 limit。"
+				}
 				conversation = append(conversation, map[string]interface{}{
 					"role":    "user",
 					"content": note,
@@ -4354,6 +4450,23 @@ type RepeatWaveOpener interface {
 // every identical success as a poll.
 type RepeatObservation interface {
 	IdenticalSuccessIsPoll(name string) bool
+}
+
+// ImmutableToolResultRead reports a tool whose success is a stored page.
+// Repeating the arguments cannot observe a new state, so the call is a
+// commit even when the host classifies reads as polls.
+func ImmutableToolResultRead(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "read_tool_result")
+}
+
+// commitLands reports a success that must not run again. A spilled page
+// stays replayable: landing it would answer the next read with "already
+// executed" and withhold the bytes the model is paging.
+func commitLands(name string, poll bool) bool {
+	if poll || ImmutableToolResultRead(name) {
+		return false
+	}
+	return true
 }
 
 // AnswerHandsWorkBack reports a closing reply that leaves the task for the
@@ -4740,6 +4853,7 @@ type toolCallRecord struct {
 	success bool
 	poll    bool
 	skipped bool
+	batch   uint64
 }
 
 // driftFailureHint reports a window of identical calls that did not succeed.
@@ -4762,9 +4876,212 @@ func driftFailureHint(tail []toolCallRecord) bool {
 	return true
 }
 
+// mostRepeatedImmutableRead reports the spilled page that this batch read
+// again. Older copies in the window still count, so a rotating set is
+// visible even when the batch ends on a different handle. A page that this
+// batch did not read does not count: the next edit would otherwise look
+// like another repeat and end the turn.
+func mostRepeatedImmutableRead(calls []toolCallRecord, batch uint64) (id string, seen int) {
+	if batch <= 0 {
+		return "", 0
+	}
+	counts := make(map[string]int)
+	inBatch := make(map[string]bool)
+	for _, call := range calls {
+		if !call.success || !ImmutableToolResultRead(call.name) {
+			continue
+		}
+		ident, ok := immutableReadIdentity(call)
+		if !ok {
+			continue
+		}
+		counts[ident]++
+		if call.batch == batch {
+			inBatch[ident] = true
+		}
+		if inBatch[ident] && counts[ident] > seen {
+			id = ident
+			seen = counts[ident]
+		}
+	}
+	return id, seen
+}
+
+func commitIdentityName(id string) string {
+	name, _, _ := strings.Cut(id, "\n")
+	return name
+}
+
+// takeFreshReadContinuation reports that this batch read a spilled page a
+// truncated read already named as next_offset, that this window has not
+// already returned, and that has not been noted. The named page is removed
+// and marked spent. rememberReadContinuation will not put that offset back
+// when the truncated page is read again.
+func takeFreshReadContinuation(calls []toolCallRecord, batch uint64, noted, continued, spent map[string]struct{}) bool {
+	if batch <= 0 || len(continued) == 0 {
+		return false
+	}
+	counts := make(map[string]int)
+	inBatch := make(map[string]int)
+	for _, call := range calls {
+		ident, ok := immutableReadIdentity(call)
+		if !ok {
+			continue
+		}
+		counts[ident]++
+		if call.batch == batch {
+			inBatch[ident]++
+		}
+	}
+	opened := false
+	for ident, n := range inBatch {
+		if n <= 0 || counts[ident] != n {
+			continue
+		}
+		if _, armed := noted[ident]; armed {
+			continue
+		}
+		if _, named := continued[ident]; !named {
+			continue
+		}
+		delete(continued, ident)
+		if spent != nil {
+			spent[ident] = struct{}{}
+		}
+		opened = true
+	}
+	return opened
+}
+
+// rememberReadContinuation records the next page printed by a truncated read.
+// A page already delivered by the repeat exception stays spent: the same
+// header is printed on every re-read of the truncated page.
+func rememberReadContinuation(available, spent map[string]struct{}, call toolCallRecord) map[string]struct{} {
+	next, ok := advertisedReadContinuation(call)
+	if !ok {
+		return available
+	}
+	if _, used := spent[next]; used {
+		return available
+	}
+	if available == nil {
+		available = map[string]struct{}{}
+	}
+	available[next] = struct{}{}
+	return available
+}
+
+// advertisedReadContinuation is the next page named by a truncated read.
+// The page body and the trailing hint are not scanned: a resume can quote
+// "next_offset" without being a continuation. A next offset that does not
+// move forward is the same page and is not recorded.
+func advertisedReadContinuation(call toolCallRecord) (string, bool) {
+	if !call.success || !ImmutableToolResultRead(call.name) {
+		return "", false
+	}
+	page, ok := spilledPageIdentity(call)
+	if !ok {
+		return "", false
+	}
+	rest, ok := strings.CutPrefix(page, "read_tool_result\n")
+	if !ok {
+		return "", false
+	}
+	handle, offsetText, ok := strings.Cut(rest, "\n")
+	if !ok || handle == "" {
+		return "", false
+	}
+	current, err := strconv.Atoi(offsetText)
+	if err != nil {
+		return "", false
+	}
+	next, ok := headerNextOffset(call.result)
+	if !ok || next <= current {
+		return "", false
+	}
+	return "read_tool_result\n" + handle + "\n" + strconv.Itoa(next), true
+}
+
+// headerServedOffset is the offset line in a read_tool_result header.
+// next_offset is a different line and must not match. The page body is
+// after the fence.
+func headerServedOffset(result string) (int, bool) {
+	fence := strings.Index(result, "\n---\n")
+	if fence < 0 {
+		return 0, false
+	}
+	for _, line := range strings.Split(result[:fence], "\n") {
+		line = strings.TrimSpace(line)
+		// next_offset shares the suffix "offset:" but is the following page.
+		if strings.HasPrefix(line, "next_offset:") {
+			continue
+		}
+		rest, ok := strings.CutPrefix(line, "offset:")
+		if !ok {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(rest))
+		if err != nil || n < 0 {
+			continue
+		}
+		return n, true
+	}
+	return 0, false
+}
+
+// headerNextOffset reads next_offset from the read_tool_result header.
+// The header ends at the page fence. Text after that fence is the page
+// the model may copy into the resume.
+func headerNextOffset(result string) (int, bool) {
+	fence := strings.Index(result, "\n---\n")
+	if fence < 0 {
+		return 0, false
+	}
+	truncated := false
+	next := 0
+	haveNext := false
+	for _, line := range strings.Split(result[:fence], "\n") {
+		line = strings.TrimSpace(line)
+		if line == "truncated: true" {
+			truncated = true
+			continue
+		}
+		rest, ok := strings.CutPrefix(line, "next_offset:")
+		if !ok {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(rest))
+		if err != nil || n < 0 {
+			continue
+		}
+		next = n
+		haveNext = true
+	}
+	if !truncated || !haveNext {
+		return 0, false
+	}
+	return next, true
+}
+
+// repeatedCommitStops reports that this identity has already had its one
+// warning, or that three copies are already in the window. seen below 2 is
+// not a repeat. A different identity is not stopped by an earlier note.
+func repeatedCommitStops(noted map[string]struct{}, id string, seen int) bool {
+	if seen < 2 || id == "" {
+		return false
+	}
+	if seen >= 3 {
+		return true
+	}
+	_, ok := noted[id]
+	return ok
+}
+
 // repeatedSuccessfulCommit reports that the latest call is a commit whose
 // arguments and receipt already occurred in this turn. Polls are ignored.
-// The identity is stable across JSON key order.
+// The identity is stable across JSON key order. A spilled page is the handle
+// plus the byte offset: limit is normalized away before the read, so a model
+// that alternates limit=1 and an omitted limit is still the same page.
 func repeatedSuccessfulCommit(calls []toolCallRecord) (id string, seen int) {
 	if len(calls) == 0 {
 		return "", 0
@@ -4773,6 +5090,15 @@ func repeatedSuccessfulCommit(calls []toolCallRecord) (id string, seen int) {
 	if !last.success || last.poll {
 		return "", 0
 	}
+	if page, ok := immutableReadIdentity(last); ok {
+		id = page
+		for _, call := range calls {
+			if got, ok := immutableReadIdentity(call); ok && got == id {
+				seen++
+			}
+		}
+		return id, seen
+	}
 	id = commitIdentity(last)
 	for _, call := range calls {
 		if call.success && !call.poll && commitIdentity(call) == id {
@@ -4780,6 +5106,50 @@ func repeatedSuccessfulCommit(calls []toolCallRecord) (id string, seen int) {
 		}
 	}
 	return id, seen
+}
+
+// immutableReadIdentity is the stored page a successful read_tool_result
+// returned. limit and the limit_applied preface are not part of it.
+func immutableReadIdentity(call toolCallRecord) (string, bool) {
+	if !call.success || !ImmutableToolResultRead(call.name) {
+		return "", false
+	}
+	if page, ok := spilledPageIdentity(call); ok {
+		return page, true
+	}
+	return commitIdentity(call), true
+}
+
+func spilledPageIdentity(call toolCallRecord) (string, bool) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(call.args), &args); err != nil {
+		return "", false
+	}
+	id := toolresult.ParseArgsString(args, "id")
+	if id == "" {
+		id = toolresult.ParseArgsString(args, "handle_id")
+	}
+	id = toolresult.NormalizeHandleID(id)
+	if id == "" || id == "x" {
+		return "", false
+	}
+	if toolresult.InvalidArgsInt(args, "offset") {
+		return "", false
+	}
+	offset := toolresult.ParseArgsInt(args, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+	// A request past the end is clamped, and the header reports the byte
+	// index that was actually served. Keeping the requested number made
+	// every larger offset a new page of the same empty tail.
+	// Alignment only moves the start forward, so a served index below the
+	// request is the clamp. The advertised next_offset still matches the
+	// number the model sent.
+	if served, ok := headerServedOffset(call.result); ok && served < offset {
+		offset = served
+	}
+	return "read_tool_result\n" + id + "\n" + strconv.Itoa(offset), true
 }
 
 func commitIdentity(call toolCallRecord) string {

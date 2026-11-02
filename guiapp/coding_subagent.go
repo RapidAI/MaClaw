@@ -1162,6 +1162,10 @@ type codingSubAgentCallbacks struct {
 	// iterationExtensions counts in-place budget refills for this task.
 	// The conversation stays; a new session message is not started.
 	iterationExtensions int
+	// iterationWaveSize is the largest budget this task has already been given.
+	// A later read of the parent loop can raise it. It cannot shrink the task
+	// when the next message restores a smaller limit.
+	iterationWaveSize int
 
 	// cachedSystemPrompt is built once per task to avoid repeated knowledge and
 	// dynamic-tool prompt assembly on every LLM turn.
@@ -1608,12 +1612,25 @@ func (c *codingSubAgentCallbacks) GetMaxIterations() int {
 			}
 			return config.EffectiveMaxIterations(codingSpawnRoleMaxIterations(role))
 		}
+		n := codingSubAgentPerTaskMaxIterations
+		fromLoop := false
 		if c.subagent.loopCtx != nil && c.subagent.loopCtx.MaxIterations() > 0 {
-			return config.EffectiveMaxIterations(c.subagent.loopCtx.MaxIterations())
+			n = config.EffectiveMaxIterations(c.subagent.loopCtx.MaxIterations())
+			fromLoop = true
+		} else if c.subagent.isFullEnvironment() {
+			n = codingSubAgentFullEnvMaxIterations
 		}
-		if c.subagent.isFullEnvironment() {
-			return codingSubAgentFullEnvMaxIterations
+		if fromLoop {
+			if n < c.iterationWaveSize {
+				return c.iterationWaveSize
+			}
+			c.iterationWaveSize = n
+			return n
 		}
+		if c.iterationWaveSize > n {
+			return c.iterationWaveSize
+		}
+		return n
 	}
 	// Per-task hard cap: SubAgent executes a single focused task, not an
 	// open-ended conversation. 80 iterations is generous for any single task
@@ -1626,9 +1643,9 @@ func (c *codingSubAgentCallbacks) GetMaxIterations() int {
 }
 
 // ExtendIterationBudget gives this same coding conversation another wave of
-// iterations. Nested workers keep their small budget. A cancelled turn and a
-// turn that never called a tool stop. The refill count matches the session
-// wave cap so a stuck task still ends.
+// iterations. The task stays in this loop until it finishes. Nested workers
+// keep their small budget. A cancelled turn and a turn that never called a
+// tool stop.
 func (c *codingSubAgentCallbacks) ExtendIterationBudget(used, toolCalls int) int {
 	if c == nil || c.subagent == nil || toolCalls <= 0 {
 		return 0
@@ -1639,15 +1656,12 @@ func (c *codingSubAgentCallbacks) ExtendIterationBudget(used, toolCalls int) int
 	if c.subagent.loopCtx != nil && c.subagent.loopCtx.IsCancelled() {
 		return 0
 	}
-	if c.iterationExtensions >= sessionRoundContinuationMaxWaves {
-		return 0
-	}
 	extra := c.GetMaxIterations()
 	if extra <= 0 {
 		return 0
 	}
 	c.iterationExtensions++
-	log.Printf("[coding-subagent] iteration budget spent after %d iterations; same task continues with %d more", used, extra)
+	log.Printf("[coding-subagent] iteration budget spent after %d iterations; same task continues with %d more (wave %d)", used, extra, c.iterationExtensions)
 	return extra
 }
 
@@ -15172,7 +15186,7 @@ func (c *codingSubAgentCallbacks) emitReadFilePreview(filePath string) {
 // codeSessionID returns the active code session ID for preview routing.
 func (c *codingSubAgentCallbacks) codeSessionID() string {
 	if c != nil && c.subagent != nil && c.subagent.loopCtx != nil {
-		if sessionID := strings.TrimSpace(c.subagent.loopCtx.codeSessionID); sessionID != "" {
+		if sessionID := strings.TrimSpace(c.subagent.loopCtx.codeSessionIDValue()); sessionID != "" {
 			return sessionID
 		}
 	}

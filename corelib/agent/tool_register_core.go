@@ -183,13 +183,17 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name: "read_tool_result",
-		Description: "Re-read a spilled tool_result handle by id from a prior [tool_result_handle] footer. " +
-			"Use when a tool preview was truncated and you need a specific byte range of the full output. " +
-			"Prefer small limit windows and raise offset to page through large results.",
+		Description: fmt.Sprintf(
+			"Re-read one page of a spilled tool_result handle by id from a prior [tool_result_handle] footer. "+
+				"Omit limit: one call returns a full page (default %d bytes). "+
+				"limit is a byte cap, not a count of items. "+
+				"When the result says truncated: true, call again with offset set to next_offset. Do not repeat the same id and offset.",
+			toolresult.DefaultReadLimit,
+		),
 		Properties: map[string]interface{}{
 			"id":     map[string]string{"type": "string", "description": "Handle id from [tool_result_handle]"},
-			"offset": map[string]string{"type": "integer", "description": "0-based byte offset into the full result (default 0)"},
-			"limit":  map[string]string{"type": "integer", "description": fmt.Sprintf("Max bytes to return (default %d, max %d)", toolresult.DefaultReadLimit, toolresult.MaxReadLimit)},
+			"offset": map[string]string{"type": "integer", "description": "0-based byte offset. Omit on the first read. Set this to next_offset only when the previous read says truncated: true."},
+			"limit":  map[string]string{"type": "integer", "description": fmt.Sprintf("Maximum bytes in one page. Omit this field. The default page is %d bytes; a smaller value is raised to that page. Maximum %d. This is not a count of results.", toolresult.DefaultReadLimit, toolresult.MaxReadLimit)},
 		},
 		// id is enforced in the handler; legacy internal callers may still pass path.
 		Handler: func(args map[string]interface{}) string { return ToolReadToolResult(args) },

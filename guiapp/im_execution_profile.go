@@ -290,6 +290,12 @@ func (h *IMMessageHandler) continuationKeepsParentExecution(profile ExecutionPro
 	if strings.TrimSpace(profile.Reason) == "social greeting" && agent.IsAnswerOnlySocialTurn(text) {
 		return profile
 	}
+	// A restart drops the in-memory parent tool list. The bound recovery
+	// slot is that turn. A light lookup here has no resume contract and no
+	// tools, so the model treats the workspace as a new question.
+	if h.sessionRestartNeedsFullExecution(userID) && (profile.IsLight() || isLightPromptProfile(profile.PromptProfile)) {
+		return fullExecutionProfile("restarted task keeps execution tools")
+	}
 	// A page fetch is a managed full profile, not the light search profile.
 	// Narrow it so the prompt stays short and the loop is not auto-extended.
 	lightish := profile.IsLight() || isLightPromptProfile(profile.PromptProfile)
@@ -478,22 +484,48 @@ func lookupContinuationProfile(profile ExecutionProfile) bool {
 	return strings.TrimSpace(profile.Reason) == lookupContinuationReason
 }
 
-// lookupContinuationCarriedGrant is a non-light tool the parent turn already
-// rendered. A lookup may run it without adopting the full coding prompt.
+// lookupContinuationCarriedGrant is a parent tool this lookup can plan.
+// A lookup may run it without adopting the full coding prompt.
 func lookupContinuationCarriedGrant(profile ExecutionProfile, carried []string, name string) bool {
 	if !lookupContinuationProfile(profile) {
 		return false
 	}
-	name = strings.TrimSpace(name)
-	if name == "" {
+	if _, ok := lookupCarryCapability(name); !ok {
 		return false
 	}
+	name = strings.TrimSpace(name)
 	for _, item := range carried {
 		if strings.TrimSpace(item) == name {
 			return true
 		}
 	}
 	return false
+}
+
+// lookupCarryCapabilities is the parent route a page-fetch lookup may inherit.
+// A legacy catalog also rendered office, mailbox, database, delegation, and
+// speech-to-text beside bash. Planning those names makes the model call them
+// and skip the page; speech-to-text and file delivery reject the plan outright.
+var lookupCarryCapabilities = map[tool.CapabilityID]bool{
+	tool.CapabilityShellExecuteLocal:      true,
+	tool.CapabilityShellExecuteRemoteHost: true,
+	tool.CapabilityFSReadLocal:            true,
+	tool.CapabilityFSWriteLocal:           true,
+}
+
+// lookupCarryCapability is a parent tool this lookup can plan, authorize, and
+// name. Light tools are already on the turn. Anything outside the workspace
+// route above stays on the stored list for a full continuation.
+func lookupCarryCapability(name string) (tool.CapabilityID, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" || agent.IsLightTurnToolAllowed(name) {
+		return "", false
+	}
+	capability, ok := semanticPetitionableCapabilities[name]
+	if !ok || !lookupCarryCapabilities[capability] {
+		return "", false
+	}
+	return capability, true
 }
 
 // liveDataLookupSelectionBudget keeps the current-fact search family and the
@@ -512,18 +544,47 @@ func liveDataPageReadPrompt() string {
 // skip web_fetch.
 func lookupContinuationToolPrompt(carried []string, primary intent.IntentLabel) string {
 	var names []string
+	seen := make(map[string]struct{}, len(carried))
+	var localShell, remoteShell, files bool
 	for _, name := range carried {
 		name = strings.TrimSpace(name)
-		if name == "" || agent.IsLightTurnToolAllowed(name) {
+		capability, ok := lookupCarryCapability(name)
+		if !ok {
 			continue
 		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
 		names = append(names, name)
+		switch capability {
+		case tool.CapabilityShellExecuteLocal:
+			localShell = true
+		case tool.CapabilityShellExecuteRemoteHost:
+			remoteShell = true
+		case tool.CapabilityFSReadLocal, tool.CapabilityFSWriteLocal:
+			files = true
+		}
 	}
 	// The shared light prompt says to answer after one lookup and not to run
 	// shell. Those lines are what made a project-task follow-up stop at the
-	// search snippet and treat a listed bash as unavailable.
+	// search snippet and treat a listed bash as unavailable. Contradict them
+	// only for tools this turn actually lists: a blanket "shell is here" makes
+	// the model call bash, get a denial, and skip web_fetch.
+	var qualify string
+	switch {
+	case localShell && files:
+		qualify = ", not to run shell, or to claim that files and shell are absent from this turn"
+	case localShell:
+		qualify = " or not to run shell"
+	case files:
+		qualify = " or to claim that files are absent from this turn"
+	}
 	var b strings.Builder
-	b.WriteString("\nThis reply continues an open project task. Ignore the instructions above that say to answer after one lookup, not to run shell, or to claim that files and shell are absent from this turn.\n")
+	b.WriteString("\nThis reply continues an open project task. Ignore the instructions above that say to answer after one lookup" + qualify + ".\n")
+	if remoteShell && !localShell {
+		b.WriteString("The listed ssh tool may run.\n")
+	}
 	if primary == intent.LabelWebFetch {
 		b.WriteString("Call web_fetch on the requested page. Do not stop after one snippet, and do not fetch a search-engine results page.\n")
 	} else {
@@ -634,13 +695,36 @@ func nonLightToolNames(tools []map[string]interface{}) []string {
 // run. Light lookups are not that surface. Ambient retrieval is not either:
 // its managed spelling (memory_recall) is absent from the light allowlist, so
 // a companion render used to replace ssh, and the next process restored the
-// companion instead of the open obligation.
+// companion instead of the open obligation. Artifact-bound names stay eligible
+// here: a turn whose obligation is speech-to-text still has to keep asr.
+// A catalog that merely rendered asr is dropped later, when no obligation
+// names that capability.
 func parentExecutionSurfaceName(name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" || agent.IsLightTurnToolAllowed(name) || ambientRetrievalSurfaceName(name) {
 		return false
 	}
 	return true
+}
+
+// omitArtifactBoundRouteNames drops speech-to-text and file delivery that
+// were only neighbors on a rendered catalog. History of a real call is not
+// passed through here, and neither is a list already matched to an obligation.
+func omitArtifactBoundRouteNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if artifactBoundRouteName(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func ambientRetrievalSurfaceName(name string) bool {
@@ -689,6 +773,19 @@ func sameExecutionNames(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+// sessionRestartNeedsFullExecution is a bound in-flight or app-exit slot.
+// Wording is not the signal. The slot is already this session's own run.
+func (h *IMMessageHandler) sessionRestartNeedsFullExecution(userID string) bool {
+	if h == nil || h.memory == nil {
+		return false
+	}
+	slot := h.memory.ActiveUnfinishedSlot(userID)
+	if slot == nil {
+		return false
+	}
+	return slot.Source.IsInFlightRecovery() || slot.Source.IsAppExit()
 }
 
 func (h *IMMessageHandler) parentExecutionIsFull(userID string) bool {
@@ -1071,6 +1168,12 @@ func (h *IMMessageHandler) noteParentExecutionForPlan(userID string, full bool, 
 		return
 	}
 	names := nonLightToolNames(tools)
+	if len(obligation) == 0 {
+		// No obligation means this list is the rendered catalog, not a route.
+		// asr beside bash is how a later web_fetch planned speech-to-text and
+		// the audio binder rejected the whole turn.
+		names = omitArtifactBoundRouteNames(names)
+	}
 	if len(names) == 0 {
 		// web_search / web_fetch / knowledge_search / memory_recall must not
 		// become the carry, and must not erase bash or ssh the parent task
@@ -1105,20 +1208,19 @@ func (h *IMMessageHandler) noteParentExecutionForPlan(userID string, full bool, 
 // task still needs on the next reply.
 func (h *IMMessageHandler) noteParentExecutionUnion(userID string, tools []map[string]interface{}) {
 	added := nonLightToolNames(tools)
-	if len(added) == 0 {
-		return
-	}
 	userID = strings.TrimSpace(userID)
-	if userID == "" {
+	if userID == "" || len(added) == 0 {
 		return
 	}
 	if obligation := h.openExecutionObligation(userID); len(obligation) > 0 {
 		// A continuation may render baseline bash beside the open route.
 		// Unioning that companion is how the next lookup grows a local shell.
 		added = parentExecutionNamesForObligation(added, obligation)
-		if len(added) == 0 {
-			return
-		}
+	} else {
+		added = omitArtifactBoundRouteNames(added)
+	}
+	if len(added) == 0 {
+		return
 	}
 	// Hydrate before taking the lock: hydrate locks this session too.
 	h.hydrateParentExecution(userID)

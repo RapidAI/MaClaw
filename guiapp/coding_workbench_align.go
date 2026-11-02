@@ -682,19 +682,40 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	if userID == "" {
 		return
 	}
-	mem := h.getStickyCodingWorkbenchMemory(userID)
-	projectPath := projectPathFromSessionOwnerID(userID)
-	if projectPath == "" {
-		projectPath = strings.TrimSpace(mem.ProjectPath)
-	}
-	steps := codingWorkbenchStepsSnapshot(mem.StepStatuses)
-	payload := map[string]interface{}{
-		"user_id":                 userID,
-		"project_path":            projectPath,
-		"step_statuses":           steps,
-		"execution_plan":          strings.TrimSpace(mem.ExecutionPlan),
-		"requirement_restatement": strings.TrimSpace(mem.RequirementRestatement),
-		"pending_approval":        strings.TrimSpace(mem.PendingPlanJSON) != "",
+	var payload map[string]interface{}
+	// Increment under the same lock as the snapshot. Two updates in one
+	// second used to share updated_unix, so a queued copy of the pending
+	// plan could arrive after confirmation and reopen the gate.
+	// A miss marker means this session was cleared. Do not replace it with
+	// an empty struct: that would write the workbench file back.
+	withStickyCodingUserLock(userID, func() {
+		raw, ok := h.stickyCodingWorkbenchMemory.Load(userID)
+		if !ok {
+			return
+		}
+		mem, ok := raw.(stickyCodingWorkbenchMemory)
+		if !ok {
+			return
+		}
+		mem.StepsEmitSeq++
+		h.stickyCodingWorkbenchMemory.Store(userID, mem)
+		scheduleStickyCodingDebouncedPersist(userID, mem)
+		projectPath := projectPathFromSessionOwnerID(userID)
+		if projectPath == "" {
+			projectPath = strings.TrimSpace(mem.ProjectPath)
+		}
+		payload = map[string]interface{}{
+			"user_id":                 userID,
+			"project_path":            projectPath,
+			"step_statuses":           codingWorkbenchStepsSnapshot(mem.StepStatuses),
+			"execution_plan":          strings.TrimSpace(mem.ExecutionPlan),
+			"requirement_restatement": strings.TrimSpace(mem.RequirementRestatement),
+			"pending_approval":        strings.TrimSpace(mem.PendingPlanJSON) != "",
+			"steps_revision":          mem.StepsEmitSeq,
+		}
+	})
+	if payload == nil {
+		return
 	}
 	h.app.emitEvent("coding-workbench-steps", payload)
 }

@@ -2151,6 +2151,10 @@ type remoteCodingCallbacks struct {
 	qualityGateEnabled *bool
 	// iterationExtensions counts in-place budget refills for this task.
 	iterationExtensions int
+	// iterationWaveSize is the largest budget this task has already been given.
+	// A later read of the parent loop can raise it. It cannot shrink the task
+	// when the next message restores a smaller limit.
+	iterationWaveSize int
 
 	eventSeq       uint64
 	firstReadSeq   uint64
@@ -2312,17 +2316,34 @@ func (c *remoteCodingCallbacks) GetMaxIterations() int {
 	// The root remote coding task is a user-facing agent turn. Honor the same
 	// configurable budget as the other agent surfaces instead of hard-capping it
 	// at 50: the workflow creates loopCtx from "Agent 最大推理轮数".
+	n := config.EffectiveMaxIterations(0)
+	fromLoop := false
 	if c != nil && c.agent != nil && c.agent.loopCtx != nil && c.agent.loopCtx.MaxIterations() > 0 {
-		return config.EffectiveMaxIterations(c.agent.loopCtx.MaxIterations())
+		n = config.EffectiveMaxIterations(c.agent.loopCtx.MaxIterations())
+		fromLoop = true
+	}
+	if c == nil {
+		return n
+	}
+	if fromLoop {
+		if n < c.iterationWaveSize {
+			return c.iterationWaveSize
+		}
+		c.iterationWaveSize = n
+		return n
 	}
 	// No root loop context is normally only possible in lightweight tests or
 	// bootstrap error paths. Keep the fallback consistent with the global agent
 	// setting's default rather than reintroducing a hidden remote-only cap.
-	return config.EffectiveMaxIterations(0)
+	if c.iterationWaveSize > n {
+		return c.iterationWaveSize
+	}
+	return n
 }
 
 // ExtendIterationBudget keeps the remote coding conversation and adds another
-// iteration wave. A nested worker keeps its own smaller budget.
+// iteration wave until that task finishes. A nested worker keeps its own
+// smaller budget.
 func (c *remoteCodingCallbacks) ExtendIterationBudget(used, toolCalls int) int {
 	if c == nil || c.agent == nil || toolCalls <= 0 {
 		return 0
@@ -2333,15 +2354,12 @@ func (c *remoteCodingCallbacks) ExtendIterationBudget(used, toolCalls int) int {
 	if c.agent.loopCtx != nil && c.agent.loopCtx.IsCancelled() {
 		return 0
 	}
-	if c.iterationExtensions >= sessionRoundContinuationMaxWaves {
-		return 0
-	}
 	extra := c.GetMaxIterations()
 	if extra <= 0 {
 		return 0
 	}
 	c.iterationExtensions++
-	log.Printf("[remote-coding] iteration budget spent after %d iterations; same task continues with %d more", used, extra)
+	log.Printf("[remote-coding] iteration budget spent after %d iterations; same task continues with %d more (wave %d)", used, extra, c.iterationExtensions)
 	return extra
 }
 

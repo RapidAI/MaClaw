@@ -21,6 +21,7 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 	// host wave is not the user's next message. That message consumes the
 	// fence and continues the same conversation.
 	if h.goalContinuationAdmittedPastStop(msg) {
+		h.bindSessionRestartSlot(msg.UserID, unfinishedSlot)
 		return askUserContext, false, false
 	}
 	if h.consumeCancelledTaskBoundary(msg.UserID) {
@@ -54,18 +55,18 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 			return "", true, false
 		}
 		log.Printf("[TaskContext] acp-mode-b structural continue user=%s historyLen=%d (skip LLM)", msg.UserID, len(entries))
+		h.bindSessionRestartSlot(msg.UserID, unfinishedSlot)
 		return askUserContext, freshTask, false
 	}
 	tcDecision := h.resolveTaskContext(
 		msg.CancelCtx, msg.UserID, trimmed, entries,
 		hasPendingTaskAnswer, false, false,
 	)
-	// A recovered in-flight slot is intentionally not resumed from a
-	// structural/fallback "continue": it may contain an unpaired side effect.
-	// When there is a live, non-session-exit recovery candidate, obtain the
-	// task-context classifier's explicit semantic decision before binding it.
-	// This is a narrow control-plane decision, not a keyword heuristic and not
-	// an authorization to replay the interrupted operation.
+	// A recovered in-flight slot may contain an unpaired side effect. Ask the
+	// classifier before binding it. "new" does not bind. Continue, including
+	// a classifier failure that preserves this session, binds the slot so its
+	// resume contract is in the prompt. Binding is not permission to replay
+	// the interrupted tool; that contract says to inspect first.
 	if shouldConfirmRecoveredSemanticContinuation(tcDecision, unfinishedSlot) {
 		tcDecision = h.resolveTaskContextWithClassification(
 			msg.CancelCtx, msg.UserID, trimmed, entries,
@@ -97,7 +98,11 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		log.Printf("[TaskContext] recall failed for user %s, preserving current task context", msg.UserID)
 		return askUserContext, freshTask, false
 	case agent.TaskContinue:
-		if isConfirmedSemanticContinuation(tcDecision) {
+		// A restart leaves this session's recovery slot unbound. The transcript
+		// can still be on disk, but the resume contract is not in the prompt
+		// until the slot is active. Continuing this session binds its own slot.
+		// A classifier "new" does not reach this case.
+		if isConfirmedSemanticContinuation(tcDecision) || sessionRestartSlotPending(unfinishedSlot) {
 			h.bindSemanticContinuationSlot(msg.UserID, unfinishedSlot)
 		}
 		log.Printf("[TaskContext] continue for user %s: %s", msg.UserID, tcDecision.Reason)
@@ -154,13 +159,41 @@ func shouldConfirmRecoveredSemanticContinuation(decision agent.TaskContextDecisi
 	if decision.Action != agent.TaskContinue || decision.Source != "fallback" || unfinishedSlot == nil || *unfinishedSlot == nil {
 		return false
 	}
-	return !(*unfinishedSlot).Source.IsSessionExit()
+	slot := *unfinishedSlot
+	// The classifier runs once, before the slot is bound. A resumed slot is
+	// already this task. Asking again adds an LLM call to every later turn
+	// and lets that answer clear the transcript.
+	if !unfinishedSlotNeedsDecision(slot) || slot.Source.IsSessionExit() {
+		return false
+	}
+	return true
 }
 
 func isConfirmedSemanticContinuation(decision agent.TaskContextDecision) bool {
 	return decision.Action == agent.TaskContinue &&
 		decision.Source == "llm" &&
 		decision.ConfirmedContinuation
+}
+
+// sessionRestartSlotPending is this session's own interrupted run after the
+// process died or its lease expired. It is already stored under this session,
+// so binding it does not consult another task. Wording is not the signal.
+func sessionRestartSlotPending(unfinishedSlot **agent.UnfinishedTaskSlot) bool {
+	if unfinishedSlot == nil || *unfinishedSlot == nil {
+		return false
+	}
+	slot := *unfinishedSlot
+	if !slot.Source.IsInFlightRecovery() || !unfinishedSlotNeedsDecision(slot) {
+		return false
+	}
+	return true
+}
+
+func (h *IMMessageHandler) bindSessionRestartSlot(userID string, unfinishedSlot **agent.UnfinishedTaskSlot) {
+	if !sessionRestartSlotPending(unfinishedSlot) {
+		return
+	}
+	h.bindSemanticContinuationSlot(userID, unfinishedSlot)
 }
 
 func (h *IMMessageHandler) bindSemanticContinuationSlot(userID string, unfinishedSlot **agent.UnfinishedTaskSlot) {

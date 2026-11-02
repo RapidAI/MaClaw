@@ -522,8 +522,64 @@ func TestChatTaskGuidanceKeepsFollowUpsOnTheSameWork(t *testing.T) {
 	if !strings.Contains(text, "steer_background_task") || !strings.Contains(text, "slides") || !strings.Contains(text, "stop_all_work") {
 		t.Fatalf("guidance = %s", text)
 	}
-	if !strings.Contains(chatTaskWorkerGuidance(), "verified") {
+	worker := chatTaskWorkerGuidance()
+	helper := chatTaskHelperReportGuidance()
+	if !strings.Contains(worker, "verified") || !strings.Contains(helper, "verified") {
 		t.Fatal("worker guidance missing the verified-result rule")
+	}
+	if strings.Contains(worker, "文件：") || !strings.Contains(helper, "文件：") || strings.Contains(helper, "what the person reads") {
+		t.Fatalf("report contract mixed with the person-facing reply:\nworker=%s\nhelper=%s", worker, helper)
+	}
+}
+
+func TestChatTaskResultNoteKeepsReplyAndNamesFiles(t *testing.T) {
+	reply := "已经改好。这两句现在放在概要最前面。"
+	path := `F:\resume\resume-inference-engine.pdf`
+	note := formatChatTaskResultNote("简历", reply, []string{path})
+	if !strings.Contains(note, reply) || !strings.Contains(note, path) || strings.Contains(note, "\n1. ") {
+		t.Fatalf("note = %q", note)
+	}
+	if got := strings.Count(formatChatTaskResultNote("简历", reply+"\n"+path, []string{path}), path); got != 1 {
+		t.Fatalf("path count = %d", got)
+	}
+	fileOnly := formatChatTaskResultNote("简历", "", []string{path})
+	if !strings.Contains(fileOnly, "简历") || !strings.Contains(fileOnly, path) {
+		t.Fatalf("file-only note = %q", fileOnly)
+	}
+	slash := formatChatTaskResultNote("简历", `文件在 F:/resume/resume-inference-engine.pdf`, []string{path})
+	if strings.Count(slash, "resume-inference-engine.pdf") != 1 {
+		t.Fatalf("slash variant duplicated: %q", slash)
+	}
+	mixed := formatChatTaskResultNote("简历", `见 f:/resume/resume-inference-engine.pdf.`, []string{path})
+	if strings.Count(mixed, "resume-inference-engine.pdf") != 1 {
+		t.Fatalf("case, slash, or sentence period duplicated the path: %q", mixed)
+	}
+	both := formatChatTaskResultNote("简历", "做好了", []string{path, `F:/resume/resume-inference-engine.pdf`})
+	if strings.Count(both, "resume-inference-engine.pdf") != 1 {
+		t.Fatalf("slash twins both listed: %q", both)
+	}
+	longer := formatChatTaskResultNote("简历", `备份在 F:\resume\resume-inference-engine.pdf.bak`, []string{path})
+	if !strings.Contains(longer, path) {
+		t.Fatalf("prefix file hid the real path: %q", longer)
+	}
+	spaced := formatChatTaskResultNote("简历", "做好了", []string{`C:\Users\ma139\Desktop\演讲稿 完整版.docx`, `D:\out\b.docx`})
+	if !strings.Contains(spaced, `演讲稿 完整版.docx`) || strings.Count(spaced, "\n") < 2 {
+		t.Fatalf("spaced paths were joined on one line: %q", spaced)
+	}
+	reply = strings.Repeat("改好了。", 30)
+	var many []string
+	for i := 0; i < 8; i++ {
+		many = append(many, fmt.Sprintf(`F:\resume\part-%d.pdf`, i))
+	}
+	noted := formatChatTaskResultNote("简历", reply, many)
+	if !strings.HasPrefix(noted, reply) || !strings.Contains(noted, "part-0.pdf") || strings.Contains(noted, "part-3.pdf") || !strings.Contains(noted, "+5") {
+		t.Fatalf("paths replaced the reply: %q", noted)
+	}
+	status := formatChatTaskStatus([]AIAssistantChatTask{{
+		Title: "简历", Status: string(chatTaskDone), ResultText: "已经改好。", ArtifactPaths: []string{path},
+	}}, "zh", true)
+	if !strings.Contains(status, "已经改好。") || !strings.Contains(status, path) {
+		t.Fatalf("status = %q", status)
 	}
 }
 
@@ -883,8 +939,8 @@ func TestSpentForegroundChatContinuesWithoutAnotherUserMessage(t *testing.T) {
 	}
 	capped := NewLoopContext("chat-capped", desktopChatForegroundIterationBudget, nil)
 	capped.OfferChatTaskDispatch = true
-	if _, ok := h.continueSpentForegroundChat(capped, desktopUserID, "继续", agent.LoopResult{Error: "max iterations reached"}); !ok {
-		t.Fatal("an iteration ceiling left the task for the user")
+	if _, ok := h.continueSpentForegroundChat(capped, desktopUserID, "继续", agent.LoopResult{Error: "max iterations reached"}); ok {
+		t.Fatal("an iteration ceiling started another task")
 	}
 	handed := NewLoopContext("chat-handed", desktopChatForegroundIterationBudget, nil)
 	handed.OfferChatTaskDispatch = true
@@ -1668,8 +1724,39 @@ func TestChatTaskProgressAndEmptyResult(t *testing.T) {
 		t.Fatal("empty result was treated as done")
 	}
 	withFile := chatTaskResultFromAgentResponse(&IMAgentResponse{LocalFilePaths: []string{"/tmp/out.pptx"}}, nil)
-	if withFile.Err != nil || len(withFile.Artifacts) != 1 {
+	if withFile.Err != nil || len(withFile.Artifacts) != 1 || withFile.Text != "" {
 		t.Fatalf("file result = %+v", withFile)
+	}
+	helperFile := chatTaskResultFromAgentResponse(&IMAgentResponse{LocalFilePaths: []string{`F:\resume\a.pdf`}}, &LoopContext{ComputerHelper: true})
+	if helperFile.Err != nil || helperFile.Text != "" || len(helperFile.Artifacts) != 1 {
+		t.Fatalf("empty helper reply became a card: %+v", helperFile)
+	}
+	oneLine := "已经改好。\n1. 只是其中一句"
+	keptLine := chatTaskResultFromAgentResponse(&IMAgentResponse{
+		Text:           oneLine,
+		LocalFilePaths: []string{`F:\resume\a.pdf`},
+	}, &LoopContext{ComputerHelper: true})
+	if keptLine.Err != nil || keptLine.Text != oneLine {
+		t.Fatalf("one numbered line was parsed as a helper card: %+v", keptLine)
+	}
+	reply := "已经改好。\n\n这两句现在放在概要最前面。"
+	person := chatTaskResultFromAgentResponse(&IMAgentResponse{
+		Text:           reply,
+		LocalFilePaths: []string{`F:\resume\resume-inference-engine.pdf`},
+	}, nil)
+	if person.Err != nil || person.Text != reply || len(person.Artifacts) != 1 {
+		t.Fatalf("person-facing result = %+v", person)
+	}
+	if strings.Contains(person.Text, "文件：") {
+		t.Fatalf("reply was rewritten as a helper card: %q", person.Text)
+	}
+	numbered := "1. 概要已前移\n2. 重复条目已删\n3. PDF 已生成\n其余说明仍在正文里。"
+	numberedResult := chatTaskResultFromAgentResponse(&IMAgentResponse{
+		Text:           numbered,
+		LocalFilePaths: []string{`F:\resume\resume-inference-engine.pdf`},
+	}, nil)
+	if numberedResult.Err != nil || numberedResult.Text != numbered {
+		t.Fatalf("numbered reply = %+v", numberedResult)
 	}
 }
 

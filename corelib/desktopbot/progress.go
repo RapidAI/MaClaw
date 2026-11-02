@@ -246,6 +246,32 @@ var (
 	helperHomePath   = regexp.MustCompile(`/home/desktop/\S+`)
 )
 
+// HelperReport reports whether body is the helper card.
+// The card is a 文件： line, or at least two of the three conclusion lines.
+// One numbered line in a normal answer is not a card.
+func HelperReport(body string) bool {
+	var seen [3]bool
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if helperFileLine.MatchString(line) {
+			return true
+		}
+		if m := helperConclusion.FindStringSubmatch(line); m != nil {
+			seen[m[1][0]-'1'] = true
+		}
+	}
+	n := 0
+	for _, ok := range seen {
+		if ok {
+			n++
+		}
+	}
+	return n >= 2
+}
+
 // CollapseHelperReport keeps three conclusion lines and the named paths.
 // Tool traces stay out of the text. An empty conclusion and no path is a failure.
 func CollapseHelperReport(body string, extraPaths []string) (string, error) {
@@ -270,9 +296,8 @@ func CollapseHelperReport(body string, extraPaths []string) (string, error) {
 			continue
 		}
 		if m := helperFileLine.FindStringSubmatch(line); m != nil {
-			for _, part := range strings.Fields(m[1]) {
-				add(part)
-			}
+			// One path. Fields would split "演讲稿 完整版.docx" into two names.
+			add(strings.Trim(strings.TrimSpace(m[1]), `"'`))
 			continue
 		}
 		for _, path := range helperHomePath.FindAllString(line, -1) {

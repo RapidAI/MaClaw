@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,11 +13,13 @@ type mockLLMClassifier struct {
 	err        error
 	calls      int
 	timeoutSec int
+	lastUser   string
 }
 
 func (m *mockLLMClassifier) Classify(systemPrompt, userMessage string, timeoutSec int) (string, error) {
 	m.calls++
 	m.timeoutSec = timeoutSec
+	m.lastUser = userMessage
 	return m.response, m.err
 }
 
@@ -630,5 +633,72 @@ func TestResolve_IncompleteTaskMarker_UsesLLM(t *testing.T) {
 	}
 	if llm.calls != 1 {
 		t.Fatalf("expected classifier to be called once, got %d", llm.calls)
+	}
+}
+
+func TestClassifyInterruptedTaskDropsEarlierTranscriptRequest(t *testing.T) {
+	llm := &mockLLMClassifier{response: "continue"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "下一页用真实照片",
+		History: []ConversationEntry{
+			{Role: "user", Content: "设置一套电商网站架构"},
+			{Role: "assistant", Content: "电商首页已生成"},
+			{Role: "user", Content: "生成小朋友的识字书，动物图版要多一些"},
+			{Role: "assistant", Content: "正在排版识字卡"},
+		},
+		HasIncompleteTaskMarker: true,
+		InterruptedTask:         "生成小朋友的识字书",
+	})
+	if d.Action != TaskContinue || !d.ConfirmedContinuation {
+		t.Fatalf("decision = %#v", d)
+	}
+	if strings.Contains(llm.lastUser, "设置一套电商网站架构") || strings.Contains(llm.lastUser, "电商首页已生成") {
+		t.Fatalf("earlier task leaked into the classifier prompt: %s", llm.lastUser)
+	}
+	if !strings.Contains(llm.lastUser, "Interrupted task: 生成小朋友的识字书") || !strings.Contains(llm.lastUser, "正在排版识字卡") {
+		t.Fatalf("interrupted run missing from classifier prompt: %s", llm.lastUser)
+	}
+	if !strings.Contains(llm.lastUser, "during the task named above") {
+		t.Fatalf("classifier was not told the interrupted task is the current one: %s", llm.lastUser)
+	}
+}
+
+func TestResolveFast_EmptyHistoryKeepsInterruptedTask(t *testing.T) {
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
+	kept := mgr.ResolveFast(ResolveInput{
+		UserMessage:     "下一页用真实照片",
+		InterruptedTask: "生成小朋友的识字书",
+	})
+	if kept.Action != TaskContinue || kept.Source != "fallback" {
+		t.Fatalf("interrupted run with no transcript = %#v", kept)
+	}
+	fresh := mgr.ResolveFast(ResolveInput{UserMessage: "下一页用真实照片"})
+	if fresh.Action != TaskNew || fresh.Source != "structural" {
+		t.Fatalf("empty session = %#v", fresh)
+	}
+}
+
+func TestClassifyInterruptedTaskStopsAtLaterDifferentRequest(t *testing.T) {
+	llm := &mockLLMClassifier{response: "continue"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	_ = mgr.Resolve(ResolveInput{
+		UserMessage: "继续",
+		History: []ConversationEntry{
+			{Role: "user", Content: "生成小朋友的识字书"},
+			{Role: "assistant", Content: "正在排版识字卡"},
+			{Role: "user", Content: "继续"},
+			{Role: "assistant", Content: "动物页用了示意图"},
+			{Role: "user", Content: "设置一套电商网站架构"},
+			{Role: "assistant", Content: "电商首页已生成"},
+		},
+		HasIncompleteTaskMarker: true,
+		InterruptedTask:         "生成小朋友的识字书",
+	})
+	if strings.Contains(llm.lastUser, "设置一套电商网站架构") || strings.Contains(llm.lastUser, "电商首页已生成") {
+		t.Fatalf("later task leaked into the classifier prompt: %s", llm.lastUser)
+	}
+	if !strings.Contains(llm.lastUser, "动物页用了示意图") {
+		t.Fatalf("same-task progress was cut: %s", llm.lastUser)
 	}
 }

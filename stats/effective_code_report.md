@@ -3,105 +3,136 @@
 ## Scope
 
 - Scope: tracked source files from `git ls-files`
-- Excluded: common docs, assets, build artifacts, caches, and generated-code paths such as `.git`, `build`, `dist`, `docs`, `data`, `vendor`, `wailsjs`, and `intermediates`
+- Included: first-party application, service, frontend, mobile and firmware source; tests are reported separately
+- Excluded: docs, assets, test fixtures, build outputs, caches, generated code (e.g. `wailsjs`, `*.generated.*`, `*_gen.go`), bundled third-party code (`third_party`, `corelib/amrnb`, `corelib/opus`, firmware components) and build/CI/deploy script directories (`scripts`, `build`, `deploy`, `.github`)
 - Effective LOC: non-empty, non-comment lines only
-- Generated on: `2026-03-24`
+- Generated on: `2026-11-02`
 
 ## Overview
 
-- Source files counted: `851`
-- Effective LOC counted: `176,800`
+- Source files counted: `10,239`
+- Physical lines: `3,964,391`
+- Blank lines: `265,784`
+- Comment-only lines: `237,750`
+- Effective LOC: `3,460,857`
+- Production: `2,157,455`
+- Test: `1,303,402`
 
 ## By Code Kind
 
 | Code Kind | Files | Effective LOC |
 |---|---|---|
-| Production | 703 | 148,380 |
-| Test | 148 | 28,420 |
+| Production | 6,086 | 2,157,455 |
+| Test | 4,153 | 1,303,402 |
 
 ## By Business Category
 
 | Category | Files | Effective LOC |
 |---|---|---|
-| Backend/Core | 687 | 142,457 |
-| Frontend | 70 | 24,136 |
-| Native/Engine | 32 | 7,124 |
-| Tools/Scripts | 22 | 2,025 |
-| Mobile | 40 | 1,058 |
+| Backend/Core | 7,835 | 2,627,412 |
+| Frontend | 1,468 | 619,263 |
+| Embedded/Firmware | 676 | 99,122 |
+| Mobile | 208 | 78,438 |
+| Native/Engine | 52 | 36,622 |
 
 ## Business Category x Code Kind
 
 | Category | Code Kind | Files | Effective LOC |
 |---|---|---|---|
-| Backend/Core | Production | 543 | 114,374 |
-| Backend/Core | Test | 144 | 28,083 |
-| Frontend | Production | 67 | 23,882 |
-| Frontend | Test | 3 | 254 |
-| Mobile | Production | 40 | 1,058 |
-| Native/Engine | Production | 31 | 7,041 |
-| Native/Engine | Test | 1 | 83 |
-| Tools/Scripts | Production | 22 | 2,025 |
+| Backend/Core | Production | 4,376 | 1,539,511 |
+| Backend/Core | Test | 3,459 | 1,087,901 |
+| Embedded/Firmware | Production | 577 | 89,031 |
+| Embedded/Firmware | Test | 99 | 10,091 |
+| Frontend | Production | 959 | 449,028 |
+| Frontend | Test | 509 | 170,235 |
+| Mobile | Production | 122 | 43,263 |
+| Mobile | Test | 86 | 35,175 |
+| Native/Engine | Production | 52 | 36,622 |
 
 ## By Language
 
 | Language | Files | Effective LOC |
 |---|---|---|
-| Go | 645 | 138,636 |
-| TypeScript/TSX | 35 | 17,607 |
-| TypeScript | 50 | 5,394 |
-| C++ | 14 | 3,265 |
-| HTML | 11 | 3,161 |
-| C | 1 | 2,475 |
-| Batch | 18 | 1,242 |
-| CSS | 2 | 1,041 |
-| C/C Header | 15 | 810 |
-| JavaScript | 11 | 740 |
-| Python | 4 | 608 |
-| Shell | 7 | 563 |
-| Objective-C | 2 | 465 |
-| XML | 18 | 262 |
-| YAML | 6 | 172 |
-| Kotlin | 3 | 156 |
-| PowerShell | 5 | 112 |
-| Swift | 4 | 91 |
+| Go | 7,689 | 2,592,262 |
+| TypeScript/TSX | 607 | 319,318 |
+| JavaScript | 174 | 119,522 |
+| TypeScript | 606 | 113,803 |
+| C | 279 | 70,797 |
+| CSS | 54 | 60,205 |
+| Dart | 144 | 52,101 |
+| Python | 95 | 38,208 |
+| Assembly | 44 | 35,443 |
+| HTML | 69 | 24,791 |
+| PowerShell | 100 | 12,977 |
+| C/C Header | 289 | 12,244 |
+| Shell | 13 | 2,790 |
+| Batch | 22 | 2,768 |
+| Objective-C | 4 | 1,105 |
+| C++ | 1 | 1,065 |
+| YAML | 27 | 980 |
+| XML | 14 | 391 |
+| SQL | 3 | 51 |
+| Swift | 4 | 33 |
+| Kotlin | 1 | 3 |
 
 ## By Top-Level Directory
 
 | Directory | Files | Effective LOC |
 |---|---|---|
-| gui | 306 | 87,078 |
-| hub | 161 | 31,717 |
-| corelib | 118 | 17,034 |
-| hubcenter | 95 | 15,096 |
-| tui | 51 | 11,718 |
-| RapidSpeech.cpp | 32 | 7,124 |
-| tmp-weixin | 33 | 3,437 |
-| mobile | 43 | 1,812 |
-| (root) | 5 | 1,056 |
-| openclaw-bridge | 6 | 370 |
-| cmd | 1 | 358 |
+| guiapp | 3,532 | 1,376,581 |
+| corelib | 3,475 | 949,750 |
+| hub | 956 | 413,056 |
+| hubcenter | 423 | 183,166 |
+| MaClawSrv | 308 | 105,234 |
+| iot-agentos | 633 | 94,510 |
+| mobile | 208 | 78,438 |
+| datasrv | 114 | 62,867 |
+| tui | 161 | 54,873 |
+| web | 67 | 51,187 |
+| desktopd | 81 | 24,571 |
+| ClawMateMaker | 60 | 12,865 |
+| TigerProxy | 32 | 10,808 |
+| buddy | 62 | 8,357 |
+| maclaw-cli | 4 | 7,198 |
+| vscode-ext | 28 | 6,670 |
+| cmd | 17 | 6,595 |
+| (root) | 22 | 4,179 |
+| Ins-maclaw | 23 | 2,968 |
+| ThirdAPIDemo | 6 | 2,046 |
+| internal | 12 | 1,899 |
+| srvdemo | 3 | 1,586 |
+| maclaw-miniprogram | 9 | 925 |
+| esp32-nv3023-lcd-test | 2 | 489 |
+| ecapa-raw | 1 | 39 |
 
 ## Largest Files Top 20
 
 | File | Language | Effective LOC |
 |---|---|---|
-| `gui/frontend/src/App.tsx` | TypeScript/TSX | 6,537 |
-| `gui/app.go` | Go | 4,894 |
-| `gui/im_message_handler.go` | Go | 3,961 |
-| `RapidSpeech.cpp/rapidspeech/src/frontend/fftsg.c` | C | 2,475 |
-| `gui/platform_windows.go` | Go | 1,600 |
-| `gui/android_pwa_shell.go` | Go | 1,417 |
-| `hub/internal/store/sqlite/repositories_stub.go` | Go | 1,408 |
-| `gui/remote_session_manager.go` | Go | 1,271 |
-| `tui/commands/clawnet.go` | Go | 1,214 |
-| `gui/remote_hub_client.go` | Go | 1,202 |
-| `hub/internal/ws/handlers_machine.go` | Go | 1,179 |
-| `tui/agent_tools.go` | Go | 1,178 |
-| `gui/app_clawnet.go` | Go | 1,132 |
-| `corelib/weixin/gateway.go` | Go | 1,117 |
-| `hub/internal/qqbot/plugin.go` | Go | 1,115 |
-| `gui/frontend/src/components/remote/SkillsManagementPanel.tsx` | TypeScript/TSX | 1,087 |
-| `hub/internal/feishu/notifier.go` | Go | 1,041 |
-| `gui/frontend/src/App.css` | CSS | 1,002 |
-| `hub/internal/feishu/webhook.go` | Go | 1,000 |
-| `gui/internal/systray/systray_windows.go` | Go | 948 |
+| `corelib/tts/g2p_zh_pinyin_full.go` | Go | 20,995 |
+| `guiapp/frontend/src/components/pages/AppsPage.tsx` | TypeScript/TSX | 18,994 |
+| `guiapp/coding_subagent.go` | Go | 16,724 |
+| `corelib/embedding/tensor/avx512_kernels_amd64.s` | Assembly | 14,348 |
+| `guiapp/frontend/src/components/pages/__tests__/AppsPage.test.tsx` | TypeScript/TSX | 13,523 |
+| `guiapp/app.go` | Go | 13,452 |
+| `guiapp/coding_subagent_test.go` | Go | 12,360 |
+| `MaClawSrv/http_test.go` | Go | 10,206 |
+| `corelib/agent/loop_test.go` | Go | 9,354 |
+| `guiapp/frontend/src/components/ai/__tests__/AIAssistantPanel.test.tsx` | TypeScript/TSX | 9,306 |
+| `datasrv/structureddata/webui.go` | Go | 9,104 |
+| `datasrv/structureddata/http_test.go` | Go | 8,680 |
+| `hub/internal/httpapi/mobile_handlers.go` | Go | 8,143 |
+| `guiapp/frontend/src/components/filecompanion/FileCompanionWindow.test.tsx` | TypeScript/TSX | 8,095 |
+| `guiapp/frontend/src/components/ai/__tests__/useAIAssistant.test.ts` | TypeScript | 7,648 |
+| `corelib/agent/tools_local_search_test.go` | Go | 7,620 |
+| `guiapp/app_project_search.go` | Go | 7,584 |
+| `guiapp/im_agent_loop_shared.go` | Go | 7,516 |
+| `guiapp/frontend/src/components/pages/AppsPage.css` | CSS | 7,373 |
+| `guiapp/coding_subagent_localization.go` | Go | 7,265 |
+
+## Excluded (for reference, not in totals)
+
+| Group | Files | Effective LOC |
+|---|---|---|
+| Bundled third-party | 1,428 | 131,068 |
+| Build/CI/deploy scripts | 122 | 20,829 |

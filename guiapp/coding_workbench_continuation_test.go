@@ -182,8 +182,26 @@ func TestCodingLoopRefillsIterationsInTheSameConversation(t *testing.T) {
 		t.Fatalf("refill = %d, want another %d iterations of the same task", got, codingSubAgentPerTaskMaxIterations)
 	}
 	root.iterationExtensions = sessionRoundContinuationMaxWaves
-	if got := root.ExtendIterationBudget(80, 12); got != 0 {
-		t.Fatalf("the refill cap was ignored: %d", got)
+	if got := root.ExtendIterationBudget(80, 12); got != codingSubAgentPerTaskMaxIterations {
+		t.Fatalf("unfinished coding task stopped after %d waves: refill = %d", sessionRoundContinuationMaxWaves, got)
+	}
+
+	parent := NewLoopContext("coding-parent", 80, nil)
+	held := &codingSubAgentCallbacks{subagent: &CodingSubAgent{loopCtx: parent}}
+	if got := held.GetMaxIterations(); got != 80 {
+		t.Fatalf("coding wave = %d, want 80", got)
+	}
+	parent.SetMaxIterations(30)
+	if got := held.GetMaxIterations(); got != 80 {
+		t.Fatalf("coding wave followed the parent reset: %d", got)
+	}
+	parent.SetMaxIterations(200)
+	if got := held.GetMaxIterations(); got != 200 {
+		t.Fatalf("coding wave = %d, want the raised parent budget 200", got)
+	}
+	parent.SetMaxIterations(30)
+	if got := held.ExtendIterationBudget(200, 8); got != 200 {
+		t.Fatalf("coding refill followed the parent reset: %d", got)
 	}
 
 	nested := &codingSubAgentCallbacks{subagent: &CodingSubAgent{nestDepth: 1}}
@@ -195,9 +213,31 @@ func TestCodingLoopRefillsIterationsInTheSameConversation(t *testing.T) {
 	if got := remote.ExtendIterationBudget(300, 20); got != config.MaxAgentIterationsCap {
 		t.Fatalf("remote refill = %d, want the root budget", got)
 	}
+	remote.iterationExtensions = sessionRoundContinuationMaxWaves
+	if got := remote.ExtendIterationBudget(300, 20); got != config.MaxAgentIterationsCap {
+		t.Fatalf("unfinished remote coding task stopped after %d waves: refill = %d", sessionRoundContinuationMaxWaves, got)
+	}
 	remote.agent.nestDepth = 1
 	if got := remote.ExtendIterationBudget(300, 20); got != 0 {
 		t.Fatalf("a nested remote worker was refilled by %d", got)
+	}
+
+	remoteParent := NewLoopContext("remote-parent", 80, nil)
+	remoteHeld := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{loopCtx: remoteParent}}
+	if got := remoteHeld.GetMaxIterations(); got != 80 {
+		t.Fatalf("remote wave = %d, want 80", got)
+	}
+	remoteParent.SetMaxIterations(30)
+	if got := remoteHeld.GetMaxIterations(); got != 80 {
+		t.Fatalf("remote wave followed the parent reset: %d", got)
+	}
+	remoteParent.SetMaxIterations(200)
+	if got := remoteHeld.GetMaxIterations(); got != 200 {
+		t.Fatalf("remote wave = %d, want the raised parent budget 200", got)
+	}
+	remoteParent.SetMaxIterations(30)
+	if got := remoteHeld.ExtendIterationBudget(200, 8); got != 200 {
+		t.Fatalf("remote refill followed the parent reset: %d", got)
 	}
 }
 

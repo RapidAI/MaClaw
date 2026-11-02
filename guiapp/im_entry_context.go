@@ -102,12 +102,10 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	// App-exit slots (written at graceful shutdown for in-flight sessions) bind
 	// automatically: reopening the restored/historical tab is the resume intent.
 	opts.Decision = applyAppExitAutoResumeDecision(*msg, trimmed, result.UnfinishedSlot, opts.Decision)
-	// Crash/lease-expiry recovery is deliberately opt-in: only an explicit
-	// continuation message binds the recovered context. Any other substantive
-	// message starts a new task and dismisses the stale recovery slot.
-	//
-	// This must run here, after the serialization boundary has reloaded (and,
-	// if needed, materialized) the slot, but before slot actions mutate memory.
+	// A crash or expired lease is the same session's saved run, but it is not
+	// bound from the words in the message. Task-context continuation binds
+	// that slot later, which is what puts its resume contract in the prompt.
+	// A classifier decision of "new" leaves the slot unbound and starts over.
 	opts.Decision = applyImplicitInFlightRecoveryDecision(*msg, trimmed, result.UnfinishedSlot, opts.Decision)
 	result.Decision = opts.Decision
 	if slotFreshTask, resp, handled := h.applyExplicitTaskSlotAction(msg, opts.Trimmed, opts.Decision, &result.EntriesBeforeClear, &result.UnfinishedSlot); handled {

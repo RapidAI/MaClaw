@@ -123,6 +123,32 @@ func TestBindSemanticContinuationKeepsExpertTaskWhenDirDiffers(t *testing.T) {
 	}
 }
 
+func TestProjectSessionRestartMatchesDefaultWorkspaceFallback(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "生成小朋友的识字书")
+	owner := projectSessionOwnerID(taskDir)
+	slot := &agent.UnfinishedTaskSlot{ProjectPath: taskDir}
+	if !recoveredSlotMatchesSession(owner, slot, corelib.EffectiveWorkspaceDir()) {
+		t.Fatal("restart dropped the task slot when the live directory fell back to the process default")
+	}
+	if !recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: corelib.EffectiveWorkspaceDir()}, taskDir) {
+		t.Fatal("restart dropped a slot that still names the process default")
+	}
+	other := filepath.Join(t.TempDir(), "设置一套电商网站架构")
+	if recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: other}, taskDir) {
+		t.Fatal("a different task directory matched this session")
+	}
+	sandbox := filepath.Join(taskDir, "workspace")
+	if !recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: sandbox}, corelib.EffectiveWorkspaceDir()) {
+		t.Fatal("restart dropped the task sandbox when the live directory fell back to the process default")
+	}
+	if !recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: sandbox}, taskDir) {
+		t.Fatal("restart dropped the task sandbox when the live directory is the task root")
+	}
+	if !recoveredSlotMatchesSession(projectSessionOwnerID(sandbox), &agent.UnfinishedTaskSlot{ProjectPath: taskDir}, corelib.EffectiveWorkspaceDir()) {
+		t.Fatal("restart dropped the task root for a session opened on its workspace sandbox")
+	}
+}
+
 func TestUnfinishedSlotHintDoesNotInterruptResumedTask(t *testing.T) {
 	h := &IMMessageHandler{}
 	slot := &agent.UnfinishedTaskSlot{SlotID: "slot-resumed", Status: agent.UnfinishedTaskSlotStatusResumed}
@@ -523,15 +549,184 @@ func TestResolveIMEntryContextDoesNotBindInFlightRecoveryOnPhraseAlone(t *testin
 	if result.Handled {
 		t.Fatalf("entry context unexpectedly handled response: %#v", result.Response)
 	}
-	// Phrase-based recovery binding was removed by design
-	// (applyImplicitInFlightRecoveryDecision is a no-op): a "continue"-like
-	// message alone must neither bind nor dismiss the slot — the unified
-	// task-context classifier owns that decision.
+	// The phrase itself must not set the explicit resume decision. With no
+	// classifier configured, preserving this session binds its own restart slot.
 	if result.Decision.ResumeSlotID != "" || result.Decision.StartNewTask || result.Decision.DismissSlotID != "" {
 		t.Fatalf("phrase alone must not decide recovery, decision = %#v", result.Decision)
 	}
-	if active := memory.GetUnfinishedSlot(userID); active == nil || active.SlotID != slot.SlotID {
-		t.Fatalf("recovery slot must stay untouched without a classifier decision, got %#v", active)
+	if active := memory.ActiveUnfinishedSlot(userID); active == nil || active.SlotID != slot.SlotID || active.Status != agent.UnfinishedTaskSlotStatusResumed {
+		t.Fatalf("session continue should bind its own restart slot, got %#v", active)
+	}
+}
+
+func TestRestartSlotBindsWhenTranscriptWasNotSaved(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	const userID = "restart-session-no-transcript"
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-lease",
+		UserID:   userID,
+		Source:   agent.UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		Status:   agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask: "生成小朋友的识字书",
+		Summary:  "识字卡写到动物页",
+	}
+	memory.UpsertUnfinishedSlot(userID, slot)
+	h := &IMMessageHandler{memory: memory}
+	msg := IMUserMessage{UserID: userID, Text: "下一页用真实照片", Lang: "zh-Hans"}
+	trimmed := msg.Text
+
+	result := h.resolveIMEntryContext(imEntryContextOptions{
+		Message:            &msg,
+		Trimmed:            &trimmed,
+		EntriesBeforeClear: nil,
+		UnfinishedSlot:     memory.GetUnfinishedSlot(userID),
+	})
+	if result.Handled || result.FreshTask {
+		t.Fatalf("missing transcript started a new task: handled=%v fresh=%v resp=%#v", result.Handled, result.FreshTask, result.Response)
+	}
+	active := memory.ActiveUnfinishedSlot(userID)
+	if active == nil || active.SlotID != slot.SlotID || active.Status != agent.UnfinishedTaskSlotStatusResumed {
+		t.Fatalf("session restart slot not bound: %#v", active)
+	}
+}
+
+func TestRestartSlotBindsWhenSessionContinues(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	const userID = "restart-session-continue"
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-lease",
+		UserID:   userID,
+		Source:   agent.UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		Status:   agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask: "生成小朋友的识字书",
+		Summary:  "识字卡写到动物页",
+	}
+	memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: slot.LastTask},
+		{Role: "assistant", Content: slot.Summary},
+	})
+	memory.UpsertUnfinishedSlot(userID, slot)
+	h := &IMMessageHandler{memory: memory}
+	msg := IMUserMessage{UserID: userID, Text: "继续", Lang: "zh-Hans"}
+	trimmed := msg.Text
+
+	result := h.resolveIMEntryContext(imEntryContextOptions{
+		Message:            &msg,
+		Trimmed:            &trimmed,
+		EntriesBeforeClear: memory.Load(userID),
+		UnfinishedSlot:     memory.GetUnfinishedSlot(userID),
+	})
+	if result.Handled || result.FreshTask {
+		t.Fatalf("restart continue handled=%v fresh=%v resp=%#v", result.Handled, result.FreshTask, result.Response)
+	}
+	active := memory.ActiveUnfinishedSlot(userID)
+	if active == nil || active.SlotID != slot.SlotID || active.Status != agent.UnfinishedTaskSlotStatusResumed {
+		t.Fatalf("session restart slot not bound: %#v", active)
+	}
+	prompt := h.buildResumeTraceContextWithLang(userID, msg.Text, "zh-Hans")
+	if !strings.Contains(prompt, "生成小朋友的识字书") || !strings.Contains(prompt, "不要混入其他旧任务") {
+		t.Fatalf("resume contract = %q", prompt)
+	}
+}
+
+func TestResumedRestartSlotSkipsAnotherClassification(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	const userID = "restart-session-resumed"
+	calls := 0
+	h := &IMMessageHandler{memory: memory}
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{LLMTimeout: time.Second}, taskClassifierFunc(func(_, _ string, _ int) (string, error) {
+		calls++
+		return "new", nil
+	}))
+	memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-book",
+		UserID:   userID,
+		Source:   agent.UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		Status:   agent.UnfinishedTaskSlotStatusResumed,
+		LastTask: "生成小朋友的识字书",
+	})
+	held := memory.GetUnfinishedSlot(userID)
+	_, fresh, _ := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "下一页用真实照片"},
+		"下一页用真实照片",
+		explicitTaskSlotDecision{},
+		[]agent.ConversationEntry{
+			{Role: "user", Content: "生成小朋友的识字书"},
+			{Role: "assistant", Content: "正在排版识字卡"},
+		},
+		&held,
+		"",
+		false, false, false,
+	)
+	if calls != 0 {
+		t.Fatalf("resumed restart slot was classified again: %d", calls)
+	}
+	if fresh {
+		t.Fatal("resumed restart slot was cleared as a new task")
+	}
+	if got := memory.GetUnfinishedSlot(userID); got == nil || got.SlotID != "slot-book" || got.Status != agent.UnfinishedTaskSlotStatusResumed {
+		t.Fatalf("slot after later turn: %#v", got)
+	}
+}
+
+func TestRecoveryClassificationDoesNotOfferOtherTasks(t *testing.T) {
+	userID := projectSessionOwnerID(filepath.Join(t.TempDir(), "生成小朋友的识字书"))
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	var seen string
+	h := &IMMessageHandler{memory: memory}
+	h.taskArchive = agent.NewTaskArchive(filepath.Join(t.TempDir(), "archive.json"), 10)
+	h.taskArchive.Archive(agent.ArchivedTask{
+		ID:          "other",
+		UserID:      userID,
+		Summary:     "设置一套电商网站架构",
+		LastRequest: "设置一套电商网站架构",
+		Status:      agent.ArchivedTaskStatusSwitched,
+	})
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{LLMTimeout: time.Second}, taskClassifierFunc(func(_, user string, _ int) (string, error) {
+		seen = user
+		return "continue", nil
+	}))
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-book",
+		UserID:   userID,
+		Source:   agent.UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		Status:   agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask: "生成小朋友的识字书",
+	}
+	memory.UpsertUnfinishedSlot(userID, slot)
+	held := memory.GetUnfinishedSlot(userID)
+	_, fresh, _ := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "下一页用真实照片"},
+		"下一页用真实照片",
+		explicitTaskSlotDecision{},
+		[]agent.ConversationEntry{
+			{Role: "user", Content: "设置一套电商网站架构"},
+			{Role: "assistant", Content: "电商首页已生成"},
+			{Role: "user", Content: "生成小朋友的识字书"},
+			{Role: "assistant", Content: "正在排版识字卡"},
+		},
+		&held,
+		"",
+		false, false, false,
+	)
+	if fresh {
+		t.Fatal("recovery classification started a new task")
+	}
+	if strings.Contains(seen, "设置一套电商网站架构") || strings.Contains(seen, "电商首页已生成") {
+		t.Fatalf("other task was offered to the classifier: %s", seen)
+	}
+	if !strings.Contains(seen, "正在排版识字卡") {
+		t.Fatalf("classifier lost the interrupted run's own progress: %s", seen)
+	}
+	if !strings.Contains(seen, "incomplete or interrupted") || !strings.Contains(seen, "Interrupted task: 生成小朋友的识字书") {
+		t.Fatalf("classifier was not told this run was interrupted: %s", seen)
+	}
+	if active := memory.ActiveUnfinishedSlot(userID); active == nil || active.SlotID != slot.SlotID {
+		t.Fatalf("session restart slot not bound: %#v", active)
 	}
 }
 
@@ -566,14 +761,13 @@ func TestResolveIMEntryContextKeepsInFlightRecoverySlotForOrdinaryInput(t *testi
 	if result.Handled {
 		t.Fatalf("entry context unexpectedly handled response: %#v", result.Response)
 	}
-	// A new-topic message alone must not dismiss the recovery slot either:
-	// starting a fresh task is the unified task-context classifier's call,
-	// not a wording rule (applyImplicitInFlightRecoveryDecision is a no-op).
+	// Wording does not dismiss the slot. Without a classifier, the session is
+	// preserved, so the restart slot is bound instead of deleted.
 	if result.FreshTask || result.Decision.StartNewTask || result.Decision.DismissSlotID != "" {
 		t.Fatalf("phrase alone must not start a fresh task, fresh=%v decision=%#v", result.FreshTask, result.Decision)
 	}
-	if slot := memory.GetUnfinishedSlot(userID); slot == nil || slot.SlotID != "slot-recovery" {
-		t.Fatalf("recovery slot must stay pending without a classifier decision, got %#v", slot)
+	if slot := memory.ActiveUnfinishedSlot(userID); slot == nil || slot.SlotID != "slot-recovery" || slot.Status != agent.UnfinishedTaskSlotStatusResumed {
+		t.Fatalf("preserved session should bind its restart slot, got %#v", slot)
 	}
 }
 

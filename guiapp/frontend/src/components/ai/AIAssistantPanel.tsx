@@ -109,7 +109,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, codingChecklistAllDone, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
@@ -331,6 +331,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // checklist; ignore-project stays set until the next real send so late cancelled-turn events
     // cannot repaint the strip without blocking other coding tabs.
     const codingWorkbenchTurnEpochRef = useRef(0);
+    // Bumped when a live coding-workbench-steps snapshot is applied. A status
+    // poll that started earlier must not paint an older pending plan back
+    // over a plan that has already been confirmed.
+    const codingWorkbenchStepsGenRef = useRef(0);
+    // Newest step stamp already applied. A late snapshot with an older stamp
+    // must not put the start / skip / reject buttons back.
+    const codingStepsClockRef = useRef({ seq: 0, unix: 0, started: false });
+    // False when this snapshot is older than the steps already shown.
+    // A clear keeps the clock, so a late copy of the pending plan cannot
+    // come back after the list was retired. Project and turn switches zero it.
+    const rememberCodingSteps = (incoming: ReturnType<typeof codingWorkbenchStepsFromPayload>, seq?: unknown): boolean => {
+        const next = codingStepsClockFrom(seq, incoming);
+        const clock = codingStepsClockRef.current;
+        if (!codingStepsClockIsCurrent(clock, next, incoming.length === 0)) return false;
+        if (codingStepsSnapshotRegresses(clock.started, clock, next, incoming)) return false;
+        if (next.seq > clock.seq) clock.seq = next.seq;
+        if (incoming.length > 0 && next.unix > clock.unix) clock.unix = next.unix;
+        clock.started = incoming.length > 0 && !codingPlanAwaitingStart(incoming);
+        return true;
+    };
     const codingWorkbenchIgnoreProjectRef = useRef("");
     const isCodingWorkbenchHydrationSuppressed = (projectPath: string) => {
         const ignored = codingWorkbenchIgnoreProjectRef.current;
@@ -945,6 +965,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingRequirementRestatement("");
             setCodingPlanMode("auto");
             setCodingPendingApproval(false);
+            codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
             setCodingStepStatuses([]);
             setCodingSessionCost("");
             setCodingWorktreeMode("auto");
@@ -993,6 +1014,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         const statusEpoch = codingWorkbenchTurnEpochRef.current;
         const grantEpochAtFetch = taskCommandGrantEpochRef.current;
+        const stepsGen = codingWorkbenchStepsGenRef.current;
         void GetCodingWorkbenchStatus(projectPath).then((st) => {
             if (cancelled || remotePasswordRecallGenerationRef.current !== recallGeneration || !st || statusEpoch !== codingWorkbenchTurnEpochRef.current) return;
             setRemoteReconnectStatusPath(projectPath);
@@ -1005,27 +1027,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setTaskCommandAllowed(!!st.session_high_risk_access);
             }
             const plan = String(st.session_plan || "").trim();
-            const execPlan = String(st.execution_plan || "").trim();
             setCodingSessionPlan(plan);
-            setCodingExecutionPlan(execPlan);
-            setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
             const mode = String(st.plan_mode || "auto").toLowerCase();
             setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
-            {
+            // Opening a project starts this read immediately. A steps snapshot
+            // that arrives while it is in flight already has the confirmed plan.
+            const incomingSteps = codingWorkbenchStepsFromPayload(st.step_statuses);
+            if (stepsGen === codingWorkbenchStepsGenRef.current && rememberCodingSteps(incomingSteps, st.steps_revision)) {
+                setCodingExecutionPlan(String(st.execution_plan || "").trim());
+                setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
                 const pending = !!st.pending_approval;
                 setCodingPendingApproval(pending);
                 if (!pending) {
                     setCodingPendingPlanEditing(false);
                 }
+                setCodingStepStatuses(incomingSteps);
             }
-            setCodingStepStatuses(Array.isArray(st.step_statuses) ? st.step_statuses.map((s: any) => ({
-                index: Number(s.index) || 0,
-                title: String(s.title || ""),
-                status: String(s.status || "pending"),
-                summary: String(s.summary || ""),
-                verify_cmd: String(s.verify_cmd || ""),
-                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
-            })) : []);
             {
                 const inTok = Number(st.session_input_tokens) || 0;
                 const outTok = Number(st.session_output_tokens) || 0;
@@ -1279,19 +1296,30 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!pureCoding || !projectPath) return;
         const normPath = (p: string) => String(p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
         const expected = normPath(projectPath);
-        const applySteps = (raw: any) => {
-            if (!Array.isArray(raw)) {
-                setCodingStepStatuses([]);
-                return;
-            }
-            setCodingStepStatuses(raw.map((s: any) => ({
-                index: Number(s.index) || 0,
-                title: String(s.title || ""),
-                status: String(s.status || "pending"),
-                summary: String(s.summary || ""),
-                verify_cmd: String(s.verify_cmd || ""),
-                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
-            })));
+        const applySteps = (raw: any, seq?: unknown): boolean => {
+            // A missing list is an empty checklist (status omits it). It still
+            // has to lose to a newer snapshot, or the poll that follows a
+            // shapeless event paints the approval gate back on.
+            const next = codingWorkbenchStepsFromPayload(raw);
+            if (!rememberCodingSteps(next, seq)) return false;
+            setCodingStepStatuses(next);
+            // A step that has left "pending" means the gate is gone. Drop a
+            // half-open plan editor so it cannot reappear on the next poll.
+            if (!codingPlanAwaitingStart(next)) setCodingPendingPlanEditing(false);
+            return true;
+        };
+        // The steps snapshot already carries pending_approval. Applying it here
+        // drops the start/skip/reject gate as soon as the plan is confirmed,
+        // instead of leaving it up until the turn's status poll.
+        const applyPendingApproval = (source: any) => {
+            if (!source || typeof source !== "object") return;
+            const pendingKey = Object.prototype.hasOwnProperty.call(source, "pending_approval")
+                ? "pending_approval"
+                : (Object.prototype.hasOwnProperty.call(source, "pendingApproval") ? "pendingApproval" : "");
+            if (!pendingKey) return;
+            const pending = !!source[pendingKey];
+            setCodingPendingApproval(pending);
+            if (!pending) setCodingPendingPlanEditing(false);
         };
         const off = EventsOn("coding-workbench-steps", (payload: any) => {
             if (!pureCodingTabRef.current || isCodingWorkbenchHydrationSuppressed(projectPath)) return;
@@ -1300,7 +1328,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (pp && expected && pp !== expected) return;
             if (Array.isArray(payload?.step_statuses) || Array.isArray(payload?.stepStatuses)) {
                 if (isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
-                applySteps(payload?.step_statuses ?? payload?.stepStatuses);
+                if (!applySteps(payload?.step_statuses ?? payload?.stepStatuses, payload?.steps_revision ?? payload?.stepsRevision)) return;
+                codingWorkbenchStepsGenRef.current += 1;
+                applyPendingApproval(payload);
                 // The event is a snapshot. An empty plan or restatement is a
                 // clear: resume drops the generic continue paraphrase, and a
                 // new single-task turn drops the previous execution plan.
@@ -1315,9 +1345,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 return;
             }
             // Fallback: re-poll status if payload shape unexpected.
+            const stepsGen = codingWorkbenchStepsGenRef.current;
             void GetCodingWorkbenchStatus(projectPath).then((st) => {
                 if (!st || isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
-                applySteps(st.step_statuses);
+                if (stepsGen !== codingWorkbenchStepsGenRef.current) return;
+                if (!applySteps(st.step_statuses, st.steps_revision)) return;
+                codingWorkbenchStepsGenRef.current += 1;
+                applyPendingApproval(st);
                 setCodingExecutionPlan(String(st.execution_plan || "").trim());
                 setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
             });
@@ -1335,28 +1369,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const sk = normalizeAssistantSessionKey(String(payload?.session_key || payload?.SessionKey || ""));
             if (sk && expectedSession && sk !== normalizeAssistantSessionKey(expectedSession)) return;
             const epoch = codingWorkbenchTurnEpochRef.current;
+            const stepsGen = codingWorkbenchStepsGenRef.current;
             void GetCodingWorkbenchStatus(projectPath).then((st) => {
                 if (!st || isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
                 setCodingSessionPlan(String(st.session_plan || "").trim());
-                setCodingExecutionPlan(String(st.execution_plan || "").trim());
-                setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
                 const mode = String(st.plan_mode || "auto").toLowerCase();
                 setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
-                {
+                // A steps snapshot that landed while this poll was in flight is
+                // newer. Keep its plan, steps, and approval flag.
+                const incomingSteps = codingWorkbenchStepsFromPayload(st.step_statuses);
+                if (stepsGen === codingWorkbenchStepsGenRef.current && rememberCodingSteps(incomingSteps, st.steps_revision)) {
+                    setCodingExecutionPlan(String(st.execution_plan || "").trim());
+                    setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
                     const pending = !!st.pending_approval;
                     setCodingPendingApproval(pending);
                     if (!pending) {
                         setCodingPendingPlanEditing(false);
                     }
+                    setCodingStepStatuses(incomingSteps);
                 }
-                setCodingStepStatuses(Array.isArray(st.step_statuses) ? st.step_statuses.map((s: any) => ({
-                    index: Number(s.index) || 0,
-                    title: String(s.title || ""),
-                    status: String(s.status || "pending"),
-                    summary: String(s.summary || ""),
-                    verify_cmd: String(s.verify_cmd || ""),
-                    verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
-                })) : []);
                 {
                     const inTok = Number(st.session_input_tokens) || 0;
                     const outTok = Number(st.session_output_tokens) || 0;
@@ -1698,26 +1729,32 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 project_path: projectPath,
             });
             if (sent === false) return;
-            // Refresh sticky status (pending flag + steps).
+            // Refresh sticky status (pending flag + steps). Drop the result
+            // when a live steps snapshot arrived while the read was in flight:
+            // that snapshot is the confirmed plan, and this read can still be
+            // the pre-confirm copy.
             const epoch = codingWorkbenchTurnEpochRef.current;
+            const stepsGen = codingWorkbenchStepsGenRef.current;
             const st = await GetCodingWorkbenchStatus(projectPath);
             if (isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
+            if (stepsGen !== codingWorkbenchStepsGenRef.current) return;
+            const incomingSteps = codingWorkbenchStepsFromPayload(st?.step_statuses);
+            if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
             setCodingPendingApproval(!!st?.pending_approval);
-            setCodingStepStatuses(Array.isArray(st?.step_statuses) ? st.step_statuses.map((s: any) => ({
-                index: Number(s.index) || 0,
-                title: String(s.title || ""),
-                status: String(s.status || "pending"),
-                summary: String(s.summary || ""),
-                verify_cmd: String(s.verify_cmd || ""),
-                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
-            })) : []);
+            setCodingStepStatuses(incomingSteps);
             setCodingExecutionPlan(String(st?.execution_plan || "").trim());
             setCodingRequirementRestatement(String(st?.requirement_restatement || "").trim());
         } catch {
-            // Re-sync pending if reject optimistic clear failed
+            // Re-sync pending if reject optimistic clear failed. Skip when a
+            // newer steps snapshot already replaced this read.
             try {
+                const stepsGen = codingWorkbenchStepsGenRef.current;
                 const st = await GetCodingWorkbenchStatus(projectPath);
+                if (stepsGen !== codingWorkbenchStepsGenRef.current) return;
+                const incomingSteps = codingWorkbenchStepsFromPayload(st?.step_statuses);
+                if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
                 setCodingPendingApproval(!!st?.pending_approval);
+                setCodingStepStatuses(incomingSteps);
             } catch { /* ignore */ }
         }
     }, [activeTab?.agentMode, activeTab?.id, activeTab?.projectPath, activeTab?.remoteNeedsReconnect, activeTab?.type, codingPendingPlanEditing, codingPendingPlanDraft, remoteReconnect.needsReconnect, remoteReconnectStatusPath]);
@@ -1732,15 +1769,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingExecutionPlan(String(updated?.markdown || md));
             setCodingPendingPlanDraft(String(updated?.markdown || md));
             setCodingPendingPlanEditing(false);
+            const stepsGen = codingWorkbenchStepsGenRef.current;
             const st = await GetCodingWorkbenchStatus(projectPath);
-            setCodingStepStatuses(Array.isArray(st?.step_statuses) ? st.step_statuses.map((s: any) => ({
-                index: Number(s.index) || 0,
-                title: String(s.title || ""),
-                status: String(s.status || "pending"),
-                summary: String(s.summary || ""),
-                verify_cmd: String(s.verify_cmd || ""),
-                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
-            })) : []);
+            if (stepsGen !== codingWorkbenchStepsGenRef.current) return;
+            const incomingSteps = codingWorkbenchStepsFromPayload(st?.step_statuses);
+            if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
+            setCodingStepStatuses(incomingSteps);
             setCodingPendingApproval(!!st?.pending_approval);
         } catch { /* keep editor open */ }
         finally { setCodingPendingPlanSaving(false); }
@@ -2042,11 +2076,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!projectPath) return;
         try {
             const epoch = codingWorkbenchTurnEpochRef.current;
+            const stepsGen = codingWorkbenchStepsGenRef.current;
             const st = await GetCodingWorkbenchStatus(projectPath);
             if (!st || isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
+            const incomingSteps = codingWorkbenchStepsFromPayload(st.step_statuses);
+            const liveSteps = stepsGen === codingWorkbenchStepsGenRef.current && rememberCodingSteps(incomingSteps, st.steps_revision);
             setCodingSessionPlan(String(st.session_plan || "").trim());
-            setCodingExecutionPlan(String(st.execution_plan || "").trim());
-            setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
+            if (liveSteps) {
+                setCodingExecutionPlan(String(st.execution_plan || "").trim());
+                setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
+            }
             setCodingCheckpointLabel(String(st.checkpoint_label || "").trim());
             setCodingCheckpointFiles(Array.isArray(st.checkpoint_files) ? st.checkpoint_files.map(String) : []);
             setCodingCheckpointSnapshots(Number(st.checkpoint_snapshots) || 0);
@@ -2068,21 +2107,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             } else {
                 setCodingHooksInfo(null);
             }
-            {
+            if (liveSteps) {
                 const pending = !!st.pending_approval;
                 setCodingPendingApproval(pending);
                 if (!pending) {
                     setCodingPendingPlanEditing(false);
                 }
+                setCodingStepStatuses(incomingSteps);
             }
-            setCodingStepStatuses(Array.isArray(st.step_statuses) ? st.step_statuses.map((s: any) => ({
-                index: Number(s.index) || 0,
-                title: String(s.title || ""),
-                status: String(s.status || "pending"),
-                summary: String(s.summary || ""),
-                verify_cmd: String(s.verify_cmd || ""),
-                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
-            })) : []);
         } catch { /* ignore */ }
     }, [activeTab?.projectPath, activeTab?.type]);
     const handleSaveCodingCheckpoint = useCallback(async () => {
@@ -2399,6 +2431,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setCodingPendingApproval(false);
         setCodingPendingPlanEditing(false);
         setCodingPendingPlanDraft("");
+        codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
         setCodingStepStatuses([]);
     }, []);
     const projectStreamHistoryRef = useRef<{ tabId: string; messages: ChatMessage[] } | null>(null);
@@ -4631,11 +4664,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return { task: activeTask, raw };
     }, [activeTab?.projectPath, codingStepStatuses, taskListProp, workflowAwaitingReview, workflowCurrentPhaseStatus, workflowState.active]);
     const codingChecklistSteps = useMemo(() => presentCodingAgentChecklist(codingExecutionPlan, codingStepStatuses), [codingExecutionPlan, codingStepStatuses]);
-    // The checklist retirement condition (codingChecklistAllDone): once every
-    // row closed successfully the card has nothing left to report, and pinning
-    // a finished list above the composer would cover a session that is no
-    // longer working on it. A failed row is not "closed", so it keeps the card.
-    const codingChecklistRetired = !codingPendingApproval && codingChecklistSteps.length > 0 && codingChecklistAllDone(codingChecklistSteps);
+    // Start / Skip / Reject stay up only while every step is still unstarted.
+    // The checklist applies the same rule to its own buttons.
+    const codingPlanGateOpen = codingPendingApproval && codingPlanAwaitingStart(codingChecklistSteps);
+    // A finished checklist is not pinned over the composer, even if the approval
+    // flag is stale. A failed row is not finished, so that card stays.
+    const codingChecklistRetired = !codingPlanGateOpen && codingChecklistSteps.length > 0 && codingChecklistAllDone(codingChecklistSteps);
     const { workspace: remoteWorkspace, label: remoteWorkspaceLabel } = resolveRemoteWorkspaceDisplay({ isRemoteCodingDev: isRemoteCodingDevEnvironment, isLive: remoteReconnectStatusPath === activeRemoteProjectPath, liveHost: remoteReconnect.host, liveWorkDir: remoteReconnect.workDir, livePort: remoteReconnect.port, tabHost: activeTab.remoteHost, tags: activeTaskExecutionSnapshot.task?.tags });
     const activeTaskSnapshotRunning = useMemo(() => executionSnapshotRawIsRunning(activeTaskExecutionSnapshot.raw), [activeTaskExecutionSnapshot]);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
@@ -6601,7 +6635,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         preparing={activeProjectPreparing}
                         prepareMode={activeProjectPrepareMode || undefined}
                         stepStatuses={codingChecklistSteps}
-                        pendingApproval={codingPendingApproval}
+                        pendingApproval={codingPlanGateOpen}
                         conflictCount={codingConflictCount}
                         lockExpanded={remoteCodingNeedsReconnect}
                         expanded={codingControlExpanded}
@@ -6754,7 +6788,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                             : localizeText(lang, "Off", "关闭", "關閉")}
                                                 </button>
                                             ))}
-                                            {codingPendingApproval && (
+                                            {codingPlanGateOpen && (
                                                 <span className="aap-pending-approval" data-testid="coding-pending-approval">
                                                     <span style={{ color: codingBannerChrome.accentStrong, fontWeight: 600 }}>
                                                         {localizeText(lang, "Plan awaiting approval", "计划待批准", "計畫待批准")}
@@ -7073,7 +7107,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         {codingExecutionPlan || (codingPendingApproval && codingPendingPlanEditing) ? (
                                             <CodingExecutionPlanCard
                                                 executionPlan={codingExecutionPlan}
-                                                pendingApproval={!!codingPendingApproval}
+                                                pendingApproval={codingPlanGateOpen}
                                                 pendingPlanEditing={codingPendingPlanEditing}
                                                 pendingPlanSaving={codingPendingPlanSaving}
                                                 pendingPlanDraft={codingPendingPlanDraft}

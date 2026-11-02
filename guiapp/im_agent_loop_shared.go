@@ -554,6 +554,9 @@ func (h *IMMessageHandler) executeSharedTurn(
 	if cb.maxIter <= 0 {
 		cb.maxIter = startState.MaxIterations
 	}
+	if ctx != nil {
+		cb.loopMaxAtStart = ctx.MaxIterations()
+	}
 	// Cancellation must revoke the durable surface before an in-flight provider
 	// response can reach the callback. The hook is scoped to this loop and is
 	// removed after RunLoop returns, so a completed turn cannot cancel a later
@@ -724,18 +727,41 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// starts one when nothing is running. History stores that note, not the
 	// model's request for another user message.
 	handedOff := false
+	if loopResult.Error == "max iterations reached" {
+		// Refills already ran inside this loop. The ceiling is a pause, not a
+		// failed task and not a new loop.
+		if strings.TrimSpace(loopResult.Text) == "" {
+			loopResult.Text = sessionRoundManualContinueText
+		}
+		loopResult.Error = ""
+		loopResult.HardExit = false
+	}
 	if cb == nil || !cb.hasPendingToolBatch {
 		if note, ok := h.continueSpentForegroundChat(ctx, userID, userText, loopResult); ok {
 			loopResult.Text = note
 			outHistory = applyForegroundHandoffNote(outHistory, len(history), note)
 			handedOff = true
-			if loopResult.Error == "max iterations reached" {
-				loopResult.Error = ""
-				loopResult.HardExit = false
-			}
 		}
 	}
-	if shouldSaveSharedLoopTerminalHistory(loopResult, cb) {
+	// required_effect_unsettled is not final until the host attaches this
+	// turn's file. Saving it now, then saving again after settlement, runs
+	// compaction on the first copy and the second copy puts the trimmed
+	// entries back. One save after settlement carries the class that survived.
+	// If attach never returns, the deferred save still records the turn.
+	recordRequiredEffectAfterSettlement := loopResult.Error == "required_effect_unsettled"
+	requiredEffectHistorySaved := false
+	if recordRequiredEffectAfterSettlement {
+		defer func() {
+			if requiredEffectHistorySaved || !shouldSaveSharedLoopTerminalHistory(loopResult, cb) {
+				return
+			}
+			if strings.TrimSpace(loopResult.Error) == "required_effect_unsettled" {
+				agent.StampTurnTerminalClass(outHistory, len(history), loopResult.Error)
+			}
+			h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
+		}()
+	}
+	if shouldSaveSharedLoopTerminalHistory(loopResult, cb) && !recordRequiredEffectAfterSettlement {
 		// The stop code belongs to this turn's record. The model copy omits it.
 		agent.StampTurnTerminalClass(outHistory, len(history), loopResult.Error)
 		h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
@@ -790,6 +816,20 @@ func (h *IMMessageHandler) executeSharedTurn(
 		ResponseSource: responseSource,
 	}
 	attachSharedLoopArtifacts(resp, cb)
+	// The host has now attached this turn's file. A discharged obligation
+	// revises the loop result, the hop run, and the trajectory. An obligation
+	// that is still open is stamped on the history. stopBeforeSettlement is
+	// the loop's own stop: settlement clears it when the file discharges the
+	// plan, and that finished plan is not a turn that lost its write tools.
+	// The normal save records the class settlement just decided. The flag is
+	// set first so a panic inside that save does not enter it again from the
+	// deferred backup.
+	stopBeforeSettlement := loopResult.Error
+	noteHostSettledRequiredEffect(outHistory, len(history), &loopResult, resp, startState.Recorder)
+	if recordRequiredEffectAfterSettlement && shouldSaveSharedLoopTerminalHistory(loopResult, cb) {
+		requiredEffectHistorySaved = true
+		h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
+	}
 	// A marker is incomplete work. Clear it only after the projection had its
 	// chance to settle what the loop stopped for: this turn's own response is
 	// the receipt owner of a current-channel delivery. The decision used to run
@@ -869,7 +909,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// P0-1 (0b-i): a degraded turn that silently lost its write tools gets a
 	// chance to self-recover (tombstone + async reclassification + model
 	// re-decision continuation, or an explicit notice).
-	if loopResult.Error == "" && !handedOff {
+	if sharedLoopSchedulesDegradedRecovery(loopResult.Error, handedOff, stopBeforeSettlement) {
 		h.maybeRecoverDegradedTurn(ctx, userID, userText, requestID, cb.tools, platform, "")
 	}
 	_ = loopID
@@ -1323,6 +1363,52 @@ func (c *sharedAgentLoopCallbacks) clearRecoveredRequiredEffect(resp *IMAgentRes
 	}
 	log.Printf("[semantic] host artifact attach recovered turn; clearing stale error %q", resp.Error)
 	resp.Error = ""
+	// The hard exit is this obligation. Once the plan is discharged the turn
+	// is finished; leaving HardExit set kept the outcome classified hard_exit
+	// after the file was already attached.
+	resp.HardExit = false
+}
+
+// noteHostSettledRequiredEffect revises the turn after the host has had its
+// chance to discharge required_effect_unsettled. The loop stops, and the
+// trajectory records that stop, before the file is attached. When the file
+// discharges the plan, that stop is no longer the outcome: the loop result,
+// the response, and the trajectory become a finished turn, and the history
+// keeps no incomplete class. When the plan is still open, the class is
+// stamped on this turn's assistant entries. The bool reports that a class
+// was written.
+func noteHostSettledRequiredEffect(history []agent.ConversationEntry, turnStart int, loopResult *agent.LoopResult, resp *IMAgentResponse, recorder *TrajectoryRecorder) bool {
+	if loopResult == nil || strings.TrimSpace(loopResult.Error) != "required_effect_unsettled" {
+		return false
+	}
+	if resp != nil && strings.TrimSpace(resp.Error) == "" {
+		loopResult.Error = ""
+		loopResult.HardExit = false
+		resp.HardExit = false
+		if recorder != nil {
+			recorder.SetOutcome("success", "", -1, -1, -1, -1)
+		}
+		return false
+	}
+	agent.StampTurnTerminalClass(history, turnStart, loopResult.Error)
+	class := strings.TrimSpace(loopResult.Error)
+	for i := turnStart; i < len(history); i++ {
+		if history[i].TerminalClass == class {
+			return true
+		}
+	}
+	return false
+}
+
+// sharedLoopSchedulesDegradedRecovery reports a turn that stopped with nothing
+// owed and may have lost its write tools. A required effect the host has since
+// discharged is a finished plan; scheduling recovery from the cleared error
+// would start that work again.
+func sharedLoopSchedulesDegradedRecovery(loopError string, handedOff bool, stopBeforeSettlement string) bool {
+	if handedOff || strings.TrimSpace(loopError) != "" {
+		return false
+	}
+	return strings.TrimSpace(stopBeforeSettlement) != "required_effect_unsettled"
 }
 
 func hostResponseCarriesProjectedArtifact(resp *IMAgentResponse) bool {
@@ -1829,8 +1915,17 @@ type sharedAgentLoopCallbacks struct {
 	eventErrMu           sync.Mutex
 	eventErr             error
 	maxIter              int
-	httpClient           *http.Client
-	escalated            bool
+	// loopMaxAtStart is the parent ceiling when this turn began. A later
+	// explicit raise is adopted. Restoring a smaller limit for the next
+	// message does not shrink this turn.
+	loopMaxAtStart int
+	// iterationWaveSize is the largest wave this turn has already been given.
+	iterationWaveSize int
+	// appliedTurnCeiling is the explicit ceiling already installed in this
+	// loop. A later refill must not be stopped by the same value.
+	appliedTurnCeiling int
+	httpClient         *http.Client
+	escalated         bool
 	// surfaceRefreshPending is set when the tool-driven route escalation changes
 	// the endpoint, credentials, or context budget the prompt was built for.
 	// A Hub hint-only upgrade does not set it. The core loop consumes the flag
@@ -2461,6 +2556,12 @@ func (c *sharedAgentLoopCallbacks) OpenNextRepeatWave(name string) bool {
 // capability has already applied these arguments when the receipt matches.
 // Shell, read, search, and desktop control stay polls.
 func (c *sharedAgentLoopCallbacks) IdenticalSuccessIsPoll(name string) bool {
+	// A spilled page does not change between calls. Classifying it as a poll
+	// keeps an identical success out of the commit stop, and the model repeats
+	// the same handle until the iteration cap.
+	if agent.ImmutableToolResultRead(strings.TrimSpace(name)) {
+		return false
+	}
 	if c == nil || c.semanticSurface == nil {
 		return true
 	}
@@ -3201,7 +3302,53 @@ func (c *sharedAgentLoopCallbacks) RouteTurn(userText string) (corelib.MaclawLLM
 }
 
 func (c *sharedAgentLoopCallbacks) GetMaxIterations() int {
-	return config.EffectiveMaxIterations(c.maxIter)
+	n := config.EffectiveMaxIterations(c.maxIter)
+	if c.iterationWaveSize > n {
+		n = c.iterationWaveSize
+	}
+	if c.loopCtx != nil {
+		if live := c.loopCtx.MaxIterations(); live > c.loopMaxAtStart {
+			if raised := config.EffectiveMaxIterations(live); raised > n {
+				c.iterationWaveSize = raised
+				n = raised
+			}
+		}
+	}
+	return n
+}
+
+// TurnIterationCeiling reports a limit set for this turn. The same value is
+// reported once; after the loop installs it, refills continue the task.
+// A coding task that has already passed the limit keeps its loop. Stopping
+// there would end work that still has to finish.
+func (c *sharedAgentLoopCallbacks) TurnIterationCeiling(iteration int) (int, bool) {
+	if c == nil || c.loopCtx == nil {
+		return 0, false
+	}
+	n, ok := c.loopCtx.turnIterationCeiling()
+	if !ok || n == c.appliedTurnCeiling {
+		return 0, false
+	}
+	if iteration > n && c.handler.codingTaskStillOpen(c.loopCtx, c.userID) {
+		c.appliedTurnCeiling = n
+		return 0, false
+	}
+	c.appliedTurnCeiling = n
+	return n, true
+}
+
+// ExtendIterationBudget keeps this conversation when the reasoning counter
+// runs out. The tool transcript stays. A new task would start from a summary
+// and repeat work that already succeeded.
+func (c *sharedAgentLoopCallbacks) ExtendIterationBudget(used, toolCalls int) int {
+	if c == nil || c.loopCtx == nil || !c.loopCtx.claimIterationExtensionForOpenTask(toolCalls, c.handler.codingTaskStillOpen(c.loopCtx, c.userID)) {
+		return 0
+	}
+	extra := c.GetMaxIterations()
+	if extra <= 0 {
+		return 0
+	}
+	return extra
 }
 
 func (c *sharedAgentLoopCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
@@ -7782,6 +7929,9 @@ func (c *sharedAgentLoopCallbacks) executeTrustedOfficeWrite(selection tool.Plan
 	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
 		return "[system rejected] canonical_office_write_arguments_invalid"
 	}
+	// Backstop for a canonical request that skipped the admission gate.
+	// semanticCanonicalArguments rejects this shape before Admit, so a missing
+	// or mixed form does not become a failed plan execution.
 	path, data, err := semanticTrustedOfficeWriteArgsAllowed(args)
 	if err != nil {
 		return "[system rejected] " + err.Error()
@@ -8300,6 +8450,13 @@ func (c *sharedAgentLoopCallbacks) semanticCanonicalArguments(selection tool.Pla
 	// references; a missing file is a correctable argument mistake, so it is
 	// rejected here (grant unconsumed) rather than inside the adapter.
 	if selection.FitProof.MatchedCapability == tool.CapabilityDocumentWriteOffice {
+		// The schema declares sheets and slides together and requires only
+		// path, so a call with neither form is schema-legal. Rejecting it
+		// after Admit stored a failed execution, and the later document could
+		// not discharge that need.
+		if err := semanticOfficeWriteFormAdmission(canonical.CanonicalJSON); err != nil {
+			return tool.CanonicalRequest{}, err
+		}
 		if c.handler != nil {
 			if workspace := trustedPrincipalBoundWorkspace(c.handler, c.userID); workspace != "" {
 				if err := semanticOfficeSlideImageCheck(workspace, argsJSON); err != nil {

@@ -1,6 +1,7 @@
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import {
+    codingPlanAwaitingStart,
     codingStepGlyph,
     codingStepIsActive,
     codingStepIsDone,
@@ -53,6 +54,9 @@ export function CodingAgentPlanChecklist({
     // Same predicate the step rows use, so a backend `started` lights up the row
     // and the header badge together.
     const running = steps.find((s) => codingStepIsActive(s.status));
+    // Confirmed plans keep the checklist. The start / skip / reject gate is
+    // only for a plan that has not begun, even if the approval flag is stale.
+    const showPlanGate = pendingApproval && codingPlanAwaitingStart(steps);
     const title = pendingApproval
         ? localizeText(lang, "Plan", "计划", "計畫")
         : localizeText(lang, "Steps", "步骤", "步驟");
@@ -83,7 +87,7 @@ export function CodingAgentPlanChecklist({
                     <div data-testid="coding-agent-plan-current" style={{ color: chrome.accentStrong, fontSize: 11 }}>
                         T{running.index} {codingStepStatusLabel(lang, running.status)}
                     </div>
-                ) : pendingApproval ? (
+                ) : showPlanGate ? (
                     <div style={{ color: chrome.accentStrong, fontSize: 11, fontWeight: 600 }}>
                         {localizeText(lang, "Awaiting start", "待开始实施", "待開始實施")}
                     </div>
@@ -160,7 +164,7 @@ export function CodingAgentPlanChecklist({
                     );
                 })}
             </ol>
-            {pendingApproval && (
+            {showPlanGate && (
                 <div className="capc-actions">
                     <button
                         type="button"

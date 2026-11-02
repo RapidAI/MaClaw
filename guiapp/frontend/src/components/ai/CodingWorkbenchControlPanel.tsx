@@ -15,6 +15,13 @@ export { isFormFieldTarget } from "./codingUiGuards";
 // importing this component. Re-exported to keep existing imports working.
 export {
     codingChecklistAllDone,
+    codingPlanAwaitingStart,
+    codingStepsClockFrom,
+    codingStepsClockIsCurrent,
+    codingStepsSnapshotRegresses,
+    codingWorkbenchStepsAreCurrent,
+    codingWorkbenchStepsFromPayload,
+    codingWorkbenchStepsRevision,
     codingStepIsActive,
     codingStepIsDone,
     codingStepIsFailed,

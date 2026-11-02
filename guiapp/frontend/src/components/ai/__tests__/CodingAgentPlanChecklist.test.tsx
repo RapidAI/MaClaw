@@ -201,6 +201,30 @@ describe("CodingAgentPlanChecklist", () => {
         );
         expect(getByTestId("coding-agent-plan-understanding").textContent).toContain("控制台贪吃蛇");
         expect(getByTestId("coding-agent-plan-understanding").textContent).not.toContain("改为图形界面版");
+        expect(getByTestId("coding-agent-plan-checklist").textContent || "").toContain("待开始实施");
+        expect(getByTestId("coding-agent-plan-approve")).toBeTruthy();
+    });
+
+    it("hides start actions once the confirmed plan is already underway", () => {
+        const { queryByTestId, getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                pendingApproval
+                ready
+                understanding="实测三个 SDK 的 PDF 处理性能。"
+                steps={[
+                    { index: 1, title: "确认各SDK入口与参数", status: "running" },
+                    { index: 2, title: "检查两组PDF样本", status: "pending" },
+                ]}
+            />,
+        );
+        expect(getByTestId("coding-agent-plan-current").textContent).toContain("T1");
+        expect(getByTestId("coding-agent-plan-checklist").textContent || "").not.toContain("待开始实施");
+        expect(queryByTestId("coding-agent-plan-approve")).toBeNull();
+        expect(queryByTestId("coding-agent-plan-skip")).toBeNull();
+        expect(queryByTestId("coding-agent-plan-reject")).toBeNull();
     });
 
     it("shows start actions while a plan is awaiting approval", () => {

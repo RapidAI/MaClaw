@@ -334,16 +334,12 @@ func (h *IMMessageHandler) confirmRiskSkillInstall(
 	platform string,
 	userID string,
 ) bool {
-	if platform == "" {
-		log.Printf("[critical-confirm] fail-closed: empty platform for skill %q", skillName)
+	if h == nil || h.app == nil || strings.TrimSpace(platform) == "" {
+		log.Printf("[critical-confirm] fail-closed: confirmation channel unavailable for skill %q (platform=%q)", skillName, platform)
 		return false
 	}
 
 	confirmID := nextSkillConfirmID("crit")
-	lang := h.skillConfirmLang()
-	promptText := buildSkillRiskPromptForLang(lang, skillName, source, level, factors)
-	confirmLabel, rejectLabel := localizedSkillInstallActionLabels(lang)
-
 	entry := &pendingCriticalConfirmEntry{
 		Ch: make(chan criticalRiskConfirmResponse, 1),
 	}
@@ -357,30 +353,39 @@ func (h *IMMessageHandler) confirmRiskSkillInstall(
 		time.Sleep(confirmTimeout)
 		if entry.tryResolve() {
 			h.pendingCriticalConfirm.Delete(confirmID)
+			h.clearCriticalConfirmIM(confirmID)
 			close(entry.Ch)
 			log.Printf("[critical-confirm] cleanup: confirmID=%s expired after %v", confirmID, confirmTimeout)
 		}
 	}()
 
+	// Register before localization. skillConfirmLang reads config, and a slow
+	// read must not hide the pending confirmation from the caller.
+	lang := h.skillConfirmLang()
+	promptText := buildSkillRiskPromptForLang(lang, skillName, source, level, factors)
+	confirmLabel, rejectLabel := localizedSkillInstallActionLabels(lang)
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return h.finishCancelledCriticalConfirm(entry, confirmID, skillName)
+	}
+
 	// Dispatch confirmation UI.
 	switch {
 	case normalizeIMMessagePlatformKind(platform).IsDesktop():
-		if h.app != nil {
-			payload := map[string]interface{}{
-				"confirm_id": confirmID,
-				"summary":    promptText,
-				"lang":       lang,
-				"actions": []map[string]string{
-					{"label": confirmLabel, "command": "confirm"},
-					{"label": rejectLabel, "command": "reject"},
-				},
-			}
-			h.app.emitEvent("critical-risk-confirm", payload)
-			log.Printf("[critical-confirm] desktop event emitted confirm_id=%s skill=%q", confirmID, skillName)
-		} else {
-			log.Printf("[critical-confirm] fail-closed: app is nil for desktop platform, skill %q", skillName)
-			return false
+		payload := map[string]interface{}{
+			"confirm_id": confirmID,
+			"summary":    promptText,
+			"lang":       lang,
+			"actions": []map[string]string{
+				{"label": confirmLabel, "command": "confirm"},
+				{"label": rejectLabel, "command": "reject"},
+			},
 		}
+		h.app.emitEvent("critical-risk-confirm", payload)
+		log.Printf("[critical-confirm] desktop event emitted confirm_id=%s skill=%q", confirmID, skillName)
 
 	default:
 		displayText := FormatAskUserForDisplay(&AskUserRequest{
@@ -388,20 +393,15 @@ func (h *IMMessageHandler) confirmRiskSkillInstall(
 			Options:   []string{confirmLabel, rejectLabel},
 			InputType: askUserInputConfirm.String(),
 		})
-		if h.app != nil {
-			imConfirmKey := platform + ":" + userID
-			h.pendingCriticalConfirmIM.Store(imConfirmKey, confirmID)
-			hubClient := h.app.hubClient()
-			if hubClient != nil {
-				if err := hubClient.SendIMProactiveMessage(displayText); err != nil {
-					log.Printf("[critical-confirm] failed to send proactive message for confirm_id=%s: %v", confirmID, err)
-				}
+		imConfirmKey := platform + ":" + userID
+		h.pendingCriticalConfirmIM.Store(imConfirmKey, confirmID)
+		hubClient := h.app.hubClient()
+		if hubClient != nil {
+			if err := hubClient.SendIMProactiveMessage(displayText); err != nil {
+				log.Printf("[critical-confirm] failed to send proactive message for confirm_id=%s: %v", confirmID, err)
 			}
-			log.Printf("[critical-confirm] IM proactive message sent confirm_id=%s platform=%s skill=%q", confirmID, platform, skillName)
-		} else {
-			log.Printf("[critical-confirm] fail-closed: app is nil for IM platform %s, skill %q", platform, skillName)
-			return false
 		}
+		log.Printf("[critical-confirm] IM proactive message sent confirm_id=%s platform=%s skill=%q", confirmID, platform, skillName)
 	}
 
 	// Block until: user responds, channel closed (timeout), or caller cancelled.
@@ -416,11 +416,44 @@ func (h *IMMessageHandler) confirmRiskSkillInstall(
 		return resp.Confirmed
 
 	case <-ctx.Done():
-		// Caller's context cancelled — return false but do NOT clean up.
-		// The cleanup goroutine owns the entry's lifetime.
-		log.Printf("[critical-confirm] context cancelled confirm_id=%s skill=%q — channel stays alive for user", confirmID, skillName)
+		return h.finishCancelledCriticalConfirm(entry, confirmID, skillName)
+	}
+}
+
+// finishCancelledCriticalConfirm retires a prompt whose caller is already gone.
+// A response that won the race is still honored. The IM reply key is removed so
+// the user's next message is not consumed as a stale install decision.
+func (h *IMMessageHandler) finishCancelledCriticalConfirm(entry *pendingCriticalConfirmEntry, confirmID, skillName string) bool {
+	if entry != nil && entry.tryResolve() {
+		if h != nil {
+			h.pendingCriticalConfirm.Delete(confirmID)
+			h.clearCriticalConfirmIM(confirmID)
+		}
+		log.Printf("[critical-confirm] context cancelled confirm_id=%s skill=%q", confirmID, skillName)
 		return false
 	}
+	if entry == nil {
+		return false
+	}
+	resp, ok := <-entry.Ch
+	if !ok {
+		log.Printf("[critical-confirm] context cancelled confirm_id=%s skill=%q", confirmID, skillName)
+		return false
+	}
+	log.Printf("[critical-confirm] received response confirm_id=%s confirmed=%v", confirmID, resp.Confirmed)
+	return resp.Confirmed
+}
+
+func (h *IMMessageHandler) clearCriticalConfirmIM(confirmID string) {
+	if h == nil || confirmID == "" {
+		return
+	}
+	h.pendingCriticalConfirmIM.Range(func(key, value interface{}) bool {
+		if id, _ := value.(string); id == confirmID {
+			h.pendingCriticalConfirmIM.Delete(key)
+		}
+		return true
+	})
 }
 
 // ResolveCriticalConfirm is called by the frontend or IM gateway when the user

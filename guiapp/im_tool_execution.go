@@ -470,7 +470,7 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	emitCodingSubAgentCodeSessionStart(h.app, codeSessionID, previewRoutePath)
 	defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, previewRoutePath)
 	if opts.Context != nil {
-		opts.Context.codeSessionID = codeSessionID
+		opts.Context.setCodeSessionID(codeSessionID)
 	}
 	result := runner(
 		h,

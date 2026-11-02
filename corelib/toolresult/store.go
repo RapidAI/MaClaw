@@ -286,7 +286,7 @@ func appendHandleFooter(preview string, h *Handle) string {
 	fmt.Fprintf(&b, "tool: %s\n", modelVisibleToolName(h.ToolName))
 	fmt.Fprintf(&b, "original_bytes: %d\n", h.OriginalBytes)
 	fmt.Fprintf(&b, "preview_bytes: %d\n", h.PreviewBytes)
-	b.WriteString("hint: 完整结果已落盘。需要细节时用 read_tool_result(id=..., offset, limit) 分段读取；勿要求模型复述全文。\n")
+	b.WriteString("hint: 完整结果已落盘。需要细节时用 read_tool_result(id=...) 读取一页，不要传 limit。若返回 truncated: true，再把 offset 设为结果里 next_offset 那一行的整数继续，不要重复同一个 offset。勿要求模型复述全文。\n")
 	return b.String()
 }
 

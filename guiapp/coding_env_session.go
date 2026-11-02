@@ -85,6 +85,10 @@ type stickyCodingWorkbenchMemory struct {
 	SkipNextPlan bool `json:"skip_next_plan,omitempty"`
 	// StepStatuses is live Todo status for the active multi-step plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// StepsEmitSeq orders checklist snapshots. Unix seconds collide when a
+	// plan is confirmed in the same second it was stored, and a late copy of
+	// that earlier snapshot would put Start / Skip / Reject back.
+	StepsEmitSeq int64 `json:"steps_emit_seq,omitempty"`
 	// LastOutcome is the finished turn's terminal result as a workflow-status
 	// word ("completed" | "failed" | "interrupted" | "cancelled"), written with
 	// LastOutcomeAtUnix by the same turn that produced it. The task list

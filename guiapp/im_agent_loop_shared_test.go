@@ -112,6 +112,9 @@ func TestIdenticalSuccessIsPollFollowsCommitCapability(t *testing.T) {
 	if (&sharedAgentLoopCallbacks{}).IdenticalSuccessIsPoll("office") != true {
 		t.Fatal("a host with no surface must keep identical success as a poll")
 	}
+	if (&sharedAgentLoopCallbacks{}).IdenticalSuccessIsPoll("read_tool_result") {
+		t.Fatal("a spilled page is a stored blob, not a live poll")
+	}
 }
 
 // The handoff path used to append the next call only in process memory.

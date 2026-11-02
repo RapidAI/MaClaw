@@ -45,16 +45,19 @@ func TestDesktopBotProgressCases(t *testing.T) {
 	t.Run("helper_three_line_report", func(t *testing.T) {
 		c := readGUIProgressCase(t, "helper_three_line_report")
 		body := c.Trace + "\n1. " + c.Lines[0] + "\n2. " + c.Lines[1] + "\n3. " + c.Lines[2] + "\n文件：" + c.Path
-		result := chatTaskResultFromAgentResponse(&IMAgentResponse{Text: body}, nil)
+		helper := &LoopContext{ComputerHelper: true}
+		result := chatTaskResultFromAgentResponse(&IMAgentResponse{Text: body}, helper)
 		if result.Err != nil {
 			t.Fatal(result.Err)
 		}
 		if strings.Contains(result.Text, c.Trace) || !strings.Contains(result.Text, c.Lines[0]) || !strings.Contains(result.Text, c.Path) {
 			t.Fatalf("main session text = %q", result.Text)
 		}
-		empty := chatTaskResultFromAgentResponse(&IMAgentResponse{Text: c.EmptyBody}, nil)
-		if empty.Err == nil || strings.Contains(empty.Err.Error(), c.Trace) {
-			t.Fatalf("empty = %+v", empty)
+		// A final message that is not the four-line card stays the reply.
+		// Collapsing it used to fail the task or leave empty numbered lines.
+		plain := chatTaskResultFromAgentResponse(&IMAgentResponse{Text: c.EmptyBody, LocalFilePaths: []string{c.Path}}, helper)
+		if plain.Err != nil || plain.Text != c.EmptyBody || strings.Contains(plain.Text, "1. ") {
+			t.Fatalf("non-report = %+v", plain)
 		}
 	})
 

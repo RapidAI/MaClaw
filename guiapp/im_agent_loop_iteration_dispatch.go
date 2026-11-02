@@ -208,6 +208,10 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	// It must use the same routed snapshot that will issue the LLM request;
 	// otherwise a context-only escalation first takes effect one round late.
 	roundCfg := activeAgentLoopConfig(opts.RunState, opts.Config)
+	toolCalls := 0
+	if opts.RunState != nil {
+		toolCalls = opts.RunState.TotalToolCallsInLoop
+	}
 	phaseStartedAt := time.Now()
 	roundPrep := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
 		Context:                 opts.Context,
@@ -218,6 +222,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		MinIterations:           opts.MinIterations,
 		ConfigMax:               opts.ConfigMax,
 		ChatFinalizeGrace:       opts.ChatFinalizeGrace,
+		ToolCalls:               toolCalls,
 		Config:                  roundCfg,
 		Conversation:            *opts.Conversation,
 		Tools:                   *opts.Tools,

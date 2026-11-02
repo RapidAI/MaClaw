@@ -413,7 +413,7 @@ func (s experienceSkillStore) scanBeforePersist(entry *corelib.NLSkillEntry, ope
 		}
 		return nil, fmt.Errorf("experience skill %s security scan produced no report", operation)
 	}
-	if app != nil && app.skillInstallScanShouldBlock(report) {
+	if app != nil && app.skillInstallUnattendedShouldBlock(report) {
 		if app != nil {
 			app.logSkillInstallSecurityEvent(
 				security.AuditActionHubSkillReject,

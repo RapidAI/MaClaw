@@ -1395,6 +1395,34 @@ func TestHydrateParentExecutionWaitsForTheScan(t *testing.T) {
 	}
 }
 
+func TestRestartSlotKeepsFullExecutionWithoutParentTools(t *testing.T) {
+	const userID = "desktop-user:restart-slot"
+	mem := agent.NewConversationMemory()
+	t.Cleanup(mem.Stop)
+	mem.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-restart",
+		UserID:   userID,
+		Status:   agent.UnfinishedTaskSlotStatusInterrupted,
+		Source:   agent.UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		LastTask: "生成小朋友的识字书",
+	})
+	if !mem.BindUnfinishedSlot(userID, "slot-restart") {
+		t.Fatal("bind restart slot")
+	}
+	h := &IMMessageHandler{memory: mem}
+	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", TaskType: "general", Reason: "semantic capability-managed lookup"}
+	got := h.continuationKeepsParentExecution(light, userID, "下一页用真实照片", nil)
+	if got.IsLight() || got.Reason != "restarted task keeps execution tools" {
+		t.Fatalf("bound restart slot stayed on the light profile: %+v", got)
+	}
+
+	plain := agent.NewConversationMemory()
+	t.Cleanup(plain.Stop)
+	if got := (&IMMessageHandler{memory: plain}).continuationKeepsParentExecution(light, userID, "下一页用真实照片", nil); !got.IsLight() {
+		t.Fatalf("a light turn without a restart slot became full: %+v", got)
+	}
+}
+
 func TestHydrateParentExecutionReadsTypedToolCalls(t *testing.T) {
 	const userID = "desktop-user:typed-calls"
 	mem := agent.NewConversationMemory()
@@ -2266,6 +2294,52 @@ func TestAnswerOnlyTurnKeepsCarriedExecutionTools(t *testing.T) {
 	}
 }
 
+func TestParentExecutionOmitsArtifactBoundCatalog(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.noteParentExecution("desktop-user:resume", true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+		{"function": map[string]interface{}{"name": "asr"}},
+		{"function": map[string]interface{}{"name": "send_file"}},
+		{"function": map[string]interface{}{"name": "read_file"}},
+	})
+	got := h.parentExecutionTools("desktop-user:resume")
+	for _, name := range got {
+		if name == "asr" || name == "send_file" {
+			t.Fatalf("artifact-bound catalog neighbor recorded as the route: %v", got)
+		}
+	}
+	if len(got) != 2 || got[0] != "bash" || got[1] != "read_file" {
+		t.Fatalf("route = %v, want bash and read_file", got)
+	}
+}
+
+func TestAudioObligationKeepsTranscribeRoute(t *testing.T) {
+	matched := parentExecutionNamesForObligation([]string{"bash", "asr", "send_file"}, map[coretool.CapabilityID]bool{
+		coretool.CapabilityAudioTranscribeSpeech: true,
+	})
+	if len(matched) != 1 || matched[0] != "asr" {
+		t.Fatalf("transcription obligation route = %v, want asr", matched)
+	}
+	if got := omitArtifactBoundRouteNames([]string{"bash", "asr"}); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("catalog neighbor filter = %v, want bash", got)
+	}
+	if got := nonLightHistoryNames([]string{"asr", "bash"}); len(got) != 2 || got[0] != "asr" || got[1] != "bash" {
+		t.Fatalf("a real asr call must survive hydrate, got %v", got)
+	}
+}
+
+func TestLookupCarryDoesNotMintArtifactBoundNeeds(t *testing.T) {
+	needs, added := ensureLookupContinuationCarriedNeeds(nil, []string{"bash", "asr", "send_file", "send_to_im", "office", "mailbox_delete", "database", "delegate_task", "record_audio"}, 0.9)
+	if len(added) != 1 || added[0] != string(coretool.CapabilityShellExecuteLocal) {
+		t.Fatalf("carried capabilities = %v, want only the shell", added)
+	}
+	for _, need := range needs {
+		if artifactBoundCapability(need.Capability) {
+			t.Fatalf("carry minted an artifact-bound need: %+v", need)
+		}
+	}
+}
+
 func TestLookupCarryOpensSiblingBudget(t *testing.T) {
 	needs, added := ensureLookupContinuationCarriedNeeds(nil, []string{"bash", "web_search"}, 0.9)
 	if lookupCarryNeedIDPrefix <= "need:lookup-continuation:" {
@@ -2318,15 +2392,36 @@ func TestLookupContinuationCarriedGrant(t *testing.T) {
 	if lookupContinuationRepeatAllowed(lookup, []string{"bash"}, "download_file") {
 		t.Fatal("a lookup must not open another download")
 	}
-	bashPrompt := lookupContinuationToolPrompt([]string{"bash", "web_search"}, intent.LabelSearch)
+	bashPrompt := lookupContinuationToolPrompt([]string{"bash", "web_search", "asr", "send_file", "edit_file", "office", "mailbox_delete"}, intent.LabelSearch)
 	if !strings.Contains(bashPrompt, "(bash)") || !strings.Contains(bashPrompt, "call web_fetch") || !strings.Contains(bashPrompt, "not to run shell") {
 		t.Fatalf("lookup prompt = %q", bashPrompt)
+	}
+	if strings.Contains(bashPrompt, "asr") || strings.Contains(bashPrompt, "send_file") || strings.Contains(bashPrompt, "edit_file") ||
+		strings.Contains(bashPrompt, "office") || strings.Contains(bashPrompt, "mailbox_delete") {
+		t.Fatalf("lookup prompt named a tool this turn will not publish: %q", bashPrompt)
+	}
+	if lookupContinuationCarriedGrant(lookup, []string{"bash", "ssh", "asr", "send_file", "office", "mailbox_delete"}, "asr") ||
+		lookupContinuationCarriedGrant(lookup, []string{"bash", "ssh", "asr", "send_file", "office", "mailbox_delete"}, "send_file") ||
+		lookupContinuationCarriedGrant(lookup, []string{"bash", "ssh", "asr", "send_file", "office", "mailbox_delete"}, "office") ||
+		lookupContinuationCarriedGrant(lookup, []string{"bash", "ssh", "asr", "send_file", "office", "mailbox_delete"}, "mailbox_delete") {
+		t.Fatal("a lookup must not authorize catalog neighbors")
+	}
+	if !lookupContinuationCarriedGrant(lookup, []string{"bash", "ssh", "office"}, "ssh") {
+		t.Fatal("carried ssh must stay authorized on a lookup")
 	}
 	if strings.Contains(bashPrompt, "web_search)") || strings.Contains(bashPrompt, "(web_search") {
 		t.Fatal("lookup prompt must not authorize a light tool by name")
 	}
 	if strings.Contains(lookupContinuationToolPrompt(nil, intent.LabelSearch), "bash") {
 		t.Fatal("lookup prompt must not name bash when nothing was carried")
+	}
+	catalogOnly := lookupContinuationToolPrompt([]string{"office", "asr", "mailbox_delete"}, intent.LabelSearch)
+	if strings.Contains(catalogOnly, "not to run shell") || strings.Contains(catalogOnly, "files and shell") {
+		t.Fatalf("lookup prompt invited shell when the carry has no workspace tool: %q", catalogOnly)
+	}
+	sshPrompt := lookupContinuationToolPrompt([]string{"ssh", "office"}, intent.LabelSearch)
+	if !strings.Contains(sshPrompt, "(ssh)") || !strings.Contains(sshPrompt, "listed ssh tool may run") || strings.Contains(sshPrompt, "not to run shell") {
+		t.Fatalf("ssh lookup prompt = %q", sshPrompt)
 	}
 	if strings.Contains(lookupContinuationToolPrompt([]string{"bash"}, intent.LabelWebFetch), "After web_search") {
 		t.Fatal("a page-fetch lookup must not send the model to web_search first")

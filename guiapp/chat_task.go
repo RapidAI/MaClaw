@@ -725,6 +725,13 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 	return chatTaskResultFromAgentResponse(lastResp, lastLoop)
 }
 
+// chatTaskResultFromAgentResponse finishes a background task.
+//
+// A computer helper is contracted to hand back three conclusion lines and a
+// file path. CollapseHelperReport is that parser: it keeps the card and drops
+// the trace. Every other task's final text is the result the person sees.
+// Running that text through the helper parser drops the reply and, when a
+// file was produced, emits empty "1. 2. 3." slots plus a 文件： line.
 func chatTaskResultFromAgentResponse(resp *IMAgentResponse, loop *LoopContext) chatTaskRunResult {
 	if resp == nil {
 		return chatTaskRunResult{Err: fmt.Errorf("chat task returned no result")}
@@ -734,11 +741,19 @@ func chatTaskResultFromAgentResponse(resp *IMAgentResponse, loop *LoopContext) c
 	if errText := strings.TrimSpace(resp.Error); errText != "" {
 		return chatTaskRunResult{Err: fmt.Errorf("%s", errText), Text: text, Artifacts: artifacts}
 	}
-	shown, err := desktopbot.CollapseHelperReport(text, artifacts)
-	if err != nil {
-		return chatTaskRunResult{Err: err, Artifacts: artifacts}
+	// Only a helper card is parsed. A normal reply that also produced a file
+	// is the result; collapsing it drops the reply and leaves empty numbers.
+	if loop != nil && loop.ComputerHelper && desktopbot.HelperReport(text) {
+		shown, err := desktopbot.CollapseHelperReport(text, artifacts)
+		if err != nil {
+			return chatTaskRunResult{Err: err, Artifacts: artifacts}
+		}
+		return chatTaskRunResult{Text: shown, Artifacts: artifacts}
 	}
-	return chatTaskRunResult{Text: shown, Artifacts: artifacts}
+	if text == "" && len(artifacts) == 0 {
+		return chatTaskRunResult{Err: fmt.Errorf("chat task returned no result")}
+	}
+	return chatTaskRunResult{Text: text, Artifacts: artifacts}
 }
 
 // openHelperMemory starts a helper without the main session.
@@ -944,7 +959,7 @@ func (r *chatTaskRegistry) deliverResult(snap AIAssistantChatTask) {
 	if r.handler != nil && r.handler.memory != nil && snap.SessionKey != "" {
 		r.handler.memory.Append(snap.SessionKey, agent.ConversationEntry{
 			Role:    "assistant",
-			Content: formatChatTaskResultNote(snap.Title, snap.ResultText),
+			Content: formatChatTaskResultNote(snap.Title, snap.ResultText, snap.ArtifactPaths),
 		})
 	}
 	if r.handler == nil || r.handler.app == nil {
@@ -1393,12 +1408,39 @@ func (h *IMMessageHandler) chatTaskDispatchGuidance(sessionKey string) string {
 }
 
 func chatTaskWorkerGuidance() string {
-	return "\n\n[Background work]\n" +
-		"Do the work. Your final message is what the person reads. Use their language, plain words, and lead with the result.\n" +
-		"Progress is for a real change only: a file is ready, you are blocked, or a step failed. Do not narrate each command.\n" +
-		"Call chat_task_request_input only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed.\n" +
-		"Never say the work is done unless you verified it. If you are blocked or it failed, say that actual state. Do not invent results.\n" +
-		"Do not mention task ids, tool names, or internal lanes. Do not start another task.\n"
+	return chatTaskRunGuidance(false)
+}
+
+// chatTaskHelperReportGuidance is the computer-helper contract.
+// CollapseHelperReport parses exactly these four lines and drops everything else.
+// The person-facing worker guidance must not be added on top: it tells the
+// model to write a normal reply, and the parser then throws that reply away.
+func chatTaskHelperReportGuidance() string {
+	return chatTaskRunGuidance(true)
+}
+
+func chatTaskRunGuidance(helperReport bool) string {
+	var b strings.Builder
+	b.WriteString("\n\n[Background work]\n")
+	if helperReport {
+		b.WriteString("Do the work. The final message is a helper report, not a chat reply.\n")
+	} else {
+		b.WriteString("Do the work. Your final message is what the person reads. Use their language, plain words, and lead with the result.\n")
+	}
+	b.WriteString("Progress is for a real change only: a file is ready, you are blocked, or a step failed. Do not narrate each command.\n")
+	b.WriteString("Call chat_task_request_input only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed.\n")
+	b.WriteString("Never say the work is done unless you verified it. If you are blocked or it failed, say that actual state. Do not invent results.\n")
+	b.WriteString("Do not mention task ids, tool names, or internal lanes. Do not start another task.\n")
+	if helperReport {
+		// Last, so the shared rules above cannot be read as permission to add a fifth line.
+		b.WriteString("End with exactly four lines and no other text:\n")
+		b.WriteString("1. what finished\n")
+		b.WriteString("2. what is left\n")
+		b.WriteString("3. what is blocked, or 无\n")
+		b.WriteString("文件：one absolute path, or 无\n")
+		b.WriteString("Use the person's language on the three conclusion lines. Keep the 文件： label.\n")
+	}
+	return b.String()
 }
 
 func (h *IMMessageHandler) tryChatTaskStatusReply(msg IMUserMessage) (*IMAgentResponse, bool) {
@@ -2273,16 +2315,113 @@ func truncateChatTaskText(text string, maxRunes int) string {
 	return strings.TrimSpace(string(runes[:maxRunes])) + "…"
 }
 
-func formatChatTaskResultNote(title, result string) string {
-	result = truncateChatTaskText(strings.TrimSpace(result), 800)
-	if result != "" {
-		return result
+func formatChatTaskResultNote(title, result string, artifacts []string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		result = strings.TrimSpace(title)
 	}
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return ""
+	return chatTaskTextWithArtifacts(result, artifacts, 800)
+}
+
+// artifactPathsNotIn returns produced files the reply does not already name.
+// Slash direction does not make a second copy of the same path.
+func artifactPathsNotIn(text string, artifacts []string) []string {
+	var missing []string
+	seen := map[string]struct{}{}
+	for _, path := range chatTaskUniquePaths(artifacts) {
+		key := foldPathKey(path)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if textNamesPath(text, path) {
+			continue
+		}
+		missing = append(missing, path)
 	}
-	return title
+	return missing
+}
+
+func textNamesPath(text, path string) bool {
+	if text == "" || path == "" {
+		return false
+	}
+	if namesPathForm(text, path) {
+		return true
+	}
+	// Windows paths treat case and slash direction as the same file.
+	if !strings.ContainsAny(path, `:/\\`) {
+		return false
+	}
+	return namesPathForm(foldPathKey(text), foldPathKey(path))
+}
+
+func foldPathKey(s string) string {
+	return strings.ToLower(strings.ReplaceAll(s, `/`, `\`))
+}
+
+// namesPathForm matches path as a whole name. "a.pdf.bak" is not a mention
+// of "a.pdf". A sentence period after the name is not an extension.
+func namesPathForm(text, path string) bool {
+	if path == "" {
+		return false
+	}
+	for start := 0; start < len(text); {
+		rel := strings.Index(text[start:], path)
+		if rel < 0 {
+			return false
+		}
+		next := start + rel + len(path)
+		if !pathContinues(text, next) {
+			return true
+		}
+		start = next
+	}
+	return false
+}
+
+func pathContinues(text string, i int) bool {
+	if i >= len(text) {
+		return false
+	}
+	r, size := utf8.DecodeRuneInString(text[i:])
+	if r == utf8.RuneError && size == 1 {
+		return false
+	}
+	if r == '/' || r == '\\' || r == '_' || r == '-' || isASCIIPathName(r) {
+		return true
+	}
+	if r != '.' {
+		return false
+	}
+	n, _ := utf8.DecodeRuneInString(text[i+size:])
+	return isASCIIPathName(n) || n == '_' || n == '-'
+}
+
+func isASCIIPathName(r rune) bool {
+	return r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+}
+
+// chatTaskNotedArtifactLimit keeps a long write-set from replacing the reply
+// in a note or a status answer. The task still stores every path.
+const chatTaskNotedArtifactLimit = 3
+
+func chatTaskTextWithArtifacts(text string, artifacts []string, maxRunes int) string {
+	text = truncateChatTaskText(strings.TrimSpace(text), maxRunes)
+	missing := artifactPathsNotIn(text, artifacts)
+	if len(missing) == 0 {
+		return text
+	}
+	// Newline, not space: a path may itself contain spaces.
+	extra := strings.Join(missing, "\n")
+	if len(missing) > chatTaskNotedArtifactLimit {
+		extra = strings.Join(missing[:chatTaskNotedArtifactLimit], "\n")
+		extra += fmt.Sprintf("\n+%d", len(missing)-chatTaskNotedArtifactLimit)
+	}
+	if text == "" {
+		return truncateChatTaskText(extra, maxRunes)
+	}
+	return text + "\n" + extra
 }
 
 func formatChatTaskStatus(tasks []AIAssistantChatTask, lang string, chinese bool) string {
@@ -2308,8 +2447,8 @@ func formatChatTaskStatus(tasks []AIAssistantChatTask, lang string, chinese bool
 			} else {
 				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s is done.", "%s已经做好。"), title)
 			}
-			if task.ResultText != "" {
-				fmt.Fprintf(&b, " %s", truncateChatTaskText(task.ResultText, 160))
+			if detail := chatTaskTextWithArtifacts(task.ResultText, task.ArtifactPaths, 160); detail != "" {
+				fmt.Fprintf(&b, " %s", detail)
 			}
 			b.WriteByte('\n')
 		case chatTaskFailed:

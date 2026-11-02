@@ -209,11 +209,13 @@ export function appendChatTaskResultMessage<T extends ChatTaskMessage>(messages:
     const files = paths.length > 0 ? paths : (single ? [single] : undefined);
     const text = String(payload.text || "").trim();
     if (!text && !(files && files.length)) return messages;
+    // Files stay on localFilePaths and render as the artifact card.
+    // Copying them into the body drew the path a second time above 产出物.
     return [...messages, {
         id,
         role: "assistant",
         kind: "chatTask",
-        content: text || (files || []).join("\n"),
+        content: text,
         sessionKey: String(payload.session_key || "").trim() || undefined,
         localFilePath: single || undefined,
         localFilePaths: files,

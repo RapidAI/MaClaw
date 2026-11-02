@@ -483,8 +483,8 @@ func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry core
 	skillDir := d.localSkillDir(entry.Name)
 	files := d.packageLocalFilesFromDir(skillDir)
 
-	// Auto-publish has no interactive approval channel. Strict mode blocks
-	// high/critical reports; other modes record the finding and allow publish.
+	// Auto-publish has no confirmation channel. Deny blocks. Strict Ask also
+	// blocks. Standard Confirm* records the finding and allows publish.
 	scanEntry := entry
 	scanEntry.SkillDir = skillDir
 	var report *cskill.ScanReport
@@ -507,7 +507,7 @@ func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry core
 		} else {
 			return fmt.Errorf("skill auto-publish security scan produced no report")
 		}
-	} else if d.app != nil && d.app.skillInstallScanShouldBlock(report) {
+	} else if d.app != nil && d.app.skillInstallUnattendedShouldBlock(report) {
 		if d.auditLog != nil {
 			_ = d.auditLog.Log(security.AuditEntry{
 				Timestamp:    time.Now(),

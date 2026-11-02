@@ -474,9 +474,9 @@ func buildUnfinishedSlotResumeContextWithLang(slot *agent.UnfinishedTaskSlot, la
 			"- 恢復安全：此前工作可能已經修改了工作區或外部系統。再次執行本機修改或外部操作前，先檢查目前狀態。\n"))
 	}
 	b.WriteString(unfinishedSlotText(lang,
-		"User explicitly chose to continue this unfinished task. Continue only that task; do not mix in other old tasks.\n",
-		"\u7528\u6237\u5df2\u663e\u5f0f\u9009\u62e9\u7ee7\u7eed\u8fd9\u4e2a\u672a\u5b8c\u6210\u4efb\u52a1\u3002\u8bf7\u4ec5\u56f4\u7ed5\u8be5\u4efb\u52a1\u7ee7\u7eed\uff0c\u4e0d\u8981\u6df7\u5165\u5176\u4ed6\u65e7\u4efb\u52a1\u3002\n",
-		"\u4f7f\u7528\u8005\u5df2\u986f\u5f0f\u9078\u64c7\u7e7c\u7e8c\u9019\u500b\u672a\u5b8c\u6210\u4efb\u52d9\u3002\u8acb\u50c5\u570d\u7e5e\u8a72\u4efb\u52d9\u7e7c\u7e8c\uff0c\u4e0d\u8981\u6df7\u5165\u5176\u4ed6\u820a\u4efb\u52d9\u3002\n"))
+		"Continue only this unfinished task; do not mix in other old tasks. Inspect the current files and progress first. Do not redo finished work, and do not replay an interrupted tool just because the task was recovered.\n",
+		"这一轮只继续这个未完成任务，不要混入其他旧任务。先看当前文件和已有进度，不要重做已经完成的部分，也不要因为任务被恢复就重放中断时的工具。\n",
+		"這一輪只繼續這個未完成任務，不要混入其他舊任務。先看目前檔案和已有進度，不要重做已經完成的部分，也不要因為任務被恢復就重放中斷時的工具。\n"))
 	return b.String()
 }
 
@@ -535,16 +535,64 @@ func buildUnfinishedSlotHintWithLang(slot *agent.UnfinishedTaskSlot, lang string
 // recoveredSlotMatchesSession reports whether a pending recovery slot belongs
 // to the conversation that just received a message. An expert session is one
 // conversation, and its checkpoint may still name the process default from
-// before the task directory was attached. Two different chosen directories
-// are different tasks.
+// before the task directory was attached. A project-tab session is also one
+// task: after a restart its live directory can fall back to the process
+// default while the slot still names the task directory, or the reverse.
+// The task directory and its workspace sandbox are the same task. A slot
+// for a different task directory is not. An expert session, and a desktop
+// session with no project, still refuse two chosen directories.
 func recoveredSlotMatchesSession(userID string, slot *agent.UnfinishedTaskSlot, currentProjectPath string) bool {
 	if unfinishedSlotProjectMatchesCurrent(slot, currentProjectPath) {
 		return true
 	}
-	if slot == nil || expertIDFromUserID(userID) == "" {
+	if slot == nil {
 		return false
 	}
-	return isProcessDefaultWorkspacePath(slot.ProjectPath) || isProcessDefaultWorkspacePath(currentProjectPath)
+	if expertIDFromUserID(userID) != "" && (isProcessDefaultWorkspacePath(slot.ProjectPath) || isProcessDefaultWorkspacePath(currentProjectPath)) {
+		return true
+	}
+	sessionProject := projectPathFromSessionOwnerID(userID)
+	if sessionProject == "" {
+		return false
+	}
+	slotPath := normalizeProjectSessionPath(slot.ProjectPath)
+	current := normalizeProjectSessionPath(currentProjectPath)
+	// The slot is this session when it names the task directory or that
+	// directory's workspace sandbox. The live directory may be either of
+	// those, or the process default after a restart. A tagged work root
+	// can sit outside both; the slot still belongs to this session.
+	if sameNormalizedPath(slotPath, sessionProject) || sameTaskWorkspace(slotPath, sessionProject) {
+		return true
+	}
+	if isProcessDefaultWorkspacePath(slotPath) && (current == "" || sameNormalizedPath(current, sessionProject) || sameTaskWorkspace(current, sessionProject) || isProcessDefaultWorkspacePath(current)) {
+		return true
+	}
+	if isProcessDefaultWorkspacePath(current) && (slotPath == "" || sameNormalizedPath(slotPath, sessionProject) || sameTaskWorkspace(slotPath, sessionProject)) {
+		return true
+	}
+	return false
+}
+
+// sameTaskWorkspace reports that one path is the other's managed-task
+// workspace sandbox. The process default workspace is not that sandbox.
+func sameTaskWorkspace(left, right string) bool {
+	left = normalizeProjectSessionPath(left)
+	right = normalizeProjectSessionPath(right)
+	if left == "" || right == "" || sameNormalizedPath(left, right) {
+		return false
+	}
+	if isProcessDefaultWorkspacePath(left) || isProcessDefaultWorkspacePath(right) {
+		return false
+	}
+	return sameNormalizedPath(left, taskWorkspaceSandbox(right)) || sameNormalizedPath(right, taskWorkspaceSandbox(left))
+}
+
+func taskWorkspaceSandbox(dir string) string {
+	dir = normalizeProjectSessionPath(dir)
+	if dir == "" || isProcessDefaultWorkspacePath(dir) || strings.EqualFold(filepath.Base(dir), "workspace") {
+		return ""
+	}
+	return normalizeProjectSessionPath(filepath.Join(dir, "workspace"))
 }
 
 func isProcessDefaultWorkspacePath(dir string) bool {

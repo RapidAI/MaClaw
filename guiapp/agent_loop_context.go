@@ -28,6 +28,13 @@ type LoopContext struct {
 	mu                sync.RWMutex
 	maxIterations     int // current max iterations for this loop
 	iteration         int // current iteration count
+	// iterationExtensions counts in-place refills after the counter runs out.
+	// The same loop keeps its tool transcript. A new task is not started.
+	iterationExtensions int
+	// iterationCeilingRaised is set when this turn grew the ceiling without a
+	// refill, such as the chat auto-extend. The next message restores the
+	// configured budget.
+	iterationCeilingRaised bool
 	status            LoopState
 	userCancelled     bool  // set only for an explicit user stop, before CancelC is closed
 	pauseAfterCurrent bool  // finish the in-flight request or subtask, then stop before the next one
@@ -462,6 +469,117 @@ func (c *LoopContext) AddMaxIterations(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.maxIterations += n
+}
+
+// extendedIterationCeiling is the limit last raised inside this loop.
+// A later refresh must not clamp it back down to the original budget.
+func (c *LoopContext) extendedIterationCeiling() (int, bool) {
+	if c == nil {
+		return 0, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.iterationExtensions <= 0 || c.maxIterations <= 0 {
+		return 0, false
+	}
+	return c.maxIterations, true
+}
+
+// setCodeSessionID publishes the preview session for this coding turn.
+// The next message clears it. Readers in the running loop take the same lock.
+func (c *LoopContext) setCodeSessionID(id string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.codeSessionID = id
+	c.mu.Unlock()
+}
+
+// codeSessionIDValue is the preview session for this coding turn.
+func (c *LoopContext) codeSessionIDValue() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.codeSessionID
+}
+
+// codingSessionOpen reports the preview session for the coding turn that is
+// on this loop. The workbench sets it before the task runs and the next
+// message clears it.
+func (c *LoopContext) codingSessionOpen() bool {
+	return strings.TrimSpace(c.codeSessionIDValue()) != ""
+}
+
+// claimIterationExtension allows one more wave of iterations in this loop.
+// A turn that never called a tool, a light lookup, and a cancelled turn stop.
+// An ordinary chat stops after the session wave cap. An unfinished coding
+// task does not: it keeps the same conversation until the work is done.
+func (c *LoopContext) claimIterationExtension(toolCalls int) bool {
+	return c.claimIterationExtensionForOpenTask(toolCalls, false)
+}
+
+// releaseTurnIterationExtension drops a previous turn's refill. The counter
+// and the raised ceiling belong to that turn. A reused loop must not keep
+// them, or the next message inherits a spent cap or an unfinished coding
+// session's open budget. codeSessionID is the preview session for one
+// coding turn; the workbench sets it again after this reset.
+func (c *LoopContext) releaseTurnIterationExtension(configuredMax int) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	raised := c.iterationExtensions > 0 || c.iterationCeilingRaised
+	c.iterationExtensions = 0
+	c.iterationCeilingRaised = false
+	c.codeSessionID = ""
+	if raised && configuredMax > 0 && c.maxIterations != configuredMax {
+		c.maxIterations = configuredMax
+	}
+}
+
+// turnIterationCeiling is the limit set for this turn, such as set_max_iterations.
+func (c *LoopContext) turnIterationCeiling() (int, bool) {
+	if c == nil {
+		return 0, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.iterationCeilingRaised || c.maxIterations <= 0 {
+		return 0, false
+	}
+	return c.maxIterations, true
+}
+
+// raiseIterationCeiling stores a limit that belongs to this turn. The next
+// message restores the configured budget.
+func (c *LoopContext) raiseIterationCeiling(n int) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.maxIterations = n
+	c.iterationCeilingRaised = true
+	c.mu.Unlock()
+}
+
+func (c *LoopContext) claimIterationExtensionForOpenTask(toolCalls int, codingStillOpen bool) bool {
+	if c == nil || toolCalls <= 0 || c.IsCancelled() || c.Runtime.Execution.IsLight() {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !codingStillOpen && strings.TrimSpace(c.codeSessionID) != "" {
+		codingStillOpen = true
+	}
+	if !codingStillOpen && c.iterationExtensions >= sessionRoundContinuationMaxWaves {
+		return false
+	}
+	c.iterationExtensions++
+	return true
 }
 
 func (c *LoopContext) MarkBackgroundTaskBoundaryExtended(key string) bool {

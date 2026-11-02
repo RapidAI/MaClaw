@@ -2979,6 +2979,13 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 			}
 		}
 		h.persistCodingWorkbenchPlans(userID, planMarkdown, sessionSeed)
+		// Store the approval gate before the steps snapshot. That snapshot
+		// carries pending_approval, and the UI drops Start / Skip / Reject as
+		// soon as the flag is false. Seeding steps first would emit
+		// pending_approval=false and hide the gate before this plan exists.
+		if planMode == codingPlanModeAuto || planMode == codingPlanModeApprove {
+			h.storeStickyPendingCodingPlan(userID, requestText, planMarkdown, tasks)
+		}
 		// Seed step statuses as pending for live Todo UI.
 		h.setStickyCodingStepStatuses(userID, codingWorkbenchStepsFromTasks(tasks, codingStepPending))
 	}
@@ -2988,9 +2995,6 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// steps before it can mutate the workspace.  "off" remains the explicit
 	// fast-execution override.
 	if planMode == codingPlanModeAuto || planMode == codingPlanModeApprove {
-		if userID != "" {
-			h.storeStickyPendingCodingPlan(userID, requestText, planMarkdown, tasks)
-		}
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("已规划 %d 个执行步骤，等待批准后执行", len(tasks)))
 		}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -151,15 +152,27 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 		scanner := NewSkillSecurityScanner(h.app, nil)
 		scanReport := scanner.ScanInstallStaged(ctx, skill, skill.SkillDir, sendStatus)
 		installScanReport = scanReport
-		if h.app.skillInstallScanShouldBlockForSource(scanReport, source) {
+		action, recordedWithoutChannel := h.app.skillInstallActionWithChannel(scanReport, source, strings.TrimSpace(platform) != "")
+		switch action {
+		case security.PolicyDeny:
 			cskill.CleanupStaging(stagingDir)
 			return skillInstallExecutionResult{Text: FormatScanReportForUser(scanReport, displayName), SilentFailure: true}
-		}
-		if h.app.skillInstallReviewNeedsConfirmationForSource(scanReport, source) {
-			confirmed := h.confirmRiskSkillInstall(ctx, displayName, source, scanReport.FinalLevel, scanReport.PatternAssessment.Factors, platform, userID)
+		case security.PolicyAsk:
+			confirmed := h.confirmRiskSkillInstall(ctx, displayName, source, scanReport.FinalLevel, skillInstallRiskFactors(scanReport), platform, userID)
 			if !confirmed {
 				cskill.CleanupStaging(stagingDir)
 				return skillInstallExecutionResult{Text: FormatScanReportForUser(scanReport, displayName), SilentFailure: true}
+			}
+		default:
+			if recordedWithoutChannel && h.getAuditLog() != nil {
+				_ = h.getAuditLog().Log(security.AuditEntry{
+					Timestamp:    time.Now(),
+					Action:       security.AuditActionHubSkillInstall,
+					ToolName:     source + "_skill_install",
+					RiskLevel:    scanReport.FinalLevel,
+					PolicyAction: security.PolicyAudit,
+					Result:       fmt.Sprintf("no confirmation channel; recorded %s-risk skill %s and allowed by current policy: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
+				})
 			}
 		}
 	}

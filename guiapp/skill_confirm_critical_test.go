@@ -270,20 +270,35 @@ func TestConfirmCriticalRisk_ContextCancellation(t *testing.T) {
 	h := &IMMessageHandler{app: &App{}}
 
 	ctx, cancel := context.WithCancel(context.Background())
-
-	// Cancel the context after a short delay so the function unblocks.
+	defer cancel()
+	done := make(chan bool, 1)
 	go func() {
-		time.Sleep(30 * time.Millisecond)
-		cancel()
+		done <- h.confirmCriticalRiskSkill(
+			ctx,
+			"dangerous-skill", "https://hub.example.com",
+			[]string{"rm -rf found"}, "feishu", "user1",
+		)
 	}()
 
-	result := h.confirmCriticalRiskSkill(
-		ctx,
-		"dangerous-skill", "https://hub.example.com",
-		[]string{"rm -rf found"}, "desktop", "user1",
-	)
-	if result {
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if _, ok := h.pendingCriticalConfirmIM.Load("feishu:user1"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("IM confirm key was not registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if result := <-done; result {
 		t.Fatal("expected false on context cancellation, got true")
+	}
+	if n := pendingCriticalConfirmCount(h); n != 0 {
+		t.Fatalf("cancelled confirm left %d pending confirmation(s)", n)
+	}
+	if _, ok := h.pendingCriticalConfirmIM.Load("feishu:user1"); ok {
+		t.Fatal("cancelled confirm left the IM reply key")
 	}
 }
 
@@ -429,6 +444,9 @@ func TestConfirmCriticalRisk_NilAppDesktop(t *testing.T) {
 	if result {
 		t.Fatal("expected false when app is nil (fail-closed), got true")
 	}
+	if n := pendingCriticalConfirmCount(h); n != 0 {
+		t.Fatalf("nil app left %d pending confirmation(s)", n)
+	}
 }
 
 // TestConfirmCriticalRisk_NilAppIM verifies fail-closed when app is nil
@@ -445,6 +463,21 @@ func TestConfirmCriticalRisk_NilAppIM(t *testing.T) {
 	if result {
 		t.Fatal("expected false when app is nil on IM (fail-closed), got true")
 	}
+	if n := pendingCriticalConfirmCount(h); n != 0 {
+		t.Fatalf("nil app left %d pending confirmation(s)", n)
+	}
+}
+
+func pendingCriticalConfirmCount(h *IMMessageHandler) int {
+	if h == nil {
+		return 0
+	}
+	n := 0
+	h.pendingCriticalConfirm.Range(func(_, _ interface{}) bool {
+		n++
+		return true
+	})
+	return n
 }
 
 // TestConfirmCriticalRisk_ConcurrentConfirmations verifies that multiple

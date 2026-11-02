@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
-import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksByWorkingDirectory, groupTasksIntoFolders, layoutWorkdirEntries, moveTaskKeysToFront, placeTaskOrderKeyAmong, TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY, TASK_WORKDIR_PIN_STORAGE_KEY, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskBlocks, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_ARCHIVE_EXPANDED_STORAGE_KEY, TASK_ARCHIVE_STORAGE_KEY, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, TASK_WORKDIR_COLLAPSE_STORAGE_KEY, taskCreationLabel, taskHomeFolderKind, taskListFolderKind, taskListStatusKind, taskOrderKey, taskSecondaryLabelFor, taskStatusBucketFor, taskWorkdirCollapseKey, taskWorkingDirectoryIdentity, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksByWorkingDirectory, groupTasksIntoFolders, layoutWorkdirEntries, moveTaskKeysToFront, newTaskSeedForWorkdirFolder, placeTaskOrderKeyAmong, TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY, TASK_WORKDIR_PIN_STORAGE_KEY, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskBlocks, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_ARCHIVE_EXPANDED_STORAGE_KEY, TASK_ARCHIVE_STORAGE_KEY, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, TASK_WORKDIR_COLLAPSE_STORAGE_KEY, taskCreationLabel, taskHomeFolderKind, taskListFolderKind, taskListStatusKind, taskOrderKey, taskSecondaryLabelFor, taskStatusBucketFor, taskWorkdirCollapseKey, taskWorkingDirectoryIdentity, workflowStatusForTask, workflowStatusForTaskRow, workdirFolderTaskType } from '../SidebarTaskManagement';
+import { draftFromWizardSeed } from '../../ai/task-config/taskDraft';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -6176,6 +6177,60 @@ describe('task workspace transfer', () => {
     });
 });
 
+describe('new task seed for a directory folder', () => {
+    it('keeps the folder directory and the session type the new-task page can hold', () => {
+        expect(workdirFolderTaskType('coding', [])).toBe('coding');
+        expect(workdirFolderTaskType('session', [])).toBe('chat');
+        const coding = { tags: ['coding_dev'], working_dir: 'E:/old' };
+        const chat = { tags: [] as string[], working_dir: 'E:/old' };
+        expect(workdirFolderTaskType('archive', [coding, coding, chat])).toBe('coding');
+        expect(workdirFolderTaskType('archive', [coding, chat])).toBe('coding');
+        expect(workdirFolderTaskType('archive', [chat, coding])).toBe('chat');
+        expect(workdirFolderTaskType('archive', [chat, chat, coding])).toBe('chat');
+
+        expect(newTaskSeedForWorkdirFolder({
+            kind: 'coding',
+            directoryKey: 'local:f:/test-prog',
+            directoryTitle: 'F:/test-prog',
+            tasks: [{ tags: ['coding_dev'], working_dir: 'F:/other' }],
+        })).toEqual({
+            taskType: 'coding',
+            workspace: { kind: 'local', localPath: 'F:/test-prog' },
+        });
+
+        expect(newTaskSeedForWorkdirFolder({
+            kind: 'coding',
+            directoryKey: 'cloud:cws_folder',
+            tasks: [{ tags: ['coding_dev', 'cloud_workspace:cws_folder'], working_dir: 'C:/cache/cws_folder' }],
+            cloudName: '经营分析',
+        })).toEqual({
+            taskType: 'chat',
+            workspace: { kind: 'cloud', cloudWorkspaceId: 'cws_folder', cloudName: '经营分析' },
+        });
+        expect(draftFromWizardSeed(newTaskSeedForWorkdirFolder({
+            kind: 'coding',
+            directoryKey: 'cloud:cws_folder',
+            tasks: [{ tags: ['coding_dev'], working_dir: 'C:/cache/cws_folder' }],
+            cloudName: '经营分析',
+        })).workspace.kind).toBe('cloud');
+
+        expect(newTaskSeedForWorkdirFolder({
+            kind: 'coding',
+            directoryKey: 'remote:home.rapidai.tech:55:/home/proj',
+            tasks: [
+                { tags: ['remote_coding_dev', 'remote_host:home.rapidai.tech', 'remote_port:55'] },
+                { tags: ['remote_coding_dev', 'remote_host:home.rapidai.tech', 'remote_user:ubuntu', 'remote_port:55', 'remote_workdir:/home/proj'] },
+            ],
+        })).toEqual({
+            taskType: 'coding',
+            workspace: {
+                kind: 'remote',
+                remote: { host: 'home.rapidai.tech', port: 55, user: 'ubuntu', password: '', workDir: '/home/proj' },
+            },
+        });
+    });
+});
+
 describe('task list folders', () => {
     const chat = { ...baseProject, id: 'chat-1', name: 'Design a site', project_path: 'D:/work/tasks/chat', tags: [] as string[] };
     const coding = { ...baseProject, id: 'code-1', name: 'Coding feature', project_path: 'D:/work/tasks/code', tags: ['coding_dev'] };
@@ -6456,6 +6511,121 @@ describe('task list folders', () => {
             localStorage.removeItem(TASK_WORKDIR_PIN_STORAGE_KEY);
             localStorage.removeItem(TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY);
         }
+    });
+
+    it('creates a task from a directory folder using that directory and the tasks session type', () => {
+        const listen = () => {
+            const seen: Array<Record<string, unknown>> = [];
+            const listener = (event: Event) => { seen.push(((event as CustomEvent).detail || {}) as Record<string, unknown>); };
+            window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener);
+            return {
+                seen,
+                stop: () => window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, listener),
+            };
+        };
+        const codingA = { ...baseProject, id: 'code-a', name: '编程甲', project_path: 'D:/work/tasks/code-a', working_dir: 'F:/test-prog', tags: ['coding_dev'] };
+        const codingB = { ...baseProject, id: 'code-b', name: '编程乙', project_path: 'D:/work/tasks/code-b', working_dir: 'F:/test-prog', tags: ['coding_dev', 'source:expert:paper-review'] };
+        const chatA = { ...baseProject, id: 'chat-a', name: '会话甲', project_path: 'D:/work/tasks/chat-a', working_dir: 'D:/notes', tags: ['source:expert:paper-review'] };
+        const chatB = { ...baseProject, id: 'chat-b', name: '会话乙', project_path: 'D:/work/tasks/chat-b', working_dir: 'D:/notes', tags: [] as string[] };
+        const remoteTags = ['remote_coding_dev', 'remote_host:home.rapidai.tech', 'remote_user:ubuntu', 'remote_port:55', 'remote_workdir:/home/proj'];
+        const remoteA = { ...baseProject, id: 'remote-a', name: '巡检甲', project_path: 'D:/work/tasks/ra', tags: remoteTags };
+        const remoteB = { ...baseProject, id: 'remote-b', name: '巡检乙', project_path: 'D:/work/tasks/rb', tags: [...remoteTags] };
+        const cloudA = { ...baseProject, id: 'cloud-a', name: '云端甲', project_path: 'D:/work/tasks/ca', tags: ['cloud_workspace:cws_folder', 'coding_dev'], working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_folder' };
+        const cloudB = { ...baseProject, id: 'cloud-b', name: '云端乙', project_path: 'D:/work/tasks/cb', tags: ['cloud_workspace:cws_folder', 'coding_dev', 'task_copy'], working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_folder' };
+        const archivedA = { ...baseProject, id: 'arch-a', name: '归档甲', project_path: 'D:/work/tasks/arch-a', working_dir: 'E:/old', tags: ['coding_dev'] };
+        const archivedB = { ...baseProject, id: 'arch-b', name: '归档乙', project_path: 'D:/work/tasks/arch-b', working_dir: 'E:/old', tags: ['coding_dev'] };
+
+        rememberCloudWorkspaceDisplayName('cws_folder', '经营分析');
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(archivedA), taskOrderKey(archivedB)]));
+        localStorage.setItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY, '1');
+        renderTaskManagement({
+            lang: 'zh',
+            tasks: [codingA, codingB, chatA, chatB, remoteA, remoteB, cloudA, cloudB, archivedA, archivedB],
+        });
+
+        const codingFolders = within(screen.getByTestId('task-folder-coding')).getAllByTestId('task-workdir-folder');
+        fireEvent.contextMenu(within(codingFolders[0]).getByTestId('task-workdir-toggle'));
+        const codingMenu = screen.getByTestId('task-workdir-context-menu');
+        expect(codingMenu.textContent).toContain('新建任务');
+        expect(codingMenu.textContent).toContain('置顶');
+        const codingSeen = listen();
+        try {
+            const codingFolders = within(screen.getByTestId('task-folder-coding')).getAllByTestId('task-workdir-folder');
+            const localFolder = codingFolders.find(folder => folder.getAttribute('data-workdir-key') === 'local:f:/test-prog');
+            expect(localFolder).toBeTruthy();
+            fireEvent.contextMenu(within(localFolder as HTMLElement).getByTestId('task-workdir-toggle'));
+            fireEvent.click(screen.getByTestId('task-workdir-context-new-task'));
+        } finally {
+            codingSeen.stop();
+        }
+        expect(screen.queryByTestId('task-workdir-context-menu')).toBeNull();
+        expect(codingSeen.seen).toHaveLength(1);
+        expect(codingSeen.seen[0]).toEqual({
+            taskType: 'coding',
+            workspace: { kind: 'local', localPath: 'F:/test-prog' },
+        });
+        expect(codingSeen.seen[0]).not.toHaveProperty('expertId');
+
+        const sessionSeen = listen();
+        try {
+            fireEvent.contextMenu(within(screen.getByTestId('task-folder-session')).getByTestId('task-workdir-toggle'));
+            fireEvent.click(screen.getByTestId('task-workdir-context-new-task'));
+        } finally {
+            sessionSeen.stop();
+        }
+        expect(sessionSeen.seen[0]).toEqual({
+            taskType: 'chat',
+            workspace: { kind: 'local', localPath: 'D:/notes' },
+        });
+        expect(sessionSeen.seen[0]).not.toHaveProperty('expertId');
+
+        const remoteSeen = listen();
+        try {
+            const remoteFolder = within(screen.getByTestId('task-folder-coding')).getAllByTestId('task-workdir-folder')
+                .find(folder => (folder.getAttribute('data-workdir-key') || '').startsWith('remote:'));
+            fireEvent.contextMenu(within(remoteFolder as HTMLElement).getByTestId('task-workdir-toggle'));
+            fireEvent.click(screen.getByTestId('task-workdir-context-new-task'));
+        } finally {
+            remoteSeen.stop();
+        }
+        expect(remoteSeen.seen[0]).toEqual({
+            taskType: 'coding',
+            workspace: {
+                kind: 'remote',
+                remote: { host: 'home.rapidai.tech', port: 55, user: 'ubuntu', password: '', workDir: '/home/proj' },
+            },
+        });
+
+        const cloudSeen = listen();
+        try {
+            const cloudFolder = within(screen.getByTestId('task-folder-coding')).getAllByTestId('task-workdir-folder')
+                .find(folder => folder.getAttribute('data-workdir-key') === 'cloud:cws_folder');
+            fireEvent.contextMenu(within(cloudFolder as HTMLElement).getByTestId('task-workdir-toggle'));
+            fireEvent.click(screen.getByTestId('task-workdir-context-new-task'));
+        } finally {
+            cloudSeen.stop();
+        }
+        expect(cloudSeen.seen[0]).toEqual({
+            taskType: 'chat',
+            workspace: { kind: 'cloud', cloudWorkspaceId: 'cws_folder', cloudName: '经营分析' },
+        });
+        expect(draftFromWizardSeed(cloudSeen.seen[0]).workspace).toEqual({
+            kind: 'cloud',
+            cloudWorkspaceId: 'cws_folder',
+            cloudName: '经营分析',
+        });
+
+        const archiveSeen = listen();
+        try {
+            fireEvent.contextMenu(within(screen.getByTestId('task-folder-archive')).getByTestId('task-workdir-toggle'));
+            fireEvent.click(screen.getByTestId('task-workdir-context-new-task'));
+        } finally {
+            archiveSeen.stop();
+        }
+        expect(archiveSeen.seen[0]).toEqual({
+            taskType: 'coding',
+            workspace: { kind: 'local', localPath: 'E:/old' },
+        });
     });
 
     it('keeps a newer unpinned task above older ones when a folder is pinned', () => {

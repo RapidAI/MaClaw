@@ -27,11 +27,10 @@ type agentLoopMaxRoundsExitOptions struct {
 func (h *IMMessageHandler) maxRoundsAgentLoopExit(ctx *LoopContext, opts agentLoopMaxRoundsExitOptions) *IMAgentResponse {
 	log.Printf("[AgentLoop] MAX ROUNDS EXHAUSTED loop=%s iteration=%d effectiveMax=%d configMax=%d loopOverride=%d grace=%d kind=%d user=%q task=%q elapsed=%s",
 		ctx.ID, opts.FinalIteration, opts.EffectiveMax, opts.ConfigMax, opts.LoopMaxOverride, opts.ChatFinalizeGrace, ctx.Kind, opts.UserID, truncateRunes(opts.UserText, 80), time.Since(opts.ConversationStartedAt))
-	resp, continued := h.beginSessionRoundContinuation(ctx, opts.UserID, opts.UserText, opts.History, opts.TotalToolCallsInLoop)
-	if !continued {
-		h.createMaxRoundsUnfinishedSlot(opts.UserID, opts.History)
-		resp = &IMAgentResponse{Text: sessionRoundManualContinueText}
-	}
+	// In-place refills already happened inside the loop. Another session wave
+	// would be a new loop and would redo finished steps.
+	h.createMaxRoundsUnfinishedSlot(opts.UserID, opts.History)
+	resp := &IMAgentResponse{Text: sessionRoundManualContinueText}
 	opts.AttachLLMTelemetry(resp)
 	opts.AttachVisibleArtifacts(resp)
 	history := h.injectNudgeMessages(opts.History, opts.FinalIteration, opts.TotalToolCallsInLoop, opts.Phase, opts.UserText)

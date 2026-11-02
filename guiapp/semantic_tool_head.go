@@ -12,14 +12,29 @@ import (
 )
 
 // toolHeadArtifactBoundCapabilities are reviewed names whose later binder
-// rejects the whole turn when the artifact is absent. The head must not mint
-// them from a vector: document read, file delivery, and speech-to-text each
-// fail closed without an input the intent pass already declared.
+// rejects the whole turn when the artifact is absent. Document read, file
+// delivery, and speech-to-text each fail closed without an input the intent
+// pass already declared. A vector hit is not that input, and neither is a
+// name that merely sat on the previous turn's catalog.
 var toolHeadArtifactBoundCapabilities = map[tool.CapabilityID]bool{
 	"document.read.local":                true,
 	"artifact.deliver.current_channel":   true,
 	"artifact.deliver.specified_target":  true,
 	tool.CapabilityAudioTranscribeSpeech: true,
+}
+
+// artifactBoundCapability reports a capability the binder will reject for the
+// whole turn unless this turn's intent already declared the trusted input.
+func artifactBoundCapability(id tool.CapabilityID) bool {
+	return toolHeadArtifactBoundCapabilities[id]
+}
+
+// artifactBoundRouteName is a rendered catalog name for an artifact-bound
+// capability. A lookup must not mint it, and a full catalog must not record
+// it as the route unless the open obligation is that capability.
+func artifactBoundRouteName(name string) bool {
+	capability, ok := semanticPetitionableCapabilities[strings.TrimSpace(name)]
+	return ok && artifactBoundCapability(capability)
 }
 
 // toolHeadPrivilegedReadCapabilities are read-only in the rule table and
@@ -69,7 +84,7 @@ func (h *IMMessageHandler) unionToolHeadNeeds(ctx context.Context, registry *too
 		if capabilityNeedPresent(needs, capability) && !hasPetitionParentFamilies(ctx) {
 			continue
 		}
-		if toolHeadArtifactBoundCapabilities[capability] {
+		if artifactBoundCapability(capability) {
 			held = append(held, fmt.Sprintf("%s@%.2f needs-input", score.Tool, score.Prob))
 			continue
 		}

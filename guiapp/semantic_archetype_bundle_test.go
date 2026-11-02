@@ -193,6 +193,40 @@ func TestProjectTaskSearchContinuationRestoresCarriedShell(t *testing.T) {
 	}
 }
 
+func TestLookupContinuationCarryDoesNotRequireAudio(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebFetch = func(_, url string) (string, error) { return "page: " + url, nil }
+	registerBuiltinTools(h.registry, h)
+	userID := "desktop-user:C:\\resume-task"
+	// A legacy full catalog recorded asr next to bash. The list is already
+	// persisted, so the route filter on the next full turn has not rewritten it.
+	h.parentExecution.Store(userID, []string{"bash", "asr"})
+	fetch := &intent.ClassificationResult{Primary: intent.LabelWebFetch, Confidence: 0.82, Layer: 3}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		Execution: ExecutionProfile{
+			Layer:           string(executionLayerLight),
+			PromptProfile:   "light",
+			Reason:          lookupContinuationReason,
+			ToolBudget:      0,
+			IterationBudget: lookupContinuationIterationBudget,
+		},
+		SemanticIntent: fetch,
+	}}
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContext(ctx, userID, "学术成果参见： https://orcid.org/0000-0003-1400-534X", "desktop")
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("web_fetch lookup must survive a carried asr catalog neighbor: handled=%v err=%v", handled, err)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebFetchAdapter) == "" {
+		t.Fatal("carried lookup must still publish web_fetch")
+	}
+	if planHasCapabilities(surface.plan, tool.CapabilityAudioTranscribeSpeech) {
+		t.Fatal("carried asr must not become a speech-to-text obligation")
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter) != "bash" {
+		t.Fatal("carried bash must stay on the lookup surface")
+	}
+}
+
 func TestSemanticResidueDropSpentKeepsPositiveBudget(t *testing.T) {
 	got := semanticResidueWithoutLookupCeiling(map[string]int{
 		"information.search.web":                   2,

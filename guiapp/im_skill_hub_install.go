@@ -263,54 +263,68 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 			installScanReport = scanReport
 		}
 
-		if h.app != nil && h.app.skillInstallScanShouldBlockForSource(scanReport, source) {
-			cskill.CleanupStaging(stagingDir)
-			if h.getAuditLog() != nil {
-				_ = h.getAuditLog().Log(security.AuditEntry{
-					Timestamp:    time.Now(),
-					Action:       security.AuditActionHubSkillReject,
-					ToolName:     source + "_skill_install",
-					RiskLevel:    scanReport.FinalLevel,
-					PolicyAction: security.PolicyDeny,
-					Result:       fmt.Sprintf("policy blocked %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
-				})
-			}
-			return skillInstallExecutionResult{
-				Text:          FormatScanReportForUser(scanReport, displayName) + "\n" + localizedSkillInstallBlockedMessage(h.skillConfirmLang(), displayName, false),
-				SilentFailure: true,
-			}
-		}
-
-		if h.app != nil && h.app.skillInstallReviewNeedsConfirmationForSource(scanReport, source) {
-			confirmed := h.confirmRiskSkillInstall(
-				ctx, displayName, source, scanReport.FinalLevel, scanReport.PatternAssessment.Factors, platform, userID,
-			)
-			if !confirmed {
+		if h.app != nil {
+			action, recordedWithoutChannel := h.app.skillInstallActionWithChannel(scanReport, source, strings.TrimSpace(platform) != "")
+			switch action {
+			case security.PolicyDeny:
 				cskill.CleanupStaging(stagingDir)
+				level, summary := skillInstallReportLevelSummary(scanReport)
 				if h.getAuditLog() != nil {
 					_ = h.getAuditLog().Log(security.AuditEntry{
 						Timestamp:    time.Now(),
 						Action:       security.AuditActionHubSkillReject,
 						ToolName:     source + "_skill_install",
-						RiskLevel:    scanReport.FinalLevel,
+						RiskLevel:    level,
 						PolicyAction: security.PolicyDeny,
-						Result:       fmt.Sprintf("user rejected %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
+						Result:       fmt.Sprintf("policy blocked %s-risk skill %s: %s", level, displayName, summary),
 					})
 				}
 				return skillInstallExecutionResult{
-					Text:          FormatScanReportForUser(scanReport, displayName) + "\n" + localizedSkillInstallRejectedMessage(h.skillConfirmLang(), displayName),
+					Text:          FormatScanReportForUser(scanReport, displayName) + "\n" + localizedSkillInstallBlockedMessage(h.skillConfirmLang(), displayName, false),
 					SilentFailure: true,
 				}
-			}
-			if h.getAuditLog() != nil {
-				_ = h.getAuditLog().Log(security.AuditEntry{
-					Timestamp:    time.Now(),
-					Action:       security.AuditActionHubSkillInstall,
-					ToolName:     source + "_skill_install",
-					RiskLevel:    scanReport.FinalLevel,
-					PolicyAction: security.PolicyUserOverride,
-					Result:       fmt.Sprintf("user approved %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
-				})
+			case security.PolicyAsk:
+				confirmed := h.confirmRiskSkillInstall(
+					ctx, displayName, source, scanReport.FinalLevel, skillInstallRiskFactors(scanReport), platform, userID,
+				)
+				if !confirmed {
+					cskill.CleanupStaging(stagingDir)
+					if h.getAuditLog() != nil {
+						_ = h.getAuditLog().Log(security.AuditEntry{
+							Timestamp:    time.Now(),
+							Action:       security.AuditActionHubSkillReject,
+							ToolName:     source + "_skill_install",
+							RiskLevel:    scanReport.FinalLevel,
+							PolicyAction: security.PolicyDeny,
+							Result:       fmt.Sprintf("user rejected %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
+						})
+					}
+					return skillInstallExecutionResult{
+						Text:          FormatScanReportForUser(scanReport, displayName) + "\n" + localizedSkillInstallRejectedMessage(h.skillConfirmLang(), displayName),
+						SilentFailure: true,
+					}
+				}
+				if h.getAuditLog() != nil {
+					_ = h.getAuditLog().Log(security.AuditEntry{
+						Timestamp:    time.Now(),
+						Action:       security.AuditActionHubSkillInstall,
+						ToolName:     source + "_skill_install",
+						RiskLevel:    scanReport.FinalLevel,
+						PolicyAction: security.PolicyUserOverride,
+						Result:       fmt.Sprintf("user approved %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
+					})
+				}
+			default:
+				if recordedWithoutChannel && h.getAuditLog() != nil {
+					_ = h.getAuditLog().Log(security.AuditEntry{
+						Timestamp:    time.Now(),
+						Action:       security.AuditActionHubSkillInstall,
+						ToolName:     source + "_skill_install",
+						RiskLevel:    scanReport.FinalLevel,
+						PolicyAction: security.PolicyAudit,
+						Result:       fmt.Sprintf("no confirmation channel; recorded %s-risk skill %s and allowed by current policy: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
+					})
+				}
 			}
 		}
 	}

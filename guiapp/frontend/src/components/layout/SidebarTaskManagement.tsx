@@ -94,6 +94,8 @@ type WorkdirFolderContextMenu = {
     y: number;
     kind: TaskListFolderKind;
     directoryKey: string;
+    /** Full directory this folder stands for. Local folders use it as the new task's working directory. */
+    directoryTitle: string;
     label: string;
     pinned: boolean;
 };
@@ -1166,6 +1168,88 @@ type TaskFolderSource = {
 /** Folder a task returns to when it leaves Archive. Tags decide; archive does not. */
 export function taskHomeFolderKind(task: Pick<TaskManagementItem, 'tags'>): MovableTaskListFolderKind {
     return isPureCodingTaskTags(task.tags) ? 'coding' : 'session';
+}
+
+type WorkdirFolderTask = Pick<TaskManagementItem, 'tags' | 'working_dir' | 'execution_dir'>;
+
+/** Session type for a new task opened from a directory folder.
+ * 会话 and 编程 are already one type. Archive follows the tasks inside it;
+ * a tie follows the first task. */
+export function workdirFolderTaskType(kind: TaskListFolderKind, tasks: readonly WorkdirFolderTask[]): 'chat' | 'coding' {
+    if (kind === 'coding') return 'coding';
+    if (kind === 'session') return 'chat';
+    let coding = 0;
+    let session = 0;
+    for (const task of tasks) {
+        if (taskHomeFolderKind(task) === 'coding') coding += 1;
+        else session += 1;
+    }
+    if (coding > session) return 'coding';
+    if (session > coding) return 'chat';
+    const first = tasks[0];
+    return first && taskHomeFolderKind(first) === 'coding' ? 'coding' : 'chat';
+}
+
+/**
+ * Seed for "新建任务" on a directory folder. The directory key decides the
+ * workspace, not whichever row happens to sort first.
+ * A cloud workspace cannot stay selected once the type is 编程 (the new-task
+ * page drops it), so a cloud folder opens as a session on that workspace.
+ * A remote folder is a coding task on that SSH directory.
+ */
+export function newTaskSeedForWorkdirFolder(input: {
+    kind: TaskListFolderKind;
+    directoryKey: string;
+    directoryTitle?: string;
+    tasks: readonly WorkdirFolderTask[];
+    cloudName?: string;
+}): NewTaskWizardSeed {
+    const key = input.directoryKey;
+    // Cloud and remote each have one creatable type. Counting tags there cannot change it.
+    const taskType = key.startsWith('cloud:')
+        ? 'chat'
+        : key.startsWith('remote:')
+            ? 'coding'
+            : workdirFolderTaskType(input.kind, input.tasks);
+    const seed: NewTaskWizardSeed = { taskType };
+    if (key.startsWith('remote:')) {
+        let partial: { host: string; port: number; user: string; workDir: string } | null = null;
+        for (const task of input.tasks) {
+            if (agentModeFromTaskTags(task.tags) !== 'remote_coding_dev') continue;
+            const meta = remoteCodingMetaFromTaskTags(task.tags);
+            if (!meta.host) continue;
+            const candidate = { host: meta.host, port: meta.port, user: meta.user, workDir: meta.workDir };
+            // Host, user, and directory are what creation requires. A row that
+            // only has a host must not hide a later row that can actually connect.
+            if (meta.user && meta.workDir) {
+                seed.workspace = { kind: 'remote', remote: { ...candidate, password: '' } };
+                return seed;
+            }
+            if (!partial) partial = candidate;
+        }
+        if (partial) seed.workspace = { kind: 'remote', remote: { ...partial, password: '' } };
+        return seed;
+    }
+    if (key.startsWith('cloud:')) {
+        const id = key.slice('cloud:'.length).trim();
+        if (!id) return seed;
+        const cloudName = String(input.cloudName || '').trim();
+        seed.workspace = {
+            kind: 'cloud',
+            cloudWorkspaceId: id,
+            ...(cloudName ? { cloudName } : {}),
+        };
+        return seed;
+    }
+    const titled = String(input.directoryTitle || '').trim();
+    const fromTask = input.tasks
+        .map(task => String(task.working_dir || task.execution_dir || '').trim())
+        .find(path => path.length > 0) || '';
+    const localPath = titled || fromTask;
+    if (localPath && !isCloudWorkspacePath(localPath)) {
+        seed.workspace = { kind: 'local', localPath };
+    }
+    return seed;
 }
 
 export function taskListFolderKind(task: TaskFolderSource, archivedKeys?: ReadonlySet<string>): TaskListFolderKind {
@@ -5114,6 +5198,27 @@ export const SidebarTaskManagement = ({
         openNewTaskWizard(seed);
     };
 
+    /** Right-click "新建任务" on a directory folder. */
+    const newTaskFromWorkdirFolder = (menu: WorkdirFolderContextMenu) => {
+        // Rows in the order the folder shows them, so an archive tie follows the top row.
+        const placed = taskFolders.find(folder => folder.kind === menu.kind);
+        const members = placed?.entries.find(entry => entry.kind === 'folder' && entry.folder.key === menu.directoryKey);
+        const tasks = members && members.kind === 'folder' ? members.folder.tasks : [];
+        const cloudId = menu.directoryKey.startsWith('cloud:') ? menu.directoryKey.slice('cloud:'.length).trim() : '';
+        const seed = newTaskSeedForWorkdirFolder({
+            kind: menu.kind,
+            directoryKey: menu.directoryKey,
+            directoryTitle: menu.directoryTitle,
+            tasks,
+            cloudName: cloudId
+                ? (cloudWorkspaces.find(row => row.id === cloudId)?.name || lookupCloudWorkspaceDisplayName(cloudId))
+                : '',
+        });
+        setWorkdirContextMenu(null);
+        setTaskListNotice('');
+        openNewTaskWizard(seed);
+    };
+
     /** Forks a task: same settings plus its full conversation, then opens the copy. */
     const duplicateTask = async (menu: NonNullable<TaskContextMenu>) => {
         if (duplicatingTaskRef.current) return;
@@ -5901,6 +6006,7 @@ export const SidebarTaskManagement = ({
                         y: event.clientY,
                         kind: folder.kind,
                         directoryKey: entry.folder.key,
+                        directoryTitle: entry.folder.title,
                         label: workdirLabel,
                         pinned: folderPinned,
                     });
@@ -5912,7 +6018,7 @@ export const SidebarTaskManagement = ({
                 className="stsm-task-folder__toggle"
                 data-testid="task-workdir-toggle"
                 aria-expanded={workdirExpanded}
-                title={joinHoverLines(workdirTitle, workdirToggleLabel, folderPinned
+                title={joinHoverLines(workdirTitle, workdirToggleLabel, textForLang(lang, 'Right-click to create a task', '右键新建任务', '右鍵新建任務'), folderPinned
                     ? textForLang(lang, 'Right-click to unpin', '右键取消置顶', '右鍵取消置頂')
                     : textForLang(lang, 'Right-click to pin', '右键置顶', '右鍵置頂'))}
                 onKeyDown={e => {
@@ -6791,8 +6897,27 @@ export const SidebarTaskManagement = ({
             </>;
         })()}
 
-        {workdirContextMenu && (
-            <>
+        {workdirContextMenu && (() => {
+            const menu = workdirContextMenu;
+            const items: TaskContextMenuItem[] = [
+                {
+                    label: textForLang(lang, 'New task', '新建任务', '新建任務'),
+                    icon: 'new',
+                    testId: 'task-workdir-context-new-task',
+                    title: textForLang(lang, 'Create a task in this folder with the same session type', '用该文件夹的目录，按其中任务的会话类型新建任务', '用該資料夾的目錄，按其中任務的會話類型新建任務'),
+                    action: () => newTaskFromWorkdirFolder(menu),
+                },
+                {
+                    label: menu.pinned
+                        ? textForLang(lang, 'Unpin', '取消置顶', '取消置頂')
+                        : textForLang(lang, 'Pin', '置顶', '置頂'),
+                    icon: 'pin',
+                    testId: 'task-workdir-context-pin',
+                    title: menu.label,
+                    action: () => pinWorkdirFolder(menu.kind, menu.directoryKey),
+                },
+            ];
+            return <>
             <div
                 className="stsm-menu-scrim"
                 onClick={() => setWorkdirContextMenu(null)}
@@ -6802,25 +6927,26 @@ export const SidebarTaskManagement = ({
                 data-testid="task-workdir-context-menu"
                 role="menu"
                 onContextMenu={event => event.preventDefault()}
-                style={{ position: 'fixed', ...contextMenuPosition(workdirContextMenu.x, workdirContextMenu.y, 1), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
+                style={{ position: 'fixed', ...contextMenuPosition(menu.x, menu.y, items.length), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
             >
-                <div
-                    data-testid="task-workdir-context-pin"
-                    role="menuitem"
-                    title={workdirContextMenu.label}
-                    onClick={() => pinWorkdirFolder(workdirContextMenu.kind, workdirContextMenu.directoryKey)}
-                    style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--theme-text-primary)' }}
-                    onMouseEnter={e => { e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 8%, transparent)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-                >
-                    <span className="stsm-menu-icon" aria-hidden="true"><TaskContextMenuIcon name="pin" /></span>
-                    <span>{workdirContextMenu.pinned
-                        ? textForLang(lang, 'Unpin', '取消置顶', '取消置頂')
-                        : textForLang(lang, 'Pin', '置顶', '置頂')}</span>
-                </div>
+                {items.map(item => (
+                    <div
+                        key={item.testId || item.label}
+                        data-testid={item.testId}
+                        role="menuitem"
+                        title={item.title}
+                        onClick={() => { void item.action(); }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--theme-text-primary)' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 8%, transparent)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                        <span className="stsm-menu-icon" aria-hidden="true"><TaskContextMenuIcon name={item.icon} /></span>
+                        <span>{item.label}</span>
+                    </div>
+                ))}
             </div>
-            </>
-        )}
+            </>;
+        })()}
 
         {editRemoteOpen && createPortal(
             <div

@@ -176,8 +176,9 @@ func semanticTrustedOfficeWriteInvocationSchema() map[string]interface{} {
 // semanticTrustedOfficeWriteArgsAllowed admits exactly one document form:
 // spreadsheet (path + sheets) or presentation (path + slides, optional
 // title/subtitle). Mixing two non-empty forms or adding any other key is
-// rejected before the adapter runs, so a model cannot smuggle legacy
-// office-soup arguments.
+// rejected before Admit, from semanticOfficeWriteFormAdmission, so a model
+// cannot smuggle legacy office-soup arguments and a missing form cannot be
+// stored as a failed execution. The adapter calls this again as a backstop.
 //
 // The rendered schema necessarily declares both forms at once, and models
 // habitually fill the unused one with an empty array, a null, or a
@@ -240,12 +241,24 @@ func semanticTrustedOfficeWriteArgsAllowed(args map[string]interface{}) (path st
 			return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: pass exactly one of sheets (spreadsheet) or slides (presentation), and omit the other key entirely")
 		}
 	case !sheetsForm.present && !slidesForm.present:
-		return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: pass exactly one of sheets (spreadsheet) or slides (presentation), and omit the other key entirely")
+		switch ext := strings.ToLower(filepath.Ext(strings.TrimSpace(path))); ext {
+		case ".xlsx":
+			return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: an .xlsx path needs sheets, and slides must be omitted")
+		case ".pptx":
+			return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: a .pptx path needs slides, and sheets must be omitted")
+		case "":
+			return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: pass exactly one of sheets (spreadsheet) or slides (presentation), and omit the other key entirely")
+		default:
+			return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: %s is not a spreadsheet or presentation; this tool writes .xlsx (sheets) or .pptx (slides)", ext)
+		}
 	}
 	if !hasPath || strings.TrimSpace(path) == "" {
 		return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: path is required")
 	}
 	path = strings.TrimSpace(path)
+	if err := semanticOfficeWritePathMatchesForm(path, sheetsForm.present); err != nil {
+		return "", nil, err
+	}
 	if sheetsForm.present {
 		return path, map[string]interface{}{"sheets": sheetsForm.value}, nil
 	}
@@ -602,6 +615,46 @@ func semanticOfficeSlideImageCheck(workspace, argsJSON string) error {
 				return &semanticCanonicalDetailedRejection{text: fmt.Sprintf("[system rejected] trusted_office_write_image_missing: %s. The call was refused before execution, so the tool remains available: reference the image by the workspace-relative Path reported when it was acquired, then call again.%s", path, semanticWorkspaceImageHint(workspace))}
 			}
 		}
+	}
+	return nil
+}
+
+// semanticOfficeWriteFormAdmission enforces the one-form contract before
+// Admit. The rendered schema has to declare sheets and slides together, and
+// its only required field is path, so a resume call that carries path, title,
+// and purpose is schema-legal. Checking that shape inside the adapter ran
+// after Admit and completed the selection as failed. The need was then an
+// outcome, and the Word file the host attached later could not discharge it.
+func semanticOfficeWriteFormAdmission(canonicalJSON []byte) error {
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalJSON, &args); err != nil || args == nil {
+		return &semanticCanonicalDetailedRejection{text: "[system rejected] trusted_office_write_arguments_rejected: arguments must be an object. The call was refused before execution, so the tool remains available."}
+	}
+	if _, _, err := semanticTrustedOfficeWriteArgsAllowed(args); err != nil {
+		return &semanticCanonicalDetailedRejection{text: "[system rejected] " + err.Error() + ". The call was refused before execution, so the tool remains available."}
+	}
+	return nil
+}
+
+// semanticOfficeWritePathMatchesForm rejects a path the writer will not emit.
+// Slides are saved as .pptx; any other extension is rewritten to .pptx before
+// the bytes are written. Sheets are written as .xlsx at the given path. A
+// .docx path with either form would be admitted and would consume the grant
+// on a file that is not the Word document the path names. No extension keeps
+// the writer's own default.
+func semanticOfficeWritePathMatchesForm(path string, sheets bool) error {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == "" {
+		return nil
+	}
+	if sheets {
+		if ext != ".xlsx" {
+			return fmt.Errorf("trusted_office_write_arguments_rejected: sheets writes an .xlsx spreadsheet, not %s", ext)
+		}
+		return nil
+	}
+	if ext != ".pptx" {
+		return fmt.Errorf("trusted_office_write_arguments_rejected: slides writes a .pptx presentation, not %s", ext)
 	}
 	return nil
 }

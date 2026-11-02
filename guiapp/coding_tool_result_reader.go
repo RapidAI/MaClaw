@@ -28,7 +28,7 @@ func appendSpilledToolResultReader(tools []map[string]interface{}, needed bool) 
 			return tools
 		}
 	}
-	return append(tools, toolDefFromCore("read_tool_result", "分段回读被截断的工具完整输出（使用 [tool_result_handle] 的 id）", nil))
+	return append(tools, toolDefFromCore("read_tool_result", "", nil))
 }
 
 func codingReadToolResultExecution(handler *IMMessageHandler, argsJSON string) agent.ToolExecutionResult {

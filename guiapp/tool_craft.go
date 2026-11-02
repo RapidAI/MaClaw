@@ -1343,8 +1343,10 @@ func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, scrip
 		)
 		return report, nil
 	}
-	if app != nil && app.skillInstallScanShouldBlock(report) {
-		if app != nil {
+	if app != nil {
+		action, recordedWithoutChannel := app.skillInstallActionWithChannel(report, "", false)
+		switch action {
+		case security.PolicyDeny:
 			level := report.FinalLevel
 			if report.IsDangerous() {
 				level = security.RiskCritical
@@ -1356,17 +1358,18 @@ func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, scrip
 				security.PolicyDeny,
 				fmt.Sprintf("crafted script rejected before execution for skill %s: %s", skillName, report.Summary),
 			)
+			return report, fmt.Errorf("crafted script security scan blocked execution: level=%s summary=%s", report.FinalLevel, report.Summary)
+		default:
+			if recordedWithoutChannel {
+				app.logSkillInstallSecurityEvent(
+					security.AuditActionHubSkillInstall,
+					"craft_tool_prescan",
+					report.FinalLevel,
+					security.PolicyAudit,
+					fmt.Sprintf("crafted script scan recorded risk for skill %s and allowed execution by current policy: %s", skillName, report.Summary),
+				)
+			}
 		}
-		return report, fmt.Errorf("crafted script security scan blocked execution: level=%s summary=%s", report.FinalLevel, report.Summary)
-	}
-	if app != nil && app.skillInstallReviewNeedsConfirmation(report) {
-		app.logSkillInstallSecurityEvent(
-			security.AuditActionHubSkillInstall,
-			"craft_tool_prescan",
-			report.FinalLevel,
-			security.PolicyAudit,
-			fmt.Sprintf("crafted script scan recorded risk for skill %s and allowed execution by current policy: %s", skillName, report.Summary),
-		)
 	}
 	if app != nil {
 		status := "Generated script security scan passed."

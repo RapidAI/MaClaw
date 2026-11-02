@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"log"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -863,32 +864,266 @@ func (h *IMMessageHandler) buildSituationReport(userID string) string {
 		}
 	}
 
-	// Recent artifacts from memory
-	if h.memoryStore != nil && userID != "" {
-		recent := h.memoryStore.EntriesSince(time.Now().Add(-24 * time.Hour))
-		for _, e := range recent {
-			if len(ctx.RecentArtifacts) >= 3 {
-				break
-			}
-			if strings.TrimSpace(e.OwnerID) != "" && strings.TrimSpace(e.OwnerID) != userID {
-				continue
-			}
-			if string(e.Category) == "task_artifact" {
-				title := e.Title
-				if title == "" && len([]rune(e.Content)) > 50 {
-					title = string([]rune(e.Content)[:50]) + "..."
-				}
-				if title != "" {
-					ctx.RecentArtifacts = append(ctx.RecentArtifacts, title)
-				}
-			}
+	// This turn belongs to one task. Name that task, and keep other tasks'
+	// titles out of the report. A bare 「继续」 was reading those titles as
+	// the work to resume.
+	project := projectPathFromSessionOwnerID(userID)
+	recoveryTitle, recoveryResumed := h.situationRecoveryTask(userID)
+	if ctx.InFlightTask == "" {
+		ctx.InFlightTask = situationCurrentTaskTitle(userID)
+	}
+	if ctx.InFlightTask == "" && recoveryTitle != "" {
+		if recoveryResumed {
+			ctx.InFlightTask = recoveryTitle
+		} else {
+			ctx.UnfinishedTask = recoveryTitle
 		}
+	}
+	// The desktop chat and the process default are shared by every task that
+	// lost its directory. While this session still has that interrupted run,
+	// other outputs in the same folder are not its progress.
+	sharedSession := project == "" || isProcessDefaultWorkspacePath(project)
+	if h.memoryStore != nil && userID != "" && !(sharedSession && recoveryTitle != "") {
+		ctx.RecentArtifacts = situationRecentArtifactTitles(
+			h.memoryStore.EntriesSince(time.Now().Add(-24*time.Hour)),
+			userID,
+		)
 	}
 
 	if !ctx.HasMeaningfulContext() {
 		return ""
 	}
 	return agent.BuildSituationReport(ctx)
+}
+
+// situationCurrentTaskTitle is the task this session is already inside.
+// The folder name is that task. Other sidebar titles are not.
+func situationCurrentTaskTitle(userID string) string {
+	project := projectPathFromSessionOwnerID(userID)
+	if project == "" || isProcessDefaultWorkspacePath(project) {
+		return ""
+	}
+	name := strings.TrimSpace(stripTaskDirTimestampSuffix(filepath.Base(project)))
+	if strings.EqualFold(name, "workspace") {
+		parent := normalizeProjectSessionPath(filepath.Dir(project))
+		if parent == "" || parent == "." || isProcessDefaultWorkspacePath(parent) {
+			return ""
+		}
+		name = strings.TrimSpace(stripTaskDirTimestampSuffix(filepath.Base(parent)))
+	}
+	if name == "" || name == "." || name == string(filepath.Separator) || strings.EqualFold(name, "workspace") {
+		return ""
+	}
+	return name
+}
+
+// situationRecoveryTask is the interrupted run stored on this session.
+// The folder name is a better title when the session has one. This fills
+// the report when the live directory is only the shared default workspace.
+// A bare 「继续」 is not a task name.
+func (h *IMMessageHandler) situationRecoveryTask(userID string) (string, bool) {
+	if h == nil || h.memory == nil {
+		return "", false
+	}
+	slot := h.memory.GetUnfinishedSlot(userID)
+	if slot == nil || slot.Status == agent.UnfinishedTaskSlotStatusCompleted {
+		return "", false
+	}
+	title := strings.TrimSpace(slot.LastTask)
+	if title == "" || bareContinuationUtterance(title) {
+		return "", false
+	}
+	return title, slot.Status == agent.UnfinishedTaskSlotStatusResumed
+}
+
+// situationRecentArtifactTitles is this task's own recent output.
+// Desktop task rows are stored as task_artifact with an empty owner, so an
+// owner check lets every recent task title into every session. Those rows
+// are the task list, not completed work, and a different task's file is
+// not this turn's progress.
+func situationRecentArtifactTitles(entries []memory.Entry, userID string) []string {
+	userID = strings.TrimSpace(userID)
+	project := projectPathFromSessionOwnerID(userID)
+	type titled struct {
+		title string
+		at    time.Time
+	}
+	var items []titled
+	for _, e := range entries {
+		if memory.MapToCanonical(e.Category) != memory.CategoryTaskArtifact {
+			continue
+		}
+		if owner := strings.TrimSpace(e.OwnerID); owner != "" && owner != userID {
+			continue
+		}
+		if memory.IsDurableTaskManagementEntry(&e) {
+			continue
+		}
+		if project == "" {
+			if situationEntryOutsideDefaultWorkspace(e) {
+				continue
+			}
+		} else if !situationArtifactInProject(e, project) {
+			continue
+		}
+		title := strings.TrimSpace(e.Title)
+		if title == "" {
+			content := strings.TrimSpace(e.Content)
+			if runes := []rune(content); len(runes) > 50 {
+				title = string(runes[:50]) + "..."
+			} else {
+				title = content
+			}
+		}
+		if title == "" {
+			continue
+		}
+		at := e.UpdatedAt
+		if at.IsZero() {
+			at = e.CreatedAt
+		}
+		items = append(items, titled{title: title, at: at})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].at.After(items[j].at)
+	})
+	out := make([]string, 0, min(len(items), 3))
+	seen := make(map[string]struct{}, min(len(items), 3))
+	for _, item := range items {
+		if _, ok := seen[item.title]; ok {
+			continue
+		}
+		seen[item.title] = struct{}{}
+		out = append(out, item.title)
+		if len(out) == 3 {
+			break
+		}
+	}
+	return out
+}
+
+// situationEntryOutsideDefaultWorkspace is a file that belongs to some task
+// directory. The desktop session has no project of its own, so those files
+// are other tasks. Files under the process default stay; that is this chat.
+func situationEntryOutsideDefaultWorkspace(e memory.Entry) bool {
+	home := corelib.EffectiveWorkspaceDir()
+	if strings.TrimSpace(home) == "" {
+		home = corelib.WorkspaceDir()
+	}
+	paths := make([]string, 0, 1+len(e.Tags))
+	if strings.TrimSpace(e.SourceURL) != "" {
+		paths = append(paths, e.SourceURL)
+	}
+	paths = append(paths, e.Tags...)
+	for _, raw := range paths {
+		if !situationLooksLikePath(raw) {
+			continue
+		}
+		if home != "" && (isProcessDefaultWorkspacePath(raw) || situationPathInProject(raw, home)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func situationArtifactInProject(e memory.Entry, project string) bool {
+	roots := situationProjectRoots(project)
+	if len(roots) == 0 {
+		return false
+	}
+	home := corelib.EffectiveWorkspaceDir()
+	if strings.TrimSpace(home) == "" {
+		home = corelib.WorkspaceDir()
+	}
+	matched := false
+	for _, tag := range e.Tags {
+		pathTag := situationTaskPath(tag)
+		if pathTag == "" {
+			continue
+		}
+		if situationPathInAnyRoot(pathTag, roots) {
+			matched = true
+			continue
+		}
+		// A file can sit in the shared default workspace and still name
+		// another task in its tags. That tag is the task, not this session.
+		if home != "" && (isProcessDefaultWorkspacePath(pathTag) || situationPathInProject(pathTag, home)) {
+			continue
+		}
+		return false
+	}
+	if situationPathInAnyRoot(e.SourceURL, roots) {
+		return true
+	}
+	return matched
+}
+
+// situationTaskPath is a directory tag. Keyed metadata such as
+// working_dir:C:\... is not a task identity.
+func situationTaskPath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !situationLooksLikePath(raw) {
+		return ""
+	}
+	if i := strings.Index(raw, ":"); i > 1 {
+		return ""
+	}
+	return raw
+}
+
+// situationProjectRoots is the session directory plus its managed-task
+// workspace sandbox. A session opened on that sandbox also owns the task
+// root: workflow output is tagged with the task directory, while the file
+// itself often lives outside the sandbox.
+func situationProjectRoots(project string) []string {
+	project = normalizeProjectSessionPath(project)
+	if project == "" {
+		return nil
+	}
+	roots := []string{project}
+	if sandbox := taskWorkspaceSandbox(project); sandbox != "" {
+		roots = append(roots, sandbox)
+	}
+	if isProcessDefaultWorkspacePath(project) || !strings.EqualFold(filepath.Base(project), "workspace") {
+		return roots
+	}
+	parent := normalizeProjectSessionPath(filepath.Dir(project))
+	if sameNormalizedPath(taskWorkspaceSandbox(parent), project) {
+		roots = append(roots, parent)
+	}
+	return roots
+}
+
+func situationPathInAnyRoot(raw string, roots []string) bool {
+	for _, root := range roots {
+		if situationPathInProject(raw, root) {
+			return true
+		}
+	}
+	return false
+}
+
+func situationPathInProject(raw, project string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || project == "" || !situationLooksLikePath(raw) {
+		return false
+	}
+	candidate := normalizeProjectSessionPath(raw)
+	if candidate == "" {
+		return false
+	}
+	if strings.EqualFold(candidate, project) {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(candidate), strings.ToLower(project)+string(filepath.Separator))
+}
+
+func situationLooksLikePath(raw string) bool {
+	if strings.ContainsAny(raw, `/\`) {
+		return true
+	}
+	return len(raw) >= 2 && raw[1] == ':'
 }
 
 // --- Event Bus Integration ---

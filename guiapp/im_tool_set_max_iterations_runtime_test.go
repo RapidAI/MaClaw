@@ -62,6 +62,30 @@ func TestSetMaxIterationsMissingRuntimeOwnerFailsClosed(t *testing.T) {
 	}
 }
 
+func TestSetMaxIterationsExpiresWithTheTurn(t *testing.T) {
+	h := &IMMessageHandler{standaloneConfig: &StandaloneConfig{MaxIterationsFunc: func() int { return 100 }}}
+	ctx := NewLoopContext("desktop", 100, nil)
+	h.setSessionLoopCtx(desktopUserID, ctx)
+	turn := IMUserMessage{RequestID: "turn-1", UserID: desktopUserID, Platform: "desktop", Text: "做一个游戏"}
+	h.prepareIMLoopContext(ctx, turn, nil, false, false)
+
+	result := h.toolSetMaxIterations(map[string]interface{}{
+		"max_iterations":                 float64(40),
+		registeredToolPolicyOwnerIDField: desktopUserID,
+	})
+	if !strings.Contains(result, "40") || ctx.MaxIterations() != 40 || !ctx.iterationCeilingRaised {
+		t.Fatalf("result=%q max=%d raised=%v", result, ctx.MaxIterations(), ctx.iterationCeilingRaised)
+	}
+	kept := h.prepareIMLoopContext(ctx, turn, nil, false, false)
+	if kept.MaxIterations() != 40 || !kept.iterationCeilingRaised {
+		t.Fatalf("retry dropped the turn limit max=%d raised=%v", kept.MaxIterations(), kept.iterationCeilingRaised)
+	}
+	next := h.prepareIMLoopContext(ctx, IMUserMessage{RequestID: "turn-2", UserID: desktopUserID, Platform: "desktop", Text: "下一句"}, nil, false, false)
+	if next.MaxIterations() != 100 || next.iterationCeilingRaised {
+		t.Fatalf("next message kept the turn limit max=%d raised=%v", next.MaxIterations(), next.iterationCeilingRaised)
+	}
+}
+
 func TestAgentLoopSetMaxIterationsEmptyRuntimeOwnerFailsClosed(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	registerBuiltinTools(h.registry, h)

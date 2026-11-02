@@ -57,13 +57,12 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 		return fmt.Errorf("skill security scan hash failed for %q: %w", skill.Name, err)
 	}
 	if rec, err := readSkillScanCache(skill.SkillDir, skill.Name); err == nil && rec.Hash == hash && skillScanCacheRecordVersionMatches(rec) && skillScanCacheRecordSignatureValid(rec) {
-		switch status := normalizeSkillScanCacheStatus(rec.Status); {
-		case skillScanCacheRecordIsCritical(rec) && app.securityPolicyMode() == "strict":
+		status := normalizeSkillScanCacheStatus(rec.Status)
+		if app.skillInstallUnattendedShouldBlock(scanReportFromCacheRecord(rec)) {
 			return fmt.Errorf("skill %q was previously blocked by security scan (level=%s): %s", skill.Name, rec.Level, rec.Summary)
-		case status.IsAllowed():
+		}
+		if status.IsAllowed() || status.IsBlocked() {
 			return nil
-		case status.IsBlocked() && app.securityPolicyMode() == "strict":
-			return fmt.Errorf("skill %q was previously blocked by security scan (level=%s): %s", skill.Name, rec.Level, rec.Summary)
 		}
 	}
 
@@ -89,14 +88,18 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 	if err := writeSkillScanCacheForReport(skill, skill.SkillDir, hash, report); err != nil {
 		app.log(fmt.Sprintf("[skill-runner] failed to write scan cache for %s: %v", skill.Name, err))
 	}
-	if app.skillInstallScanShouldBlock(report) {
+	if app.skillInstallUnattendedShouldBlock(report) {
 		return fmt.Errorf("skill %q blocked by security scan (level=%s): %s", skill.Name, report.FinalLevel, report.Summary)
 	}
 	return nil
 }
 
-func skillScanCacheRecordIsCritical(rec skillScanCacheRecord) bool {
-	return strings.EqualFold(strings.TrimSpace(rec.Level), string(security.RiskCritical))
+func scanReportFromCacheRecord(rec skillScanCacheRecord) *cskill.ScanReport {
+	return &cskill.ScanReport{
+		FinalLevel: security.RiskLevel(strings.ToLower(strings.TrimSpace(rec.Level))),
+		Summary:    rec.Summary,
+		ScannedBy:  rec.ScannedBy,
+	}
 }
 
 func skillScanCacheRecordVersionMatches(rec skillScanCacheRecord) bool {
@@ -125,9 +128,6 @@ func writeSkillScanCacheForReportStatus(skill *corelib.NLSkillEntry, skillDir, h
 	}
 	status = normalizeSkillScanCacheStatus(status)
 	if status == skillScanCacheStatusUnknown {
-		status = skillScanCacheStatusBlocked
-	}
-	if report.IsDangerous() && status == skillScanCacheStatusUnknown {
 		status = skillScanCacheStatusBlocked
 	}
 	if hash == "" {

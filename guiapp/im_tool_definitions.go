@@ -107,7 +107,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"background": map[string]string{"type": "boolean", "description": "后台执行（可选，默认 false）。设为 true 时命令在后台运行，立即返回 task_id，用 async_wait 查询进度。适用于翻译、编译、下载等长时间任务"},
 			}),
 		toolDefFromCore("read_file", "读取本机文件内容。支持 offset 参数从指定位置读取（适合监控日志文件的增量内容）", nil),
-		toolDefFromCore("read_tool_result", "分段回读被截断的工具完整输出（使用 [tool_result_handle] 的 id）", nil),
+		toolDefFromCore("read_tool_result", readToolResultToolDescription, nil),
 		toolDefFromCore("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。内容无长度限制，超长内容系统会自动处理。超过约6000字符时建议分块写入：先 overwrite 第一部分，再 append 后续部分）",
 			map[string]interface{}{
 				"path":     map[string]string{"type": "string", "description": "文件路径（绝对路径或相对于 Project directory 的路径）"},

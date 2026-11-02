@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
     codingChecklistAllDone,
+    codingPlanAwaitingStart,
+    codingStepsClockFrom,
+    codingStepsClockIsCurrent,
+    codingStepsSnapshotRegresses,
+    codingWorkbenchStepsAreCurrent,
+    codingWorkbenchStepsFromPayload,
+    codingWorkbenchStepsRevision,
     codingStepIsActive,
     codingStepIsDone,
     codingStepIsFailed,
@@ -9,6 +16,11 @@ import {
     presentCodingAgentChecklist,
 } from "../codingStepStatus";
 import { codingStepGlyph } from "../CodingWorkbenchControlPanel";
+
+// These helpers read only updated_unix; a real coding step also carries
+// index/status, so fresh object literals are widened through this identity
+// helper to keep TypeScript excess-property checks out of the way.
+const stepStamps = (steps: Array<{ index?: number; status?: string; updated_unix?: number }>) => steps;
 
 /**
  * The canonical set the coding workbench actually emits
@@ -159,6 +171,83 @@ describe("codingChecklistAllDone", () => {
         expect(codingChecklistAllDone([
             { index: 1, status: "verify_failed" },
             { index: 2, status: "passed" },
+        ])).toBe(false);
+    });
+
+    it("normalizes a step payload and drops a non-array", () => {
+        expect(codingWorkbenchStepsFromPayload(null)).toEqual([]);
+        expect(codingWorkbenchStepsFromPayload({ index: 1 })).toEqual([]);
+        expect(codingWorkbenchStepsFromPayload([
+            { index: "2", title: "检查样本", status: "running", summary: "note", verify_cmd: "go test", verify_ok: false, updated_unix: 200 },
+            null,
+        ])).toEqual([
+            { index: 2, title: "检查样本", status: "running", summary: "note", verify_cmd: "go test", verify_ok: false, updated_unix: 200 },
+            { index: 0, title: "", status: "pending", summary: "", verify_cmd: "", verify_ok: undefined, updated_unix: 0 },
+        ]);
+    });
+
+    it("drops a stamped snapshot older than the steps already shown", () => {
+        const older = [{ index: 1, status: "pending", updated_unix: 100 }];
+        const newer = [{ index: 1, status: "running", updated_unix: 200 }];
+        expect(codingWorkbenchStepsRevision(newer)).toBe(200);
+        expect(codingWorkbenchStepsRevision(older)).toBe(100);
+        expect(codingWorkbenchStepsRevision(stepStamps([{ index: 1, status: "pending" }]))).toBe(0);
+        expect(codingWorkbenchStepsAreCurrent(200, older)).toBe(false);
+        expect(codingWorkbenchStepsAreCurrent(200, newer)).toBe(true);
+        expect(codingWorkbenchStepsAreCurrent(200, stepStamps([{ index: 1, status: "running", updated_unix: 200 }]))).toBe(true);
+        expect(codingWorkbenchStepsAreCurrent(200, stepStamps([{ index: 1, status: "running" }]))).toBe(true);
+        expect(codingWorkbenchStepsAreCurrent(200, [])).toBe(true);
+        expect(codingWorkbenchStepsAreCurrent(0, older)).toBe(true);
+    });
+
+    it("orders a sequenced snapshot ahead of a newer unix stamp", () => {
+        const pending = codingStepsClockFrom(1, [{ updated_unix: 900 }]);
+        const confirmed = codingStepsClockFrom(2, [{ updated_unix: 100 }]);
+        const stale = codingStepsClockFrom(1, [{ updated_unix: 900 }]);
+        expect(codingStepsClockIsCurrent({ seq: 0, unix: 0 }, pending)).toBe(true);
+        expect(codingStepsClockIsCurrent(pending, confirmed)).toBe(true);
+        expect(codingStepsClockIsCurrent(confirmed, stale)).toBe(false);
+        expect(codingStepsClockIsCurrent(confirmed, codingStepsClockFrom(undefined, [{ updated_unix: 900 }]))).toBe(false);
+        expect(codingStepsClockIsCurrent(confirmed, codingStepsClockFrom(3, []), true)).toBe(true);
+        expect(codingStepsClockIsCurrent(confirmed, codingStepsClockFrom(2, []), true)).toBe(true);
+        expect(codingStepsClockIsCurrent(confirmed, codingStepsClockFrom(1, []), true)).toBe(false);
+        expect(codingStepsClockIsCurrent({ seq: 0, unix: 200 }, codingStepsClockFrom(undefined, [{ updated_unix: 100 }]))).toBe(false);
+        expect(codingStepsClockIsCurrent({ seq: 0, unix: 200 }, codingStepsClockFrom(undefined, []), true)).toBe(true);
+        expect(codingStepsClockIsCurrent({ seq: 0, unix: 0 }, codingStepsClockFrom(undefined, stepStamps([{ status: "running" }])))).toBe(true);
+        expect(codingStepsClockIsCurrent({ seq: 0, unix: 200 }, codingStepsClockFrom(1, [{ updated_unix: 100 }]))).toBe(false);
+        expect(codingStepsClockIsCurrent({ seq: 0, unix: 200 }, codingStepsClockFrom(1, [{ updated_unix: 200 }]))).toBe(true);
+    });
+
+    it("does not rewind a started plan with the same snapshot generation", () => {
+        const current = codingStepsClockFrom(2, stepStamps([{ status: "running", updated_unix: 100 }]));
+        const sameSeq = codingStepsClockFrom(2, stepStamps([{ status: "pending", updated_unix: 100 }]));
+        const sameUnix = codingStepsClockFrom(undefined, stepStamps([{ status: "pending", updated_unix: 100 }]));
+        const nextPlan = codingStepsClockFrom(3, stepStamps([{ status: "pending", updated_unix: 100 }]));
+        expect(codingStepsSnapshotRegresses(true, current, sameSeq, [{ status: "pending" }])).toBe(true);
+        expect(codingStepsSnapshotRegresses(true, { seq: 0, unix: 100 }, sameUnix, [{ status: "pending" }])).toBe(true);
+        expect(codingStepsSnapshotRegresses(true, current, nextPlan, [{ status: "pending" }])).toBe(false);
+        expect(codingStepsSnapshotRegresses(false, current, sameSeq, [{ status: "pending" }])).toBe(false);
+        expect(codingStepsSnapshotRegresses(true, current, sameSeq, [{ status: "running" }])).toBe(false);
+    });
+
+    it("keeps the plan gate only until a step has started", () => {
+        expect(codingPlanAwaitingStart(undefined)).toBe(true);
+        expect(codingPlanAwaitingStart([])).toBe(true);
+        expect(codingPlanAwaitingStart([
+            { index: 1, status: "pending" },
+            { index: 2, status: "" },
+        ])).toBe(true);
+        expect(codingPlanAwaitingStart([
+            { index: 1, status: "running" },
+            { index: 2, status: "pending" },
+        ])).toBe(false);
+        expect(codingPlanAwaitingStart([
+            { index: 1, status: "passed" },
+            { index: 2, status: "pending" },
+        ])).toBe(false);
+        expect(codingPlanAwaitingStart([
+            { index: 1, status: "failed" },
+            { index: 2, status: "skipped" },
         ])).toBe(false);
     });
 

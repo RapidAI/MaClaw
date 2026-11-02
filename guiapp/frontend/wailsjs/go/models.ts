@@ -9294,6 +9294,7 @@ export namespace main {
 	    plan_mode?: string;
 	    pending_approval?: boolean;
 	    step_statuses?: codingWorkbenchStepStatus[];
+    steps_revision?: number;
 	    project_instruction_sources?: string[];
 	    checkpoint_label?: string;
 	    session_input_tokens?: number;

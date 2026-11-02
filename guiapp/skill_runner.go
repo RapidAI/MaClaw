@@ -4161,7 +4161,7 @@ func (r *SkillRunner) maybeRepairSkillWithContext(ctx context.Context, entry *co
 		repairReport = r.scanRepairedSkillWithContext(ctx, entry)
 	}
 	missingScanBlocked := repairReport == nil && (app == nil || app.skillInstallMissingScanShouldBlock())
-	riskyScanBlocked := repairReport != nil && app != nil && app.skillInstallScanShouldBlock(repairReport)
+	riskyScanBlocked := repairReport != nil && app != nil && app.skillInstallUnattendedShouldBlock(repairReport)
 	legacyRiskyScanBlocked := repairReport != nil && app == nil && repairReport.NeedsUserReview()
 	if missingScanBlocked || riskyScanBlocked || legacyRiskyScanBlocked {
 		if err := ctx.Err(); err != nil {

@@ -1069,7 +1069,7 @@ func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilit
 		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Managed capability skill scan did not produce a report; current policy allows installation.", nil)
 		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", security.RiskCritical, security.PolicyAudit, fmt.Sprintf("current policy allowed managed capability %s skill %s even though scan report was missing", item.ID, entry.Name))
 	}
-	if report != nil && a.skillInstallScanShouldBlockForSource(report, originSource) {
+	if report != nil && a.skillInstallUnattendedShouldBlockForSource(report, originSource) {
 		cskill.CleanupStaging(stagingDir)
 		a.emitSkillInstallProgress(entry.Name, "blocked", "Managed capability skill blocked by pre-install security scan.", report)
 		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillReject, "managed_capability_skill_install", report.FinalLevel, security.PolicyDeny, fmt.Sprintf("managed capability %s rejected skill %s: %s", item.ID, entry.Name, report.Summary))
@@ -1186,7 +1186,7 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Managed capability skill scan did not produce a report; current policy allows installation.", nil)
 		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", security.RiskCritical, security.PolicyAudit, fmt.Sprintf("current policy allowed managed capability %s skill %s even though scan report was missing", capabilityID, entry.Name))
 	}
-	if report != nil && a.skillInstallScanShouldBlockForSource(report, effectiveSource) {
+	if report != nil && a.skillInstallUnattendedShouldBlockForSource(report, effectiveSource) {
 		cskill.CleanupStaging(stagingDir)
 		a.emitSkillInstallProgress(entry.Name, "blocked", "Managed capability skill blocked by pre-install security scan.", report)
 		a.logSkillInstallSecurityEvent(

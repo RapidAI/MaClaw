@@ -406,40 +406,39 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			installScanReport = scanReport
 		}
 
-		if h.app.skillInstallScanShouldBlockForSource(scanReport, effectiveSource) {
+		platform := runtimePlatform
+		if strings.TrimSpace(platform) == "" {
+			if loopCtx := h.runtimeLoopContextForOwner(installPolicyOwnerID); loopCtx != nil {
+				platform = runtimePlatformFromLoopContext(loopCtx)
+			}
+		}
+		action, recordedWithoutChannel := h.app.skillInstallActionWithChannel(scanReport, effectiveSource, strings.TrimSpace(platform) != "")
+		switch action {
+		case security.PolicyDeny:
 			cskill.CleanupStaging(stagingDir)
+			level, summary := skillInstallReportLevelSummary(scanReport)
 			if h.getAuditLog() != nil {
 				_ = h.getAuditLog().Log(security.AuditEntry{
 					Timestamp:    time.Now(),
 					Action:       security.AuditActionHubSkillReject,
 					ToolName:     "hub_skill_install",
-					RiskLevel:    scanReport.FinalLevel,
+					RiskLevel:    level,
 					PolicyAction: security.PolicyDeny,
-					Result:       fmt.Sprintf("pre-install policy blocked skill %s: %s", entry.Name, scanReport.Summary),
+					Result:       fmt.Sprintf("pre-install policy blocked skill %s: %s", entry.Name, summary),
 				})
 			}
 			return FormatScanReportForUser(scanReport, entry.Name) +
 				"\n" + localizedSkillInstallBlockedMessage(h.skillConfirmLang(), entry.Name, true)
-		}
-		if h.app.skillInstallReviewNeedsConfirmationForSource(scanReport, effectiveSource) {
-			platform := runtimePlatform
+		case security.PolicyAsk:
 			confirmCtx := context.Background()
 			if loopCtx := h.runtimeLoopContextForOwner(installPolicyOwnerID); loopCtx != nil {
-				if platform == "" {
-					platform = runtimePlatformFromLoopContext(loopCtx)
-				}
 				var cancel context.CancelFunc
 				confirmCtx, cancel = loopCtx.Context()
 				defer cancel()
 			}
 
-			allFactors := scanReport.PatternAssessment.Factors
-			for _, f := range scanReport.Findings {
-				allFactors = append(allFactors, f.Description)
-			}
-
 			confirmed := h.confirmRiskSkillInstall(
-				confirmCtx, entry.Name, hubURL, scanReport.FinalLevel, allFactors, platform, installPolicyOwnerID,
+				confirmCtx, entry.Name, hubURL, scanReport.FinalLevel, skillInstallRiskFactors(scanReport), platform, installPolicyOwnerID,
 			)
 
 			if !confirmed {
@@ -467,6 +466,17 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 					RiskLevel:    scanReport.FinalLevel,
 					PolicyAction: security.PolicyUserOverride,
 					Result:       fmt.Sprintf("user confirmed skill %s, scanned_by=%s, level=%s", entry.Name, scanReport.ScannedBy, scanReport.FinalLevel),
+				})
+			}
+		default:
+			if recordedWithoutChannel && h.getAuditLog() != nil {
+				_ = h.getAuditLog().Log(security.AuditEntry{
+					Timestamp:    time.Now(),
+					Action:       security.AuditActionHubSkillInstall,
+					ToolName:     "hub_skill_install",
+					RiskLevel:    scanReport.FinalLevel,
+					PolicyAction: security.PolicyAudit,
+					Result:       fmt.Sprintf("no confirmation channel; recorded skill %s and allowed by current policy: %s", entry.Name, scanReport.Summary),
 				})
 			}
 		}
@@ -1750,7 +1760,7 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 		return nil
 	}
 	scanner := cskill.NewSecurityScanner(nil)
-	report := scanner.ScanStaged(context.Background(), entry, skillDir, func(status string) {
+	report := scanner.ScanInstallStaged(context.Background(), entry, skillDir, func(status string) {
 		if h != nil && h.app != nil {
 			h.app.log(fmt.Sprintf("[manage_skill] security scan %s: %s", entry.Name, status))
 		}
@@ -1768,29 +1778,24 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 		}
 		return fmt.Errorf("security scan produced no report")
 	}
-	if report.NeedsUserReview() {
-		if h != nil && h.app != nil {
-			h.app.logSkillInstallSecurityEvent(
-				security.AuditActionHubSkillReject,
-				"manage_skill_autofix",
-				report.FinalLevel,
-				security.PolicyDeny,
-				fmt.Sprintf("skill autofix writeback requires manual review for %s: %s", entry.Name, report.Summary),
-			)
-		}
+	if h != nil && h.app != nil && h.app.skillInstallUnattendedShouldBlock(report) {
+		h.app.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillReject,
+			"manage_skill_autofix",
+			report.FinalLevel,
+			security.PolicyDeny,
+			fmt.Sprintf("skill autofix writeback rejected for %s: %s", entry.Name, report.Summary),
+		)
 		return fmt.Errorf("level=%s summary=%s", report.FinalLevel, report.Summary)
 	}
-	if h != nil && h.app != nil && h.app.skillInstallScanShouldBlock(report) {
-		if h != nil && h.app != nil {
-			h.app.logSkillInstallSecurityEvent(
-				security.AuditActionHubSkillReject,
-				"manage_skill_autofix",
-				report.FinalLevel,
-				security.PolicyDeny,
-				fmt.Sprintf("skill autofix writeback rejected for %s: %s", entry.Name, report.Summary),
-			)
-		}
-		return fmt.Errorf("level=%s summary=%s", report.FinalLevel, report.Summary)
+	if h != nil && h.app != nil && report.NeedsUserReview() {
+		h.app.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillUpdate,
+			"manage_skill_autofix",
+			report.FinalLevel,
+			security.PolicyAudit,
+			fmt.Sprintf("skill autofix writeback recorded risk for %s and allowed by current policy: %s", entry.Name, report.Summary),
+		)
 	}
 	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
 		return fmt.Errorf("write skill scan cache: %w", err)
@@ -2693,7 +2698,7 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 	limit := config.EffectiveMaxIterations(int(n))
 	reason := stringVal(args, "reason")
 	if ctx := h.runtimeLoopContextForOwner(ownerID); ctx != nil {
-		ctx.SetMaxIterations(limit)
+		ctx.raiseIterationCeiling(limit)
 	}
 
 	if reason != "" {

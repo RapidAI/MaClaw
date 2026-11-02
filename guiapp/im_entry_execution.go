@@ -534,7 +534,11 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		systemPrompt += h.chatTaskDispatchGuidance(msg.UserID)
 	}
 	if !shareDiscussion && loopCtx != nil && strings.TrimSpace(loopCtx.ChatTaskID) != "" {
-		systemPrompt += chatTaskWorkerGuidance()
+		if loopCtx.ComputerHelper {
+			systemPrompt += chatTaskHelperReportGuidance()
+		} else {
+			systemPrompt += chatTaskWorkerGuidance()
+		}
 	}
 	promptElapsed := time.Since(promptStart)
 

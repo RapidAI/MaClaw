@@ -1044,6 +1044,10 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 			loopCtx.Runtime.PolicyOwnerID = policyOwnerID
 			loopCtx.Runtime.WorkflowOwnerID = policyOwnerID
 		}
+		// A new message drops the previous turn's refill. A retry of this
+		// same payload keeps the ceiling: the coding turn may still be on
+		// this loop, and shrinking it would stop the work mid-run.
+		loopCtx.releaseTurnIterationExtension(h.getMaclawAgentMaxIterations())
 	}
 	if !resetRuntime {
 		// Keep the host-computed value in sync explicitly so a retry can never

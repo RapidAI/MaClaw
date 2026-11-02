@@ -53,6 +53,125 @@ export function codingStepIsSettled(status: string): boolean {
     return codingStepIsDone(status) || codingStepIsFailed(status) || codingStepIsSkipped(status);
 }
 
+export type CodingWorkbenchStepRow = {
+    index: number;
+    title: string;
+    status: string;
+    summary: string;
+    verify_cmd: string;
+    verify_ok?: boolean;
+    /** Unix seconds from the backend. 0 means the producer did not stamp the row. */
+    updated_unix: number;
+};
+
+/** Normalize a status or event step list. A non-array is an empty checklist. */
+export function codingWorkbenchStepsFromPayload(raw: unknown): CodingWorkbenchStepRow[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((item) => {
+        const step = item && typeof item === "object" ? item as Record<string, unknown> : {};
+        return {
+            index: Number(step.index) || 0,
+            title: String(step.title || ""),
+            status: String(step.status || "pending"),
+            summary: String(step.summary || ""),
+            verify_cmd: String(step.verify_cmd || ""),
+            verify_ok: typeof step.verify_ok === "boolean" ? step.verify_ok : undefined,
+            updated_unix: Number(step.updated_unix) || 0,
+        };
+    });
+}
+
+/** Newest stamp on the list. Unstamped rows contribute nothing. */
+export function codingWorkbenchStepsRevision(steps: { updated_unix?: number }[] | undefined): number {
+    let max = 0;
+    for (const step of steps || []) {
+        const stamp = Number(step?.updated_unix) || 0;
+        if (stamp > max) max = stamp;
+    }
+    return max;
+}
+
+/**
+ * A clear and an unstamped list still apply. A stamped list older than the
+ * revision already on screen is a late event and must not restore the gate.
+ */
+export function codingWorkbenchStepsAreCurrent(
+    currentRevision: number,
+    incoming: { updated_unix?: number }[] | undefined,
+): boolean {
+    if (!incoming || incoming.length === 0) return true;
+    const next = codingWorkbenchStepsRevision(incoming);
+    if (next <= 0) return true;
+    return next >= currentRevision;
+}
+
+/**
+ * Checklist snapshot clock. `seq` is the backend emit counter and wins over
+ * `unix`, because two writes in the same second share a unix stamp.
+ */
+export type CodingStepsClock = { seq: number; unix: number };
+
+export function codingStepsClockFrom(seq: unknown, steps: { updated_unix?: number }[] | undefined): CodingStepsClock {
+    const parsed = Number(seq);
+    return {
+        seq: Number.isFinite(parsed) && parsed > 0 ? parsed : 0,
+        unix: codingWorkbenchStepsRevision(steps),
+    };
+}
+
+/**
+ * Newer sequence always wins. Without one, a stamped list older than the
+ * screen is dropped, and an unstamped list cannot rewind a stamped one.
+ * An empty list still applies so a finished plan can clear.
+ */
+export function codingStepsClockIsCurrent(current: CodingStepsClock, incoming: CodingStepsClock, incomingEmpty = false): boolean {
+    if (incoming.seq > 0) {
+        if (current.seq > 0) return incoming.seq >= current.seq;
+        // First sequence number seen. A stamped list already on screen is
+        // newer than an older unix stamp, even if that older copy has a seq.
+        if (current.unix > 0 && incoming.unix > 0 && incoming.unix < current.unix) return false;
+        return true;
+    }
+    if (current.seq > 0) return false;
+    if (incomingEmpty) return true;
+    if (incoming.unix <= 0) return current.unix <= 0;
+    if (current.unix <= 0) return true;
+    return incoming.unix >= current.unix;
+}
+
+/**
+ * Same generation as the list already shown, but every incoming row is still
+ * unstarted. That is the pre-confirm copy (a poll read the same counter) and
+ * must not rewind a step that has already left pending.
+ */
+export function codingStepsSnapshotRegresses(
+    started: boolean,
+    current: CodingStepsClock,
+    incoming: CodingStepsClock,
+    incomingSteps: { status?: string }[] | undefined,
+): boolean {
+    if (!started) return false;
+    const list = incomingSteps || [];
+    if (list.length === 0 || !codingPlanAwaitingStart(list)) return false;
+    if (incoming.seq > 0 && current.seq > 0 && incoming.seq === current.seq) return true;
+    return incoming.seq <= 0 && incoming.unix > 0 && current.unix > 0 && incoming.unix === current.unix;
+}
+
+/**
+ * Plan gate (start / skip / reject) is only for a plan that has not begun.
+ *
+ * An empty list still counts as awaiting: the card may only have the
+ * requirement restatement. The first active or settled row means the plan
+ * was confirmed and the gate would sit under a live checklist.
+ */
+export function codingPlanAwaitingStart<T extends { status?: string }>(steps: T[] | undefined): boolean {
+    const list = steps || [];
+    return list.every((step) => {
+        const status = String(step?.status || "");
+        return !codingStepIsActive(status) && !codingStepIsSettled(status);
+    });
+}
+
 /**
  * True when every row reached a successful close (done or skipped).
  *

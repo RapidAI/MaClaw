@@ -43,17 +43,28 @@ func computeAgentLoopIterationLimits(ctx *LoopContext, maxIter int, minIteration
 }
 
 func (h *IMMessageHandler) refreshAgentLoopEffectiveMax(ctx *LoopContext, iteration int, effectiveMax int, minIterations int, loopDriftDetector *DriftDetector, sendProgress func(string)) int {
-	if ctx != nil && ctx.ForegroundChatBudget > 0 && h.loopMaxOverride <= 0 {
-		ctx.SetMaxIterations(ctx.ForegroundChatBudget)
-		return ctx.ForegroundChatBudget
-	}
 	if h.loopMaxOverride > 0 {
 		override := h.loopMaxOverride
 		if minIterations > 0 && override < minIterations {
 			override = minIterations
 		}
-		ctx.SetMaxIterations(override)
+		if ctx != nil {
+			ctx.SetMaxIterations(override)
+		}
 		return override
+	}
+	if ceiling, raised := ctx.extendedIterationCeiling(); raised {
+		// A refill already raised this loop. The foreground budget is the
+		// first wave only; clamping back to it spends every later refill
+		// and leaves the turn on the original small limit.
+		if ceiling >= effectiveMax {
+			return ceiling
+		}
+		return effectiveMax
+	}
+	if ctx != nil && ctx.ForegroundChatBudget > 0 {
+		ctx.SetMaxIterations(ctx.ForegroundChatBudget)
+		return ctx.ForegroundChatBudget
 	}
 	if cm := ctx.MaxIterations(); cm > 0 && cm != effectiveMax {
 		effectiveMax = cm
@@ -88,8 +99,10 @@ func (h *IMMessageHandler) refreshAgentLoopEffectiveMax(ctx *LoopContext, iterat
 		return effectiveMax
 	}
 	effectiveMax = autoExtended
-	ctx.SetMaxIterations(effectiveMax)
-	sendProgress(fmt.Sprintf("Current task is long; auto-extended reasoning rounds to %d.", effectiveMax))
+	ctx.raiseIterationCeiling(effectiveMax)
+	if sendProgress != nil {
+		sendProgress(fmt.Sprintf("Current task is long; auto-extended reasoning rounds to %d.", effectiveMax))
+	}
 	log.Printf("[AgentLoop] auto-extended: iteration=%d new_max=%d cap=%d loop=%s", iteration, effectiveMax, autoExtendCap, ctx.ID)
 	if h.traceService != nil && ctx.RunID != "" {
 		h.appendTraceEvent(ctx, "loop.extended", "info", "Auto-extended iteration limit", truncateTraceText(fmt.Sprintf("remaining=%d new_max=%d", remaining, effectiveMax), 220), "", "")
@@ -97,8 +110,12 @@ func (h *IMMessageHandler) refreshAgentLoopEffectiveMax(ctx *LoopContext, iterat
 	return effectiveMax
 }
 
+func backgroundIterationPauseDue(ctx *LoopContext, iteration int, effectiveMax int) bool {
+	return ctx != nil && ctx.Kind == LoopKindBackground && effectiveMax > 4 && iteration == effectiveMax-2
+}
+
 func handleBackgroundIterationPause(ctx *LoopContext, iteration int, effectiveMax int) (*IMAgentResponse, bool) {
-	if ctx.Kind != LoopKindBackground || effectiveMax <= 4 || iteration != effectiveMax-2 {
+	if !backgroundIterationPauseDue(ctx, iteration, effectiveMax) {
 		return nil, false
 	}
 	ctx.SetLoopState(LoopStatePaused)
@@ -126,6 +143,36 @@ func handleBackgroundIterationPause(ctx *LoopContext, iteration int, effectiveMa
 		ctx.SetLoopState(LoopStateTimeout)
 		return &IMAgentResponse{Text: fmt.Sprintf("Background task %s timed out waiting for continuation and was ended.", ctx.ID)}, true
 	}
+}
+
+// codingTaskStillOpen reports an unfinished programming task. That task keeps
+// receiving iterations in the loop it already has. Ordinary chat keeps the
+// session wave cap.
+func (h *IMMessageHandler) codingTaskStillOpen(ctx *LoopContext, userID string) bool {
+	if ctx != nil && ctx.codingSessionOpen() {
+		return true
+	}
+	// A background job for the same owner is not the coding task. It keeps
+	// the pause and the chat wave cap. The interactive workbench turn does not.
+	if h == nil || ctx == nil || ctx.Kind == LoopKindBackground {
+		return false
+	}
+	if h.isPureCodingWorkbenchSession(userID) {
+		return true
+	}
+	return h.isPureCodingWorkbenchSession(ctx.UserID)
+}
+
+// sameLoopIterationRefill adds another configured budget to the loop that
+// is about to stop. The conversation and tool results stay where they are.
+// codingStillOpen keeps a programming task on this loop after the chat cap.
+func sameLoopIterationRefill(ctx *LoopContext, toolCalls, configuredMax int, codingStillOpen bool) int {
+	if !ctx.claimIterationExtensionForOpenTask(toolCalls, codingStillOpen) {
+		return 0
+	}
+	extra := config.EffectiveMaxIterations(configuredMax)
+	log.Printf("[agent-loop] same conversation continues with %d more iterations (used tools %d)", extra, toolCalls)
+	return extra
 }
 
 func shouldStopForAgentLoopIterationLimit(ctx *LoopContext, iteration int, effectiveMax int, chatFinalizeGrace int) bool {

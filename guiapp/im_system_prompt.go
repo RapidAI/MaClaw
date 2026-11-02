@@ -87,9 +87,9 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	basePromptElapsed := time.Since(promptBuildStart)
 
 	resumeStart := time.Now()
-	if !profile.IsLight() {
-		systemPrompt += h.buildResumeTraceContextWithLang(msg.UserID, promptMessage, msg.Lang)
-	}
+	// A light profile has no situation report. The resume contract is still
+	// this turn when a slot is bound. With no active slot the call is empty.
+	systemPrompt += h.buildResumeTraceContextWithLang(msg.UserID, promptMessage, msg.Lang)
 	resumeElapsed := time.Since(resumeStart)
 
 	policyOwnerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)

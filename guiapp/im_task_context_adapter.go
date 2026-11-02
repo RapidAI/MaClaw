@@ -120,6 +120,7 @@ func (h *IMMessageHandler) resolveTaskContext(
 		IsConfirmedResume:             isConfirmedResume,
 		HasActiveUnderstandingSession: hasActiveUnderstanding,
 		HasIncompleteTaskMarker:       hasIncompleteTaskMarker(history),
+		InterruptedTask:               recoveryClassificationTask(h, userID),
 		HasActiveBackgroundTask:       h.hasActiveCommandBackgroundTaskForOwner(userID),
 		ExplicitNewTask:               explicitNewTask,
 	}
@@ -151,10 +152,6 @@ func (h *IMMessageHandler) resolveTaskContextWithClassification(
 ) agent.TaskContextDecision {
 	h.ensureTaskContextManager()
 
-	var archived []agent.ArchivedTask
-	if h.taskArchive != nil {
-		archived = h.taskArchive.List(userID)
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -163,22 +160,46 @@ func (h *IMMessageHandler) resolveTaskContextWithClassification(
 	if h.memory != nil {
 		lastAccess = h.memory.LastAccessTime(userID)
 	}
+	// This call exists only for the session's own interrupted run. Other
+	// archived tasks are a menu the classifier can recall instead, which is
+	// how 「继续」 switched to a different task. The slot is the incomplete
+	// marker even when that sentence was not written into history.
 	decision := h.taskContextManager.Resolve(agent.ResolveInput{
 		Context:                 ctx,
 		OwnerID:                 userID,
 		UserMessage:             trimmedMsg,
 		History:                 history,
 		LastAccess:              lastAccess,
-		ArchivedTasks:           archived,
 		HasPendingAskUser:       hasPendingAskUser,
 		IsConfirmedResume:       isConfirmedResume,
-		HasIncompleteTaskMarker: hasIncompleteTaskMarker(history),
+		HasIncompleteTaskMarker: true,
+		InterruptedTask:         recoveryClassificationTask(h, userID),
 		HasActiveBackgroundTask: h.hasActiveCommandBackgroundTaskForOwner(userID),
 		ExplicitNewTask:         explicitNewTask,
 	})
-	log.Printf("[TaskContext] recovery user=%s action=%s reason=%q source=%s historyLen=%d archivedLen=%d",
-		userID, decision.Action, decision.Reason, decision.Source, len(history), len(archived))
+	log.Printf("[TaskContext] recovery user=%s action=%s reason=%q source=%s historyLen=%d",
+		userID, decision.Action, decision.Reason, decision.Source, len(history))
 	return decision
+}
+
+// recoveryClassificationTask is this session's interrupted run. A bare
+// 「继续」 is not a task name; the saved progress line is.
+func recoveryClassificationTask(h *IMMessageHandler, userID string) string {
+	if h == nil || h.memory == nil {
+		return ""
+	}
+	slot := h.memory.GetUnfinishedSlot(userID)
+	if slot == nil || !slot.Source.IsInFlightRecovery() {
+		return ""
+	}
+	title := strings.TrimSpace(slot.LastTask)
+	if title == "" || bareContinuationUtterance(title) {
+		title = strings.TrimSpace(slot.Summary)
+	}
+	if title == "" || bareContinuationUtterance(title) {
+		return ""
+	}
+	return truncateRunes(title, 120)
 }
 
 // archiveCurrentTask saves the current conversation as an archived task

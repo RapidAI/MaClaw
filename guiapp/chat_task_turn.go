@@ -405,19 +405,16 @@ func (c *LoopContext) foregroundChatNeedsHostHandoff() bool {
 }
 
 // foregroundChatEndedUnfinished is a desktop chat turn that stopped while the
-// task was still open. A full turn's iteration ceiling is that stop. A light
-// lookup's ceiling is the end of the lookup. A reply that asks the user to
-// send another message is unfinished on either profile. A worker does not
+// task was still open. A reply that asks the user to send another message is
+// unfinished. The iteration ceiling stays in this loop. A worker does not
 // start another worker.
 func (c *LoopContext) foregroundChatEndedUnfinished(result agent.LoopResult) bool {
 	if c == nil || !c.OfferChatTaskDispatch || strings.TrimSpace(c.ChatTaskID) != "" || c.chatTaskHandoffSent() {
 		return false
 	}
-	if strings.TrimSpace(result.Error) == "max iterations reached" && !c.Runtime.Execution.IsLight() {
-		if text := strings.TrimSpace(result.Text); text == "" || agent.AnswerHandsWorkBack(text) {
-			return true
-		}
-	}
+	// An iteration ceiling is refilled inside this loop. Starting a task here
+	// opens a new loop that does not have the tool transcript, so the work
+	// starts over.
 	return agent.AnswerHandsWorkBack(result.Text)
 }
 

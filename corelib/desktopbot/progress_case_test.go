@@ -215,3 +215,26 @@ func runNoTranscriptCopy(t *testing.T, c progressCase) {
 		}
 	}
 }
+
+func TestCollapseHelperReportKeepsSpacesInOnePath(t *testing.T) {
+	path := `C:\Users\ma139\Desktop\演讲稿 完整版.docx`
+	shown, err := desktopbot.CollapseHelperReport("文件："+path, []string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(shown, "演讲稿") != 1 || !strings.Contains(shown, path) {
+		t.Fatalf("spaced path split: %q", shown)
+	}
+}
+
+func TestHelperReportIsTheCardNotOneNumberedLine(t *testing.T) {
+	if desktopbot.HelperReport("已经改好。\n1. 只是其中一句") {
+		t.Fatal("one numbered line was treated as a helper card")
+	}
+	if !desktopbot.HelperReport("1. 做好了\n2. 没有剩余\n文件：/tmp/a.pdf") {
+		t.Fatal("card was not recognized")
+	}
+	if !desktopbot.HelperReport("文件：/tmp/a.pdf") {
+		t.Fatal("file line was not recognized")
+	}
+}

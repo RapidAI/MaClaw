@@ -351,10 +351,14 @@ func TestHostAttachedPresentationSettlesOfficePlan(t *testing.T) {
 	resp := &IMAgentResponse{
 		LocalFilePath: `C:\Users\ma139\Desktop\作业\SDG1_Brazil_BolsaFamilia_final.pptx`,
 		Error:         "required_effect_unsettled",
+		HardExit:      true,
 	}
 	attachSharedLoopArtifacts(resp, cb)
-	if resp.Error != "" {
-		t.Fatalf("attached presentation kept the loop error %q", resp.Error)
+	if resp.Error != "" || resp.HardExit {
+		t.Fatalf("attached presentation kept the loop outcome error=%q hard_exit=%v", resp.Error, resp.HardExit)
+	}
+	if status, errMsg := classifyIMAgentResponseOutcome(resp); status != "success" || errMsg != "" {
+		t.Fatalf("outcome status=%s err=%s", status, errMsg)
 	}
 	if !surface.completed["office"] || !surface.completed["deliver"] {
 		t.Fatalf("file did not close office and delivery: %#v", surface.completed)
@@ -368,6 +372,116 @@ func TestHostAttachedPresentationSettlesOfficePlan(t *testing.T) {
 	result := agent.LoopResult{Error: "required_effect_unsettled", HardExit: true}
 	if !sharedLoopTurnSettled(result, resp, cb) {
 		t.Fatal("settled presentation left the recovery marker")
+	}
+}
+
+// A Word file produced outside the office adapter discharges the same unstarted
+// office need. The adapter itself only writes spreadsheets and presentations;
+// the plan's office document includes .docx. A path-only office call must not
+// have recorded a failure, or this attachment could not close the need.
+func TestHostAttachedWordSettlesOfficePlan(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:document.write.office:resume", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+		{
+			ID: "deliver", NeedID: "need:deliver",
+			Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+			FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel", QualifierBindings: map[string]string{"format": "file"}},
+		},
+	}
+	surface.completed = map[string]bool{}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface, checkpointRunID: "run-docx"}
+	resp := &IMAgentResponse{
+		LocalFilePath: `F:\resume\resume-inference-engine.docx`,
+		FileName:      "resume-inference-engine.docx",
+		Error:         "required_effect_unsettled",
+		HardExit:      true,
+	}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.Error != "" || resp.HardExit {
+		t.Fatalf("attached word file kept the loop outcome error=%q hard_exit=%v", resp.Error, resp.HardExit)
+	}
+	if !surface.completed["office"] || !surface.completed["deliver"] {
+		t.Fatalf("docx did not close office and delivery: %#v", surface.completed)
+	}
+	if cb.RequiredEffectUnsettled() {
+		t.Fatalf("plan still open after the word file was accepted: %#v", cb.hopRunSnapshot())
+	}
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "将该文件转换为word 版本"},
+		{Role: "assistant", Content: "已生成 Word。"},
+	}
+	result := agent.LoopResult{Error: "required_effect_unsettled", HardExit: true}
+	if noteHostSettledRequiredEffect(history, 0, &result, resp, nil) {
+		t.Fatal("discharged word turn asked to record an incomplete class")
+	}
+	if result.Error != "" || result.HardExit || history[1].TerminalClass != "" {
+		t.Fatalf("result=%+v class=%q", result, history[1].TerminalClass)
+	}
+	final := finalizeHopRun(cb.hopRunSnapshot(), result)
+	if final.Status != "completed" || final.Remaining != 0 {
+		t.Fatalf("hop run after the word file: status=%s remaining=%d", final.Status, final.Remaining)
+	}
+	if !sharedLoopTurnSettled(result, resp, cb) {
+		t.Fatal("revised loop result left the recovery marker")
+	}
+}
+
+func TestSharedLoopSchedulesDegradedRecovery(t *testing.T) {
+	if !sharedLoopSchedulesDegradedRecovery("", false, "") {
+		t.Fatal("a clean finish may recover a degraded turn")
+	}
+	if sharedLoopSchedulesDegradedRecovery("", false, "required_effect_unsettled") {
+		t.Fatal("a discharged required effect must not start another recovery")
+	}
+	if sharedLoopSchedulesDegradedRecovery("required_effect_unsettled", false, "required_effect_unsettled") {
+		t.Fatal("an open required effect is not a clean finish")
+	}
+	if sharedLoopSchedulesDegradedRecovery("", true, "") {
+		t.Fatal("a handoff is not a degraded recovery")
+	}
+}
+
+func TestHostOpenRequiredEffectKeepsIncompleteClass(t *testing.T) {
+	history := []agent.ConversationEntry{{Role: "assistant", Content: "still working"}}
+	result := agent.LoopResult{Error: "required_effect_unsettled", HardExit: true}
+	resp := &IMAgentResponse{Error: "required_effect_unsettled", HardExit: true}
+	if !noteHostSettledRequiredEffect(history, 0, &result, resp, nil) {
+		t.Fatal("an open obligation was not stamped")
+	}
+	if result.Error != "required_effect_unsettled" || !result.HardExit || !resp.HardExit {
+		t.Fatalf("open result=%+v resp=%+v", result, resp)
+	}
+	if history[0].TerminalClass != "required_effect_unsettled" {
+		t.Fatalf("class=%q", history[0].TerminalClass)
+	}
+	if status, _ := classifyIMAgentResponseOutcome(resp); status != "hard_exit" {
+		t.Fatalf("open outcome status=%s", status)
+	}
+}
+
+func TestHostSettledRequiredEffectRewritesTrajectory(t *testing.T) {
+	rec := NewTrajectoryRecorderForBaseDir(t.TempDir())
+	rec.StartSession("s", "p", "m", "openai", "u", "desktop", nil)
+	rec.RecordLoopResult(agent.LoopResult{
+		Error:    "required_effect_unsettled",
+		HardExit: true,
+		HistoryDelta: []agent.ConversationEntry{
+			{Role: "user", Content: "将该文件转换为word 版本"},
+			{Role: "assistant", Content: "已生成 Word。"},
+		},
+	})
+	history := []agent.ConversationEntry{{Role: "assistant", Content: "已生成 Word。"}}
+	result := agent.LoopResult{Error: "required_effect_unsettled", HardExit: true}
+	resp := &IMAgentResponse{HardExit: true, LocalFilePath: `F:\resume\resume-inference-engine.docx`}
+	if noteHostSettledRequiredEffect(history, 0, &result, resp, rec) {
+		t.Fatal("discharged turn asked to stamp an incomplete class")
+	}
+	rec.mu.Lock()
+	status, errMsg := rec.session.Status, rec.session.Error
+	rec.mu.Unlock()
+	if status != "success" || errMsg != "" || result.Error != "" || result.HardExit {
+		t.Fatalf("trajectory status=%q err=%q result=%+v", status, errMsg, result)
 	}
 }
 

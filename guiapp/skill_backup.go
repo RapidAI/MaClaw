@@ -227,7 +227,7 @@ func (e *SkillExecutor) scanSkillBeforeArchiveExport(entry corelib.NLSkillEntry)
 		return fmt.Errorf("skill export security scan produced no report")
 	}
 	if e != nil && e.app != nil {
-		if e.app.skillInstallScanShouldBlock(report) {
+		if e.app.skillInstallUnattendedShouldBlock(report) {
 			return fmt.Errorf("skill export blocked by security scan: %s level=%s summary=%s", entry.Name, report.FinalLevel, report.Summary)
 		}
 		return nil
@@ -332,7 +332,7 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 			scanReport = cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &skill, skill.SkillDir, nil)
 		}
 		missingScanBlocked := scanReport == nil && (e.app == nil || e.app.skillInstallMissingScanShouldBlock())
-		riskyScanBlocked := scanReport != nil && e.app != nil && e.app.skillInstallScanShouldBlock(scanReport)
+		riskyScanBlocked := scanReport != nil && e.app != nil && e.app.skillInstallUnattendedShouldBlock(scanReport)
 		legacyRiskyScanBlocked := false
 		if missingScanBlocked || riskyScanBlocked || legacyRiskyScanBlocked {
 			report.Failed++

@@ -8426,6 +8426,31 @@ func TestRunLoop_ExtendsTheSameConversationWhenTheBudgetRunsOut(t *testing.T) {
 	}
 }
 
+func TestApplyTurnIterationCeilingStopsBelowWorkAlreadyDone(t *testing.T) {
+	cb := &ceilingStub{n: 40}
+	if got, stop := applyTurnIterationCeiling(cb, 100, 300); !stop || got != 40 {
+		t.Fatalf("past ceiling = %d stop=%v", got, stop)
+	}
+	if got, stop := applyTurnIterationCeiling(cb, 10, 300); stop || got != 40 {
+		t.Fatalf("future ceiling = %d stop=%v", got, stop)
+	}
+	if got, stop := applyTurnIterationCeiling(&mockCallbacks{maxIter: 30}, 10, 30); stop || got != 30 {
+		t.Fatalf("plain callback ceiling = %d stop=%v", got, stop)
+	}
+}
+
+type ceilingStub struct {
+	mockCallbacks
+	n int
+}
+
+func (s *ceilingStub) TurnIterationCeiling(int) (int, bool) {
+	if s == nil || s.n <= 0 {
+		return 0, false
+	}
+	return s.n, true
+}
+
 func TestExtendSameConversationBudgetRefusesAFreshOrOversizedGrant(t *testing.T) {
 	cb := &grantBudgetCallbacks{mockCallbacks: mockCallbacks{maxIter: 3}, extra: 1000}
 	if got := extendSameConversationBudget(cb, 3, 0); got != 0 {

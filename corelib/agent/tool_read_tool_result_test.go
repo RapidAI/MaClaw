@@ -70,6 +70,30 @@ func TestToolReadToolResult_ByPath(t *testing.T) {
 	}
 }
 
+func TestAnnotateAdjustedReadLimit(t *testing.T) {
+	body := "[tool_result_read]\noffset: 0\n"
+	if got := annotateAdjustedReadLimit(0, toolresult.DefaultReadLimit, body); got != body {
+		t.Fatalf("omitted limit should stay silent, got %q", got)
+	}
+	if got := annotateAdjustedReadLimit(toolresult.DefaultReadLimit, toolresult.DefaultReadLimit, body); got != body {
+		t.Fatalf("an exact page should stay silent, got %q", got)
+	}
+	got := annotateAdjustedReadLimit(1, toolresult.DefaultReadLimit, body)
+	if !strings.Contains(got, "limit_applied: ") || !strings.Contains(got, "requested limit 1") || !strings.HasSuffix(got, body) {
+		t.Fatalf("sub-page limit must be reported without dropping the page: %q", got)
+	}
+	if strings.Contains(got, "offset=next_offset") {
+		t.Fatalf("the note must not tell the model to send the field name: %q", got)
+	}
+}
+
+func TestToolReadToolResultRejectsAWordOffset(t *testing.T) {
+	msg := ToolReadToolResult(map[string]interface{}{"id": "page", "offset": "next_offset"})
+	if !strings.Contains(msg, "error:") || !strings.Contains(msg, "integer") {
+		t.Fatalf("a word offset must be rejected, got %q", msg)
+	}
+}
+
 func TestRegisterCoreTools_IncludesReadToolResult(t *testing.T) {
 	reg := NewCoreToolRegistry()
 	RegisterCoreTools(reg, CoreToolDeps{})
@@ -81,10 +105,27 @@ func TestRegisterCoreTools_IncludesReadToolResult(t *testing.T) {
 		}
 		if name, _ := fn["name"].(string); name == "read_tool_result" {
 			found = true
+			desc, _ := fn["description"].(string)
+			if strings.Contains(desc, "small limit") {
+				t.Fatalf("description still tells the model to prefer a tiny page: %s", desc)
+			}
+			if !strings.Contains(desc, "Omit limit") || !strings.Contains(desc, "next_offset") {
+				t.Fatalf("description must state the default page and the continuation offset: %s", desc)
+			}
 			parameters, _ := fn["parameters"].(map[string]interface{})
 			properties, _ := parameters["properties"].(map[string]interface{})
 			if _, exposed := properties["session_key"]; exposed {
 				t.Fatal("read_tool_result exposed host-owned session_key to the model")
+			}
+			limitDesc := ""
+			switch limit := properties["limit"].(type) {
+			case map[string]interface{}:
+				limitDesc, _ = limit["description"].(string)
+			case map[string]string:
+				limitDesc = limit["description"]
+			}
+			if !strings.Contains(limitDesc, "not a count") {
+				t.Fatalf("limit must say it is a byte cap: %s", limitDesc)
 			}
 			break
 		}

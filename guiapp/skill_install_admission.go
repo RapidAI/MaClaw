@@ -15,6 +15,17 @@ import (
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
+func skillInstallReportLevelSummary(report *cskill.ScanReport) (security.RiskLevel, string) {
+	if report == nil {
+		return security.RiskCritical, "scan report is missing"
+	}
+	summary := strings.TrimSpace(report.Summary)
+	if summary == "" {
+		summary = "no summary"
+	}
+	return report.FinalLevel, summary
+}
+
 func skillInstallRiskFactors(report *cskill.ScanReport) []string {
 	if report == nil {
 		return nil
@@ -109,20 +120,7 @@ func (a *App) skillInstallReviewNeedsConfirmation(report *cskill.ScanReport) boo
 }
 
 func (a *App) skillInstallReviewNeedsConfirmationForSource(report *cskill.ScanReport, source string) bool {
-	if report == nil || report.IsSafe() || a.isSecurityDeveloperMode() {
-		return false
-	}
-	if skillInstallAuditOnlyMarketplaceSource(source) {
-		return false
-	}
-	switch a.securityPolicyMode() {
-	case "standard":
-		return report.IsDangerous()
-	case "strict":
-		return report.IsDangerous() || report.NeedsUserReview()
-	default:
-		return false
-	}
+	return a.skillInstallPolicyActionForSource(report, source) == security.PolicyAsk
 }
 
 func (a *App) skillInstallScanShouldBlock(report *cskill.ScanReport) bool {
@@ -130,13 +128,7 @@ func (a *App) skillInstallScanShouldBlock(report *cskill.ScanReport) bool {
 }
 
 func (a *App) skillInstallScanShouldBlockForSource(report *cskill.ScanReport, source string) bool {
-	if report == nil || report.IsSafe() || a.isSecurityDeveloperMode() {
-		return false
-	}
-	if skillInstallAuditOnlyMarketplaceSource(source) {
-		return false
-	}
-	return a.securityPolicyMode() == "strict" && (report.IsDangerous() || report.NeedsUserReview())
+	return a.skillInstallPolicyActionForSource(report, source) == security.PolicyDeny
 }
 
 func (a *App) skillInstallFinalAuditAction(report *cskill.ScanReport) security.PolicyAction {
@@ -144,28 +136,76 @@ func (a *App) skillInstallFinalAuditAction(report *cskill.ScanReport) security.P
 }
 
 func (a *App) skillInstallFinalAuditActionForSource(report *cskill.ScanReport, source string) security.PolicyAction {
-	if report == nil {
-		return security.PolicyAllow
-	}
+	return a.skillInstallPolicyActionForSource(report, source)
+}
+
+// skillInstallFallbackPolicyEngine matches securityPolicyMode() when the app
+// has not loaded a policy engine yet: standard.
+var skillInstallFallbackPolicyEngine = NewPolicyEngine()
+
+// skillInstallPolicyActionForSource is the only install gate. It follows the
+// risk-guardrail table: allow and audit install immediately, ask prompts the
+// user, and deny blocks. Trusted marketplaces stay audit-only. Developer and
+// guardrails-off modes record findings and do not ask or block.
+func (a *App) skillInstallPolicyActionForSource(report *cskill.ScanReport, source string) security.PolicyAction {
 	if a != nil && a.isRiskGuardrailOffMode() {
 		return security.PolicyAllow
 	}
-	if skillInstallAuditOnlyMarketplaceSource(source) && !report.IsSafe() {
+	if skillInstallAuditOnlyMarketplaceSource(source) {
+		if report == nil || report.IsSafe() {
+			return security.PolicyAllow
+		}
 		return security.PolicyAudit
 	}
 	if a != nil && a.isSecurityDeveloperMode() {
-		if report.IsDangerous() || report.NeedsUserReview() {
+		if report != nil && !report.IsSafe() {
 			return security.PolicyAudit
 		}
 		return security.PolicyAllow
 	}
-	if a != nil && a.skillInstallReviewNeedsConfirmation(report) {
-		return security.PolicyUserOverride
+	if report == nil || !skillInstallRiskLevelKnown(report.FinalLevel) {
+		if a != nil && a.securityPolicyMode() == "strict" {
+			return security.PolicyDeny
+		}
+		return security.PolicyAllow
 	}
-	if report.NeedsUserReview() {
-		return security.PolicyAudit
+	engine := skillInstallFallbackPolicyEngine
+	if a != nil && a.policyEngine != nil {
+		engine = a.policyEngine
 	}
-	return security.PolicyAllow
+	return engine.Evaluate("skill_install", nil, report.FinalLevel)
+}
+
+func skillInstallRiskLevelKnown(level security.RiskLevel) bool {
+	_, known := security.RiskLevelOrder[level]
+	return known
+}
+
+// skillInstallUnattendedShouldBlock is the gate for paths that cannot show a
+// confirmation. Standard Confirm* records and allows. Strict confirmation has
+// no silent fallback, so Ask becomes a block. Deny stays a block.
+func (a *App) skillInstallUnattendedShouldBlock(report *cskill.ScanReport) bool {
+	return a.skillInstallUnattendedShouldBlockForSource(report, "")
+}
+
+func (a *App) skillInstallUnattendedShouldBlockForSource(report *cskill.ScanReport, source string) bool {
+	action, _ := a.skillInstallActionWithChannel(report, source, false)
+	return action == security.PolicyDeny
+}
+
+// skillInstallActionWithChannel follows the guardrail table when a confirmation
+// UI may be absent. Standard Confirm* with no channel becomes an audit that
+// allows the install. Strict Confirm* with no channel becomes a deny. The bool
+// is true when an Ask was recorded instead of shown.
+func (a *App) skillInstallActionWithChannel(report *cskill.ScanReport, source string, channelAvailable bool) (security.PolicyAction, bool) {
+	action := a.skillInstallPolicyActionForSource(report, source)
+	if channelAvailable || action != security.PolicyAsk {
+		return action, false
+	}
+	if a.securityPolicyMode() == "standard" {
+		return security.PolicyAudit, true
+	}
+	return security.PolicyDeny, false
 }
 
 func skillInstallAuditOnlyMarketplaceSource(source string) bool {
@@ -325,8 +365,18 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 		log.Printf("[skill-install-confirm] received response confirm_id=%s confirmed=%v", confirmID, resp.Confirmed)
 		return resp.Confirmed
 	case <-ctx.Done():
-		log.Printf("[skill-install-confirm] context cancelled confirm_id=%s skill=%q", confirmID, skillName)
-		return false
+		if entry.tryResolve() {
+			a.skillInstallConfirm.Delete(confirmID)
+			log.Printf("[skill-install-confirm] context cancelled confirm_id=%s skill=%q", confirmID, skillName)
+			return false
+		}
+		resp, ok := <-entry.Ch
+		if !ok {
+			log.Printf("[skill-install-confirm] context cancelled confirm_id=%s skill=%q", confirmID, skillName)
+			return false
+		}
+		log.Printf("[skill-install-confirm] received response confirm_id=%s confirmed=%v", confirmID, resp.Confirmed)
+		return resp.Confirmed
 	}
 }
 
@@ -420,13 +470,18 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 		)
 		return fmt.Errorf("skill security scan rejected installation: scan report is missing")
 	}
-	if report.IsSafe() {
-		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Security scan passed.", report)
+	action, recordedWithoutChannel := a.skillInstallActionWithChannel(report, source, a.ctx != nil)
+	if report.IsSafe() && action != security.PolicyAsk && action != security.PolicyDeny {
+		status := "Security scan passed."
+		if action == security.PolicyAudit {
+			status = "Security scan recorded risk and allowed installation by current policy."
+		}
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", status, report)
 		a.logSkillInstallSecurityEvent(
 			security.AuditActionHubSkillInstall,
 			"manual_skill_install",
 			report.FinalLevel,
-			security.PolicyAllow,
+			action,
 			fmt.Sprintf("pre-install scan allowed skill %s, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel),
 		)
 		return nil
@@ -443,8 +498,19 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 		return nil
 	}
 
-	factors := skillInstallRiskFactors(report)
-	if a.skillInstallReviewNeedsConfirmation(report) {
+	switch action {
+	case security.PolicyDeny:
+		a.emitSkillInstallProgress(entry.Name, "blocked", "Installation blocked by current security policy.", report)
+		a.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillReject,
+			"manual_skill_install",
+			report.FinalLevel,
+			security.PolicyDeny,
+			fmt.Sprintf("pre-install policy blocked skill %s: %s", entry.Name, report.Summary),
+		)
+		return fmt.Errorf("skill security scan blocked installation: level=%s summary=%s", report.FinalLevel, report.Summary)
+	case security.PolicyAsk:
+		factors := skillInstallRiskFactors(report)
 		statusMsg := "High risk found. Waiting for your allow or reject decision."
 		if report.IsDangerous() {
 			statusMsg = "Critical risk found. Waiting for your allow or reject decision."
@@ -470,18 +536,26 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 			security.PolicyUserOverride,
 			fmt.Sprintf("user allowed skill %s after pre-install scan, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel),
 		)
+		return nil
+	default:
+		if recordedWithoutChannel || !report.IsSafe() {
+			status := "Security scan recorded risk and allowed installation by current policy."
+			result := fmt.Sprintf("pre-install scan allowed skill %s by current policy, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel)
+			if recordedWithoutChannel {
+				status = "No confirmation channel. Security scan recorded risk and allowed installation by current policy."
+				result = fmt.Sprintf("no confirmation channel; pre-install scan recorded risk and allowed skill %s by current policy, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel)
+			}
+			a.emitSkillInstallProgress(entry.Name, "scan-complete", status, report)
+			a.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillInstall,
+				"manual_skill_install",
+				report.FinalLevel,
+				action,
+				result,
+			)
+		}
+		return nil
 	}
-	if report.NeedsUserReview() {
-		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Security scan recorded risk and allowed installation by current policy.", report)
-		a.logSkillInstallSecurityEvent(
-			security.AuditActionHubSkillInstall,
-			"manual_skill_install",
-			report.FinalLevel,
-			security.PolicyAudit,
-			fmt.Sprintf("pre-install scan allowed skill %s by current policy, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel),
-		)
-	}
-	return nil
 }
 
 func (a *App) scanAndAdmitSkillBeforeRegister(ctx context.Context, entry *corelib.NLSkillEntry, source string) (*cskill.ScanReport, error) {

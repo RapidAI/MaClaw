@@ -3704,7 +3704,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// or locating an artifact, but neither should look like a source change.
 	codeSessionID := newCodingSubAgentCodeSessionID("coding-workbench", userID)
 	if loopCtx != nil {
-		loopCtx.codeSessionID = codeSessionID
+		loopCtx.setCodeSessionID(codeSessionID)
 	}
 	// Route with tab project path (managed task dir), not exec/working_dir.
 	// Frontend shouldAcceptCodeEventForProject filters on activeTab.projectPath.

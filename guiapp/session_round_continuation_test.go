@@ -36,36 +36,20 @@ func sessionRoundExitOptions(task string, toolCalls int) agentLoopMaxRoundsExitO
 	}
 }
 
-func TestSessionRoundContinuationSchedulesTheNextWave(t *testing.T) {
+func TestExhaustedIterationExitDoesNotStartANewTask(t *testing.T) {
 	h := newSessionRoundHandler(t)
 	ctx := NewLoopContext("chat", 30, nil)
 	task := "把这批论文做成综述"
 	resp := h.maxRoundsAgentLoopExit(ctx, sessionRoundExitOptions(task, 4))
-	if resp == nil || !resp.sessionRoundContinue {
-		t.Fatalf("response = %#v, want the same task to continue", resp)
-	}
-	if strings.Contains(resp.Text, "Send another message") || strings.Contains(resp.Text, "请继续发送") {
-		t.Fatalf("response asked the user to continue: %q", resp.Text)
-	}
-	// Without the desktop bot the host falls back to its minimal line, which
-	// says the same task keeps going; a model-written line may name the
-	// automatic continuation instead.
-	if !strings.Contains(resp.Text, "自动继续") && !strings.Contains(resp.Text, "接着做") {
-		t.Fatalf("response = %q, want the continuation note", resp.Text)
+	if resp == nil || resp.sessionRoundContinue || resp.Text != sessionRoundManualContinueText {
+		t.Fatalf("response = %#v, want the same loop's refill to be the continuation", resp)
 	}
 	h.sessionRounds.mu.Lock()
 	armed := h.sessionRounds.timers["desktop-user"] != nil
 	waves := h.sessionRounds.waves["desktop-user"]
 	h.sessionRounds.mu.Unlock()
-	if !armed || waves != 1 {
-		t.Fatalf("timer armed=%v waves=%d, want the next wave queued", armed, waves)
-	}
-	slot := h.memory.GetUnfinishedSlot("desktop-user")
-	if slot == nil || slot.Status != agent.UnfinishedTaskSlotStatusMaxRoundsReached {
-		t.Fatalf("slot = %#v, want a pending max-rounds slot until the wave fires", slot)
-	}
-	if !strings.Contains(sessionRoundContinuationPrompt(task), "继续完成同一任务") {
-		t.Fatal("continuation prompt does not keep the same task")
+	if armed || waves != 0 {
+		t.Fatalf("timer armed=%v waves=%d, want no new task", armed, waves)
 	}
 }
 
@@ -120,8 +104,8 @@ func TestSessionRoundContinuationSkipsChannelPlatforms(t *testing.T) {
 	desktop.Platform = desktopPlatform
 	desktopOpts := sessionRoundExitOptions("把这批论文做成综述", 4)
 	desktopOpts.UserID = userID
-	if resp := h.maxRoundsAgentLoopExit(desktop, desktopOpts); resp == nil || !resp.sessionRoundContinue {
-		t.Fatalf("desktop turn did not continue: %#v", resp)
+	if resp := h.maxRoundsAgentLoopExit(desktop, desktopOpts); resp == nil || resp.sessionRoundContinue {
+		t.Fatalf("desktop turn started a new task: %#v", resp)
 	}
 }
 
@@ -327,11 +311,14 @@ func TestCodingBudgetHardStopContinuesTheSessionTask(t *testing.T) {
 		func(*IMAgentResponse) {},
 		func(*IMAgentResponse) {},
 	)
-	if result.Response == nil || !result.Response.sessionRoundContinue {
-		t.Fatalf("response = %#v, want the session task to continue", result.Response)
+	if result.Response != nil || result.Count != config.MaxAgentIterationsCap {
+		t.Fatalf("response = %#v count=%d, want the same loop to keep the coding count", result.Response, result.Count)
 	}
-	if strings.Contains(result.Response.Text, "Send 'continue'") {
-		t.Fatalf("response asked the user to continue: %q", result.Response.Text)
+	h.sessionRounds.mu.Lock()
+	armed := h.sessionRounds.timers["desktop-user"] != nil
+	h.sessionRounds.mu.Unlock()
+	if armed {
+		t.Fatal("coding budget started a new task")
 	}
 }
 

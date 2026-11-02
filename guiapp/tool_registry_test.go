@@ -252,6 +252,21 @@ func TestRegisterBuiltinToolsIncludesMISDataWorkspace(t *testing.T) {
 	}
 }
 
+func TestRegisterBuiltinToolsReadToolResultOmitsLimitWindows(t *testing.T) {
+	r := NewToolRegistry()
+	registerBuiltinTools(r, &IMMessageHandler{})
+	tool, ok := r.Get("read_tool_result")
+	if !ok {
+		t.Fatal("read_tool_result is not registered")
+	}
+	if strings.Contains(tool.Description, "offset/limit") {
+		t.Fatalf("description tells the model to pass limit: %s", tool.Description)
+	}
+	if !strings.Contains(tool.Description, "不要传 limit") || !strings.Contains(tool.Description, "next_offset") {
+		t.Fatalf("description = %s", tool.Description)
+	}
+}
+
 func TestRegisterBuiltinToolsOmitsExternalCodingSessionTools(t *testing.T) {
 	r := NewToolRegistry()
 	registerBuiltinTools(r, &IMMessageHandler{})

@@ -2871,6 +2871,9 @@ type CodingWorkbenchStatus struct {
 	PendingApproval bool `json:"pending_approval,omitempty"`
 	// StepStatuses is live Todo status for the active plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// StepsRevision matches the live event's steps_revision. A status read
+	// that started from an older snapshot must not repaint the gate.
+	StepsRevision int64 `json:"steps_revision,omitempty"`
 	// ProjectInstructions sources (AGENTS.md etc.).
 	ProjectInstructionSources []string `json:"project_instruction_sources,omitempty"`
 	// CheckpointLabel is the last saved checkpoint name.
@@ -2995,6 +2998,7 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 		// row must not hand the checklist a report body.
 		st.StepStatuses = codingWorkbenchStepsSnapshot(mem.StepStatuses)
 	}
+	st.StepsRevision = mem.StepsEmitSeq
 	if len(mem.ProjectInstructionSources) > 0 {
 		st.ProjectInstructionSources = append([]string(nil), mem.ProjectInstructionSources...)
 	}

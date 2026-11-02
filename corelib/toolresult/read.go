@@ -3,6 +3,7 @@ package toolresult
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,7 +26,8 @@ type ReadOptions struct {
 	Root string
 	// Offset is a 0-based byte offset into the stored content.
 	Offset int
-	// Limit is the max number of bytes to return. Default 6000, max 32768.
+	// Limit is the max number of bytes to return. A non-positive limit uses
+	// DefaultReadLimit. Values above MaxReadLimit are capped.
 	Limit int
 }
 
@@ -48,6 +50,24 @@ const DefaultReadLimit = 16 * 1024
 
 // MaxReadLimit caps a single read_tool_result call.
 const MaxReadLimit = 32768
+
+// ModelReadLimit is the page size the model-facing reader applies.
+// Read itself still honors an exact limit for byte-level callers.
+//
+// A missing limit and a limit below one page both mean the default page.
+// The tool schema used to say "prefer small limit windows". Models answered
+// with limit=1 and offset=0. A one-byte slice is truncated, the result says
+// to call read_tool_result again, and the same arguments never advance
+// through the spilled payload.
+func ModelReadLimit(limit int) int {
+	if limit < DefaultReadLimit {
+		return DefaultReadLimit
+	}
+	if limit > MaxReadLimit {
+		return MaxReadLimit
+	}
+	return limit
+}
 
 // Resolve finds the on-disk path for a handle id and/or path under the store root.
 func Resolve(id, path, sessionKey, root string) (string, error) {
@@ -86,10 +106,7 @@ func Resolve(id, path, sessionKey, root string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("toolresult: id or path is required")
 	}
-	// Strip accidental suffixes from models.
-	id = strings.TrimSuffix(id, ".txt")
-	id = strings.TrimSuffix(id, encryptedSuffix)
-	id = sanitizePathSegment(id)
+	id = NormalizeHandleID(id)
 	if id == "" || id == "x" {
 		return "", fmt.Errorf("toolresult: invalid id")
 	}
@@ -364,47 +381,110 @@ func nextValidUTF8Boundary(data []byte, offset int) int {
 	return offset
 }
 
+// NormalizeHandleID is the id Resolve opens. A model may append .txt or .enc,
+// or include characters that cannot appear in the stored name. Those spellings
+// are one spilled page.
+func NormalizeHandleID(id string) string {
+	id = strings.TrimSpace(id)
+	id = strings.TrimSuffix(id, ".txt")
+	id = strings.TrimSuffix(id, encryptedSuffix)
+	return sanitizePathSegment(id)
+}
+
 // FormatReadResult renders a model-facing text response for read_tool_result.
+// The page bytes sit between the two fences. The action hint is after the
+// closing fence: a hint above a 16KB body was followed by the same offset the
+// model had just sent, and a hint glued onto the body was copied into the file.
 func FormatReadResult(r ReadResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[tool_result_read]\nid: %s\noffset: %d\nreturned_bytes: %d\ntotal_bytes: %d\n",
 		r.ID, r.Offset, r.ReturnedBytes, r.TotalBytes)
 	if r.Truncated {
-		fmt.Fprintf(&b, "truncated: true\nnext_offset: %d\nhint: call read_tool_result again with offset=%d to continue\n",
-			r.NextOffset, r.NextOffset)
+		fmt.Fprintf(&b, "truncated: true\nnext_offset: %d\n", r.NextOffset)
 	} else {
 		b.WriteString("truncated: false\n")
 	}
 	b.WriteString("\n---\n")
 	b.WriteString(r.Content)
+	b.WriteString("\n--- end ---\n")
+	if r.Truncated {
+		fmt.Fprintf(&b, "hint: truncated is true. Call read_tool_result with this id and offset=%d. Omit limit. Do not send offset=%d.\n",
+			r.NextOffset, r.Offset)
+	} else {
+		fmt.Fprintf(&b, "hint: truncated is false. This page is complete. Do not call read_tool_result for this id and offset %d.\n",
+			r.Offset)
+	}
 	return b.String()
 }
 
-// ParseArgsInt extracts a non-negative int from tool args (int/float64/string).
+// ParseArgsInt extracts an int from tool args (int/float64/string).
+// A missing key uses def. A present value that is not a finite integer also
+// uses def; callers that must not treat that as the first page use
+// InvalidArgsInt.
 func ParseArgsInt(args map[string]interface{}, key string, def int) int {
-	if args == nil {
+	n, ok := parseArgsInt(args, key, def)
+	if !ok {
 		return def
+	}
+	return n
+}
+
+// InvalidArgsInt reports that key is present and is not a finite integer.
+// A missing key is valid: the caller default applies. The words "next_offset"
+// are not a byte index; treating them as 0 re-reads the first page.
+func InvalidArgsInt(args map[string]interface{}, key string) bool {
+	_, ok := parseArgsInt(args, key, 0)
+	return !ok
+}
+
+func parseArgsInt(args map[string]interface{}, key string, def int) (int, bool) {
+	if args == nil {
+		return def, true
 	}
 	v, ok := args[key]
 	if !ok || v == nil {
-		return def
+		return def, true
 	}
 	switch n := v.(type) {
 	case int:
-		return n
+		return n, true
 	case int64:
-		return int(n)
-	case float64:
-		return int(n)
-	case string:
-		i, err := strconv.Atoi(strings.TrimSpace(n))
-		if err != nil {
-			return def
+		if int64(int(n)) != n {
+			return 0, false
 		}
-		return i
+		return int(n), true
+	case float64:
+		return wholeInt(n)
+	case string:
+		s := strings.TrimSpace(n)
+		if i, err := strconv.Atoi(s); err == nil {
+			return i, true
+		}
+		// "16384.0" is the same byte offset. Atoi rejects it and the page
+		// identity would collapse onto offset 0, which then looks like a repeat
+		// of the first page. A fraction is not that page: truncating 16384.9
+		// would land on 16384 and stop the real continuation.
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, false
+		}
+		return wholeInt(f)
 	default:
-		return def
+		return 0, false
 	}
+}
+
+// wholeInt accepts only values that are already integers. Truncating a
+// fraction would alias a different byte index.
+func wholeInt(f float64) (int, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < float64(math.MinInt) || f > float64(math.MaxInt) {
+		return 0, false
+	}
+	n := int(f)
+	if float64(n) != f {
+		return 0, false
+	}
+	return n, true
 }
 
 // ParseArgsString extracts a string tool argument.

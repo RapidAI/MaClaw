@@ -216,9 +216,9 @@ Typical usage: Read source code, config files, logs`,
 
 	"read_tool_result": fmt.Sprintf(`Parameters:
 - id (string): Handle id from a prior [tool_result_handle] footer
-- offset (int, optional): 0-based byte offset, default 0
-- limit (int, optional): Max bytes to return, default %d, max %d
-How to use: When a tool result was truncated and shows [tool_result_handle], call read_tool_result(id=..., offset=0, limit=%d) for a slice; if truncated=true, continue with next_offset.`, toolresult.DefaultReadLimit, toolresult.MaxReadLimit, toolresult.DefaultReadLimit),
+- offset (int, optional): Omit on the first read. When the previous read says truncated is true, set this to the integer on its next_offset line
+- limit (int, optional): Omit. One page is %d bytes; a smaller value is raised to that page. Maximum %d
+How to use: When a tool result shows [tool_result_handle], call read_tool_result(id=...) once and omit limit. If truncated is false, use that page. If truncated is true, call again with offset set to the integer on the next_offset line. Do not repeat the same id and offset.`, toolresult.DefaultReadLimit, toolresult.MaxReadLimit),
 
 	"FileRead": `Parameters:
 - path (string, required): 要读取的文件路径，可为绝对路径或相对当前项目目录的路径

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
@@ -756,5 +757,157 @@ func TestSituationReportWithoutRuntimeOwnerDoesNotExposeDesktopArtifacts(t *test
 
 	if report := handler.buildSituationReport(""); strings.Contains(report, "Desktop Artifact") {
 		t.Fatalf("situation report without owner leaked desktop artifact: %q", report)
+	}
+}
+
+func TestSituationReportProjectSessionContinuesOnlyThatTask(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	root := t.TempDir()
+	book := filepath.Join(root, "生成小朋友的识字书")
+	shop := filepath.Join(root, "设置一套电商网站架构")
+	primer := filepath.Join(root, "编写一本西里尔蒙古文启蒙教程")
+	now := time.Now()
+	save := func(title, dir string, durable bool) {
+		t.Helper()
+		tags := []string{dir}
+		source := filepath.Join(dir, "workspace", "out.pdf")
+		sourceType := "workflow_output"
+		if durable {
+			tags = append(tags, "task_management", "task_user_created")
+			source = filepath.Join(dir, "task.md")
+			sourceType = "manual"
+		}
+		if err := store.Save(corememory.Entry{
+			Title:      title,
+			Content:    title,
+			Category:   corememory.CategoryTaskArtifact,
+			Tags:       tags,
+			SourceURL:  source,
+			SourceType: sourceType,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}); err != nil {
+			t.Fatalf("Save %q: %v", title, err)
+		}
+	}
+	save("生成小朋友的识字书", book, true)
+	save("设置一套电商网站架构", shop, true)
+	save("编写一本西里尔蒙古文启蒙教程", primer, true)
+	save("识字卡已导出", book, false)
+	save("电商首页已生成", shop, false)
+	if err := store.Save(corememory.Entry{
+		Title:      "识字目录",
+		Content:    "识字目录",
+		Category:   corememory.CategoryTaskArtifact,
+		Tags:       []string{book},
+		SourceURL:  filepath.Join(root, "memory-refs", "cards.md"),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("Save root-tagged output: %v", err)
+	}
+	if err := store.Save(corememory.Entry{
+		Title:      "落在共享目录的电商稿",
+		Content:    "落在共享目录的电商稿",
+		Category:   corememory.CategoryTaskArtifact,
+		Tags:       []string{shop, "working_dir:" + shop},
+		SourceURL:  filepath.Join(corelib.EffectiveWorkspaceDir(), "shop-draft.html"),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("Save shared-dir output: %v", err)
+	}
+
+	handler := &IMMessageHandler{memoryStore: store}
+	report := handler.buildSituationReport(projectSessionOwnerID(book))
+	if !strings.Contains(report, "进行中: 生成小朋友的识字书") {
+		t.Fatalf("current task missing from report: %q", report)
+	}
+	if !strings.Contains(report, "识字卡已导出") || !strings.Contains(report, "识字目录") {
+		t.Fatalf("current task output missing from report: %q", report)
+	}
+	for _, other := range []string{"设置一套电商网站架构", "编写一本西里尔蒙古文启蒙教程", "电商首页已生成", "落在共享目录的电商稿"} {
+		if strings.Contains(report, other) {
+			t.Fatalf("other task %q leaked into report: %q", other, report)
+		}
+	}
+
+	shopReport := handler.buildSituationReport(projectSessionOwnerID(shop))
+	if strings.Contains(shopReport, "识字卡已导出") || strings.Contains(shopReport, "生成小朋友的识字书") || strings.Contains(shopReport, "识字目录") {
+		t.Fatalf("book task leaked into shop report: %q", shopReport)
+	}
+	if !strings.Contains(shopReport, "进行中: 设置一套电商网站架构") || !strings.Contains(shopReport, "电商首页已生成") || !strings.Contains(shopReport, "落在共享目录的电商稿") {
+		t.Fatalf("shop report = %q", shopReport)
+	}
+	shared := handler.buildSituationReport(projectSessionOwnerID(corelib.EffectiveWorkspaceDir()))
+	if strings.Contains(shared, "进行中:") || strings.Contains(shared, "识字卡已导出") || strings.Contains(shared, "电商首页已生成") || strings.Contains(shared, "落在共享目录的电商稿") {
+		t.Fatalf("process-default workspace became a task: %q", shared)
+	}
+	desktop := handler.buildSituationReport(desktopUserID)
+	for _, other := range []string{"生成小朋友的识字书", "识字卡已导出", "识字目录", "电商首页已生成", "落在共享目录的电商稿", "设置一套电商网站架构"} {
+		if strings.Contains(desktop, other) {
+			t.Fatalf("desktop session listed another task %q: %q", other, desktop)
+		}
+	}
+	sandbox := handler.buildSituationReport(projectSessionOwnerID(filepath.Join(book, "workspace")))
+	if !strings.Contains(sandbox, "进行中: 生成小朋友的识字书") || !strings.Contains(sandbox, "识字卡已导出") || !strings.Contains(sandbox, "识字目录") {
+		t.Fatalf("workspace sandbox lost its task: %q", sandbox)
+	}
+	if strings.Contains(sandbox, "电商首页已生成") || strings.Contains(sandbox, "落在共享目录的电商稿") {
+		t.Fatalf("shop output leaked into book sandbox: %q", sandbox)
+	}
+}
+
+func TestSituationReportRecoverySlotNamesTheInterruptedTask(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	ws := corelib.EffectiveWorkspaceDir()
+	if err := store.Save(corememory.Entry{
+		Title:      "电商首页已生成",
+		Content:    "电商首页已生成",
+		Category:   corememory.CategoryTaskArtifact,
+		SourceURL:  filepath.Join(ws, "shop", "index.html"),
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	conv := agent.NewConversationMemory()
+	t.Cleanup(conv.Stop)
+	owner := projectSessionOwnerID(ws)
+	conv.UpsertUnfinishedSlot(owner, &agent.UnfinishedTaskSlot{
+		SlotID:      "slot-book",
+		UserID:      owner,
+		ProjectPath: ws,
+		Status:      agent.UnfinishedTaskSlotStatusInterrupted,
+		Source:      agent.UnfinishedTaskSlotSourceInFlightRecovery,
+		LastTask:    "生成小朋友的识字书",
+	})
+	handler := &IMMessageHandler{memoryStore: store, memory: conv}
+	report := handler.buildSituationReport(owner)
+	if !strings.Contains(report, "未完成: 生成小朋友的识字书") {
+		t.Fatalf("interrupted task missing: %q", report)
+	}
+	if strings.Contains(report, "进行中:") || strings.Contains(report, "电商首页已生成") {
+		t.Fatalf("shared workspace mixed another task into the interrupted run: %q", report)
+	}
+	conv.UpsertUnfinishedSlot(desktopUserID, &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-desktop-book",
+		UserID:   desktopUserID,
+		Status:   agent.UnfinishedTaskSlotStatusInterrupted,
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+		LastTask: "生成小朋友的识字书",
+	})
+	desktop := handler.buildSituationReport(desktopUserID)
+	if !strings.Contains(desktop, "未完成: 生成小朋友的识字书") || strings.Contains(desktop, "电商首页已生成") {
+		t.Fatalf("desktop session mixed another task into the interrupted run: %q", desktop)
 	}
 }

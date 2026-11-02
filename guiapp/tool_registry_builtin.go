@@ -15,6 +15,11 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+// readToolResultToolDescription is the model-facing text for read_tool_result.
+// It must not tell the model to pass limit: a small limit is raised to one
+// page, and the old wording kept models on limit=1, offset=0.
+const readToolResultToolDescription = "回读被截断的工具完整输出，id 来自 [tool_result_handle]。不要传 limit，一次返回一整页。结果里 truncated 为 false 时用这一页；为 true 时把 offset 设成 next_offset 那一行的整数，不要重复同一个 id 和 offset。"
+
 // registerBuiltinTools registers all built-in tools into the ToolRegistry.
 // Each tool's Handler delegates to the corresponding IMMessageHandler method.
 // This replaces the hardcoded buildToolDefinitions() + executeTool() switch-case.
@@ -407,7 +412,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	readToolResultSchema, readToolResultRequired := overlayCoreToolSchema("read_tool_result", nil)
-	reg("read_tool_result", "分段回读被截断的工具完整输出（使用 [tool_result_handle] 的 id）。大日志/网页/bash 输出被投影为预览后，用此工具按 offset/limit 读取细节。",
+	reg("read_tool_result", readToolResultToolDescription,
 		ToolCategoryBuiltin, []string{"file", "read", "tool_result", "handle"},
 		readToolResultSchema, readToolResultRequired,
 		func(args map[string]interface{}) string { return h.toolReadToolResult(args) })

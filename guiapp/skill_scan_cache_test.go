@@ -596,28 +596,49 @@ func TestAdmitManualSkillInstallAllowsMissingReportInRelaxedMode(t *testing.T) {
 }
 
 func TestSkillInstallReviewNeedsConfirmationByMode(t *testing.T) {
+	mediumReport := &cskill.ScanReport{FinalLevel: security.RiskMedium, Summary: "medium", ScannedBy: "pattern"}
 	highReport := &cskill.ScanReport{FinalLevel: security.RiskHigh, Summary: "high", ScannedBy: "pattern"}
-	for _, mode := range []string{"standard", "none", "relaxed"} {
+	criticalReport := &cskill.ScanReport{FinalLevel: security.RiskCritical, Summary: "critical", ScannedBy: "pattern"}
+
+	for _, mode := range []string{"none", "relaxed", "developer"} {
 		app := &App{policyEngine: NewPolicyEngineWithMode(mode)}
-		if app.skillInstallReviewNeedsConfirmation(highReport) || app.skillInstallScanShouldBlock(highReport) {
-			t.Fatalf("%s mode should record high-risk skill scan without blocking", mode)
+		for _, report := range []*cskill.ScanReport{mediumReport, highReport, criticalReport} {
+			if app.skillInstallReviewNeedsConfirmation(report) || app.skillInstallScanShouldBlock(report) {
+				t.Fatalf("%s mode should install %s skill risk without confirmation or blocking", mode, report.FinalLevel)
+			}
 		}
 	}
-	criticalReport := &cskill.ScanReport{FinalLevel: security.RiskCritical, Summary: "critical", ScannedBy: "pattern"}
-	if !(&App{policyEngine: NewPolicyEngineWithMode("standard")}).skillInstallReviewNeedsConfirmation(criticalReport) {
-		t.Fatal("standard mode should require confirmation for critical skill risk")
+
+	standard := &App{policyEngine: NewPolicyEngineWithMode("standard")}
+	if standard.skillInstallReviewNeedsConfirmation(mediumReport) || standard.skillInstallScanShouldBlock(mediumReport) {
+		t.Fatal("standard mode should record medium-risk skill install without confirmation")
 	}
-	if (&App{policyEngine: NewPolicyEngineWithMode("relaxed")}).skillInstallReviewNeedsConfirmation(criticalReport) {
-		t.Fatal("relaxed mode should record critical skill risk without confirmation")
+	if !standard.skillInstallReviewNeedsConfirmation(highReport) || standard.skillInstallScanShouldBlock(highReport) {
+		t.Fatal("standard mode should ask before installing a high-risk skill")
 	}
-	if (&App{policyEngine: NewPolicyEngineWithMode("none")}).skillInstallReviewNeedsConfirmation(criticalReport) || (&App{policyEngine: NewPolicyEngineWithMode("none")}).skillInstallScanShouldBlock(criticalReport) {
-		t.Fatal("none mode should allow critical skill risk without confirmation or blocking")
+	if !standard.skillInstallReviewNeedsConfirmation(criticalReport) || standard.skillInstallScanShouldBlock(criticalReport) {
+		t.Fatal("standard mode should ask before installing a critical skill")
 	}
-	if !(&App{policyEngine: NewPolicyEngineWithMode("strict")}).skillInstallScanShouldBlock(criticalReport) {
-		t.Fatal("strict mode should block critical skill risk")
+
+	strict := &App{policyEngine: NewPolicyEngineWithMode("strict")}
+	if !strict.skillInstallReviewNeedsConfirmation(mediumReport) || strict.skillInstallScanShouldBlock(mediumReport) {
+		t.Fatal("strict mode should ask before installing a medium-risk skill")
 	}
-	if (&App{policyEngine: NewPolicyEngineWithMode("developer")}).skillInstallReviewNeedsConfirmation(criticalReport) || (&App{policyEngine: NewPolicyEngineWithMode("developer")}).skillInstallScanShouldBlock(criticalReport) {
-		t.Fatal("developer mode should only record critical skill risk")
+	if !strict.skillInstallReviewNeedsConfirmation(highReport) || strict.skillInstallScanShouldBlock(highReport) {
+		t.Fatal("strict mode should ask before installing a high-risk skill")
+	}
+	if strict.skillInstallReviewNeedsConfirmation(criticalReport) || !strict.skillInstallScanShouldBlock(criticalReport) {
+		t.Fatal("strict mode should block critical skill install without a confirmation prompt")
+	}
+	if standard.skillInstallUnattendedShouldBlock(highReport) || standard.skillInstallUnattendedShouldBlock(criticalReport) {
+		t.Fatal("standard mode without a confirmation channel should record high and critical skill risk and continue")
+	}
+	if !strict.skillInstallUnattendedShouldBlock(mediumReport) || !strict.skillInstallUnattendedShouldBlock(highReport) || !strict.skillInstallUnattendedShouldBlock(criticalReport) {
+		t.Fatal("strict mode without a confirmation channel should block medium, high, and critical skill risk")
+	}
+	relaxed := &App{policyEngine: NewPolicyEngineWithMode("relaxed")}
+	if relaxed.skillInstallUnattendedShouldBlock(criticalReport) {
+		t.Fatal("relaxed mode should install critical skill risk without a confirmation channel")
 	}
 }
 
@@ -664,6 +685,71 @@ func TestTrustedMarketplaceSkillInstallRecordsRiskWithoutBlocking(t *testing.T) 
 	}
 }
 
+func TestSkillInstallActionWithChannelRecordsStandardAsk(t *testing.T) {
+	high := &cskill.ScanReport{FinalLevel: security.RiskHigh, Summary: "high", ScannedBy: "pattern"}
+	medium := &cskill.ScanReport{FinalLevel: security.RiskMedium, Summary: "medium", ScannedBy: "pattern"}
+	standard := &App{policyEngine: NewPolicyEngineWithMode("standard")}
+	action, recorded := standard.skillInstallActionWithChannel(high, "", false)
+	if action != security.PolicyAudit || !recorded {
+		t.Fatalf("standard without channel = %s recorded=%v, want audit recorded", action, recorded)
+	}
+	action, recorded = standard.skillInstallActionWithChannel(high, "", true)
+	if action != security.PolicyAsk || recorded {
+		t.Fatalf("standard with channel = %s recorded=%v, want ask", action, recorded)
+	}
+	strict := &App{policyEngine: NewPolicyEngineWithMode("strict")}
+	action, recorded = strict.skillInstallActionWithChannel(high, "", false)
+	if action != security.PolicyDeny || recorded {
+		t.Fatalf("strict high without channel = %s recorded=%v, want deny", action, recorded)
+	}
+	action, recorded = strict.skillInstallActionWithChannel(medium, "", false)
+	if action != security.PolicyDeny || recorded {
+		t.Fatalf("strict medium without channel = %s recorded=%v, want deny", action, recorded)
+	}
+}
+
+func TestAdmitManualSkillInstallRecordsHighRiskWithoutUI(t *testing.T) {
+	auditLog, err := NewAuditLog(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAuditLog: %v", err)
+	}
+	defer auditLog.Close()
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("standard"), auditLog: auditLog}
+	entry := &corelib.NLSkillEntry{Name: "high-without-ui"}
+	report := &cskill.ScanReport{FinalLevel: security.RiskHigh, Summary: "high", ScannedBy: "pattern"}
+	if err := app.admitManualSkillInstall(context.Background(), entry, "unit test", report); err != nil {
+		t.Fatalf("standard mode without a UI should record high risk and allow install, got %v", err)
+	}
+	entries, err := auditLog.Query(security.AuditFilter{})
+	if err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	if len(entries) != 1 || entries[0].PolicyAction != security.PolicyAudit {
+		t.Fatalf("audit entry = %#v, want one audit record", entries)
+	}
+	strict := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("strict")}
+	if err := strict.admitManualSkillInstall(context.Background(), entry, "unit test", report); err == nil {
+		t.Fatal("strict mode without a UI should block high risk")
+	}
+}
+
+func TestConfirmManualSkillInstallCancelClearsPending(t *testing.T) {
+	app := &App{ctx: context.Background(), testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("standard")}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if app.confirmManualSkillInstall(ctx, "docx", "manual", security.RiskHigh, []string{"high"}) {
+		t.Fatal("cancelled manual confirm returned true")
+	}
+	n := 0
+	app.skillInstallConfirm.Range(func(_, _ interface{}) bool {
+		n++
+		return true
+	})
+	if n != 0 {
+		t.Fatalf("cancelled manual confirm left %d pending confirmation(s)", n)
+	}
+}
+
 func TestConfirmManualSkillInstallRejectsCriticalRiskWithoutUIContext(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("standard")}
 	if app.confirmManualSkillInstall(context.Background(), "dangerous", "manual zip", security.RiskCritical, []string{"dangerous command"}) {
@@ -692,5 +778,23 @@ func TestAdmitManualSkillInstallRejectsNilEntry(t *testing.T) {
 	report := &cskill.ScanReport{FinalLevel: security.RiskLow, Summary: "ok", ScannedBy: "pattern"}
 	if err := app.admitManualSkillInstall(context.Background(), nil, "unit test", report); err == nil {
 		t.Fatal("admitManualSkillInstall() allowed nil entry, want rejection")
+	}
+}
+
+func TestScanManagedSkillWritebackFollowsGuardrail(t *testing.T) {
+	dir := t.TempDir()
+	body := "name: docx\ndescription: convert\nsteps:\n  - action: bash\n    params:\n      command: \"cat in.txt | python convert.py\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"relaxed", "standard", "developer"} {
+		h := &IMMessageHandler{app: &App{policyEngine: NewPolicyEngineWithMode(mode)}}
+		if err := h.scanManagedSkillWriteback(dir, "docx"); err != nil {
+			t.Fatalf("%s writeback rejected a risky autofix: %v", mode, err)
+		}
+	}
+	strict := &IMMessageHandler{app: &App{policyEngine: NewPolicyEngineWithMode("strict")}}
+	if err := strict.scanManagedSkillWriteback(dir, "docx"); err == nil {
+		t.Fatal("strict writeback allowed a risky autofix")
 	}
 }

@@ -36,27 +36,8 @@ func (h *IMMessageHandler) enforceAgentLoopCodingBudget(
 	attachPendingVisibleArtifacts func(*IMAgentResponse),
 ) agentLoopCodingBudgetResult {
 	result := agentLoopCodingBudgetResult{Conversation: conversation, Count: nextCodingIterationCount(currentCount, toolCalls)}
-	hardLimit := codingIterBudgetHardLimit(ctx)
-	if result.Count >= hardLimit {
-		log.Printf("[coding-budget] hard limit reached: %d consecutive coding iterations, force-returning (iter=%d max=%d)", result.Count, iteration, hardLimit)
-		if phase != nil {
-			phase.Stage = agentStageFinalize
-		}
-		finalResp, continued := h.beginSessionRoundContinuation(ctx, userID, "", history, result.Count)
-		if !continued {
-			finalResp = &IMAgentResponse{Text: fmt.Sprintf("Coding execution reached the %d-iteration limit. Completed work has been saved. Send 'continue' to keep going.", hardLimit)}
-		}
-		if voiceData != "" {
-			finalResp.VoiceData = voiceData
-			finalResp.VoiceFileName = voiceFileName
-			finalResp.VoiceMimeType = voiceMimeType
-		}
-		attachLLMTelemetry(finalResp)
-		attachPendingVisibleArtifacts(finalResp)
-		h.saveConversationHistoryTimed(userID, history, finalResp)
-		result.Response = finalResp
-		return result
-	}
+	// The reasoning counter refills in this same loop. A hard stop here used
+	// to end the turn and open another session, which repeated the task.
 	if result.Count == codingIterBudgetSoft {
 		log.Printf("[coding-budget] soft limit reached: %d consecutive coding iterations, injecting progress reminder (iter=%d)", result.Count, iteration)
 		systemMessagesStart := len(conversation)

@@ -7835,6 +7835,518 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').not.toContain('对齐现有实现');
     });
 
+    it('hides the plan gate after the plan is confirmed', async () => {
+        const projectPath = 'D:/tasks/confirmed-coding-plan';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 2,
+            pending_approval: true,
+            requirement_restatement: '实测三个 SDK 的 PDF 处理性能。',
+            step_statuses: [
+                { index: 1, title: '确认各SDK入口与参数', status: 'pending' },
+                { index: 2, title: '检查两组PDF样本', status: 'pending' },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'PDF性能对比',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-approve')).toBeTruthy());
+        expect(getByTestId('coding-agent-plan-skip')).toBeTruthy();
+        expect(getByTestId('coding-agent-plan-reject')).toBeTruthy();
+        expect(getByTestId('coding-control-chip-pending')).toBeTruthy();
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+
+        // Confirmation clears pending_approval before the first step is marked
+        // running. The gate has to leave with that snapshot.
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: false,
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'pending' },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending' },
+                ],
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+        expect(queryByTestId('coding-control-chip-pending')).toBeNull();
+        expect(getByTestId('coding-agent-plan-checklist')).toBeTruthy();
+
+        // A snapshot can also keep the approval flag while a step is already
+        // running. The live row is enough to keep the gate hidden.
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: true,
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'running' },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending' },
+                ],
+            });
+        });
+        expect(getByTestId('coding-agent-plan-current').textContent || '').toContain('T1');
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+        expect(queryByTestId('coding-control-chip-pending')).toBeNull();
+    });
+
+    it('keeps a confirmed plan when a late status poll still says it is pending', async () => {
+        const projectPath = 'D:/tasks/confirmed-plan-late-poll';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 2,
+            pending_approval: true,
+            requirement_restatement: '实测三个 SDK 的 PDF 处理性能。',
+            step_statuses: [
+                { index: 1, title: '确认各SDK入口与参数', status: 'pending' },
+                { index: 2, title: '检查两组PDF样本', status: 'pending' },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'PDF性能对比',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-approve')).toBeTruthy());
+
+        let releaseStale: (value: unknown) => void = () => {};
+        const stale = new Promise((resolve) => { releaseStale = resolve; });
+        getCodingWorkbenchStatusMock.mockImplementationOnce(() => stale);
+
+        const responseHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'ai-assistant-response')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(responseHandler).toEqual(expect.any(Function));
+        expect(stepsHandler).toEqual(expect.any(Function));
+
+        const callsBefore = getCodingWorkbenchStatusMock.mock.calls.length;
+        act(() => { responseHandler?.({}); });
+        expect(getCodingWorkbenchStatusMock.mock.calls.length).toBe(callsBefore + 1);
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: false,
+                requirement_restatement: '已确认的性能对比',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'running' },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending' },
+                ],
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+
+        await act(async () => {
+            releaseStale({
+                pending_approval: true,
+                requirement_restatement: '过期的需求理解',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'pending' },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending' },
+                ],
+            });
+            await stale;
+            await Promise.resolve();
+        });
+
+        expect(getByTestId('coding-agent-plan-current').textContent || '').toContain('T1');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('已确认的性能对比');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').not.toContain('过期的需求理解');
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+    });
+
+    it('keeps a confirmed plan when an older steps snapshot arrives later', async () => {
+        const projectPath = 'D:/tasks/confirmed-plan-stale-snapshot';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 2,
+            pending_approval: true,
+            requirement_restatement: '实测三个 SDK 的 PDF 处理性能。',
+            step_statuses: [
+                { index: 1, title: '确认各SDK入口与参数', status: 'pending', updated_unix: 100 },
+                { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 100 },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'PDF性能对比',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-approve')).toBeTruthy());
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: false,
+                requirement_restatement: '已确认的性能对比',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'running', updated_unix: 200 },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 200 },
+                ],
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: true,
+                requirement_restatement: '过期的需求理解',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'pending', updated_unix: 100 },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 100 },
+                ],
+            });
+        });
+
+        expect(getByTestId('coding-agent-plan-current').textContent || '').toContain('T1');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('已确认的性能对比');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').not.toContain('过期的需求理解');
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+        expect(queryByTestId('coding-control-chip-pending')).toBeNull();
+    });
+
+    it('keeps a confirmed plan when an earlier snapshot shares its timestamp', async () => {
+        const projectPath = 'D:/tasks/confirmed-plan-same-second';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 2,
+            pending_approval: true,
+            steps_revision: 1,
+            requirement_restatement: '实测三个 SDK 的 PDF 处理性能。',
+            step_statuses: [
+                { index: 1, title: '确认各SDK入口与参数', status: 'pending', updated_unix: 100 },
+                { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 100 },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'PDF性能对比',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-approve')).toBeTruthy());
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: false,
+                steps_revision: 2,
+                requirement_restatement: '已确认的性能对比',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'running', updated_unix: 100 },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 100 },
+                ],
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+
+        // Same updated_unix as confirmation, and a later unix on the stale
+        // copy. The emit counter is what keeps the gate closed.
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: true,
+                steps_revision: 1,
+                requirement_restatement: '过期的需求理解',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'pending', updated_unix: 900 },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 900 },
+                ],
+            });
+        });
+
+        expect(getByTestId('coding-agent-plan-current').textContent || '').toContain('T1');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('已确认的性能对比');
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+        expect(queryByTestId('coding-control-chip-pending')).toBeNull();
+    });
+
+    it('keeps a confirmed plan when the same snapshot generation is still pending', async () => {
+        const projectPath = 'D:/tasks/confirmed-plan-same-generation';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 2,
+            pending_approval: true,
+            steps_revision: 2,
+            requirement_restatement: '实测三个 SDK 的 PDF 处理性能。',
+            step_statuses: [
+                { index: 1, title: '确认各SDK入口与参数', status: 'pending', updated_unix: 100 },
+                { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 100 },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'PDF性能对比',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-approve')).toBeTruthy());
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: false,
+                steps_revision: 2,
+                requirement_restatement: '已确认的性能对比',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'running', updated_unix: 100 },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 100 },
+                ],
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: true,
+                steps_revision: 2,
+                requirement_restatement: '过期的需求理解',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'pending', updated_unix: 900 },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 900 },
+                ],
+            });
+        });
+
+        expect(getByTestId('coding-agent-plan-current').textContent || '').toContain('T1');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('已确认的性能对比');
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+        expect(queryByTestId('coding-control-chip-pending')).toBeNull();
+    });
+
+    it('keeps a confirmed plan when a shapeless steps event polls an older status', async () => {
+        const projectPath = 'D:/tasks/confirmed-plan-omitted-steps';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 2,
+            pending_approval: true,
+            steps_revision: 1,
+            requirement_restatement: '实测三个 SDK 的 PDF 处理性能。',
+            step_statuses: [
+                { index: 1, title: '确认各SDK入口与参数', status: 'pending', updated_unix: 100 },
+                { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 100 },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'PDF性能对比',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-approve')).toBeTruthy());
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: false,
+                steps_revision: 2,
+                requirement_restatement: '已确认的性能对比',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'running', updated_unix: 200 },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending', updated_unix: 200 },
+                ],
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+
+        let releaseStale: (value: unknown) => void = () => {};
+        const stale = new Promise((resolve) => { releaseStale = resolve; });
+        getCodingWorkbenchStatusMock.mockImplementationOnce(() => stale);
+        const callsBefore = getCodingWorkbenchStatusMock.mock.calls.length;
+        act(() => { stepsHandler?.({ project_path: projectPath }); });
+        expect(getCodingWorkbenchStatusMock.mock.calls.length).toBe(callsBefore + 1);
+
+        await act(async () => {
+            releaseStale({
+                pending_approval: true,
+                steps_revision: 1,
+                requirement_restatement: '过期的需求理解',
+            });
+            await stale;
+            await Promise.resolve();
+        });
+
+        expect(getByTestId('coding-agent-plan-current').textContent || '').toContain('T1');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('已确认的性能对比');
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+        expect(queryByTestId('coding-control-chip-pending')).toBeNull();
+    });
+
+    it('keeps a confirmed plan when project status arrives after the steps snapshot', async () => {
+        const projectPath = 'D:/tasks/confirmed-plan-hydration';
+        let releaseStatus: (value: unknown) => void = () => {};
+        const status = new Promise((resolve) => { releaseStatus = resolve; });
+        getCodingWorkbenchStatusMock.mockImplementation(() => status);
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'PDF性能对比',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+        expect(getCodingWorkbenchStatusMock).toHaveBeenCalled();
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: false,
+                requirement_restatement: '已确认的性能对比',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'running' },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending' },
+                ],
+            });
+        });
+
+        await act(async () => {
+            releaseStatus({
+                kind: 'remote',
+                armed: true,
+                needs_reconnect: false,
+                pending_approval: true,
+                requirement_restatement: '过期的需求理解',
+                step_statuses: [
+                    { index: 1, title: '确认各SDK入口与参数', status: 'pending' },
+                    { index: 2, title: '检查两组PDF样本', status: 'pending' },
+                ],
+            });
+            await status;
+            await Promise.resolve();
+        });
+
+        expect(getByTestId('coding-agent-plan-current').textContent || '').toContain('T1');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('已确认的性能对比');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').not.toContain('过期的需求理解');
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+    });
+
     it('retires the coding plan checklist once every step is done', async () => {
         const projectPath = 'D:/tasks/finished-coding-plan';
         getCodingWorkbenchStatusMock.mockResolvedValue({

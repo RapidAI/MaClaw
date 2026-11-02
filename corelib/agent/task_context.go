@@ -20,6 +20,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // TaskAction is the resolved action for a new user message.
@@ -183,6 +184,11 @@ type ResolveInput struct {
 	// reached, session still running, etc.).
 	HasIncompleteTaskMarker bool
 
+	// InterruptedTask names the run a crash or expired lease left on this
+	// session. It is the current task when the transcript no longer starts
+	// with the original request. It is not a list of other tasks.
+	InterruptedTask string
+
 	// HasActiveBackgroundTask is true when a local or SSH background command
 	// spawned from the current runtime is still active. Active work is a hard
 	// task boundary: a follow-up message must not destructively archive the
@@ -261,8 +267,10 @@ func (m *TaskContextManager) resolve(input ResolveInput, allowLLM bool) TaskCont
 
 	// --- Layer 2: Structural signals ---
 
-	// No history = definitely a new task.
-	if len(input.History) == 0 {
+	// No history is a new task only when this session has no interrupted run.
+	// A crash can leave the slot without a saved transcript. That slot is the
+	// task. The classifier can still call a later message new.
+	if len(input.History) == 0 && strings.TrimSpace(input.InterruptedTask) == "" {
 		return TaskContextDecision{
 			Action: TaskNew,
 			Reason: "no conversation history",
@@ -287,6 +295,9 @@ func (m *TaskContextManager) resolve(input ResolveInput, allowLLM bool) TaskCont
 	// --- Layer 4: Non-destructive fallback ---
 	// Ambiguous task switching is semantic. Without a classifier, preserve current
 	// context; only an explicit classifier result may destructively switch tasks.
+	if len(input.History) == 0 {
+		return fallbackTaskContextDecision("interrupted task has no transcript, no LLM available")
+	}
 	return fallbackTaskContextDecision("history exists, no LLM available")
 }
 
@@ -298,16 +309,26 @@ func (m *TaskContextManager) resolve(input ResolveInput, allowLLM bool) TaskCont
 // completes before the deadline, the result is used immediately. If it times
 // out, fallback preserves context rather than destructively clearing history.
 func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDecision {
-	// Build a compact context summary for the LLM.
-	currentTaskSummary := buildCurrentTaskSummary(input.History)
+	// Build a compact context summary for the LLM. The interrupted run is
+	// the current task. An older request in the same transcript is a
+	// different task, and naming it here is how continuation switched tasks.
+	interruptedTask := strings.TrimSpace(input.InterruptedTask)
+	currentTaskSummary := summaryForInterruptedTask(input.History, interruptedTask)
 	archivedSummaries := buildArchivedTaskSummaries(input.ArchivedTasks)
 
 	systemPrompt := taskContextClassifierPrompt
 
 	var userMsg strings.Builder
 	fmt.Fprintf(&userMsg, "Current task summary: %s\n", currentTaskSummary)
+	if interruptedTask != "" {
+		fmt.Fprintf(&userMsg, "Interrupted task: %s\n", interruptedTask)
+	}
 	if input.HasIncompleteTaskMarker {
-		userMsg.WriteString("Current task status: previous turn may be incomplete or interrupted. If user asks to continue/resume, classify as continue; if unrelated, classify as new.\n")
+		if interruptedTask != "" {
+			userMsg.WriteString("Current task status: this session was incomplete or interrupted during the task named above. If the user continues that task, classify as continue. If the message is clearly unrelated to that task, classify as new. Do not resume a different task.\n")
+		} else {
+			userMsg.WriteString("Current task status: previous turn may be incomplete or interrupted. If user asks to continue/resume, classify as continue; if unrelated, classify as new.\n")
+		}
 	}
 	if archivedSummaries != "" {
 		fmt.Fprintf(&userMsg, "\nArchived tasks:\n%s\n", archivedSummaries)
@@ -473,6 +494,86 @@ Reply only with continue, new, or recall:<task_id>. Do not explain.`
 //     all item titles/headings are preserved so that back-references like
 //     "fix those 4 problems" have explicit anchors in the summary.
 //     For plain prose, a generous truncation (500 runes) is used.
+
+// summaryForInterruptedTask names the recovered run as the current task.
+// The summary keeps the turn that asked for that run, including its latest
+// reply. An earlier request, and a later different request, are left out.
+func summaryForInterruptedTask(history []ConversationEntry, task string) string {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return buildCurrentTaskSummary(history)
+	}
+	start := latestUserTurnOnTask(history, task)
+	if start < 0 {
+		return "Initial user request: " + task
+	}
+	// A bare continuation line is still this run. Any other later request that
+	// does not name the task ends the summary, so that request is not progress.
+	end := len(history)
+	for i := start + 1; i < len(history); i++ {
+		if history[i].Role != "user" {
+			continue
+		}
+		text, ok := history[i].Content.(string)
+		if !ok || transcriptTurnStaysOnTask(text, task) {
+			continue
+		}
+		end = i
+		break
+	}
+	return buildCurrentTaskSummary(history[start:end])
+}
+
+func transcriptTurnStaysOnTask(text, task string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || textNamesTask(text, task) {
+		return true
+	}
+	text = strings.Trim(text, "。.!！ ")
+	switch strings.ToLower(text) {
+	case "继续", "continue", "接着", "接着做", "go on", "重试":
+		return true
+	default:
+		return false
+	}
+}
+
+func latestUserTurnOnTask(history []ConversationEntry, task string) int {
+	found := -1
+	for i, entry := range history {
+		if entry.Role != "user" {
+			continue
+		}
+		text, ok := entry.Content.(string)
+		if !ok || !textNamesTask(text, task) {
+			continue
+		}
+		found = i
+	}
+	return found
+}
+
+func textNamesTask(text, task string) bool {
+	text = strings.TrimSpace(text)
+	task = strings.TrimSpace(task)
+	if text == "" || task == "" {
+		return false
+	}
+	if strings.EqualFold(text, task) {
+		return true
+	}
+	foldedText := strings.ToLower(text)
+	foldedTask := strings.ToLower(task)
+	if strings.Contains(foldedText, foldedTask) {
+		return true
+	}
+	// A saved title is often the original request cut short.
+	if utf8.RuneCountInString(text) >= 8 && strings.Contains(foldedTask, foldedText) {
+		return true
+	}
+	return false
+}
+
 func buildCurrentTaskSummary(history []ConversationEntry) string {
 	if len(history) == 0 {
 		return "(none)"

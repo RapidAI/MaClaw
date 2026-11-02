@@ -405,3 +405,73 @@ func TestTrustedOfficeWriteRegistersProducedArtifactForDelivery(t *testing.T) {
 		t.Fatalf("produced deck not registered for delivery: deliveredPaths=%v want %q", callbacks.deliveredPaths, abs)
 	}
 }
+
+// A path-only office call is schema-legal (path is the only required field)
+// and used to be rejected inside the adapter, after Admit. That stored a
+// failed execution, so the Word file written afterwards could not discharge
+// the office need. The refusal belongs to canonicalization, before Admit.
+func TestOfficeFormRefusalIsPreAdmission(t *testing.T) {
+	if err := semanticOfficeWriteFormAdmission(nil); err == nil || !strings.Contains(err.Error(), "arguments must be an object") || !strings.Contains(err.Error(), "refused before execution") {
+		t.Fatalf("nil office arguments err=%v", err)
+	}
+	if err := semanticOfficeWriteFormAdmission([]byte("null")); err == nil || !strings.Contains(err.Error(), "arguments must be an object") {
+		t.Fatalf("null office arguments err=%v", err)
+	}
+	if err := semanticOfficeWriteFormAdmission([]byte("[]")); err == nil || !strings.Contains(err.Error(), "arguments must be an object") {
+		t.Fatalf("array office arguments err=%v", err)
+	}
+	schema := semanticTrustedOfficeWriteInvocationSchema()
+	auth, err := tool.NewParameterAuthorization(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		parameterSchemas: map[string]map[string]interface{}{
+			semanticTrustedOfficeWriteAdapter: schema,
+		},
+	}}
+	selection := tool.PlannedSelection{
+		AdapterName:            semanticTrustedOfficeWriteAdapter,
+		FitProof:               tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice},
+		ParameterAuthorization: auth,
+	}
+	_, err = cb.semanticCanonicalArguments(selection, `{"path":"F:\\resume\\resume-inference-engine.docx","title":"马勇 简历","purpose":"工作简历 Word 版","subtitle":""}`)
+	if err == nil || !strings.Contains(err.Error(), "trusted_office_write_arguments_rejected") || !strings.Contains(err.Error(), ".docx is not a spreadsheet or presentation") || !strings.Contains(err.Error(), "refused before execution") {
+		t.Fatalf("path-only office call err=%v", err)
+	}
+	_, err = cb.semanticCanonicalArguments(selection, `{"path":"F:\\resume\\resume-inference-engine.docx","slides":[{"title":"封面"}]}`)
+	if err == nil || !strings.Contains(err.Error(), "slides writes a .pptx presentation, not .docx") {
+		t.Fatalf("docx path with slides err=%v", err)
+	}
+	_, err = cb.semanticCanonicalArguments(selection, `{"path":"resume.docx","sheets":[{"name":"S","rows":[["a"]]}]}`)
+	if err == nil || !strings.Contains(err.Error(), "sheets writes an .xlsx spreadsheet, not .docx") {
+		t.Fatalf("docx path with sheets err=%v", err)
+	}
+	if _, _, err = semanticTrustedOfficeWriteArgsAllowed(map[string]interface{}{"path": "resume.ppt"}); err == nil || !strings.Contains(err.Error(), ".ppt is not a spreadsheet or presentation") {
+		t.Fatalf("legacy presentation path err=%v", err)
+	}
+	if _, _, err = semanticTrustedOfficeWriteArgsAllowed(map[string]interface{}{"path": "deck.pptx"}); err == nil || !strings.Contains(err.Error(), "a .pptx path needs slides") {
+		t.Fatalf("pptx path without slides err=%v", err)
+	}
+	if _, _, err = semanticTrustedOfficeWriteArgsAllowed(map[string]interface{}{"path": "book.xlsx"}); err == nil || !strings.Contains(err.Error(), "an .xlsx path needs sheets") {
+		t.Fatalf("xlsx path without sheets err=%v", err)
+	}
+	_, err = cb.semanticCanonicalArguments(selection, `{"path":"deck.pptx","sheets":[{"name":"S","rows":[["a"]]}],"slides":[{"title":"封面"}]}`)
+	if err == nil || !strings.Contains(err.Error(), "trusted_office_write_arguments_rejected") {
+		t.Fatalf("mixed office call err=%v", err)
+	}
+	washed, err := cb.semanticCanonicalArguments(selection, `{"path":"deck.pptx","slides":[{"title":"封面"}],"sheets":[]}`)
+	if err != nil {
+		t.Fatalf("empty unused sheets rejected before admission: %v", err)
+	}
+	if strings.Contains(string(washed.CanonicalJSON), `"sheets"`) {
+		t.Fatalf("empty sheets survived wash: %s", washed.CanonicalJSON)
+	}
+	got, err := cb.semanticCanonicalArguments(selection, `{"path":"deck.pptx","slides":[{"title":"封面"}]}`)
+	if err != nil {
+		t.Fatalf("slides form rejected: %v", err)
+	}
+	if !strings.Contains(string(got.CanonicalJSON), `"slides"`) {
+		t.Fatalf("canonical=%s", got.CanonicalJSON)
+	}
+}

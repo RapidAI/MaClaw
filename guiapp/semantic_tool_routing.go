@@ -4994,8 +4994,8 @@ func ensureLookupContinuationCarriedNeeds(needs []tool.CapabilityNeed, names []s
 	var added []string
 	for _, name := range names {
 		name = strings.TrimSpace(name)
-		capability, ok := semanticPetitionableCapabilities[name]
-		if !ok || have[capability] || agent.IsLightTurnToolAllowed(name) {
+		capability, ok := lookupCarryCapability(name)
+		if !ok || have[capability] {
 			continue
 		}
 		have[capability] = true

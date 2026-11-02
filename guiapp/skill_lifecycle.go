@@ -557,7 +557,7 @@ func prepareSkillDirForMarket(skillDir string, autoFix bool, appOpt ...*App) ([]
 			return changes, report, nil
 		}
 		return changes, nil, restoreOnError(scanErr)
-	} else if app != nil && app.skillInstallScanShouldBlock(scanReport) {
+	} else if app != nil && app.skillInstallUnattendedShouldBlock(scanReport) {
 		return changes, nil, restoreOnError(fmt.Errorf("skill package blocked by security scan: level=%s summary=%s", scanReport.FinalLevel, scanReport.Summary))
 	}
 	if err := publishManagedSource(); err != nil {
@@ -612,7 +612,7 @@ func scanSkillDirForOutboundPackage(skillDir string, appOpt ...*App) error {
 		return fmt.Errorf("skill package outbound security scan produced no report")
 	}
 	if app := firstSkillLifecycleApp(appOpt...); app != nil {
-		if app.skillInstallScanShouldBlock(report) {
+		if app.skillInstallUnattendedShouldBlock(report) {
 			return fmt.Errorf("skill package blocked by outbound security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
 		}
 		return nil

@@ -143,7 +143,7 @@ func scanAgentSkillExport(entry corelib.NLSkillEntry, appOpt ...*App) error {
 		return fmt.Errorf("agent skill export security scan produced no report")
 	}
 	if app := firstSkillLifecycleApp(appOpt...); app != nil {
-		if app.skillInstallScanShouldBlock(report) {
+		if app.skillInstallUnattendedShouldBlock(report) {
 			return fmt.Errorf("agent skill export blocked by security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
 		}
 		return nil

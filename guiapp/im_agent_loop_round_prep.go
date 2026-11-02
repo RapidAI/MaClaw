@@ -20,6 +20,7 @@ type agentLoopRoundPrepOptions struct {
 	MinIterations     int
 	ConfigMax         int
 	ChatFinalizeGrace int
+	ToolCalls         int
 	Config            corelib.MaclawLLMConfig
 	Conversation      []interface{}
 	Tools             []map[string]interface{}
@@ -87,9 +88,16 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	}
 	effectiveMax := h.refreshAgentLoopEffectiveMax(ctx, opts.Iteration, opts.EffectiveMax, opts.MinIterations, opts.DriftDetector, opts.SendProgress)
 	result.EffectiveMax = effectiveMax
-	if resp, handled := handleBackgroundIterationPause(ctx, opts.Iteration, effectiveMax); handled {
-		result.Response = resp
-		return result
+	// A background loop used to wait here for a person to grant more rounds,
+	// and gave up after five minutes. An unfinished coding task refills in
+	// this same loop instead, so that wait must not end it first. The
+	// workbench lookup stays on this one iteration; other rounds are not
+	// near the ceiling.
+	if backgroundIterationPauseDue(ctx, opts.Iteration, effectiveMax) && !h.codingTaskStillOpen(ctx, opts.UserID) {
+		if resp, handled := handleBackgroundIterationPause(ctx, opts.Iteration, effectiveMax); handled {
+			result.Response = resp
+			return result
+		}
 	}
 	if cm := ctx.MaxIterations(); cm > 0 && cm != effectiveMax {
 		effectiveMax = cm
@@ -97,9 +105,33 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	}
 	effectiveMax = h.applyAgentLoopBoundaryExtensions(ctx, opts.UserID, opts.Iteration, effectiveMax)
 	result.EffectiveMax = effectiveMax
-	if shouldStopForAgentLoopIterationLimit(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace) {
-		result.Stop = true
-		return result
+	// Refill when the configured ceiling is reached, before the chat grace
+	// rounds. Those rounds tell the model to finish, so waiting for them
+	// ends the task while this same loop still has iterations to add.
+	// An explicit ceiling already below the current iteration is a cap, not
+	// a signal to spend another wave catching up.
+	if opts.Iteration >= effectiveMax {
+		codingOpen := h.codingTaskStillOpen(ctx, opts.UserID)
+		if n, ok := ctx.turnIterationCeiling(); ok && opts.Iteration > n && !codingOpen {
+			result.Stop = true
+			return result
+		}
+		// The counter is already past a lowered ceiling. One refill brings a
+		// coding task back ahead of the counter. Stepping by a small wave
+		// would spend a model call for every gap.
+		if codingOpen && opts.Iteration > effectiveMax {
+			effectiveMax = opts.Iteration
+		}
+		if extra := sameLoopIterationRefill(ctx, opts.ToolCalls, opts.ConfigMax, codingOpen); extra > 0 {
+			effectiveMax += extra
+			if ctx != nil {
+				ctx.SetMaxIterations(effectiveMax)
+			}
+			result.EffectiveMax = effectiveMax
+		} else if shouldStopForAgentLoopIterationLimit(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace) {
+			result.Stop = true
+			return result
+		}
 	}
 
 	if note, resp, paused := runWindowPauseResponse(ctx, opts.Conversation); paused {

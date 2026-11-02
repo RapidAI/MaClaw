@@ -371,7 +371,7 @@ func (r *SubAgentTaskRunner) runTaskWithRecover(
 	}
 
 	if r.loopCtx != nil {
-		r.loopCtx.codeSessionID = r.activeCodeSessionID()
+		r.loopCtx.setCodeSessionID(r.activeCodeSessionID())
 	}
 	return runner(
 		r.handler,
