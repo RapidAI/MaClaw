@@ -528,6 +528,88 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(offButton.className).toContain('is-active');
     });
 
+    it('keeps the custom User-Agent input after the value is cleared', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'WorkBuddy 国内版', url: 'https://copilot.tencent.com/v2', key: 'token', model: 'glm-5.3',
+                    protocol: 'openai', auth_type: 'oauth', agent_type: 'workbuddy', supports_vision: false,
+                },
+            ],
+            current: 'WorkBuddy 国内版',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+
+        const input = await screen.findByPlaceholderText('Custom User-Agent') as HTMLInputElement;
+        expect(input.value).toBe('workbuddy');
+
+        fireEvent.change(input, { target: { value: '' } });
+        const cleared = screen.getByPlaceholderText('Custom User-Agent') as HTMLInputElement;
+        expect(cleared.value).toBe('');
+
+        fireEvent.change(cleared, { target: { value: 'w' } });
+        fireEvent.change(screen.getByPlaceholderText('Custom User-Agent'), { target: { value: '' } });
+        const emptied = screen.getByPlaceholderText('Custom User-Agent') as HTMLInputElement;
+        expect(emptied.value).toBe('');
+        fireEvent.blur(emptied);
+        expect((screen.getByPlaceholderText('Custom User-Agent') as HTMLInputElement).value).toBe('workbuddy');
+
+        fireEvent.change(screen.getByPlaceholderText('Custom User-Agent'), { target: { value: 'new-agent' } });
+        expect((screen.getByPlaceholderText('Custom User-Agent') as HTMLInputElement).value).toBe('new-agent');
+
+        fireEvent.change(screen.getByPlaceholderText('Custom User-Agent'), { target: { value: 'Cursor' } });
+        expect((screen.getByPlaceholderText('Custom User-Agent') as HTMLInputElement).value).toBe('Cursor');
+        fireEvent.change(screen.getByPlaceholderText('Custom User-Agent'), { target: { value: 'CursorX' } });
+        expect((screen.getByPlaceholderText('Custom User-Agent') as HTMLInputElement).value).toBe('CursorX');
+    });
+
+    it('drops an in-progress User-Agent when quick-fill replaces the provider', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [{
+                name: 'Custom1', url: '', key: 'secret', model: '', protocol: 'openai', is_custom: true, supports_vision: false,
+            }],
+            current: 'Custom1',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
+        fireEvent.change(screen.getByPlaceholderText('Custom User-Agent'), { target: { value: 'temp-agent' } });
+
+        const quickFill = screen.getAllByRole('combobox').find(element =>
+            Array.from(element.querySelectorAll('option')).some(option => option.value === 'OpenAI Official'),
+        );
+        fireEvent.change(quickFill!, { target: { value: 'OpenAI Official' } });
+
+        expect(screen.queryByDisplayValue('temp-agent')).toBeNull();
+        expect(screen.getByRole('button', { name: 'openclaw' }).className).toContain('is-active');
+        fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
+        await waitFor(() => {
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith(
+                'https://api.openai.com/v1', 'secret', 'openai', 'openclaw',
+            );
+        });
+    });
+
+    it('discards an uncommitted User-Agent when the dialog closes', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [{
+                name: 'WorkBuddy 国内版', url: 'https://copilot.tencent.com/v2', key: 'token', model: 'glm-5.3',
+                protocol: 'openai', auth_type: 'oauth', agent_type: 'workbuddy', supports_vision: false,
+            }],
+            current: 'WorkBuddy 国内版',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.change(await screen.findByPlaceholderText('Custom User-Agent'), { target: { value: 'temp-agent' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        expect((await screen.findByPlaceholderText('Custom User-Agent') as HTMLInputElement).value).toBe('workbuddy');
+    });
+
     it('saves a custom User-Agent value', async () => {
         TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
 
@@ -1585,6 +1667,53 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(screen.getByDisplayValue('already-there')).toBeTruthy();
         expect(screen.queryByDisplayValue('zen-from-cli')).toBeNull();
         expect(screen.getByText(/Opened OpenCode. Copy the key from API Keys/i)).toBeTruthy();
+    });
+
+    it('localizes preset provider names when the UI language is Mongolian', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'MaClaw官方', url: 'https://hub.example/v1', key: '', model: 'auto', is_hub_service: true },
+                { name: '智谱编程', url: 'https://open.bigmodel.cn/api/anthropic', key: 'sk', model: 'glm-5.3' },
+                { name: '火山引擎 Agent Plan', url: 'https://ark.cn-beijing.volces.com/api/plan/v3', key: '', model: 'glm-5.2' },
+                { name: '腾讯TokenPlan', url: 'https://tokenhub.tencentmaas.com/plan/v3', key: '', model: 'auto' },
+                { name: '讯飞星辰', url: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2', key: '', model: 'astron-code-latest' },
+                { name: '星辰大模型', url: 'https://api-maas.teleai.com.cn/v1', key: '', model: 'TeleChat3-438B-A24B' },
+                { name: 'WorkBuddy 国内版', url: 'https://copilot.tencent.com/v2', key: '', model: 'glm-5.3' },
+                { name: 'WorkBuddy 国际版', url: 'https://www.workbuddy.ai/v2', key: '', model: 'glm-5.3' },
+                { name: 'Qoder 国内版', url: 'https://qoder.example/cn', key: '', model: 'qoder' },
+                { name: 'Qoder 国际版', url: 'https://qoder.example/global', key: '', model: 'qoder' },
+                { name: 'Trae 国内版', url: 'https://trae.example/cn', key: '', model: 'trae' },
+                { name: 'Trae 国际版', url: 'https://trae.example/global', key: '', model: 'trae' },
+                { name: 'OpenAI', url: 'https://api.openai.com/v1', key: 'sk', model: 'gpt-5' },
+            ],
+            current: '智谱编程',
+        });
+        render(<LLMConfigPanel lang="mn" onStatusChange={vi.fn()} />);
+
+        const status = await screen.findByTestId('llm-current-provider');
+        expect(status.textContent).toContain('Zhipu');
+        expect(status.textContent).not.toMatch(/[\u3400-\u9fff]/);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Үйлчилгээ үзүүлэгч удирдах' }));
+        for (const label of [
+            'MaClaw',
+            'Zhipu',
+            'Volc Agent',
+            'TokenPlan',
+            'iFlytek',
+            'TeleAI',
+            'WorkBuddy CN',
+            'WorkBuddy Global',
+            'Qoder CN',
+            'Qoder Global',
+            'Trae CN',
+            'Trae Global',
+            'OpenAI',
+        ]) {
+            expect(screen.getByRole('button', { name: label })).toBeTruthy();
+        }
+        const grid = screen.getByRole('dialog', { name: 'MaClaw LLM тохиргоо' }).querySelector('.llm-config-provider-grid');
+        expect(grid?.textContent).not.toMatch(/[\u3400-\u9fff]/);
     });
 
 });

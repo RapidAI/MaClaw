@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -2108,27 +2109,209 @@ func TestSemanticSessionResidueFollowUpKeepsOriginalSummary(t *testing.T) {
 	}
 }
 
-func TestFreshAnaphoricSendDropsTheCarriedMailboxCeiling(t *testing.T) {
-	loop := &LoopContext{semanticResidueRemaining: map[string]int{
-		"information.search.web":                  2,
-		"document.generate.file":                  0,
-		string(tool.CapabilityMessageSendMailbox): 0,
-	}}
-	loop.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
-	needs := []tool.CapabilityNeed{{ID: "need:mail", Capability: tool.CapabilityMessageSendMailbox, Required: true}}
-	if got := clampNeedsToResidueRemaining(needs, loop.semanticResidueRemaining); len(got) != 1 {
-		t.Fatalf("fresh mailbox need was clamped: %#v (ceiling=%v)", got, loop.semanticResidueRemaining)
+// The incident shape: the parent plan carried four of web_fetch's five repeat
+// siblings (the residue ceiling had already spent one), while the petition
+// re-plan regenerates the full five. The extra sibling must not ride the
+// parent-family exemption; the identity validator would reject the whole
+// mailbox petition because of it.
+func TestPetitionClampDropsAnExtraSiblingOfAParentFamily(t *testing.T) {
+	parentIDs := map[string]struct{}{
+		"need:information.fetch.web:4fa69d25e4e3":    {},
+		"need:information.fetch.web:4fa69d25e4e3#02": {},
+		"need:information.fetch.web:4fa69d25e4e3#03": {},
+		"need:information.fetch.web:4fa69d25e4e3#04": {},
 	}
-	// Other carried ceilings are still the open task's replay authority.
-	if left := loop.semanticResidueRemaining["information.search.web"]; left != 2 {
-		t.Fatalf("unrelated search ceiling changed: %v", loop.semanticResidueRemaining)
+	needs := []tool.CapabilityNeed{
+		{ID: "need:information.fetch.web:4fa69d25e4e3", Capability: tool.CapabilityInformationFetchWeb, Required: true},
+		{ID: "need:information.fetch.web:4fa69d25e4e3#02", Capability: tool.CapabilityInformationFetchWeb, Required: true},
+		{ID: "need:information.fetch.web:4fa69d25e4e3#03", Capability: tool.CapabilityInformationFetchWeb, Required: true},
+		{ID: "need:information.fetch.web:4fa69d25e4e3#04", Capability: tool.CapabilityInformationFetchWeb, Required: true},
+		{ID: "need:information.fetch.web:4fa69d25e4e3#05", Capability: tool.CapabilityInformationFetchWeb, Required: true},
+		{ID: "need:message.send.mailbox:ca6c9fe7f746", Capability: tool.CapabilityMessageSendMailbox, Required: true},
+	}
+	remaining := map[string]int{string(tool.CapabilityInformationFetchWeb): 3}
+	got := clampNeedsToResidue(needs, remaining, parentIDs)
+	ids := map[string]bool{}
+	for _, need := range got {
+		ids[need.ID] = true
+	}
+	for _, parent := range []string{
+		"need:information.fetch.web:4fa69d25e4e3",
+		"need:information.fetch.web:4fa69d25e4e3#02",
+		"need:information.fetch.web:4fa69d25e4e3#03",
+		"need:information.fetch.web:4fa69d25e4e3#04",
+	} {
+		if !ids[parent] {
+			t.Fatalf("parent selection %s was dropped: %#v", parent, got)
+		}
+	}
+	if ids["need:information.fetch.web:4fa69d25e4e3#05"] {
+		t.Fatalf("extra sibling survived the clamp: %#v", got)
+	}
+	if !ids["need:message.send.mailbox:ca6c9fe7f746"] {
+		t.Fatalf("petitioned mailbox need was dropped: %#v", got)
+	}
+}
+
+// Incident 2026-10-31: the first turn sent the Beijing PDF and paused for the
+// mail confirmation, so its residue carried message.send.mailbox with a spent
+// per-turn count. The follow-up was a lookup/document continuation; the renew
+// pass reopened the lookup and document steps but not the delivery step, and
+// the clamp then dropped the mailbox need the continuation had just inherited.
+func TestOpenLookupContinuationRenewsTheMailboxDeliveryStep(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:information.search.web:a21b0f4bd8bc", Capability: "information.search.web", Required: true},
+			{ID: "need:document.generate.file:549acc88f83c", Capability: "document.generate.file", Required: true},
+			{ID: "need:artifact.deliver.current_channel:2ba2c0469d4f", Capability: agentservice.CapabilityArtifactDeliverCurrent, Required: true},
+			{ID: "need:message.send.mailbox:ca6c9fe7f746", Capability: tool.CapabilityMessageSendMailbox, Required: true},
+		},
+		Remaining: map[string]int{
+			"information.search.web":                              2,
+			"document.generate.file":                              0,
+			string(agentservice.CapabilityArtifactDeliverCurrent): 0,
+			string(tool.CapabilityMessageSendMailbox):             0,
+		},
+	}
+	planned := intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3,
+		Secondary: []intent.IntentLabel{intent.LabelDocumentGenerate},
+	}
+	remaining := semanticResidueRemainingForOpenTurn(residue, planned)
+	if _, spent := remaining[string(tool.CapabilityMessageSendMailbox)]; spent {
+		t.Fatalf("the open delivery step stayed spent: %v", remaining)
+	}
+	mail := tool.CapabilityNeed{ID: "need:message.send.mailbox:ca6c9fe7f746", Capability: tool.CapabilityMessageSendMailbox, Required: true}
+	if got := clampNeedsToResidueRemaining([]tool.CapabilityNeed{mail}, remaining); len(got) != 1 {
+		t.Fatalf("the inherited mailbox need was clamped: %#v (remaining=%v)", got, remaining)
+	}
+	merged, ok := semanticClassificationWithAuthorizedResidue(
+		intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3},
+		residue.Needs, semanticResidueContinue, intent.LabelLiveData,
+	)
+	if !ok || !merged.HasLabel(intent.LabelMailboxSend) {
+		t.Fatalf("the continuation did not inherit the open delivery step: %#v ok=%v", merged, ok)
+	}
+}
+
+func TestResidueRenewsDeliveryChannelsByFamily(t *testing.T) {
+	for _, capability := range []tool.CapabilityID{
+		tool.CapabilityMessageSendMailbox,
+		agentservice.CapabilityArtifactDeliverCurrent,
+		"artifact.deliver.specified",
+		"message.send.im_text",
+	} {
+		if !semanticResidueDeliveryCapability(capability) {
+			t.Fatalf("%s must renew as part of the open delivery task", capability)
+		}
+	}
+	for _, capability := range []tool.CapabilityID{
+		"message.configure.mailbox",
+		"document.generate.file",
+		"artifact.acquire.remote",
+	} {
+		if semanticResidueDeliveryCapability(capability) {
+			t.Fatalf("%s is not a delivery and must stay spent", capability)
+		}
+	}
+}
+
+func TestResidueRenewsDeliveryForANewOfficeArtifact(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:document.write.office:aaa", Capability: tool.CapabilityDocumentWriteOffice, Required: true},
+			{ID: "need:artifact.deliver.current_channel:bbb", Capability: agentservice.CapabilityArtifactDeliverCurrent, Required: true},
+			{ID: "need:message.send.mailbox:ccc", Capability: tool.CapabilityMessageSendMailbox, Required: true},
+			{ID: "need:information.search.web:ddd", Capability: "information.search.web", Required: true},
+		},
+		Remaining: map[string]int{
+			string(tool.CapabilityDocumentWriteOffice):            0,
+			string(agentservice.CapabilityArtifactDeliverCurrent): 0,
+			string(tool.CapabilityMessageSendMailbox):             0,
+			"information.search.web":                              3,
+		},
+	}
+	planned := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.95, Layer: 3}
+	remaining := semanticResidueRemainingForOpenTurn(residue, planned)
+	for _, key := range []string{
+		string(tool.CapabilityDocumentWriteOffice),
+		string(agentservice.CapabilityArtifactDeliverCurrent),
+		string(tool.CapabilityMessageSendMailbox),
+	} {
+		if _, spent := remaining[key]; spent {
+			t.Fatalf("a new office artifact kept its spent %s ceiling: %v", key, remaining)
+		}
+	}
+	if remaining["information.search.web"] != 3 {
+		t.Fatalf("an unused search ceiling changed: %v", remaining)
+	}
+}
+
+func TestPureLookupContinuationDoesNotArmDelivery(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:information.search.web:a21b0f4bd8bc", Capability: "information.search.web", Required: true},
+			{ID: "need:artifact.deliver.current_channel:2ba2c0469d4f", Capability: agentservice.CapabilityArtifactDeliverCurrent, Required: true},
+			{ID: "need:message.send.mailbox:ca6c9fe7f746", Capability: tool.CapabilityMessageSendMailbox, Required: true},
+		},
+		Remaining: map[string]int{
+			"information.search.web":                              0,
+			string(agentservice.CapabilityArtifactDeliverCurrent): 0,
+			string(tool.CapabilityMessageSendMailbox):             0,
+		},
+	}
+	// Evidence only: nothing new is being delivered, so the spent delivery
+	// stays closed while the lookup ceiling opens.
+	remaining := semanticResidueRemainingForOpenTurn(residue,
+		intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.95, Layer: 3})
+	if _, spent := remaining["information.search.web"]; spent {
+		t.Fatalf("lookup ceiling stayed closed: %v", remaining)
+	}
+	for _, key := range []string{
+		string(agentservice.CapabilityArtifactDeliverCurrent),
+		string(tool.CapabilityMessageSendMailbox),
+	} {
+		if left, tracked := remaining[key]; !tracked || left != 0 {
+			t.Fatalf("a pure lookup re-armed %s: %v", key, remaining)
+		}
+	}
+}
+
+func TestDeliveryOnlyContinuationRenewsTheSend(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:document.generate.file:549acc88f83c", Capability: agentservice.CapabilityDocumentGenerate, Required: true},
+			{ID: "need:artifact.deliver.current_channel:2ba2c0469d4f", Capability: agentservice.CapabilityArtifactDeliverCurrent, Required: true},
+			{ID: "need:message.send.mailbox:ca6c9fe7f746", Capability: tool.CapabilityMessageSendMailbox, Required: true},
+		},
+		Remaining: map[string]int{
+			string(agentservice.CapabilityDocumentGenerate):       0,
+			string(agentservice.CapabilityArtifactDeliverCurrent): 0,
+			string(tool.CapabilityMessageSendMailbox):             0,
+		},
+	}
+	remaining := semanticResidueRemainingForOpenTurn(residue,
+		intent.ClassificationResult{Primary: intent.LabelDocumentDelivery, Confidence: 0.95, Layer: 3})
+	if _, spent := remaining[string(tool.CapabilityMessageSendMailbox)]; spent {
+		t.Fatalf("a delivery-only continuation kept the spent send: %v", remaining)
+	}
+	// The artifact already exists; the pipeline did not run again and its
+	// spent ceiling stays closed.
+	if left, tracked := remaining[string(agentservice.CapabilityDocumentGenerate)]; !tracked || left != 0 {
+		t.Fatalf("a delivery-only turn reopened the pipeline: %v", remaining)
 	}
 
-	// Without the host's fresh-send decision the spent count still clamps.
-	spent := &LoopContext{semanticResidueRemaining: map[string]int{
-		string(tool.CapabilityMessageSendMailbox): 0,
-	}}
-	if got := clampNeedsToResidueRemaining(needs, spent.semanticResidueRemaining); len(got) != 0 {
-		t.Fatalf("spent mailbox need survived the replay ceiling: %#v", got)
+	// An explicit mailbox send is the same delivery action on a named channel.
+	explicit := semanticResidueRemainingForOpenTurn(residue,
+		intent.ClassificationResult{Primary: intent.LabelMailboxSend, Confidence: 0.95, Layer: 3})
+	if _, spent := explicit[string(tool.CapabilityMessageSendMailbox)]; spent {
+		t.Fatalf("an explicit send kept the spent mailbox ceiling: %v", explicit)
+	}
+	if left, tracked := explicit[string(agentservice.CapabilityDocumentGenerate)]; !tracked || left != 0 {
+		t.Fatalf("an explicit send reopened the pipeline: %v", explicit)
 	}
 }

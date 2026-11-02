@@ -220,7 +220,6 @@ func TestCompressMemoriesImmediatelyInvalidatesAgentMemorySnapshot(t *testing.T)
 		t.Fatal("precondition: static memory snapshot not built")
 	}
 
-	before := handler.cachedStaticMemorySnapshot(desktopUserID)
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 	maintenance := memory.NewMaintenance(store, nil, nil)
 	app.memoryMaintenance = maintenance
@@ -236,8 +235,16 @@ func TestCompressMemoriesImmediatelyInvalidatesAgentMemorySnapshot(t *testing.T)
 	if entries := store.List("", ""); len(entries) != 1 {
 		t.Fatalf("store after compression = %#v, want the single kept entry", entries)
 	}
-	if fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID); fresh == before {
-		t.Fatal("rebuilt snapshot still shows the pre-compression content")
+	// The rebuild reflects the store as it is now. Store.Save already merges
+	// substring duplicates at write time, so compression itself may not
+	// change the bytes here — the contract under test is that the frozen
+	// snapshot was dropped and a fresh build succeeds against the kept entry.
+	fresh, built := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
+	if !built {
+		t.Fatal("snapshot was not rebuilt after compression")
+	}
+	if !strings.Contains(fresh, "supplementary wording") {
+		t.Fatalf("rebuilt snapshot lost the kept entry: %q", fresh)
 	}
 }
 
@@ -289,17 +296,21 @@ func TestRestoreArchiveMemoryImmediatelyInvalidatesAgentMemorySnapshot(t *testin
 	}
 	handler := &IMMessageHandler{memoryStore: store}
 	handler.WarmFrozenMemorySnapshot(desktopUserID)
-	before := handler.cachedStaticMemorySnapshot(desktopUserID)
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 
 	if err := app.RestoreArchiveMemory(archived.ID); err != nil {
 		t.Fatalf("RestoreArchiveMemory() error = %v", err)
 	}
-	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before || strings.Contains(got, archived.Content) {
-		t.Fatalf("archive restore rewrote the frozen snapshot: %q", got)
+	// Restore rewrote the store, so the pinned snapshot must end; the next
+	// build picks up the restored entry. The pre-restore body must not leak.
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != "" {
+		t.Fatalf("archive restore kept a stale frozen snapshot: %q", got)
 	}
 	if entries := store.List("", ""); len(entries) != 1 || entries[0].Content != archived.Content {
 		t.Fatalf("store after archive restore = %#v, want restored entry", entries)
+	}
+	if fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID); !strings.Contains(fresh, archived.Content) {
+		t.Fatalf("rebuilt snapshot does not show the restored entry: %q", fresh)
 	}
 }
 
@@ -319,7 +330,6 @@ func TestUserDataMigrationMemoryReplacementImmediatelyInvalidatesAgentMemorySnap
 	}
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 
-	before := handler.cachedStaticMemorySnapshot(desktopUserID)
 	if err := app.replaceUserDataMigrationMemoryEntries([]memory.Entry{{
 		ID:       "memory-after-migration",
 		Content:  "memory after migration replacement",
@@ -327,11 +337,16 @@ func TestUserDataMigrationMemoryReplacementImmediatelyInvalidatesAgentMemorySnap
 	}}); err != nil {
 		t.Fatalf("replaceUserDataMigrationMemoryEntries() error = %v", err)
 	}
-	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before || !strings.Contains(got, "memory before migration replacement") {
-		t.Fatalf("migration rewrote the frozen snapshot: %q", got)
+	// Migration rewrote the store, so the pinned snapshot must end; the next
+	// build picks up the replacement. The pre-migration body must not leak.
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != "" {
+		t.Fatalf("migration kept a stale frozen snapshot: %q", got)
 	}
 	if entries := store.List("", ""); len(entries) != 1 || entries[0].Content != "memory after migration replacement" {
 		t.Fatalf("store after migration replacement = %#v, want replacement entry", entries)
+	}
+	if fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID); !strings.Contains(fresh, "memory after migration replacement") {
+		t.Fatalf("rebuilt snapshot does not show the replacement entry: %q", fresh)
 	}
 }
 

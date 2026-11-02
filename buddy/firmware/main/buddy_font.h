@@ -23,6 +23,9 @@ void buddy_utf8_truncate(char *dst, size_t dst_size, const char *src, size_t max
 
 int buddy_font_missing_total(bool reset);
 
+/** Coverage label reported in hello. Bumps when the packed tables change. */
+const char *buddy_font_rev(void);
+
 /** Decodes one UTF-8 codepoint; returns bytes consumed (>=1). */
 int buddy_font_utf8_next(const char *text, uint32_t *codepoint);
 

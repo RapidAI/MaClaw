@@ -61,6 +61,7 @@ type AppSpies = {
     DeletePrivateExpertMarketListing: ReturnType<typeof vi.fn>;
     SubmitExpertMarketListing: ReturnType<typeof vi.fn>;
     SubmitExpertMarketListingWithDistribution: ReturnType<typeof vi.fn>;
+    SubmitExpertMarketListingToUsers: ReturnType<typeof vi.fn>;
 };
 
 function installAppSpies(experts: unknown[] = [builtinExpert, userExpert]): AppSpies {
@@ -84,6 +85,7 @@ function installAppSpies(experts: unknown[] = [builtinExpert, userExpert]): AppS
         DeletePrivateExpertMarketListing: vi.fn().mockResolvedValue(undefined),
         SubmitExpertMarketListing: vi.fn().mockResolvedValue({ id: 'listing-new' }),
         SubmitExpertMarketListingWithDistribution: vi.fn().mockResolvedValue({ id: 'listing-new' }),
+        SubmitExpertMarketListingToUsers: vi.fn().mockResolvedValue({ id: 'listing-shared', visibility: 'users', status: 'shared' }),
     };
     (window as any).go = { main: { App: spies } };
     return spies;
@@ -299,6 +301,44 @@ describe('UtilitiesPage AI expert section', () => {
         expect(screen.queryByTestId('utilities-expert-share-user-exp-1')).toBeNull();
     });
 
+    it('shares an expert with several users identified by phone or email', async () => {
+        const spies = installAppSpies();
+        render(<UtilitiesPage lang="zh-Hans" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        fireEvent.click(screen.getByRole('radio', { name: '指定用户（无需审核，可填写多个手机号或邮箱）' }));
+        fireEvent.change(screen.getByRole('textbox', { name: '指定用户的手机号或邮箱' }), { target: { value: '13800138000\nfriend@example.com, +86 13800138000, 0086 13800138000, 13900139000' } });
+        fireEvent.click(screen.getByRole('button', { name: '分享给指定用户' }));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingToUsers).toHaveBeenCalledWith('user-exp-1', '1.0.0', '13800138000\nfriend@example.com\n13900139000'));
+        expect(spies.SubmitExpertMarketListing).not.toHaveBeenCalled();
+        expect(spies.SubmitExpertMarketListingWithDistribution).not.toHaveBeenCalled();
+    });
+
+    it('ignores a second click while a selected-user share is still starting', async () => {
+        const spies = installAppSpies();
+        let resolveSubmission!: (listing: Record<string, unknown>) => void;
+        spies.SubmitExpertMarketListingToUsers.mockReturnValue(new Promise(resolve => { resolveSubmission = resolve; }));
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        fireEvent.click(screen.getByRole('radio', { name: 'Selected users (no review, enter one or more phone numbers or emails)' }));
+        fireEvent.change(screen.getByRole('textbox', { name: 'Phone numbers or emails of selected users' }), { target: { value: '13800138000' } });
+        const submit = screen.getByRole('button', { name: 'Share with selected users' });
+        fireEvent.click(submit);
+        fireEvent.click(submit);
+        expect(spies.SubmitExpertMarketListingToUsers).toHaveBeenCalledTimes(1);
+        resolveSubmission({ id: 'listing-shared', visibility: 'users', status: 'shared' });
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Share AI expert' })).toBeNull());
+    });
+
+    it('asks for a phone number or email before sharing with selected users', async () => {
+        const spies = installAppSpies();
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        fireEvent.click(screen.getByRole('radio', { name: 'Selected users (no review, enter one or more phone numbers or emails)' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Share with selected users' }));
+        expect(screen.getByRole('dialog', { name: 'Share AI expert' })).toBeTruthy();
+        expect(spies.SubmitExpertMarketListingToUsers).not.toHaveBeenCalled();
+    });
+
     it('submits a private share without the public review flow', async () => {
         const spies = installAppSpies();
         render(<UtilitiesPage lang="en" />);
@@ -426,6 +466,19 @@ describe('UtilitiesPage AI expert section', () => {
 		fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!);
 
         await waitFor(() => expect(spies.DeletePrivateExpertMarketListing).toHaveBeenCalledWith('listing-private'));
+        expect(await screen.findByTestId('utilities-expert-share-user-exp-1')).toBeTruthy();
+    });
+
+    it('deletes a selected-user share and restores the Share action', async () => {
+        const spies = installAppSpies();
+        spies.GetExpertMarketAccount.mockResolvedValue({ uploads: [{ id: 'listing-shared', local_expert_id: 'user-exp-1', status: 'shared', visibility: 'users' }] });
+        render(<DialogProvider><UtilitiesPage lang="en" /></DialogProvider>);
+        fireEvent.click(await screen.findByTestId('utilities-expert-delete-share-user-exp-1'));
+        const confirm = await screen.findByRole('dialog', { name: 'Delete share' });
+        expect(confirm.textContent).toContain('The selected users will no longer be able to install this expert.');
+        fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!);
+
+        await waitFor(() => expect(spies.DeletePrivateExpertMarketListing).toHaveBeenCalledWith('listing-shared'));
         expect(await screen.findByTestId('utilities-expert-share-user-exp-1')).toBeTruthy();
     });
 

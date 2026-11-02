@@ -154,6 +154,72 @@ func TestScreenPositionParamsKeepNegativeOrigin(t *testing.T) {
 	}
 }
 
+func TestScaleLogicalToPhysical(t *testing.T) {
+	if got := scaleLogicalToPhysical(1280, 96); got != 1280 {
+		t.Fatalf("96 DPI = %d", got)
+	}
+	if got := scaleLogicalToPhysical(1280, 144); got != 1920 {
+		t.Fatalf("144 DPI = %d", got)
+	}
+	if got := scaleLogicalToPhysical(1000, 120); got != 1250 {
+		t.Fatalf("120 DPI = %d", got)
+	}
+	if got := scaleLogicalToPhysical(0, 144); got != 0 {
+		t.Fatalf("zero = %d", got)
+	}
+	if got := scaleLogicalToPhysical(800, 0); got != 800 {
+		t.Fatalf("missing DPI = %d", got)
+	}
+}
+
+func TestPlanRestoredPlacement(t *testing.T) {
+	normal := workAreaRect{Left: 40, Top: 20, Right: 1140, Bottom: 740}
+	target := workAreaRect{Left: 48, Top: 24, Right: 1148, Bottom: 744}
+	got, cmd, update := planRestoredPlacement(swShowNormal, normal, target)
+	if update || cmd != swShowNormal || got != normal {
+		t.Fatalf("already normal: %+v cmd=%d update=%v", got, cmd, update)
+	}
+	// SW_SHOWMINIMIZED is 2. A late reassert must not un-minimize.
+	if _, _, update := planRestoredPlacement(2, normal, target); update {
+		t.Fatal("minimized placement must stay minimized")
+	}
+	near := workAreaRect{Left: 41, Top: 20, Right: 1141, Bottom: 740}
+	got, cmd, update = planRestoredPlacement(swShowMaximized, normal, near)
+	if !update || cmd != swShowNormal || got != normal {
+		t.Fatalf("near rect keeps workspace position: %+v cmd=%d update=%v", got, cmd, update)
+	}
+	// Same size, different place. Keeping the old rect flashes that position
+	// before the screen point is put back.
+	got, cmd, update = planRestoredPlacement(swShowMaximized, normal, target)
+	if !update || cmd != swShowNormal || got != target {
+		t.Fatalf("shifted rect replaced: %+v cmd=%d update=%v", got, cmd, update)
+	}
+	stale := workAreaRect{Left: 0, Top: 0, Right: 1920, Bottom: 1040}
+	got, cmd, update = planRestoredPlacement(swShowMaximized, stale, target)
+	if !update || cmd != swShowNormal || got != target {
+		t.Fatalf("stale maximized rect = %+v cmd=%d update=%v", got, cmd, update)
+	}
+}
+
+func TestScreenRectToWorkspace(t *testing.T) {
+	screen := workAreaRect{Left: 100, Top: 80, Right: 900, Bottom: 680}
+	if got := screenRectToWorkspace(screen, 0, 0); got != screen {
+		t.Fatalf("bottom taskbar origin is already workspace: %+v", got)
+	}
+	// Taskbar on the left: workspace (0,0) is screen (48,0).
+	got := screenRectToWorkspace(screen, 48, 0)
+	want := workAreaRect{Left: 52, Top: 80, Right: 852, Bottom: 680}
+	if got != want {
+		t.Fatalf("left taskbar = %+v", got)
+	}
+	// A display left of the primary keeps its negative screen X when the
+	// primary work origin is (0,0).
+	left := workAreaRect{Left: -1700, Top: -40, Right: -500, Bottom: 700}
+	if got := screenRectToWorkspace(left, 0, 0); got != left {
+		t.Fatalf("left display = %+v", got)
+	}
+}
+
 func TestShouldPreserveClampedNormalPlacement(t *testing.T) {
 	work := workAreaRect{Left: 0, Top: 0, Right: 1920, Bottom: 1040}
 	normal := workAreaRect{Left: 80, Top: 60, Right: 1180, Bottom: 780}

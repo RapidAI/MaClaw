@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TokenBankListShareAudiences, TokenBankSetShareVisibility } from '../../wailsjs/go/main/App';
 import { localizeText } from '../i18n/langSelect';
+import { presetProviderDisplayName } from './remote/presetProviderLabel';
 import type { TokenBankShare } from '../utils/hubcenterTokenBank';
 import { useDialog } from './CustomDialog';
 import {
@@ -191,7 +192,7 @@ export function TokenBankAccessDialog({ lang, share, onClose, onSaved }: TokenBa
         return `${choiceLabel(pair.hubId, hubChoices)} + ${choiceLabel(pair.tenantId, tenantChoices)}`;
     };
 
-    const shareName = share.display_name || share.id;
+    const shareName = presetProviderDisplayName(lang, share.display_name) || share.id;
 
     return (
         <div ref={dialogRef} className="tbk-modal-backdrop" role="dialog" aria-modal="true" aria-label={t('Change who can call this share', '更改访问范围', '更改存取範圍')} tabIndex={-1}>

@@ -380,6 +380,13 @@ type CodingSubAgentResult struct {
 	// that host assertion, without treating the model's summary as evidence.
 	qualityGateDisabled bool
 
+	// knowledgeFinalized marks a result whose post-task knowledge work (recall
+	// outcomes plus experience extraction) already ran at the execution
+	// boundary. The V1 orchestrator checks it so a runner result is not
+	// processed twice. Results synthesized by tests or the runtime adapter
+	// leave it false and keep the orchestrator path unchanged.
+	knowledgeFinalized bool
+
 	// Localization records structured root-cause evidence for bug-fix tasks.
 	// It is nil for non-debugging work and for legacy callers that did not need
 	// the bug-localization workflow.
@@ -19216,8 +19223,13 @@ func runTaskWithSubAgentRuntimeOptions(
 	if result != nil && result.Status == TaskExecWaitingChild {
 		result.RuntimeHandoff = true
 	}
+	knowledgeProjectPath := codingKnowledgeProjectPath(projectPath, runtimeOptions)
 	if result != nil && result.Status == TaskExecPassed && handler != nil {
-		persistLocalizationExperience(handler.app, sa.codingKB, projectPath, task.Title, result.Localization, result.CommandsRun, result.RuntimeTaskID)
+		persistLocalizationExperience(handler.app, sa.codingKB, knowledgeProjectPath, task.Title, result.Localization, result.CommandsRun, result.RuntimeTaskID)
 	}
+	// One boundary for every local planner: recall feedback and experience
+	// extraction must run for workbench steps, delegated tasks, trusted
+	// delegates and workflow retries alike.
+	finalizeLocalCodingKnowledge(handler, cfg, httpClient, task, result, projectPath, knowledgeProjectPath)
 	return result
 }

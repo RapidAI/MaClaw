@@ -57,7 +57,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionHostShares, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionWithdrawnNotice, sameCompanionMineShare, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionHostShares, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -2179,7 +2179,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const notesReplyRef = useRef(true);
     const flushPendingShareNotesRef = useRef<() => void>(() => undefined);
     const applyShareNotesRef = useRef<(listed: unknown) => void>(() => undefined);
-    const applyLibraryListRef = useRef<(listed: unknown) => void>(() => undefined);
+    const applyLibraryListRef = useRef<(listed: unknown) => boolean>(() => false);
     // A list request records this value when it starts. Delete increments it
     // after the project is gone, so that request cannot paint the project back.
     const libraryDeleteGen = useRef(0);
@@ -2189,8 +2189,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const [libraryListSnapshot, setLibraryListSnapshot] = useState<unknown>(null);
     const libraryViewOpenRef = useRef(false);
     libraryViewOpenRef.current = view === "library";
-    // A closed library must not hand its last list to the next mount: the view
-    // reloads on open and a kept snapshot would paint one stale frame first.
+    // The poll applies lists while 文档管理 is closed, and that uses up the
+    // generation. Remember the latest one so the next open can paint it.
+    // The state snapshot stays empty while the view is closed: writing it on
+    // every poll would re-render the window.
+    const lastLibraryListRef = useRef<unknown>(null);
     useEffect(() => {
         if (view !== "library") setLibraryListSnapshot(null);
     }, [view]);
@@ -2435,6 +2438,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // The window poll and 文档管理 both read the library. One apply keeps notes,
     // the sharer's transcript, and a removed copy on the same path key.
     applyLibraryListRef.current = (listed) => {
+        if (!takeCompanionLibraryList(listed)) return false;
+        lastLibraryListRef.current = listed;
         libraryReadyRef.current = true;
         // The same list carries the Hub capability and the share bindings, so
         // read the capability first: a participant's question must not be
@@ -2465,7 +2470,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         for (const update of synced.updates) applyShareUpdateRef.current(update);
         applyShareNotesRef.current(listed);
         releaseHeldShareNotesRef.current();
-        if (synced.removed.length === 0) return;
+        if (synced.removed.length === 0) return true;
         // The host is read before the next render replaces shareHosts. The
         // notice waits until an open tab is about to close, so a document that
         // was only in the library does not interrupt the article on screen.
@@ -2499,6 +2504,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             pendingShareMarksRef.current.delete(path);
             forgetIntro(path);
         }
+        return true;
     };
     // The host's own line and its answer reach the hub as they happen; the
     // 同步 button stays for an explicit re-upload. One upload per burst, and a
@@ -2587,9 +2593,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         let stopped = false;
         let timer = 0;
         let quietTicks = 0;
-        // One list at a time. A slow download can hold the hub read for
-        // minutes; without this, every 5-second tick would queue another call
-        // behind it.
+        // One list at a time. The call returns the stored library; the cloud
+        // refresh finishes on file-companion:library and must not stack.
         let reading = false;
         const refresh = () => {
             if (stopped || reading) return;
@@ -2620,12 +2625,19 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 schedule();
             }, COMPANION_POLL_TICK_MS);
         };
+        const onLibrary = (listed: unknown) => {
+            if (stopped) return;
+            applyLibraryListRef.current(listed);
+        };
+        const runtime = runtimeAPI();
+        runtime?.EventsOn?.("file-companion:library", onLibrary);
         refresh();
         schedule();
         window.addEventListener("focus", refresh);
         return () => {
             stopped = true;
             window.clearTimeout(timer);
+            runtime?.EventsOff?.("file-companion:library");
             window.removeEventListener("focus", refresh);
         };
     }, []);
@@ -6204,12 +6216,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
                     onExit={() => setView("read")}
                     onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
-                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    onListed={(listed) => applyLibraryListRef.current(listed)}
                     onShareProject={(path) => { setImportDialogLink(""); setShareDialogRow(null); setShareDialogPath(path); }}
                     onEditShare={(row) => { setImportDialogLink(""); setShareDialogRow(row); setShareDialogPath(row.path ?? ""); }}
                     onImportLink={(link) => { setImportDialogLink(link); setImportDialogOpen(true); }}
                     libraryDeleteGen={libraryDeleteGen}
-                    listedSnapshot={libraryListSnapshot}
+                    listedSnapshot={libraryListSnapshot ?? lastLibraryListRef.current}
                     onProjectDeleted={(path) => {
                         const key = companionSharePathKey(path);
                         if (!key) return;

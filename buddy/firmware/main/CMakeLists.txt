@@ -15,6 +15,11 @@ idf_component_register(
          "buddy_i2c.c"
          "buddy_sound.c"
          "buddy_pet.c"
+         "buddy_task_cursor.c"
+         "buddy_mood.c"
+         "buddy_bpt1.c"
+         "buddy_layout.c"
+         "buddy_gesture.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_driver_i2c
              ${buddy_panel_requires} esp_driver_usb_serial_jtag esp_driver_i2s

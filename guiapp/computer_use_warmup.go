@@ -2281,32 +2281,6 @@ func (a *App) GetComputerUseReadiness() map[string]interface{} {
 
 	issues := make([]map[string]interface{}, 0, 4)
 
-	// OmniParser weights
-	spOn := a.GetScreenParsingEnabled()
-	yoloInfo := a.CheckYOLOModel()
-	yoloExists := modelStatusExists(yoloInfo)
-	if spOn && !yoloExists {
-		path, _ := yoloInfo["path"].(string)
-		downloading, _ := yoloInfo["downloading"].(bool)
-		failed, _ := yoloInfo["error"].(string)
-		if !downloading && failed != "" {
-			issues = append(issues, map[string]interface{}{
-				"id":       "yolo_missing",
-				"severity": "warn",
-				"message":  failed,
-				"action":   "download_yolo",
-				"path":     path,
-			})
-		} else {
-			issues = append(issues, map[string]interface{}{
-				"id":       "yolo_downloading",
-				"severity": "warn",
-				"message":  "OmniParser weights are downloading in the background. Screen parsing turns on when the file is ready.",
-				"path":     path,
-			})
-		}
-	}
-
 	// Permissions (prefer last warmup; live probe if empty)
 	var perms map[string]interface{}
 	if warm := a.GetComputerUseLastWarmup(); warm != nil {
@@ -2464,12 +2438,42 @@ func (a *App) GetComputerUseReadiness() map[string]interface{} {
 	}
 	out["ready"] = ready
 	out["permissions"] = perms
-	if yoloExists {
-		out["yolo"] = map[string]interface{}{"exists": true, "path": yoloInfo["path"]}
-	} else {
-		out["yolo"] = map[string]interface{}{"exists": false, "path": yoloInfo["path"], "enabled": spOn}
-	}
+	// Read weights after the permission probe. That probe can start UIA and
+	// outlast a background download, so the snapshot matches the file on return.
+	yoloInfo := a.CheckYOLOModel()
+	yoloPath, _ := yoloInfo["path"].(string)
+	yoloDownloading, _ := yoloInfo["downloading"].(bool)
+	yoloErr, _ := yoloInfo["error"].(string)
+	out["yolo"] = computerUseYOLOStatus(
+		modelStatusExists(yoloInfo),
+		yoloPath,
+		a.GetScreenParsingEnabled(),
+		yoloDownloading,
+		yoloErr,
+	)
 	return out
+}
+
+// computerUseYOLOStatus is the diagnostic snapshot for OmniParser weights.
+// It never produces a chat-banner issue. An in-progress download hides an
+// older failure; a present file hides both.
+func computerUseYOLOStatus(exists bool, path string, screenParsingOn, downloading bool, failed string) map[string]interface{} {
+	if exists {
+		return map[string]interface{}{"exists": true, "path": path}
+	}
+	status := map[string]interface{}{
+		"exists":  false,
+		"path":    path,
+		"enabled": screenParsingOn,
+	}
+	if downloading {
+		status["downloading"] = true
+		return status
+	}
+	if failed != "" {
+		status["error"] = failed
+	}
+	return status
 }
 
 // OpenComputerUsePermissionSettings opens OS privacy UI for Computer Use setup.

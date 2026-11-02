@@ -336,8 +336,8 @@ func (a *App) CodingKnowledgeImportFromFile(filePath string) (int, error) {
 		exp.LastReviewedAt = time.Time{}
 		exp.Labels = append(exp.Labels, "imported", "import_requires_review")
 
-		// Dedup check
-		if isDuplicateExperience(ctx, store, exp) {
+		// Dedup check, scoped by project/language like runtime extraction.
+		if _, ok := findDuplicateExperience(ctx, store, exp); ok {
 			continue
 		}
 
@@ -361,6 +361,7 @@ const (
 	defaultMaxTotal                    = 1000
 	defaultMaxReviewedPerProject       = 100
 	defaultMaxReviewedTokensPerProject = 30_000
+	defaultAutoPromoteObservations     = 2
 )
 
 // CodingKnowledgeProjectCapacity describes a project that exceeds the per-project limit.
@@ -391,6 +392,25 @@ func resolveCodingKnowledgeLimits(cfg corelib.AppConfig) (maxTotal, maxPerProjec
 		maxPerProject = cfg.CodingKnowledgeMaxPerProject
 	}
 	return maxTotal, maxPerProject
+}
+
+// resolveCodingKnowledgeAutoPromoteObservations returns the minimum number of
+// independent runtime-task observations required before an auto-mode candidate
+// becomes active. A zero configuration keeps the conservative built-in default;
+// values below 2 are clamped because a single LLM extraction must never be
+// enough to enter automatic prompt injection.
+func resolveCodingKnowledgeAutoPromoteObservations(cfg corelib.AppConfig) int {
+	n := cfg.CodingKnowledgeAutoPromoteObservations
+	if n <= 0 {
+		n = defaultAutoPromoteObservations
+	}
+	if n < 2 {
+		n = 2
+	}
+	if n > 20 {
+		n = 20
+	}
+	return n
 }
 
 func codingKnowledgeReviewedProjectBudget(cfg corelib.AppConfig) knowledge.CodingExperienceBudget {
@@ -445,25 +465,33 @@ func computeCodingKnowledgeCapacity(totalCount, maxTotal, maxPerProject int, all
 	}
 
 	byProject := map[string][]knowledge.CodingExperience{}
+	displayPath := map[string]string{}
 	for _, exp := range all {
 		if exp.Scope != knowledge.CodingScopeProject {
 			continue
 		}
 		path := strings.TrimSpace(exp.ProjectPath)
-		if path == "" {
-			path = "(unknown project)"
+		key := knowledge.CodingProjectPathKey(path)
+		if key == "" {
+			key = "(unknown project)"
+		} else if _, ok := displayPath[key]; !ok {
+			displayPath[key] = path
 		}
-		byProject[path] = append(byProject[path], exp)
+		byProject[key] = append(byProject[key], exp)
 	}
 
 	var projectsOver []CodingKnowledgeProjectCapacity
 	projectEvict := 0
-	for path, exps := range byProject {
+	for key, exps := range byProject {
 		if len(exps) <= maxPerProject {
 			continue
 		}
 		over := len(exps) - maxPerProject
 		projectEvict += over
+		path := displayPath[key]
+		if path == "" {
+			path = key
+		}
 		projectsOver = append(projectsOver, CodingKnowledgeProjectCapacity{
 			ProjectPath: path,
 			Count:       len(exps),
@@ -528,11 +556,11 @@ func (a *App) CodingKnowledgeEvict() (int, error) {
 		if exp.Scope != knowledge.CodingScopeProject {
 			continue
 		}
-		path := strings.TrimSpace(exp.ProjectPath)
-		if path == "" {
-			path = "(unknown project)"
+		key := knowledge.CodingProjectPathKey(strings.TrimSpace(exp.ProjectPath))
+		if key == "" {
+			key = "(unknown project)"
 		}
-		byProject[path] = append(byProject[path], exp)
+		byProject[key] = append(byProject[key], exp)
 	}
 	for _, exps := range byProject {
 		if len(exps) <= maxPerProject {

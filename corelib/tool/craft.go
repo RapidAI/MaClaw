@@ -131,7 +131,7 @@ func ExecuteScript(scriptPath, language string, timeout int) (string, error) {
 
 	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
 	// GBK/CP936 mojibake when scripts output non-ASCII text.
-	cmd.Env = AppendUTF8Env(os.Environ())
+	cmd.Env = AugmentCommandEnv(AppendUTF8Env(os.Environ()))
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

@@ -320,6 +320,48 @@ func TestExportComputerUseObserveHistoryCSV(t *testing.T) {
 	_ = os.Remove(path)
 }
 
+func TestComputerUseYOLOStatusStaysOffTheBanner(t *testing.T) {
+	const path = `C:\models\omniparser-v2.yolow`
+
+	downloading := computerUseYOLOStatus(false, path, true, true, "github timeout")
+	if downloading["exists"] != false || downloading["enabled"] != true || downloading["downloading"] != true {
+		t.Fatalf("in progress: %#v", downloading)
+	}
+	if _, ok := downloading["error"]; ok {
+		t.Fatalf("in-progress download must hide the previous failure: %#v", downloading)
+	}
+
+	failed := computerUseYOLOStatus(false, path, true, false, "github timeout")
+	if failed["downloading"] != nil || failed["error"] != "github timeout" {
+		t.Fatalf("failed download: %#v", failed)
+	}
+
+	waiting := computerUseYOLOStatus(false, path, false, false, "")
+	if waiting["enabled"] != false {
+		t.Fatalf("parsing off: %#v", waiting)
+	}
+	if _, ok := waiting["downloading"]; ok {
+		t.Fatalf("idle status marked downloading: %#v", waiting)
+	}
+	if _, ok := waiting["error"]; ok {
+		t.Fatalf("idle status has an error: %#v", waiting)
+	}
+
+	present := computerUseYOLOStatus(true, path, true, true, "github timeout")
+	if present["exists"] != true || present["path"] != path {
+		t.Fatalf("present file: %#v", present)
+	}
+	if _, ok := present["downloading"]; ok {
+		t.Fatalf("present file still marked downloading: %#v", present)
+	}
+	if _, ok := present["error"]; ok {
+		t.Fatalf("present file still carries a failure: %#v", present)
+	}
+	if _, ok := present["enabled"]; ok {
+		t.Fatalf("present file should not repeat the toggle: %#v", present)
+	}
+}
+
 func TestGetComputerUseReadinessIncludesLastE2E(t *testing.T) {
 	storeComputerUseLastE2E(map[string]interface{}{
 		"ok": false, "error": "baseline screenshot failed",

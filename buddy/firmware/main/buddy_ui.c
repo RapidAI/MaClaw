@@ -4,9 +4,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_timer.h"
+
 #include "buddy_display.h"
 #include "buddy_font.h"
+#include "buddy_layout.h"
+#include "buddy_mood.h"
 #include "buddy_pet.h"
+#include "buddy_sound.h"
+#include "buddy_task_cursor.h"
 
 #define W 360
 #define H 360
@@ -30,14 +36,38 @@
 
 static buddy_counts_t s_last_counts;
 static char s_last_title[BUDDY_TITLE_BYTES + 1];
+static char s_last_phase[BUDDY_PHASE_BYTES + 1];
+static char s_last_elapsed[BUDDY_ELAPSED_BYTES + 1];
 static char s_last_weather[BUDDY_LABEL_BYTES + 1];
+static char s_last_location[BUDDY_LABEL_BYTES + 1];
+static int s_last_temp;
+static bool s_last_weather_stale;
+static bool s_last_has_weather;
 static char s_last_date[24];
 static char s_last_weekday[16];
+static char s_last_prompt[96];
 static int s_last_page = -1;
 static int s_last_active = -1;
 static bool s_last_online;
 static bool s_last_stale;
 static int s_last_fill = -100;
+static int s_last_mood = -2;
+static bool s_last_muted;
+static bool s_last_pinned;
+static char s_last_attention_kind[12];
+static char s_last_attention_title[BUDDY_TITLE_BYTES + 1];
+static bool s_asleep;
+static buddy_task_cursor_t s_cursor;
+
+static const buddy_layout_t *ui_layout(void) {
+    static buddy_layout_t layout;
+    static bool ready;
+    if (!ready) {
+        buddy_layout_metrics(buddy_display_glass_round(), &layout);
+        ready = true;
+    }
+    return &layout;
+}
 
 static void put_px(uint16_t *fb, int x, int y, uint16_t color) {
     if (x < 0 || y < 0 || x >= W || y >= H) return;
@@ -45,8 +75,20 @@ static void put_px(uint16_t *fb, int x, int y, uint16_t color) {
 }
 
 static void fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color) {
-    for (int yy = y; yy < y + h; ++yy) {
-        for (int xx = x; xx < x + w; ++xx) put_px(fb, xx, yy, color);
+    if (w <= 0 || h <= 0) return;
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    if (x0 >= x1 || y0 >= y1) return;
+    const int n = x1 - x0;
+    for (int yy = y0; yy < y1; ++yy) {
+        uint16_t *row = fb + (size_t)yy * W + x0;
+        for (int i = 0; i < n; ++i) row[i] = color;
     }
 }
 
@@ -144,7 +186,9 @@ static void draw_value_right(uint16_t *fb, int right_x, int y, int value, uint16
 static int page_of(const buddy_view_t *v) {
     if (v->prompt_active) return BUDDY_PAGE_PROMPT;
     if (v->celebrate_active) return BUDDY_PAGE_CELEBRATE;
-    return (v->online && v->counts.in_progress > 0) ? BUDDY_PAGE_TASKS : BUDDY_PAGE_STANDBY;
+    if (v->online && v->counts.in_progress > 0) return BUDDY_PAGE_TASKS;
+    if (v->online && v->attention.title[0]) return BUDDY_PAGE_ATTENTION;
+    return BUDDY_PAGE_STANDBY;
 }
 
 int buddy_ui_page(const buddy_view_t *view) {
@@ -160,6 +204,8 @@ const char *buddy_ui_page_name(int page) {
             return "prompt";
         case BUDDY_PAGE_CELEBRATE:
             return "celebrate";
+        case BUDDY_PAGE_ATTENTION:
+            return "attention";
         default:
             return "standby";
     }
@@ -168,32 +214,130 @@ const char *buddy_ui_page_name(int page) {
 void buddy_ui_init(void) {
     memset(&s_last_counts, 0, sizeof(s_last_counts));
     s_last_title[0] = '\0';
+    s_last_phase[0] = '\0';
+    s_last_elapsed[0] = '\0';
     s_last_weather[0] = '\0';
+    s_last_location[0] = '\0';
+    s_last_temp = 0;
+    s_last_weather_stale = false;
+    s_last_has_weather = false;
     s_last_date[0] = '\0';
     s_last_weekday[0] = '\0';
+    s_last_prompt[0] = '\0';
+    s_last_attention_kind[0] = '\0';
+    s_last_attention_title[0] = '\0';
     s_last_page = -1;
     s_last_active = -1;
     s_last_fill = -100;
 }
 
-/** Rotates the displayed in-progress task every three seconds. */
+/** Rotates the displayed in-progress task every three seconds.
+ * A short press restarts that dwell on the next task. */
 static int active_task_index(const buddy_view_t *v, int64_t now_ms) {
-    if (!v || v->current_count <= 0) return 0;
-    if (v->current_count == 1) return 0;
-    return (int)((now_ms / 3000) % v->current_count);
+    const int count = v ? v->current_count : 0;
+    buddy_task_cursor_note_count(&s_cursor, count, now_ms);
+    if (count <= 0) return 0;
+    return buddy_task_cursor_index(&s_cursor, count, now_ms);
 }
 
-static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) {
+void buddy_ui_on_tap(void) {
+    buddy_view_t view;
+    buddy_state_get(&view);
+    buddy_task_cursor_advance(&s_cursor, view.current_count, esp_timer_get_time() / 1000);
+}
+
+void buddy_ui_on_swipe(void) {
+    buddy_view_t view;
+    buddy_state_get(&view);
+    /* Prompt and celebrate cover the carousel. A swipe there would pin a
+     * list the glass is not showing. */
+    if (page_of(&view) != BUDDY_PAGE_TASKS) return;
+    buddy_task_cursor_toggle_pin(&s_cursor, view.current_count, esp_timer_get_time() / 1000);
+}
+
+int buddy_ui_active_index(void) {
+    buddy_view_t view;
+    buddy_state_get(&view);
+    if (view.current_count <= 0) return -1;
+    return active_task_index(&view, esp_timer_get_time() / 1000);
+}
+
+/** Progress track. Unknown progress (the host sends -1) is a block that
+ * travels the track; a later partial repaint moves only these rows. */
+static void draw_task_bar(uint16_t *fb, const buddy_view_t *v, int active, int64_t now_ms) {
+    const buddy_layout_t *layout = ui_layout();
+    const int bar_x = layout->bar_x;
+    const int bar_y = 298;
+    const int bar_w = layout->bar_w;
+    const int bar_h = 12;
+    fill_rect(fb, bar_x, bar_y, bar_w, bar_h, COL_PANEL);
+    float progress = -1.0f;
+    if (v->current_count > 0 && active >= 0 && active < v->current_count) {
+        progress = v->current[active].progress;
+    }
+    if (progress >= 0) {
+        int fill_w = (int)(progress * (float)bar_w);
+        if (fill_w < 0) fill_w = 0;
+        if (fill_w > bar_w) fill_w = bar_w;
+        fill_rect(fb, bar_x, bar_y, fill_w, bar_h, COL_ACCENT);
+        char pct[8];
+        snprintf(pct, sizeof(pct), "%d%%", (int)(progress * 100.0f + 0.5f));
+        draw_centered(fb, 312, pct, COL_MUTED, COL_BG, 2);
+        return;
+    }
+    const int block = 30;
+    const int travel = bar_w - block;
+    /* ~4px per 50ms tick: /4 jumped a third of the block each frame. */
+    const int pos = (int)((now_ms / 12) % (travel > 0 ? travel : 1));
+    fill_rect(fb, bar_x + pos, bar_y, block, bar_h, COL_MUTED);
+}
+
+/** A still face so a task page can show the pet mood without redrawing it. */
+static void draw_pet_chip(uint16_t *fb, int cx, int cy, int mood) {
+    fill_circle(fb, cx, cy, 12, COL_PET);
+    if (mood == BUDDY_MOOD_SLEEP) {
+        hline(fb, cx - 6, cx - 2, cy - 1, COL_BG);
+        hline(fb, cx + 2, cx + 6, cy - 1, COL_BG);
+        return;
+    }
+    const int eye = mood == BUDDY_MOOD_BUSY ? 1 : 2;
+    fill_circle(fb, cx - 4, cy - 2, eye, COL_BG);
+    fill_circle(fb, cx + 4, cy - 2, eye, COL_BG);
+    if (mood == BUDDY_MOOD_HAPPY) {
+        hline(fb, cx - 4, cx + 4, cy + 3, COL_BG);
+        hline(fb, cx - 2, cx + 2, cy + 5, COL_BG);
+    } else if (mood == BUDDY_MOOD_BUSY) {
+        hline(fb, cx - 4, cx + 4, cy + 4, COL_BG);
+    }
+}
+
+static void draw_task_chip(uint16_t *fb, int mood) {
+    /* Below the progress track, inside both the round aperture and the square. */
+    draw_pet_chip(fb, W / 2, 332, mood);
+}
+
+static void widen_ascii_digits(char *dst, size_t dst_size, const char *src);
+static void draw_arc_text_top(uint16_t *fb, const char *text, int radius, int y_offset, uint16_t fg);
+static size_t fit_text_arc(char *dst, size_t dst_size, const char *src, int max_px, bool ellipsis);
+static void draw_task_banner(uint16_t *fb, const buddy_view_t *v, int active);
+static void draw_attention_date(uint16_t *fb, const buddy_view_t *v);
+
+static const char *attention_label(const buddy_view_t *v) {
+    if (strcmp(v->attention.kind, "failed") == 0) return "异常";
+    if (strcmp(v->attention.kind, "paused") == 0) return "已暂停";
+    return "待确认";
+}
+
+static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms, bool muted, int mood) {
     fill_rect(fb, 0, 0, W, H, COL_BG);
     const int active = active_task_index(v, now_ms);
 
-    // Header stays inside the circle: the top corners are bezel, not pixels.
-    draw_centered(fb, 36, "MaClaw", COL_MUTED, COL_BG, 2);
+    const buddy_layout_t *layout = ui_layout();
+    // Phase and age take the brand line when the host sent them.
+    draw_task_banner(fb, v, active);
 
-    // Three counters. The 360px panel's visible aperture is ~300px, so keep
-    // content inside r=150 from (180,180): values end at x=270, labels at x=88.
-    const int label_x = 88;
-    const int value_right = 262;
+    const int label_x = layout->label_x;
+    const int value_right = layout->value_right;
     draw_text(fb, label_x, 74, "总任务", COL_TEXT, COL_BG, 1, 120);
     draw_value_right(fb, value_right, 62, v->counts.total, COL_TEXT, COL_BG, 4);
 
@@ -203,18 +347,18 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
     draw_text(fb, label_x, 178, "已完成", COL_SUCCESS, COL_BG, 1, 120);
     draw_value_right(fb, value_right, 166, v->counts.done, COL_SUCCESS, COL_BG, 4);
 
-    hline(fb, 90, 270, 204, COL_PANEL);
+    hline(fb, layout->rule_x0, layout->rule_x1, 204, COL_PANEL);
 
-    // Current task title, two lines. 240px wide keeps the second line inside
-    // the lower chord.
-    const int text_x = 60;
-    const int text_w = 240;
+    const int text_x = layout->text_x;
+    const int text_w = layout->title_w;
     char line1[BUDDY_TITLE_BYTES + 8];
     char line2[BUDDY_TITLE_BYTES + 8];
     line1[0] = '\0';
     line2[0] = '\0';
     if (v->current_count > 0 && v->current[active].title[0]) {
-        const size_t used = fit_text(line1, sizeof(line1), v->current[active].title, 1, text_w, true);
+        // The first line is a clean break. An ellipsis here would mark a title
+        // as cut off even when the rest is drawn on the next line.
+        const size_t used = fit_text(line1, sizeof(line1), v->current[active].title, 1, text_w, false);
         const char *rest = v->current[active].title + used;
         if (*rest) {
             fit_text(line2, sizeof(line2), rest, 1, text_w, true);
@@ -225,78 +369,114 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) 
     draw_text(fb, text_x, 206, line1, COL_TEXT, COL_BG, 1, text_w);
     if (line2[0]) draw_text(fb, text_x, 234, line2, COL_TEXT, COL_BG, 1, text_w);
 
-    // Progress bar, narrowed so its bottom corners stay inside the aperture.
-    const int bar_x = 108;
-    const int bar_y = 298;
-    const int bar_w = 144;
-    const int bar_h = 12;
-    fill_rect(fb, bar_x, bar_y, bar_w, bar_h, COL_PANEL);
-    float progress = v->current_count > 0 ? v->current[active].progress : -1;
-    if (progress >= 0) {
-        int fill_w = (int)(progress * (float)bar_w);
-        if (fill_w < 0) fill_w = 0;
-        if (fill_w > bar_w) fill_w = bar_w;
-        fill_rect(fb, bar_x, bar_y, fill_w, bar_h, COL_ACCENT);
-        char pct[8];
-        snprintf(pct, sizeof(pct), "%d%%", (int)(progress * 100.0f + 0.5f));
-        draw_centered(fb, 312, pct, COL_MUTED, COL_BG, 2);
-    } else {
-        // Indeterminate: a moving bright block.
-        const int block = 30;
-        const int travel = bar_w - block;
-        const int pos = (int)((now_ms / 4) % (travel > 0 ? travel : 1));
-        fill_rect(fb, bar_x + pos, bar_y, block, bar_h, COL_MUTED);
-    }
+    draw_task_bar(fb, v, active, now_ms);
 
     // One status line at the bottom. It combines at most two short pieces so
     // it stays inside the circle; stale is only shown when nothing else is.
-    char tail[64];
+    char tail[BUDDY_TITLE_BYTES + 24];
     tail[0] = '\0';
     uint16_t tail_color = COL_MUTED;
     if (!v->online) {
         strlcpy(tail, "未连接", sizeof(tail));
         tail_color = COL_MUTED;
     } else {
-        if (v->counts.failed > 0) {
-            snprintf(tail, sizeof(tail), "异常 %d", v->counts.failed);
+        if (v->attention.title[0]) {
+            strlcpy(tail, attention_label(v), sizeof(tail));
+            strlcat(tail, " ", sizeof(tail));
+            strlcat(tail, v->attention.title, sizeof(tail));
+            tail_color = strcmp(v->attention.kind, "failed") == 0 ? COL_DANGER : COL_WARN;
+        }
+        const int anomaly = v->counts.failed + v->counts.paused;
+        if (!tail[0] && anomaly > 0) {
+            snprintf(tail, sizeof(tail), "异常 %d", anomaly);
             tail_color = COL_DANGER;
         }
-        if (v->counts.pending > 0) {
+        if (!tail[0] && v->counts.pending > 0) {
             char piece[24];
-            snprintf(piece, sizeof(piece), "待处理 %d", v->counts.pending);
+            snprintf(piece, sizeof(piece), "待确认 %d", v->counts.pending);
             if (tail[0]) strlcat(tail, " · ", sizeof(tail));
             strlcat(tail, piece, sizeof(tail));
-            if (v->counts.failed == 0) tail_color = COL_WARN;
+            if (anomaly == 0) tail_color = COL_WARN;
         }
         if (!tail[0] && v->stale) {
             strlcpy(tail, "数据陈旧", sizeof(tail));
             tail_color = COL_WARN;
         }
     }
-    if (tail[0]) draw_centered(fb, 270, tail, tail_color, COL_BG, 1);
+    if (muted) {
+        if (tail[0]) strlcat(tail, " · ", sizeof(tail));
+        strlcat(tail, "静音", sizeof(tail));
+        if (tail_color == COL_MUTED) tail_color = COL_WARN;
+    }
+    if (tail[0]) {
+        char shown[BUDDY_TITLE_BYTES + 24];
+        fit_text(shown, sizeof(shown), tail, 1, layout->tail_w, true);
+        draw_centered(fb, 270, shown, tail_color, COL_BG, 1);
+    }
+    if (v->current_count > 1 && v->current_count <= BUDDY_MAX_TASKS && active >= 0 &&
+        active < BUDDY_MAX_TASKS) {
+        char index[4];
+        index[0] = (char)('0' + active + 1);
+        index[1] = '/';
+        index[2] = (char)('0' + v->current_count);
+        index[3] = '\0';
+        const int width = buddy_font_width(index, 1, 48);
+        const uint16_t index_color = buddy_task_cursor_pinned(&s_cursor) ? COL_ACCENT : COL_MUTED;
+        draw_text(fb, layout->index_right - width, layout->index_y, index, index_color, COL_BG, 1, 48);
+    }
+    draw_task_chip(fb, mood);
 }
 
-static void draw_pet(uint16_t *fb, int cx, int cy, int64_t now_ms) {
-    const int phase = (int)((now_ms / 120) % 8);
-    const int bob = (phase < 4) ? -phase / 2 : -(7 - phase) / 2;
+static void draw_attention_page(uint16_t *fb, const buddy_view_t *v, int mood) {
+    fill_rect(fb, 0, 0, W, H, COL_BG);
+    draw_attention_date(fb, v);
+    const buddy_layout_t *layout = ui_layout();
+    const uint16_t label_color = strcmp(v->attention.kind, "failed") == 0 ? COL_DANGER : COL_WARN;
+    int extra = 0;
+    if (strcmp(v->attention.kind, "paused") == 0) extra = v->counts.paused;
+    else if (strcmp(v->attention.kind, "failed") == 0) extra = v->counts.failed;
+    else extra = v->counts.pending;
+    char label[32];
+    if (extra > 1) snprintf(label, sizeof(label), "%s %d", attention_label(v), extra);
+    else strlcpy(label, attention_label(v), sizeof(label));
+    draw_centered(fb, 88, label, label_color, COL_BG, 1);
+
+    char line1[BUDDY_TITLE_BYTES + 8];
+    char line2[BUDDY_TITLE_BYTES + 8];
+    line2[0] = '\0';
+    const size_t used = fit_text(line1, sizeof(line1), v->attention.title, 1, layout->title_w, false);
+    if (v->attention.title[used]) {
+        fit_text(line2, sizeof(line2), v->attention.title + used, 1, layout->title_w, true);
+    }
+    draw_centered(fb, 132, line1, COL_TEXT, COL_BG, 1);
+    if (line2[0]) draw_centered(fb, 160, line2, COL_TEXT, COL_BG, 1);
+    draw_pet_chip(fb, W / 2, 250, mood);
+}
+
+static void draw_pet(uint16_t *fb, int cx, int cy, int64_t now_ms, int mood) {
+    const int phase = (int)((now_ms / (mood == BUDDY_MOOD_SLEEP ? 360 : 120)) % 8);
+    int bob = (phase < 4) ? -phase / 2 : -(7 - phase) / 2;
+    if (mood == BUDDY_MOOD_SLEEP) bob = 2;
+    if (mood == BUDDY_MOOD_HAPPY) bob *= 2;
 
     const int blink_cycle = (int)(now_ms % 3200);
-    const bool blink = blink_cycle > 3000;
+    const bool blink = mood == BUDDY_MOOD_SLEEP || blink_cycle > 3000;
 
-    // Ears.
-    fill_circle(fb, cx - 40, cy - 44 + bob, 17, COL_PET_DARK);
-    fill_circle(fb, cx + 40, cy - 44 + bob, 17, COL_PET_DARK);
-    fill_circle(fb, cx - 40, cy - 44 + bob, 9, COL_PET_CHEEK);
-    fill_circle(fb, cx + 40, cy - 44 + bob, 9, COL_PET_CHEEK);
+    const int ear_y = cy - (mood == BUDDY_MOOD_SLEEP ? 36 : 44) + bob;
+    fill_circle(fb, cx - 40, ear_y, 17, COL_PET_DARK);
+    fill_circle(fb, cx + 40, ear_y, 17, COL_PET_DARK);
+    fill_circle(fb, cx - 40, ear_y, 9, COL_PET_CHEEK);
+    fill_circle(fb, cx + 40, ear_y, 9, COL_PET_CHEEK);
 
-    // Head.
     fill_circle(fb, cx, cy + bob, 58, COL_PET);
     fill_ring(fb, cx, cy + bob, 58, 55, COL_PET_DARK);
 
-    // Eyes.
     if (blink) {
         hline(fb, cx - 30, cx - 12, cy - 6 + bob, COL_BG);
         hline(fb, cx + 12, cx + 30, cy - 6 + bob, COL_BG);
+    } else if (mood == BUDDY_MOOD_BUSY) {
+        fill_circle(fb, cx - 21, cy - 6 + bob, 4, COL_BG);
+        fill_circle(fb, cx + 21, cy - 6 + bob, 4, COL_BG);
     } else {
         fill_circle(fb, cx - 21, cy - 8 + bob, 7, COL_BG);
         fill_circle(fb, cx + 21, cy - 8 + bob, 7, COL_BG);
@@ -304,13 +484,20 @@ static void draw_pet(uint16_t *fb, int cx, int cy, int64_t now_ms) {
         fill_circle(fb, cx + 23, cy - 10 + bob, 2, COL_TEXT);
     }
 
-    // Cheeks.
-    fill_circle(fb, cx - 33, cy + 14 + bob, 6, COL_PET_CHEEK);
-    fill_circle(fb, cx + 33, cy + 14 + bob, 6, COL_PET_CHEEK);
+    const int cheek = mood == BUDDY_MOOD_HAPPY ? 8 : 6;
+    fill_circle(fb, cx - 33, cy + 14 + bob, cheek, COL_PET_CHEEK);
+    fill_circle(fb, cx + 33, cy + 14 + bob, cheek, COL_PET_CHEEK);
 
-    // Mouth: a small smile built from three dots rows.
-    hline(fb, cx - 10, cx + 10, cy + 20 + bob, COL_BG);
-    hline(fb, cx - 6, cx + 6, cy + 24 + bob, COL_BG);
+    if (mood == BUDDY_MOOD_SLEEP || mood == BUDDY_MOOD_BUSY) {
+        hline(fb, cx - 8, cx + 8, cy + 22 + bob, COL_BG);
+    } else if (mood == BUDDY_MOOD_HAPPY) {
+        hline(fb, cx - 14, cx + 14, cy + 18 + bob, COL_BG);
+        hline(fb, cx - 10, cx + 10, cy + 22 + bob, COL_BG);
+        hline(fb, cx - 4, cx + 4, cy + 26 + bob, COL_BG);
+    } else {
+        hline(fb, cx - 10, cx + 10, cy + 20 + bob, COL_BG);
+        hline(fb, cx - 6, cx + 6, cy + 24 + bob, COL_BG);
+    }
 }
 
 /** Draws a 24x24 1-bit cell rotated around its centre, magnified by `zoom`.
@@ -492,49 +679,137 @@ static void widen_ascii_digits(char *dst, size_t dst_size, const char *src) {
     dst[out] = '\0';
 }
 
-static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) {
-    fill_rect(fb, 0, 0, W, H, COL_BG);
+/** Phase name and age along the top. The counters, title and bar already fill
+ * the middle, so this replaces the brand line instead of crowding the track. */
+static void draw_task_banner(uint16_t *fb, const buddy_view_t *v, int active) {
+    const buddy_layout_t *layout = ui_layout();
+    char raw[BUDDY_PHASE_BYTES + BUDDY_ELAPSED_BYTES + 8];
+    raw[0] = '\0';
+    if (v && v->current_count > 0 && active >= 0 && active < v->current_count) {
+        const buddy_task_t *task = &v->current[active];
+        if (task->phase[0] && task->elapsed[0]) {
+            strlcpy(raw, task->phase, sizeof(raw));
+            strlcat(raw, " · ", sizeof(raw));
+            strlcat(raw, task->elapsed, sizeof(raw));
+        } else if (task->phase[0]) {
+            strlcpy(raw, task->phase, sizeof(raw));
+        } else if (task->elapsed[0]) {
+            strlcpy(raw, task->elapsed, sizeof(raw));
+        }
+    }
+    if (!raw[0]) {
+        draw_centered(fb, layout->header_y, "MaClaw", COL_MUTED, COL_BG, 2);
+        return;
+    }
+    char wide[160];
+    widen_ascii_digits(wide, sizeof(wide), raw);
+    if (layout->arc_standby) {
+        char fit[160];
+        fit_text_arc(fit, sizeof(fit), wide, 220, true);
+        draw_arc_text_top(fb, fit, 138, -3, COL_MUTED);
+        return;
+    }
+    char fit[160];
+    fit_text(fit, sizeof(fit), wide, 1, 220, true);
+    draw_centered(fb, layout->header_y, fit, COL_MUTED, COL_BG, 1);
+}
+
+/** The attention page replaces standby, so the date the host already sends
+ * stays on the rim. No date yet leaves that rim empty. */
+static void draw_attention_date(uint16_t *fb, const buddy_view_t *v) {
+    if (!v || !v->has_clock || !v->date[0]) return;
+    const buddy_layout_t *layout = ui_layout();
+    char wide[96];
+    widen_ascii_digits(wide, sizeof(wide), v->date);
+    char line[128];
+    strlcpy(line, wide, sizeof(line));
+    if (v->weekday[0]) {
+        strlcat(line, " ", sizeof(line));
+        strlcat(line, v->weekday, sizeof(line));
+    }
+    if (layout->arc_standby) {
+        char fit[128];
+        fit_text_arc(fit, sizeof(fit), line, 250, true);
+        draw_arc_text_top(fb, fit, 138, -3, COL_TEXT);
+        return;
+    }
+    char fit[128];
+    fit_text(fit, sizeof(fit), line, 1, layout->title_w, true);
+    draw_centered(fb, layout->date_y, fit, COL_TEXT, COL_BG, 1);
+}
+
+static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms, int mood, bool muted,
+                              bool pet_only) {
+    // A pet tick keeps the date and weather pixels already in the framebuffer.
+    // The 176px asset is y=82..257; clearing through y=78 also wipes the bottom
+    // of the status line, which is painted again after the pet.
+    if (pet_only) {
+        fill_rect(fb, 0, 78, W, 180, COL_BG);
+    } else {
+        fill_rect(fb, 0, 0, W, H, COL_BG);
+    }
+    const buddy_layout_t *layout = ui_layout();
+    if (!pet_only) {
 
     char date_line[128];
+    date_line[0] = '\0';
     if (v->has_clock) {
         char wide_date[96];
         widen_ascii_digits(wide_date, sizeof(wide_date), v->date);
         snprintf(date_line, sizeof(date_line), "%s %s", wide_date, v->weekday);
-        char date_fit[128];
-        fit_text_arc(date_fit, sizeof(date_fit), date_line, 250, true);
-        draw_arc_text_top(fb, date_fit, 138, -3, COL_TEXT);
-    } else {
-        draw_arc_text_top(fb, "MaClaw Buddy", 138, -3, COL_TEXT);
     }
-
-    if (!v->online) {
-        draw_centered(fb, 61, "未连接", COL_MUTED, COL_BG, 1);
-    } else if (v->counts.pending > 0) {
-        char raw[32];
-        char buf[64];
-        snprintf(raw, sizeof(raw), "待处理 %d", v->counts.pending);
-        widen_ascii_digits(buf, sizeof(buf), raw);
-        draw_centered(fb, 61, buf, COL_WARN, COL_BG, 1);
+    if (layout->arc_standby) {
+        if (date_line[0]) {
+            char date_fit[128];
+            fit_text_arc(date_fit, sizeof(date_fit), date_line, 250, true);
+            draw_arc_text_top(fb, date_fit, 138, -3, COL_TEXT);
+        } else {
+            draw_arc_text_top(fb, "MaClaw Buddy", 138, -3, COL_TEXT);
+        }
+    } else if (date_line[0]) {
+        char date_fit[128];
+        fit_text(date_fit, sizeof(date_fit), date_line, 1, layout->title_w, true);
+        draw_centered(fb, layout->date_y, date_fit, COL_TEXT, COL_BG, 1);
+    } else {
+        draw_centered(fb, layout->date_y, "MaClaw Buddy", COL_TEXT, COL_BG, 1);
+    }
     }
 
     // Pet: the GUI's animated asset when the host has delivered it, otherwise
-    // the built-in vector mascot. The bottom edge stays at y=258 while the top
-    // moves up, so the larger pet grows into the space freed above it.
-    if (buddy_pet_ready()) {
+    // the built-in vector mascot. Sleep has no matching frame in that asset,
+    // so the closed-eye pose is always the vector one. The asset's bottom edge
+    // stays at y=258 while the top moves up.
+    if (mood != BUDDY_MOOD_SLEEP && buddy_pet_ready()) {
         buddy_pet_lock();
         const int count = buddy_pet_frame_count();
-        const int frame_ms = buddy_pet_frame_ms();
+        const int frame_ms = buddy_mood_frame_ms(mood, buddy_pet_frame_ms());
         const int index = count > 0 ? (int)((now_ms / frame_ms) % count) : 0;
         const uint8_t *frame = buddy_pet_frame(index);
         if (frame) {
             draw_pet_asset_frame(fb, W / 2, 170, 176, frame);
         } else {
-            draw_pet(fb, W / 2, 170, now_ms);
+            draw_pet(fb, W / 2, 170, now_ms, mood);
         }
         buddy_pet_unlock();
     } else {
-        draw_pet(fb, W / 2, 170, now_ms);
+        draw_pet(fb, W / 2, 170, now_ms, mood);
     }
+
+    // The 176px asset reaches y=82, which covers the bottom of a 24px line
+    // drawn at y=61. Paint the status after the pet so it stays readable.
+    if (!v->online) {
+        draw_centered(fb, 61, muted ? "未连接 · 静音" : "未连接", COL_MUTED, COL_BG, 1);
+    } else if (v->counts.pending > 0) {
+        char raw[40];
+        char buf[64];
+        snprintf(raw, sizeof(raw), muted ? "待确认 %d · 静音" : "待确认 %d", v->counts.pending);
+        widen_ascii_digits(buf, sizeof(buf), raw);
+        draw_centered(fb, 61, buf, COL_WARN, COL_BG, 1);
+    } else if (muted) {
+        draw_centered(fb, 61, "静音", COL_WARN, COL_BG, 1);
+    }
+
+    if (pet_only) return;
 
     // Weather and location live on two bottom arcs, leaving the centre free
     // for the pet. The weather line is the primary reading, so it renders its
@@ -545,15 +820,27 @@ static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_m
         snprintf(wx, sizeof(wx), "%s%s %d°C", v->weather_stale ? "旧 " : "",
                  v->weather_summary, v->weather_temp);
         char wx_fit[96];
-        fit_text_arc(wx_fit, sizeof(wx_fit), wx, 170, true);
-        draw_arc_text_bottom(fb, wx_fit, 133, COL_ACCENT, WEATHER_TEXT_ZOOM);
-        if (v->weather_location[0]) {
-            char loc[64];
-            fit_text_arc(loc, sizeof(loc), v->weather_location, 150, true);
-            draw_arc_text_bottom(fb, loc, 97, COL_MUTED, 1.0f);
+        if (layout->arc_standby) {
+            fit_text_arc(wx_fit, sizeof(wx_fit), wx, 170, true);
+            draw_arc_text_bottom(fb, wx_fit, 133, COL_ACCENT, WEATHER_TEXT_ZOOM);
+            if (v->weather_location[0]) {
+                char loc[64];
+                fit_text_arc(loc, sizeof(loc), v->weather_location, 150, true);
+                draw_arc_text_bottom(fb, loc, 97, COL_MUTED, 1.0f);
+            }
+        } else {
+            fit_text(wx_fit, sizeof(wx_fit), wx, 1, layout->title_w, true);
+            draw_centered(fb, layout->weather_y, wx_fit, COL_ACCENT, COL_BG, 1);
+            if (v->weather_location[0]) {
+                char loc[64];
+                fit_text(loc, sizeof(loc), v->weather_location, 1, layout->title_w, true);
+                draw_centered(fb, layout->location_y, loc, COL_MUTED, COL_BG, 1);
+            }
         }
-    } else {
+    } else if (layout->arc_standby) {
         draw_arc_text_bottom(fb, "正在获取天气", 133, COL_MUTED, WEATHER_TEXT_ZOOM);
+    } else {
+        draw_centered(fb, layout->weather_y, "正在获取天气", COL_MUTED, COL_BG, 1);
     }
 }
 
@@ -604,10 +891,12 @@ static void draw_trail(uint16_t *fb, int x0, int y0, int x1, int y1, uint16_t co
 }
 
 static void draw_celebrate_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms) {
-    fill_rect(fb, 0, 0, W, H, COL_BG);
     const int64_t elapsed = now_ms - v->celebrate_start_ms;
-    if (elapsed < 0) return;
-    if (elapsed > (int64_t)v->celebrate_seconds * 1000) return;
+    // The UI tick and this draw sample the clock a moment apart. Clearing the
+    // panel when the draw is the one that crosses the deadline flashes black
+    // for a frame; keep the last fireworks instead.
+    if (elapsed < 0 || elapsed > (int64_t)v->celebrate_seconds * 1000) return;
+    fill_rect(fb, 0, 0, W, H, COL_BG);
 
     // Rich firework field: 12 shells of five shapes, each with a rising
     // rocket, a burst flash, a shock ring and 16-34 particles with drag,
@@ -763,9 +1052,10 @@ static void draw_celebrate_page(uint16_t *fb, const buddy_view_t *v, int64_t now
         char line1[BUDDY_TITLE_BYTES + 8];
         char line2[BUDDY_TITLE_BYTES + 8];
         line2[0] = '\0';
-        const size_t used = fit_text(line1, sizeof(line1), v->celebrate_title, 1, 240, true);
+        const int title_w = ui_layout()->title_w;
+        const size_t used = fit_text(line1, sizeof(line1), v->celebrate_title, 1, title_w, false);
         if (used < strlen(v->celebrate_title)) {
-            fit_text(line2, sizeof(line2), v->celebrate_title + used, 1, 240, true);
+            fit_text(line2, sizeof(line2), v->celebrate_title + used, 1, title_w, true);
         }
         draw_centered(fb, 128, line1, COL_TEXT, COL_BG, 1);
         if (line2[0]) draw_centered(fb, 156, line2, COL_TEXT, COL_BG, 1);
@@ -777,12 +1067,13 @@ static void draw_prompt_page(uint16_t *fb, const buddy_view_t *v) {
     draw_centered(fb, 140, "MaClaw Buddy", COL_ACCENT, COL_BG, 2);
     char line1[80];
     char line2[80];
-    fit_text(line1, sizeof(line1), v->prompt[0] ? v->prompt : "等待主机连接", 1, W - 60, false);
+    // title_w keeps the second line (y=228, 24px tall) inside the round
+    // aperture. W-60 reached past r=150 at that height.
+    const int prompt_w = ui_layout()->title_w;
+    const char *prompt = v->prompt[0] ? v->prompt : "等待主机连接";
+    const size_t used = fit_text(line1, sizeof(line1), prompt, 1, prompt_w, false);
     line2[0] = '\0';
-    if (v->prompt[0]) {
-        const size_t used = strlen(line1);
-        if (v->prompt[used]) fit_text(line2, sizeof(line2), v->prompt + used, 1, W - 60, true);
-    }
+    if (prompt[used]) fit_text(line2, sizeof(line2), prompt + used, 1, prompt_w, true);
     draw_centered(fb, 200, line1, COL_TEXT, COL_BG, 1);
     if (line2[0]) draw_centered(fb, 228, line2, COL_TEXT, COL_BG, 1);
 }
@@ -791,8 +1082,27 @@ void buddy_ui_render(const buddy_view_t *v, int64_t now_ms) {
     uint16_t *fb = buddy_display_framebuffer();
     if (!fb || !v) return;
 
+    // The panel keeps its last pixels while the backlight is off. Composing
+    // a 360x360 frame into a dark panel only burns CPU and QSPI.
+    static int64_t s_last_anim_ms;
+    if (!buddy_display_awake()) {
+        s_asleep = true;
+        return;
+    }
+    if (s_asleep) {
+        s_asleep = false;
+        s_last_page = -1;
+        s_last_anim_ms = 0;
+    }
+
     const int page = page_of(v);
     const int active = active_task_index(v, now_ms);
+    const int mood = buddy_mood_resolve(v->pet_explicit, page, v->online, buddy_display_resting());
+    buddy_sound_config_t sound_cfg;
+    memset(&sound_cfg, 0, sizeof(sound_cfg));
+    sound_cfg.master = true;
+    buddy_sound_get_config(&sound_cfg);
+    const bool muted = !sound_cfg.master;
     // The celebration page is a 5s animation; draw it on every tick (the UI
     // task runs at 20fps) and let the state tick expire it.
     if (page == BUDDY_PAGE_CELEBRATE) {
@@ -803,18 +1113,18 @@ void buddy_ui_render(const buddy_view_t *v, int64_t now_ms) {
     }
     // The pet uses a 120ms animation frame; redrawing a full 360x360 frame on
     // every tick would push several MB/s over QSPI for no visible gain.
-    static int64_t s_last_anim_ms;
     const bool anim_frame = now_ms - s_last_anim_ms >= 120;
-    if (page == BUDDY_PAGE_STANDBY && !anim_frame) {
-        return;
-    }
-    if (page == BUDDY_PAGE_STANDBY) {
-        s_last_anim_ms = now_ms;
-    }
     const bool counts_changed = memcmp(&s_last_counts, &v->counts, sizeof(s_last_counts)) != 0;
     const char *title = v->current_count > 0 ? v->current[active].title : "";
+    const char *phase = v->current_count > 0 ? v->current[active].phase : "";
+    const char *elapsed = v->current_count > 0 ? v->current[active].elapsed : "";
     const bool title_changed = strcmp(s_last_title, title) != 0;
-    const bool weather_changed = strcmp(s_last_weather, v->weather_summary) != 0;
+    const bool detail_changed = strcmp(s_last_phase, phase) != 0 || strcmp(s_last_elapsed, elapsed) != 0;
+    const bool weather_changed = v->has_weather != s_last_has_weather ||
+                                 v->weather_stale != s_last_weather_stale ||
+                                 v->weather_temp != s_last_temp ||
+                                 strcmp(s_last_weather, v->weather_summary) != 0 ||
+                                 strcmp(s_last_location, v->weather_location) != 0;
     const bool clock_changed = strcmp(s_last_date, v->date) != 0 ||
                                strcmp(s_last_weekday, v->weekday) != 0;
     const bool status_changed = s_last_online != v->online || s_last_stale != v->stale ||
@@ -822,36 +1132,94 @@ void buddy_ui_render(const buddy_view_t *v, int64_t now_ms) {
     const int fill = v->current_count > 0 ? (int)(v->current[active].progress * 100) : -100;
     const bool fill_changed = fill != s_last_fill;
     const bool rotation_changed = s_last_active != active;
+    const bool pin_changed = buddy_task_cursor_pinned(&s_cursor) != s_last_pinned;
+    const bool mood_changed = mood != s_last_mood;
+    const bool mute_changed = muted != s_last_muted;
+    const bool prompt_changed = strcmp(s_last_prompt, v->prompt) != 0;
+    const bool attention_changed = strcmp(s_last_attention_kind, v->attention.kind) != 0 ||
+                                   strcmp(s_last_attention_title, v->attention.title) != 0;
 
     // Standby animates the pet at ~8 fps; the task page repaints only when a
     // visible value changed or the three-second rotation advances.
-    const bool animate = page == BUDDY_PAGE_STANDBY;
-    if (!animate && !counts_changed && !title_changed && !weather_changed && !clock_changed &&
-        !status_changed && !fill_changed && !rotation_changed) {
+    // The sleep pose does not move. A dark glass is not redrawn either: the
+    // backlight is off, so a busy pet would only keep the panel bus awake.
+    const bool animate = page == BUDDY_PAGE_STANDBY && anim_frame && mood != BUDDY_MOOD_SLEEP &&
+                         buddy_display_awake();
+    if (page == BUDDY_PAGE_STANDBY && !animate && !status_changed && !weather_changed &&
+        !clock_changed && !counts_changed && !mood_changed && !mute_changed) {
         return;
     }
+    // A minute tick must not repaint the task page, or the progress track
+    // hitches. The attention page does redraw: its date lives on that frame.
+    const bool content_changed = counts_changed || title_changed || detail_changed || status_changed ||
+                                 fill_changed || rotation_changed || pin_changed || mood_changed ||
+                                 mute_changed || prompt_changed || attention_changed ||
+                                 (page == BUDDY_PAGE_ATTENTION && clock_changed);
+    // Unknown progress stays an indeterminate block. A known ratio is a still
+    // fill, so it does not take this path. Repaint just the track; a full
+    // 360x360 frame here would keep the panel bus busy the whole time.
+    if (page == BUDDY_PAGE_TASKS && !content_changed && v->current_count > 0 && fill < 0 &&
+        !buddy_display_resting()) {
+        draw_task_bar(fb, v, active, now_ms);
+        buddy_display_flush_rows(298, 310);
+        return;
+    }
+    if (!animate && page != BUDDY_PAGE_STANDBY && !content_changed) {
+        return;
+    }
+    if (page == BUDDY_PAGE_STANDBY) {
+        s_last_anim_ms = now_ms;
+    }
 
+    // The 176px pet covers y=82..257. A tick that only advances that pose leaves
+    // the date and weather pixels already on the panel, and skips redrawing them.
+    const bool pet_only = page == BUDDY_PAGE_STANDBY && animate && !status_changed &&
+                          !weather_changed && !clock_changed && !counts_changed &&
+                          !mood_changed && !mute_changed;
     switch (page) {
         case BUDDY_PAGE_TASKS:
-            draw_task_page(fb, v, now_ms);
+            draw_task_page(fb, v, now_ms, muted, mood);
+            break;
+        case BUDDY_PAGE_ATTENTION:
+            draw_attention_page(fb, v, mood);
             break;
         case BUDDY_PAGE_PROMPT:
             draw_prompt_page(fb, v);
             break;
         default:
-            draw_standby_page(fb, v, now_ms);
+            draw_standby_page(fb, v, now_ms, mood, muted, pet_only);
             break;
     }
-    buddy_display_flush_rows(0, H);
+    if (pet_only) {
+        buddy_display_flush_rows(78, 262);
+    } else {
+        buddy_display_flush_rows(0, H);
+    }
 
     memcpy(&s_last_counts, &v->counts, sizeof(s_last_counts));
     strlcpy(s_last_title, title, sizeof(s_last_title));
-    strlcpy(s_last_weather, v->weather_summary, sizeof(s_last_weather));
-    strlcpy(s_last_date, v->date, sizeof(s_last_date));
-    strlcpy(s_last_weekday, v->weekday, sizeof(s_last_weekday));
+    strlcpy(s_last_phase, phase, sizeof(s_last_phase));
+    strlcpy(s_last_elapsed, elapsed, sizeof(s_last_elapsed));
+    if (page == BUDDY_PAGE_STANDBY) {
+        strlcpy(s_last_weather, v->weather_summary, sizeof(s_last_weather));
+        strlcpy(s_last_location, v->weather_location, sizeof(s_last_location));
+        s_last_temp = v->weather_temp;
+        s_last_weather_stale = v->weather_stale;
+        s_last_has_weather = v->has_weather;
+    }
+    if (page == BUDDY_PAGE_STANDBY || page == BUDDY_PAGE_ATTENTION) {
+        strlcpy(s_last_date, v->date, sizeof(s_last_date));
+        strlcpy(s_last_weekday, v->weekday, sizeof(s_last_weekday));
+    }
     s_last_page = page;
+    strlcpy(s_last_prompt, v->prompt, sizeof(s_last_prompt));
     s_last_active = active;
     s_last_online = v->online;
     s_last_stale = v->stale;
     s_last_fill = fill;
+    s_last_mood = mood;
+    s_last_muted = muted;
+    s_last_pinned = buddy_task_cursor_pinned(&s_cursor);
+    strlcpy(s_last_attention_kind, v->attention.kind, sizeof(s_last_attention_kind));
+    strlcpy(s_last_attention_title, v->attention.title, sizeof(s_last_attention_title));
 }

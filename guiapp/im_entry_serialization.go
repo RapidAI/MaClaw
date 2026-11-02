@@ -77,6 +77,7 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 			result.UnfinishedSlot = slot
 		}
 	}
+	result.UnfinishedSlot = h.releaseSettledMailboxReviewSlot(msg.UserID, result.UnfinishedSlot, result.EntriesBeforeClear)
 
 	result.Decision = resolveExplicitTaskSlotDecision(msg, result.UnfinishedSlot)
 	return result

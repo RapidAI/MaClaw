@@ -10,6 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -2575,31 +2576,46 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
 	if expertID := strings.TrimSpace(req.ExpertID); expertID != "" {
-		// Expert tab: session is keyed by expert id, not by project path, so the
-		// persona/history stay isolated per expert regardless of any projectPath.
-		userID = expertSessionUserID(expertID)
-		// A restored LaTeX expert tab can send before its task directory is on
-		// the tab. Tools would inherit the desktop while the editor reads the
-		// task workspace. Recover the durable task and bind that directory.
+		// A send that omitted the task path would otherwise run in the desktop
+		// default (~/.maclaw/workspace) even when the task record names the
+		// directory the user chose.
 		if projectPath == "" {
-			if resolved := a.resolveLatexExpertProjectPath(expertID); resolved != "" {
+			if resolved := a.liveExpertTaskPath(expertID); resolved != "" {
+				projectPath = resolved
+				req.ProjectPath = resolved
+				log.Printf("[AI assistant] expert recovered task path request_id=%s expert=%s project_path=%q", requestID, expertID, projectPath)
+			} else if resolved := a.resolveLatexExpertProjectPath(expertID); resolved != "" {
 				projectPath = resolved
 				req.ProjectPath = resolved
 				log.Printf("[AI assistant] latex expert recovered task path request_id=%s project_path=%q", requestID, projectPath)
 			}
 		}
+		// Each expert task owns its agent session. A new task must not run on,
+		// or cancel, the session of a task that is still working.
+		userID = expertTaskSessionUserID(expertID, projectPath)
 	}
-	// A scheduled expert launch can allocate a new task while the previous
-	// turn still owns the shared session (KeepExpertSession). No creation-time
-	// reset runs in that case, so release the previous task's directory
-	// binding before this tab restores it for the new task.
+	// The same task key can be sent again after its workspace changed. Drop a
+	// binding that still points at a different task before this send restores one.
 	if expertID := expertIDFromUserID(userID); expertID != "" {
 		a.releaseStaleExpertTaskWorkspace(userID, projectPath, req.EventScopeID)
 	}
 	// event_scope_id is the concrete UI tab. Restore its optional private
 	// directory before any downstream tool/prompt/workflow resolution.
+	// An expert task must not inherit the directory the shared tab still has
+	// from a different task of the same expert.
 	if tabID := strings.TrimSpace(req.EventScopeID); tabID != "" {
-		a.bindAssistantTabWorkingDir(tabID, userID)
+		if projectPathFromExpertTaskUserID(userID) != "" {
+			// Apply the tab directory before this send becomes the tab owner.
+			// A directory published by another task of the same expert must not
+			// be copied onto this one.
+			a.applyExpertTabWorkingDir(tabID, userID, projectPath)
+			a.expertTabSessionOwners.Store(tabID, userID)
+		} else {
+			if expertIDFromUserID(userID) != "" {
+				a.expertTabSessionOwners.Store(tabID, userID)
+			}
+			a.bindAssistantTabWorkingDir(tabID, userID)
+		}
 	}
 	if projectPath != "" {
 		// Resolve the execution directory the same way the other project-task
@@ -2610,6 +2626,12 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		// so a "continue" on a task with a configured worktree never created
 		// or entered that directory.
 		executionProjectPath := a.BoundWorkingDirForOwner(userID)
+		// A stored process default is not a directory the user chose for this
+		// expert. Prefer the task record so the folder is created there; the
+		// bind below points the session at the same place.
+		if strings.TrimSpace(req.ExpertID) != "" && isProcessDefaultWorkspacePath(executionProjectPath) {
+			executionProjectPath = ""
+		}
 		if executionProjectPath == "" {
 			executionProjectPath = a.recentTaskExecutionProjectPath(projectPath)
 		}
@@ -2648,6 +2670,9 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		return nil, fmt.Errorf("AI assistant backend is unavailable")
 	}
 	log.Printf("[AI assistant] enqueue request request_id=%s session_key=%q project_path=%q text_len=%d", requestID, userID, projectPath, len(text))
+	if expertID := strings.TrimSpace(req.ExpertID); expertID != "" && projectPath != "" {
+		a.adoptSharedExpertMemory(hubClient.ensureIMHandler(), expertID, projectPath)
+	}
 
 	// All messages run in a background goroutine so the Wails IPC channel is
 	// freed immediately. The final response is pushed via the
@@ -3060,16 +3085,12 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	}
 	codingWorkbench := a.isDesktopCodingWorkbenchSession(userID, projectPath)
 	onProgress = suppressCodingWorkbenchStatusProgress(onProgress, codingWorkbench)
-	status := func(english, chinese string) {
-		if strings.HasPrefix(strings.ToLower(msgLang), "en") {
-			onProgress("[Status] " + english)
-			return
-		}
-		onProgress("[Status] " + chinese)
+	status := func(key string) {
+		onProgress(imThinkingStatus(msgLang, key))
 	}
 	if !codingWorkbench {
-		status("Task received", "已接收任务")
-		status("Preparing the execution path", "正在准备执行路径")
+		status(i18n.MsgStatusTaskReceivedShort)
+		status(i18n.MsgStatusPreparingPath)
 	}
 	streamDeltaNormalizer := &aiAssistantStreamDeltaNormalizer{}
 	onToken := func(delta string) {
@@ -3104,12 +3125,12 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	imHandlerStartedAt := time.Now()
 	handler := hubClient.ensureIMHandler()
 	ensureIMHandlerElapsed = time.Since(imHandlerStartedAt)
-	status("Execution environment is ready", "执行环境已就绪")
+	status(i18n.MsgStatusEnvReady)
 	if shouldReconcileAIAssistantClientHistory(req, msg.UserID) {
-		status("Synchronizing conversation context", "正在同步会话上下文")
+		status(i18n.MsgStatusSyncContext)
 		a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
 	}
-	status("Analyzing the task and starting work", "正在分析任务并开始处理")
+	status(i18n.MsgStatusAnalyzing)
 	agentLoopStartedAt := time.Now()
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	agentLoopElapsed = time.Since(agentLoopStartedAt)
@@ -3711,10 +3732,14 @@ func normalizeAIAssistantSessionUserID(userID string) (string, error) {
 	if trimmed == desktopUserID {
 		return desktopUserID, nil
 	}
-	// Expert session keys ("desktop-user:expert:<id>") pass through as-is;
-	// they must be handled before the project-path branch, which rejects them
-	// (projectPathFromSessionOwnerID deliberately returns "" for expert ids).
+	// Expert keys are handled before the project-path branch, which rejects
+	// them (projectPathFromSessionOwnerID returns "" for an expert id). A
+	// per-task key keeps its path; collapsing it to the expert id would put
+	// every task of that expert back on one session.
 	if id := expertIDFromUserID(trimmed); id != "" {
+		if path := projectPathFromExpertTaskUserID(trimmed); path != "" {
+			return expertTaskSessionUserID(id, path), nil
+		}
 		return expertSessionUserID(id), nil
 	}
 	if isACPAssistantSessionUserID(trimmed) {

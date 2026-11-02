@@ -5,6 +5,7 @@ import type { LLMProvider } from "./LLMConfigPanelShared";
 import { NONE_PROVIDER, HUB_SERVICE_PROVIDER_NAME } from "./LLMConfigPanelShared";
 import { CreateMobileLLMDesktopQRSession, FetchProviderModels } from "../../../wailsjs/go/main/App";
 import { panelText } from "../../i18n/mnPanel";
+import { presetProviderDisplayName } from "./presetProviderLabel";
 
 interface MobileQRCodeDialogProps {
     open: boolean;
@@ -218,7 +219,7 @@ export function MobileQRCodeDialog({ open, onClose, providers, currentName, lang
                                         border: `1px solid ${safeIdx === i ? colors.primary : colors.border}`,
                                         borderRadius: 4, transition: "all 0.15s",
                                     }}>
-                                        {p.name}
+                                        {presetProviderDisplayName(lang, p.name)}
                                     </button>
                                 ))}
                             </div>

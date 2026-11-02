@@ -132,6 +132,21 @@ func TestMongolianProgressIsCyrillicAndTUIStaysEnglish(t *testing.T) {
 	if Tf(MsgMilestoneDoneSteps, "mn", 3) != "3 алхам дууссан" {
 		t.Fatalf("formatted mn = %q", Tf(MsgMilestoneDoneSteps, "mn", 3))
 	}
+	elapsed := Tf(MsgMilestoneProcessingElapsed, "mn", Tf(MsgDurationMinutesSeconds, "mn", 1, 30))
+	if strings.ContainsAny(elapsed, "分秒") || !strings.Contains(elapsed, "1 мин 30 сек") {
+		t.Fatalf("mn elapsed duration = %q", elapsed)
+	}
+	for _, key := range []string{
+		MsgStatusFullPath,
+		MsgStatusPrepareModel,
+		MsgStatusModelWaiting,
+		MsgDurationMinutesSeconds,
+	} {
+		got := T(key, "mn")
+		if got == key || strings.ContainsAny(got, "分秒正在") {
+			t.Fatalf("mn %s = %q", key, got)
+		}
+	}
 }
 
 func TestAllKeysPresent(t *testing.T) {

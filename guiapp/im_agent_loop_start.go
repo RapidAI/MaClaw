@@ -55,13 +55,17 @@ type agentLoopStartState struct {
 	Conversation                  []interface{}
 	History                       []agent.ConversationEntry
 	UserContent                   interface{}
-	TaskAnchor                    *taskIdentityAnchor
-	ConversationStartedAt         time.Time
-	EffectiveMax                  int
-	ChatFinalizeGrace             int
-	SemanticSurface               *semanticCallSurface
-	HostReject                    *IMAgentResponse
-	Cleanup                       func()
+	// RouteAttachments is the attachment list the turn was classified with,
+	// including images staged from the desktop picker. A retry that follows
+	// a saved-model change has to see this same list.
+	RouteAttachments      []MessageAttachment
+	TaskAnchor            *taskIdentityAnchor
+	ConversationStartedAt time.Time
+	EffectiveMax          int
+	ChatFinalizeGrace     int
+	SemanticSurface       *semanticCallSurface
+	HostReject            *IMAgentResponse
+	Cleanup               func()
 }
 
 func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions) agentLoopStartState {
@@ -139,16 +143,17 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		semanticHandled = true
 		log.Printf("[pet-companion] chat turn without tools user=%q", opts.UserID)
 	} else if fileCompanionTurnWithoutTools(opts.UserID, opts.Platform) {
-		// The companion's closed surface: read-only document tools bound to
-		// the open file, or nothing when the file type needs no tools. The
-		// legacy router and the semantic planner never run for this owner.
+		// One closed surface for every open document. PDF page tools explain
+		// themselves when the file is not a PDF. A share discussion has already
+		// dropped the writers. The legacy router and the semantic planner
+		// never run for this owner.
 		semanticHandled = true
 		tools = h.fileCompanionClosedSurfaceTools(opts.UserID)
-		// A paper turn already gets its PDF from the host, which writes the
-		// model's own answer. The writer is not offered there: one click must
-		// not leave two PDFs behind.
+		// A paper turn already gets its PDF from the host. The writer is not
+		// offered, and neither is web lookup: the interpretation stays inside
+		// the document and only suggests search terms.
 		if fileCompanionPaperTurnText(opts.UserText) {
-			tools = fileCompanionWithoutGenerateTool(tools)
+			tools = fileCompanionPaperSurfaceTools(tools)
 		}
 		baseTools = tools
 		log.Printf("[file-companion] closed tool surface tools=%d user=%q", len(tools), opts.UserID)
@@ -382,6 +387,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		Conversation:                  conversationStart.Conversation,
 		History:                       conversationStart.History,
 		UserContent:                   conversationStart.UserContent,
+		RouteAttachments:              attachments,
 		TaskAnchor:                    conversationStart.TaskAnchor,
 		ConversationStartedAt:         conversationStart.StartedAt,
 		EffectiveMax:                  limits.EffectiveMax,

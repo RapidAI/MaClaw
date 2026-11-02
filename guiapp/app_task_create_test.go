@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -333,6 +334,55 @@ func TestCreateTaskUnifiedLatexExpertStartsAFreshPaper(t *testing.T) {
 	}
 	if listed != 2 {
 		t.Fatalf("latex expert tasks listed %d times, want both papers; rows=%s", listed, strings.Join(listedDump, " || "))
+	}
+}
+
+func TestCreateFreshExpertTaskLeavesThePreviousTaskTurnRunning(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	mem := agent.NewConversationMemory()
+	t.Cleanup(mem.Stop)
+	handler := &IMMessageHandler{memory: mem}
+	app.imHandler = handler
+
+	first, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write the first paper",
+		ExpertID:   builtinLatexExpertID,
+		ExpertName: "LaTeX",
+	})
+	if err != nil {
+		t.Fatalf("first CreateTaskUnified: %v", err)
+	}
+	taskKey := expertTaskSessionUserID(builtinLatexExpertID, first.ProjectPath)
+	shared := expertSessionUserID(builtinLatexExpertID)
+	taskLoop := NewLoopContext("task-a", 4, nil)
+	sharedLoop := NewLoopContext("shared", 4, nil)
+	handler.sessionLoops.Store(taskKey, &sessionLoopState{loopCtx: taskLoop})
+	handler.sessionLoops.Store(shared, &sessionLoopState{loopCtx: sharedLoop})
+	mem.Save(taskKey, []agent.ConversationEntry{{Role: "user", Content: "still writing the book"}})
+	mem.Save(shared, []agent.ConversationEntry{{Role: "user", Content: "legacy shared transcript"}})
+
+	second, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write another paper",
+		ExpertID:   builtinLatexExpertID,
+		ExpertName: "LaTeX",
+	})
+	if err != nil {
+		t.Fatalf("second CreateTaskUnified: %v", err)
+	}
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("second task = %q, want a new directory (first %q)", second.ProjectPath, first.ProjectPath)
+	}
+	if taskLoop.IsCancelled() {
+		t.Fatal("creating another expert task cancelled the previous task's turn")
+	}
+	if sharedLoop.IsCancelled() {
+		t.Fatal("creating another expert task cancelled the shared expert session")
+	}
+	if got := mem.Load(taskKey); len(got) != 1 {
+		t.Fatalf("previous task memory = %#v", got)
+	}
+	if got := mem.Load(shared); len(got) != 1 {
+		t.Fatalf("shared expert memory = %#v", got)
 	}
 }
 

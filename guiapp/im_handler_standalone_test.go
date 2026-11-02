@@ -420,6 +420,82 @@ func TestTaskContextContinueBindsUnfinishedSlotWithoutPrompt(t *testing.T) {
 	}
 }
 
+// A pending recovery card stays on screen until the user clicks a button or
+// types. The typed message is a classifier decision: wording such as "继续"
+// does not resume, and a continuation that never uses that word still does.
+func TestTypedRecoveryChoiceFollowsClassifierNotWording(t *testing.T) {
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "把演讲稿做成 PPT"},
+		{Role: "assistant", Content: "正在生成幻灯片"},
+	}
+	newHandler := func(t *testing.T, verdict string) *IMMessageHandler {
+		t.Helper()
+		h := NewIMMessageHandlerStandalone(StandaloneConfig{
+			LLMConfigFunc: func() corelib.MaclawLLMConfig {
+				return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test-model", Protocol: "openai"}
+			},
+		})
+		t.Cleanup(h.memory.Stop)
+		h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+			MaxArchivedTasks:         10,
+			ActiveConversationWindow: -time.Second,
+			LLMTimeout:               2 * time.Second,
+		}, staticTaskClassifier(verdict))
+		return h
+	}
+	newSlot := func(t *testing.T, userID, slotID string) *agent.UnfinishedTaskSlot {
+		t.Helper()
+		return &agent.UnfinishedTaskSlot{
+			SlotID:      slotID,
+			UserID:      userID,
+			ProjectPath: filepath.Join(t.TempDir(), "recorded-default"),
+			Status:      agent.UnfinishedTaskSlotStatusInterrupted,
+			Source:      agent.UnfinishedTaskSlotSourceInFlightRecovery,
+			LastTask:    "把演讲稿做成 PPT",
+		}
+	}
+
+	t.Run("continue", func(t *testing.T) {
+		userID := expertSessionUserID("builtin-pptx-maker")
+		h := newHandler(t, "continue")
+		slot := newSlot(t, userID, "slot-typed-continue")
+		h.memory.UpsertUnfinishedSlot(userID, slot)
+		held := h.memory.GetUnfinishedSlot(userID)
+		msg := IMUserMessage{UserID: userID, Text: "把剩下的页补上"}
+		_, fresh, _ := h.applyUnifiedTaskContextDecision(msg, msg.Text, explicitTaskSlotDecision{}, history, &held, "", false, false, false)
+		if fresh || held != nil {
+			t.Fatalf("classifier continue did not take over the card: fresh=%v held=%#v", fresh, held)
+		}
+		resp, handled := h.maybeReturnUnfinishedSlotHint(msg, msg.Text, fresh, explicitTaskSlotDecision{}, held)
+		if handled || resp != nil {
+			t.Fatalf("typed continuation was swallowed by the card: handled=%v resp=%#v", handled, resp)
+		}
+		if active := h.memory.ActiveUnfinishedSlot(userID); active == nil || active.Status != agent.UnfinishedTaskSlotStatusResumed {
+			t.Fatalf("typed continuation was not bound: %#v", active)
+		}
+	})
+
+	t.Run("new", func(t *testing.T) {
+		userID := expertSessionUserID("builtin-pptx-maker")
+		h := newHandler(t, "new")
+		slot := newSlot(t, userID, "slot-typed-new")
+		h.memory.UpsertUnfinishedSlot(userID, slot)
+		held := h.memory.GetUnfinishedSlot(userID)
+		msg := IMUserMessage{UserID: userID, Text: "继续"}
+		_, fresh, _ := h.applyUnifiedTaskContextDecision(msg, msg.Text, explicitTaskSlotDecision{}, history, &held, "", false, false, false)
+		if !fresh {
+			t.Fatal("classifier new was ignored because the text said 继续")
+		}
+		if got := h.memory.GetUnfinishedSlot(userID); got != nil {
+			t.Fatalf("new task left the recovery slot pending: %#v", got)
+		}
+		resp, handled := h.maybeReturnUnfinishedSlotHint(msg, msg.Text, fresh, explicitTaskSlotDecision{}, held)
+		if handled || resp != nil {
+			t.Fatalf("a classified new task was turned back into the recovery card: handled=%v resp=%#v", handled, resp)
+		}
+	})
+}
+
 func TestTaskContextContinueDoesNotAutoBindSessionExitSlot(t *testing.T) {
 	userID := "u-semantic-session-exit"
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{

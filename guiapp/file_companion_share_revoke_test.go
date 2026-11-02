@@ -685,4 +685,18 @@ func TestListFileCompanionLibraryReattachesARememberedHostFile(t *testing.T) {
 	if fileCompanionDedupeKey(got) != fileCompanionDedupeKey(source) {
 		t.Fatalf("path = %s, want %s", got, source)
 	}
+	for _, item := range listed.Items {
+		if item.Source == "cloud" && item.Token == token && item.Revision != 1 {
+			t.Fatalf("reattached host file stored revision %d", item.Revision)
+		}
+	}
+	again, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range again.Items {
+		if item.Source == "cloud" && item.Token == token && item.Revision != 1 {
+			t.Fatalf("reattached host file revision changed to %d", item.Revision)
+		}
+	}
 }

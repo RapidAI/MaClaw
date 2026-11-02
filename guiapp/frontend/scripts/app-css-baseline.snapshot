@@ -26950,8 +26950,8 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .acb-brand-version { font-size: 30px; }
 .acb-brand-gen { font-size: 21px; font-weight: 650; color: #7a2330; letter-spacing: 0.04em; }
 
-/* Warm-up splash: staged stepper + progress bar + live status line. All
-   colors come from theme tokens so light/dark schemes restyle it for free. */
+/* Warm-up splash: staged stepper + live status line. All colors come from
+   theme tokens so light/dark schemes restyle it for free. */
 .acb-warmup { gap: 28px; }
 .acb-warmup-panel {
     width: min(380px, 80%);
@@ -26960,36 +26960,10 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
     align-items: stretch;
     gap: 16px;
 }
-.acb-warmup-progress {
-    position: relative;
-    height: 4px;
-    border-radius: var(--radius-pill);
-    background: color-mix(in srgb, var(--theme-text-muted) 16%, var(--theme-surface));
-    overflow: hidden;
-}
-.acb-warmup-progress__fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    border-radius: inherit;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--theme-primary) 70%, transparent), var(--theme-primary));
-    transition: width 520ms var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
-}
-.acb-warmup-progress__fill::after {
-    /* Sheen sweep keeps the bar alive while real progress is unknown (connecting). */
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(100deg, transparent 25%, rgba(255, 255, 255, 0.5) 50%, transparent 75%);
-    transform: translateX(-100%);
-    animation: acb-warmup-sheen 1.8s ease-in-out infinite;
-}
-@keyframes acb-warmup-sheen { to { transform: translateX(100%); } }
-
 .acb-warmup-steps {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 6px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -27003,7 +26977,8 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
     align-items: center;
     gap: 8px;
 }
-/* Connector into a step; filled once that step is reached (done or active).
+/* Connector into a step. It fills only after the previous step is done,
+   so the line reaches the active dot and stops there.
    top: 7.5px centers the 2px line on the 17px dot (8.5px center). */
 .acb-warmup-step + .acb-warmup-step::before {
     content: "";
@@ -27015,8 +26990,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
     border-radius: 1px;
     background: color-mix(in srgb, var(--theme-text-muted) 20%, var(--theme-surface));
 }
-.acb-warmup-step--done + .acb-warmup-step::before,
-.acb-warmup-step--active + .acb-warmup-step::before {
+.acb-warmup-step--done + .acb-warmup-step::before {
     background: color-mix(in srgb, var(--theme-primary) 55%, transparent);
 }
 .acb-warmup-step__dot {
@@ -27041,10 +27015,15 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
     border-color: var(--theme-primary);
 }
 .acb-warmup-step__label {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
     font-size: 12px;
     line-height: 1.3;
     color: var(--theme-text-muted);
+    text-align: center;
     white-space: nowrap;
+    text-overflow: ellipsis;
     transition: color var(--transition-normal);
 }
 .acb-warmup-step--active .acb-warmup-step__label {
@@ -27064,7 +27043,6 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
     50% { box-shadow: 0 0 0 6px var(--theme-primary-soft); }
 }
 @media (prefers-reduced-motion: reduce) {
-    .acb-warmup-progress__fill::after { animation: none; opacity: 0; }
     .acb-warmup-step--active .acb-warmup-step__dot { animation: none; }
     .acb-brand { animation: none; }
 }

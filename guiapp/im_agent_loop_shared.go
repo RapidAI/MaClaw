@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -358,6 +359,12 @@ func (h *IMMessageHandler) executeSharedTurn(
 		loopID = fmt.Sprintf("shared-%d", time.Now().UnixNano())
 		log.Printf("[InFlightTask] generated missing shared loop id user=%q loop=%q", userID, loopID)
 	}
+	// Capture this turn's generation before any work can replace the loop. The
+	// evidence finalizer must never consume a newer turn's accumulated state.
+	turnGeneration := uint64(0)
+	if ctx != nil {
+		turnGeneration = ctx.SemanticTurnGeneration()
+	}
 	// Recovery identity is per turn. loopID stays the context kind for logs
 	// and event scope; reusing it as the checkpoint run id made every chat
 	// turn share in_flight_run:chat.
@@ -393,7 +400,19 @@ func (h *IMMessageHandler) executeSharedTurn(
 			result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
 			log.Printf("[agent-loop] shared panic owner=%q request_id=%q loop=%q panic=%v\n%s", userID, requestID, loopID, r, debug.Stack())
 		}
-		status, _ := classifyIMAgentResponseOutcome(result)
+		status, outcomeErr := classifyIMAgentResponseOutcome(result)
+		// Direct main-agent coding turns can contribute verified recall
+		// outcomes without entering the codingruntime writer ledger. A nil
+		// response is not a successful turn even though the classifier defaults
+		// it to success.
+		evidenceStatus := status
+		finalText := ""
+		if result == nil {
+			evidenceStatus = "error"
+		} else {
+			finalText = result.Text
+		}
+		h.finalizeMainAgentCodingTurn(ctx, evidenceStatus, turnGeneration, outcomeErr, userText, finalText)
 		terminalEvent := agentruntime.EventRunCompleted
 		if status == "cancelled" {
 			terminalEvent = agentruntime.EventRunCancelled
@@ -503,6 +522,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		loopCtx:           ctx,
 		userID:            userID,
 		userText:          userText,
+		routeAttachments:  startState.RouteAttachments,
 		checkpointHistory: append(append([]agent.ConversationEntry(nil), history...), agent.ConversationEntry{Role: "user", Content: userContent}),
 		checkpointRunID:   recoveryRunID,
 		commitTaskKey:     commitTaskKey,
@@ -776,7 +796,17 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// before the projection, so a turn the host delivered was still recorded as
 	// an unfinished external effect and the next message was refused as an
 	// uncertain send.
-	if cb.checkpointCommitted && sharedLoopTurnSettled(loopResult, resp, cb) {
+	// A mailbox send or delete whose result this turn is already known never
+	// left an uncertain server mutation. required_effect_unsettled still means
+	// the planned send did not complete, but the pre-tool marker would
+	// otherwise refuse the next message. Earlier turns' mailbox results do
+	// not settle this turn. im_message, send_file, and send_to_im stay on the
+	// review path.
+	turnDelta := []agent.ConversationEntry(nil)
+	if len(outHistory) > len(history) {
+		turnDelta = outHistory[len(history):]
+	}
+	if cb.checkpointCommitted && (sharedLoopTurnSettled(loopResult, resp, cb) || sharedLoopMayCompleteMailboxMarker(loopResult, turnDelta, outHistory)) {
 		if err := h.memory.CompleteInFlightCheckpointForRun(userID, recoveryRunID); err != nil {
 			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
 		}
@@ -981,7 +1011,14 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 		setSharedLoopArtifactSource(resp, imResponseSourceScreenshot)
 	}
 	finalizeHostOwnedFileResponse(resp, cb)
+	// The attached file is the execution record the plan was missing. Record
+	// it before the recovery decision, which reads the same plan.
+	cb.settleHostProducedPlanEffects(resp)
 	cb.settleLocalChatDelivery(resp, localFileDelivered)
+	// required_effect_unsettled is stale only once that record discharged the
+	// plan. Clearing it beside a file that left other required work open made
+	// the reply look finished while the recovery marker stayed behind.
+	cb.clearRecoveredRequiredEffect(resp)
 }
 
 // materializeSemanticDeliveryFileForLocalChat writes a desktop/TUI PDF (or
@@ -1018,6 +1055,76 @@ func materializeSemanticDeliveryFileForLocalChat(resp *IMAgentResponse, cb *shar
 		resp.FileMaterializeNanos = time.Since(started).Nanoseconds()
 	}
 	return true
+}
+
+// settleHostProducedPlanEffects writes the host's attached file back onto
+// the required plan selections that file discharges and that never started.
+// A skill or other local producer can materialize the document without going
+// through the semantic adapter, and the projection then attaches it. Until
+// that attachment is an execution record, RequiredEffectUnsettled stays true,
+// the in-flight checkpoint is kept, and the next message is recovered as an
+// interrupted task.
+//
+// A selection that already has a record keeps it. Failed and unknown are
+// outcomes, not gaps a later file may overwrite. Optional repeats and
+// companion offers are not closed here, so they cannot supersede a failed
+// required attempt. A kept failure on the response is not acceptance.
+func (c *sharedAgentLoopCallbacks) settleHostProducedPlanEffects(resp *IMAgentResponse) {
+	if c == nil || c.semanticSurface == nil || resp == nil {
+		return
+	}
+	if keepVisibleErrorAfterHostFileAttach(resp.Error) {
+		return
+	}
+	names := hostAttachedDocumentNames(resp)
+	if len(names) == 0 {
+		return
+	}
+	optional, optionalKnown := semanticSurfaceOptionalNeeds(c.semanticSurface)
+	var settled []string
+	for _, selection := range c.semanticSurface.plan.Selections {
+		if c.semanticSurface.completed[selection.ID] {
+			continue
+		}
+		if !hopSelectionRequired(selection, optional, optionalKnown) {
+			continue
+		}
+		if !hostAttachedFilesSatisfySelection(names, selection) {
+			continue
+		}
+		if !c.selectionRecordAbsent(selection.ID) {
+			continue
+		}
+		if c.semanticSurface.completed == nil {
+			c.semanticSurface.completed = map[string]bool{}
+		}
+		c.semanticSurface.completed[selection.ID] = true
+		settled = append(settled, selection.ID)
+	}
+	if len(settled) > 0 {
+		log.Printf("[semantic] host artifact settled plan selections %s", strings.Join(settled, ","))
+	}
+}
+
+// selectionRecordAbsent reports that this selection has no execution record.
+// A cached hop state is enough. A missing executor means this surface never
+// stored one. Any other store error is not absence: settling over it would
+// mark a step done while its real record could not be read.
+func (c *sharedAgentLoopCallbacks) selectionRecordAbsent(id string) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	if evidence, ok := c.semanticSurface.hopEvidence[hopEvidenceKey(c.semanticSurface, id)]; ok && evidence.State != "" {
+		return false
+	}
+	if c.semanticSurface.executor == nil {
+		return true
+	}
+	_, err := c.semanticSurface.executor.Execution(c.semanticSurface.scope, id)
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, tool.ErrPlanExecutionNotFound)
 }
 
 // settleLocalChatDelivery records the receipt for a delivery whose channel is
@@ -1141,25 +1248,22 @@ func (c *sharedAgentLoopCallbacks) flushHostOwnedLiveDataVisual(resp *IMAgentRes
 	}
 }
 
-// finalizeHostOwnedFileResponse is the last attach step. The artifact stays on
-// the response. A stale error that is not part of the turn's outcome is cleared
+// finalizeHostOwnedFileResponse projects the artifact that is already on the
+// response. A stale error that is not part of the turn's outcome is cleared
 // so the client can keep that artifact. A terminal class such as no_progress
-// stays, because the keep-list names it. The 已生成 receipt is the fallback
-// only when this turn published that PDF and the projected answer is empty. A
-// delivery of an already-produced document keeps the delivery outcome and the
-// original file name.
+// stays, because the keep-list names it. required_effect_unsettled names the
+// plan, so it stays until settlement proves the plan is quiet. The 已生成
+// receipt is the fallback only when this turn published that PDF and the
+// projected answer is empty. A delivery of an already-produced document keeps
+// the delivery outcome and the original file name.
 //
-// Every projected artifact kind counts, not only files: a delivered image or
-// voice clip is the same host-owned attach, and leaving the loop error beside
-// it would record a finished turn as an unfinished external effect.
+// Every projected artifact kind counts, not only a single local path: extra
+// paths, a delivered image, or a voice clip are the same host-owned attach.
 func finalizeHostOwnedFileResponse(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) {
-	if resp == nil {
+	if resp == nil || !hostResponseCarriesProjectedArtifact(resp) {
 		return
 	}
-	hasFile := strings.TrimSpace(resp.LocalFilePath) != "" || strings.TrimSpace(resp.FileData) != ""
-	if !hasFile && strings.TrimSpace(resp.ImageKey) == "" && strings.TrimSpace(resp.VoiceData) == "" {
-		return
-	}
+	hasFile := strings.TrimSpace(resp.LocalFilePath) != "" || strings.TrimSpace(resp.FileData) != "" || hostResponseHasLocalPaths(resp)
 	if hasFile {
 		// The continuation note is the reply. A published PDF still attaches; its
 		// receipt must not replace the note.
@@ -1198,8 +1302,49 @@ func finalizeHostOwnedFileResponse(resp *IMAgentResponse, cb *sharedAgentLoopCal
 	if !shouldClearStaleErrorAfterHostFileAttach(resp.Error) {
 		return
 	}
+	// This error names the plan, not the attachment. It is cleared after
+	// settlement, and only when the plan no longer has required work open.
+	if strings.TrimSpace(resp.Error) == "required_effect_unsettled" {
+		return
+	}
 	log.Printf("[semantic] host artifact attach recovered turn; clearing stale error %q", resp.Error)
 	resp.Error = ""
+}
+
+// clearRecoveredRequiredEffect drops required_effect_unsettled after the
+// attached artifact has discharged the plan. A file that does not cover the
+// remaining required work leaves both the error and the recovery marker.
+func (c *sharedAgentLoopCallbacks) clearRecoveredRequiredEffect(resp *IMAgentResponse) {
+	if resp == nil || strings.TrimSpace(resp.Error) != "required_effect_unsettled" {
+		return
+	}
+	if c == nil || !hostResponseCarriesProjectedArtifact(resp) || c.RequiredEffectUnsettled() {
+		return
+	}
+	log.Printf("[semantic] host artifact attach recovered turn; clearing stale error %q", resp.Error)
+	resp.Error = ""
+}
+
+func hostResponseCarriesProjectedArtifact(resp *IMAgentResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if strings.TrimSpace(resp.LocalFilePath) != "" || strings.TrimSpace(resp.FileData) != "" || hostResponseHasLocalPaths(resp) {
+		return true
+	}
+	return strings.TrimSpace(resp.ImageKey) != "" || strings.TrimSpace(resp.VoiceData) != ""
+}
+
+func hostResponseHasLocalPaths(resp *IMAgentResponse) bool {
+	if resp == nil {
+		return false
+	}
+	for _, path := range resp.LocalFilePaths {
+		if strings.TrimSpace(path) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func hostResponseHasPDF(resp *IMAgentResponse) bool {
@@ -1536,6 +1681,10 @@ type sharedAgentLoopCallbacks struct {
 	loopCtx  *LoopContext
 	userID   string
 	userText string
+	// routeAttachments is the list the turn was first routed with, including
+	// images staged from the desktop picker. A retry that follows a saved-model
+	// change uses this same list, so an image is not reclassified as plain text.
+	routeAttachments []MessageAttachment
 	// scheduleAdministerListed is set only when this turn's schedule
 	// administration call succeeded as a list. advanceSemanticToolSurface
 	// consumes it for that capability. A list whose utterance still owes a
@@ -1889,6 +2038,44 @@ func (c *sharedAgentLoopCallbacks) effectivePlatform() string {
 
 func (c *sharedAgentLoopCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.llmCfg
+}
+
+// RefreshLLMSelection implements agent.LLMSelectionRefresh. A retry keeps
+// the model captured at turn start unless the saved selection has changed.
+// Cancelling and sending again already resolves that selection; this makes
+// the in-flight wait do the same, including a companion tab left retrying
+// an unavailable model after the main window switched.
+func (c *sharedAgentLoopCallbacks) RefreshLLMSelection(current corelib.MaclawLLMConfig) (corelib.MaclawLLMConfig, bool) {
+	if c == nil || c.handler == nil || c.handler.app == nil {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	if strings.TrimSpace(c.roleBase.Model) == "" || strings.TrimSpace(c.roleBase.URL) == "" {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	// A failed reread must not fall through to the assistant profile. That
+	// fallback is a different model for a background or computer-use turn,
+	// and the retry would treat the failure as a person switching models.
+	role := agentLoopLLMRole(c.handler, c.loopCtx)
+	base, err := c.handler.app.ResolveMaclawLLMRole(role)
+	if err != nil || strings.TrimSpace(base.Model) == "" || strings.TrimSpace(base.URL) == "" {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	if !agent.LLMSelectionChanged(c.roleBase, base) {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	next, decision := c.handler.applyTurnModelRoute(base, c.userText, c.loopCtx, c.routeAttachments)
+	if strings.TrimSpace(next.Model) == "" || strings.TrimSpace(next.URL) == "" {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	// Remember the new baseline even when routing lands on the same endpoint,
+	// so the rest of this wait does not resolve the profile again.
+	c.roleBase = base
+	if !agent.LLMSelectionChanged(current, next) {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	c.llmCfg = next
+	c.route = decision
+	return next, true
 }
 
 // UsageTracker implements agent.UsageTrackerProvider: feeds genuine tool
@@ -2268,6 +2455,28 @@ func (c *sharedAgentLoopCallbacks) OpenNextRepeatWave(name string) bool {
 		}
 	}
 	return c.openNextRepeatSibling(name)
+}
+
+// IdenticalSuccessIsPoll implements agent.RepeatObservation. A commit
+// capability has already applied these arguments when the receipt matches.
+// Shell, read, search, and desktop control stay polls.
+func (c *sharedAgentLoopCallbacks) IdenticalSuccessIsPoll(name string) bool {
+	if c == nil || c.semanticSurface == nil {
+		return true
+	}
+	name = strings.TrimSpace(name)
+	grant, ok := c.semanticSurface.grants[name]
+	if !ok {
+		grant, ok = c.semanticSurface.retiredGrants[name]
+	}
+	if !ok {
+		return true
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !found {
+		return true
+	}
+	return !tool.CommittedRepeatCapability(selection.FitProof.MatchedCapability)
 }
 
 // storeNextRepeatSibling appends one sibling and keeps the route plan aligned
@@ -3026,13 +3235,13 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	if fileCompanionToolsDisabled(c.userID) {
 		c.semanticSurface = nil
 		c.dropDiscoveredMCPSidecar()
-		// The companion surface is closed by construction: only the read-only
-		// document definitions may reach the wire, always bound to the open
-		// document by the executor rather than by call arguments. Anything
-		// else found on the callback — a rejected legacy provision, a
-		// semantic grant, a forged definition — is dropped here, so a
-		// companion request can never render a tool the executor would
-		// refuse or one that writes.
+		// The companion surface is closed by construction: only its own document
+		// and public-lookup definitions may reach the wire. Anything else
+		// found on the callback — a rejected legacy provision, a semantic
+		// grant, a forged definition — is dropped here, so a companion request
+		// cannot render a tool the executor would refuse. Writers that create
+		// a file stay inside the companion results directory, and a share
+		// discussion never lists them.
 		closed := make([]map[string]interface{}, 0, len(c.tools))
 		for _, tool := range c.tools {
 			fn, _ := tool["function"].(map[string]interface{})
@@ -4292,6 +4501,18 @@ func semanticLiveGrantNameForCapability(surface *semanticCallSurface, capability
 	return tool.LiveGrantNameForCapability(surface.plan, surface.grants, capability)
 }
 
+// openCodeFreeHostResult runs a free-model host tool without the semantic
+// grant. The loop admits these names, then dispatches through
+// ExecuteToolCallWithContext, which would otherwise reject them as
+// selection_not_authorized because the planner never rendered them.
+func (c *sharedAgentLoopCallbacks) openCodeFreeHostResult(name, argsJSON string) (string, bool) {
+	if c == nil || !agent.OpenCodeFreeHostTool(c.GetLLMConfig(), name) {
+		return "", false
+	}
+	argsJSON = confineOpenCodeFreeToolArgs(name, argsJSON, openCodeFreeWorkspace(c.handler, c.userID))
+	return c.executeToolWithoutSemanticSurface(name, argsJSON), true
+}
+
 func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c == nil || c.handler == nil {
 		return "handler unavailable"
@@ -4318,6 +4539,9 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		return c.executeToolWithoutSemanticSurface(name, c.continuationOverlayArgsJSON(name, argsJSON))
 	}
 	if text, handled, _ := c.executeAdmittedSkillHostCall(name, argsJSON); handled {
+		return text
+	}
+	if text, handled := c.openCodeFreeHostResult(name, argsJSON); handled {
 		return text
 	}
 	if c.semanticSurface != nil {
@@ -4406,6 +4630,8 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 			outcome = agent.ToolExecutionOutcomeError
 		}
 		result = agent.ToolExecutionResult{Result: text, Outcome: outcome}
+	} else if text, handled := c.openCodeFreeHostResult(name, argsJSON); handled {
+		result = classifySharedLoopToolResult(name, text)
 	} else if spent, ok := c.rejectManagedInstalledMCPSpent(name); ok {
 		result = spent
 	} else if c != nil && c.semanticSurface != nil && c.installedMCPSidecarCall(name) {
@@ -8434,6 +8660,66 @@ func sharedLoopTurnSettled(result agent.LoopResult, resp *IMAgentResponse, cb *s
 		result.Error == "required_effect_unsettled" &&
 		resp != nil && strings.TrimSpace(resp.Error) == "" &&
 		!cb.RequiredEffectUnsettled()
+}
+
+// sharedLoopMayCompleteMailboxMarker is the mailbox half of turn-end cleanup.
+// This turn's own mailbox results must be known, and the saved history must
+// not still contain a transport-uncertain mailbox delivery. An earlier known
+// refusal does not settle the marker. An earlier confirmation card does not
+// keep it. An earlier transport-uncertain result does.
+func sharedLoopMayCompleteMailboxMarker(result agent.LoopResult, turnDelta, history []agent.ConversationEntry) bool {
+	if !mailboxRequiredSendResolvedLocally(result, turnDelta) {
+		return false
+	}
+	return !mailboxUncertainMutationInHistory(history)
+}
+
+// mailboxUncertainMutationInHistory reports a mailbox_send or mailbox_delete
+// result that may already have reached the server. A confirmation card is
+// not that class.
+func mailboxUncertainMutationInHistory(entries []agent.ConversationEntry) bool {
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(entry.ToolName)) {
+		case "mailbox_send", "mailbox_delete":
+			if mailbox.ExternalMutationUncertain(contentString(entry.Content)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mailboxRequiredSendResolvedLocally reports a required-effect stop whose
+// mailbox_send and mailbox_delete results in this turn are all known.
+// history is this turn's delta. A known refusal from an earlier turn does not
+// settle a marker this turn still holds. The plan still failed, but nothing
+// new was left in an unknown server state, so the in-flight marker must not
+// become an interrupted review slot. A missing mailbox result, an uncertain
+// result, an open confirmation, or any im_message / send_file / send_to_im
+// result keeps the marker.
+func mailboxRequiredSendResolvedLocally(result agent.LoopResult, history []agent.ConversationEntry) bool {
+	if result.AskUser != nil || result.RecordAudio != nil || result.Error != "required_effect_unsettled" {
+		return false
+	}
+	saw := false
+	for _, entry := range history {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(entry.ToolName)) {
+		case "im_message", "send_file", "send_to_im":
+			return false
+		case "mailbox_send", "mailbox_delete":
+			saw = true
+			if !mailbox.ExternalMutationKnown(contentString(entry.Content)) {
+				return false
+			}
+		}
+	}
+	return saw
 }
 
 // interruptedSharedLoopResultResponse keeps the UI outcome aligned with the

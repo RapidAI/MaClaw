@@ -157,6 +157,42 @@ func (t *AgentProgressTracker) Buffer() *MilestoneBuffer {
 	return t.buffer
 }
 
+// ProgressSummary is the current clock line in this tracker's UI language.
+// The buffer's own summary defaults to Chinese; a status reply has to use
+// the language the heartbeat already used.
+func (t *AgentProgressTracker) ProgressSummary() string {
+	if t == nil || t.buffer == nil {
+		return ""
+	}
+	return t.buffer.ProgressSummaryLang(t.uiLang())
+}
+
+// CompletedOutputSummary lists finished steps in this tracker's UI language.
+func (t *AgentProgressTracker) CompletedOutputSummary() string {
+	if t == nil || t.buffer == nil {
+		return ""
+	}
+	return t.buffer.CompletedOutputSummaryLang(t.uiLang())
+}
+
+// UILang is the language used for this tracker's clock and step summaries.
+func (t *AgentProgressTracker) UILang() string {
+	return t.uiLang()
+}
+
+func (t *AgentProgressTracker) uiLang() string {
+	if t == nil {
+		return "zh"
+	}
+	t.mu.Lock()
+	lang := t.lang
+	t.mu.Unlock()
+	if strings.TrimSpace(lang) == "" {
+		return "zh"
+	}
+	return lang
+}
+
 // Stop flushes any pending milestones and stops the background ticker.
 // Safe to call multiple times.
 func (t *AgentProgressTracker) Stop() {

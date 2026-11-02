@@ -247,25 +247,6 @@ func (h *IMMessageHandler) storeSemanticSessionResidue(key string, residue seman
 	}
 }
 
-// dropSemanticResidueCeiling removes one carried capability count. The host
-// calls it when this turn authorizes a fresh delivery: the previous turn's
-// spent count belongs to that send, not to this one, and
-// clampNeedsToResidueRemaining would otherwise delete the new need.
-func (c *LoopContext) dropSemanticResidueCeiling(capability string) {
-	if c == nil || strings.TrimSpace(capability) == "" {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.semanticResidueRemaining == nil {
-		return
-	}
-	delete(c.semanticResidueRemaining, strings.TrimSpace(capability))
-	if len(c.semanticResidueRemaining) == 0 {
-		c.semanticResidueRemaining = nil
-	}
-}
-
 // resetSemanticTurnLocalState drops residue bookkeeping that belongs to one
 // inbound turn. A reused LoopContext otherwise keeps a greeting closure or a
 // spent ceiling, and the next message cannot plan tools.
@@ -1271,22 +1252,42 @@ func semanticResidueRemainingForFollowUp(remaining map[string]int, planned inten
 	return out
 }
 
-// semanticResidueRenewOpenLookup drops a spent evidence ceiling, and a spent
-// document capability only when this residue still carries it. A zero left
-// by some other family stays spent, including a stale file-write ceiling
-// that baseline expansion would otherwise treat as unlimited.
-func semanticResidueRenewOpenLookup(remaining map[string]int, needs []tool.CapabilityNeed) map[string]int {
-	keys := []string{
-		"information.search.web",
-		string(tool.CapabilityInformationFetchWeb),
-	}
-	seen := map[string]bool{
-		"information.search.web":                   true,
-		string(tool.CapabilityInformationFetchWeb): true,
+// semanticResidueRenewal names which parts of the open task get a new
+// per-turn budget on this turn. They are separate because a turn can do one
+// without the others: a pure lookup gathers evidence, a render builds the
+// pipeline, and a resend delivers an artifact that already exists.
+type semanticResidueRenewal struct {
+	evidence bool // search / fetch
+	pipeline bool // document / office / visual / local write
+	delivery bool // artifact.deliver.* / message.send.*
+}
+
+// semanticResidueRenewOpenTask opens a new per-turn budget for the open task.
+// A zero left by a part this turn does not use stays spent, including a stale
+// file-write ceiling that baseline expansion would otherwise treat as
+// unlimited.
+func semanticResidueRenewOpenTask(remaining map[string]int, needs []tool.CapabilityNeed, renew semanticResidueRenewal) map[string]int {
+	var keys []string
+	seen := map[string]bool{}
+	if renew.evidence {
+		for _, key := range []string{"information.search.web", string(tool.CapabilityInformationFetchWeb)} {
+			keys = append(keys, key)
+			seen[key] = true
+		}
 	}
 	for _, need := range needs {
 		id := string(need.Capability)
-		if id == "" || seen[id] || !semanticResidueNeedRenewsWithLookup(need) {
+		if id == "" || seen[id] {
+			continue
+		}
+		if semanticResidueDeliveryCapability(need.Capability) {
+			if !renew.delivery {
+				continue
+			}
+		} else if !renew.pipeline {
+			continue
+		}
+		if !semanticResidueNeedRenewsWithOpenTask(need) {
 			continue
 		}
 		seen[id] = true
@@ -1295,7 +1296,7 @@ func semanticResidueRenewOpenLookup(remaining map[string]int, needs []tool.Capab
 	return semanticResidueDropSpent(remaining, keys...)
 }
 
-func semanticResidueNeedRenewsWithLookup(need tool.CapabilityNeed) bool {
+func semanticResidueNeedRenewsWithOpenTask(need tool.CapabilityNeed) bool {
 	if semanticPlanCompanionNeed(need) {
 		return false
 	}
@@ -1303,12 +1304,53 @@ func semanticResidueNeedRenewsWithLookup(need tool.CapabilityNeed) bool {
 	case agentservice.CapabilityLiveDataVisual,
 		agentservice.CapabilityDocumentGenerate,
 		tool.CapabilityDocumentWriteOffice,
-		tool.CapabilityFSWriteLocal,
-		agentservice.CapabilityArtifactDeliverCurrent:
+		tool.CapabilityFSWriteLocal:
 		return true
 	default:
-		return false
+		return semanticResidueDeliveryCapability(need.Capability)
 	}
+}
+
+// semanticResidueDeliveryCapability reports a capability that hands the task's
+// artifact to a channel. A delivery is part of the open lookup/document task,
+// not a one-shot replay: a continuation that produces a new artifact delivers
+// it again, so the previous turn's spent count is not this turn's per-turn
+// quota. The channel's own confirmation (the mailbox send, the chat handoff)
+// remains the guard against a silent repeat, and the per-turn repeat budget
+// still bounds this turn.
+//
+// The rule is by capability family, not a list of names, so a new delivery
+// channel inherits the same continuity without another edit.
+func semanticResidueDeliveryCapability(capability tool.CapabilityID) bool {
+	id := string(capability)
+	return strings.HasPrefix(id, "artifact.deliver.") || strings.HasPrefix(id, "message.send.")
+}
+
+// semanticContinuationProducesArtifact reports a continuation that builds a
+// new artifact outside the lookup/document path. Its per-turn pipeline and
+// delivery budget are new work, not a replay of the previous artifact.
+func semanticContinuationProducesArtifact(planned intent.ClassificationResult) bool {
+	for _, label := range planned.Labels() {
+		switch label {
+		case intent.LabelDocumentGenerate, intent.LabelOffice, intent.LabelLiveDataVisual:
+			return true
+		}
+	}
+	return false
+}
+
+// semanticTurnRequestsDelivery reports a turn whose action is to hand an
+// existing artifact to a channel. The pipeline did not run again, but the
+// delivery step is new work and gets its own per-turn budget. An explicit
+// mailbox send is the same action on a named channel.
+func semanticTurnRequestsDelivery(planned intent.ClassificationResult) bool {
+	for _, label := range planned.Labels() {
+		switch label {
+		case intent.LabelDocumentDelivery, intent.LabelAttachmentDelivery, intent.LabelMailboxSend:
+			return true
+		}
+	}
+	return false
 }
 
 func semanticPlanCompanionNeed(need tool.CapabilityNeed) bool {
@@ -1333,9 +1375,21 @@ func semanticResidueRemainingForOpenTurn(residue semanticSessionResidue, planned
 	remaining := semanticResidueRemainingForFollowUp(residue.Remaining, planned)
 	// A continued render ("生成pdf报告") keeps document_generate as primary,
 	// so it is not a lookup. Its spent generate ceiling must still open, or
-	// a positive search count leaves the PDF clamped. Unrelated zeros stay.
-	if semanticClassificationRequestsLookupEvidence(planned) || semanticContinuesOpenDocument(planned, residue) {
-		return semanticResidueRenewOpenLookup(remaining, residue.Needs)
+	// a positive search count leaves the PDF clamped. Any other new artifact
+	// of the open task — a sheet, a card — opens the same per-turn budget for
+	// its pipeline and delivery. A delivery-only request (the artifact
+	// already exists) opens the delivery family, not the pipeline. Unrelated
+	// zeros stay.
+	producesArtifact := semanticContinuesOpenDocument(planned, residue) ||
+		semanticContinuationProducesArtifact(planned)
+	requestsDelivery := semanticTurnRequestsDelivery(planned)
+	lookupEvidence := semanticClassificationRequestsLookupEvidence(planned)
+	if lookupEvidence || producesArtifact || requestsDelivery {
+		return semanticResidueRenewOpenTask(remaining, residue.Needs, semanticResidueRenewal{
+			evidence: lookupEvidence,
+			pipeline: producesArtifact,
+			delivery: producesArtifact || requestsDelivery,
+		})
 	}
 	if semanticResidueWaveSpent(residue) && !semanticClassificationRequestsAcquire(planned) {
 		remaining = semanticResidueRenewSpentObligation(residue, remaining)
@@ -1476,29 +1530,33 @@ func clampNeedsToResidueRemaining(needs []tool.CapabilityNeed, remaining map[str
 	return clampNeedsToResidue(needs, remaining, nil)
 }
 
-// clampPetitionNeedsToResidue keeps every family the parent plan already
+// clampPetitionNeedsToResidue keeps every selection the parent plan already
 // published. Those selections are the expansion validator's authority. A new
 // petition need of the same capability is what competes for whatever session
-// budget is left, so it cannot take the slot and drop the parent family.
+// budget is left, so it cannot take the slot and drop the parent selection.
+// The exemption is by exact need identity, not by repeat family: the validator
+// compares identities, and a family-wide exemption let a re-plan add an extra
+// sibling the parent never selected, which then failed the whole child
+// (production 2026-10-31: mailbox_send petition after a lookup/document task).
 func clampPetitionNeedsToResidue(needs []tool.CapabilityNeed, remaining map[string]int, ctx context.Context) []tool.CapabilityNeed {
-	var families map[string]struct{}
+	var parentNeedIDs map[string]struct{}
 	if ctx != nil {
-		families, _ = ctx.Value(semanticPetitionParentFamiliesKey{}).(map[string]struct{})
+		parentNeedIDs, _ = ctx.Value(semanticPetitionParentNeedIDsKey{}).(map[string]struct{})
 	}
-	return clampNeedsToResidue(needs, remaining, families)
+	return clampNeedsToResidue(needs, remaining, parentNeedIDs)
 }
 
-func clampNeedsToResidue(needs []tool.CapabilityNeed, remaining map[string]int, parentFamilies map[string]struct{}) []tool.CapabilityNeed {
+func clampNeedsToResidue(needs []tool.CapabilityNeed, remaining map[string]int, parentNeedIDs map[string]struct{}) []tool.CapabilityNeed {
 	if len(needs) == 0 || len(remaining) == 0 {
 		return needs
 	}
-	// Parent families were granted on this turn. Count them before any new
+	// Parent selections were granted on this turn. Count them before any new
 	// need, independent of slice order, or a petitioned sibling listed first
 	// consumes the ceiling and the validator loses the parent.
 	seen := map[string]int{}
-	if len(parentFamilies) > 0 {
+	if len(parentNeedIDs) > 0 {
 		for _, need := range needs {
-			if _, parent := parentFamilies[tool.RepeatFamilyKey(need.ID)]; parent {
+			if _, parent := parentNeedIDs[need.ID]; parent {
 				seen[string(need.Capability)]++
 			}
 		}
@@ -1506,8 +1564,8 @@ func clampNeedsToResidue(needs []tool.CapabilityNeed, remaining map[string]int, 
 	out := make([]tool.CapabilityNeed, 0, len(needs))
 	for _, need := range needs {
 		capability := string(need.Capability)
-		if len(parentFamilies) > 0 {
-			if _, parent := parentFamilies[tool.RepeatFamilyKey(need.ID)]; parent {
+		if len(parentNeedIDs) > 0 {
+			if _, parent := parentNeedIDs[need.ID]; parent {
 				out = append(out, need)
 				continue
 			}

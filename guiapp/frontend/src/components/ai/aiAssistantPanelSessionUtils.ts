@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { buildOutgoingMessageMulti, type ChatMessage } from "./useAIAssistant";
 import { expertTabId } from "./expertTypes";
-import { cloudWorkspaceIdFromPath } from "./codingTaskMode";
+import { cloudWorkspaceIdFromPath, isExplicitTaskCopy } from "./codingTaskMode";
 import { normalizeProjectSessionPath } from "./assistantSessionPath";
 import { mergeProjectRoundHistory } from "./aiAssistantProjectTabState";
 
@@ -702,7 +702,7 @@ export function isAutoACPAssistantTabTaskItem(item: { project_path?: unknown; ta
 }
 
 /** Return the expert identity carried by a durable task-management row. */
-export function expertIDFromTaskTags(tags?: string[] | null): string {
+export function expertIDFromTaskTags(tags?: readonly string[] | null): string {
     for (const rawTag of tags || []) {
         const tag = String(rawTag || "").trim();
         if (!tag.startsWith(EXPERT_TASK_SOURCE_PREFIX)) continue;
@@ -772,10 +772,57 @@ export function activeAssistantTaskIdentity(tab: {
     return null;
 }
 
-/** Session key for an expert tab conversation. Aligns with the backend userID (ExpertID branch). */
+/** Session key for an expert with no task path. Aligns with the backend userID. */
 export function expertSessionKey(expertId?: string | null): string {
     const id = String(expertId || "").trim();
     return id ? `${EXPERT_SESSION_KEY_PREFIX}${id}` : "";
+}
+
+/** Separates the expert id from the task path. Expert ids cannot contain ":". */
+const EXPERT_TASK_SESSION_MARK = ":task:";
+
+/**
+ * Agent session owned by one expert task. An empty path stays on the expert
+ * key. The path is canonicalized so a Windows bind and a slash form name the
+ * same session as the backend.
+ */
+export function expertTaskSessionKey(expertId?: string | null, projectPath?: string | null): string {
+    const base = expertSessionKey(expertId);
+    if (!base) return "";
+    const path = normalizeProjectSessionPath(projectPath || "");
+    if (!path) return base;
+    return `${base}${EXPERT_TASK_SESSION_MARK}${path}`;
+}
+
+/**
+ * Session of an expert task opened on its own project tab. The newest task
+ * uses the expert tab. An older row keeps a project tab, and that tab has to
+ * follow this session or a running turn never appears there. A copy keeps
+ * the project-path session.
+ */
+export function expertSessionForProjectTask(
+    tasks: ReadonlyArray<{ project_path?: string | null; projectPath?: string | null; tags?: readonly string[] | null }> | null | undefined,
+    projectPath?: string | null,
+): string {
+    const path = normalizeProjectSessionPath(projectPath);
+    if (!path || !tasks?.length) return "";
+    for (const task of tasks) {
+        const taskPath = normalizeProjectSessionPath(String(task?.project_path || task?.projectPath || ""));
+        if (taskPath !== path) continue;
+        if (isExplicitTaskCopy(task?.tags)) return "";
+        const expertId = expertIDFromTaskTags(task?.tags);
+        return expertId ? expertTaskSessionKey(expertId, path) : "";
+    }
+    return "";
+}
+
+/**
+ * A project tab for an older expert task queues on that task's session key.
+ * Draining it through the expert tab would send the text as whichever task
+ * the expert tab is showing now.
+ */
+export function projectTabOwnsExpertQueue(tabType?: string | null, queueSessionKey?: string | null): boolean {
+    return tabType === "project" && isExpertSessionKey(queueSessionKey) && !!expertIdFromSessionKey(queueSessionKey);
 }
 
 export function isExpertSessionKey(sessionKey?: string | null): boolean {
@@ -801,7 +848,29 @@ export function shouldBlockAssistantTabOpenOnTaskRegistration(tabType?: string |
 /** Reverse of expertSessionKey: extract the expert id, or "" for non-expert keys. */
 export function expertIdFromSessionKey(sessionKey?: string | null): string {
     const key = typeof sessionKey === "string" ? sessionKey.trim() : "";
-    return key.startsWith(EXPERT_SESSION_KEY_PREFIX) ? key.slice(EXPERT_SESSION_KEY_PREFIX.length).trim() : "";
+    if (!key.startsWith(EXPERT_SESSION_KEY_PREFIX)) return "";
+    let rest = key.slice(EXPERT_SESSION_KEY_PREFIX.length).trim();
+    const cut = rest.indexOf(EXPERT_TASK_SESSION_MARK);
+    if (cut >= 0) rest = rest.slice(0, cut).trim();
+    return rest;
+}
+
+/**
+ * Identities the sidebar can mark as running. A task-scoped expert session
+ * contributes its project path only: publishing the expert id as well would
+ * mark every sibling row, and only the newest one would light up.
+ */
+export function busyTaskRunIdentities(busySessionKeys: string[]): { projectPaths: string[]; expertIds: string[] } {
+    const projectPaths = Array.from(new Set(
+        busySessionKeys.map(key => projectPathFromSessionKey(key)).filter(Boolean),
+    )).sort();
+    const expertIds = Array.from(new Set(
+        busySessionKeys
+            .filter(key => !projectPathFromSessionKey(key))
+            .map(key => expertIdFromSessionKey(key))
+            .filter(Boolean),
+    )).sort();
+    return { projectPaths, expertIds };
 }
 
 /**
@@ -817,13 +886,7 @@ export function useBusyTaskRunsSignal(
 ) {
     useEffect(() => {
         if (typeof onChange !== "function") return;
-        const projectPaths = Array.from(new Set(
-            busySessionKeys.map(key => projectPathFromSessionKey(key)).filter(Boolean),
-        )).sort();
-        const expertIds = Array.from(new Set(
-            busySessionKeys.map(key => expertIdFromSessionKey(key)).filter(Boolean),
-        )).sort();
-        onChange({ projectPaths, expertIds });
+        onChange(busyTaskRunIdentities(busySessionKeys));
     }, [busySessionKeys, onChange]);
 }
 
@@ -831,9 +894,15 @@ export function projectPathFromSessionKey(sessionKey?: string | null): string {
     const key = typeof sessionKey === "string" ? sessionKey.trim() : "";
     const prefix = "desktop-user:";
     if (!key.startsWith(prefix)) return "";
-    // Expert session keys carry no project path — never hand "expert:<id>" to
-    // path-based routing (it would be mistaken for a real project path).
-    if (isExpertSessionKey(key) || isACPAssistantSessionKey(key)) return "";
+    if (isACPAssistantSessionKey(key)) return "";
+    // An expert key without a task path is an id, not a directory. A per-task
+    // key carries the path after the first ":task:" mark.
+    if (isExpertSessionKey(key)) {
+        const rest = key.slice(EXPERT_SESSION_KEY_PREFIX.length);
+        const cut = rest.indexOf(EXPERT_TASK_SESSION_MARK);
+        if (cut < 0) return "";
+        return normalizeProjectSessionPath(rest.slice(cut + EXPERT_TASK_SESSION_MARK.length));
+    }
     let rest = key.slice(prefix.length);
     // A project-less background chat task is desktop-user:task:<id>. "task" is
     // not a directory (mirrors projectSessionOwnerID).
@@ -951,9 +1020,15 @@ export function normalizeAssistantSessionKey(sessionKey?: string | null): string
     if (!key) return "";
     const prefix = "desktop-user:";
     if (!key.startsWith(prefix)) return key;
-	// Expert and ACP owners are opaque identifiers, not project paths. Normalizing
-	// them as paths changes their identity and can merge separate sessions.
-    if (isExpertSessionKey(key) || isACPAssistantSessionKey(key)) return key;
+    if (isACPAssistantSessionKey(key)) return key;
+    // Rebuild an expert task key so slash and drive-letter forms match. An
+    // expert id without a task path stays opaque.
+    if (isExpertSessionKey(key)) {
+        const id = expertIdFromSessionKey(key);
+        if (!id) return key;
+        const path = projectPathFromSessionKey(key);
+        return path ? expertTaskSessionKey(id, path) : expertSessionKey(id);
+    }
     const path = normalizeProjectSessionPath(key.slice(prefix.length));
     return path ? `${prefix}${path}` : "desktop-user";
 }

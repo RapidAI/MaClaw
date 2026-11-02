@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
@@ -252,6 +253,19 @@ type UnfinishedTaskSlot struct {
 	LastToolName     string    `json:"last_tool_name,omitempty"`
 	SideEffectState  string    `json:"side_effect_state,omitempty"`
 	RecoveryMode     string    `json:"recovery_mode,omitempty"`
+	// MailboxResultBaseline is how many results for LastToolName were already
+	// saved when a mailbox latch was taken. Zero is a real baseline, so
+	// MailboxResultBaselineSet says the count was recorded. An unset baseline
+	// is a marker written before that count existed.
+	MailboxResultBaseline    int  `json:"mailbox_result_baseline,omitempty"`
+	MailboxResultBaselineSet bool `json:"mailbox_result_baseline_set,omitempty"`
+	// MailboxUncertainDropped means a transport-uncertain mailbox_send or
+	// mailbox_delete result left the active branch while this latch was held.
+	// That is empty text, MsgUncertain, MsgDeleteUncertain, or
+	// [system unknown]. A confirmation card has not dialed, so it does not
+	// set this flag. Later known results must not retire a dropped delivery:
+	// it may already have landed, and recovery will not reload the row.
+	MailboxUncertainDropped bool `json:"mailbox_uncertain_dropped,omitempty"`
 	// RuntimeTaskID links UI-facing recovery state to the durable coding
 	// execution ledger. It is an opaque identifier only—never a command,
 	// tool payload, prompt, credential, or replay plan.
@@ -307,44 +321,57 @@ type ConversationArchiver interface {
 // --- Internal types ---
 
 type conversationSession struct {
-	entries              []ConversationEntry
-	persistedEntries     []ConversationEntry
-	entryOrder           map[string]int
-	entriesLoaded        bool
-	activeBranchTipID    string
-	lastAccess           time.Time
-	unfinishedSlot       *UnfinishedTaskSlot
-	recoverySlots        []*UnfinishedTaskSlot
-	activeSlotID         string
-	inFlightTask         string // non-empty while an agent loop is executing; cleared on normal exit
-	inFlightProjectPath  string // project path when the in-flight task was set
-	inFlightSetAt        time.Time
-	inFlightRunID        string
-	inFlightSequence     uint64
-	inFlightLastTool     string
-	inFlightSideEffect   string
-	semanticResidue      *SemanticSessionResidue
-	producedDocument     *PersistedProducedDocument
-	parentExecutionTools []string
-	parentExecutionKnown bool
+	entries             []ConversationEntry
+	persistedEntries    []ConversationEntry
+	entryOrder          map[string]int
+	entriesLoaded       bool
+	activeBranchTipID   string
+	lastAccess          time.Time
+	unfinishedSlot      *UnfinishedTaskSlot
+	recoverySlots       []*UnfinishedTaskSlot
+	activeSlotID        string
+	inFlightTask        string // non-empty while an agent loop is executing; cleared on normal exit
+	inFlightProjectPath string // project path when the in-flight task was set
+	inFlightSetAt       time.Time
+	inFlightRunID       string
+	inFlightSequence    uint64
+	inFlightLastTool    string
+	inFlightSideEffect  string
+	// inFlightMailboxResultBaseline is the number of results for the latched
+	// mailbox tool already in history when the provisional latch was saved.
+	// Older known results must not count as this call's outcome.
+	inFlightMailboxResultBaseline int
+	inFlightMailboxBaselineSet    bool
+	// inFlightMailboxUncertainDropped sticks after a checkpoint trim removes
+	// a transport-uncertain mailbox result. A confirmation card does not set
+	// it. The next save no longer has that row to compare, so the bool is
+	// what keeps the latch from retiring.
+	inFlightMailboxUncertainDropped bool
+	semanticResidue                 *SemanticSessionResidue
+	producedDocument                *PersistedProducedDocument
+	parentExecutionTools            []string
+	parentExecutionKnown            bool
 }
 
 type persistedSession struct {
-	Entries                []ConversationEntry        `json:"entries"`
-	ActiveBranchTipID      string                     `json:"active_branch_tip_id,omitempty"`
-	LastAccess             time.Time                  `json:"last_access"`
-	UnfinishedSlot         *UnfinishedTaskSlot        `json:"unfinished_slot,omitempty"`
-	RecoverySlots          []*UnfinishedTaskSlot      `json:"recovery_slots,omitempty"`
-	ActiveSlotID           string                     `json:"active_slot_id,omitempty"`
-	InFlightTask           string                     `json:"in_flight_task,omitempty"`
-	InFlightProjectPath    string                     `json:"in_flight_project_path,omitempty"`
-	InFlightSetAt          time.Time                  `json:"in_flight_set_at,omitempty"`
-	InFlightRunID          string                     `json:"in_flight_run_id,omitempty"`
-	InFlightSequence       uint64                     `json:"in_flight_sequence,omitempty"`
-	InFlightLastTool       string                     `json:"in_flight_last_tool,omitempty"`
-	InFlightSideEffect     string                     `json:"in_flight_side_effect,omitempty"`
-	SemanticSessionResidue *SemanticSessionResidue    `json:"semantic_session_residue,omitempty"`
-	ProducedDocument       *PersistedProducedDocument `json:"produced_document,omitempty"`
+	Entries                         []ConversationEntry        `json:"entries"`
+	ActiveBranchTipID               string                     `json:"active_branch_tip_id,omitempty"`
+	LastAccess                      time.Time                  `json:"last_access"`
+	UnfinishedSlot                  *UnfinishedTaskSlot        `json:"unfinished_slot,omitempty"`
+	RecoverySlots                   []*UnfinishedTaskSlot      `json:"recovery_slots,omitempty"`
+	ActiveSlotID                    string                     `json:"active_slot_id,omitempty"`
+	InFlightTask                    string                     `json:"in_flight_task,omitempty"`
+	InFlightProjectPath             string                     `json:"in_flight_project_path,omitempty"`
+	InFlightSetAt                   time.Time                  `json:"in_flight_set_at,omitempty"`
+	InFlightRunID                   string                     `json:"in_flight_run_id,omitempty"`
+	InFlightSequence                uint64                     `json:"in_flight_sequence,omitempty"`
+	InFlightLastTool                string                     `json:"in_flight_last_tool,omitempty"`
+	InFlightSideEffect              string                     `json:"in_flight_side_effect,omitempty"`
+	InFlightMailboxResultBaseline   int                        `json:"in_flight_mailbox_result_baseline,omitempty"`
+	InFlightMailboxBaselineSet      bool                       `json:"in_flight_mailbox_baseline_set,omitempty"`
+	InFlightMailboxUncertainDropped bool                       `json:"in_flight_mailbox_uncertain_dropped,omitempty"`
+	SemanticSessionResidue          *SemanticSessionResidue    `json:"semantic_session_residue,omitempty"`
+	ProducedDocument                *PersistedProducedDocument `json:"produced_document,omitempty"`
 	// ParentExecutionTools are non-light tool names from the previous full
 	// turn. They are not grants and carry no arguments.
 	// ParentExecutionKnown distinguishes "cleared" from "never recorded"
@@ -1051,6 +1078,11 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 			entries = adoptCompletedCompactionSummaries(s.entries, entries)
 		}
 		cm.saveEntriesLocked(s, entries, now)
+		// Checkpoint trim can drop older mailbox rows. This save puts the
+		// wider branch back. Those rows are not a new result, so the baseline
+		// has to match the branch just written. Otherwise a known result from
+		// an earlier call makes an unreported send look settled.
+		noteMailboxLatchBaselineAfterHistorySave(s)
 		sh.mu.Unlock()
 		if cm.sqliteActive() {
 			if _, detached := cm.detachedPath(userID); detached {
@@ -1763,6 +1795,9 @@ func (cm *ConversationMemory) SetInFlightTaskForRun(userID, task, projectPath, r
 		s.inFlightSequence = 0
 		s.inFlightLastTool = ""
 		s.inFlightSideEffect = ""
+		s.inFlightMailboxResultBaseline = 0
+		s.inFlightMailboxBaselineSet = false
+		s.inFlightMailboxUncertainDropped = false
 		s.lastAccess = now
 		sh.mu.Unlock()
 		cm.markSessionDirty(userID)
@@ -1823,8 +1858,10 @@ func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, ent
 	// History and the sequence still advance; only that evidence stays.
 	// Lease expiry moves that evidence onto the slot and clears the marker,
 	// so a continuing checkpoint has to read it before dropping the slot.
-	lastTool := strings.TrimSpace(checkpoint.LastToolName)
-	sideEffect := strings.TrimSpace(checkpoint.SideEffectState)
+	incomingTool := strings.TrimSpace(checkpoint.LastToolName)
+	incomingEffect := strings.TrimSpace(checkpoint.SideEffectState)
+	lastTool := incomingTool
+	sideEffect := incomingEffect
 	if s.inFlightRunID == runID && ExternalSendCheckpointEvidence(s.inFlightLastTool, s.inFlightSideEffect) {
 		lastTool = s.inFlightLastTool
 		sideEffect = s.inFlightSideEffect
@@ -1832,6 +1869,37 @@ func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, ent
 		lastTool = s.unfinishedSlot.LastToolName
 		sideEffect = s.unfinishedSlot.SideEffectState
 	}
+	// Lease expiry moved a dropped delivery onto the slot and cleared the
+	// marker. This continuing checkpoint is about to drop that slot, so the
+	// flag has to come back first. A later known result must not retire it.
+	if sameRunSlot && s.unfinishedSlot.MailboxUncertainDropped {
+		s.inFlightMailboxUncertainDropped = true
+	}
+	// The pre-tool marker is provisional. mailbox_send and mailbox_delete
+	// record external_uncertain before the call, including when the host
+	// refuses before any server is contacted. Once this checkpoint has put
+	// a new known result for that tool on the active branch, that latch is
+	// stale. A confirmation card that is still visible has not contacted the
+	// server and does not keep the latch. A new confirmation card is not this
+	// call's result. A trimmed checkpoint can drop
+	// older rows, so a smaller count is not evidence that this call failed
+	// to report. The checkpoint being written is the remaining effect: a
+	// channel send, a still-open mailbox call, a local edit, or no external
+	// effect. A missing result stays latched: the process may have died
+	// during SMTP or IMAP. A known result from an earlier call is not this
+	// call's outcome. A transport-uncertain result that left the active
+	// branch is remembered on the marker. A confirmation card is not: SMTP
+	// or IMAP has not been attempted. The next checkpoint no longer contains
+	// that row, and a later known result must not retire the delivery.
+	previousActive := activeCheckpointEntries(before)
+	currentActive := activeCheckpointEntries(s)
+	if mailboxUncertainLeftActiveBranch(lastTool, previousActive, currentActive) {
+		s.inFlightMailboxUncertainDropped = true
+	}
+	if !s.inFlightMailboxUncertainDropped && retireProvisionalMailboxLatch(lastTool, sideEffect, previousActive, currentActive) {
+		lastTool, sideEffect = remainingEffectAfterMailboxLatch(incomingTool, incomingEffect, lastTool, currentActive)
+	}
+	noteMailboxLatchBaseline(s, lastTool, sideEffect)
 	if sameRunSlot {
 		dropUnfinishedSlotLocked(s)
 	}
@@ -1942,6 +2010,16 @@ func (cm *ConversationMemory) CompleteInFlightCheckpointForRun(userID, runID str
 		return nil
 	}
 	before := cloneConversationSession(s)
+	// A dropped uncertain mailbox result is still unresolved. Completing the
+	// marker here would let the next message send again.
+	if ownsMarker && s.inFlightMailboxUncertainDropped {
+		sh.mu.Unlock()
+		return nil
+	}
+	if clearSlot && s.unfinishedSlot != nil && s.unfinishedSlot.MailboxUncertainDropped {
+		sh.mu.Unlock()
+		return nil
+	}
 	if ownsMarker {
 		clearInFlightFields(s)
 	}
@@ -1968,6 +2046,9 @@ func clearInFlightFields(s *conversationSession) {
 	s.inFlightSequence = 0
 	s.inFlightLastTool = ""
 	s.inFlightSideEffect = ""
+	s.inFlightMailboxResultBaseline = 0
+	s.inFlightMailboxBaselineSet = false
+	s.inFlightMailboxUncertainDropped = false
 }
 
 // SaveAndCompleteInFlightCheckpointForRun atomically replaces a run's
@@ -2016,6 +2097,10 @@ func (cm *ConversationMemory) SaveAndCompleteInFlightCheckpointForRun(userID, ru
 	before := cloneConversationSession(s)
 	now := time.Now()
 	cm.saveEntriesLocked(s, entries, now)
+	// The ask-user pause returns before turn-end completion. A delivery that
+	// may already have landed has to become a review slot first; clearing
+	// only the marker would let the next message send again.
+	queueDroppedMailboxReviewLocked(s, userID, runID, now)
 	if s.inFlightRunID == runID {
 		s.inFlightTask = ""
 		s.inFlightProjectPath = ""
@@ -2024,10 +2109,15 @@ func (cm *ConversationMemory) SaveAndCompleteInFlightCheckpointForRun(userID, ru
 		s.inFlightSequence = 0
 		s.inFlightLastTool = ""
 		s.inFlightSideEffect = ""
+		s.inFlightMailboxResultBaseline = 0
+		s.inFlightMailboxBaselineSet = false
+		s.inFlightMailboxUncertainDropped = false
 	}
 	// A synthetic slot for this exact run is not a user decision. The paired
-	// pause is the durable state, so the slot goes away with the marker.
-	if pendingSameRunRecoverySlot(s.unfinishedSlot, inFlightRunScopeKey(runID)) {
+	// pause is the durable state, so that slot goes away with the marker.
+	// The slot just queued for a dropped delivery stays: the pause must not
+	// forget a result the server may already have accepted.
+	if slot := s.unfinishedSlot; pendingSameRunRecoverySlot(slot, inFlightRunScopeKey(runID)) && !slot.MailboxUncertainDropped {
 		dropUnfinishedSlotLocked(s)
 	}
 	s.lastAccess = now
@@ -2038,6 +2128,37 @@ func (cm *ConversationMemory) SaveAndCompleteInFlightCheckpointForRun(userID, ru
 		return err
 	}
 	return nil
+}
+
+// queueDroppedMailboxReviewLocked publishes a review slot for a mailbox
+// result that left the active branch before this pause. The marker is cleared
+// by the caller. The slot keeps MailboxUncertainDropped so a later known
+// result cannot release it.
+func queueDroppedMailboxReviewLocked(s *conversationSession, userID, runID string, now time.Time) {
+	if s == nil || s.inFlightRunID != runID || !s.inFlightMailboxUncertainDropped {
+		return
+	}
+	queueUnfinishedSlotLocked(s, &UnfinishedTaskSlot{
+		SlotID:                   newRecoverySlotID("inflight-recovery", now),
+		UserID:                   userID,
+		ProjectPath:              s.inFlightProjectPath,
+		Tool:                     "agent",
+		Status:                   UnfinishedTaskSlotStatusInterrupted,
+		Summary:                  "An uncertain mailbox result left the active branch. Review it before sending again.",
+		LastTask:                 s.inFlightTask,
+		ResumePrompt:             recoveryResumePrompt(s.inFlightSideEffect),
+		Source:                   UnfinishedTaskSlotSourceInFlightRecovery,
+		EvidenceScopeKey:         inFlightRunScopeKey(runID),
+		LastCheckpointAt:         s.inFlightSetAt,
+		LastToolName:             s.inFlightLastTool,
+		SideEffectState:          s.inFlightSideEffect,
+		RecoveryMode:             recoveryModeForSideEffect(s.inFlightSideEffect),
+		MailboxResultBaseline:    s.inFlightMailboxResultBaseline,
+		MailboxResultBaselineSet: s.inFlightMailboxBaselineSet,
+		MailboxUncertainDropped:  true,
+		CreatedAt:                now,
+		UpdatedAt:                now,
+	})
 }
 
 // cloneConversationSession snapshots the mutable state touched by a checkpoint
@@ -2083,6 +2204,9 @@ func (cm *ConversationMemory) restoreCheckpointMutation(userID string, before, c
 			current.inFlightSequence = before.inFlightSequence
 			current.inFlightLastTool = before.inFlightLastTool
 			current.inFlightSideEffect = before.inFlightSideEffect
+			current.inFlightMailboxResultBaseline = before.inFlightMailboxResultBaseline
+			current.inFlightMailboxBaselineSet = before.inFlightMailboxBaselineSet
+			current.inFlightMailboxUncertainDropped = before.inFlightMailboxUncertainDropped
 		}
 		if reflect.DeepEqual(current.unfinishedSlot, candidate.unfinishedSlot) &&
 			reflect.DeepEqual(current.recoverySlots, candidate.recoverySlots) && current.activeSlotID == candidate.activeSlotID {
@@ -2107,7 +2231,10 @@ func sameInFlightCheckpointState(a, b *conversationSession) bool {
 		a.inFlightRunID == b.inFlightRunID &&
 		a.inFlightSequence == b.inFlightSequence &&
 		a.inFlightLastTool == b.inFlightLastTool &&
-		a.inFlightSideEffect == b.inFlightSideEffect
+		a.inFlightSideEffect == b.inFlightSideEffect &&
+		a.inFlightMailboxResultBaseline == b.inFlightMailboxResultBaseline &&
+		a.inFlightMailboxBaselineSet == b.inFlightMailboxBaselineSet &&
+		a.inFlightMailboxUncertainDropped == b.inFlightMailboxUncertainDropped
 }
 
 // RewriteAllSessions applies rewrite to every stored conversation. A nil return
@@ -2215,6 +2342,9 @@ func (cm *ConversationMemory) RefreshInFlightTaskForRun(userID, runID string) bo
 			s.inFlightRunID = runID
 			s.inFlightLastTool = slot.LastToolName
 			s.inFlightSideEffect = slot.SideEffectState
+			s.inFlightMailboxResultBaseline = slot.MailboxResultBaseline
+			s.inFlightMailboxBaselineSet = slot.MailboxResultBaselineSet
+			s.inFlightMailboxUncertainDropped = slot.MailboxUncertainDropped
 			s.inFlightSequence = 0
 			dropUnfinishedSlotLocked(s)
 			reclaimed = true
@@ -2280,6 +2410,9 @@ func (cm *ConversationMemory) ClearInFlightTask(userID string) {
 				s.inFlightSequence = 0
 				s.inFlightLastTool = ""
 				s.inFlightSideEffect = ""
+				s.inFlightMailboxResultBaseline = 0
+				s.inFlightMailboxBaselineSet = false
+				s.inFlightMailboxUncertainDropped = false
 				changed = true
 			}
 		}
@@ -2334,27 +2467,43 @@ func (cm *ConversationMemory) expireStaleInFlightTasks(now time.Time, lease time
 		lease = InFlightTaskLease
 	}
 	expired := 0
+	changed := false
 	cm.checkpointLock(func() {
 		for _, sh := range cm.shards {
+			cm.loadMailboxLatchHistory(sh)
 			sh.mu.Lock()
 			for userID, s := range sh.sessions {
-				if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
+				if s == nil {
 					continue
 				}
-				setAt := s.inFlightSetAt
-				if setAt.IsZero() {
-					setAt = s.lastAccess
+				if strings.TrimSpace(s.inFlightTask) != "" {
+					setAt := s.inFlightSetAt
+					if setAt.IsZero() {
+						setAt = s.lastAccess
+					}
+					if !setAt.IsZero() && now.Sub(setAt) > lease {
+						if settledMailboxMarker(s) {
+							// The mailbox call already has a known result. A lease
+							// slot here would be the generic unfinished card.
+							log.Printf("[InFlightRecovery] skipped settled mailbox latch on lease user=%s tool=%s", userID, s.inFlightLastTool)
+							clearInFlightFields(s)
+						} else {
+							cm.convertExpiredInFlightLocked(userID, s, now)
+						}
+						s.lastAccess = now
+						cm.markSessionDirty(userID)
+						expired++
+					}
 				}
-				if setAt.IsZero() || now.Sub(setAt) <= lease {
-					continue
+				if releaseSettledMailboxSlotsLocked(s) {
+					s.lastAccess = now
+					cm.markSessionDirty(userID)
+					changed = true
 				}
-				cm.convertExpiredInFlightLocked(userID, s, now)
-				cm.markSessionDirty(userID)
-				expired++
 			}
 			sh.mu.Unlock()
 		}
-		if expired > 0 {
+		if expired > 0 || changed {
 			cm.markDirtyAndScheduleFlush()
 		}
 	})
@@ -2366,22 +2515,25 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 	projectPath := s.inFlightProjectPath
 	runID := s.inFlightRunID
 	queueUnfinishedSlotLocked(s, &UnfinishedTaskSlot{
-		SlotID:           newRecoverySlotID("inflight-expired", now),
-		UserID:           userID,
-		ProjectPath:      projectPath,
-		Tool:             "agent",
-		Status:           UnfinishedTaskSlotStatusInterrupted,
-		Summary:          "Previous task stopped making progress and was moved to recovery.",
-		LastTask:         task,
-		ResumePrompt:     expiredInFlightResumePrompt(s.inFlightSideEffect),
-		Source:           UnfinishedTaskSlotSourceInFlightLeaseExpired,
-		EvidenceScopeKey: inFlightRunScopeKey(runID),
-		LastCheckpointAt: s.inFlightSetAt,
-		LastToolName:     s.inFlightLastTool,
-		SideEffectState:  s.inFlightSideEffect,
-		RecoveryMode:     recoveryModeForSideEffect(s.inFlightSideEffect),
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		SlotID:                   newRecoverySlotID("inflight-expired", now),
+		UserID:                   userID,
+		ProjectPath:              projectPath,
+		Tool:                     "agent",
+		Status:                   UnfinishedTaskSlotStatusInterrupted,
+		Summary:                  "Previous task stopped making progress and was moved to recovery.",
+		LastTask:                 task,
+		ResumePrompt:             expiredInFlightResumePrompt(s.inFlightSideEffect),
+		Source:                   UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		EvidenceScopeKey:         inFlightRunScopeKey(runID),
+		LastCheckpointAt:         s.inFlightSetAt,
+		LastToolName:             s.inFlightLastTool,
+		SideEffectState:          s.inFlightSideEffect,
+		RecoveryMode:             recoveryModeForSideEffect(s.inFlightSideEffect),
+		MailboxResultBaseline:    s.inFlightMailboxResultBaseline,
+		MailboxResultBaselineSet: s.inFlightMailboxBaselineSet,
+		MailboxUncertainDropped:  s.inFlightMailboxUncertainDropped,
+		CreatedAt:                now,
+		UpdatedAt:                now,
 	})
 	clearInFlightFields(s)
 	s.lastAccess = now
@@ -2401,6 +2553,316 @@ func ExternalSendCheckpointEvidence(toolName, sideEffect string) bool {
 	default:
 		return false
 	}
+}
+
+// retireProvisionalMailboxLatch is true only when the latched tool is a
+// mailbox mutation and this checkpoint saved a new result for it that is
+// already known. Results that were already stored when the latch was taken
+// belong to an earlier call. Zero new results means this call has not reported.
+func retireProvisionalMailboxLatch(lastTool, sideEffect string, previous, current []ConversationEntry) bool {
+	if !ExternalSendCheckpointEvidence(lastTool, sideEffect) {
+		return false
+	}
+	return mailboxLatchAdvanced(lastTool, previous, current)
+}
+
+// mailboxUncertainLeftActiveBranch reports a transport-uncertain result for
+// the latched mailbox tool that this save did not keep. That row may have
+// been a real SMTP or IMAP delivery. A confirmation card is not remembered:
+// the server has not been contacted. Callers store the transport case on
+// the marker so a later checkpoint can still see it.
+func mailboxUncertainLeftActiveBranch(toolName string, previous, current []ConversationEntry) bool {
+	if !mailboxMutationTool(toolName) {
+		return false
+	}
+	prev := mailboxMutationResults(toolName, previous)
+	cur := mailboxMutationResults(toolName, current)
+	pairedPrev, _ := pairMailboxMutationResults(prev, cur)
+	for i := range prev {
+		if !pairedPrev[i] && mailbox.ExternalMutationUncertain(prev[i].content) {
+			return true
+		}
+	}
+	return false
+}
+
+// mailboxLatchAdvanced reports that this checkpoint placed a new known result
+// for the tool on the active branch. A confirmation card that is still visible
+// is not a delivery and does not keep the latch; a new confirmation card is
+// not this call's result. Checkpoint trim can drop older rows, so the branch
+// count is not monotonic. A result is new when its tool-call id was not on the
+// previous branch. Rows that have no id match by text. A transport-uncertain or
+// other unknown result removed in this same save still blocks this
+// retirement. A confirmation card does not: the server was not contacted,
+// and recording that known result as the baseline would leave the latch
+// stuck after the card is gone.
+func mailboxLatchAdvanced(toolName string, previous, current []ConversationEntry) bool {
+	if !mailboxMutationResultsRetired(toolName, current) {
+		return false
+	}
+	prev := mailboxMutationResults(toolName, previous)
+	cur := mailboxMutationResults(toolName, current)
+	pairedPrev, pairedCur := pairMailboxMutationResults(prev, cur)
+	for i := range prev {
+		if pairedPrev[i] || prev[i].known || mailbox.ExternalMutationConfirmation(prev[i].content) {
+			continue
+		}
+		return false
+	}
+	for i := range cur {
+		// A new confirmation card is not this call's outcome. Only a new
+		// known result retires the latch while an older card stays visible.
+		if !pairedCur[i] && cur[i].known {
+			return true
+		}
+	}
+	return false
+}
+
+type mailboxMutationResult struct {
+	id      string
+	content string
+	known   bool
+}
+
+func mailboxMutationResults(toolName string, entries []ConversationEntry) []mailboxMutationResult {
+	if !mailboxMutationTool(toolName) {
+		return nil
+	}
+	want := strings.TrimSpace(toolName)
+	out := make([]mailboxMutationResult, 0)
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(entry.ToolName), want) {
+			continue
+		}
+		text := conversationContentText(entry.Content)
+		out = append(out, mailboxMutationResult{
+			id:      strings.TrimSpace(entry.ToolCallID),
+			content: text,
+			known:   mailbox.ExternalMutationKnown(text),
+		})
+	}
+	return out
+}
+
+// pairMailboxMutationResults matches current results to previous ones.
+// Tool-call ids pair first. A row with no id pairs to one previous row that
+// also has no id and the same text, so two identical refusals stay distinct.
+func pairMailboxMutationResults(prev, cur []mailboxMutationResult) (pairedPrev, pairedCur []bool) {
+	pairedPrev = make([]bool, len(prev))
+	pairedCur = make([]bool, len(cur))
+	for i := range cur {
+		if cur[i].id == "" {
+			continue
+		}
+		for j := range prev {
+			if pairedPrev[j] || prev[j].id != cur[i].id {
+				continue
+			}
+			pairedPrev[j] = true
+			pairedCur[i] = true
+			break
+		}
+	}
+	for i := range cur {
+		if pairedCur[i] || cur[i].id != "" {
+			continue
+		}
+		for j := range prev {
+			if pairedPrev[j] || prev[j].id != "" || prev[j].content != cur[i].content {
+				continue
+			}
+			pairedPrev[j] = true
+			pairedCur[i] = true
+			break
+		}
+	}
+	return pairedPrev, pairedCur
+}
+
+// activeCheckpointEntries is the branch recovery reloads. Inactive branches
+// stay in the stored tree and must not change this call's latch.
+func activeCheckpointEntries(s *conversationSession) []ConversationEntry {
+	if s == nil {
+		return nil
+	}
+	if strings.TrimSpace(s.activeBranchTipID) == "" || len(s.entries) == 0 {
+		return s.entries
+	}
+	active := NewConversationTreeWithTip(s.entries, s.activeBranchTipID).ActiveBranch()
+	if len(active) == 0 {
+		return s.entries
+	}
+	return active
+}
+
+func mailboxToolResultCount(toolName string, entries []ConversationEntry) int {
+	if !mailboxMutationTool(toolName) {
+		return 0
+	}
+	want := strings.TrimSpace(toolName)
+	n := 0
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(entry.ToolName), want) {
+			n++
+		}
+	}
+	return n
+}
+
+// noteMailboxLatchBaseline records how many results for this mailbox tool are
+// already saved, so a later checkpoint can tell a new result from that history.
+// Any other marker clears the baseline.
+func noteMailboxLatchBaseline(s *conversationSession, tool, effect string) {
+	if s == nil {
+		return
+	}
+	if mailboxMutationTool(tool) && ExternalSendCheckpointEvidence(tool, effect) {
+		s.inFlightMailboxResultBaseline = mailboxToolResultCount(tool, activeCheckpointEntries(s))
+		s.inFlightMailboxBaselineSet = true
+		return
+	}
+	s.inFlightMailboxResultBaseline = 0
+	s.inFlightMailboxBaselineSet = false
+}
+
+// noteMailboxLatchBaselineAfterHistorySave keeps the baseline on the branch
+// a history save just wrote. Retirement stays on the checkpoint path, which
+// sees the paired tool delta. A dropped transport-uncertain row keeps the
+// baseline the checkpoint recorded.
+func noteMailboxLatchBaselineAfterHistorySave(s *conversationSession) {
+	if s == nil || strings.TrimSpace(s.inFlightTask) == "" || s.inFlightMailboxUncertainDropped {
+		return
+	}
+	noteMailboxLatchBaseline(s, s.inFlightLastTool, s.inFlightSideEffect)
+}
+
+// MailboxLatchSettled reports that this mailbox latch already has a known
+// result of its own. A confirmation card is neither that result nor a reason
+// to keep the latch. An unset baseline is a marker from before the count was
+// stored: any known result settles it. A recorded baseline settles only when
+// a newer result exists, so an earlier known refusal does not erase a send
+// that has not reported yet.
+func MailboxLatchSettled(toolName string, entries []ConversationEntry, baseline int, baselineSet bool) bool {
+	if !mailboxMutationResultsRetired(toolName, entries) {
+		return false
+	}
+	if !baselineSet {
+		return true
+	}
+	return mailboxToolResultCount(toolName, entries) > baseline
+}
+
+// remainingEffectAfterMailboxLatch replaces a resolved provisional mailbox
+// latch with the effect this checkpoint actually recorded. The stored latch
+// is not evidence once its own results are known.
+func remainingEffectAfterMailboxLatch(incomingTool, incomingEffect, latchedTool string, entries []ConversationEntry) (string, string) {
+	incomingTool = strings.TrimSpace(incomingTool)
+	incomingEffect = strings.TrimSpace(incomingEffect)
+	switch strings.ToLower(incomingTool) {
+	case "im_message", "send_file", "send_to_im":
+		if incomingEffect == "" || incomingEffect == "none" || incomingEffect == "local_committed" {
+			incomingEffect = "external_uncertain"
+		}
+		return incomingTool, incomingEffect
+	case "mailbox_send", "mailbox_delete":
+		if !mailboxMutationResultsRetired(incomingTool, entries) {
+			if incomingEffect == "" || incomingEffect == "none" {
+				incomingEffect = "external_uncertain"
+			}
+			return incomingTool, incomingEffect
+		}
+	}
+	if incomingEffect == "local_committed" {
+		tool := incomingTool
+		if tool == "" || mailboxMutationTool(tool) {
+			tool = latchedTool
+		}
+		return tool, "local_committed"
+	}
+	if (incomingEffect == "external_uncertain" || incomingEffect == "unknown") && incomingTool != "" && !mailboxMutationResultsRetired(incomingTool, entries) {
+		return incomingTool, incomingEffect
+	}
+	return latchedTool, "none"
+}
+
+func mailboxMutationTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "mailbox_send", "mailbox_delete":
+		return true
+	default:
+		return false
+	}
+}
+
+func knownMailboxMutationTool(name string, entries []ConversationEntry) bool {
+	return mailboxMutationTool(name) && MailboxMutationResultsKnown(name, entries)
+}
+
+// mailboxMutationResultsRetired reports that a mailbox latch can close.
+// A known result is enough when every other saved result for that tool is a
+// confirmation card. The card has not contacted the server. An empty,
+// transport-uncertain, or unrecognized result still blocks. This is looser
+// than MailboxMutationResultsKnown, which a single open card must still fail
+// so the tool batch stays unresolved.
+func mailboxMutationResultsRetired(toolName string, entries []ConversationEntry) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "mailbox_send", "mailbox_delete":
+	default:
+		return false
+	}
+	sawKnown := false
+	want := strings.TrimSpace(toolName)
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(entry.ToolName), want) {
+			continue
+		}
+		text := conversationContentText(entry.Content)
+		if mailbox.ExternalMutationConfirmation(text) {
+			continue
+		}
+		if !mailbox.ExternalMutationKnown(text) {
+			return false
+		}
+		sawKnown = true
+	}
+	return sawKnown
+}
+
+// MailboxMutationResultsKnown reports that every saved result for this
+// mailbox_send or mailbox_delete is a known outcome. Another tool, a missing
+// result, a confirmation card, or any still-unknown result is not known.
+// im_message, send_file, and send_to_im are never known by this check.
+func MailboxMutationResultsKnown(toolName string, entries []ConversationEntry) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "mailbox_send", "mailbox_delete":
+	default:
+		return false
+	}
+	saw := false
+	want := strings.TrimSpace(toolName)
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(entry.ToolName), want) {
+			continue
+		}
+		saw = true
+		if !mailbox.ExternalMutationKnown(conversationContentText(entry.Content)) {
+			return false
+		}
+	}
+	return saw
 }
 
 func recoveryModeForSideEffect(sideEffect string) string {
@@ -2452,6 +2914,119 @@ func (cm *ConversationMemory) PromoteRecoverableCheckpoints(now time.Time) int {
 	return cm.promoteRecoverableCheckpoints(now)
 }
 
+// loadMailboxLatchHistory loads transcripts for mailbox latches that can be
+// judged only from saved tool results. SQLite startup installs the marker
+// before those rows.
+func (cm *ConversationMemory) loadMailboxLatchHistory(sh *memoryShard) {
+	if cm == nil || sh == nil {
+		return
+	}
+	sh.mu.Lock()
+	ids := make([]string, 0)
+	for userID, s := range sh.sessions {
+		if sessionNeedsMailboxLatchHistory(s) {
+			ids = append(ids, userID)
+		}
+	}
+	sh.mu.Unlock()
+	for _, userID := range ids {
+		cm.ensureSessionEntriesLoaded(userID)
+	}
+}
+
+func sessionNeedsMailboxLatchHistory(s *conversationSession) bool {
+	if s == nil || s.entriesLoaded {
+		return false
+	}
+	if strings.TrimSpace(s.inFlightTask) != "" && mailboxMutationTool(s.inFlightLastTool) && !s.inFlightMailboxUncertainDropped {
+		return true
+	}
+	if mailboxSlotNeedsHistory(s.unfinishedSlot) {
+		return true
+	}
+	for _, slot := range s.recoverySlots {
+		if mailboxSlotNeedsHistory(slot) {
+			return true
+		}
+	}
+	return false
+}
+
+func mailboxSlotNeedsHistory(slot *UnfinishedTaskSlot) bool {
+	if slot == nil || slot.MailboxUncertainDropped || !unfinishedSlotIsPendingDecision(slot) {
+		return false
+	}
+	return mailboxMutationTool(slot.LastToolName)
+}
+
+// settledMailboxMarker is a mailbox latch whose saved results are already
+// known. Promoting it would show the generic unfinished card.
+func settledMailboxMarker(s *conversationSession) bool {
+	if s == nil || strings.TrimSpace(s.inFlightTask) == "" || s.inFlightMailboxUncertainDropped {
+		return false
+	}
+	return MailboxLatchSettled(s.inFlightLastTool, activeCheckpointEntries(s), s.inFlightMailboxResultBaseline, s.inFlightMailboxBaselineSet)
+}
+
+// releaseSettledMailboxSlotsLocked completes mailbox review slots whose
+// results are already known. History stays. A dropped transport-uncertain
+// row stays latched. Parked recovery slots are included: startup projection
+// lists them even when another slot is current.
+func releaseSettledMailboxSlotsLocked(s *conversationSession) bool {
+	if s == nil {
+		return false
+	}
+	released := dropSettledParkedMailboxSlotsLocked(s)
+	seen := map[string]struct{}{}
+	for {
+		slot := s.unfinishedSlot
+		if slot == nil {
+			break
+		}
+		if _, dup := seen[slot.SlotID]; dup {
+			break
+		}
+		seen[slot.SlotID] = struct{}{}
+		if !mailboxSlotSettled(s, slot) {
+			break
+		}
+		log.Printf("[InFlightRecovery] released settled mailbox slot user=%s slot=%s tool=%s", slot.UserID, slot.SlotID, slot.LastToolName)
+		promoteNextRecoverySlotLocked(s)
+		released = true
+	}
+	return released
+}
+
+func dropSettledParkedMailboxSlotsLocked(s *conversationSession) bool {
+	if s == nil || len(s.recoverySlots) == 0 {
+		return false
+	}
+	kept := make([]*UnfinishedTaskSlot, 0, len(s.recoverySlots))
+	released := false
+	for _, slot := range s.recoverySlots {
+		if mailboxSlotSettled(s, slot) {
+			log.Printf("[InFlightRecovery] released parked settled mailbox slot user=%s slot=%s tool=%s", slot.UserID, slot.SlotID, slot.LastToolName)
+			if s.activeSlotID != "" && s.activeSlotID == slot.SlotID {
+				s.activeSlotID = ""
+			}
+			released = true
+			continue
+		}
+		kept = append(kept, slot)
+	}
+	if released {
+		s.recoverySlots = kept
+	}
+	return released
+}
+
+func mailboxSlotSettled(s *conversationSession, slot *UnfinishedTaskSlot) bool {
+	if !mailboxSlotNeedsHistory(slot) {
+		return false
+	}
+	return MailboxLatchSettled(slot.LastToolName, activeCheckpointEntries(s), slot.MailboxResultBaseline, slot.MailboxResultBaselineSet)
+}
+
 func (cm *ConversationMemory) promoteRecoverableCheckpoints(now time.Time) int {
 	if now.IsZero() {
 		now = time.Now()
@@ -2459,34 +3034,53 @@ func (cm *ConversationMemory) promoteRecoverableCheckpoints(now time.Time) int {
 	promoted, changed := 0, false
 	cm.checkpointLock(func() {
 		for _, sh := range cm.shards {
+			cm.loadMailboxLatchHistory(sh)
 			sh.mu.Lock()
 			for userID, s := range sh.sessions {
-				if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
+				if s == nil {
 					continue
 				}
-				queueUnfinishedSlotLocked(s, &UnfinishedTaskSlot{
-					SlotID:           newRecoverySlotID("inflight-recovery", now),
-					UserID:           userID,
-					ProjectPath:      s.inFlightProjectPath,
-					Tool:             "agent",
-					Status:           UnfinishedTaskSlotStatusInterrupted,
-					Summary:          "Previous task was interrupted after a durable tool-progress checkpoint.",
-					LastTask:         s.inFlightTask,
-					ResumePrompt:     recoveryResumePrompt(s.inFlightSideEffect),
-					Source:           UnfinishedTaskSlotSourceInFlightRecovery,
-					EvidenceScopeKey: inFlightRunScopeKey(s.inFlightRunID),
-					LastCheckpointAt: s.inFlightSetAt,
-					LastToolName:     s.inFlightLastTool,
-					SideEffectState:  s.inFlightSideEffect,
-					RecoveryMode:     recoveryModeForSideEffect(s.inFlightSideEffect),
-					CreatedAt:        now,
-					UpdatedAt:        now,
-				})
-				promoted++
-				clearInFlightFields(s)
-				s.lastAccess = now
-				changed = true
-				cm.markSessionDirty(userID)
+				if strings.TrimSpace(s.inFlightTask) != "" {
+					if settledMailboxMarker(s) {
+						log.Printf("[InFlightRecovery] skipped settled mailbox latch user=%s tool=%s", userID, s.inFlightLastTool)
+						clearInFlightFields(s)
+						s.lastAccess = now
+						changed = true
+						cm.markSessionDirty(userID)
+					} else {
+						queueUnfinishedSlotLocked(s, &UnfinishedTaskSlot{
+							SlotID:                   newRecoverySlotID("inflight-recovery", now),
+							UserID:                   userID,
+							ProjectPath:              s.inFlightProjectPath,
+							Tool:                     "agent",
+							Status:                   UnfinishedTaskSlotStatusInterrupted,
+							Summary:                  "Previous task was interrupted after a durable tool-progress checkpoint.",
+							LastTask:                 s.inFlightTask,
+							ResumePrompt:             recoveryResumePrompt(s.inFlightSideEffect),
+							Source:                   UnfinishedTaskSlotSourceInFlightRecovery,
+							EvidenceScopeKey:         inFlightRunScopeKey(s.inFlightRunID),
+							LastCheckpointAt:         s.inFlightSetAt,
+							LastToolName:             s.inFlightLastTool,
+							SideEffectState:          s.inFlightSideEffect,
+							RecoveryMode:             recoveryModeForSideEffect(s.inFlightSideEffect),
+							MailboxResultBaseline:    s.inFlightMailboxResultBaseline,
+							MailboxResultBaselineSet: s.inFlightMailboxBaselineSet,
+							MailboxUncertainDropped:  s.inFlightMailboxUncertainDropped,
+							CreatedAt:                now,
+							UpdatedAt:                now,
+						})
+						promoted++
+						clearInFlightFields(s)
+						s.lastAccess = now
+						changed = true
+						cm.markSessionDirty(userID)
+					}
+				}
+				if releaseSettledMailboxSlotsLocked(s) {
+					s.lastAccess = now
+					changed = true
+					cm.markSessionDirty(userID)
+				}
 			}
 			sh.mu.Unlock()
 		}
@@ -2515,14 +3109,17 @@ func inFlightRunScopeKey(runID string) string {
 // InFlightRecovery is the checkpoint evidence cleared together with the
 // in-flight marker. It carries no tool arguments or result payload.
 type InFlightRecovery struct {
-	Task             string
-	ProjectPath      string
-	RunID            string
-	EvidenceScopeKey string
-	LastToolName     string
-	SideEffectState  string
-	RecoveryMode     string
-	SetAt            time.Time
+	Task                     string
+	ProjectPath              string
+	RunID                    string
+	EvidenceScopeKey         string
+	LastToolName             string
+	SideEffectState          string
+	RecoveryMode             string
+	MailboxResultBaseline    int
+	MailboxResultBaselineSet bool
+	MailboxUncertainDropped  bool
+	SetAt                    time.Time
 }
 
 // ConsumeInFlightTask atomically reads and clears the in-flight marker.
@@ -2554,13 +3151,16 @@ func (cm *ConversationMemory) ConsumeInFlightRecovery(userID string) InFlightRec
 			return
 		}
 		recovered = InFlightRecovery{
-			Task:             s.inFlightTask,
-			ProjectPath:      s.inFlightProjectPath,
-			RunID:            s.inFlightRunID,
-			EvidenceScopeKey: inFlightRunScopeKey(s.inFlightRunID),
-			LastToolName:     s.inFlightLastTool,
-			SideEffectState:  s.inFlightSideEffect,
-			SetAt:            s.inFlightSetAt,
+			Task:                     s.inFlightTask,
+			ProjectPath:              s.inFlightProjectPath,
+			RunID:                    s.inFlightRunID,
+			EvidenceScopeKey:         inFlightRunScopeKey(s.inFlightRunID),
+			LastToolName:             s.inFlightLastTool,
+			SideEffectState:          s.inFlightSideEffect,
+			MailboxResultBaseline:    s.inFlightMailboxResultBaseline,
+			MailboxResultBaselineSet: s.inFlightMailboxBaselineSet,
+			MailboxUncertainDropped:  s.inFlightMailboxUncertainDropped,
+			SetAt:                    s.inFlightSetAt,
 		}
 		if strings.TrimSpace(s.inFlightLastTool) != "" || strings.TrimSpace(s.inFlightSideEffect) != "" {
 			recovered.RecoveryMode = recoveryModeForSideEffect(s.inFlightSideEffect)
@@ -2572,6 +3172,9 @@ func (cm *ConversationMemory) ConsumeInFlightRecovery(userID string) InFlightRec
 		s.inFlightSequence = 0
 		s.inFlightLastTool = ""
 		s.inFlightSideEffect = ""
+		s.inFlightMailboxResultBaseline = 0
+		s.inFlightMailboxBaselineSet = false
+		s.inFlightMailboxUncertainDropped = false
 		sh.mu.Unlock()
 		cm.markSessionDirty(userID)
 	})
@@ -3000,24 +3603,27 @@ func (cm *ConversationMemory) installPersistedSession(userID string, session per
 
 func conversationSessionFromPersisted(session persistedSession) *conversationSession {
 	return &conversationSession{
-		entries:              append([]ConversationEntry(nil), session.Entries...),
-		entriesLoaded:        true,
-		activeBranchTipID:    session.ActiveBranchTipID,
-		lastAccess:           session.LastAccess,
-		unfinishedSlot:       CloneUnfinishedTaskSlot(session.UnfinishedSlot),
-		recoverySlots:        cloneRecoverySlots(session.RecoverySlots),
-		activeSlotID:         session.ActiveSlotID,
-		inFlightTask:         session.InFlightTask,
-		inFlightProjectPath:  session.InFlightProjectPath,
-		inFlightSetAt:        session.InFlightSetAt,
-		inFlightRunID:        session.InFlightRunID,
-		inFlightSequence:     session.InFlightSequence,
-		inFlightLastTool:     session.InFlightLastTool,
-		inFlightSideEffect:   session.InFlightSideEffect,
-		semanticResidue:      clonePersistedSemanticResidue(session.SemanticSessionResidue),
-		producedDocument:     clonePersistedProducedDocument(session.ProducedDocument),
-		parentExecutionTools: cloneParentExecutionTools(session.ParentExecutionTools),
-		parentExecutionKnown: session.ParentExecutionKnown,
+		entries:                         append([]ConversationEntry(nil), session.Entries...),
+		entriesLoaded:                   true,
+		activeBranchTipID:               session.ActiveBranchTipID,
+		lastAccess:                      session.LastAccess,
+		unfinishedSlot:                  CloneUnfinishedTaskSlot(session.UnfinishedSlot),
+		recoverySlots:                   cloneRecoverySlots(session.RecoverySlots),
+		activeSlotID:                    session.ActiveSlotID,
+		inFlightTask:                    session.InFlightTask,
+		inFlightProjectPath:             session.InFlightProjectPath,
+		inFlightSetAt:                   session.InFlightSetAt,
+		inFlightRunID:                   session.InFlightRunID,
+		inFlightSequence:                session.InFlightSequence,
+		inFlightLastTool:                session.InFlightLastTool,
+		inFlightSideEffect:              session.InFlightSideEffect,
+		inFlightMailboxResultBaseline:   session.InFlightMailboxResultBaseline,
+		inFlightMailboxBaselineSet:      session.InFlightMailboxBaselineSet,
+		inFlightMailboxUncertainDropped: session.InFlightMailboxUncertainDropped,
+		semanticResidue:                 clonePersistedSemanticResidue(session.SemanticSessionResidue),
+		producedDocument:                clonePersistedProducedDocument(session.ProducedDocument),
+		parentExecutionTools:            cloneParentExecutionTools(session.ParentExecutionTools),
+		parentExecutionKnown:            session.ParentExecutionKnown,
 	}
 }
 
@@ -3067,23 +3673,26 @@ func (cm *ConversationMemory) writeDetachedUser(userID string) error {
 func persistedFromSession(session *conversationSession) persistedSession {
 	entries, _ := sanitizeConversationEntriesForPersistence(session.entries)
 	return persistedSession{
-		Entries:                entries,
-		ActiveBranchTipID:      session.activeBranchTipID,
-		LastAccess:             session.lastAccess,
-		UnfinishedSlot:         CloneUnfinishedTaskSlot(session.unfinishedSlot),
-		RecoverySlots:          cloneRecoverySlots(session.recoverySlots),
-		ActiveSlotID:           session.activeSlotID,
-		InFlightTask:           session.inFlightTask,
-		InFlightProjectPath:    session.inFlightProjectPath,
-		InFlightSetAt:          session.inFlightSetAt,
-		InFlightRunID:          session.inFlightRunID,
-		InFlightSequence:       session.inFlightSequence,
-		InFlightLastTool:       session.inFlightLastTool,
-		InFlightSideEffect:     session.inFlightSideEffect,
-		SemanticSessionResidue: clonePersistedSemanticResidue(session.semanticResidue),
-		ProducedDocument:       clonePersistedProducedDocument(session.producedDocument),
-		ParentExecutionTools:   cloneParentExecutionTools(session.parentExecutionTools),
-		ParentExecutionKnown:   session.parentExecutionKnown,
+		Entries:                         entries,
+		ActiveBranchTipID:               session.activeBranchTipID,
+		LastAccess:                      session.lastAccess,
+		UnfinishedSlot:                  CloneUnfinishedTaskSlot(session.unfinishedSlot),
+		RecoverySlots:                   cloneRecoverySlots(session.recoverySlots),
+		ActiveSlotID:                    session.activeSlotID,
+		InFlightTask:                    session.inFlightTask,
+		InFlightProjectPath:             session.inFlightProjectPath,
+		InFlightSetAt:                   session.inFlightSetAt,
+		InFlightRunID:                   session.inFlightRunID,
+		InFlightSequence:                session.inFlightSequence,
+		InFlightLastTool:                session.inFlightLastTool,
+		InFlightSideEffect:              session.inFlightSideEffect,
+		InFlightMailboxResultBaseline:   session.inFlightMailboxResultBaseline,
+		InFlightMailboxBaselineSet:      session.inFlightMailboxBaselineSet,
+		InFlightMailboxUncertainDropped: session.inFlightMailboxUncertainDropped,
+		SemanticSessionResidue:          clonePersistedSemanticResidue(session.semanticResidue),
+		ProducedDocument:                clonePersistedProducedDocument(session.producedDocument),
+		ParentExecutionTools:            cloneParentExecutionTools(session.parentExecutionTools),
+		ParentExecutionKnown:            session.parentExecutionKnown,
 	}
 }
 
@@ -3278,25 +3887,12 @@ func (cm *ConversationMemory) loadFromDiskLegacyJSON() error {
 
 		sh := cm.shardNoWait(userID)
 		sh.mu.Lock()
-		sh.sessions[userID] = &conversationSession{
-			entries:              entries,
-			activeBranchTipID:    session.ActiveBranchTipID,
-			lastAccess:           session.LastAccess,
-			unfinishedSlot:       CloneUnfinishedTaskSlot(session.UnfinishedSlot),
-			recoverySlots:        cloneRecoverySlots(session.RecoverySlots),
-			activeSlotID:         session.ActiveSlotID,
-			inFlightTask:         session.InFlightTask,
-			inFlightProjectPath:  session.InFlightProjectPath,
-			inFlightSetAt:        inFlightSetAt,
-			inFlightRunID:        session.InFlightRunID,
-			inFlightSequence:     session.InFlightSequence,
-			inFlightLastTool:     session.InFlightLastTool,
-			inFlightSideEffect:   session.InFlightSideEffect,
-			semanticResidue:      clonePersistedSemanticResidue(session.SemanticSessionResidue),
-			producedDocument:     clonePersistedProducedDocument(session.ProducedDocument),
-			parentExecutionTools: cloneParentExecutionTools(session.ParentExecutionTools),
-			parentExecutionKnown: session.ParentExecutionKnown,
-		}
+		// Same field set as the SQLite loader. A hand-written literal here
+		// dropped the mailbox baseline on the JSON fallback.
+		loaded := conversationSessionFromPersisted(session)
+		loaded.entries = entries
+		loaded.inFlightSetAt = inFlightSetAt
+		sh.sessions[userID] = loaded
 		sh.mu.Unlock()
 	}
 	if err := cm.overlayDetachedSessions(); err != nil {

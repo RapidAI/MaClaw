@@ -100,7 +100,7 @@ import { CodingAgentProcessTimeline } from "./CodingAgentProcessTimeline";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionKey, formatGoalChecklistFromRecord, isACPAssistantSessionKey, logAIPanelDiagnostic, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, logAIPanelDiagnostic, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
 import { expertTabId } from "./expertTypes";
 import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
@@ -2465,7 +2465,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // under the session's synchronization. Do not issue a separate cancel
             // in parallel, which can race the clear with a late write.
             if (activeTab.projectPath) {
-                const sessionKey = activeTab.sessionKey || `desktop-user:${activeTab.projectPath}`;
+                const sessionKey = activeTab.sessionKey || expertSessionForProjectTask(taskListProp, activeTab.projectPath) || `desktop-user:${activeTab.projectPath}`;
                 // Invalidate all session-owned transient state before the async
                 // cancel returns. Otherwise an open file picker or late stream
                 // event can revive attachments/messages after a clear.
@@ -2497,7 +2497,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setQueueInteractionStarted(false);
             setQueueEditDraftActive(false);
             setEditingEntryId(null);
-            const sessionKey = expertSessionKey(activeTab.expertId);
+            const sessionKey = expertTaskSessionKey(activeTab.expertId, activeTab.projectPath);
             if (sessionKey) {
                 forgetAIAssistantSessionRounds(sessionKey);
                 ClearAIAssistantHistoryForSession(sessionKey).catch(() => {});
@@ -2509,7 +2509,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setQueueEditDraftActive(false);
         setEditingEntryId(null);
         await clearHistory();
-    }, [activeTab.agentMode, activeTab.id, activeTab.type, activeTab.projectPath, activeTab.expertId, clearHistory, clearTabConversation, ensureProjectSessionHistoryCleared, resetCodingWorkbenchTurnUI]);
+    }, [activeTab.agentMode, activeTab.id, activeTab.type, activeTab.projectPath, activeTab.expertId, clearHistory, clearTabConversation, ensureProjectSessionHistoryCleared, resetCodingWorkbenchTurnUI, taskListProp]);
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const isExpertTabActive = activeTab.type === "expert";
@@ -2652,8 +2652,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [isPureCodingEnvironment, codingInterruptScopeKey, codingPendingApproval, codingConflictCount, remoteCodingNeedsReconnect]);
     const showChatUI = isLocalTabActive || isProjectTabActive || isExpertTabActive;
     const activeSessionKey = isProjectTabActive && activeTab.projectPath
-        ? (activeTab.sessionKey || `desktop-user:${activeTab.projectPath}`)
-        : (isExpertTabActive && activeTab.expertId ? expertSessionKey(activeTab.expertId) : 'desktop-user');
+        ? (activeTab.sessionKey || expertSessionForProjectTask(taskListProp, activeTab.projectPath) || `desktop-user:${activeTab.projectPath}`)
+        : (isExpertTabActive && activeTab.expertId ? expertTaskSessionKey(activeTab.expertId, activeTab.projectPath) : 'desktop-user');
     const {
         handlePaste: handlePasteBase,
         handleDragOver: handleDragOverBase,
@@ -2733,8 +2733,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const tabs = getTabs().filter(tab => (tab.type === "project" && tab.projectPath) || (tab.type === "expert" && tab.expertId));
         for (const tab of tabs) {
             const sessionKey = tab.type === "expert"
-                ? expertSessionKey(tab.expertId)
-                : (tab.sessionKey || projectSessionKey(tab.projectPath));
+                ? expertTaskSessionKey(tab.expertId, tab.projectPath)
+                : (tab.sessionKey || expertSessionForProjectTask(taskListProp, tab.projectPath) || projectSessionKey(tab.projectPath));
             if (normalizeAssistantSessionKey(sessionKey) !== goalUser) continue;
             const existingState = getTabState(tab.id);
             const history = (Array.isArray(existingState?.history) ? existingState.history : []) as ChatMessage[];
@@ -2995,7 +2995,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const projectTabs = getTabs().filter(tab => (tab.type === "project" && tab.projectPath) || (tab.type === "expert" && tab.expertId));
         if (projectTabs.length === 0) return;
         for (const tab of projectTabs) {
-            const sessionKey = tab.type === "expert" ? expertSessionKey(tab.expertId) : (tab.sessionKey || `desktop-user:${tab.projectPath}`);
+            const sessionKey = tab.type === "expert" ? expertTaskSessionKey(tab.expertId, tab.projectPath) : (tab.sessionKey || expertSessionForProjectTask(taskListProp, tab.projectPath) || `desktop-user:${tab.projectPath}`);
             const floor = sessionFloorFor(tab.id, tab.sessionFloorMs);
             const existingState = getTabState(tab.id);
             const existingHistory = (Array.isArray(existingState?.history) ? existingState.history : []) as ChatMessage[];
@@ -3045,7 +3045,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             persistProjectTabMsgIds();
         }
-    }, [expertSessionFloorKey, getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState]);
+    }, [expertSessionFloorKey, getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState, taskListProp]);
     const rawDisplayMessages = useMemo(() => {
         if (!isProjectTabActive && !isExpertTabActive) {
             if (projectTabRoundsRef.current.size > 0) {
@@ -3437,19 +3437,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const queueSessionKey = typeof options?.queue_session_key === "string" ? options.queue_session_key.trim() : "";
         const sendOptions = { ...(options || {}) };
         delete sendOptions.queue_session_key;
-        const queuedProjectPath = projectPathFromSessionKey(queueSessionKey) || undefined;
         const queuedExpertId = expertIdFromSessionKey(queueSessionKey) || undefined;
         const forceLocalQueueRoute = queueSessionKey === "desktop-user";
         const optionProjectPath = typeof sendOptions.project_path === "string" ? sendOptions.project_path : undefined;
         const optionTabId = typeof sendOptions.tabId === "string" ? sendOptions.tabId : undefined;
         const liveActiveTab = activeTabRef.current;
-        const activeSessionProjectPath = projectPathFromSessionKey(getActiveSessionKey());
+        // An expert task key embeds its workspace path. That path is not a
+        // project-tab send: the expert route owns it. Treating it as a project
+        // path would drop expert_id and run the turn on desktop-user:<path>.
+        const activeRouteKey = getActiveSessionKey();
+        const queuedProjectPath = isExpertSessionKey(queueSessionKey) ? undefined : (projectPathFromSessionKey(queueSessionKey) || undefined);
+        const queuedExpertPath = isExpertSessionKey(queueSessionKey) ? (projectPathFromSessionKey(queueSessionKey) || undefined) : undefined;
+        const projectTabOwnsThisExpertQueue = projectTabOwnsExpertQueue(liveActiveTab.type, queueSessionKey);
+        const activeSessionProjectPath = isExpertSessionKey(activeRouteKey) ? undefined : (projectPathFromSessionKey(activeRouteKey) || undefined);
         const resolvedACPProjectPath = queueSessionKey.startsWith("desktop-user:acp:")
             ? getTabs().find(tab => tab.type === "project" && tab.sessionKey === queueSessionKey)?.projectPath
             : undefined;
         const resolvedProjectPath = queuedProjectPath
 			|| resolvedACPProjectPath
             || optionProjectPath
+            || (projectTabOwnsThisExpertQueue ? (queuedExpertPath || (liveActiveTab.type === "project" ? liveActiveTab.projectPath : undefined)) : undefined)
             || (!forceLocalQueueRoute && !queuedExpertId && liveActiveTab.type === "project" ? liveActiveTab.projectPath : undefined)
             || (!forceLocalQueueRoute && !queuedExpertId ? activeSessionProjectPath : undefined)
             || undefined;
@@ -3457,7 +3464,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ? getTabs().find(t => t.type === "project" && t.projectPath === resolvedProjectPath)
             : undefined;
         const resolvedTabId = optionTabId || resolvedTab?.id || (liveActiveTab.type === "project" ? liveActiveTab.id : undefined);
-        const isProjectSend = !!resolvedProjectPath;
+        const expertRouteOwnsSend = !projectTabOwnsThisExpertQueue && (!!queuedExpertId || (liveActiveTab.type === "expert" && !queuedProjectPath));
+        const isProjectSend = !!resolvedProjectPath && !expertRouteOwnsSend;
         const resolvedExpertId = queuedExpertId || (!forceLocalQueueRoute && liveActiveTab.type === "expert" ? liveActiveTab.expertId : undefined);
         // Reset commands must wipe the target session's transcript and durable
         // history. Sending them as chat only clears backend memory and leaves
@@ -3521,7 +3529,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     clearTabConversation(expertTabId);
                     clearedProjectTabIdsRef.current.add(expertTabId);
                 }
-                const sessionKey = expertSessionKey(resolvedExpertId);
+                const sessionKey = expertTaskSessionKey(resolvedExpertId, expertTab?.projectPath || (liveActiveTab.type === "expert" ? liveActiveTab.projectPath : ""));
                 if (sessionKey) {
                     forgetAIAssistantSessionRounds(sessionKey);
                     ClearAIAssistantHistoryForSession(sessionKey).catch(() => {});
@@ -3616,6 +3624,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 tabId: resolvedTabId,
                 project_path: resolvedProjectPath,
             };
+            // An older expert task is shown on a project tab. Its running turn
+            // lives on the task session, so this send has to join that session.
+            const archivedExpertKey = expertSessionForProjectTask(taskListProp, resolvedProjectPath)
+                || (projectTabOwnsThisExpertQueue ? queueSessionKey : "");
+            const archivedExpertId = expertIdFromSessionKey(archivedExpertKey);
+            if (archivedExpertId) mergedOptions.expert_id = archivedExpertId;
 			// ACP turns are already executing through the external host. Never route
 			// a queued UI action into the path-owned desktop project conversation.
 			if (queueSessionKey.startsWith("desktop-user:acp:")) {
@@ -3655,7 +3669,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             });
             const roundSeq = projectTabRoundSeqRef.current + 1;
             projectTabRoundSeqRef.current = roundSeq;
-            const roundKey = projectSessionKey(resolvedProjectPath);
+            const roundKey = archivedExpertKey || projectSessionKey(resolvedProjectPath);
             if (roundKey) {
                 projectTabRoundsRef.current.set(roundKey, {
                     tabId: typeof mergedOptions.tabId === "string" ? mergedOptions.tabId : null,
@@ -3666,6 +3680,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 });
                 setProjectTabRouteVersion(version => version + 1);
             }
+            if (archivedExpertKey) markPanelSendInFlight(archivedExpertKey, true);
             return sendMessage(text, mergedOptions).then((sent: boolean) => {
                 const currentRound = roundKey ? projectTabRoundsRef.current.get(roundKey) : undefined;
                 if (sent === false && currentRound?.seq === roundSeq) {
@@ -3686,22 +3701,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setProjectTabRouteVersion(version => version + 1);
                 }
                 throw err;
+            }).finally(() => {
+                if (archivedExpertKey) markPanelSendInFlight(archivedExpertKey, false);
             });
         }
         if (resolvedExpertId) {
-            // Expert route: no project path — the backend derives the session
-            // userID (desktop-user:expert:<id>) and persona from expert_id.
+            // The backend session is desktop-user:expert:<id>:task:<path> when
+            // this tab has a task. The persona still comes from expert_id.
             const expertTab = getTabs().find(tab => tab.type === "expert" && tab.expertId === resolvedExpertId);
             const expertTabId = optionTabId || expertTab?.id || (liveActiveTab.type === "expert" ? liveActiveTab.id : undefined);
-            const expertKey = expertSessionKey(resolvedExpertId);
             if (expertTabId) clearedProjectTabIdsRef.current.delete(expertTabId);
             const mergedOptions: Record<string, unknown> = {
                 ...sendOptions,
                 tabId: expertTabId,
                 expert_id: resolvedExpertId,
             };
-            const expertProjectPath = String(expertTab?.projectPath || (liveActiveTab.type === "expert" ? liveActiveTab.projectPath : "") || "").trim();
+            const expertProjectPath = String(queuedExpertPath || expertTab?.projectPath || (liveActiveTab.type === "expert" ? liveActiveTab.projectPath : "") || "").trim();
             if (expertProjectPath) mergedOptions.project_path = expertProjectPath;
+            const expertKey = expertTaskSessionKey(resolvedExpertId, expertProjectPath);
             const expertFloor = sessionFloorFor(String(expertTabId || ""), expertTab?.sessionFloorMs ?? (liveActiveTab.type === "expert" ? liveActiveTab.sessionFloorMs : undefined));
             const expertHeld = projectStreamHistoryRef.current;
             const expertHistory = (expertTabId === liveActiveTab.id
@@ -3753,7 +3770,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             : sendOptions;
         const localSend = sendMessage(text, localOptions as any);
         return localSend.finally(() => markPanelSendInFlight(localSessionKey, false));
-    }, [clearActiveHistory, clearHistory, clearTabConversation, ensureProjectSessionHistoryCleared, getTabState, getTabs, markPanelSendInFlight, messages, persistProjectTabMsgIds, projectTabMessages, saveTabState, sendMessage]);
+    }, [clearActiveHistory, clearHistory, clearTabConversation, ensureProjectSessionHistoryCleared, getTabState, getTabs, markPanelSendInFlight, messages, persistProjectTabMsgIds, projectTabMessages, saveTabState, sendMessage, taskListProp]);
     sendMessageForTabRef.current = sendMessageForTab;
     const sendProjectMessageAfterPrepare = useCallback((text: string, options?: Record<string, unknown>): Promise<boolean> => {
         const tabId = typeof options?.tabId === "string" ? options.tabId : "";
@@ -4014,11 +4031,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             } else if (getTabState(tabId)) {
                 clearTabConversation(tabId);
             }
+            // The new task view starts empty. Do not clear the backend session:
+            // that cancel is what stopped the previous task's live turn.
             const sessionKey = expertSessionKey(expertId);
-            if (sessionKey) {
-                forgetAIAssistantSessionRounds(sessionKey);
-                await ClearAIAssistantHistoryForSession(sessionKey);
-            }
+            if (sessionKey) forgetAIAssistantSessionRounds(sessionKey);
         },
         markExpertSessionFloor: (expertId) => {
             const floor = freshExpertFloorRef.current.get(expertId) || 0;
@@ -4029,7 +4045,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         },
         // Wizard expert handoff: deliver the composer's first message through
         // the freshly opened expert tab (backend expert branch triggers on it).
-        sendExpertMessage: (text, expertId) => sendMessageForTab(text, { queue_session_key: expertSessionKey(expertId), ...userTurnDisplayOptions(text) }),
+        sendExpertMessage: (text, expertId) => {
+            const tab = getTabs().find(item => item.type === "expert" && item.expertId === expertId);
+            return sendMessageForTab(text, { queue_session_key: expertTaskSessionKey(expertId, tab?.projectPath), ...userTurnDisplayOptions(text) });
+        },
         onEnsureExpertTask: props.onEnsureExpertTask,
         onEnsureAssistantTabTask: props.onEnsureAssistantTabTask,
     });
@@ -6126,6 +6145,47 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // internally calls sendMessage with proper options.
         return executeRoutedAction(command);
     }, [activeTab.expertId, activeTab.id, activeTab.projectPath, codingTaskReadyForIntents, executeAction, isExpertTabActive, isProjectTabActive, isPureCodingEnvironment, projectTabMessages]);
+
+    const buddyConfirmPathRef = useRef('');
+    const buddyConfirmUntilRef = useRef(0);
+    const buddyProjectPathRef = useRef(activeTab.projectPath);
+    buddyProjectPathRef.current = activeTab.projectPath;
+    const panelExecuteActionRef = useRef(panelExecuteAction);
+    panelExecuteActionRef.current = panelExecuteAction;
+    useEffect(() => {
+        const norm = (value: string) => value.replace(/\\/g, '/');
+        const onConfirm = (ev: Event) => {
+            const path = (ev as CustomEvent<{ projectPath?: string }>).detail?.projectPath || '';
+            const want = norm(path);
+            const have = norm(String(buddyProjectPathRef.current || ''));
+            if (want && want === have) {
+                buddyConfirmPathRef.current = '';
+                buddyConfirmUntilRef.current = 0;
+                panelExecuteActionRef.current('__wf_review__ confirm');
+                return;
+            }
+            // The project tab may still be switching. Drop the request if it
+            // never arrives, so a later visit does not confirm on its own.
+            buddyConfirmPathRef.current = path;
+            buddyConfirmUntilRef.current = Date.now() + 1500;
+        };
+        window.addEventListener('buddy:confirm-review', onConfirm);
+        return () => window.removeEventListener('buddy:confirm-review', onConfirm);
+    }, []);
+    useEffect(() => {
+        const wantRaw = buddyConfirmPathRef.current;
+        if (!wantRaw) return;
+        if (Date.now() > buddyConfirmUntilRef.current) {
+            buddyConfirmPathRef.current = '';
+            return;
+        }
+        const want = wantRaw.replace(/\\/g, '/');
+        const have = String(activeTab.projectPath || '').replace(/\\/g, '/');
+        if (!have || want !== have) return;
+        buddyConfirmPathRef.current = '';
+        buddyConfirmUntilRef.current = 0;
+        panelExecuteAction('__wf_review__ confirm');
+    }, [activeTab.projectPath, panelExecuteAction]);
 
     const handleRecordingComplete = useCallback((result: RecordingCompleteResult, messageId: string) => {
         // Deactivate before sending completion so input unlocks and the card

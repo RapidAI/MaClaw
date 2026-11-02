@@ -15,7 +15,6 @@
 package progress
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -218,7 +217,7 @@ func (b *MilestoneBuffer) ProgressSummaryLang(lang string) string {
 
 	if len(b.milestones) == 0 {
 		elapsed := time.Since(b.startTime).Truncate(time.Second)
-		return i18n.Tf(i18n.MsgMilestoneProcessingElapsed, lang, formatDuration(elapsed))
+		return i18n.Tf(i18n.MsgMilestoneProcessingElapsed, lang, formatDuration(elapsed, lang))
 	}
 
 	completed := 0
@@ -236,17 +235,23 @@ func (b *MilestoneBuffer) ProgressSummaryLang(lang string) string {
 	if !latest.Completed {
 		// Currently executing a step.
 		return i18n.Tf(i18n.MsgMilestoneStepsCurrent, lang,
-			completed, latest.Summary, formatDuration(elapsed))
+			completed, latest.Summary, formatDuration(elapsed, lang))
 	}
 
 	return i18n.Tf(i18n.MsgMilestoneStepsLatest, lang,
-		completed, lastSummary, formatDuration(elapsed))
+		completed, lastSummary, formatDuration(elapsed, lang))
 }
 
 // CompletedOutputSummary returns a summary of completed milestones for use
 // when a task is interrupted (Replace/Insert). Lists the completed steps
 // so the user knows what was accomplished before interruption.
+// Defaults to Chinese labels.
 func (b *MilestoneBuffer) CompletedOutputSummary() string {
+	return b.CompletedOutputSummaryLang("zh")
+}
+
+// CompletedOutputSummaryLang is CompletedOutputSummary in lang.
+func (b *MilestoneBuffer) CompletedOutputSummaryLang(lang string) string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -262,18 +267,37 @@ func (b *MilestoneBuffer) CompletedOutputSummary() string {
 	if len(parts) <= 3 {
 		return strings.Join(parts, ", ")
 	}
-	return fmt.Sprintf("%s 等 %d 个步骤", strings.Join(parts[:3], ", "), len(parts))
+	return i18n.Tf(i18n.MsgMilestoneCompletedTruncated, lang, strings.Join(parts[:3], ", "), len(parts))
 }
 
-// formatDuration formats a duration in a human-friendly way.
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%d 秒", int(d.Seconds()))
+// formatDuration formats a duration in the UI language. Minutes and seconds
+// come from the same truncated second count, so the two units cannot drift.
+// Chinese keeps 秒 / 分钟; other languages must not inherit those units.
+func formatDuration(d time.Duration, lang string) string {
+	if d < 0 {
+		d = 0
 	}
-	mins := int(d.Minutes())
-	secs := int(d.Seconds()) % 60
+	total := int(d / time.Second)
+	if total < 60 {
+		return i18n.Tf(i18n.MsgDurationSeconds, lang, total)
+	}
+	hours := total / 3600
+	mins := (total % 3600) / 60
+	secs := total % 60
+	if hours > 0 {
+		switch {
+		case mins == 0 && secs == 0:
+			return i18n.Tf(i18n.MsgDurationHours, lang, hours)
+		case mins == 0:
+			return i18n.Tf(i18n.MsgDurationHours, lang, hours) + " " + i18n.Tf(i18n.MsgDurationSeconds, lang, secs)
+		case secs == 0:
+			return i18n.Tf(i18n.MsgDurationHoursMinutes, lang, hours, mins)
+		default:
+			return i18n.Tf(i18n.MsgDurationHoursMinutesSeconds, lang, hours, mins, secs)
+		}
+	}
 	if secs == 0 {
-		return fmt.Sprintf("%d 分钟", mins)
+		return i18n.Tf(i18n.MsgDurationMinutes, lang, mins)
 	}
-	return fmt.Sprintf("%d 分 %d 秒", mins, secs)
+	return i18n.Tf(i18n.MsgDurationMinutesSeconds, lang, mins, secs)
 }

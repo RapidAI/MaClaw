@@ -43,7 +43,7 @@ import (
 // asset-backed Pet Store to participate in the existing HA operation stream.
 type petStoreSyncRecorder interface {
 	AppendPetStorePackSnapshot(context.Context, string, any)
-	AppendPetStoreMetrics(context.Context, string, int64)
+	AppendPetStoreMetrics(context.Context, string, int64, string, string, string)
 }
 
 // ApplyPetStoreMetrics handles the small, high-frequency download update HA
@@ -51,8 +51,9 @@ type petStoreSyncRecorder interface {
 func (h *SkillMarketHandlers) ApplyPetStoreMetrics(ctx context.Context, raw json.RawMessage) error {
 	h.ensurePetStoreSchema()
 	var payload struct {
-		ID        string `json:"id"`
-		Downloads int64  `json:"downloads"`
+		ID        string                   `json:"id"`
+		Downloads int64                    `json:"downloads"`
+		Event     petStoreSnapshotDownload `json:"event"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
@@ -60,8 +61,23 @@ func (h *SkillMarketHandlers) ApplyPetStoreMetrics(ctx context.Context, raw json
 	if strings.TrimSpace(payload.ID) == "" || payload.Downloads < 0 {
 		return fmt.Errorf("invalid pet store metrics")
 	}
-	_, err := h.store.DB().ExecContext(ctx, `UPDATE sm_pet_store_packs SET download_count=MAX(download_count, ?) WHERE id=?`, payload.Downloads, payload.ID)
-	return err
+	if payload.Event.ID != "" && (payload.Event.PackID != payload.ID || strings.TrimSpace(payload.Event.DownloaderUserID) == "" || !validPetStoreSnapshotTime(payload.Event.CreatedAt)) {
+		return fmt.Errorf("invalid pet store download event")
+	}
+	tx, err := h.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE sm_pet_store_packs SET download_count=MAX(download_count, ?) WHERE id=?`, payload.Downloads, payload.ID); err != nil {
+		return err
+	}
+	if payload.Event.ID != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_pet_store_downloads (id, pack_id, downloader_user_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, payload.Event.ID, payload.Event.PackID, payload.Event.DownloaderUserID, payload.Event.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 const (
@@ -387,6 +403,7 @@ func publicPetStorePacks(packs []*petStorePack) []petStorePublicPack {
 type petStoreSnapshot struct {
 	Packs     []petStoreSnapshotPack     `json:"packs"`
 	Purchases []petStoreSnapshotPurchase `json:"purchases"`
+	Downloads []petStoreSnapshotDownload `json:"downloads,omitempty"`
 }
 
 type petStoreSnapshotPack struct {
@@ -416,6 +433,15 @@ type petStoreSnapshotPurchase struct {
 	AmountPaid  int64  `json:"amount_paid"`
 	Status      string `json:"status"`
 	CreatedAt   string `json:"created_at"`
+}
+
+// petStoreSnapshotDownload is one archive delivery. Creator reports are
+// date-bounded, so the catalogue counter alone cannot reconstruct them on a peer.
+type petStoreSnapshotDownload struct {
+	ID               string `json:"id"`
+	PackID           string `json:"pack_id"`
+	DownloaderUserID string `json:"downloader_user_id"`
+	CreatedAt        string `json:"created_at"`
 }
 
 func validPetStoreSnapshotTime(value string) bool {
@@ -536,6 +562,11 @@ func (h *SkillMarketHandlers) ensurePetStoreSchema() {
 	})
 }
 
+// petStoreEmitMu serializes snapshot export. A purchase dump reads the archive
+// before it appends; a refund that commits during that read must append after
+// it, or peers keep the pre-refund entitlement.
+var petStoreEmitMu sync.Mutex
+
 func (h *SkillMarketHandlers) emitPetStoreSync(ctx context.Context, packID string) {
 	if h == nil || h.petStoreSync == nil {
 		return
@@ -546,6 +577,8 @@ func (h *SkillMarketHandlers) emitPetStoreSync(ctx context.Context, packID strin
 	}
 	ctx = context.WithoutCancel(ctx)
 	go func() {
+		petStoreEmitMu.Lock()
+		defer petStoreEmitMu.Unlock()
 		snap, err := h.dumpPetStorePackSnapshot(ctx, packID)
 		if err != nil {
 			log.Printf("[petstore] WARN: dump sync snapshot for %s failed: %v", packID, err)
@@ -562,8 +595,11 @@ func (h *SkillMarketHandlers) emitPetStoreSync(ctx context.Context, packID strin
 // so its base64 snapshot is bounded to roughly 4 MB plus metadata.
 func (h *SkillMarketHandlers) dumpPetStorePackSnapshot(ctx context.Context, packID string) (*petStoreSnapshot, error) {
 	h.ensurePetStoreSchema()
-	snap := &petStoreSnapshot{Packs: make([]petStoreSnapshotPack, 0), Purchases: make([]petStoreSnapshotPurchase, 0)}
-	rows, err := h.store.ReadDB().QueryContext(ctx, `SELECT `+petStorePackColumns+` FROM sm_pet_store_packs WHERE id=?`, packID)
+	snap := &petStoreSnapshot{Packs: make([]petStoreSnapshotPack, 0), Purchases: make([]petStoreSnapshotPurchase, 0), Downloads: make([]petStoreSnapshotDownload, 0)}
+	// Read the write connection. The replica can lag the commit that just
+	// triggered this snapshot, and a stale dump would republish the pre-commit
+	// entitlement.
+	rows, err := h.store.DB().QueryContext(ctx, `SELECT `+petStorePackColumns+` FROM sm_pet_store_packs WHERE id=?`, packID)
 	if err != nil {
 		return nil, err
 	}
@@ -589,7 +625,7 @@ func (h *SkillMarketHandlers) dumpPetStorePackSnapshot(ctx context.Context, pack
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = h.store.ReadDB().QueryContext(ctx, `SELECT id, pack_id, buyer_user_id, buyer_email, amount_paid, status, created_at FROM sm_pet_store_purchases WHERE pack_id=? ORDER BY id`, packID)
+	rows, err = h.store.DB().QueryContext(ctx, `SELECT id, pack_id, buyer_user_id, buyer_email, amount_paid, status, created_at FROM sm_pet_store_purchases WHERE pack_id=? ORDER BY id`, packID)
 	if err != nil {
 		return nil, err
 	}
@@ -600,6 +636,21 @@ func (h *SkillMarketHandlers) dumpPetStorePackSnapshot(ctx context.Context, pack
 			return nil, err
 		}
 		snap.Purchases = append(snap.Purchases, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows, err = h.store.DB().QueryContext(ctx, `SELECT id, pack_id, downloader_user_id, created_at FROM sm_pet_store_downloads WHERE pack_id=? ORDER BY id`, packID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item petStoreSnapshotDownload
+		if err := rows.Scan(&item.ID, &item.PackID, &item.DownloaderUserID, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		snap.Downloads = append(snap.Downloads, item)
 	}
 	return snap, rows.Err()
 }
@@ -612,7 +663,7 @@ func (h *SkillMarketHandlers) SeedPetStoreHASync(ctx context.Context) {
 		return
 	}
 	h.ensurePetStoreSchema()
-	rows, err := h.store.ReadDB().QueryContext(ctx, `SELECT id FROM sm_pet_store_packs ORDER BY id`)
+	rows, err := h.store.DB().QueryContext(ctx, `SELECT id FROM sm_pet_store_packs ORDER BY id`)
 	if err != nil {
 		return
 	}
@@ -707,12 +758,25 @@ func (h *SkillMarketHandlers) ApplyPetStoreSnapshot(ctx context.Context, raw jso
 		archives = append(archives, archiveToWrite{pack: p, data: data})
 	}
 	for _, p := range snap.Purchases {
-		if strings.TrimSpace(p.ID) == "" || strings.TrimSpace(p.PackID) == "" || strings.TrimSpace(p.BuyerUserID) == "" || strings.TrimSpace(p.BuyerEmail) == "" || !validPetStoreSnapshotTime(p.CreatedAt) || p.AmountPaid < 0 || p.Status != "active" {
+		if strings.TrimSpace(p.ID) == "" || strings.TrimSpace(p.PackID) == "" || strings.TrimSpace(p.BuyerUserID) == "" || strings.TrimSpace(p.BuyerEmail) == "" || !validPetStoreSnapshotTime(p.CreatedAt) || p.AmountPaid < 0 || (p.Status != "active" && p.Status != "refunded") {
 			return fmt.Errorf("invalid pet store purchase snapshot")
 		}
 		if _, found := packIDs[p.PackID]; !found {
 			return fmt.Errorf("pet store purchase references an absent pack")
 		}
+	}
+	seenDownloads := make(map[string]struct{}, len(snap.Downloads))
+	for _, event := range snap.Downloads {
+		if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.DownloaderUserID) == "" || !validPetStoreSnapshotTime(event.CreatedAt) {
+			return fmt.Errorf("invalid pet store download snapshot")
+		}
+		if _, found := packIDs[event.PackID]; !found {
+			return fmt.Errorf("pet store download references an absent pack")
+		}
+		if _, exists := seenDownloads[event.ID]; exists {
+			return fmt.Errorf("duplicate pet store download snapshot id")
+		}
+		seenDownloads[event.ID] = struct{}{}
 	}
 	tx, err := h.store.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -784,8 +848,27 @@ func (h *SkillMarketHandlers) ApplyPetStoreSnapshot(ctx context.Context, raw jso
 		}
 	}
 	for _, p := range snap.Purchases {
-		_, err := tx.ExecContext(ctx, `INSERT INTO sm_pet_store_purchases (id, pack_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status`, p.ID, p.PackID, p.BuyerUserID, p.BuyerEmail, p.AmountPaid, p.Status, p.CreatedAt)
+		// A refund is terminal. A delayed snapshot that still says active must
+		// not give the buyer the pack back after every peer has revoked it.
+		// The buyer unique key can also collide when two nodes sold the same
+		// pack before they converged; that must update the existing entitlement
+		// instead of failing the HA batch.
+		_, err := tx.ExecContext(ctx, `INSERT INTO sm_pet_store_purchases (id, pack_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status WHERE NOT (sm_pet_store_purchases.status='refunded' AND excluded.status<>'refunded')`, p.ID, p.PackID, p.BuyerUserID, p.BuyerEmail, p.AmountPaid, p.Status, p.CreatedAt)
+		if isSnapshotUniqueConflict(err) {
+			var result sql.Result
+			result, err = tx.ExecContext(ctx, `UPDATE sm_pet_store_purchases SET status=CASE WHEN status='refunded' AND ?<>'refunded' THEN status ELSE ? END, amount_paid=?, buyer_email=? WHERE pack_id=? AND buyer_user_id=?`, p.Status, p.Status, p.AmountPaid, p.BuyerEmail, p.PackID, p.BuyerUserID)
+			if err == nil {
+				if changed, _ := result.RowsAffected(); changed == 0 {
+					err = fmt.Errorf("pet store purchase %s matched no buyer", p.ID)
+				}
+			}
+		}
 		if err != nil {
+			return err
+		}
+	}
+	for _, event := range snap.Downloads {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_pet_store_downloads (id, pack_id, downloader_user_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, event.ID, event.PackID, event.DownloaderUserID, event.CreatedAt); err != nil {
 			return err
 		}
 	}
@@ -1791,7 +1874,9 @@ func (h *SkillMarketHandlers) DownloadPetStorePack(w http.ResponseWriter, r *htt
 			return
 		}
 	}
-	if _, err := tx.ExecContext(r.Context(), `INSERT INTO sm_pet_store_downloads (id, pack_id, downloader_user_id, created_at) VALUES (?, ?, ?, ?)`, "pet_"+petStoreUniqueID("download"), id, userID, petStoreNow()); err != nil {
+	eventID := "pet_" + petStoreUniqueID("download")
+	eventAt := petStoreNow()
+	if _, err := tx.ExecContext(r.Context(), `INSERT INTO sm_pet_store_downloads (id, pack_id, downloader_user_id, created_at) VALUES (?, ?, ?, ?)`, eventID, id, userID, eventAt); err != nil {
 		smError(w, http.StatusInternalServerError, "record pet pack download event")
 		return
 	}
@@ -1799,12 +1884,14 @@ func (h *SkillMarketHandlers) DownloadPetStorePack(w http.ResponseWriter, r *htt
 		smError(w, http.StatusInternalServerError, "record pet pack download")
 		return
 	}
-	// The listing itself is immutable for a download. Replicate only the counter
-	// rather than its base64 archive so popular packages do not amplify HA I/O.
+	// The listing itself is immutable for a download. Replicate the counter and
+	// this one delivery event, not the base64 archive, so popular packages do
+	// not amplify HA I/O. The full snapshot still carries the event log so a
+	// peer that missed the metrics op catches up on the next listing sync.
 	if h.petStoreSync != nil {
 		var downloads int64
 		if err := h.store.DB().QueryRowContext(r.Context(), `SELECT download_count FROM sm_pet_store_packs WHERE id=?`, id).Scan(&downloads); err == nil {
-			h.petStoreSync.AppendPetStoreMetrics(context.WithoutCancel(r.Context()), id, downloads)
+			h.petStoreSync.AppendPetStoreMetrics(context.WithoutCancel(r.Context()), id, downloads, eventID, userID, eventAt)
 		}
 	}
 	w.Header().Set("Content-Type", "application/zip")

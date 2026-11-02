@@ -154,8 +154,9 @@ func TestFileCompanionVideoNoteSidecarWithoutFFmpeg(t *testing.T) {
 	}
 }
 
-func TestFileCompanionClosedSurfaceStaysEmptyForMP4(t *testing.T) {
+func TestFileCompanionMediaUsesTheSharedToolSet(t *testing.T) {
 	app := newVideoNoteTestApp(t)
+	app.imHandler = &IMMessageHandler{app: app}
 	for _, name := range []string{"clip.mp4", "clip.wav", "clip.mp3", "clip.m4a", "clip.flac"} {
 		path := writeMedia(t, app, name, []byte("x"))
 		doc, err := app.FileCompanionOpen(path)
@@ -166,8 +167,13 @@ func TestFileCompanionClosedSurfaceStaysEmptyForMP4(t *testing.T) {
 		if petCompanionToolsDisabled(userID) {
 			t.Fatal("pet tool mode turned on")
 		}
-		if got := app.imHandler.fileCompanionClosedSurfaceTools(userID); len(got) != 0 {
-			t.Fatalf("%s tools = %#v", name, got)
+		got := agentLoopToolNamesForLog(app.imHandler.fileCompanionClosedSurfaceTools(userID))
+		want := []string{
+			fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs,
+			fileCompanionToolRestore, fileCompanionToolGenerate, fileCompanionToolReadDocument, fileCompanionToolCraft, fileCompanionToolWebSearch, fileCompanionToolWebFetch,
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s tools = %q, want the shared list", name, got)
 		}
 		callbacks := &sharedAgentLoopCallbacks{userID: userID, semanticSurface: &semanticCallSurface{}}
 		if tools := callbacks.BuildToolsForModelRequest("生成笔记", 1); tools != nil {

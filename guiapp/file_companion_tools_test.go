@@ -35,7 +35,10 @@ func TestFileCompanionClosedSurfaceToolsOnlyForPDF(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 	userID := "file-companion:" + pdfDoc.SessionID
 	tools := h.fileCompanionClosedSurfaceTools(userID)
-	want := []string{fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore, fileCompanionToolGenerate}
+	want := []string{
+		fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs,
+		fileCompanionToolRestore, fileCompanionToolGenerate, fileCompanionToolReadDocument, fileCompanionToolCraft, fileCompanionToolWebSearch, fileCompanionToolWebFetch,
+	}
 	if got := agentLoopToolNamesForLog(tools); len(got) != len(want) {
 		t.Fatalf("pdf surface tools = %q, want %q", got, want)
 	} else {
@@ -46,8 +49,8 @@ func TestFileCompanionClosedSurfaceToolsOnlyForPDF(t *testing.T) {
 		}
 	}
 	_, mdDoc := seedCompanionTestFile(t, app, "notes.md", "# 笔记\n")
-	if got := h.fileCompanionClosedSurfaceTools("file-companion:" + mdDoc.SessionID); len(got) != 0 {
-		t.Fatalf("markdown surface tools = %q, want none", agentLoopToolNamesForLog(got))
+	if got := agentLoopToolNamesForLog(h.fileCompanionClosedSurfaceTools("file-companion:" + mdDoc.SessionID)); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("markdown surface tools = %q, want the same list", got)
 	}
 }
 
@@ -383,7 +386,7 @@ func TestFileCompanionAuthorizerAdmitsTheClosedSurfaceOnLightProfile(t *testing.
 		}}},
 	}
 	light := agent.PromptProfileLight
-	for _, name := range []string{fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore} {
+	for _, name := range []string{fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore, fileCompanionToolReadDocument, fileCompanionToolCraft, fileCompanionToolWebSearch, fileCompanionToolWebFetch} {
 		if !cb.IsToolAllowed(name) {
 			t.Fatalf("light turn refuses %s", name)
 		}
@@ -864,7 +867,7 @@ func TestFileCompanionPromptDescribesPDFTools(t *testing.T) {
 	if !strings.Contains(pdf, fileCompanionToolRenderPage) || !strings.Contains(pdf, "图N") || !strings.Contains(pdf, "裁出") || !strings.Contains(pdf, "full=true") || !strings.Contains(pdf, fileCompanionToolRestore) {
 		t.Fatalf("pdf prompt lost the tool contract:\n%s", pdf)
 	}
-	if !strings.Contains(pdf, fileCompanionToolGenerate) || !strings.Contains(pdf, "markdown") {
+	if !strings.Contains(pdf, fileCompanionToolGenerate) || !strings.Contains(pdf, "markdown") || !strings.Contains(pdf, fileCompanionToolReadDocument) || !strings.Contains(pdf, fileCompanionToolCraft) || !strings.Contains(pdf, fileCompanionToolWebSearch) || !strings.Contains(pdf, fileCompanionToolWebFetch) {
 		t.Fatalf("pdf prompt lost the writer contract:\n%s", pdf)
 	}
 	if !strings.Contains(pdf, "不要声称已经生成或发送了 PDF") {
@@ -874,8 +877,9 @@ func TestFileCompanionPromptDescribesPDFTools(t *testing.T) {
 		t.Fatalf("pdf prompt forbids the tools it names:\n%s", pdf)
 	}
 	for _, ext := range []string{".md", ".docx"} {
-		if plain := fileCompanionPrompt("n"+ext, ext); !strings.Contains(plain, "不要使用工具") {
-			t.Fatalf("%s prompt lost the no-tools rule:\n%s", ext, plain)
+		plain := fileCompanionPrompt("n"+ext, ext)
+		if !strings.Contains(plain, "不要使用工具") || !strings.Contains(plain, fileCompanionToolReadDocument) || !strings.Contains(plain, fileCompanionToolCraft) {
+			t.Fatalf("%s prompt lost the reader contract:\n%s", ext, plain)
 		}
 	}
 	if xlsx := fileCompanionPrompt("t.xlsx", ".xlsx"); !strings.Contains(xlsx, "sheets JSON") {

@@ -578,6 +578,10 @@ export function CodingKnowledgeConfirm(arg1) {
   return window['go']['main']['App']['CodingKnowledgeConfirm'](arg1);
 }
 
+export function CodingKnowledgeConfirmMany(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeConfirmMany'](arg1);
+}
+
 export function CodingKnowledgeCreateRevisionCandidate(arg1, arg2) {
   return window['go']['main']['App']['CodingKnowledgeCreateRevisionCandidate'](arg1, arg2);
 }
@@ -2851,6 +2855,10 @@ export function SubmitExpertMarketListing(arg1, arg2, arg3, arg4) {
 
 export function SubmitExpertMarketListingWithDistribution(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['SubmitExpertMarketListingWithDistribution'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function SubmitExpertMarketListingToUsers(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SubmitExpertMarketListingToUsers'](arg1, arg2, arg3);
 }
 
 export function PublishExpertMarketListing(arg1) {
@@ -5408,6 +5416,10 @@ export function SetMainWindowScreenPosition(arg1, arg2) {
   return window['go']['main']['App']['SetMainWindowScreenPosition'](arg1, arg2);
 }
 
+export function RestoreMainWindowGeometry(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['RestoreMainWindowGeometry'](arg1, arg2, arg3, arg4);
+}
+
 export function SetMemoryMaxBackups(arg1) {
   return window['go']['main']['App']['SetMemoryMaxBackups'](arg1);
 }
@@ -6278,6 +6290,10 @@ export function BuddyGetStatus() {
 
 export function BuddyPushSnapshot(arg1) {
   return window['go']['main']['App']['BuddyPushSnapshot'](arg1);
+}
+
+export function BuddyPushPet(arg1) {
+  return window['go']['main']['App']['BuddyPushPet'](arg1);
 }
 
 export function BuddyPushWeather(arg1, arg2, arg3) {

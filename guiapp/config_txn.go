@@ -275,6 +275,13 @@ func (a *App) mutateConfigMaybe(patchFn func(cfg *corelib.AppConfig) bool, opts 
 		}
 		return false, nil
 	}
+	// Explicit clearing goes through PatchConfigFields with this field alone.
+	// In-process patches that zero the flag, including a struct overwrite, keep
+	// a finished first run. A no-op patch returns above and never reaches this.
+	if current.OnboardingDone && !cfg.OnboardingDone {
+		cfg.OnboardingDone = true
+		log.Printf("[config] kept onboarding_done caller=%q", caller)
+	}
 	corelib.ApplyZhipuCodingConfigMigration(&cfg)
 	remapLegacyZhipuCodingProfileModels(cfg.MaclawLLMProfiles, cfg.MaclawLLMProviders)
 	if !opts.allowHubManagedSecurity && a.shouldPreserveHubManagedSecurity(current) {

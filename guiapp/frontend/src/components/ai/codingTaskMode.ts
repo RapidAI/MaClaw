@@ -59,7 +59,7 @@ function cloudWorkspaceTaskNameScore(name?: string | null): number {
 
 /** Keep at most one sidebar row per cloud workspace. Prefer a named title. */
 /** User-made copy. It shares configuration with the source but is its own row and chat. */
-export function isExplicitTaskCopy(tags?: string[] | null): boolean {
+export function isExplicitTaskCopy(tags?: readonly string[] | null): boolean {
     return !!tags?.some(tag => String(tag || "").trim() === "task_copy");
 }
 

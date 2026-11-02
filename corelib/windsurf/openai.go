@@ -586,7 +586,10 @@ func streamChat(ctx context.Context, apiServer, apiKey string, req chatRequest) 
 			return
 		}
 		if err != nil && !emitted {
-			if werr := writeChoices([]map[string]any{{"index": 0, "delta": map[string]string{"content": explainDevin(err)}}}, nil); werr != nil {
+			// Headers are already on the wire, so the open-failure header cannot
+			// be added. The field marks this chunk. Desktop chat ignores it and
+			// still renders the text.
+			if werr := writeChoices([]map[string]any{{"index": 0, "delta": map[string]string{"content": explainDevin(err)}}}, map[string]any{StreamErrorField: true}); werr != nil {
 				_ = pw.CloseWithError(werr)
 				return
 			}
@@ -623,6 +626,15 @@ func streamChat(ctx context.Context, apiServer, apiKey string, req chatRequest) 
 	}, nil
 }
 
+// StreamErrorHeader marks an HTTP 200 event stream whose assistant text is
+// the open failure. Desktop chat still renders that text. A proxy reads the
+// header so the failure is not billed as a completion.
+const StreamErrorHeader = "X-Devin-Stream-Error"
+
+// StreamErrorField marks one SSE chunk whose text is a Cascade failure
+// discovered after the response headers were sent. Desktop chat ignores it.
+const StreamErrorField = "devin_stream_error"
+
 func completedStream(model, text string) *http.Response {
 	var buf bytes.Buffer
 	write := func(choices any) {
@@ -640,6 +652,7 @@ func completedStream(model, text string) *http.Response {
 	header := make(http.Header)
 	header.Set("Content-Type", "text/event-stream")
 	header.Set("Cache-Control", "no-cache")
+	header.Set(StreamErrorHeader, "1")
 	return &http.Response{
 		StatusCode:    http.StatusOK,
 		Header:        header,

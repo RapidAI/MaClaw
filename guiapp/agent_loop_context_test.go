@@ -338,3 +338,52 @@ func TestSlotKind_String(t *testing.T) {
 		}
 	}
 }
+
+func TestLoopContextCodingKnowledgeRecallTracksSemanticTurn(t *testing.T) {
+	loop := NewLoopContext("knowledge-recall-test", 1, nil)
+	generation := loop.SemanticTurnGeneration()
+	loop.noteCodingKnowledgeRecallIDs(generation, []string{"a", "b", "a"})
+	got := loop.snapshotCodingKnowledgeRecallIDs()
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("snapshot = %v, want [a b]", got)
+	}
+
+	// A late result from the replaced turn must be dropped, not appended to
+	// the new turn.
+	loop.ReplaceSemanticTurn()
+	loop.noteCodingKnowledgeRecallIDs(generation, []string{"stale"})
+	if got := loop.snapshotCodingKnowledgeRecallIDs(); len(got) != 0 {
+		t.Fatalf("snapshot after stale note = %v, want empty", got)
+	}
+
+	loop.noteCodingKnowledgeRecallIDs(loop.SemanticTurnGeneration(), []string{"c"})
+	// A delegation that started in the replaced turn must not consume the new
+	// turn's evidence.
+	if got := loop.takeCodingKnowledgeRecallIDsForGeneration(generation); len(got) != 0 {
+		t.Fatalf("stale-generation take = %v, want empty", got)
+	}
+	if got := loop.snapshotCodingKnowledgeRecallIDs(); len(got) != 1 || got[0] != "c" {
+		t.Fatalf("new-turn snapshot = %v, want [c]", got)
+	}
+	taken := loop.takeCodingKnowledgeRecallIDs()
+	if len(taken) != 1 || taken[0] != "c" {
+		t.Fatalf("take = %v, want [c]", taken)
+	}
+	if got := loop.snapshotCodingKnowledgeRecallIDs(); len(got) != 0 {
+		t.Fatalf("snapshot after take = %v, want empty", got)
+	}
+}
+
+func TestCodingKnowledgeRecallContextRoundTrip(t *testing.T) {
+	loop := NewLoopContext("knowledge-recall-context", 1, nil)
+	ctx := withCodingKnowledgeRecallContext(context.Background(), loop)
+	if got := codingKnowledgeRecallLoopContext(ctx); got != loop {
+		t.Fatalf("context loop = %p, want %p", got, loop)
+	}
+	if got := codingKnowledgeRecallGeneration(ctx); got != loop.SemanticTurnGeneration() {
+		t.Fatalf("context generation = %d, want %d", got, loop.SemanticTurnGeneration())
+	}
+	if got := codingKnowledgeRecallLoopContext(context.Background()); got != nil {
+		t.Fatalf("background context loop = %p, want nil", got)
+	}
+}

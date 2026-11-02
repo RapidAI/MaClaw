@@ -164,3 +164,90 @@ func TestSemanticPetitionExpansionStillRejectsOutsideLabel(t *testing.T) {
 		t.Fatalf("a shell leg added by a search petition must stay rejected, err=%v", err)
 	}
 }
+
+// The incident shape: a lookup plus document task does not plan the mail leg,
+// the model petitions mailbox_send, and the expansion validator used to reject
+// the whole child because the re-plan re-derived extra sibling legs. The child
+// must add exactly the parent's selections plus the petitioned label's template.
+func TestSemanticPetitionMailboxSendOnLookupDocumentTask(t *testing.T) {
+	classification := liveDataGenerateClassification()
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, classification.Primary)}
+	h.semanticTrustedWebSearch = func(userID, query string) (string, error) { return "found: " + query, nil }
+	registerBuiltinTools(h.registry, h)
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(app.closeSemanticInvocationStore)
+	h.app = app
+	loopCtx := h.prepareIMLoopContext(nil, IMUserMessage{
+		UserID: "user-1", Platform: "desktop", Text: pengzhouWeatherPDFText(),
+	}, nil, false, false)
+	requestCtx, cancel := semanticRoutingContext(loopCtx)
+	t.Cleanup(cancel)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		requestCtx, "user-1", pengzhouWeatherPDFText(), "desktop", "root-petition-mail", "turn-petition-mail", classification, nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("surface handled=%v err=%v", handled, err)
+	}
+	if planHasCapabilities(surface.plan, "message.send.mailbox") {
+		t.Fatalf("fixture must start without the mail leg: %#v", surface.plan.Selections)
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop", loopCtx: loopCtx}
+	_, message := cb.PetitionToolCall("mailbox_send")
+	if strings.Contains(message, "outside the petitioned label") || strings.Contains(message, "expansion failed") {
+		t.Fatalf("mailbox_send expansion failed: %q", message)
+	}
+	child := cb.semanticSurface
+	if child == surface || !planHasCapabilities(child.plan, "message.send.mailbox") {
+		t.Fatalf("child plan=%#v message=%q", child.plan.Selections, message)
+	}
+}
+
+func TestPetitionWhitelistKeepsParentNeedIdentities(t *testing.T) {
+	parent := tool.ToolPlan{Selections: []tool.PlannedSelection{
+		{ID: "selection:search", NeedID: "need:information.search.web:a21b0f4bd8bc"},
+		{ID: "selection:gen", NeedID: "need:document.generate.file:549acc88f83c"},
+	}}
+	ctx := withSemanticPetitionExpansion(context.Background())
+	ctx = withSemanticPetitionParentFamilies(ctx, parent)
+	ctx = withSemanticPetitionedLabel(ctx, intent.LabelMailboxSend)
+	needs := []tool.CapabilityNeed{
+		{ID: "need:information.search.web:a21b0f4bd8bc", Capability: "information.search.web", Required: true},
+		{ID: "need:information.search.web:a21b0f4bd8bc#02", Capability: "information.search.web", Required: true},
+		{ID: "need:document.generate.file:549acc88f83c", Capability: "document.generate.file", Required: true},
+		{ID: "need:message.send.mailbox:ca6c9fe7f746", Capability: tool.CapabilityMessageSendMailbox, Required: true},
+		{ID: "need:shell.execute.local:deadbeef", Capability: tool.CapabilityShellExecuteLocal, Required: true},
+	}
+	kept := semanticNeedsForPetitionWhitelist(needs, ctx)
+	ids := map[string]bool{}
+	for _, need := range kept {
+		ids[need.ID] = true
+	}
+	if !ids["need:information.search.web:a21b0f4bd8bc"] || !ids["need:document.generate.file:549acc88f83c"] {
+		t.Fatalf("parent identities were dropped: %#v", kept)
+	}
+	if !ids["need:message.send.mailbox:ca6c9fe7f746"] {
+		t.Fatalf("petitioned label template was dropped: %#v", kept)
+	}
+	if ids["need:information.search.web:a21b0f4bd8bc#02"] {
+		t.Fatalf("an extra sibling of a parent family passed the whitelist: %#v", kept)
+	}
+	if ids["need:shell.execute.local:deadbeef"] {
+		t.Fatalf("an unrelated capability passed the whitelist: %#v", kept)
+	}
+}
+
+func TestPetitionWhitelistDerivesNeedIDFromSelectionID(t *testing.T) {
+	parent := tool.ToolPlan{Selections: []tool.PlannedSelection{
+		{ID: "selection:need:information.search.web:a21b0f4bd8bc"},
+	}}
+	ctx := withSemanticPetitionExpansion(context.Background())
+	ctx = withSemanticPetitionParentFamilies(ctx, parent)
+	ctx = withSemanticPetitionedLabel(ctx, intent.LabelMailboxSend)
+	needs := []tool.CapabilityNeed{
+		{ID: "need:information.search.web:a21b0f4bd8bc", Capability: "information.search.web", Required: true},
+	}
+	kept := semanticNeedsForPetitionWhitelist(needs, ctx)
+	if len(kept) != 1 || kept[0].ID != "need:information.search.web:a21b0f4bd8bc" {
+		t.Fatalf("selection-id fallback lost the parent identity: %#v", kept)
+	}
+}

@@ -18,6 +18,145 @@ import (
 	"testing"
 )
 
+func TestCodingKnowledgeToolRecordsRecallIDsInLoopContext(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+		}
+		closeCodingKnowledgeStore(t, app)
+	})
+	store := app.ensureCodingKnowledgeStore()
+	ctx := context.Background()
+	saved, err := store.SaveExperience(ctx, knowledge.CodingExperience{
+		Title:            "Nil HTTP client",
+		Category:         knowledge.CodingCategoryPitfall,
+		Scope:            knowledge.CodingScopeUniversal,
+		TriggerCondition: "nil http client",
+		Content:          "Check the pooled HTTP client before reusing a connection.",
+		Status:           knowledge.CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+
+	registry := NewToolRegistry()
+	registerKnowledgeTools(registry, app)
+	tool, ok := registry.Get("coding_knowledge_search")
+	if !ok || tool.Handler == nil || tool.HandlerCtx == nil {
+		t.Fatal("coding_knowledge_search must expose both handler variants")
+	}
+
+	loop := NewLoopContext("coding-knowledge-tool-test", 1, nil)
+	text := tool.HandlerCtx(withCodingKnowledgeRecallContext(context.Background(), loop), map[string]interface{}{"query": "nil http client"}, nil)
+	if !strings.Contains(text, "Nil HTTP client") {
+		t.Fatalf("tool result = %q, want the active experience", text)
+	}
+	ids := loop.snapshotCodingKnowledgeRecallIDs()
+	if len(ids) != 1 || ids[0] != saved.ID {
+		t.Fatalf("recalled IDs = %v, want [%s]", ids, saved.ID)
+	}
+
+	// Legacy no-context callers keep working; they simply cannot record
+	// provisional recall evidence.
+	if text := tool.Handler(map[string]interface{}{"query": "nil http client"}); !strings.Contains(text, "Nil HTTP client") {
+		t.Fatalf("legacy handler result = %q, want the active experience", text)
+	}
+}
+
+func TestCodingKnowledgeToolUsesLoopOwnerProjectScope(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+		}
+		closeCodingKnowledgeStore(t, app)
+	})
+	store := app.ensureCodingKnowledgeStore()
+	ctx := context.Background()
+	projectA := filepath.Join(t.TempDir(), "project-a")
+	projectB := filepath.Join(t.TempDir(), "project-b")
+	save := func(title, projectPath string) {
+		t.Helper()
+		if _, err := store.SaveExperience(ctx, knowledge.CodingExperience{
+			Title:            title,
+			Category:         knowledge.CodingCategoryPattern,
+			Scope:            knowledge.CodingScopeProject,
+			ProjectPath:      projectPath,
+			TriggerCondition: "scopecheck project recall",
+			Content:          "scopecheck recovery steps.",
+			Status:           knowledge.CodingStatusActive,
+		}); err != nil {
+			t.Fatalf("SaveExperience(%s): %v", title, err)
+		}
+	}
+	save("Alpha Scopecheck", projectA)
+	save("Beta Scopecheck", projectB)
+
+	registry := NewToolRegistry()
+	registerKnowledgeTools(registry, app)
+	tool, ok := registry.Get("coding_knowledge_search")
+	if !ok || tool.HandlerCtx == nil {
+		t.Fatal("coding_knowledge_search must expose a context handler")
+	}
+
+	// A background task keeps its own project even if the desktop shows a
+	// different tab; its loop user ID is the project source of truth.
+	loop := NewLoopContext("coding-knowledge-project-scope", 1, nil)
+	loop.UserID = desktopUserID + ":" + projectA
+	text := tool.HandlerCtx(withCodingKnowledgeRecallContext(context.Background(), loop), map[string]interface{}{"query": "scopecheck"}, nil)
+	if !strings.Contains(text, "Alpha Scopecheck") {
+		t.Fatalf("tool result = %q, want the loop project's experience", text)
+	}
+	if strings.Contains(text, "Beta Scopecheck") {
+		t.Fatalf("tool result = %q, must not leak another project's project-scoped experience", text)
+	}
+}
+
+func TestCodingKnowledgeToolHonorsLimit(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+		}
+		closeCodingKnowledgeStore(t, app)
+	})
+	store := app.ensureCodingKnowledgeStore()
+	ctx := context.Background()
+	save := func(title string) {
+		t.Helper()
+		if _, err := store.SaveExperience(ctx, knowledge.CodingExperience{
+			Title:            title,
+			Category:         knowledge.CodingCategoryPattern,
+			Scope:            knowledge.CodingScopeUniversal,
+			TriggerCondition: "limit tool search",
+			Content:          "limit tool search guidance",
+			Status:           knowledge.CodingStatusActive,
+		}); err != nil {
+			t.Fatalf("SaveExperience(%s): %v", title, err)
+		}
+	}
+	save("Limit experience one")
+	save("Limit experience two")
+
+	registry := NewToolRegistry()
+	registerKnowledgeTools(registry, app)
+	tool, ok := registry.Get("coding_knowledge_search")
+	if !ok {
+		t.Fatal("coding_knowledge_search is not registered")
+	}
+	text := tool.Handler(map[string]interface{}{"query": "limit tool search", "limit": float64(1)})
+	if !strings.Contains(text, "找到 1 条") {
+		t.Fatalf("tool ignored limit=1: %q", text)
+	}
+	if count := strings.Count(text, "Limit experience"); count != 1 {
+		t.Fatalf("tool returned %d experiences, want 1: %q", count, text)
+	}
+	if !strings.Contains(text, "经验ID: ") {
+		t.Fatalf("tool result must expose a citable experience ID: %q", text)
+	}
+}
+
 func TestRegisterKnowledgeTools(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}

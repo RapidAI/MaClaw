@@ -12,6 +12,12 @@ uint16_t *buddy_display_framebuffer(void);
 int buddy_display_width(void);
 int buddy_display_height(void);
 
+/** Glass size, not the 360 compose buffer. The 240 module is square. */
+int buddy_display_glass_width(void);
+int buddy_display_glass_height(void);
+bool buddy_display_glass_round(void);
+const char *buddy_display_panel_id(void);
+
 /** Pushes full-width rows [y0, y1) from the framebuffer to the panel. */
 void buddy_display_flush_rows(int y0, int y1);
 
@@ -20,6 +26,9 @@ void buddy_display_note_activity(void);
 /** Applies the idle backlight policy (dim after 60s, off after 120s). */
 void buddy_display_tick(void);
 bool buddy_display_awake(void);
+/** True while the backlight is dimmed or off. idle sleeps in this state.
+ * busy and happy stay on a dimmed glass; a dark glass is not redrawn. */
+bool buddy_display_resting(void);
 void buddy_display_wake(void);
 
 /** Converts logical RGB888 to the byte order ST77916 QSPI expects. */

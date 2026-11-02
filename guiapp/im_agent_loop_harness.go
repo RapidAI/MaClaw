@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
@@ -244,17 +245,31 @@ func llmRetryProgressActivity(text string) llmRetryActivity {
 }
 
 func progressTextIsAcknowledgement(text string) bool {
+	trimmed := stripKnownProgressStatusLabel(strings.TrimSpace(text))
+	for _, lang := range []string{"zh", "en", "mn"} {
+		if trimmed == i18n.T(i18n.MsgProgressAck, lang) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripKnownProgressStatusLabel(text string) string {
 	trimmed := strings.TrimSpace(text)
 	if len(trimmed) >= len("[Status]") && strings.EqualFold(trimmed[:len("[Status]")], "[Status]") {
 		trimmed = strings.TrimSpace(trimmed[len("[Status]"):])
 	}
-	for _, prefix := range []string{"〔进度〕", "[进度]", "【进度】", "〔Progress〕", "[Progress]", "【Progress】"} {
-		if strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(prefix)) {
-			trimmed = strings.TrimSpace(trimmed[len(prefix):])
-			break
+	for _, lang := range []string{"zh", "en", "mn"} {
+		if prefix := i18n.T(i18n.MsgProgressStatusLabel, lang); prefix != "" && strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
 		}
 	}
-	return trimmed == "收到，正在处理"
+	for _, prefix := range []string{"〔进度〕", "[进度]", "【进度】", "〔Progress〕", "[Progress]", "【Progress】"} {
+		if strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(prefix)) {
+			return strings.TrimSpace(trimmed[len(prefix):])
+		}
+	}
+	return trimmed
 }
 
 // startRetryActivityNotes records activity immediately and again on each

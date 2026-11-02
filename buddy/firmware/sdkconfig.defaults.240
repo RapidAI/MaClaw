@@ -1,0 +1,3 @@
+# Square 240 module. buddy/tools/build-profiles.ps1 appends this after
+# sdkconfig.defaults and builds into build-nv3023, leaving the EchoEar tree alone.
+CONFIG_BUDDY_PANEL_NV3023_240=y

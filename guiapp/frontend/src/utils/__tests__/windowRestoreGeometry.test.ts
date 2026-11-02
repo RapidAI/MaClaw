@@ -59,6 +59,17 @@ describe("applyWindowRestoreGeometry", () => {
     it("no-ops without a snapshot", () => {
         expect(applyWindowRestoreGeometry({ setSize: vi.fn(), setPosition: vi.fn() }, null)).toBe(false);
     });
+
+    it("uses one restore-frame call so the WebView is refit with the window", () => {
+        const restoreFrame = vi.fn();
+        const setSize = vi.fn();
+        const setPosition = vi.fn();
+        const geometry = { width: 1100, height: 720, x: 12, y: 24 };
+        expect(applyWindowRestoreGeometry({ setSize, setPosition, restoreFrame }, geometry)).toBe(true);
+        expect(restoreFrame).toHaveBeenCalledWith(geometry);
+        expect(setSize).not.toHaveBeenCalled();
+        expect(setPosition).not.toHaveBeenCalled();
+    });
 });
 
 describe("createWindowMaximizeRestoreSession", () => {

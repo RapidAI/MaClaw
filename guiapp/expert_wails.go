@@ -81,14 +81,25 @@ func (a *App) syncPendingExpertsToHub(client *expertHubClient, hubItems []Expert
 	if client == nil {
 		return
 	}
-	go func() {
+	run := func() {
 		expertHubSyncMutex.Lock()
 		defer expertHubSyncMutex.Unlock()
 		a.syncPendingExpertsToHubLocked(client, hubItems)
-	}()
+	}
+	if expertHubSyncInlineForTest() {
+		run()
+		return
+	}
+	go run()
 }
 
 func (a *App) syncPendingExpertsToHubLocked(client *expertHubClient, hubItems []ExpertDefinition) {
+	// A test that opened its own Hub still reads defaultExpertStore. Unless
+	// that store was swapped, this pass would push or delete the signed-in
+	// catalog.
+	if err := refuseAmbientExpertProfileWrite(defaultExpertStore.path()); err != nil {
+		return
+	}
 	local, tombstones, pendingUploads, pendingDeletes, err := defaultExpertStore.ListForHubSync()
 	if err != nil {
 		return
@@ -306,7 +317,9 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 	// Best-effort Hub sync. Builtin experts (and their override copies) stay
 	// local-only: every device ships the same builtins. Expert Market installs
 	// are also device-local, including after a user edits one in the editor.
-	if !isBuiltinID && !localOnly {
+	// A blocked test must not arm a retry either: the desktop app would upload
+	// that marker from the real profile the next time it lists experts.
+	if !isBuiltinID && !localOnly && !expertHubSyncBlockedInTest(a) {
 		if err := defaultExpertStore.MarkPendingHubUpload(def.ID); err != nil {
 			log.Printf("[experts] mark pending Hub upload %q failed: %v", def.ID, err)
 		}
@@ -359,6 +372,9 @@ func (a *App) DeleteExpert(id string) error {
 	}
 	invalidateExpertDefCache(id)
 	a.emitEvent(EventExpertsChanged)
+	if expertHubSyncBlockedInTest(a) {
+		return nil
+	}
 	deletedAt, markErr := defaultExpertStore.MarkPendingHubDelete(id)
 	if markErr != nil {
 		log.Printf("[experts] mark pending Hub delete %q failed: %v", id, markErr)

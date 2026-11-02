@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/buddy/protocol"
 	"github.com/RapidAI/CodeClaw/buddy/serialport"
 	"github.com/RapidAI/CodeClaw/buddy/service"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // buddyConfig is persisted as data/buddy.json.
@@ -26,19 +27,27 @@ type buddyConfig struct {
 // BuddyStatus is what the settings panel renders. The diagnostic fields are
 // also used by the end-to-end verification harness through the Wails bridge.
 type BuddyStatus struct {
-	Enabled       bool   `json:"enabled"`
-	Port          string `json:"port,omitempty"`
-	Connected     bool   `json:"connected"`
-	DeviceFW      string `json:"device_fw,omitempty"`
-	DeviceBoard   string `json:"device_board,omitempty"`
-	DeviceTouch   bool   `json:"device_touch"`
-	DeviceSound   bool   `json:"device_sound"`
-	Page          string `json:"page,omitempty"`
-	LastStateAt   string `json:"last_state_at,omitempty"`
-	LastAckAt     string `json:"last_ack_at,omitempty"`
-	MissingGlyphs int    `json:"missing_glyphs,omitempty"`
-	LastError     string `json:"last_error,omitempty"`
-	SnapshotAgeS  int    `json:"snapshot_age_s,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	Port           string `json:"port,omitempty"`
+	Connected      bool   `json:"connected"`
+	DeviceFW       string `json:"device_fw,omitempty"`
+	DeviceBoard    string `json:"device_board,omitempty"`
+	DeviceTouch    bool   `json:"device_touch"`
+	DeviceKey      bool   `json:"device_key"`
+	DeviceSound    bool   `json:"device_sound"`
+	DeviceWidth    int    `json:"device_width,omitempty"`
+	DeviceHeight   int    `json:"device_height,omitempty"`
+	DeviceRound    bool   `json:"device_round,omitempty"`
+	DevicePanel    string `json:"device_panel,omitempty"`
+	DeviceFont     string `json:"device_font,omitempty"`
+	SoundMaster    bool   `json:"sound_master"`
+	StateLatencyMS int64  `json:"state_latency_ms,omitempty"`
+	Page           string `json:"page,omitempty"`
+	LastStateAt    string `json:"last_state_at,omitempty"`
+	LastAckAt      string `json:"last_ack_at,omitempty"`
+	MissingGlyphs  int    `json:"missing_glyphs,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
+	SnapshotAgeS   int    `json:"snapshot_age_s,omitempty"`
 
 	LastPushAt          string              `json:"last_push_at,omitempty"`
 	LastSentAt          string              `json:"last_sent_at,omitempty"`
@@ -55,19 +64,30 @@ func (a *App) buddyConfigPath() string {
 
 func (a *App) loadBuddyConfig() buddyConfig {
 	sound := protocol.DefaultSoundConfig()
-	cfg := buddyConfig{Enabled: true, Sound: &sound} // plug-and-play by default
+	// A missing file is a first launch: plug and play. A present file that
+	// cannot be read must not default to on, or a torn write would occupy the
+	// hardware port with the checkbox off.
+	fallbackOff := func() buddyConfig {
+		sound := protocol.DefaultSoundConfig()
+		return buddyConfig{Enabled: false, Sound: &sound}
+	}
 	raw, err := os.ReadFile(a.buddyConfigPath())
 	if err != nil {
-		return cfg
+		if os.IsNotExist(err) {
+			return buddyConfig{Enabled: true, Sound: &sound}
+		}
+		log.Printf("[buddy] config read failed: %v", err)
+		return fallbackOff()
 	}
+	cfg := buddyConfig{Enabled: true, Sound: &sound}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		log.Printf("[buddy] config parse failed: %v", err)
-		sound := protocol.DefaultSoundConfig()
-		return buddyConfig{Enabled: true, Sound: &sound}
+		return fallbackOff()
 	}
 	if cfg.Sound == nil {
 		cfg.Sound = &sound
 	}
+	cfg.Sound.EnsureAttention()
 	cfg.Sound.Sanitize()
 	return cfg
 }
@@ -85,12 +105,59 @@ func (a *App) saveBuddyConfig(cfg buddyConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(a.buddyConfigPath(), raw, 0o644)
+	return replaceFile(a.buddyConfigPath(), raw)
+}
+
+// replaceFile writes the full contents aside, then swaps them into place so a
+// crash cannot leave buddy.json half-written.
+func replaceFile(path string, raw []byte) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := renameReplacing(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // buddyLogPath is the on-disk trace of the serial link and pet refreshes.
 func buddyLogPath() string {
 	return filepath.Join(os.TempDir(), "maclaw-buddy.log")
+}
+
+// focusFromBuddyInput raises MaClaw and tells the task list about a tap.
+// Pending confirmation wins over the task currently drawn on the glass.
+func (a *App) focusFromBuddyInput(in protocol.Input) {
+	if in.Gesture != "tap" && in.Gesture != "confirm" {
+		return
+	}
+	payload := map[string]any{"gesture": in.Gesture, "page": in.Page}
+	if in.Index != nil {
+		payload["index"] = *in.Index
+	}
+	a.emitEvent("buddy:input", payload)
+	if !a.hasWailsEventsContext() {
+		return
+	}
+	runtime.WindowUnminimise(a.ctx)
+	runtime.WindowShow(a.ctx)
 }
 
 // logBuddyf mirrors a buddy message to the console and the diagnostic file.
@@ -104,17 +171,26 @@ func logBuddyf(format string, args ...any) {
 }
 
 // startBuddyService starts the in-process serial runner if enabled.
+// The config file is read under buddyCfgWrite, then that lock is released
+// before the runner exists. Stop can persist enabled=false and cancel the
+// new runner instead of waiting out the whole startup.
 func (a *App) startBuddyService() {
+	a.buddyCfgWrite.Lock()
+	cfg := a.loadBuddyConfig()
 	a.buddyMu.Lock()
-	defer a.buddyMu.Unlock()
 	if a.buddyCancel != nil {
+		a.buddyMu.Unlock()
+		a.buddyCfgWrite.Unlock()
 		return
 	}
-	cfg := a.loadBuddyConfig()
 	a.buddyCfg = cfg
 	if !cfg.Enabled {
+		a.buddyMu.Unlock()
+		a.buddyCfgWrite.Unlock()
 		return
 	}
+	a.buddyCfgWrite.Unlock()
+	defer a.buddyMu.Unlock()
 
 	opts := service.DefaultOptions()
 	opts.HostVersion = "8.1.0"
@@ -124,10 +200,29 @@ func (a *App) startBuddyService() {
 	opts.Logf = func(format string, args ...any) {
 		logBuddyf(format, args...)
 	}
+	opts.OnDeviceSound = func(cfg protocol.SoundConfig) {
+		// Detach from the runner goroutine so a report that arrives while
+		// startBuddyService still holds buddyMu cannot deadlock.
+		go func() {
+			if err := a.persistBuddySound(cfg); err != nil {
+				logBuddyf("save device sound: %v", err)
+			}
+		}()
+	}
+	opts.OnDeviceInput = func(in protocol.Input) {
+		go a.focusFromBuddyInput(in)
+	}
 
 	var runner *service.Runner
 	dial := func() (io.ReadWriteCloser, error) {
-		port, name, err := serialport.Dialer(cfg.Port)
+		a.buddyMu.Lock()
+		enabled := a.buddyCfg.Enabled
+		portName := a.buddyCfg.Port
+		a.buddyMu.Unlock()
+		if !enabled {
+			return nil, service.ErrLinkDisabled
+		}
+		port, name, err := serialport.Dialer(portName)
 		if err != nil {
 			return nil, err
 		}
@@ -256,7 +351,15 @@ func (a *App) BuddyGetStatus() BuddyStatus {
 	status.DeviceFW = s.DeviceFW
 	status.DeviceBoard = s.DeviceBoard
 	status.DeviceTouch = s.DeviceTouch
+	status.DeviceKey = s.DeviceKey
 	status.DeviceSound = s.DeviceSound
+	status.DeviceWidth = s.DeviceWidth
+	status.DeviceHeight = s.DeviceHeight
+	status.DeviceRound = s.DeviceRound
+	status.DevicePanel = s.DevicePanel
+	status.DeviceFont = s.DeviceFont
+	status.SoundMaster = s.SoundMaster
+	status.StateLatencyMS = s.StateLatencyMS
 	status.Page = s.Page
 	status.MissingGlyphs = s.MissingGlyphs
 	if s.DeviceMissingGlyphs > status.MissingGlyphs {
@@ -300,13 +403,18 @@ func (a *App) BuddyGetStatus() BuddyStatus {
 
 // BuddyStart enables the service (optionally pinned to a port).
 func (a *App) BuddyStart(port string) error {
+	a.buddyCfgWrite.Lock()
 	cfg := a.loadBuddyConfig()
 	cfg.Enabled = true
 	cfg.Port = strings.TrimSpace(port)
 	a.buddyMu.Lock()
-	a.buddyCfg = cfg
+	if sound := cloneBuddySound(a.buddyCfg.Sound); sound != nil {
+		cfg.Sound = sound
+	}
 	a.buddyMu.Unlock()
-	if err := a.saveBuddyConfig(cfg); err != nil {
+	err := a.publishBuddyConfig(cfg)
+	a.buddyCfgWrite.Unlock()
+	if err != nil {
 		return fmt.Errorf("save buddy config: %w", err)
 	}
 	a.stopBuddyService()
@@ -315,18 +423,67 @@ func (a *App) BuddyStart(port string) error {
 }
 
 // BuddyStop disables the service and releases the serial port so esptool can
-// flash the device.
+// flash the device. The config write finishes before the runner is cancelled,
+// and it shares buddyCfgWrite with sound saves so a late report cannot turn
+// the link back on.
 func (a *App) BuddyStop() error {
+	a.buddyCfgWrite.Lock()
 	cfg := a.loadBuddyConfig()
 	cfg.Enabled = false
 	a.buddyMu.Lock()
-	a.buddyCfg = cfg
+	if sound := cloneBuddySound(a.buddyCfg.Sound); sound != nil {
+		cfg.Sound = sound
+	}
 	a.buddyMu.Unlock()
-	if err := a.saveBuddyConfig(cfg); err != nil {
+	err := a.publishBuddyConfig(cfg)
+	a.buddyCfgWrite.Unlock()
+	if err != nil {
 		return fmt.Errorf("save buddy config: %w", err)
 	}
 	a.stopBuddyService()
 	return nil
+}
+
+// cloneBuddySound copies the attention event too. A shallow copy would share
+// that pointer, so a later sanitize could change the runner's live config.
+func cloneBuddySound(src *protocol.SoundConfig) *protocol.SoundConfig {
+	if src == nil {
+		return nil
+	}
+	sound := *src
+	if src.Attention != nil {
+		att := *src.Attention
+		sound.Attention = &att
+	}
+	return &sound
+}
+
+// publishBuddyConfig writes buddy.json and only then updates memory. The
+// caller holds buddyCfgWrite. A failed write leaves the switch unchanged, so
+// the checkbox cannot show off while the runner still holds the port.
+func (a *App) publishBuddyConfig(cfg buddyConfig) error {
+	if err := a.saveBuddyConfig(cfg); err != nil {
+		return err
+	}
+	a.buddyMu.Lock()
+	a.buddyCfg = cfg
+	a.buddyMu.Unlock()
+	return nil
+}
+
+// persistBuddySound stores a device-reported sound config. Enabled is copied
+// under buddyCfgWrite, so a report that started while the link was on cannot
+// write enabled=true after BuddyStop.
+func (a *App) persistBuddySound(sound protocol.SoundConfig) error {
+	sound.EnsureAttention()
+	sound.Sanitize()
+	a.buddyCfgWrite.Lock()
+	defer a.buddyCfgWrite.Unlock()
+	a.buddyMu.Lock()
+	cfg := a.buddyCfg
+	cfg.Sound = &sound
+	a.buddyMu.Unlock()
+	return a.publishBuddyConfig(cfg)
 }
 
 // BuddyGetSoundConfig returns the persisted notification sound settings.
@@ -343,13 +500,17 @@ func (a *App) BuddyGetSoundConfig() protocol.SoundConfig {
 // BuddySetSoundConfig persists the sound settings and pushes them to a live
 // device. A nil runner (link disabled) only saves them for the next connect.
 func (a *App) BuddySetSoundConfig(cfg protocol.SoundConfig) error {
+	cfg.EnsureAttention()
 	cfg.Sanitize()
+	a.buddyCfgWrite.Lock()
 	a.buddyMu.Lock()
-	a.buddyCfg.Sound = &cfg
 	full := a.buddyCfg
+	full.Sound = &cfg
 	runner := a.buddyRunner
 	a.buddyMu.Unlock()
-	if err := a.saveBuddyConfig(full); err != nil {
+	err := a.publishBuddyConfig(full)
+	a.buddyCfgWrite.Unlock()
+	if err != nil {
 		return fmt.Errorf("save buddy config: %w", err)
 	}
 	if runner != nil {
@@ -361,6 +522,18 @@ func (a *App) BuddySetSoundConfig(cfg protocol.SoundConfig) error {
 // BuddyPushSnapshot accepts the census the frontend computed with the same
 // helpers the sidebar uses. Keeping the calculation in the frontend is what
 // guarantees zero drift between the sidebar and the device.
+// BuddyPushPet sets the glass pet from the assistant turn: busy while a
+// turn is running, idle when it ends. Anything else is ignored.
+func (a *App) BuddyPushPet(state string) error {
+	a.buddyMu.Lock()
+	runner := a.buddyRunner
+	a.buddyMu.Unlock()
+	if runner != nil {
+		runner.SetPetMood(state)
+	}
+	return nil
+}
+
 func (a *App) BuddyPushSnapshot(payload string) error {
 	var snap protocol.Snapshot
 	if err := json.Unmarshal([]byte(payload), &snap); err != nil {

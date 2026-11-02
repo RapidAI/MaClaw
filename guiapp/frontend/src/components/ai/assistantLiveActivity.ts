@@ -1,4 +1,5 @@
-import { localizeText } from "../../i18n";
+import { localizeText, normalizeLang } from "../../i18n";
+import { presetProviderDisplayName } from "../remote/presetProviderLabel";
 import { stripLeadingEmojiCluster } from "./aiAssistantProgressUtils";
 import { stripAssistantToolCallMarkers } from "./assistantToolCall";
 import { codingAgentShellExplorationTarget, codingAgentShellSearchTarget } from "./CodingAgentProgressStatus";
@@ -315,10 +316,13 @@ export function resolveLiveModelTarget(input: {
 export function formatLiveModelObject(lang: string, providerName?: string, modelId?: string, isHubService?: boolean): string {
     const provider = isHubService
         ? localizeText(lang, "MaClaw official", "MaClaw官方", "MaClaw官方")
-        : String(providerName || "").trim();
+        : presetProviderDisplayName(lang, providerName);
     const model = String(modelId || "").trim();
     const name = [provider, model].filter(Boolean).join(" ");
     if (!name) return "";
+    // "${name} model" is not a catalog template. Once the provider name is
+    // already Mongolian, the English word would mix the two languages.
+    if (normalizeLang(lang) === "mn") return `${name} загвар`;
     return localizeText(lang, `${name} model`, `${name} 模型`, `${name} 模型`);
 }
 

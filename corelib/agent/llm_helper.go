@@ -509,6 +509,22 @@ func doSimpleOpenAIRequestOnce(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	if err != nil {
 		return nil, err
 	}
+	if parsed, _, _, ferr, handled := llm.TryOpenCodeFreeClient(ctx, cfg, data, client, nil); handled {
+		if ferr != nil {
+			return nil, ferr
+		}
+		if parsed == nil || len(parsed.Choices) == 0 {
+			return nil, fmt.Errorf("no response from model")
+		}
+		text := parsed.Choices[0].Message.Content
+		if text == "" {
+			text = parsed.Choices[0].Message.ReasoningContent
+		}
+		if text == "" {
+			return nil, fmt.Errorf("no response from model")
+		}
+		return &LLMSimpleResponse{Content: StripThinkingTags(text)}, nil
+	}
 	log.Printf("[LLM Simple] POST %s model=%s configured_model=%s protocol=%s (stream=%t)", endpoint, cfg.UpstreamModel(), cfg.Model, cfg.Protocol, stream)
 
 	resp, err := client.Do(req)

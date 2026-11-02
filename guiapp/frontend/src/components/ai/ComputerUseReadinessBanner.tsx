@@ -1,6 +1,7 @@
 /**
  * Shows setup / recovery hints when Computer Use needs attention:
- * missing YOLO weights, OS permissions, or recent observe failures.
+ * OS permissions or recent observe failures.
+ * OmniParser weight download stays in the background and is not listed here.
  * Each issue can be dismissed independently (localStorage).
  */
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
@@ -8,7 +9,6 @@ import {
     ComputerUseE2EInteract,
     ComputerUseSelfCheck,
     ComputerUseSmokeCheck,
-    DownloadYOLOModel,
     ExportComputerUseDiagnostics,
     GetComputerUseReadiness,
     OpenComputerUseLastDiagnostics,
@@ -130,9 +130,7 @@ export function ComputerUseReadinessBanner({ lang, theme: t }: Props) {
         if (!action) return;
         setBusy(true);
         try {
-            if (action === "download_yolo") {
-                await DownloadYOLOModel();
-            } else if (action === "open_accessibility" || action === "open_privacy") {
+            if (action === "open_accessibility" || action === "open_privacy") {
                 await OpenComputerUsePermissionSettings(
                     action === "open_privacy" ? "privacy" : "accessibility"
                 );
@@ -205,18 +203,6 @@ export function ComputerUseReadinessBanner({ lang, theme: t }: Props) {
 
     const msgFor = (iss: Issue) => {
         switch (iss.id) {
-            case "yolo_downloading":
-                return tr(
-                    "OmniParser weights are downloading in the background. Screen parsing turns on when the file is ready.",
-                    "OmniParser 权重正在后台下载，完成后将自动启用屏幕解析。",
-                    "OmniParser 權重正在後台下載，完成後將自動啟用螢幕解析。"
-                );
-            case "yolo_missing":
-                return tr(
-                    "OmniParser weights did not download. Retry to continue.",
-                    "OmniParser 权重下载失败，可重试。",
-                    "OmniParser 權重下載失敗，可重試。"
-                );
             case "accessibility":
                 return tr(
                     "Grant macOS Accessibility so Computer Use can read UI trees.",
@@ -270,8 +256,6 @@ export function ComputerUseReadinessBanner({ lang, theme: t }: Props) {
 
     const actionLabel = (action?: string) => {
         switch (action) {
-            case "download_yolo":
-                return tr("Download weights", "下载权重", "下載權重");
             case "open_accessibility":
                 return tr("Open Accessibility", "打开辅助功能", "打開輔助功能");
             case "open_screen_recording":

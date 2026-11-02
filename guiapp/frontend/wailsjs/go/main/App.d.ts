@@ -291,6 +291,8 @@ export function CodingKnowledgeCapacity():Promise<main.CodingKnowledgeCapacitySt
 
 export function CodingKnowledgeConfirm(arg1:string):Promise<void>;
 
+export function CodingKnowledgeConfirmMany(arg1:Array<string>):Promise<main.CodingKnowledgeConfirmManyResult>;
+
 export function CodingKnowledgeCreateRevisionCandidate(arg1:string,arg2:string):Promise<knowledge.CodingExperience>;
 
 export function CodingKnowledgeDelete(arg1:string):Promise<void>;
@@ -1429,6 +1431,8 @@ export function PurchaseExpertMarketListing(arg1:string):Promise<Record<string, 
 export function SubmitExpertMarketListing(arg1:string,arg2:string,arg3:number,arg4:string):Promise<Record<string, any>>;
 
 export function SubmitExpertMarketListingWithDistribution(arg1:string,arg2:string,arg3:number,arg4:string,arg5:boolean):Promise<Record<string, any>>;
+
+export function SubmitExpertMarketListingToUsers(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
 export function PublishExpertMarketListing(arg1:string):Promise<Record<string, any>>;
 
@@ -2698,6 +2702,7 @@ export function SetMaclawLLMCurrentModel(arg1:string):Promise<void>;
 export function SetMaclawLLMThinkingMode(arg1:string):Promise<void>;
 
 export function SetMainWindowScreenPosition(arg1:number,arg2:number):Promise<void>;
+export function RestoreMainWindowGeometry(arg1:number,arg2:number,arg3:number,arg4:number):Promise<void>;
 
 export function SetMemoryMaxBackups(arg1:number):Promise<void>;
 
@@ -3114,6 +3119,8 @@ export function BuddyGetStatus():Promise<{enabled:boolean,port?:string,connected
 
 export function BuddyPushSnapshot(arg1:string):Promise<void>;
 
+export function BuddyPushPet(arg1:string):Promise<void>;
+
 export function BuddyPushWeather(arg1:string,arg2:string,arg3:number):Promise<void>;
 
 export function BuddyRefreshWeather():Promise<string>;
@@ -3138,9 +3145,9 @@ export function DeleteBotRoom(arg1:string):Promise<void>;
 
 export function PostBotRoomMessage(arg1:string,arg2:string):Promise<{message:{id:string,from:string,target:string,kind:string,text:string,created_at:string},woken:Array<string>}>;
 
-export function BuddyGetSoundConfig():Promise<{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number}}>;
+export function BuddyGetSoundConfig():Promise<{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number},attention?:{enabled:boolean,effect:number}}>;
 
-export function BuddySetSoundConfig(arg1:{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number}}):Promise<void>;
+export function BuddySetSoundConfig(arg1:{master:boolean,running:{enabled:boolean,effect:number},complete:{enabled:boolean,effect:number},standby:{enabled:boolean,effect:number},attention?:{enabled:boolean,effect:number}}):Promise<void>;
 
 export function BuddyRefreshPet():Promise<void>;
 

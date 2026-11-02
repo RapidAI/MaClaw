@@ -13,6 +13,7 @@ import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { capabilityModelMenuLabel, capabilityMultiplierFor } from "../../utils/capabilityModelLabel";
+import { presetProviderDisplayName } from "../remote/presetProviderLabel";
 import type { AIExecutionProfile } from "./AITabTypes";
 
 const EMPTY_PROVIDERS: SidebarLLMProviderSummary[] = [];
@@ -99,13 +100,13 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
     const roleLabel = activeProfile === "coding"
         ? tr("Coding", "编程", "編程")
         : tr("Assistant", "助手", "助手");
-    const providerName = String(currentProvider?.name || "").trim();
+    const providerName = presetProviderDisplayName(lang, currentProvider?.name);
     const modelPart = selectedModelLabel || (providerName ? "" : tr("Model", "模型", "模型"));
     const normalModelChipLabel = isReadOnlyFollowingCoding
         ? `${tr("Coding · Follows assistant", "编程 · 跟随助手", "編程 · 跟隨助手")}${selectedModelLabel ? ` · ${selectedModelLabel}` : ""}`
         : [roleLabel, providerName, modelPart].filter(Boolean).join(" · ");
     const modelChipLabel = providerSelectionPending && !isReadOnlyFollowingCoding
-        ? `${roleLabel} · ${currentProvider?.name || tr("Provider", "服务商", "服務商")} · ${tr("choose model", "选择模型", "選擇模型")}`
+        ? `${roleLabel} · ${providerName || tr("Provider", "服务商", "服務商")} · ${tr("choose model", "选择模型", "選擇模型")}`
         : normalModelChipLabel;
 
     const closeModelMenu = useCallback(() => {
@@ -234,6 +235,7 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
                     modelList={modelList}
                     modelMultipliers={modelMultipliers}
                     showCapabilityDefaults={showCapabilityFee}
+                    lang={lang}
                     currentModel={currentModel}
                     modelsLoading={modelsLoading}
                     onSelectProvider={handleSelectProvider}

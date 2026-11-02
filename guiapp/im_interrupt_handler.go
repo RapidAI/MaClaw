@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
@@ -402,8 +403,8 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			cancelReply = cancelled.Text
 		}
 		if tracker != nil {
-			if summary := tracker.Buffer().CompletedOutputSummary(); summary != "" {
-				cancelReply += "\n已完成: " + summary
+			if summary := tracker.CompletedOutputSummary(); summary != "" {
+				cancelReply += "\n" + i18n.Tf(i18n.MsgMilestoneDoneList, trackerLang(tracker), summary)
 			}
 		}
 		return progress.InterruptResult{
@@ -413,9 +414,9 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		}
 
 	case progress.ActionStatusQuery:
-		reply := "正在处理中..."
+		reply := i18n.T(i18n.MsgStatusInProgress, interruptReplyLang(ih))
 		if tracker != nil {
-			reply = tracker.Buffer().ProgressSummary()
+			reply = tracker.ProgressSummary()
 		}
 		return progress.InterruptResult{
 			Handled: true,
@@ -577,4 +578,18 @@ func (ih *imInterruptHandler) HandleCorrection(
 			Reply: "不支持的纠正操作。",
 		}
 	}
+}
+
+func trackerLang(tracker *progress.AgentProgressTracker) string {
+	if tracker == nil {
+		return "zh"
+	}
+	return tracker.UILang()
+}
+
+func interruptReplyLang(ih *imInterruptHandler) string {
+	if ih == nil || ih.handler == nil {
+		return "zh"
+	}
+	return ih.handler.imUILang()
 }

@@ -74,7 +74,7 @@ func BuildResponsesAPIRequestData(
 ) (endpoint string, body []byte, err error) {
 	base := cfg.URL
 	if corelib.IsOpenCodeURL(cfg.URL) {
-		base = corelib.OpenCodeUpstreamBase(cfg.URL, cfg.UpstreamModel())
+		base = corelib.OpenCodeUpstreamBaseFor(cfg.URL, cfg.UpstreamModel(), cfg.Key)
 	}
 	endpoint = BuildResponsesEndpoint(base)
 	messages = normalizeOpenAIChatToolCallLinkage(messages)

@@ -68,9 +68,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	toolStartedAt := time.Now()
 	requestID := ""
 	loopID := ""
+	toolGeneration := uint64(0)
 	if opts.Context != nil {
 		requestID = opts.Context.Runtime.RequestID
 		loopID = opts.Context.ID
+		toolGeneration = opts.Context.SemanticTurnGeneration()
 	}
 	defer func() {
 		log.Printf("[agent-loop tool] done owner=%q request_id=%q loop=%q iteration=%d tool=%q outcome=%s failure=%s duration=%s result_len=%d",
@@ -296,8 +298,10 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		if contextTokens <= 0 {
 			contextTokens = h.getMaclawLLMConfig().EffectiveContextTokens()
 		}
-		result = h.executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(withMailboxOwner(withTrustedAuditPrincipal(execCtx, opts.UserID), opts.UserID), policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), contextTokens, opts.TaskAnchor, tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
+		recallCtx := withCodingKnowledgeRecallContext(execCtx, opts.Context)
+		result = h.executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(withMailboxOwner(withTrustedAuditPrincipal(recallCtx, opts.UserID), opts.UserID), policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), contextTokens, opts.TaskAnchor, tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
 	}
+	h.noteMainAgentCodingToolResult(opts.Context, toolGeneration, tc.Function.Name, tc.Function.Arguments, result)
 	h.recordAdaptiveRetryToolFailure(opts.AdaptiveRetry, tc.Function.Name, result, opts.Iteration)
 
 	if opts.MilestoneTracker != nil {
@@ -382,6 +386,10 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateTask(opts agentLoopToolE
 }
 
 func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]interface{}, opts agentLoopToolExecutionOptions) (toolExecutionResult, bool) {
+	recallGeneration := uint64(0)
+	if opts.Context != nil {
+		recallGeneration = opts.Context.SemanticTurnGeneration()
+	}
 	agentName, _ := args["agent"].(string)
 	if strings.TrimSpace(strings.ToLower(agentName)) != "coding_workflow" {
 		return toolExecutionResult{}, false
@@ -480,6 +488,7 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	if result == nil {
 		return toolExecutionResult{Text: "CodingSubAgent did not return a result.", ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureExecutionPanic}, true
 	}
+	recordMainAgentCodingKnowledgeOutcomes(h, opts.Context, result, recallGeneration)
 	emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, result.FilesModified, result.FilesCreated, previewRoutePath)
 	text := formatCodingSubAgentUserAnswer(result)
 	if text == "" {

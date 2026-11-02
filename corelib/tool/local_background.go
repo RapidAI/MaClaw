@@ -143,7 +143,7 @@ func (m *LocalBackgroundTaskManager) SubmitWithOwner(command, workDir, role, own
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-	cmd.Env = AppendUTF8Env(os.Environ())
+	cmd.Env = AugmentCommandEnv(AppendUTF8Env(os.Environ()))
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 

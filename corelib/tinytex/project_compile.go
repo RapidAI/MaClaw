@@ -92,14 +92,7 @@ func compileOptions(engine, tlmgr, bibtex, biber string) PreviewOptions {
 		if PackageNameFromFile(pkg+".sty") == "" && PackageNameFromFile(pkg) == "" {
 			return fmt.Errorf("package name rejected")
 		}
-		_, code, err := runReviewed(ctx, tlmgr, filepath.Dir(tlmgr), "install", pkg)
-		if err != nil {
-			return err
-		}
-		if code != 0 {
-			return fmt.Errorf("tlmgr install %s exited %d", pkg, code)
-		}
-		return nil
+		return InstallPackage(ctx, runReviewed, tlmgr, pkg)
 	}
 	return opt
 }

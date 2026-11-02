@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, busyTaskRunIdentities, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, expertIdFromSessionKey, expertSessionForProjectTask, expertTaskSessionKey, projectTabOwnsExpertQueue, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -355,6 +355,37 @@ describe("aiAssistantPanelSessionUtils", () => {
     it("matches legacy slash variants to the normalized session", () => {
         const message = { id: "m1", role: "assistant", content: "ok", sessionKey: "desktop-user:d:\\workprj\\task\\" } as ChatMessage;
         expect(messageBelongsToSession(message, "desktop-user:D:/workprj/task")).toBe(true);
+    });
+
+    it("gives each expert task its own session and does not mark sibling rows", () => {
+        const key = expertTaskSessionKey("exp-book", "d:\\tasks\\book\\.");
+        expect(key).toBe("desktop-user:expert:exp-book:task:D:/tasks/book");
+        expect(expertTaskSessionKey("exp-book", "")).toBe("desktop-user:expert:exp-book");
+        expect(expertIdFromSessionKey(key)).toBe("exp-book");
+        expect(projectPathFromSessionKey(key)).toBe("D:/tasks/book");
+        expect(projectPathFromSessionKey("desktop-user:expert:exp-book")).toBe("");
+        expect(normalizeAssistantSessionKey("desktop-user:expert:exp-book:task:d:\\tasks\\book\\")).toBe(key);
+        expect(messageBelongsToSession(
+            { id: "m", role: "assistant", content: "ok", sessionKey: "desktop-user:expert:exp-book:task:d:\\tasks\\book\\" } as ChatMessage,
+            key,
+        )).toBe(true);
+        expect(busyTaskRunIdentities([
+            "desktop-user:expert:exp-book",
+            key,
+        ])).toEqual({
+            projectPaths: ["D:/tasks/book"],
+            expertIds: ["exp-book"],
+        });
+        expect(busyTaskRunIdentities([key]).expertIds).toEqual([]);
+        const tasks = [
+            { project_path: "d:\\tasks\\book\\", tags: ["source:expert:exp-book"] },
+            { project_path: "D:/tasks/copy", tags: ["source:expert:exp-book", "task_copy"] },
+        ];
+        expect(expertSessionForProjectTask(tasks, "D:/tasks/book")).toBe(key);
+        expect(expertSessionForProjectTask(tasks, "D:/tasks/copy")).toBe("");
+        expect(projectTabOwnsExpertQueue("project", key)).toBe(true);
+        expect(projectTabOwnsExpertQueue("expert", key)).toBe(false);
+        expect(projectTabOwnsExpertQueue("project", "desktop-user:D:/tasks/book")).toBe(false);
     });
 
     it("keeps ACP owners opaque and outside path-based routing", () => {

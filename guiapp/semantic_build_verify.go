@@ -110,6 +110,9 @@ func (h *IMMessageHandler) runTrustedBuildVerify(principalID, task, target strin
 	if err != nil {
 		return "", err
 	}
+	if h.app != nil {
+		h.app.useOfficialTlmgrUpdater()
+	}
 	out, err := buildverify.Run(context.Background(), workspace, runDir, task)
 	if err != nil {
 		switch {

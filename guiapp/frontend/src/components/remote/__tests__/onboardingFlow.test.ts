@@ -6,6 +6,10 @@ import {
     isCurrentOnboardingStep,
     isOnboardingComplete,
     isTigerClawBrand,
+    hasLoadedOnboardingFlag,
+    shouldReopenOnboarding,
+    shouldReopenOnboardingForInactiveHub,
+    shouldReopenOnboardingForOfflineLLM,
 } from '../onboardingFlow';
 
 describe('onboardingFlow', () => {
@@ -67,5 +71,23 @@ describe('onboardingFlow', () => {
         expect(getOnboardingStepLabels(flow, 'en')).toEqual(['Mode', 'LLM']);
         expect(getOnboardingStepDone(flow, { regDone: true, llmDone: false, wxCompleted: false })).toEqual([false, true, false]);
         expect(isOnboardingComplete(flow, { regDone: true, llmDone: true, wxCompleted: false })).toBe(true);
+    });
+
+    it('does not reopen onboarding after it has been completed', () => {
+        expect(shouldReopenOnboarding({ onboardingDone: true, remoteActivated: false, llmOnline: false })).toBe(false);
+        expect(shouldReopenOnboarding({ onboardingDone: true, remoteActivated: true, llmOnline: true })).toBe(false);
+        expect(shouldReopenOnboarding({ onboardingDone: false, remoteActivated: true, llmOnline: true })).toBe(false);
+        expect(shouldReopenOnboarding({ onboardingDone: false, remoteActivated: false, llmOnline: true })).toBe(true);
+        expect(shouldReopenOnboarding({ onboardingDone: false, remoteActivated: true, llmOnline: false })).toBe(true);
+        expect(shouldReopenOnboardingForOfflineLLM(true, false)).toBe(false);
+        expect(shouldReopenOnboardingForOfflineLLM(false, true)).toBe(false);
+        expect(shouldReopenOnboardingForOfflineLLM(false, false)).toBe(true);
+        expect(shouldReopenOnboardingForInactiveHub(true, false)).toBe(false);
+        expect(shouldReopenOnboardingForInactiveHub(false, true)).toBe(false);
+        expect(shouldReopenOnboardingForInactiveHub(false, false)).toBe(true);
+        expect(hasLoadedOnboardingFlag(null)).toBe(false);
+        expect(hasLoadedOnboardingFlag({})).toBe(false);
+        expect(hasLoadedOnboardingFlag({ onboarding_done: false })).toBe(true);
+        expect(hasLoadedOnboardingFlag({ onboarding_done: true })).toBe(true);
     });
 });

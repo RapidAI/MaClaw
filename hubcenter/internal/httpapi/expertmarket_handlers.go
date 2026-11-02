@@ -83,13 +83,14 @@ type expertMarketPublicListing struct {
 
 type expertMarketAdminListing struct {
 	expertMarketPublicListing
-	Visibility  string `json:"visibility"`
-	Status      string `json:"status"`
-	OwnerID     string `json:"owner_id"`
-	OwnerEmail  string `json:"owner_email"`
-	SalesAmount int64  `json:"sales_amount"`
-	ReviewNote  string `json:"review_note,omitempty"`
-	UpdatedAt   string `json:"updated_at"`
+	Visibility   string   `json:"visibility"`
+	Status       string   `json:"status"`
+	OwnerID      string   `json:"owner_id"`
+	OwnerEmail   string   `json:"owner_email"`
+	SalesAmount  int64    `json:"sales_amount"`
+	ReviewNote   string   `json:"review_note,omitempty"`
+	UpdatedAt    string   `json:"updated_at"`
+	ShareTargets []string `json:"share_targets,omitempty"`
 }
 
 // Keep the legacy test and administration INSERT column sequence stable. The
@@ -131,7 +132,8 @@ func (h *SkillMarketHandlers) ensureExpertMarketSchema() {
 		// an individual while still being ineligible for tenant-wide industry
 		// distribution until its author gives this separate permission.
 		_, _ = db.Exec(`ALTER TABLE sm_expert_market_listings ADD COLUMN platform_distribution INTEGER NOT NULL DEFAULT 0`)
-		_, _ = db.Exec(`UPDATE sm_expert_market_listings SET visibility='public' WHERE visibility IS NULL OR visibility NOT IN ('public', 'private')`)
+		_, _ = db.Exec(`UPDATE sm_expert_market_listings SET visibility='public' WHERE visibility IS NULL OR visibility NOT IN ('public', 'private', 'users')`)
+		h.ensureExpertShareSchema(db)
 		// The stable package identity is global. Without this guard a buyer could
 		// download an expert package and re-submit it as their own listing.
 		_, _ = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_expert_market_source_global ON sm_expert_market_listings(source_expert_id)`)
@@ -147,6 +149,12 @@ func (h *SkillMarketHandlers) ensureExpertMarketSchema() {
 		// available action in the admin screen.
 		_, _ = db.Exec(`UPDATE sm_expert_market_listings SET status='listed' WHERE status='approved'`)
 		_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sm_expert_market_owner ON sm_expert_market_listings(owner_user_id, updated_at DESC)`)
+		// A hard delete removes the listing row. This tombstone stops a snapshot
+		// that was dumped before the delete, but appended after it, from
+		// recreating the listing on a peer.
+		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS sm_expert_market_removals (
+			id TEXT PRIMARY KEY, removed_at TEXT NOT NULL
+		)`)
 		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS sm_expert_market_purchases (
 			id TEXT PRIMARY KEY, listing_id TEXT NOT NULL, buyer_user_id TEXT NOT NULL, buyer_email TEXT NOT NULL,
 			amount_paid INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL,
@@ -371,7 +379,7 @@ func (h *SkillMarketHandlers) optionalExpertMarketUser(r *http.Request) (string,
 
 func expertMarketValidStatus(status string) bool {
 	switch status {
-	case "pending_review", "listed", "private", "unlisted", "rejected", "deleted", "purged":
+	case "pending_review", "listed", "private", "shared", "unlisted", "rejected", "deleted", "purged":
 		return true
 	default:
 		return false
@@ -645,15 +653,37 @@ func (h *SkillMarketHandlers) SubmitExpertMarketListing(w http.ResponseWriter, r
 		visibility = "public"
 	}
 	platformDistribution := strings.EqualFold(strings.TrimSpace(r.FormValue("platform_distribution")), "true") || strings.TrimSpace(r.FormValue("platform_distribution")) == "1"
-	if visibility != "public" && visibility != "private" {
-		smError(w, http.StatusBadRequest, "visibility must be public or private")
+	if visibility != "public" && visibility != "private" && visibility != "users" {
+		smError(w, http.StatusBadRequest, "visibility must be public, private, or users")
 		return
 	}
 	// Distribution is an explicit consent for a public listing. Ignore any
-	// stale or forged opt-in sent with a private share so making it public in a
+	// stale or forged opt-in sent with a private or specified-user share so a
 	// later lifecycle step cannot silently reactivate that consent.
-	if visibility == "private" {
+	var shareTargets []expertShareTarget
+	if visibility == "private" || visibility == "users" {
 		platformDistribution = false
+	}
+	if visibility == "users" {
+		// A specified-user share is always free. A price left on the row would
+		// become a real charge if the owner later submits the same package for
+		// public review.
+		price = 0
+		rawTargets := []string{}
+		if r.MultipartForm != nil {
+			rawTargets = r.MultipartForm.Value["share_targets"]
+		}
+		var targetErr error
+		shareTargets, targetErr = h.resolveExpertShareTargets(r.Context(), userID, email, rawTargets)
+		if targetErr != nil {
+			var rejected expertShareRejected
+			if errors.As(targetErr, &rejected) {
+				smError(w, http.StatusBadRequest, rejected.Error())
+				return
+			}
+			smError(w, http.StatusInternalServerError, "could not resolve share targets")
+			return
+		}
 	}
 	version := strings.TrimSpace(r.FormValue("version"))
 	if version == "" {
@@ -708,17 +738,31 @@ func (h *SkillMarketHandlers) SubmitExpertMarketListing(w http.ResponseWriter, r
 		return
 	}
 	status := "pending_review"
-	if visibility == "private" {
+	switch visibility {
+	case "private":
 		status = "private"
+	case "users":
+		status = "shared"
 	}
 	item := &expertMarketListing{ID: id, OwnerID: userID, OwnerEmail: email, SourceExpertID: sourceID, Name: name, Description: description, Icon: icon, Version: version, Price: price, Visibility: visibility, Status: status, ZipPath: path, PackageSize: int64(len(data)), PlatformDistribution: platformDistribution, CreatedAt: now, UpdatedAt: now}
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), "INSERT INTO sm_expert_market_listings ("+expertMarketListingColumns+", platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, '', ?, ?, ?)", item.ID, item.OwnerID, item.OwnerEmail, item.SourceExpertID, item.Name, item.Description, item.Icon, item.Version, item.Price, item.Visibility, item.Status, item.ZipPath, item.PackageSize, item.CreatedAt, item.UpdatedAt, item.PlatformDistribution)
 	}
+	if err == nil && visibility == "users" {
+		for _, target := range shareTargets {
+			_, err = tx.ExecContext(r.Context(), `INSERT INTO sm_expert_market_share_targets (listing_id, contact, user_id, created_at) VALUES (?, ?, ?, ?)`, item.ID, target.Contact, target.UserID, now)
+			if err != nil {
+				break
+			}
+		}
+	}
 	if err == nil {
 		action, reason := "submitted", "submitted for review"
-		if visibility == "private" {
+		switch visibility {
+		case "private":
 			action, reason = "shared_privately", "shared privately without review"
+		case "users":
+			action, reason = "shared_with_users", "shared with specified users without review"
 		}
 		// Event actors use the durable principal too. A contact can change when
 		// the same Hub user signs in through a different bound identity.
@@ -736,7 +780,12 @@ func (h *SkillMarketHandlers) SubmitExpertMarketListing(w http.ResponseWriter, r
 		return
 	}
 	committed = true
-	writeJSON(w, http.StatusCreated, adminExpertMarketListing(item))
+	h.emitExpertMarketSync(r.Context(), id)
+	created := adminExpertMarketListing(item)
+	if visibility == "users" {
+		created.ShareTargets = expertShareTargetDisplays(shareTargets)
+	}
+	writeJSON(w, http.StatusCreated, created)
 }
 
 func (h *SkillMarketHandlers) GetExpertMarketAccount(w http.ResponseWriter, r *http.Request) {
@@ -766,6 +815,27 @@ func (h *SkillMarketHandlers) GetExpertMarketAccount(w http.ResponseWriter, r *h
 		}
 		uploads = append(uploads, adminExpertMarketListing(item))
 	}
+	if err := rows.Err(); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = rows.Close()
+	shareIDs := make([]string, 0)
+	for _, item := range uploads {
+		if item.Visibility == "users" {
+			shareIDs = append(shareIDs, item.ID)
+		}
+	}
+	if len(shareIDs) > 0 {
+		displays, shareErr := h.expertMarketShareTargetDisplays(r.Context(), shareIDs)
+		if shareErr != nil {
+			smError(w, http.StatusInternalServerError, shareErr.Error())
+			return
+		}
+		for i := range uploads {
+			uploads[i].ShareTargets = displays[uploads[i].ID]
+		}
+	}
 	// A corrupt legacy entitlement must not turn an owner-only record into a
 	// buyer-visible library item. Only public listings can ever be acquired.
 	purchaseRows, err := h.store.DB().QueryContext(r.Context(), "SELECT "+qualifiedExpertMarketListingSelectColumns("l")+" FROM sm_expert_market_purchases p JOIN sm_expert_market_listings l ON l.id=p.listing_id WHERE p.buyer_user_id=? AND p.status='active' AND l.visibility='public' ORDER BY p.created_at DESC", userID)
@@ -783,11 +853,64 @@ func (h *SkillMarketHandlers) GetExpertMarketAccount(w http.ResponseWriter, r *h
 		}
 		purchases = append(purchases, adminExpertMarketListing(item))
 	}
+	if err := purchaseRows.Err(); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = purchaseRows.Close()
+	// Specified-user shares are identified by phone or email, not by Hub or
+	// tenant. Link a contact that was named before this account existed, then
+	// return every live share addressed to this person.
+	h.linkExpertShareTargets(r.Context(), userID, email)
+	contactKeys := expertShareContactKeys(email)
+	receivedArgs := []any{userID}
+	matchSQL := "0"
+	if id := strings.TrimSpace(userID); id != "" || len(contactKeys) > 0 {
+		clauses := make([]string, 0, 2)
+		if id != "" {
+			clauses = append(clauses, "t.user_id=?")
+			receivedArgs = append(receivedArgs, id)
+		}
+		if len(contactKeys) > 0 {
+			placeholders := make([]string, len(contactKeys))
+			for i, key := range contactKeys {
+				placeholders[i] = "?"
+				receivedArgs = append(receivedArgs, key)
+			}
+			clauses = append(clauses, "t.contact COLLATE NOCASE IN ("+strings.Join(placeholders, ",")+")")
+		}
+		matchSQL = "(" + strings.Join(clauses, " OR ") + ")"
+	}
+	receivedRows, err := h.store.DB().QueryContext(r.Context(), `SELECT `+qualifiedExpertMarketListingSelectColumns("l")+` FROM sm_expert_market_share_targets t JOIN sm_expert_market_listings l ON l.id=t.listing_id WHERE l.visibility='users' AND l.status='shared' AND l.owner_user_id<>? AND `+matchSQL+` ORDER BY t.created_at DESC`, receivedArgs...)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer receivedRows.Close()
+	received := make([]expertMarketAdminListing, 0)
+	seenReceived := map[string]bool{}
+	for receivedRows.Next() {
+		item, scanErr := scanExpertMarketListing(receivedRows)
+		if scanErr != nil {
+			smError(w, http.StatusInternalServerError, scanErr.Error())
+			return
+		}
+		if item == nil || seenReceived[item.ID] {
+			continue
+		}
+		seenReceived[item.ID] = true
+		received = append(received, adminExpertMarketListing(item))
+	}
+	if err := receivedRows.Err(); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = receivedRows.Close()
 	credits := int64(0)
 	if h.creditsSvc != nil {
 		credits, _ = h.creditsSvc.GetBalance(r.Context(), userID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": map[string]string{"email": email}, "credits": credits, "uploads": uploads, "purchases": purchases})
+	writeJSON(w, http.StatusOK, map[string]any{"user": map[string]string{"email": email}, "credits": credits, "uploads": uploads, "purchases": purchases, "received": received})
 }
 
 func (h *SkillMarketHandlers) PurchaseExpertMarketListing(w http.ResponseWriter, r *http.Request) {
@@ -838,12 +961,13 @@ func (h *SkillMarketHandlers) PurchaseExpertMarketListing(w http.ResponseWriter,
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "owned", "amount_paid": item.Price, "download_url": "/api/v1/expert-market/experts/" + id + "/download"})
 }
 
 func (h *SkillMarketHandlers) DownloadExpertMarketListing(w http.ResponseWriter, r *http.Request) {
 	h.ensureExpertMarketSchema()
-	userID, _, err := h.expertMarketUser(r)
+	userID, email, err := h.expertMarketUser(r)
 	if err != nil {
 		smError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -870,12 +994,28 @@ func (h *SkillMarketHandlers) DownloadExpertMarketListing(w http.ResponseWriter,
 		smError(w, http.StatusGone, "expert listing has been removed")
 		return
 	}
+	if item.Visibility == "users" && item.Status != "shared" {
+		smError(w, http.StatusGone, "expert listing has been removed")
+		return
+	}
 	if item.OwnerID != userID {
-		var n int
-		_ = h.store.DB().QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sm_expert_market_purchases WHERE listing_id=? AND buyer_user_id=? AND status='active'", id, userID).Scan(&n)
-		if n == 0 {
-			smError(w, http.StatusForbidden, "purchase required")
-			return
+		if item.Visibility == "users" {
+			allowed, allowErr := h.expertMarketSharedWith(r.Context(), id, userID, email)
+			if allowErr != nil {
+				smError(w, http.StatusInternalServerError, allowErr.Error())
+				return
+			}
+			if !allowed {
+				smError(w, http.StatusForbidden, "this expert was not shared with you")
+				return
+			}
+		} else {
+			var n int
+			_ = h.store.DB().QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sm_expert_market_purchases WHERE listing_id=? AND buyer_user_id=? AND status='active'", id, userID).Scan(&n)
+			if n == 0 {
+				smError(w, http.StatusForbidden, "purchase required")
+				return
+			}
 		}
 	}
 	packagePath, err := h.expertMarketPackagePath(item.ZipPath)
@@ -885,7 +1025,10 @@ func (h *SkillMarketHandlers) DownloadExpertMarketListing(w http.ResponseWriter,
 	}
 	// A unique event makes download_count a count of entitled people, not retry clicks.
 	_, _ = h.store.DB().ExecContext(r.Context(), "INSERT OR IGNORE INTO sm_expert_market_downloads (id,listing_id,downloader_user_id,created_at) VALUES (?,?,?,?)", "expert_"+uniqueID("download"), id, userID, expertMarketNow())
-	_, _ = h.store.DB().ExecContext(r.Context(), "UPDATE sm_expert_market_listings SET download_count=(SELECT COUNT(*) FROM sm_expert_market_downloads WHERE listing_id=?), updated_at=updated_at WHERE id=?", id, id)
+	_, _ = h.store.DB().ExecContext(r.Context(), "UPDATE sm_expert_market_listings SET download_count=MAX(download_count, (SELECT COUNT(*) FROM sm_expert_market_downloads WHERE listing_id=?)), updated_at=updated_at WHERE id=?", id, id)
+	var downloads int64
+	_ = h.store.DB().QueryRowContext(r.Context(), "SELECT download_count FROM sm_expert_market_listings WHERE id=?", id).Scan(&downloads)
+	h.emitExpertMarketMetrics(r.Context(), id, downloads)
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(item.SourceExpertID, "\"", "")+`.zip"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -897,7 +1040,7 @@ func (h *SkillMarketHandlers) DownloadExpertMarketListing(w http.ResponseWriter,
 // intentionally retryable and independent from purchase settlement.
 func (h *SkillMarketHandlers) ReportExpertMarketInstallation(w http.ResponseWriter, r *http.Request) {
 	h.ensureExpertMarketSchema()
-	userID, _, err := h.expertMarketUser(r)
+	userID, email, err := h.expertMarketUser(r)
 	if err != nil {
 		smError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -939,16 +1082,31 @@ func (h *SkillMarketHandlers) ReportExpertMarketInstallation(w http.ResponseWrit
 		smError(w, http.StatusBadRequest, "installation report field is too long")
 		return
 	}
-	var ownerID, visibility string
-	if err := h.store.DB().QueryRowContext(r.Context(), `SELECT owner_user_id, visibility FROM sm_expert_market_listings WHERE id=?`, id).Scan(&ownerID, &visibility); err != nil {
+	var ownerID, visibility, status string
+	if err := h.store.DB().QueryRowContext(r.Context(), `SELECT owner_user_id, visibility, status FROM sm_expert_market_listings WHERE id=?`, id).Scan(&ownerID, &visibility, &status); err != nil {
 		smError(w, http.StatusNotFound, "expert listing not found")
 		return
 	}
-	if visibility != "public" {
+	if visibility == "users" {
+		if status != "shared" {
+			smError(w, http.StatusGone, "expert listing has been removed")
+			return
+		}
+		if ownerID != userID {
+			allowed, allowErr := h.expertMarketSharedWith(r.Context(), id, userID, email)
+			if allowErr != nil {
+				smError(w, http.StatusInternalServerError, allowErr.Error())
+				return
+			}
+			if !allowed {
+				smError(w, http.StatusForbidden, "this expert was not shared with you")
+				return
+			}
+		}
+	} else if visibility != "public" {
 		smError(w, http.StatusGone, "expert listing has been removed")
 		return
-	}
-	if ownerID != userID {
+	} else if ownerID != userID {
 		var owned int
 		if err := h.store.DB().QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sm_expert_market_purchases WHERE listing_id=? AND buyer_user_id=? AND status='active'`, id, userID).Scan(&owned); err != nil || owned == 0 {
 			smError(w, http.StatusForbidden, "purchase required")
@@ -1001,6 +1159,7 @@ func (h *SkillMarketHandlers) WithdrawExpertMarketListing(w http.ResponseWriter,
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]string{"visibility": "public", "status": "unlisted"})
 }
 
@@ -1026,7 +1185,7 @@ func (h *SkillMarketHandlers) DeletePrivateExpertMarketListing(w http.ResponseWr
 	}
 	defer tx.Rollback()
 	var zipPath string
-	if err := tx.QueryRowContext(r.Context(), `SELECT zip_path FROM sm_expert_market_listings WHERE id=? AND owner_user_id=? AND visibility='private' AND status='private'`, id, userID).Scan(&zipPath); err != nil {
+	if err := tx.QueryRowContext(r.Context(), `SELECT zip_path FROM sm_expert_market_listings WHERE id=? AND owner_user_id=? AND ((visibility='private' AND status='private') OR (visibility='users' AND status='shared'))`, id, userID).Scan(&zipPath); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			smError(w, http.StatusNotFound, "private expert listing not found")
 			return
@@ -1045,13 +1204,13 @@ func (h *SkillMarketHandlers) DeletePrivateExpertMarketListing(w http.ResponseWr
 	}
 	// Remove dependent records first. The listing and its private activity no
 	// longer appear in any account or administrative surface after deletion.
-	for _, table := range []string{"sm_expert_market_events", "sm_expert_market_installations", "sm_expert_market_downloads", "sm_expert_market_purchases"} {
+	for _, table := range []string{"sm_expert_market_share_targets", "sm_expert_market_events", "sm_expert_market_installations", "sm_expert_market_downloads", "sm_expert_market_purchases"} {
 		if _, err := tx.ExecContext(r.Context(), "DELETE FROM "+table+" WHERE listing_id=?", id); err != nil {
 			smError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
-	res, err := tx.ExecContext(r.Context(), `DELETE FROM sm_expert_market_listings WHERE id=? AND owner_user_id=? AND visibility='private' AND status='private'`, id, userID)
+	res, err := tx.ExecContext(r.Context(), `DELETE FROM sm_expert_market_listings WHERE id=? AND owner_user_id=? AND ((visibility='private' AND status='private') OR (visibility='users' AND status='shared'))`, id, userID)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1073,6 +1232,7 @@ func (h *SkillMarketHandlers) DeletePrivateExpertMarketListing(w http.ResponseWr
 		// operation that has otherwise completed.
 		fmt.Printf("expert market: private package cleanup for %s failed: %v\n", id, err)
 	}
+	h.emitExpertMarketDelete(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -1103,11 +1263,24 @@ func (h *SkillMarketHandlers) MakeExpertMarketListingPrivate(w http.ResponseWrit
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	reason := "public listing made private"
 	if n, _ := res.RowsAffected(); n == 0 {
-		smError(w, http.StatusNotFound, "expert listing cannot be made private")
+		res, err = tx.ExecContext(r.Context(), "UPDATE sm_expert_market_listings SET visibility='private', status='private', platform_distribution=0, updated_at=? WHERE id=? AND owner_user_id=? AND visibility='users' AND status='shared'", expertMarketNow(), id, userID)
+		if err != nil {
+			smError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if n, _ = res.RowsAffected(); n == 0 {
+			smError(w, http.StatusNotFound, "expert listing cannot be made private")
+			return
+		}
+		reason = "specified-user share made private"
+	}
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM sm_expert_market_share_targets WHERE listing_id=?`, id); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := h.recordExpertMarketEventAsTx(r, tx, id, userID, "made_private", "public listing made private"); err != nil {
+	if err := h.recordExpertMarketEventAsTx(r, tx, id, userID, "made_private", reason); err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1115,6 +1288,7 @@ func (h *SkillMarketHandlers) MakeExpertMarketListingPrivate(w http.ResponseWrit
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]string{"visibility": "private", "status": "private"})
 }
 
@@ -1138,7 +1312,12 @@ func (h *SkillMarketHandlers) PublishExpertMarketListing(w http.ResponseWriter, 
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(r.Context(), "UPDATE sm_expert_market_listings SET visibility='public', status='pending_review', review_note='', updated_at=? WHERE id=? AND owner_user_id=? AND visibility='private' AND status='private'", now, id, userID)
+	// A specified-user share is free and is not consented for industry
+	// distribution. Those fields are cleared here, not only at submit time, so
+	// a later public review cannot charge a leftover price or inherit a flag
+	// copied in from another node. SQLite evaluates the CASE against the row
+	// before this update. A private share keeps the price its owner set.
+	res, err := tx.ExecContext(r.Context(), "UPDATE sm_expert_market_listings SET visibility='public', status='pending_review', review_note='', price=CASE WHEN visibility='users' THEN 0 ELSE price END, platform_distribution=CASE WHEN visibility='users' THEN 0 ELSE platform_distribution END, updated_at=? WHERE id=? AND owner_user_id=? AND ((visibility='private' AND status='private') OR (visibility='users' AND status='shared'))", now, id, userID)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1147,7 +1326,11 @@ func (h *SkillMarketHandlers) PublishExpertMarketListing(w http.ResponseWriter, 
 		smError(w, http.StatusNotFound, "private expert listing cannot be submitted for review")
 		return
 	}
-	if err := h.recordExpertMarketEventAsTx(r, tx, id, userID, "submitted", "private listing submitted for public review"); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM sm_expert_market_share_targets WHERE listing_id=?`, id); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := h.recordExpertMarketEventAsTx(r, tx, id, userID, "submitted", "listing submitted for public review"); err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1155,6 +1338,7 @@ func (h *SkillMarketHandlers) PublishExpertMarketListing(w http.ResponseWriter, 
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]string{"visibility": "public", "status": "pending_review"})
 }
 
@@ -1376,6 +1560,7 @@ func (h *SkillMarketHandlers) AdminTransferExpertMarketOwner(w http.ResponseWrit
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]any{"owner_id": body.TargetUserID, "owner_email": targetEmail, "visibility": visibility, "status": status})
 }
 
@@ -1415,6 +1600,7 @@ func (h *SkillMarketHandlers) AdminSubmitExpertMarketPublication(w http.Response
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, after)
 }
 
@@ -1443,7 +1629,8 @@ func (h *SkillMarketHandlers) AdminDeletePrivateExpertMarketListing(w http.Respo
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if visibility != "private" {
+	ownerOnly := visibility == "private" || visibility == "users"
+	if !ownerOnly {
 		smError(w, http.StatusConflict, "only private experts can be deleted here")
 		return
 	}
@@ -1452,14 +1639,20 @@ func (h *SkillMarketHandlers) AdminDeletePrivateExpertMarketListing(w http.Respo
 			smError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"visibility": "private", "status": "deleted"})
+		h.emitExpertMarketSync(r.Context(), id)
+		writeJSON(w, http.StatusOK, map[string]string{"visibility": visibility, "status": "deleted"})
 		return
 	}
-	if status != "private" {
+	active := (visibility == "private" && status == "private") || (visibility == "users" && status == "shared")
+	if !active {
 		smError(w, http.StatusConflict, "only active private experts can be deleted")
 		return
 	}
-	res, err := tx.ExecContext(r.Context(), `UPDATE sm_expert_market_listings SET status='deleted', updated_at=? WHERE id=? AND visibility='private' AND status='private'`, expertMarketNow(), id)
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM sm_expert_market_share_targets WHERE listing_id=?`, id); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	res, err := tx.ExecContext(r.Context(), `UPDATE sm_expert_market_listings SET status='deleted', updated_at=? WHERE id=? AND visibility=? AND status=?`, expertMarketNow(), id, visibility, status)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1468,7 +1661,7 @@ func (h *SkillMarketHandlers) AdminDeletePrivateExpertMarketListing(w http.Respo
 		smError(w, http.StatusConflict, "private expert changed before deletion")
 		return
 	}
-	before, after := map[string]string{"visibility": "private", "status": "private"}, map[string]string{"visibility": "private", "status": "deleted"}
+	before, after := map[string]string{"visibility": visibility, "status": status}, map[string]string{"visibility": visibility, "status": "deleted"}
 	if err := h.recordExpertMarketAuditTx(r, tx, id, "delete_private", reason, before, after); err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1477,6 +1670,7 @@ func (h *SkillMarketHandlers) AdminDeletePrivateExpertMarketListing(w http.Respo
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, after)
 }
 
@@ -1508,7 +1702,7 @@ func (h *SkillMarketHandlers) AdminPurgePrivateExpertMarketListing(w http.Respon
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if visibility != "private" || status != "deleted" {
+	if (visibility != "private" && visibility != "users") || status != "deleted" {
 		smError(w, http.StatusConflict, "only deleted private experts can be permanently deleted")
 		return
 	}
@@ -1521,7 +1715,11 @@ func (h *SkillMarketHandlers) AdminPurgePrivateExpertMarketListing(w http.Respon
 		smError(w, http.StatusConflict, "cannot permanently delete an expert with active entitlements")
 		return
 	}
-	res, err := tx.ExecContext(r.Context(), `UPDATE sm_expert_market_listings SET status='purged', zip_path='', package_size=0, updated_at=? WHERE id=? AND visibility='private' AND status='deleted'`, expertMarketNow(), id)
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM sm_expert_market_share_targets WHERE listing_id=?`, id); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	res, err := tx.ExecContext(r.Context(), `UPDATE sm_expert_market_listings SET status='purged', zip_path='', package_size=0, updated_at=? WHERE id=? AND visibility=? AND status='deleted'`, expertMarketNow(), id, visibility)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1530,7 +1728,7 @@ func (h *SkillMarketHandlers) AdminPurgePrivateExpertMarketListing(w http.Respon
 		smError(w, http.StatusConflict, "only deleted private experts can be permanently deleted")
 		return
 	}
-	before, after := map[string]string{"visibility": "private", "status": "deleted"}, map[string]string{"visibility": "private", "status": "purged"}
+	before, after := map[string]string{"visibility": visibility, "status": "deleted"}, map[string]string{"visibility": visibility, "status": "purged"}
 	if err := h.recordExpertMarketAuditTx(r, tx, id, "purge_private", reason, before, after); err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1546,6 +1744,7 @@ func (h *SkillMarketHandlers) AdminPurgePrivateExpertMarketListing(w http.Respon
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, after)
 }
 
@@ -1562,7 +1761,7 @@ func (h *SkillMarketHandlers) AdminListExpertMarketListings(w http.ResponseWrite
 		return
 	}
 	visibility := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("visibility")))
-	if visibility != "" && visibility != "public" && visibility != "private" {
+	if visibility != "" && visibility != "public" && visibility != "private" && visibility != "users" {
 		smError(w, http.StatusBadRequest, "invalid expert market visibility")
 		return
 	}
@@ -1612,6 +1811,23 @@ func (h *SkillMarketHandlers) AdminListExpertMarketListings(w http.ResponseWrite
 	if err := rows.Err(); err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	_ = rows.Close()
+	shareIDs := make([]string, 0)
+	for _, item := range items {
+		if item.Visibility == "users" {
+			shareIDs = append(shareIDs, item.ID)
+		}
+	}
+	if len(shareIDs) > 0 {
+		displays, shareErr := h.expertMarketShareTargetDisplays(r.Context(), shareIDs)
+		if shareErr != nil {
+			smError(w, http.StatusInternalServerError, shareErr.Error())
+			return
+		}
+		for i := range items {
+			items[i].ShareTargets = displays[items[i].ID]
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"experts": items, "page": page, "page_size": 20, "total": total, "total_pages": (total + 19) / 20})
 }
@@ -1674,6 +1890,7 @@ func (h *SkillMarketHandlers) adminSetExpertMarketStatus(w http.ResponseWriter, 
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), listingID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": to})
 }
 func (h *SkillMarketHandlers) AdminApproveExpertMarketListing(w http.ResponseWriter, r *http.Request) {
@@ -1727,6 +1944,7 @@ func (h *SkillMarketHandlers) AdminUnlistExpertMarketListing(w http.ResponseWrit
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unlisted"})
 }
 func (h *SkillMarketHandlers) AdminDeleteExpertMarketListing(w http.ResponseWriter, r *http.Request) {
@@ -1767,6 +1985,7 @@ func (h *SkillMarketHandlers) AdminDeleteExpertMarketListing(w http.ResponseWrit
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -1835,6 +2054,7 @@ func (h *SkillMarketHandlers) AdminPurgeExpertMarketListing(w http.ResponseWrite
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitExpertMarketSync(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "purged"})
 }
 

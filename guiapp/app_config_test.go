@@ -2504,6 +2504,34 @@ func TestPatchConfigFieldsAppliesRuntimeSideEffects(t *testing.T) {
 	}
 }
 
+func TestPatchConfigFieldsKeepsFinishedOnboardingInBundledPatch(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"onboarding_done": true}); err != nil {
+		t.Fatalf("mark onboarding done: %v", err)
+	}
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"onboarding_done": false,
+		"language":        "zh-Hans",
+	})
+	if err != nil {
+		t.Fatalf("bundled patch: %v", err)
+	}
+	if !patched.OnboardingDone || patched.Language != "zh-Hans" {
+		t.Fatalf("bundled patch cleared onboarding or skipped language: done=%v language=%q", patched.OnboardingDone, patched.Language)
+	}
+	cleared, err := app.PatchConfigFields(map[string]interface{}{"onboarding_done": false})
+	if err != nil {
+		t.Fatalf("explicit clear: %v", err)
+	}
+	if cleared.OnboardingDone {
+		t.Fatal("single-field clear did not reset onboarding_done")
+	}
+}
+
 func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -2996,6 +3024,55 @@ func TestPatchConfigFieldsCodingKnowledgeReviewedProjectBudget(t *testing.T) {
 	}
 }
 
+func TestPatchConfigFieldsCodingKnowledgeSaveSettings(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"coding_knowledge_auto_save_mode":            "auto",
+		"coding_knowledge_save_strategy":             "on_success",
+		"coding_knowledge_max_per_project":           float64(250),
+		"coding_knowledge_max_total":                 float64(1200),
+		"coding_knowledge_auto_promote_observations": float64(3),
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields(coding knowledge save settings): %v", err)
+	}
+	if patched.CodingKnowledgeAutoSaveMode != "auto" ||
+		patched.CodingKnowledgeSaveStrategy != "on_success" ||
+		patched.CodingKnowledgeMaxPerProject != 250 ||
+		patched.CodingKnowledgeMaxTotal != 1200 ||
+		patched.CodingKnowledgeAutoPromoteObservations != 3 {
+		t.Fatalf("coding knowledge save settings = %#v", patched)
+	}
+
+	for _, patch := range []map[string]interface{}{
+		{"coding_knowledge_auto_save_mode": "sometimes"},
+		{"coding_knowledge_save_strategy": "sometimes"},
+		{"coding_knowledge_max_per_project": float64(0)},
+		{"coding_knowledge_max_total": float64(0)},
+		{"coding_knowledge_auto_promote_observations": float64(21)},
+	} {
+		if _, err := app.PatchConfigFields(patch); err == nil {
+			t.Fatalf("invalid coding knowledge setting should be rejected: %#v", patch)
+		}
+	}
+
+	reloaded, err := (&App{testHomeDir: tmpHome}).LoadConfig()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if reloaded.CodingKnowledgeAutoSaveMode != "auto" ||
+		reloaded.CodingKnowledgeSaveStrategy != "on_success" ||
+		reloaded.CodingKnowledgeMaxPerProject != 250 ||
+		reloaded.CodingKnowledgeMaxTotal != 1200 ||
+		reloaded.CodingKnowledgeAutoPromoteObservations != 3 {
+		t.Fatalf("persisted coding knowledge save settings = %#v", reloaded)
+	}
+}
+
 func testGUIDir(t *testing.T) string {
 	t.Helper()
 	_, currentFile, _, ok := runtime.Caller(0)
@@ -3017,10 +3094,15 @@ func testPatchConfigBackendFields(t *testing.T, guiDir string) map[string]bool {
 	if patchStart < 0 || patchEnd <= patchStart {
 		t.Fatalf("PatchConfigFields source bounds not found")
 	}
-	caseRE := regexp.MustCompile(`case "([a-z0-9_]+)"`)
+	// Multi-field cases (`case "a", "b":`) cover several keys at once, so
+	// collect every quoted identifier on each case line, not just the first.
+	caseLineRE := regexp.MustCompile(`(?m)^\s*case\s+((?:"[a-z0-9_]+"(?:\s*,\s*)?)+):`)
+	fieldRE := regexp.MustCompile(`"([a-z0-9_]+)"`)
 	backendFields := map[string]bool{}
-	for _, match := range caseRE.FindAllStringSubmatch(appText[patchStart:patchEnd], -1) {
-		backendFields[match[1]] = true
+	for _, match := range caseLineRE.FindAllStringSubmatch(appText[patchStart:patchEnd], -1) {
+		for _, field := range fieldRE.FindAllStringSubmatch(match[1], -1) {
+			backendFields[field[1]] = true
+		}
 	}
 	return backendFields
 }

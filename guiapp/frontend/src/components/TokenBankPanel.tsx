@@ -21,6 +21,7 @@ import {
     TokenBankWithdrawGift,
 } from '../../wailsjs/go/main/App';
 import { localizeText } from '../i18n/langSelect';
+import { presetProviderDisplayName } from './remote/presetProviderLabel';
 import { useDialog } from './CustomDialog';
 import {
     MICROCREDITS_PER_CREDIT,
@@ -142,7 +143,8 @@ function shareDialogSubject(value: string): string {
 }
 
 export function takeOutShareDialog(lang: string, displayName: string, shareID: string): { message: string; title: string } {
-    const name = shareDialogSubject(displayName) || shareDialogSubject(shareID) || '—';
+    const cleaned = shareDialogSubject(displayName);
+    const name = shareDialogSubject(presetProviderDisplayName(lang, cleaned)) || shareDialogSubject(shareID) || '—';
     return {
         message: textForLang(
             lang,
@@ -2203,7 +2205,7 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                             return (
                                 <li className="tbk-share" key={share.id}>
                                     <div className="tbk-share__head">
-                                        <span className="tbk-share__name">{share.display_name || share.id}</span>
+                                        <span className="tbk-share__name">{presetProviderDisplayName(lang, share.display_name) || share.id}</span>
                                         {share.visibility === 'private' ? (
                                             <span className="tbk-pill tbk-pill--off">{t('Private', '私有', '私有')}</span>
                                         ) : null}

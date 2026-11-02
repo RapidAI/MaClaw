@@ -17,10 +17,10 @@ func TestPrepareOpenCodeChatBodySeparatesPaidAndFree(t *testing.T) {
 	paid, ok := PrepareOpenCodeChatBody(corelib.MaclawLLMConfig{
 		URL: "https://opencode.ai/zen/v1", Model: "glm-5.3-flash", Key: "sk-paid",
 	}, paidBody)
-	if !ok || paid.URL != "https://opencode.ai/zen/go/v1" || paid.IsResponsesAPI() {
+	if !ok || paid.URL != "https://opencode.ai/inference/go/openai/v1" || paid.IsResponsesAPI() {
 		t.Fatalf("paid cfg = %+v", paid)
 	}
-	if strings.Contains(mustJSON(t, paidBody), `"name":"bash"`) || paidBody["stream"] != false {
+	if strings.Contains(mustJSON(t, paidBody), `"name":"shell"`) || paidBody["stream"] != false {
 		t.Fatalf("paid body = %#v", paidBody)
 	}
 
@@ -28,11 +28,11 @@ func TestPrepareOpenCodeChatBodySeparatesPaidAndFree(t *testing.T) {
 	free, ok := PrepareOpenCodeChatBody(corelib.MaclawLLMConfig{
 		URL: "https://opencode.ai/zen/go/v1", Model: "space-bunny-free",
 	}, freeBody)
-	if !ok || free.URL != "https://opencode.ai/zen/v1" {
+	if !ok || free.URL != "https://opencode.ai/inference/openai/v1" {
 		t.Fatalf("free cfg = %+v", free)
 	}
 	text := mustJSON(t, freeBody)
-	for _, want := range []string{`"stream":true`, `"name":"bash"`, `"name":"read"`} {
+	for _, want := range []string{`"stream":true`, `"name":"shell"`, `"name":"read"`, `"name":"glob"`, `"name":"grep"`, `"name":"edit"`, `"name":"write"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("free body missing %s: %s", want, text)
 		}
@@ -48,7 +48,7 @@ func TestPrepareOpenCodeChatBodySeparatesPaidAndFree(t *testing.T) {
 	muse, ok := PrepareOpenCodeChatBody(corelib.MaclawLLMConfig{
 		URL: "https://opencode.ai/zen/go/v1", Model: "muse-spark-1.2-contributor-free",
 	}, museBody)
-	if !ok || !muse.IsResponsesAPI() || muse.URL != "https://opencode.ai/zen/v1" {
+	if !ok || !muse.IsResponsesAPI() || muse.URL != "https://opencode.ai/inference/openai/v1" {
 		t.Fatalf("muse cfg = %+v", muse)
 	}
 	if _, injected := museBody["tools"]; injected {
@@ -77,7 +77,7 @@ func TestForwardOpenCodeChatOmitsKeyWhenEmpty(t *testing.T) {
 	if sawAuth != "" || sawClient != "cli" {
 		t.Fatalf("auth=%q client=%q", sawAuth, sawClient)
 	}
-	if sawPath != "/zen/go/v1/chat/completions" {
+	if sawPath != "/inference/go/openai/v1/chat/completions" {
 		t.Fatalf("path = %s", sawPath)
 	}
 	if !strings.Contains(string(body), "PING") {
@@ -130,7 +130,7 @@ func TestForwardOpenCodeChatAppliesMemberExtraAfterZenRewrite(t *testing.T) {
 	if strings.Contains(sawBody, "thinking") {
 		t.Fatalf("drop_fields left thinking in the zen body: %s", sawBody)
 	}
-	if !strings.Contains(sawBody, `"name":"bash"`) {
+	if !strings.Contains(sawBody, `"name":"shell"`) {
 		t.Fatalf("zen tools missing: %s", sawBody)
 	}
 }

@@ -631,6 +631,10 @@ type AppConfig struct {
 	// the broader candidate cache.
 	CodingKnowledgeMaxReviewedPerProject       int `json:"coding_knowledge_max_reviewed_per_project,omitempty"`        // default 100
 	CodingKnowledgeMaxReviewedTokensPerProject int `json:"coding_knowledge_max_reviewed_tokens_per_project,omitempty"` // default 30000
+	// AutoPromoteObservations is the number of independent runtime tasks that
+	// must produce the same guidance before an auto-mode candidate becomes
+	// active. Zero uses the built-in default (2); values below 2 are clamped.
+	CodingKnowledgeAutoPromoteObservations int `json:"coding_knowledge_auto_promote_observations,omitempty"`
 
 	// FavoriteEmployees stores the IDs of up to 9 user-configured pinned digital
 	// employees shown as quick-access buttons in the sidebar nav rail. Order matters.

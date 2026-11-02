@@ -966,6 +966,11 @@ type SearchOptions struct {
 	// "hybrid" always fuses both when an embedder is attached. A composite or
 	// unknown name still suppresses embedding on every route.
 	Retrieval string `json:"retrieval,omitempty"`
+	// rawFTSQuery, when set, replaces the FTS5 MATCH expression derived from
+	// Query. It is package-private so only internal recall paths (for example
+	// the coding experience OR fallback) can provide an expression built with
+	// the segmentation contract. Query still drives embedding and reranking.
+	rawFTSQuery string
 }
 
 // ImageSearchOptions limits a knowledge query to image evidence. Results are

@@ -169,16 +169,12 @@ func (a *App) CompileLatexPreview(filePath string) (map[string]interface{}, erro
 				return fmt.Errorf("tlmgr missing")
 			}
 			a.emitLatexPreview(cleaned, "installing", pkg)
-			cctx, cancelInstall := context.WithTimeout(installCtx, 5*time.Minute)
-			defer cancelInstall()
-			out, code, runErr := tinytex.RunCommand(cctx, tlmgr, filepath.Dir(tlmgr), "install", pkg)
-			if runErr != nil {
-				return fmt.Errorf("%w: %s", runErr, clipLatexOutput([]byte(out)))
-			}
-			if code != 0 {
-				return fmt.Errorf("exit status %d: %s", code, clipLatexOutput([]byte(out)))
-			}
-			return nil
+			// The same critical-package guard that blocks scheme-small blocks
+			// a missing package. RunReviewed gives update --self the infra
+			// budget; this preview context still bounds the whole compile,
+			// including the official updater when --self cannot apply.
+			a.useOfficialTlmgrUpdater()
+			return tinytex.InstallPackage(installCtx, tinytex.RunReviewed, tlmgr, pkg)
 		},
 		Repair: func(repairCtx context.Context, path, source, excerpt string) (string, bool, error) {
 			a.emitLatexPreview(cleaned, "repairing", filepath.Base(path))

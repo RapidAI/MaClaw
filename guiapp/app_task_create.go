@@ -35,10 +35,12 @@ type TaskCreateOptions struct {
 	WorkflowTemplateID string `json:"workflowTemplateId"`
 	// Params fills the pinned template's first-phase parameter slots.
 	Params map[string]string `json:"params,omitempty"`
-	// KeepExpertSession allocates a new expert task without archiving or
-	// cancelling the shared expert turn. A scheduled launch sets this so the
-	// open path can wait until that turn is idle. The wizard leaves it unset
-	// and still cuts the session over at creation time.
+	// KeepExpertSession allocates a new expert task without archiving the
+	// visible tab transcript. Each task already has its own agent session, so
+	// creation never cancels a turn that is still running. A scheduled launch
+	// sets this so the open path can replace the tab transcript once that
+	// launch is on screen. The wizard leaves it unset and archives the tab at
+	// creation time.
 	KeepExpertSession bool `json:"keepExpertSession,omitempty"`
 }
 
@@ -153,7 +155,7 @@ func (a *App) createTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 	// expert tab for ExpertID, bind it to this task, and send Name as the first
 	// user message through the existing expert chat channel (same as
 	// ensureExpertTask + setPendingExpertOpen in App.tsx). The backend routes
-	// expert messages by expert session id (expert_session_policy.go).
+	// that message to this task's own session (expert_session_policy.go).
 	// WorkingDir, when set, is stored on the record and becomes the execution
 	// directory. The record title uses Name, so several tasks of the same
 	// expert stay distinguishable; the expert launcher still names the first

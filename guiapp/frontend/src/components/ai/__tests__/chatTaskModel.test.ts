@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendChatTaskResultMessage, chatTasksToRestore, isChatTaskResultResponse, parseChatTaskEvent, upsertChatTaskCard, type ChatTaskMessage, type ChatTaskView } from "../chatTaskModel";
+import { appendChatTaskResultMessage, chatTaskDisplayTitle, chatTasksToRestore, isChatTaskResultResponse, parseChatTaskEvent, upsertChatTaskCard, type ChatTaskMessage, type ChatTaskView } from "../chatTaskModel";
 
 const task: ChatTaskView = {
     id: "ct-1",
@@ -57,5 +57,13 @@ describe("chat task transcript", () => {
     it("parses the task event stream", () => {
         const parsed = parseChatTaskEvent(JSON.stringify({ id: "ct-2", session_key: "desktop-user", title: "notes", status: "interrupted", recovered: true }));
         expect(parsed).toMatchObject({ id: "ct-2", status: "interrupted", recovered: true });
+    });
+
+    it("shows the job, not the dispatcher banner, as the card title", () => {
+        expect(chatTaskDisplayTitle({ title: "工作目录：C:\\Users\\ma139\\Desktop\\作业。任务两步： 1) 生成 Word 讲稿文档" })).toBe("1) 生成 Word 讲稿文档");
+        expect(chatTaskDisplayTitle({ title: "Working directory: C:\\work. Task steps: export the deck" })).toBe("export the deck");
+        expect(chatTaskDisplayTitle({ title: "把word中的配图也放到ppt中适当的位置" })).toBe("把word中的配图也放到ppt中适当的位置");
+        expect(chatTaskDisplayTitle({ title: "工作目录：C:\\a\\b。没有后续标题的目录行" })).toBe("没有后续标题的目录行");
+        expect(chatTaskDisplayTitle({ title: "" })).toBe("");
     });
 });

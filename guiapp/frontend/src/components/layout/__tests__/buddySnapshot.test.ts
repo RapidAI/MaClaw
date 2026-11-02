@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildBuddySnapshot, truncateUtf8Bytes, type BuddySnapshot } from '../buddySnapshot';
+import { buddyConfirmTarget, buddyElapsedLabel, buddyFocusTarget, buddyTaskProgress, buildBuddySnapshot, truncateUtf8Bytes, type BuddySnapshot } from '../buddySnapshot';
 
 type Row = Parameters<typeof buildBuddySnapshot>[0][number];
 
@@ -90,6 +90,48 @@ describe('buildBuddySnapshot', () => {
         expect(snap.current[0].progress).toBe(-1);
     });
 
+    it('names the pending row ahead of a failure and sends a known phase ratio', () => {
+        const running = row('impl', 'running', {
+            active_workflow: { type: 'coding', status: 'running', phase: 'implementation' },
+        });
+        const pending = row('need-confirm', 'active', {
+            active_workflow: { status: 'active', pending_review: true },
+        });
+        const failed = row('broke', 'failed');
+        const snap = buildBuddySnapshot([failed, running, pending], null);
+        expect(snap.current[0].progress).toBe(0.8);
+        expect(snap.attention).toEqual({ kind: 'pending', id: 'need-confirm', title: 'need-confirm' });
+        expect(buddyTaskProgress(row('mystery', 'running', {
+            active_workflow: { type: 'coding', status: 'running', phase: 'nope' },
+        }))).toBe(-1);
+    });
+
+    it('uses the generated catalog, including the coding review alias, and an age label', () => {
+        const now = Date.parse('2026-11-01T12:00:00Z');
+        const running = row('impl', 'running', {
+            active_workflow: { type: 'coding', status: 'running', phase: 'review' },
+            last_activity: '2026-11-01T11:48:00Z',
+        });
+        const snap = buildBuddySnapshot([running], null, now);
+        expect(snap.current[0].progress).toBe(1);
+        expect(snap.current[0].phase).toBe('验收确认');
+        expect(snap.current[0].elapsed).toBe('12 分钟');
+        expect(buddyTaskProgress(row('verify', 'running', {
+            active_workflow: { type: 'coding', phase: 'verification' },
+        }))).toBe(1);
+        expect(buddyTaskProgress(row('draft', 'running', {
+            active_workflow: { type: 'paper_writing', phase: 'drafting' },
+        }))).toBe(0.6);
+        expect(buddyElapsedLabel('2026-11-01T11:59:40Z', now)).toBe('刚刚');
+        expect(buddyElapsedLabel('2026-11-01T10:00:00Z', now)).toBe('2 小时');
+        expect(buddyElapsedLabel('2026-10-30T12:00:00Z', now)).toBe('2 天');
+        const aged = buildBuddySnapshot([
+            row('old', 'running', { created_at: '2026-11-01T10:00:00Z' }),
+        ], null, now);
+        expect(aged.current[0].elapsed).toBe('2 小时');
+        expect(aged.current[0].phase).toBeUndefined();
+    });
+
     it('keeps the sidebar bucket for completed rows that have output', () => {
         const snap = buildBuddySnapshot(
             [row('done', 'completed', { has_output: true }), row('fallback-done', '')],
@@ -99,6 +141,40 @@ describe('buildBuddySnapshot', () => {
         expect(snap.counts.done).toBe(1);
         expect(snap.counts.failed).toBe(1);
         invariant(snap);
+    });
+});
+
+describe('buddyConfirmTarget', () => {
+    it('confirms only a row that is waiting', () => {
+        const running = row('run-a', 'running');
+        const pending = row('need-confirm', 'active', {
+            active_workflow: { status: 'active', pending_review: true },
+        });
+        expect(buddyConfirmTarget([running, pending], null)?.id).toBe('need-confirm');
+        expect(buddyConfirmTarget([running], null)).toBeUndefined();
+    });
+
+    it('names a failure when nothing is waiting', () => {
+        const snap = buildBuddySnapshot([row('broke', 'failed'), row('hold', 'paused')], null);
+        expect(snap.attention?.kind).toBe('failed');
+        expect(snap.attention?.id).toBe('broke');
+    });
+});
+
+describe('buddyFocusTarget', () => {
+    it('opens the confirmation row ahead of the carousel', () => {
+        const running = row('run-a', 'running');
+        const pending = row('need-confirm', 'active', {
+            active_workflow: { status: 'active', pending_review: true },
+        });
+        expect(buddyFocusTarget([running, pending], null, 0)?.id).toBe('need-confirm');
+    });
+
+    it('opens the task shown on the glass when nothing is waiting', () => {
+        const first = row('run-a', 'running');
+        const second = row('run-b', 'running');
+        expect(buddyFocusTarget([first, second], null, 1)?.id).toBe('run-b');
+        expect(buddyFocusTarget([first], null, -1)).toBeUndefined();
     });
 });
 

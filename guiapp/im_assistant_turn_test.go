@@ -54,6 +54,30 @@ func TestBuildAgentLoopAssistantTurn_ToolCallKeepsReasoningOutOfContent(t *testi
 	}
 }
 
+func TestBuildAgentLoopAssistantTurn_DuplicateReasoningStaysOutOfToolCallContent(t *testing.T) {
+	h := &IMMessageHandler{}
+	thought := "Shell and webfetch are not allowed."
+	turn := h.buildAgentLoopAssistantTurn(&LoopContext{}, llm.Choice{
+		Message: llm.Message{
+			Role:             "assistant",
+			Content:          thought,
+			ReasoningContent: thought,
+			ToolCalls: []llm.ToolCall{{
+				ID:       "call-1",
+				Type:     "function",
+				Function: llm.ToolCallFunction{Name: "websearch", Arguments: `{"query":"北京天气"}`},
+			}},
+		},
+		FinishReason: "tool_calls",
+	})
+	if turn.Content != "" || turn.HistoryEntry.Content != "" {
+		t.Fatalf("duplicate thought leaked into content %q history %q", turn.Content, turn.HistoryEntry.Content)
+	}
+	if turn.Reasoning != thought {
+		t.Fatalf("reasoning = %q", turn.Reasoning)
+	}
+}
+
 func TestBuildAgentLoopAssistantTurn_EmptyContentUsesReasoningWhenNoToolCall(t *testing.T) {
 	h := &IMMessageHandler{}
 	turn := h.buildAgentLoopAssistantTurn(&LoopContext{}, llm.Choice{

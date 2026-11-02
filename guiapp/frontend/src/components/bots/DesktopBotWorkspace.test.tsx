@@ -70,6 +70,8 @@ const postCross = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<{ 
 const setPrimary = vi.hoisted(() => vi.fn(async (_id?: string): Promise<HubDesktopBot[]> => []));
 const claimCross = vi.hoisted(() => vi.fn(async (_botId?: string, _noteId?: string): Promise<{ claimed: boolean; id?: string; from: string }> => ({ claimed: false, from: '' })));
 const armCross = vi.hoisted(() => vi.fn(async (_botId?: string, _noteId?: string) => undefined));
+// 跟进路由（1b132e0d 起）：默认没有接管者，走正常发送链；测试可覆写。
+const routeFollowUp = vi.hoisted(() => vi.fn(async (_botId?: string, _content?: string): Promise<{ routed: boolean; to_bot?: string; ask?: string } | null> => null));
 const responseListeners = vi.hoisted(() => ({
     list: [] as Array<(payload: unknown) => void>,
     byEvent: {} as Record<string, (payload: unknown) => void>,
@@ -133,6 +135,14 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetDesktopBotRunOutput: async () => ({ status: 'running', text: '', done: false }),
     ClaimDesktopBotCrossStart: (botId: string, noteId: string) => claimCross(botId, noteId),
     ArmDesktopBotCrossRun: (botId: string, noteId: string) => armCross(botId, noteId),
+    RouteDesktopBotFollowUp: (botId: string, content: string) => routeFollowUp(botId, content),
+    GetDesktopProxyMode: async () => ({ mode: 'smart', locked: false }),
+    SaveDesktopProxyMode: async (mode: string) => ({ mode: mode || 'smart', locked: false }),
+    GetDesktopComputer: async () => ({ restart_allowed: true, reset_allowed: true, active_runs: 0 }),
+    ResetDesktopComputer: async () => ({ busy: false }),
+    RestartDesktopComputer: async () => ({ busy: false }),
+    LogFrontendDiagnostic: async () => undefined,
+    UploadDesktopBotMaterialChunk: async (_botId: string, _uploadId: string, _name: string, _offset: number, total: number) => ({ received: total, done: true, path: '~/素材/bot_1/demo.png' }),
 }));
 
 const browserOpenURL = vi.hoisted(() => vi.fn());
@@ -211,6 +221,8 @@ beforeEach(() => {
     claimCross.mockResolvedValue({ claimed: false, from: '' });
     armCross.mockReset();
     armCross.mockResolvedValue(undefined);
+    routeFollowUp.mockReset();
+    routeFollowUp.mockResolvedValue(null);
     understandTask.mockReset();
     classifyWorkStop.mockReset();
     classifyWorkStop.mockResolvedValue('unknown');

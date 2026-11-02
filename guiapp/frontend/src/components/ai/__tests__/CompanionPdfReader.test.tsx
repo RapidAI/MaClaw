@@ -667,6 +667,110 @@ describe("companion pdf reader", () => {
         }
     });
 
+    it("edits a shown annotation and leaves the saved text when the edit is dropped", async () => {
+        pdfWithPages(1);
+        const changed = vi.fn();
+        window.addEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        try {
+            render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            const page = await screen.findByTestId("companion-pdf-page-1");
+            selectHello(page);
+            fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+            fireEvent.mouseDown(screen.getByTestId("pdf-annotate"));
+            fireEvent.change(screen.getByTestId("pdf-annotation-input"), { target: { value: "这里的假设需要检验" } });
+            fireEvent.click(screen.getByTestId("pdf-annotation-save"));
+            expect(changed).toHaveBeenCalledTimes(1);
+            const before = loadPdfTranslations("C:/docs/Paper.PDF")[0];
+
+            fireEvent.click(screen.getByRole("button", { name: "编辑批注" }));
+            const draft = screen.getByRole("textbox", { name: "编辑批注" }) as HTMLTextAreaElement;
+            expect(draft.value).toBe("这里的假设需要检验");
+            expect(screen.queryByRole("button", { name: "复制批注" })).toBeNull();
+            fireEvent.change(draft, { target: { value: "改过但会放弃" } });
+            fireEvent.click(screen.getByRole("button", { name: "放弃" }));
+            expect(screen.queryByRole("textbox", { name: "编辑批注" })).toBeNull();
+            expect(screen.getByRole("dialog").textContent).toContain("这里的假设需要检验");
+            expect(screen.getByRole("dialog").textContent).not.toContain("改过但会放弃");
+            expect(loadPdfTranslations("C:/docs/Paper.PDF")[0]?.translation).toBe("这里的假设需要检验");
+            expect(changed).toHaveBeenCalledTimes(1);
+
+            fireEvent.click(screen.getByRole("button", { name: "编辑批注" }));
+            fireEvent.change(screen.getByRole("textbox", { name: "编辑批注" }), { target: { value: "按 Esc 放弃" } });
+            fireEvent.keyDown(screen.getByRole("textbox", { name: "编辑批注" }), { key: "Escape", isComposing: true });
+            expect((screen.getByRole("textbox", { name: "编辑批注" }) as HTMLTextAreaElement).value).toBe("按 Esc 放弃");
+            fireEvent.keyDown(screen.getByRole("textbox", { name: "编辑批注" }), { key: "Escape" });
+            expect(screen.getByRole("dialog").textContent).toContain("这里的假设需要检验");
+            expect(changed).toHaveBeenCalledTimes(1);
+
+            fireEvent.click(screen.getByRole("button", { name: "编辑批注" }));
+            fireEvent.change(screen.getByRole("textbox", { name: "编辑批注" }), { target: { value: "焦点在确定上" } });
+            fireEvent.keyDown(screen.getByRole("button", { name: "确定" }), { key: "Escape" });
+            expect(screen.queryByRole("textbox", { name: "编辑批注" })).toBeNull();
+            expect(screen.getByRole("dialog").textContent).toContain("这里的假设需要检验");
+            expect(screen.getByRole("dialog").textContent).not.toContain("焦点在确定上");
+            expect(changed).toHaveBeenCalledTimes(1);
+
+            fireEvent.click(screen.getByRole("button", { name: "编辑批注" }));
+            fireEvent.change(screen.getByRole("textbox", { name: "编辑批注" }), { target: { value: "关掉卡片也放弃" } });
+            fireEvent.mouseDown(screen.getByRole("button", { name: "批注" }));
+            expect(screen.queryByRole("dialog")).toBeNull();
+            fireEvent.mouseDown(screen.getByRole("button", { name: "批注" }));
+            expect(screen.getByRole("dialog").textContent).toContain("这里的假设需要检验");
+            expect(screen.queryByRole("textbox", { name: "编辑批注" })).toBeNull();
+            expect(changed).toHaveBeenCalledTimes(1);
+
+            fireEvent.click(screen.getByRole("button", { name: "编辑批注" }));
+            fireEvent.change(screen.getByRole("textbox", { name: "编辑批注" }), { target: { value: "   " } });
+            expect((screen.getByRole("button", { name: "确定" }) as HTMLButtonElement).disabled).toBe(true);
+            fireEvent.change(screen.getByRole("textbox", { name: "编辑批注" }), { target: { value: "修订后的批注" } });
+            fireEvent.keyDown(screen.getByRole("textbox", { name: "编辑批注" }), { key: "Enter", isComposing: true });
+            fireEvent.keyDown(screen.getByRole("textbox", { name: "编辑批注" }), { key: "Enter", keyCode: 229 });
+            expect(screen.getByRole("textbox", { name: "编辑批注" })).toBeTruthy();
+            expect(loadPdfTranslations("C:/docs/Paper.PDF")[0]?.translation).toBe("这里的假设需要检验");
+            expect(changed).toHaveBeenCalledTimes(1);
+            fireEvent.keyDown(screen.getByRole("textbox", { name: "编辑批注" }), { key: "Enter" });
+            expect(screen.queryByRole("textbox", { name: "编辑批注" })).toBeNull();
+            expect(screen.getByRole("dialog").textContent).toContain("修订后的批注");
+            const saved = loadPdfTranslations("C:/docs/Paper.PDF")[0];
+            expect(saved).toMatchObject({ id: before?.id, kind: "annotation", text: "Hello", translation: "修订后的批注" });
+            expect(saved?.parts).toEqual(before?.parts);
+            expect(changed).toHaveBeenCalledTimes(2);
+
+            fireEvent.click(screen.getByRole("button", { name: "编辑批注" }));
+            fireEvent.click(screen.getByRole("button", { name: "确定" }));
+            expect(changed).toHaveBeenCalledTimes(2);
+            expect(loadPdfTranslations("C:/docs/Paper.PDF")[0]?.translation).toBe("修订后的批注");
+
+            const capped = "注".repeat(12000);
+            fireEvent.click(screen.getByRole("button", { name: "编辑批注" }));
+            const editor = screen.getByRole("textbox", { name: "编辑批注" }) as HTMLTextAreaElement;
+            fireEvent.change(editor, { target: { value: capped } });
+            expect(editor.value).toBe(capped);
+            fireEvent.change(editor, { target: { value: `${capped}多` } });
+            expect(editor.value).toBe(capped);
+            fireEvent.click(screen.getByRole("button", { name: "确定" }));
+            expect(loadPdfTranslations("C:/docs/Paper.PDF")[0]?.translation).toBe("注".repeat(12000));
+            expect(changed).toHaveBeenCalledTimes(3);
+
+            const kept = loadPdfTranslations("C:/docs/Paper.PDF");
+            act(() => {
+                savePdfTranslations("C:/docs/Paper.PDF", [
+                    ...kept,
+                    { id: "tr1", text: "Hello", translation: "你好呀", parts: [{ page: 1, rects: [{ x: 0.2, y: 0.3, w: 0.2, h: 0.04 }] }] },
+                    { id: "sh1", kind: "annotation", shared: true, text: "Hello", translation: "主持人批注", parts: [{ page: 1, rects: [{ x: 0.5, y: 0.5, w: 0.2, h: 0.04 }] }] },
+                ]);
+            });
+            fireEvent.mouseDown(await screen.findByRole("button", { name: "译文" }));
+            expect(screen.getByRole("dialog").textContent).toContain("你好呀");
+            expect(screen.queryByRole("button", { name: "编辑批注" })).toBeNull();
+            fireEvent.mouseDown(screen.getByTestId("pdf-translate-icon-sh1"));
+            expect(screen.getByRole("dialog").textContent).toContain("主持人批注");
+            expect(screen.queryByRole("button", { name: "编辑批注" })).toBeNull();
+        } finally {
+            window.removeEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        }
+    });
+
     it("resizes a translation card and restores its saved size on remount", async () => {
         pdfWithPages(1, "Hello world", { width: 800, height: 1000 });
         const changed = vi.fn();

@@ -34,27 +34,28 @@ import (
 
 // SkillMarketHandlers 处理 SkillMarket 相关的 HTTP 请求。
 type SkillMarketHandlers struct {
-	store           *skillmarket.Store
-	skillStore      *skill.SkillStore
-	userSvc         *skillmarket.UserService
-	creditsSvc      *skillmarket.CreditsService
-	processor       *skillmarket.Processor
-	ratingSvc       *skillmarket.RatingService
-	trialMgr        *skillmarket.TrialManager
-	searchSvc       *skillmarket.SearchService
-	leaderboardSvc  *skillmarket.LeaderboardService
-	apiKeySvc       *skillmarket.APIKeyPoolService
-	refundSvc       *skillmarket.RefundService
-	rateLimiter     *skillmarket.RateLimiter
-	authSvc         *skillmarket.AuthService
-	settings        store.SystemSettingsRepository
-	rsaPrivKey      *rsa.PrivateKey
-	pendingDir      string
-	dataDir         string
-	petStoreSync    petStoreSyncRecorder
-	petStoreMailer  mail.Mailer
-	hubVerifier     hubViewerMachineVerifier
-	suitePurchaseMu sync.Mutex
+	store            *skillmarket.Store
+	skillStore       *skill.SkillStore
+	userSvc          *skillmarket.UserService
+	creditsSvc       *skillmarket.CreditsService
+	processor        *skillmarket.Processor
+	ratingSvc        *skillmarket.RatingService
+	trialMgr         *skillmarket.TrialManager
+	searchSvc        *skillmarket.SearchService
+	leaderboardSvc   *skillmarket.LeaderboardService
+	apiKeySvc        *skillmarket.APIKeyPoolService
+	refundSvc        *skillmarket.RefundService
+	rateLimiter      *skillmarket.RateLimiter
+	authSvc          *skillmarket.AuthService
+	settings         store.SystemSettingsRepository
+	rsaPrivKey       *rsa.PrivateKey
+	pendingDir       string
+	dataDir          string
+	petStoreSync     petStoreSyncRecorder
+	expertMarketSync expertMarketSyncRecorder
+	petStoreMailer   mail.Mailer
+	hubVerifier      hubViewerMachineVerifier
+	suitePurchaseMu  sync.Mutex
 
 	// tokenBank is the Token Bank ledger/withdrawal/gift repository (§6.1).
 	// It is held as the narrow view interface the handlers actually use, so a
@@ -99,26 +100,27 @@ const (
 
 // SkillMarketConfig 是创建 SkillMarketHandlers 所需的配置。
 type SkillMarketConfig struct {
-	Store          *skillmarket.Store
-	SkillStore     *skill.SkillStore
-	UserSvc        *skillmarket.UserService
-	CreditsSvc     *skillmarket.CreditsService
-	Processor      *skillmarket.Processor
-	RatingSvc      *skillmarket.RatingService
-	TrialMgr       *skillmarket.TrialManager
-	SearchSvc      *skillmarket.SearchService
-	LeaderboardSvc *skillmarket.LeaderboardService
-	APIKeySvc      *skillmarket.APIKeyPoolService
-	RefundSvc      *skillmarket.RefundService
-	RateLimiter    *skillmarket.RateLimiter
-	AuthSvc        *skillmarket.AuthService
-	Settings       store.SystemSettingsRepository
-	RSAPrivKey     *rsa.PrivateKey
-	PendingDir     string
-	DataDir        string
-	PetStoreSync   petStoreSyncRecorder
-	PetStoreMailer mail.Mailer
-	HubVerifier    hubViewerMachineVerifier
+	Store            *skillmarket.Store
+	SkillStore       *skill.SkillStore
+	UserSvc          *skillmarket.UserService
+	CreditsSvc       *skillmarket.CreditsService
+	Processor        *skillmarket.Processor
+	RatingSvc        *skillmarket.RatingService
+	TrialMgr         *skillmarket.TrialManager
+	SearchSvc        *skillmarket.SearchService
+	LeaderboardSvc   *skillmarket.LeaderboardService
+	APIKeySvc        *skillmarket.APIKeyPoolService
+	RefundSvc        *skillmarket.RefundService
+	RateLimiter      *skillmarket.RateLimiter
+	AuthSvc          *skillmarket.AuthService
+	Settings         store.SystemSettingsRepository
+	RSAPrivKey       *rsa.PrivateKey
+	PendingDir       string
+	DataDir          string
+	PetStoreSync     petStoreSyncRecorder
+	ExpertMarketSync expertMarketSyncRecorder
+	PetStoreMailer   mail.Mailer
+	HubVerifier      hubViewerMachineVerifier
 	// TokenBank and NodeID wire the Token Bank client API (§6.1). TokenBank is
 	// the concrete SQLite repository presented through the narrow view the
 	// handlers need; leave it nil when the LLM module is not initialised.
@@ -129,28 +131,29 @@ type SkillMarketConfig struct {
 // NewSkillMarketHandlers 创建 SkillMarket HTTP handlers。
 func NewSkillMarketHandlers(cfg SkillMarketConfig) *SkillMarketHandlers {
 	return &SkillMarketHandlers{
-		store:          cfg.Store,
-		skillStore:     cfg.SkillStore,
-		userSvc:        cfg.UserSvc,
-		creditsSvc:     cfg.CreditsSvc,
-		processor:      cfg.Processor,
-		ratingSvc:      cfg.RatingSvc,
-		trialMgr:       cfg.TrialMgr,
-		searchSvc:      cfg.SearchSvc,
-		leaderboardSvc: cfg.LeaderboardSvc,
-		apiKeySvc:      cfg.APIKeySvc,
-		refundSvc:      cfg.RefundSvc,
-		rateLimiter:    cfg.RateLimiter,
-		authSvc:        cfg.AuthSvc,
-		settings:       cfg.Settings,
-		rsaPrivKey:     cfg.RSAPrivKey,
-		pendingDir:     cfg.PendingDir,
-		dataDir:        cfg.DataDir,
-		petStoreSync:   cfg.PetStoreSync,
-		petStoreMailer: cfg.PetStoreMailer,
-		hubVerifier:    cfg.HubVerifier,
-		tokenBank:      cfg.TokenBank,
-		nodeID:         strings.TrimSpace(cfg.NodeID),
+		store:            cfg.Store,
+		skillStore:       cfg.SkillStore,
+		userSvc:          cfg.UserSvc,
+		creditsSvc:       cfg.CreditsSvc,
+		processor:        cfg.Processor,
+		ratingSvc:        cfg.RatingSvc,
+		trialMgr:         cfg.TrialMgr,
+		searchSvc:        cfg.SearchSvc,
+		leaderboardSvc:   cfg.LeaderboardSvc,
+		apiKeySvc:        cfg.APIKeySvc,
+		refundSvc:        cfg.RefundSvc,
+		rateLimiter:      cfg.RateLimiter,
+		authSvc:          cfg.AuthSvc,
+		settings:         cfg.Settings,
+		rsaPrivKey:       cfg.RSAPrivKey,
+		pendingDir:       cfg.PendingDir,
+		dataDir:          cfg.DataDir,
+		petStoreSync:     cfg.PetStoreSync,
+		expertMarketSync: cfg.ExpertMarketSync,
+		petStoreMailer:   cfg.PetStoreMailer,
+		hubVerifier:      cfg.HubVerifier,
+		tokenBank:        cfg.TokenBank,
+		nodeID:           strings.TrimSpace(cfg.NodeID),
 	}
 }
 
@@ -1630,6 +1633,13 @@ func (h *SkillMarketHandlers) AdminRefund(w http.ResponseWriter, r *http.Request
 		}
 		smError(w, status, err.Error())
 		return
+	}
+	// Credits already travel in the skill-market snapshot. A pet entitlement
+	// lives in the pet-store snapshot, so the revoked purchase has to be
+	// emitted there too or peers keep serving the pack.
+	var petPackID string
+	if err := h.store.ReadDB().QueryRowContext(r.Context(), `SELECT pack_id FROM sm_pet_store_purchases WHERE id=?`, req.PurchaseRecordID).Scan(&petPackID); err == nil {
+		h.emitPetStoreSync(r.Context(), petPackID)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "refunded"})
 }

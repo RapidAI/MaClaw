@@ -1,6 +1,7 @@
 package llmservice
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ func tryForwardOpenCode(ctx context.Context, client *http.Client, provider *llmp
 		return nil, false, nil
 	}
 	cfg := openCodeMaclawConfig(provider, upstreamModel)
+	ctx = corellm.OpenCodeFreeWithoutLocalWorkspace(ctx)
 	fwd := make(map[string]interface{}, len(body)+1)
 	for k, v := range body {
 		fwd[k] = v
@@ -111,16 +113,14 @@ func finishOpenCodeForward(provider *llmpool.ProviderConfig, data []byte, status
 	return &providerForwardResponse{StatusCode: status, Body: data}, true, nil
 }
 
-// OpenCodeCatalogURL is the model list for an OpenCode provider. The Go
-// gateway does not publish the free catalog. An empty URL with the OpenCode
-// client still lists Zen, and an empty key is allowed.
+// OpenCodeCatalogURL is the model list for an OpenCode provider. The standard
+// inference catalog lists the -free ids and the metered ids as separate models.
+// An empty URL with the OpenCode client uses that catalog, and an empty key is
+// allowed.
 func OpenCodeCatalogURL(apiURL, agentType string) string {
 	apiURL = strings.TrimSpace(apiURL)
-	if corelib.IsOpenCodeURL(apiURL) {
-		return corelib.OpenCodeUpstreamBase(apiURL, "glm-5.3-flash-free")
-	}
-	if apiURL == "" && strings.EqualFold(RequestAgentType(agentType), "OpenCode") {
-		return "https://opencode.ai/zen/v1"
+	if corelib.IsOpenCodeURL(apiURL) || (apiURL == "" && strings.EqualFold(RequestAgentType(agentType), "OpenCode")) {
+		return "https://opencode.ai/inference/v1"
 	}
 	return apiURL
 }
@@ -209,16 +209,19 @@ func streamOpenCodeResponses(ctx context.Context, client *http.Client, cfg corel
 		return nil, err
 	}
 	content := ""
+	reasoning := ""
 	finish := "stop"
 	var toolCalls []corellm.ToolCall
 	var usage *corellm.Usage
 	if resp != nil {
 		usage = resp.Usage
 		if len(resp.Choices) > 0 {
-			content = resp.Choices[0].Message.Content
-			toolCalls = resp.Choices[0].Message.ToolCalls
-			if strings.TrimSpace(resp.Choices[0].FinishReason) != "" {
-				finish = resp.Choices[0].FinishReason
+			choice := corellm.NormalizeOpenCodeFreeChoice(resp.Choices[0])
+			content = choice.Message.Content
+			reasoning = choice.Message.ReasoningContent
+			toolCalls = choice.Message.ToolCalls
+			if strings.TrimSpace(choice.FinishReason) != "" {
+				finish = choice.FinishReason
 			}
 		}
 	}
@@ -226,7 +229,7 @@ func streamOpenCodeResponses(ctx context.Context, client *http.Client, cfg corel
 	if model == "" {
 		model = cfg.UpstreamModel()
 	}
-	sse := openCodeChatSSE(model, content, finish, toolCalls, usage)
+	sse := openCodeChatSSE(model, content, reasoning, finish, toolCalls, usage)
 	result := &providerStreamResult{statusCode: http.StatusOK}
 	if err := proxyProviderSSE(strings.NewReader(sse), dst, model, result, body); err != nil {
 		return result, err
@@ -255,8 +258,76 @@ func openCodeProxyTools(raw any) []map[string]interface{} {
 	}
 }
 
-func openCodeChatSSE(model, content, finish string, toolCalls []corellm.ToolCall, usage *corellm.Usage) string {
+func streamOpenCodeFreeClient(ctx context.Context, payload []byte, responseModel, upstreamModel, apiKey string, body map[string]any, dst ProxyStreamWriter, errBody []byte) (*providerStreamResult, bool, error) {
+	if !corelib.OpenCodeZenAgentModel(openCodeZenFreeWireModel(payload, upstreamModel)) {
+		return nil, false, nil
+	}
+	if errBody != nil && !bytes.Contains(errBody, []byte("FreeUsageLimitError")) {
+		return nil, false, nil
+	}
+	// The identified client is the same one the GUI uses. Hub does not attach
+	// this server's working directory; that checkout is not the caller's project.
+	resp, err := corellm.CompleteOpenCodeFreeClient(corellm.OpenCodeFreeWithKey(ctx, apiKey), payload)
+	if err != nil || resp == nil {
+		var httpErr *corellm.HTTPStatusError
+		if errors.As(err, &httpErr) && httpErr != nil {
+			return &providerStreamResult{statusCode: httpErr.StatusCode, errorBody: httpErr.Body}, true, nil
+		}
+		if errBody == nil && err != nil {
+			return nil, true, err
+		}
+		return nil, false, nil
+	}
+	content := ""
+	reasoning := ""
+	finish := "stop"
+	var toolCalls []corellm.ToolCall
+	usage := resp.Usage
+	if len(resp.Choices) > 0 {
+		msg := corellm.PresentOpenCodeFreeMessage(corellm.OpenAIDeclaredToolNames(body["tools"]), resp.Choices[0].Message)
+		content = msg.Content
+		reasoning = msg.ReasoningContent
+		toolCalls = msg.ToolCalls
+		if strings.TrimSpace(resp.Choices[0].FinishReason) != "" {
+			finish = resp.Choices[0].FinishReason
+		}
+		finish = corellm.OpenCodeFreeFinishReason(finish, toolCalls)
+	}
+	model := strings.TrimSpace(responseModel)
+	if model == "" {
+		model = strings.TrimSpace(upstreamModel)
+	}
+	sse := openCodeChatSSE(model, content, reasoning, finish, toolCalls, usage)
+	result := &providerStreamResult{statusCode: http.StatusOK, outputText: content}
+	if err := proxyProviderSSE(strings.NewReader(sse), dst, model, result, body); err != nil {
+		return result, true, err
+	}
+	if !result.wroteBusinessStream {
+		return result, true, fmt.Errorf("upstream stream ended before business data")
+	}
+	return result, true, nil
+}
+
+// openCodeZenFreeWireModel is the id the free client will send. The planned
+// payload already rewrote big-pickle; the caller model is the fallback.
+func openCodeZenFreeWireModel(payload []byte, upstreamModel string) string {
+	raw := strings.TrimSpace(upstreamModel)
+	if len(payload) > 0 {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(payload, &body) == nil && strings.TrimSpace(body.Model) != "" {
+			raw = body.Model
+		}
+	}
+	return corelib.OpenCodeWireModel("", "", raw)
+}
+
+func openCodeChatSSE(model, content, reasoning, finish string, toolCalls []corellm.ToolCall, usage *corellm.Usage) string {
 	delta := map[string]any{"role": "assistant", "content": content}
+	if strings.TrimSpace(reasoning) != "" {
+		delta["reasoning_content"] = reasoning
+	}
 	if len(toolCalls) > 0 {
 		calls := make([]any, 0, len(toolCalls))
 		for i, call := range toolCalls {

@@ -105,7 +105,13 @@ export function nextProviderModelChoices(
 ): { id: string; name: string }[] {
     const next = providerModelChoices(provider);
     const same = current.length === next.length && current.every((item, index) => item.id === next[index].id);
-    return same ? current.map(item => ({ id: item.id, name: item.name || item.id })) : next;
+    if (!same) return next;
+    // Keep the array already on screen, including names filled in by Fetch.
+    // every(item => item.name) proves the names are present, so the identity
+    // branch is genuinely { id, name }[].
+    return current.every(item => item.name)
+        ? (current as { id: string; name: string }[])
+        : current.map(item => ({ id: item.id, name: item.name || item.id }));
 }
 
 /** Model ids to store when a quick-fill endpoint replaces the selected provider. */

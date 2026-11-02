@@ -22,3 +22,13 @@ func (a *App) SetMainWindowScreenPosition(x, y int) {
 	}
 	wailsruntime.WindowSetPosition(a.ctx, x, y)
 }
+
+// RestoreMainWindowGeometry applies a saved normal rect. Non-Windows runtimes
+// already unmaximize via the frontend toggle before this call.
+func (a *App) RestoreMainWindowGeometry(x, y, width, height int) {
+	if a == nil || a.ctx == nil {
+		return
+	}
+	wailsruntime.WindowSetSize(a.ctx, width, height)
+	wailsruntime.WindowSetPosition(a.ctx, x, y)
+}

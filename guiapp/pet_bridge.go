@@ -27,12 +27,14 @@ import (
 // SkillMarket session is never placed in the WebView or in a URL; it only
 // travels as an Authorization header from this trusted process to HubCenter.
 func (a *App) petStoreRequest(method, path string, body io.Reader, contentType string) ([]byte, error) {
-	return a.marketRequest(method, path, body, contentType, 4<<20, 4<<20, "Pet Store")
+	return a.marketRequest("", method, path, body, contentType, 4<<20, 4<<20, "Pet Store")
 }
 
 // marketRequest proxies marketplace calls through the native app while keeping
 // the request and response ceilings aligned with each market's API contract.
-func (a *App) marketRequest(method, path string, body io.Reader, contentType string, maxRequestBytes, maxResponseBytes int64, marketName string) ([]byte, error) {
+// baseOverride selects the HubCenter that stores this market. Empty uses the
+// center that issued the current SkillMarket session.
+func (a *App) marketRequest(baseOverride, method, path string, body io.Reader, contentType string, maxRequestBytes, maxResponseBytes int64, marketName string) ([]byte, error) {
 	if a == nil {
 		return nil, errString("app unavailable")
 	}
@@ -63,16 +65,23 @@ func (a *App) marketRequest(method, path string, body io.Reader, contentType str
 	// The Pet Store API is served only by HubCenter. RemoteHubURL hosts no
 	// /api/v1/pet-store/* routes, so there is deliberately no hub fallback:
 	// fail fast with a clear message instead of a stream of 404s.
-	if skillMarketSessionBase(cfg) == "" {
+	baseURL := strings.TrimSpace(baseOverride)
+	if baseURL == "" {
+		baseURL = skillMarketSessionBase(cfg)
+	}
+	if baseURL == "" {
 		return nil, errPetStoreHubCenterMissing
 	}
 	staleToken := strings.TrimSpace(cfg.SkillMarketSessionToken)
 	if staleToken == "" {
 		if refreshErr := a.refreshPetStoreSession(""); refreshErr != nil {
-			return a.marketPublicGETOr(method, path, payload, contentType, maxResponseBytes, marketName, fmt.Errorf("please sign in to HubCenter before using the %s (%v)", marketName, refreshErr))
+			return a.marketPublicGETOr(baseURL, method, path, payload, contentType, maxResponseBytes, marketName, fmt.Errorf("please sign in to HubCenter before using the %s (%v)", marketName, refreshErr))
+		}
+		if reloaded, reloadErr := a.LoadConfig(); reloadErr == nil {
+			baseURL = a.marketBaseAfterRefresh(baseOverride, reloaded)
 		}
 	}
-	data, status, err := a.marketRequestOnce(method, path, payload, contentType, maxResponseBytes, marketName, false)
+	data, status, err := a.marketRequestOnce(baseURL, method, path, payload, contentType, maxResponseBytes, marketName, false)
 	if err == nil || status != http.StatusUnauthorized {
 		return data, err
 	}
@@ -82,34 +91,49 @@ func (a *App) marketRequest(method, path string, body io.Reader, contentType str
 	// 403 is an entitlement failure (for example "purchase required"), not an
 	// expired session, so it must not trigger machine-login.
 	if refreshErr := a.refreshPetStoreSession(staleToken); refreshErr != nil {
-		return a.marketPublicGETOr(method, path, payload, contentType, maxResponseBytes, marketName, fmt.Errorf("%s session refresh failed: %w", marketName, refreshErr))
+		return a.marketPublicGETOr(baseURL, method, path, payload, contentType, maxResponseBytes, marketName, fmt.Errorf("%s session refresh failed: %w", marketName, refreshErr))
 	}
-	data, _, retryErr := a.marketRequestOnce(method, path, payload, contentType, maxResponseBytes, marketName, false)
+	if reloaded, reloadErr := a.LoadConfig(); reloadErr == nil {
+		baseURL = a.marketBaseAfterRefresh(baseOverride, reloaded)
+	}
+	data, _, retryErr := a.marketRequestOnce(baseURL, method, path, payload, contentType, maxResponseBytes, marketName, false)
 	if retryErr != nil {
-		return a.marketPublicGETOr(method, path, payload, contentType, maxResponseBytes, marketName, fmt.Errorf("%w (after refreshing HubCenter session)", retryErr))
+		return a.marketPublicGETOr(baseURL, method, path, payload, contentType, maxResponseBytes, marketName, fmt.Errorf("%w (after refreshing HubCenter session)", retryErr))
 	}
 	return data, nil
+}
+
+// marketBaseAfterRefresh keeps a Pet Store call on the center that just issued
+// the replacement session. An Expert Market override is chosen again: the
+// first choice may have been the enrolled node because the expired session
+// was rejected, and the fresh session can see which official node holds the
+// library.
+func (a *App) marketBaseAfterRefresh(baseOverride string, cfg corelib.AppConfig) string {
+	if strings.TrimSpace(baseOverride) != "" {
+		return a.resolveExpertMarketBase()
+	}
+	return skillMarketSessionBase(cfg)
 }
 
 // petStoreRequestOnce makes exactly one authenticated request. Its status is
 // returned separately so petStoreRequest can refresh only on 401.
 func (a *App) petStoreRequestOnce(method, path string, payload []byte, contentType string) ([]byte, int, error) {
-	return a.marketRequestOnce(method, path, payload, contentType, 4<<20, "Pet Store", false)
+	return a.marketRequestOnce("", method, path, payload, contentType, 4<<20, "Pet Store", false)
 }
 
-func (a *App) marketPublicGET(method, path string, payload []byte, contentType string, maxResponseBytes int64, marketName string) ([]byte, bool) {
+func (a *App) marketPublicGET(baseURL, method, path string, payload []byte, contentType string, maxResponseBytes int64, marketName string) ([]byte, bool) {
 	if !isAnonymousMarketGET(method, path) {
 		return nil, false
 	}
-	data, _, err := a.marketRequestOnce(method, path, payload, contentType, maxResponseBytes, marketName, true)
+	data, _, err := a.marketRequestOnce(baseURL, method, path, payload, contentType, maxResponseBytes, marketName, true)
 	if err != nil {
 		return nil, false
 	}
 	return data, true
 }
 
-func (a *App) marketPublicGETOr(method, path string, payload []byte, contentType string, maxResponseBytes int64, marketName string, fallback error) ([]byte, error) {
-	if data, ok := a.marketPublicGET(method, path, payload, contentType, maxResponseBytes, marketName); ok {
+func (a *App) marketPublicGETOr(baseURL, method, path string, payload []byte, contentType string, maxResponseBytes int64, marketName string, fallback error) ([]byte, error) {
+	if data, ok := a.marketPublicGET(baseURL, method, path, payload, contentType, maxResponseBytes, marketName); ok {
 		return data, nil
 	}
 	return nil, fallback
@@ -135,7 +159,7 @@ func isAnonymousMarketGET(method, path string) bool {
 	return false
 }
 
-func (a *App) marketRequestOnce(method, path string, payload []byte, contentType string, maxResponseBytes int64, marketName string, anonymous bool) ([]byte, int, error) {
+func (a *App) marketRequestOnce(baseURL, method, path string, payload []byte, contentType string, maxResponseBytes int64, marketName string, anonymous bool) ([]byte, int, error) {
 	if a == nil {
 		return nil, 0, errString("app unavailable")
 	}
@@ -143,7 +167,9 @@ func (a *App) marketRequestOnce(method, path string, payload []byte, contentType
 	if err != nil {
 		return nil, 0, err
 	}
-	baseURL := skillMarketSessionBase(cfg)
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = skillMarketSessionBase(cfg)
+	}
 	if baseURL == "" {
 		return nil, 0, errPetStoreHubCenterMissing
 	}

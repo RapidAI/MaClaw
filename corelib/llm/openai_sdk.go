@@ -46,7 +46,7 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	}
 	// Zen free models only answer as an event stream. A non-stream caller
 	// still needs one JSON chat completion, so collect that stream here.
-	if corelib.OpenCodeZenAgentModel(openAIBodyModel(body)) && openAIBodyStream(body) {
+	if corelib.OpenCodeZenAgentModel(corelib.OpenCodeWireModel(cfg.URL, cfg.Key, openAIBodyModel(body))) && openAIBodyStream(body) {
 		resp, status, raw, err := openAIHTTPChatStream(ctx, cfg, body, client, nil, nil)
 		if resp == nil {
 			return raw, status, err
@@ -65,7 +65,7 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	// exact JSON payload.
 	rawClient := openAISDKClientWithRawBody(client, body, nil)
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
-	cfg.URL = corelib.OpenCodeUpstreamBase(cfg.URL, openAIBodyModel(body))
+	cfg.URL = corelib.OpenCodeUpstreamBaseFor(cfg.URL, openAIBodyModel(body), cfg.Key)
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, rawClient)...)
 	var err error
 	_, err = openaiClient.Chat.Completions.New(
@@ -134,7 +134,10 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 		client = windsurf.WrapClient(client)
 	}
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
-	cfg.URL = corelib.OpenCodeUpstreamBase(cfg.URL, openAIBodyModel(body))
+	cfg.URL = corelib.OpenCodeUpstreamBaseFor(cfg.URL, openAIBodyModel(body), cfg.Key)
+	if resp, status, raw, err, handled := openCodeFreeDirect(ctx, cfg, body, client, onToken); handled {
+		return resp, status, raw, err
+	}
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
 	// The route deadline still bounds time-to-headers. Once an SSE body
 	// starts, it may continue past that deadline. Caller cancellation is
@@ -166,6 +169,17 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	if status != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+		if resp, ferr := openCodeFreeClientFallback(ctx, cfg, body, status, raw); ferr != nil || resp != nil {
+			if ferr != nil {
+				var httpErr *HTTPStatusError
+				if errors.As(ferr, &httpErr) {
+					return nil, httpErr.StatusCode, httpErr.Body, ferr
+				}
+				return nil, 0, raw, ferr
+			}
+			openCodeFreeDeliverTokens(resp, onToken)
+			return resp, http.StatusOK, nil, nil
+		}
 		// Preserve the bounded response body for callers that can classify
 		// provider-specific errors (for example, hub entitlement failures).
 		// HTTPStatusError.Error intentionally exposes only status and length.
@@ -497,6 +511,13 @@ func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option
 	}
 	if name, value, ok := corelib.OpenCodeSessionHeaderForConfig(cfg); ok {
 		opts = append(opts, option.WithHeader(name, value))
+		if corelib.IsOpenCodeURL(cfg.URL) {
+			opts = append(opts,
+				option.WithHeader(corelib.OpenCodeSessionIDHeader, value),
+				option.WithHeader(corelib.OpenCodeRequestHeader, corelib.OpenCodeClientRequestID(value, "request")),
+				option.WithHeader(corelib.OpenCodeProjectHeader, corelib.OpenCodeProjectGlobal),
+			)
+		}
 	}
 	if corelib.IsOpenCodeURL(cfg.URL) {
 		opts = append(opts, option.WithHeader("x-opencode-client", "cli"))

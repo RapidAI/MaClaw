@@ -7197,7 +7197,7 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
-    it('fills the composer from Continue editing so the user can request document changes', async () => {
+    it('reveals the document in Explorer from the Reveal button without opening it', async () => {
         const path = 'C:\\Users\\demo\\report.docx';
         const messages: ChatMessage[] = [
             makeMsg({
@@ -7211,14 +7211,15 @@ describe('AIAssistantPanel property tests', () => {
             state: { messages, sending: false, streaming: false, ready: true },
         });
 
-        fireEvent.click(getByTestId('task-result-continue-btn'));
+        fireEvent.click(getByTestId('task-result-reveal-btn'));
         await waitFor(() => {
-            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toContain('请继续修改文档「report.docx」');
-            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toContain(path);
+            expect(showItemInFolderMock).toHaveBeenCalledWith(path);
         });
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('');
     });
 
-    it('keeps typed composer text when Continue editing names the document', async () => {
+    it('keeps typed composer text when a continue-edit draft arrives', async () => {
         const path = 'C:\\Users\\demo\\report.docx';
         const messages: ChatMessage[] = [
             makeMsg({
@@ -7233,7 +7234,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         fireEvent.change(getByTestId('ai-input'), { target: { value: '把第二段改短' } });
-        fireEvent.click(getByTestId('task-result-continue-btn'));
+        window.dispatchEvent(new CustomEvent('maclaw:continue-edit-task-result', { detail: { path } }));
         await waitFor(() => {
             const value = (getByTestId('ai-input') as HTMLTextAreaElement).value;
             expect(value.startsWith('把第二段改短')).toBe(true);

@@ -983,6 +983,16 @@ func TestCloudWorkspaceMutateRejectsMissingID(t *testing.T) {
 }
 
 func TestCloudWorkspaceAPIErrorChineseCodes(t *testing.T) {
+	// share 系列错误文案走 cloudWorkspaceTr，按全局语言选择：设为中文才能断言中文。
+	prevLang := agentViewCurrentLang.Load()
+	setAgentViewLang("zh-Hans")
+	t.Cleanup(func() {
+		if prevLang != nil {
+			agentViewCurrentLang.Store(prevLang)
+		} else {
+			setAgentViewLang("en")
+		}
+	})
 	cases := map[string]string{
 		"CLOUD_WORKSPACE_QUOTA":             "配额",
 		"CLOUD_WORKSPACE_FORBIDDEN":         "未开通",

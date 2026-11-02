@@ -28,7 +28,7 @@ type ProgressEvent = {
     error?: string;
 };
 
-const ACTIVE = new Set(['downloading', 'extracting', 'installing', 'verifying']);
+const ACTIVE = new Set(['downloading', 'extracting', 'updating', 'installing', 'verifying']);
 
 export function LatexSettingsPanel({ lang }: { lang: string }) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
@@ -40,7 +40,8 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
     const refresh = useCallback(async () => {
         const next = (await GetLatexTinyTeXStatus()) as LatexStatus;
         setStatus((prev) => {
-            if (next?.phase === 'downloading' && !(next.percent) && (prev?.percent || 0) > 0) {
+            const bytePhase = next?.phase === 'downloading' || next?.phase === 'updating';
+            if (bytePhase && next?.phase === prev?.phase && !(next.percent) && (prev?.percent || 0) > 0) {
                 return { ...next, percent: prev?.percent, downloaded: prev?.downloaded, total: prev?.total };
             }
             return next;
@@ -86,7 +87,7 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
         const handler = (data: ProgressEvent) => {
             setStatus((prev) => ({
                 ...(prev || { enabled: true, scheme: 'scheme-small', bundle: 'TinyTeX-0' }),
-                phase: data?.phase || (data?.error ? 'error' : 'downloading'),
+                phase: data?.phase || (data?.error ? 'error' : (prev?.phase || 'downloading')),
                 percent: data?.percent || 0,
                 downloaded: data?.downloaded || 0,
                 total: data?.total || 0,
@@ -105,6 +106,8 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
                 return t('Downloading TinyTeX-0…', '正在下载 TinyTeX-0…', '正在下載 TinyTeX-0…');
             case 'extracting':
                 return t('Extracting…', '正在解压…', '正在解壓…');
+            case 'updating':
+                return t('Updating tlmgr…', '正在更新 tlmgr…', '正在更新 tlmgr…');
             case 'installing':
                 return t('Installing scheme-small…', '正在安装 scheme-small…', '正在安裝 scheme-small…');
             case 'verifying':
@@ -171,13 +174,13 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
                     <div data-testid="latex-busy">
                         <div className="model-status-box__progress-head">
                             <span className="model-status-box__label">{phaseLabel(phase)}</span>
-                            {phase === 'downloading' && (
+                            {(phase === 'downloading' || phase === 'updating') && (status?.total || 0) > 0 && (
                                 <span className="model-status-box__meta">
-                                    {status?.percent || 0}% — {formatBytes(status?.downloaded || 0)} / {(status?.total || 0) > 0 ? formatBytes(status?.total || 0) : '?'}
+                                    {status?.percent || 0}% — {formatBytes(status?.downloaded || 0)} / {formatBytes(status?.total || 0)}
                                 </span>
                             )}
                         </div>
-                        {phase === 'downloading' && (
+                        {(phase === 'downloading' || phase === 'updating') && (status?.total || 0) > 0 && (
                             <div className="model-status-box__progress-track">
                                 <div className="model-status-box__progress-fill" style={{ width: `${status?.percent || 0}%` }} />
                             </div>

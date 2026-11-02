@@ -26,13 +26,16 @@ const LEGACY_KNOWN_USER_AGENTS = ["opencode", "claude-code/2.0.0", CODEGEN_LEGAC
 const NON_SELECTABLE_KNOWN_USER_AGENTS = ["Claude Code"] as const;
 const DISPLAY_AGENT_ALIASES = new Map<string, string>([
     ["Claude Code", "claude code 2.0"],
+    ["claude-code/2.0.0", "claude code 2.0"],
     [CODEGEN_LEGACY_USER_AGENT, CODEGEN_USER_AGENT],
 ]);
 
 const knownUserAgentEqual = (known: string, agent: string) =>
     known.toLowerCase() === agent.toLowerCase();
 
-export const defaultAgentTypeForProvider = (provider?: LLMProvider | null) => {
+type AgentIdentitySource = Pick<LLMProvider, "name"> & Partial<Pick<LLMProvider, "auth_type" | "import_source" | "agent_type">>;
+
+export const defaultAgentTypeForProvider = (provider?: AgentIdentitySource | null) => {
     if (provider?.name === "CodeGen" && provider?.auth_type === "sso") return CODEGEN_USER_AGENT;
     if (provider?.name === "OpenCode") return "OpenCode";
     switch ((provider?.import_source || "").trim()) {
@@ -47,24 +50,39 @@ export const defaultAgentTypeForProvider = (provider?: LLMProvider | null) => {
     }
 };
 
-export const effectiveAgentType = (provider?: LLMProvider | null) => {
+export const effectiveAgentType = (provider?: AgentIdentitySource | null) => {
     const raw = (provider?.agent_type || "").trim();
     return raw || defaultAgentTypeForProvider(provider);
 };
 
-/** Map hidden legacy identities to the canonical visible chip value. */
-export const selectableAgentType = (provider?: LLMProvider | null) => {
-    const current = effectiveAgentType(provider);
+/** Chip label for a stored identity. Known names match case-insensitively. */
+export const canonicalAgentType = (agent: string) => {
+    const trimmed = agent.trim();
+    if (!trimmed) return "";
     for (const [from, to] of DISPLAY_AGENT_ALIASES) {
-        if (knownUserAgentEqual(from, current)) return to;
+        if (knownUserAgentEqual(from, trimmed)) return to;
     }
-    return current;
+    for (const known of KNOWN_USER_AGENTS) {
+        if (knownUserAgentEqual(known, trimmed)) return known;
+    }
+    return trimmed;
 };
+
+/** Map hidden legacy identities to the canonical visible chip value. */
+export const selectableAgentType = (provider?: LLMProvider | null) =>
+    canonicalAgentType(effectiveAgentType(provider));
 
 export const isKnownUserAgent = (agent: string) =>
     KNOWN_USER_AGENTS.some(known => knownUserAgentEqual(known, agent)) ||
     LEGACY_KNOWN_USER_AGENTS.some(known => knownUserAgentEqual(known, agent)) ||
     NON_SELECTABLE_KNOWN_USER_AGENTS.some(known => knownUserAgentEqual(known, agent));
+
+/** A saved identity the user typed, as opposed to a preset chip or an empty default. */
+export const isExplicitCustomAgent = (provider?: LLMProvider | null) => {
+    const raw = (provider?.agent_type ?? "").trim();
+    if (!raw) return false;
+    return !isKnownUserAgent(selectableAgentType(provider));
+};
 
 export const customAgentSeedForProvider = (provider?: LLMProvider | null) => {
     const current = effectiveAgentType(provider);
@@ -83,9 +101,40 @@ export const editableCustomAgentValue = (provider?: LLMProvider | null) => {
     return raw;
 };
 
-/** Called on blur / save — fills in the seed if the field was left empty. */
-export const nextCustomAgentValue = (_provider: LLMProvider | null | undefined, value: string) => value;
-
 export const commitCustomAgentValue = (provider: LLMProvider | null | undefined, value: string) => {
     return value.trim() ? value.trim() : customAgentSeedForProvider(provider);
 };
+
+/** Trimmed custom identity already stored on the provider, or "" for a preset/default. */
+export const explicitCustomAgentValue = (provider?: LLMProvider | null) => {
+    const raw = (provider?.agent_type ?? "").trim();
+    return raw && isExplicitCustomAgent(provider) ? raw : "";
+};
+
+/**
+ * True when persisting `agent` would not change this provider's identity.
+ * An empty agent_type already means the provider default. Writing that
+ * default, a display alias, or only a different letter case must not
+ * invalidate a passed connection test.
+ */
+export function agentIdentityUnchanged(provider: AgentIdentitySource | null | undefined, agent: string): boolean {
+    const next = canonicalAgentType(agent);
+    if (!next) return true;
+    const stored = provider?.agent_type ?? "";
+    return stored === next || canonicalAgentType(stored || effectiveAgentType(provider)) === next;
+}
+
+/** Copy the list with one provider's live User-Agent applied. Same list when nothing changed. */
+export function withLiveAgentType<T extends AgentIdentitySource & { connection_test_passed?: boolean }>(
+    providers: T[],
+    index: number | null,
+    agent: string,
+): T[] {
+    if (index === null || index < 0 || index >= providers.length) return providers;
+    const current = providers[index];
+    if (agentIdentityUnchanged(current, agent)) return providers;
+    const next = canonicalAgentType(agent);
+    return providers.map((provider, i) => i === index
+        ? { ...provider, agent_type: next, connection_test_passed: false }
+        : provider);
+}

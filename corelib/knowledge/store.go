@@ -2835,6 +2835,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		return []SearchResult{}, nil
 	}
 	query := buildFTSQuerySegmented(opts.Query)
+	if raw := strings.TrimSpace(opts.rawFTSQuery); raw != "" {
+		query = raw
+	}
 	if opts.Limit <= 0 || opts.Limit > 100 {
 		opts.Limit = 20
 	}

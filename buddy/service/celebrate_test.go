@@ -82,6 +82,41 @@ func TestRunnerCelebratesCompletedTask(t *testing.T) {
 	}
 }
 
+func TestRunnerCelebratesSharedTitle(t *testing.T) {
+	runner, host := startRunnerForTest(t)
+
+	runner.SetSnapshot(protocol.Snapshot{
+		Counts: protocol.Counts{Total: 2, InProgress: 2},
+		Current: []protocol.TaskItem{
+			{ID: "task-a", Title: "写周报", Progress: -1},
+			{ID: "task-b", Title: "写周报", Progress: -1},
+		},
+		UpdatedAt: time.Now().UnixMilli(),
+	})
+	waitForState(t, host)
+
+	runner.SetSnapshot(protocol.Snapshot{
+		Counts: protocol.Counts{Total: 2, InProgress: 1, Done: 1},
+		Current: []protocol.TaskItem{
+			{ID: "task-b", Title: "写周报", Progress: -1},
+		},
+		UpdatedAt: time.Now().UnixMilli(),
+	})
+	frames := readFrames(t, host, time.Second, func(m *protocol.Message) bool {
+		return m.Type == protocol.TypeCelebrate
+	})
+	var celebrate *protocol.Message
+	for _, m := range frames {
+		if m.Type == protocol.TypeCelebrate {
+			celebrate = m
+			break
+		}
+	}
+	if celebrate == nil || celebrate.Celebrate == nil || celebrate.Celebrate.Title != "写周报" {
+		t.Fatalf("shared title hid the completion; got %v", frameTypes(frames))
+	}
+}
+
 func TestRunnerDoesNotCelebrateDeletion(t *testing.T) {
 	runner, host := startRunnerForTest(t)
 

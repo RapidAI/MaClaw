@@ -1,3 +1,6 @@
+import { localizeText, normalizeLang } from "../i18n/langSelect";
+import { presetProviderDisplayName } from "../components/remote/presetProviderLabel";
+
 export const subscriptionUrls: { [key: string]: string } = {
     "GLM": "https://bigmodel.cn/glm-coding",
     "Kimi": "https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115",
@@ -159,8 +162,31 @@ const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
     }
 };
 
-// Get localized display name for a model, falling back to the raw name
+// Get localized display name for a model, falling back to the raw name.
+// Mongolian reuses the short preset labels so a saved Chinese provider name
+// does not stay on the tool tab after it was shortened everywhere else.
 export const getModelDisplayName = (modelName: string, lang: string): string => {
     const effectiveLang = lang === 'zh' ? 'zh-Hans' : lang;
-    return providerDisplayNames[effectiveLang]?.[modelName] ?? providerDisplayNames["en"]?.[modelName] ?? modelName;
+    const mapped = providerDisplayNames[effectiveLang]?.[modelName];
+    if (mapped) return mapped;
+    if (normalizeLang(lang) === 'mn') {
+        const preset = presetProviderDisplayName(lang, modelName);
+        if (preset && preset !== String(modelName || '').trim()) return preset;
+    }
+    return providerDisplayNames["en"]?.[modelName] ?? modelName;
 };
+
+const MODEL_NOTES: Record<string, [string, string, string]> = {
+    "智能路由": ["Smart route", "智能路由", "智能路由"],
+    "旗舰": ["Flagship", "旗舰", "旗艦"],
+    "轻量": ["Lite", "轻量", "輕量"],
+    "默认": ["Default", "默认", "預設"],
+    "支持图片理解": ["Vision", "支持图片理解", "支援圖片理解"],
+};
+
+/** Visible note beside a recommended model id. The stored id is unchanged. */
+export function localizeModelNote(lang: string, note: string): string {
+    const row = MODEL_NOTES[note];
+    if (!row) return note;
+    return localizeText(lang, row[0], row[1], row[2]);
+}

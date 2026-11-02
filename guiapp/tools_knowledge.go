@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -13,6 +14,38 @@ import (
 )
 
 const knowledgeToolSourceKindsDescription = "Optional source kinds: url, pdf, doc, docx, ppt, pptx, xls, xlsx, csv, markdown, text, conversation, workflow_artifact"
+
+// executeCodingKnowledgeToolSearch is the shared main-agent search path for
+// the registry handler and the legacy no-context Handler. It returns the
+// experiences so the context-aware handler can record provisional recall
+// evidence without parsing the rendered text.
+func executeCodingKnowledgeToolSearch(app *App, args map[string]interface{}, projectPath string) (string, []knowledge.CodingExperience) {
+	query, _ := args["query"].(string)
+	if strings.TrimSpace(query) == "" {
+		return "Error: query parameter is required", nil
+	}
+	var kb *knowledge.CodingKnowledgeStore
+	if app != nil {
+		kb = app.ensureCodingKnowledgeStore()
+	}
+	return runCodingKnowledgeSearch(app, kb, query, "", strings.TrimSpace(projectPath), knowledgeToolIntArg(args, "limit", 5))
+}
+
+// codingKnowledgeToolProjectPath resolves the project the tool call is working
+// in. A loop user ID that encodes a project is the strongest signal (background
+// tasks keep their own project even while the desktop shows another tab);
+// otherwise the desktop's current project is the best available context.
+func codingKnowledgeToolProjectPath(app *App, ctx context.Context) string {
+	if loop := codingKnowledgeRecallLoopContext(ctx); loop != nil {
+		if path := projectPathFromSessionOwnerID(loop.UserID); path != "" {
+			return path
+		}
+	}
+	if app != nil {
+		return strings.TrimSpace(app.GetCurrentProjectPath())
+	}
+	return ""
+}
 
 func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	if registry == nil || app == nil {
@@ -95,19 +128,22 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		Required:    []string{"query"},
 		InputSchema: map[string]interface{}{
 			"query": map[string]string{"type": "string", "description": "编码经验搜索查询"},
-			"limit": map[string]string{"type": "integer", "description": "Max results, default 5"},
+			"limit": map[string]string{"type": "integer", "description": "Max results, default 5, max 20"},
 		},
 		Source: "builtin:knowledge",
 		Handler: func(args map[string]interface{}) string {
-			query, _ := args["query"].(string)
-			if strings.TrimSpace(query) == "" {
-				return "Error: query parameter is required"
+			text, _ := executeCodingKnowledgeToolSearch(app, args, app.GetCurrentProjectPath())
+			return text
+		},
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}, _ tool.ProgressCallback) string {
+			projectPath := codingKnowledgeToolProjectPath(app, ctx)
+			text, experiences := executeCodingKnowledgeToolSearch(app, args, projectPath)
+			// The main agent's loop supplies a turn-scoped recall sink. A
+			// delegated runtime task later turns these provisional IDs into a
+			// verified outcome.
+			if loop := codingKnowledgeRecallLoopContext(ctx); loop != nil {
+				loop.noteCodingKnowledgeRecallIDs(codingKnowledgeRecallGeneration(ctx), recalledExperienceIDs(experiences))
 			}
-			var kb *knowledge.CodingKnowledgeStore
-			if app != nil {
-				kb = app.ensureCodingKnowledgeStore()
-			}
-			text, _ := runCodingKnowledgeSearch(app, kb, query, "", "")
 			return text
 		},
 	})

@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, GetCurrentLanguage, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -14,6 +14,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { a2a, corelib } from '../wailsjs/go/models';
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, EVENT_TOKEN_BANK_CREDIT, type OpenTaskLaunchDetail } from './constants/events';
 import { CloudWorkspaceShareJoinDialog } from './components/layout/CloudWorkspaceShareDialog';
+import { hasLoadedOnboardingFlag, shouldReopenOnboardingForInactiveHub, shouldReopenOnboardingForOfflineLLM } from './components/remote/onboardingFlow';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
 import type { SessionTab } from './components/remote/sessionTabs';
@@ -36,6 +37,9 @@ const windowMaximizeRestore = createWindowMaximizeRestoreSession({
     getPosition: WindowGetPosition,
     setSize: WindowSetSize,
     setPosition: (x, y) => { void SetMainWindowScreenPosition(x, y).catch(() => undefined); },
+    restoreFrame: (geometry) => {
+        void RestoreMainWindowGeometry(geometry.x, geometry.y, geometry.width, geometry.height).catch(() => undefined);
+    },
 });
 
 /** Toggle maximise, then clamp to work area (Win10 frameless taskbar overflow). */
@@ -46,11 +50,17 @@ async function toggleMaximiseAndClampWorkArea(): Promise<void> {
         if (!windowMaximizeRestore.isCurrent(op)) return;
         if (!wasMax) await windowMaximizeRestore.rememberNormal(op);
         if (!windowMaximizeRestore.isCurrent(op)) return;
-        WindowToggleMaximise();
         if (wasMax) {
-            windowMaximizeRestore.restoreNormal();
+            // Restore leaves maximized itself and applies the saved rect.
+            // Toggling first paints the OS placement, which pins the WebView
+            // to the bottom-right of the still-large frame. Fall back to the
+            // OS toggle only when no pre-maximize rect was captured.
+            if (!windowMaximizeRestore.restoreNormal()) {
+                WindowToggleMaximise();
+            }
             return;
         }
+        WindowToggleMaximise();
         await new Promise((r) => setTimeout(r, 80));
         if (!windowMaximizeRestore.isCurrent(op) || windowMaximizeRestore.shouldSkipClamp()) return;
         await ClampMaximizedWindowToWorkArea();
@@ -151,9 +161,10 @@ import { contactedProfileForExecution, contactedProfileModel, contactedProfilePr
 import { applySavedUIZoomFactor, recommendUIScale, subscribeDisplayScaleChanges, uiScaleEquals } from './utils/uiScale';
 import { getWailsAppModule } from './utils/wailsAppModule';
 import { htmlLang, localizeText as textForLang, normalizeLang, t as translateKey } from './i18n';
+import { presetProviderDisplayName } from './components/remote/presetProviderLabel';
 import { miniAppLabels, pickMiniAppLabel } from './i18n/maclawMiniAppLabels';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
-import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
+import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, localizeModelNote, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId } from './config/settingsTabs';
 import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
@@ -163,7 +174,7 @@ import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNaviga
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen, type TaskContextMenu } from './components/layout/SidebarTaskManagement';
-import { buildBuddySnapshot } from './components/layout/buddySnapshot';
+import { buddyConfirmTarget, buddyFocusTarget, buildBuddySnapshot } from './components/layout/buddySnapshot';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
@@ -365,12 +376,13 @@ function App() {
         // already maximized, restoring the assistant must keep that size.
         if (!aiPanelMaximizedWindowRef.current) return false;
         aiPanelMaximizedWindowRef.current = false;
-        try {
-            WindowUnmaximise();
-        } catch {
-            // Window state can be unavailable while closing; CSS restore still applies.
+        if (!windowMaximizeRestore.restoreNormal()) {
+            try {
+                WindowUnmaximise();
+            } catch {
+                // Window state can be unavailable while closing; CSS restore still applies.
+            }
         }
-        windowMaximizeRestore.restoreNormal();
         setWindowMaximized(false);
         return true;
     }, []);
@@ -866,16 +878,21 @@ function App() {
     // check shell is still the visible application surface.
     const onboardingRequestedRef = useRef(false);
     const requestOnboarding = useCallback(() => {
-        onboardingRequestedRef.current = true;
         if (mainWindowReadyForOverlaysRef.current) {
+            // The request has been shown. Leave it clear so a later environment
+            // check, which drops and restores overlay readiness, cannot open
+            // the wizard again after the user finished or dismissed it.
+            onboardingRequestedRef.current = false;
             setShowMaclawLLMPopup(true);
+            return;
         }
+        onboardingRequestedRef.current = true;
     }, []);
 
     useEffect(() => {
-        if (mainWindowReadyForOverlays && onboardingRequestedRef.current) {
-            setShowMaclawLLMPopup(true);
-        }
+        if (!mainWindowReadyForOverlays || !onboardingRequestedRef.current) return;
+        onboardingRequestedRef.current = false;
+        setShowMaclawLLMPopup(true);
     }, [mainWindowReadyForOverlays]);
 
     useEffect(() => {
@@ -1494,6 +1511,9 @@ function App() {
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
+    // First cold-start ping. State, not a ref: a failed ping leaves `maclawLLMOnline`
+    // false, and React will not re-render for that, so the gate would never run.
+    const [maclawLLMStartupPing, setMaclawLLMStartupPing] = useState<{ online: boolean } | null>(null);
     const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<SidebarCurrentProviderTokenUsage>({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
     const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
     const [hubCheckinPending, setHubCheckinPending] = useState(false);
@@ -1529,7 +1549,10 @@ function App() {
     const llmProfilePanelSeqRef = useRef(0);
     const llmProfileHealthRefreshSeqRef = useRef(0);
     const sidebarTokenUsageSeqRef = useRef(0);
-    const maclawLLMFirstPingDone = useRef(false);    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
+    const maclawLLMFirstPingDone = useRef(false);
+    const llmOnboardingGateStarted = useRef(false);
+    const llmOnboardingRetryTimer = useRef<number | null>(null);
+    const onboardingDoneRef = useRef(false);
 
     useEffect(() => {
         // activeTab 0 is Original (hidden), so configurable models start at 1.
@@ -2797,16 +2820,15 @@ function App() {
             callBackend(() => PingMaclawLLM()).then((s: any) => {
                 setMaclawLLMOnline(!!s.online);
                 setMaclawLLMConfigured(!!s.configured);
-                // Stash the first ping result; the separate config-aware effect will decide whether to show the popup.
                 if (!maclawLLMFirstPingDone.current) {
                     maclawLLMFirstPingDone.current = true;
-                    maclawLLMFirstPingResult.current = { online: !!s.online, configured: !!s.configured };
+                    setMaclawLLMStartupPing({ online: !!s.online });
                 }
             }).catch(() => {
                 setMaclawLLMOnline(false);
                 if (!maclawLLMFirstPingDone.current) {
                     maclawLLMFirstPingDone.current = true;
-                    maclawLLMFirstPingResult.current = { online: false, configured: false };
+                    setMaclawLLMStartupPing({ online: false });
                 }
             });
         };
@@ -2815,33 +2837,35 @@ function App() {
         return () => clearInterval(timer);
     }, []);
 
-    // Show the MaClaw LLM popup once both the first ping result AND config are available.
-    // Only checks LLM status here; registration check is done in a separate effect
-    // after useRemotePanel provides remoteActivationStatus.
-    //
-    // Resilience: a single failed ping (hub 502, network blip during startup) must
-    // not trigger the popup. We retry once after 5s before deciding. If the second
-    // attempt also fails, show the popup. If it succeeds, skip it.
+    // Open the LLM step only after config and the first ping both exist.
+    // `maclawLLMStartupPing` is the wake-up: a failed ping does not change
+    // `maclawLLMOnline` from its initial false, so that state cannot be the dependency.
+    // The 5s retry stays armed across later config refreshes. Finishing onboarding
+    // during that window updates onboardingDoneRef and the retry stays closed.
+    useEffect(() => () => {
+        if (llmOnboardingRetryTimer.current !== null) {
+            window.clearTimeout(llmOnboardingRetryTimer.current);
+            llmOnboardingRetryTimer.current = null;
+        }
+    }, []);
     useEffect(() => {
-        if (!config || !maclawLLMFirstPingResult.current) return;
-        const { online } = maclawLLMFirstPingResult.current;
-        maclawLLMFirstPingResult.current = null; // consume — only fires once
+        if (hasLoadedOnboardingFlag(config)) onboardingDoneRef.current = !!config?.onboarding_done;
+        if (llmOnboardingGateStarted.current || !hasLoadedOnboardingFlag(config) || !maclawLLMStartupPing) return;
+        const online = maclawLLMStartupPing.online;
+        llmOnboardingGateStarted.current = true;
+        if (!shouldReopenOnboardingForOfflineLLM(!!config?.onboarding_done, online)) return;
 
-        if (online) return; // LLM is reachable — no popup needed
-
-        // First ping failed — retry once after a short delay before showing popup
-        const retryTimer = setTimeout(() => {
+        llmOnboardingRetryTimer.current = window.setTimeout(() => {
+            llmOnboardingRetryTimer.current = null;
+            if (onboardingDoneRef.current) return;
             callBackend(() => PingMaclawLLM()).then((s: any) => {
-                if (!s?.online) {
-                    requestOnboarding();
-                }
-                // If online now (transient failure recovered), silently skip popup
-            }).catch(() => {
+                if (onboardingDoneRef.current || s?.online) return;
                 requestOnboarding();
+            }).catch(() => {
+                if (!onboardingDoneRef.current) requestOnboarding();
             });
         }, 5000);
-        return () => clearTimeout(retryTimer);
-    }, [config, maclawLLMOnline, requestOnboarding]);
+    }, [config, maclawLLMStartupPing, requestOnboarding]);
 
     const applyLanguage = useCallback((newLang: string) => {
         languageChoiceGen.current += 1;
@@ -4371,8 +4395,9 @@ function App() {
             // Refresh sidebar display with authoritative data from backend
             void refreshSidebarTokenUsage();
             // Toast notification
+            const shownProvider = presetProviderDisplayName(lang, providerName);
             const toastMsg = localizeText(
-                `Switched to "${providerName}". Effective on next AI request.`,
+                `Switched to "${shownProvider}". Effective on next AI request.`,
                 `已切换为「${providerName}」，下次 AI 对话时生效`,
                 `已切換為「${providerName}」，下次 AI 對話時生效`,
             );
@@ -5108,15 +5133,95 @@ function App() {
         return () => window.clearTimeout(timer);
     }, [buddySnapshot]);
 
+    // Age labels ("12 分钟") change without a task-list edit. Push on a
+    // half-minute tick; an unchanged label does not become a new state frame.
+    useEffect(() => {
+        const id = window.setInterval(() => {
+            const payload = JSON.stringify(
+                buildBuddySnapshot(
+                    taskItems,
+                    { busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask },
+                    Date.now(),
+                ),
+            );
+            const bridge = (globalThis as any).window?.go?.main?.App;
+            if (!bridge || typeof bridge.BuddyPushSnapshot !== 'function') return;
+            try {
+                const result = bridge.BuddyPushSnapshot(payload);
+                if (result && typeof result.catch === 'function') result.catch(() => {});
+            } catch {
+                // Binding absent in embedded or test shells.
+            }
+        }, 30_000);
+        return () => window.clearInterval(id);
+    }, [taskItems, busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask]);
+
+    useEffect(() => {
+        const mood = activeAssistantTaskRunning ? 'busy' : 'idle';
+        let tries = 0;
+        let timer = 0;
+        const push = () => {
+            const bridge = (globalThis as any).window?.go?.main?.App;
+            if (!bridge || typeof bridge.BuddyPushPet !== 'function') {
+                if (++tries < 10) timer = window.setTimeout(push, 500);
+                return;
+            }
+            try {
+                const result = bridge.BuddyPushPet(mood);
+                if (result && typeof result.catch === 'function') result.catch(() => {});
+            } catch {
+                // Binding absent in embedded or test shells.
+            }
+        };
+        timer = window.setTimeout(push, 250);
+        return () => window.clearTimeout(timer);
+    }, [activeAssistantTaskRunning]);
+
+    const buddyFocusSignals = useRef({ busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask });
+    buddyFocusSignals.current = { busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask };
+    const activateTaskFromBuddy = useRef(activateTaskInstance);
+    activateTaskFromBuddy.current = activateTaskInstance;
+    const buddyConfirmTimer = useRef(0);
+    useEffect(() => {
+        const off = EventsOn('buddy:input', (payload: { gesture?: string; index?: number } | undefined) => {
+            if (!payload) return;
+            if (payload.gesture === 'confirm') {
+                window.clearTimeout(buddyConfirmTimer.current);
+                buddyConfirmTimer.current = 0;
+                const target = buddyConfirmTarget(taskItemsRef.current, buddyFocusSignals.current);
+                if (!target?.project_path) return;
+                activateTaskFromBuddy.current(target.project_path, target);
+                if (target.active_workflow?.pending_review) {
+                    const projectPath = target.project_path;
+                    buddyConfirmTimer.current = window.setTimeout(() => {
+                        buddyConfirmTimer.current = 0;
+                        window.dispatchEvent(new CustomEvent('buddy:confirm-review', {
+                            detail: { projectPath },
+                        }));
+                    }, 400);
+                }
+                return;
+            }
+            if (payload.gesture !== 'tap') return;
+            const target = buddyFocusTarget(taskItemsRef.current, buddyFocusSignals.current, payload.index);
+            if (target?.project_path) activateTaskFromBuddy.current(target.project_path, target);
+        });
+        return () => {
+            window.clearTimeout(buddyConfirmTimer.current);
+            if (typeof off === 'function') off();
+            else EventsOff('buddy:input');
+        };
+    }, []);
+
     // Show onboarding only after the environment-check completion path has
     // resized and painted the main workbench. The wizard is portaled to
     // document.body, so rendering it earlier would place it over the compact
     // environment-check shell.
     const onboardingRegCheckDone = useRef(false);
     useEffect(() => {
-        if (onboardingRegCheckDone.current || !mainWindowReadyForOverlays || !config || remoteActivationStatus === null) return;
+        if (onboardingRegCheckDone.current || !mainWindowReadyForOverlays || !hasLoadedOnboardingFlag(config) || remoteActivationStatus === null) return;
         onboardingRegCheckDone.current = true;
-        if (!remoteActivationStatus.activated && !config.onboarding_done) {
+        if (shouldReopenOnboardingForInactiveHub(!!config?.onboarding_done, !!remoteActivationStatus.activated)) {
             requestOnboarding();
         }
     }, [config, mainWindowReadyForOverlays, remoteActivationStatus, requestOnboarding]);
@@ -5200,7 +5305,7 @@ function App() {
         const modelToDelete = toolCfg.models[activeTab];
         if (modelToDelete.model_name === "Original") return;
 
-        const message = t("confirmDeleteMessage").replace("{name}", modelToDelete.model_name);
+        const message = t("confirmDeleteMessage").replace("{name}", getModelDisplayName(modelToDelete.model_name, lang));
 
         setConfirmDialog({
             show: true,
@@ -5416,7 +5521,7 @@ function App() {
         const recommended = names.flatMap(name => recommendedModels[name] || []);
         const options = recommended.map(model => ({
             id: model.id,
-            name: model.note ? `${model.id} (${model.note})` : model.id,
+            name: model.note ? `${model.id} (${localizeModelNote(lang, model.note)})` : model.id,
         }));
         const defaultId = getDefaultModelId(tool, provider);
         if (defaultId && !options.some(model => model.id === defaultId)) {
@@ -7051,6 +7156,7 @@ ${instruction}`;
                     setSelectedProvider={setSelectedProviderForUrl}
                     hoveredProvider={hoveredProvider}
                     setHoveredProvider={setHoveredProvider}
+                    lang={lang}
                     t={t}
                     localizeText={localizeText}
                     onConfirm={confirmProviderSelection}

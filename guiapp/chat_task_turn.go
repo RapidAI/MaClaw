@@ -54,7 +54,7 @@ func (r *chatTaskRegistry) openTaskForSteer(sessionKey, taskID, title string) (*
 		if task.SessionKey != sessionKey || task.Status.terminal() {
 			continue
 		}
-		if title == "" || strings.EqualFold(strings.TrimSpace(task.Title), title) {
+		if title == "" || chatTaskTitleEquals(task.Title, title) {
 			matches = append(matches, task)
 		}
 	}
@@ -243,7 +243,7 @@ func chatTaskProgressMilestone(text string) (string, bool) {
 // and the "仍在执行中" heartbeat prefix are the channel, not the step.
 func chatTaskProgressStep(text string) string {
 	body := stripChatTaskProgressLabel(text)
-	for _, lang := range []string{"zh", "en"} {
+	for _, lang := range []string{"zh", "en", "mn"} {
 		prefix := chatTaskFormatPrefix(i18n.T(i18n.MsgProgressStillWorking, lang))
 		if prefix != "" && strings.HasPrefix(body, prefix) {
 			if rest := strings.TrimSpace(strings.TrimPrefix(body, prefix)); rest != "" {
@@ -264,7 +264,7 @@ func chatTaskProgressIsSilence(text string) bool {
 	if body == "" {
 		return true
 	}
-	for _, lang := range []string{"zh", "en"} {
+	for _, lang := range []string{"zh", "en", "mn"} {
 		if body == i18n.T(i18n.MsgProgressAck, lang) || body == i18n.T(i18n.MsgProgressLongTask, lang) {
 			return true
 		}
@@ -288,6 +288,7 @@ func stripChatTaskProgressLabel(text string) string {
 	for _, prefix := range []string{
 		i18n.T(i18n.MsgProgressStatusLabel, "zh"),
 		i18n.T(i18n.MsgProgressStatusLabel, "en"),
+		i18n.T(i18n.MsgProgressStatusLabel, "mn"),
 		"〔进度〕", "[进度]", "【进度】", "〔Progress〕", "[Progress]", "【Progress】",
 	} {
 		if prefix != "" && strings.HasPrefix(trimmed, prefix) {

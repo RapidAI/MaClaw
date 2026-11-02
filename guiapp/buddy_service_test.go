@@ -38,6 +38,39 @@ func TestBuddyConfigDefaultsEnabledAndRoundTrips(t *testing.T) {
 	if got.Sound == nil {
 		t.Fatal("missing sound defaults")
 	}
+
+	// A second write replaces the existing file. On Windows that must not
+	// move buddy.json aside first, or a crash in the gap would look like a
+	// first launch and turn the link back on.
+	want.Port = "COM8"
+	if err := app.saveBuddyConfig(want); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	got = app.loadBuddyConfig()
+	if got.Enabled || got.Port != "COM8" {
+		t.Fatalf("rewrite mismatch: %+v", got)
+	}
+	dir := app.GetDataDir()
+	if _, err := os.Stat(filepath.Join(dir, "buddy.json.bak")); !os.IsNotExist(err) {
+		t.Fatalf("rewrite left a backup file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "buddy.json.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("rewrite left a temp file: %v", err)
+	}
+}
+
+func TestBuddyConfigCorruptDoesNotEnable(t *testing.T) {
+	app := newBuddyTestApp(t)
+	dir := app.GetDataDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "buddy.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if app.loadBuddyConfig().Enabled {
+		t.Fatal("corrupt buddy.json must not turn the link on")
+	}
 }
 
 func TestBuddySoundConfigRoundTripsAndSanitizes(t *testing.T) {
@@ -110,5 +143,61 @@ func TestBuddyStopPersistsDisabled(t *testing.T) {
 	}
 	if app.loadBuddyConfig().Enabled {
 		t.Fatal("BuddyStop must persist enabled=false")
+	}
+}
+
+func TestBuddyStopKeepsLinkWhenSaveFails(t *testing.T) {
+	app := newBuddyTestApp(t)
+	app.buddyCfg = buddyConfig{Enabled: true, Port: "COM3"}
+	dataDir := app.GetDataDir()
+	if err := os.MkdirAll(filepath.Dir(dataDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dataDir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.BuddyStop(); err == nil {
+		t.Fatal("expected save error")
+	}
+	if !app.BuddyGetStatus().Enabled {
+		t.Fatal("failed save cleared the link")
+	}
+}
+
+func TestBuddyStartDoesNotEnableWhenSaveFails(t *testing.T) {
+	app := newBuddyTestApp(t)
+	app.buddyCfg = buddyConfig{Enabled: false, Port: "COM3"}
+	dataDir := app.GetDataDir()
+	if err := os.MkdirAll(filepath.Dir(dataDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dataDir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.BuddyStart("COM3"); err == nil {
+		t.Fatal("expected save error")
+	}
+	if app.BuddyGetStatus().Enabled || app.buddyCancel != nil {
+		t.Fatal("failed save enabled the link or opened a runner")
+	}
+}
+
+func TestDeviceSoundSaveKeepsLinkDisabled(t *testing.T) {
+	app := newBuddyTestApp(t)
+	app.buddyCfg = buddyConfig{Enabled: true, Port: "COM3"}
+	if err := app.BuddyStop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if err := app.persistBuddySound(protocol.DefaultSoundConfig()); err != nil {
+		t.Fatalf("sound save: %v", err)
+	}
+	if app.loadBuddyConfig().Enabled || app.BuddyGetStatus().Enabled {
+		t.Fatal("device sound save turned the companion link back on")
+	}
+	if err := app.BuddySetSoundConfig(protocol.DefaultSoundConfig()); err != nil {
+		t.Fatalf("set sound: %v", err)
+	}
+	if app.loadBuddyConfig().Enabled || app.BuddyGetStatus().Enabled {
+		t.Fatal("settings sound save turned the companion link back on")
 	}
 }

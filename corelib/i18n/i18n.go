@@ -392,15 +392,15 @@ const (
 
 	// Credential write gate (P0-4): one-shot confirmation card raised when a
 	// knowledge write payload matches the authoritative secret scanner.
-	MsgCredentialConfirmTitle   = "msg.credential_confirm_title"
-	MsgCredentialConfirmSummary = "msg.credential_confirm_summary" // %s tool name, %s redacted preview
-	MsgCredentialConfirmed      = "msg.credential_confirmed"
-	MsgCredentialCancelled      = "msg.credential_cancelled"
-	MsgCredentialVoided         = "msg.credential_voided"
-	MsgCredentialTimeout        = "msg.credential_timeout"
-	MsgCredentialBlocked        = "msg.credential_blocked"
+	MsgCredentialConfirmTitle    = "msg.credential_confirm_title"
+	MsgCredentialConfirmSummary  = "msg.credential_confirm_summary" // %s tool name, %s redacted preview
+	MsgCredentialConfirmed       = "msg.credential_confirmed"
+	MsgCredentialCancelled       = "msg.credential_cancelled"
+	MsgCredentialVoided          = "msg.credential_voided"
+	MsgCredentialTimeout         = "msg.credential_timeout"
+	MsgCredentialBlocked         = "msg.credential_blocked"
 	MsgCredentialCancelledNotice = "msg.credential_cancelled_notice"
-	MsgCredentialStoreOccupied  = "msg.credential_store_occupied"
+	MsgCredentialStoreOccupied   = "msg.credential_store_occupied"
 
 	// Post-recording choice UI (engine-injected after record_audio save).
 	MsgRecordPostSuccess        = "msg.record_post_success"
@@ -499,6 +499,33 @@ const (
 	MsgMilestoneStepsCurrent      = "msg.milestone_steps_current"      // %d, %s current, %s duration
 	MsgMilestoneStepsLatest       = "msg.milestone_steps_latest"       // %d, %s latest, %s duration
 	MsgMilestoneVerbEllipsis      = "msg.milestone_verb_ellipsis"      // %s verb → "verb..."
+
+	// Clock text inside progress summaries. Units follow the UI language.
+	MsgDurationSeconds             = "msg.duration_seconds"               // %d
+	MsgDurationMinutes             = "msg.duration_minutes"               // %d
+	MsgDurationMinutesSeconds      = "msg.duration_minutes_seconds"       // %d minutes, %d seconds
+	MsgDurationHours               = "msg.duration_hours"                 // %d
+	MsgDurationHoursMinutes        = "msg.duration_hours_minutes"         // %d hours, %d minutes
+	MsgDurationHoursMinutesSeconds = "msg.duration_hours_minutes_seconds" // %d hours, %d minutes, %d seconds
+	MsgMilestoneCompletedTruncated = "msg.milestone_completed_truncated"  // %s first steps, %d total
+	MsgStatusInProgress            = "msg.status_in_progress"
+
+	// Thinking-panel milestones. The desktop keeps the "[Status] " protocol
+	// prefix and localizes only the sentence.
+	MsgStatusTaskReceived      = "msg.status_task_received"
+	MsgStatusPreflightDone     = "msg.status_preflight_done"
+	MsgStatusSessionReady      = "msg.status_session_ready"
+	MsgStatusContextReady      = "msg.status_context_ready"
+	MsgStatusDirectMatched     = "msg.status_direct_matched"
+	MsgStatusFastPath          = "msg.status_fast_path"
+	MsgStatusFullPath          = "msg.status_full_path"
+	MsgStatusPrepareModel      = "msg.status_prepare_model"
+	MsgStatusModelWaiting      = "msg.status_model_waiting"
+	MsgStatusTaskReceivedShort = "msg.status_task_received_short"
+	MsgStatusPreparingPath     = "msg.status_preparing_path"
+	MsgStatusEnvReady          = "msg.status_env_ready"
+	MsgStatusSyncContext       = "msg.status_sync_context"
+	MsgStatusAnalyzing         = "msg.status_analyzing"
 )
 
 // defaultLang is the fallback when a non-Chinese, non-Mongolian tag is empty
@@ -916,49 +943,71 @@ var translations = map[string]map[string]string{
 		MsgExecRevisionDefault1:         "如果目录不对，请回复正确目录",
 		MsgExecRevisionDefault2:         "如果任务理解不对，请回复修正内容",
 		// IM tool-status card
-		MsgToolStatusLabel:            "工具 · ",
-		MsgToolActionProcessing:       "处理中",
-		MsgToolActionRunCommand:       "执行命令",
-		MsgToolActionReadFile:         "读取文件",
-		MsgToolActionWriteFile:        "写入文件",
-		MsgToolActionEditFile:         "编辑文件",
-		MsgToolActionListDir:          "列出目录",
-		MsgToolActionSearchFiles:      "搜索文件",
-		MsgToolActionGrep:             "检索内容",
-		MsgToolActionWebSearch:        "搜索网络",
-		MsgToolActionWebFetch:         "访问网页",
-		MsgToolActionSendFile:         "发送文件",
-		MsgToolActionRunSkill:         "执行技能",
-		MsgToolActionGeneratePDF:      "生成 PDF",
-		MsgToolActionMemory:           "访问记忆",
-		MsgToolActionSSHConnect:       "连接服务器",
-		MsgToolActionSSHExec:          "远程执行",
-		MsgToolActionSSHClose:         "断开连接",
-		MsgToolActionSSHCloseAll:      "断开全部连接",
-		MsgToolActionSSH:              "远程操作",
-		MsgToolActionScreenshot:       "截取屏幕",
-		MsgToolActionTTS:              "生成语音",
-		MsgToolActionASR:              "语音转写",
-		MsgToolActionBrowser:          "操作浏览器",
-		MsgToolActionCraft:            "生成脚本",
-		MsgToolActionOpen:             "打开",
-		MsgToolActionDelegate:         "委派任务",
-		MsgToolActionCallTool:         "调用工具",
-		MsgToolActionScriptProgress:   "脚本进度",
-		MsgToolActionCommandProgress:  "命令进度",
-		MsgToolActionSkillProgress:    "技能进度",
-		MsgProgressAck:                "收到，正在处理",
-		MsgProgressLongTask:           "任务耗时较长，完成后会立即通知你。",
-		MsgProgressStillWorking:       "仍在执行中，%s",
-		MsgProgressStatusLabel:        "〔进度〕",
-		MsgMilestoneWorking:           "正在 %s",
-		MsgMilestoneDoneList:          "已完成: %s",
-		MsgMilestoneDoneSteps:         "已完成 %d 个步骤",
-		MsgMilestoneDoneWorking:       "已完成: %s，正在 %s",
-		MsgMilestoneProcessingElapsed: "正在处理中（已耗时 %s）...",
-		MsgMilestoneStepsCurrent:      "已完成 %d 个步骤，当前: %s（已耗时 %s）",
-		MsgMilestoneStepsLatest:       "已完成 %d 个步骤，最近: %s（已耗时 %s）",
-		MsgMilestoneVerbEllipsis:      "%s...",
+		MsgToolStatusLabel:             "工具 · ",
+		MsgToolActionProcessing:        "处理中",
+		MsgToolActionRunCommand:        "执行命令",
+		MsgToolActionReadFile:          "读取文件",
+		MsgToolActionWriteFile:         "写入文件",
+		MsgToolActionEditFile:          "编辑文件",
+		MsgToolActionListDir:           "列出目录",
+		MsgToolActionSearchFiles:       "搜索文件",
+		MsgToolActionGrep:              "检索内容",
+		MsgToolActionWebSearch:         "搜索网络",
+		MsgToolActionWebFetch:          "访问网页",
+		MsgToolActionSendFile:          "发送文件",
+		MsgToolActionRunSkill:          "执行技能",
+		MsgToolActionGeneratePDF:       "生成 PDF",
+		MsgToolActionMemory:            "访问记忆",
+		MsgToolActionSSHConnect:        "连接服务器",
+		MsgToolActionSSHExec:           "远程执行",
+		MsgToolActionSSHClose:          "断开连接",
+		MsgToolActionSSHCloseAll:       "断开全部连接",
+		MsgToolActionSSH:               "远程操作",
+		MsgToolActionScreenshot:        "截取屏幕",
+		MsgToolActionTTS:               "生成语音",
+		MsgToolActionASR:               "语音转写",
+		MsgToolActionBrowser:           "操作浏览器",
+		MsgToolActionCraft:             "生成脚本",
+		MsgToolActionOpen:              "打开",
+		MsgToolActionDelegate:          "委派任务",
+		MsgToolActionCallTool:          "调用工具",
+		MsgToolActionScriptProgress:    "脚本进度",
+		MsgToolActionCommandProgress:   "命令进度",
+		MsgToolActionSkillProgress:     "技能进度",
+		MsgProgressAck:                 "收到，正在处理",
+		MsgProgressLongTask:            "任务耗时较长，完成后会立即通知你。",
+		MsgProgressStillWorking:        "仍在执行中，%s",
+		MsgProgressStatusLabel:         "〔进度〕",
+		MsgMilestoneWorking:            "正在 %s",
+		MsgMilestoneDoneList:           "已完成: %s",
+		MsgMilestoneDoneSteps:          "已完成 %d 个步骤",
+		MsgMilestoneDoneWorking:        "已完成: %s，正在 %s",
+		MsgMilestoneProcessingElapsed:  "正在处理中（已耗时 %s）...",
+		MsgMilestoneStepsCurrent:       "已完成 %d 个步骤，当前: %s（已耗时 %s）",
+		MsgMilestoneStepsLatest:        "已完成 %d 个步骤，最近: %s（已耗时 %s）",
+		MsgMilestoneVerbEllipsis:       "%s...",
+		MsgDurationSeconds:             "%d 秒",
+		MsgDurationMinutes:             "%d 分钟",
+		MsgDurationMinutesSeconds:      "%d 分 %d 秒",
+		MsgDurationHours:               "%d 小时",
+		MsgDurationHoursMinutes:        "%d 小时 %d 分钟",
+		MsgDurationHoursMinutesSeconds: "%d 小时 %d 分 %d 秒",
+		MsgMilestoneCompletedTruncated: "%s 等 %d 个步骤",
+		MsgStatusInProgress:            "正在处理中...",
+		MsgStatusTaskReceived:          "已接收任务，正在准备执行路径",
+		MsgStatusPreflightDone:         "会话预检完成，正在准备上下文",
+		MsgStatusSessionReady:          "会话已就绪，正在确定执行方式",
+		MsgStatusContextReady:          "上下文已准备，正在启动任务",
+		MsgStatusDirectMatched:         "已匹配直接执行能力，正在处理",
+		MsgStatusFastPath:              "已选择快速执行路径，正在构建请求",
+		MsgStatusFullPath:              "已选择完整执行路径，正在构建请求",
+		MsgStatusPrepareModel:          "正在整理上下文并准备模型请求",
+		MsgStatusModelWaiting:          "模型请求已发送，正在等待响应",
+		MsgStatusTaskReceivedShort:     "已接收任务",
+		MsgStatusPreparingPath:         "正在准备执行路径",
+		MsgStatusEnvReady:              "执行环境已就绪",
+		MsgStatusSyncContext:           "正在同步会话上下文",
+		MsgStatusAnalyzing:             "正在分析任务并开始处理",
 	},
 	"en": {
 		MsgAckProcessing:                      "Processing, please wait...",
@@ -1364,49 +1413,71 @@ var translations = map[string]map[string]string{
 		MsgExecRevisionDefault1:         "If the directory is wrong, reply with the correct directory",
 		MsgExecRevisionDefault2:         "If the task understanding is wrong, reply with the correction",
 		// IM tool-status card
-		MsgToolStatusLabel:            "Tool · ",
-		MsgToolActionProcessing:       "Working",
-		MsgToolActionRunCommand:       "Run command",
-		MsgToolActionReadFile:         "Read file",
-		MsgToolActionWriteFile:        "Write file",
-		MsgToolActionEditFile:         "Edit file",
-		MsgToolActionListDir:          "List directory",
-		MsgToolActionSearchFiles:      "Search files",
-		MsgToolActionGrep:             "Search content",
-		MsgToolActionWebSearch:        "Web search",
-		MsgToolActionWebFetch:         "Open page",
-		MsgToolActionSendFile:         "Send file",
-		MsgToolActionRunSkill:         "Run Skill",
-		MsgToolActionGeneratePDF:      "Generate PDF",
-		MsgToolActionMemory:           "Access memory",
-		MsgToolActionSSHConnect:       "Connect server",
-		MsgToolActionSSHExec:          "Remote exec",
-		MsgToolActionSSHClose:         "Disconnect",
-		MsgToolActionSSHCloseAll:      "Disconnect all",
-		MsgToolActionSSH:              "Remote operation",
-		MsgToolActionScreenshot:       "Screenshot",
-		MsgToolActionTTS:              "Generate speech",
-		MsgToolActionASR:              "Transcribe audio",
-		MsgToolActionBrowser:          "Browser",
-		MsgToolActionCraft:            "Generate script",
-		MsgToolActionOpen:             "Open",
-		MsgToolActionDelegate:         "Delegate task",
-		MsgToolActionCallTool:         "Call tool",
-		MsgToolActionScriptProgress:   "Script progress",
-		MsgToolActionCommandProgress:  "Command progress",
-		MsgToolActionSkillProgress:    "Skill progress",
-		MsgProgressAck:                "Got it, working on it...",
-		MsgProgressLongTask:           "This is taking a while; I'll notify you when done.",
-		MsgProgressStillWorking:       "Still working: %s",
-		MsgProgressStatusLabel:        "[Status] ",
-		MsgMilestoneWorking:           "Working: %s",
-		MsgMilestoneDoneList:          "Done: %s",
-		MsgMilestoneDoneSteps:         "Completed %d steps",
-		MsgMilestoneDoneWorking:       "Done: %s; working: %s",
-		MsgMilestoneProcessingElapsed: "Still processing (elapsed %s)...",
-		MsgMilestoneStepsCurrent:      "Completed %d steps, now: %s (elapsed %s)",
-		MsgMilestoneStepsLatest:       "Completed %d steps, last: %s (elapsed %s)",
-		MsgMilestoneVerbEllipsis:      "%s...",
+		MsgToolStatusLabel:             "Tool · ",
+		MsgToolActionProcessing:        "Working",
+		MsgToolActionRunCommand:        "Run command",
+		MsgToolActionReadFile:          "Read file",
+		MsgToolActionWriteFile:         "Write file",
+		MsgToolActionEditFile:          "Edit file",
+		MsgToolActionListDir:           "List directory",
+		MsgToolActionSearchFiles:       "Search files",
+		MsgToolActionGrep:              "Search content",
+		MsgToolActionWebSearch:         "Web search",
+		MsgToolActionWebFetch:          "Open page",
+		MsgToolActionSendFile:          "Send file",
+		MsgToolActionRunSkill:          "Run Skill",
+		MsgToolActionGeneratePDF:       "Generate PDF",
+		MsgToolActionMemory:            "Access memory",
+		MsgToolActionSSHConnect:        "Connect server",
+		MsgToolActionSSHExec:           "Remote exec",
+		MsgToolActionSSHClose:          "Disconnect",
+		MsgToolActionSSHCloseAll:       "Disconnect all",
+		MsgToolActionSSH:               "Remote operation",
+		MsgToolActionScreenshot:        "Screenshot",
+		MsgToolActionTTS:               "Generate speech",
+		MsgToolActionASR:               "Transcribe audio",
+		MsgToolActionBrowser:           "Browser",
+		MsgToolActionCraft:             "Generate script",
+		MsgToolActionOpen:              "Open",
+		MsgToolActionDelegate:          "Delegate task",
+		MsgToolActionCallTool:          "Call tool",
+		MsgToolActionScriptProgress:    "Script progress",
+		MsgToolActionCommandProgress:   "Command progress",
+		MsgToolActionSkillProgress:     "Skill progress",
+		MsgProgressAck:                 "Got it, working on it...",
+		MsgProgressLongTask:            "This is taking a while; I'll notify you when done.",
+		MsgProgressStillWorking:        "Still working: %s",
+		MsgProgressStatusLabel:         "[Status] ",
+		MsgMilestoneWorking:            "Working: %s",
+		MsgMilestoneDoneList:           "Done: %s",
+		MsgMilestoneDoneSteps:          "Completed %d steps",
+		MsgMilestoneDoneWorking:        "Done: %s; working: %s",
+		MsgMilestoneProcessingElapsed:  "Still processing (elapsed %s)...",
+		MsgMilestoneStepsCurrent:       "Completed %d steps, now: %s (elapsed %s)",
+		MsgMilestoneStepsLatest:        "Completed %d steps, last: %s (elapsed %s)",
+		MsgMilestoneVerbEllipsis:       "%s...",
+		MsgDurationSeconds:             "%d sec",
+		MsgDurationMinutes:             "%d min",
+		MsgDurationMinutesSeconds:      "%d min %d sec",
+		MsgDurationHours:               "%d hr",
+		MsgDurationHoursMinutes:        "%d hr %d min",
+		MsgDurationHoursMinutesSeconds: "%d hr %d min %d sec",
+		MsgMilestoneCompletedTruncated: "%s, %d steps",
+		MsgStatusInProgress:            "Still processing...",
+		MsgStatusTaskReceived:          "Task received, preparing the execution path",
+		MsgStatusPreflightDone:         "Session check finished, preparing context",
+		MsgStatusSessionReady:          "Session is ready, choosing how to run",
+		MsgStatusContextReady:          "Context is ready, starting the task",
+		MsgStatusDirectMatched:         "Matched a direct action, working on it",
+		MsgStatusFastPath:              "Chose the fast path, building the request",
+		MsgStatusFullPath:              "Chose the full path, building the request",
+		MsgStatusPrepareModel:          "Organizing context and preparing the model request",
+		MsgStatusModelWaiting:          "Model request sent, waiting for a response",
+		MsgStatusTaskReceivedShort:     "Task received",
+		MsgStatusPreparingPath:         "Preparing the execution path",
+		MsgStatusEnvReady:              "Execution environment is ready",
+		MsgStatusSyncContext:           "Synchronizing conversation context",
+		MsgStatusAnalyzing:             "Analyzing the task and starting work",
 	},
 }
 

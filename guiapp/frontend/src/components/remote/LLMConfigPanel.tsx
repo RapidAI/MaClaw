@@ -9,8 +9,11 @@ import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { cancelNamedProviderOAuth, completeDevinPastedToken, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
 import { isKimiCodeProvider, isLobsterAIProvider, isQoderProvider, isTraeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
+import { presetProviderDisplayName } from "./presetProviderLabel";
+import { localizeModelNote } from "../../config/providerCatalog";
 import { useDialog } from "../CustomDialog";
-import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, selectableAgentType } from "./userAgent";
+import { KNOWN_USER_AGENTS, withLiveAgentType } from "./userAgent";
+import { useCustomUserAgentField } from "./useCustomUserAgentField";
 import { ProviderModelCombobox } from "./ProviderModelCombobox";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
@@ -63,6 +66,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
     const [hubServiceStatus, setHubServiceStatus] = useState<HubLLMServiceStatus | null>(null);
 
     const [dlgOpen, setDlgOpen] = useState(false);
+    // Bumped when quick-fill replaces the selected provider, so an uncommitted
+    // User-Agent draft cannot be saved over the filled identity.
+    const [uaEditEpoch, setUaEditEpoch] = useState(0);
     const [dlgProviders, setDlgProviders] = useState<LLMProvider[]>([]);
     const [dlgSelectedIdx, setDlgSelectedIdx] = useState<number | null>(null);
     const [dlgHubSelected, setDlgHubSelected] = useState(false);
@@ -584,25 +590,30 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         setProviderModelListOpen(false);
     }, [dlgSelectedIdx, dlgOpen]);
 
-    useEffect(() => {
-        if (!dlgOpen || dlgSelectedIdx === null) return;
-        const selected = dlgProviders[dlgSelectedIdx];
-        if (!selected?.import_source) return;
-        setProviderModels(providerModelChoices(selected));
-        setProviderModelsError(null);
-    }, [dlgOpen, dlgSelectedIdx, dlgProviders]);
-
-    useEffect(() => {
-        if (!dlgOpen || dlgSelectedIdx === null) return;
-        const selected = dlgProviders[dlgSelectedIdx];
-        if (!selected || selected.import_source) return;
-        // Replace the dropdown when the saved ids change. An unchanged catalog
-        // keeps the list already on screen, including names from Fetch.
-        setProviderModels(prev => nextProviderModelChoices(prev, selected));
-    }, [dlgOpen, dlgSelectedIdx, dlgProviders]);
-
     const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
     const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
+    const dlgModelCatalogKey = dlgProvider
+        ? `${dlgProvider.import_source || ""}|${dlgProvider.model || ""}|${(dlgProvider.models || []).join("\n")}`
+        : "";
+
+    useEffect(() => {
+        if (!dlgOpen || dlgSelectedIdx === null || !dlgProvider?.import_source) return;
+        setProviderModels(providerModelChoices(dlgProvider));
+        setProviderModelsError(null);
+    }, [dlgOpen, dlgSelectedIdx, dlgModelCatalogKey]);
+
+    useEffect(() => {
+        if (!dlgOpen || dlgSelectedIdx === null || !dlgProvider || dlgProvider.import_source) return;
+        // Replace the dropdown when the saved ids change. An unchanged catalog
+        // keeps the list already on screen, including names from Fetch.
+        // dlgModelCatalogKey ignores agent_type, so typing a User-Agent does not rebuild it.
+        setProviderModels(prev => nextProviderModelChoices(prev, dlgProvider));
+    }, [dlgOpen, dlgSelectedIdx, dlgModelCatalogKey]);
+
+    const customUserAgent = useCustomUserAgentField(
+        dlgProvider,
+        dlgOpen ? `${dlgSelectedIdx ?? ""}:${uaEditEpoch}` : null,
+    );
     // True when the assistant's current provider is a locally imported agent:
     // the dialog explains where that credential is managed instead of
     // pretending the assistant is unconfigured.
@@ -635,7 +646,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         const fetchUrl = dlgProvider.url;
         const fetchKey = dlgProvider.key || "";
         const fetchProtocol = dlgProvider.protocol || "openai";
-        const fetchAgent = effectiveAgentType(dlgProvider);
+        const fetchAgent = customUserAgent.agentForRequest;
         setProviderModelsFetching(true);
         setProviderModelsError(null);
         setProviderModels([]);
@@ -692,7 +703,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                 setProviderModelsFetching(false);
             }
         }
-    }, [dlgProvider, dlgSelectedIdx, t]);
+    }, [customUserAgent.agentForRequest, dlgProvider, dlgSelectedIdx, t]);
 
     const dlgUpdateField = useCallback((field: keyof LLMProvider, value: string) => {
         if (dlgSelectedIdx === null) return;
@@ -856,6 +867,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         });
         setDlgDirty(true);
         setDlgTestResult(null);
+        setUaEditEpoch(epoch => epoch + 1);
     }, [dlgSelectedIdx]);
 
     const finishTestedProviderSave = async (providerName: string, testedModel: string) => {
@@ -866,7 +878,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             // A failed assignment read must not hide the switch offer.
         }
         if (plan === "confirm") {
-            const copy = agentProviderSwitchConfirmCopy(t, providerName);
+            const copy = agentProviderSwitchConfirmCopy(t, presetProviderDisplayName(lang, providerName));
             const accepted = await showConfirm(copy.message, copy.title, {
                 confirmText: t("Switch", "切换", "切換"),
                 cancelText: t("Not now", "暂不", "暫不"),
@@ -898,7 +910,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             setDlgSaving(false);
             return;
         }
-        const sp = dlgProviders[dlgSelectedIdx!];
+        const savingProviders = withLiveAgentType(dlgProviders, dlgSelectedIdx, customUserAgent.agentForRequest);
+        const sp = savingProviders[dlgSelectedIdx!];
         if (!sp) return;
         setDlgSaving(true);
         setDlgTestResult(null);
@@ -918,7 +931,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             try {
                 const saveName = sp.name;
                 const testResult = await TestAndSaveMaclawLLMProviders(
-                    dlgProviders as corelib.MaclawLLMProvider[], saveName, saveName,
+                    savingProviders as corelib.MaclawLLMProvider[], saveName, saveName,
                 );
                 const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
                 try {
@@ -953,18 +966,18 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             // If already tested successfully, just save without re-testing.
             // This allows the user to toggle supports_vision after a test
             // without the probe overwriting their manual choice.
-            if (dlgTested) {
+            if (dlgTested && !customUserAgent.pending) {
                 const saveName = sp.name;
-                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], saveName);
+                await SaveMaclawLLMProviders(savingProviders as corelib.MaclawLLMProvider[], saveName);
                 setDlgDirty(false);
                 try {
                     if (!await refreshProviderList()) {
-                        setProviders(dlgProviders.map(p => ({ ...p })));
+                        setProviders(savingProviders.map(p => ({ ...p })));
                     }
                 } catch {
                     // The save is durable even if this read fails; retain the
                     // current editable snapshot until the next refresh.
-                    setProviders(dlgProviders.map(p => ({ ...p })));
+                    setProviders(savingProviders.map(p => ({ ...p })));
                 }
                 setCurrentName(saveName);
                 setProviderListRevision(revision => revision + 1);
@@ -979,7 +992,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             // save, so a browser caller cannot forge assignability.
             const saveName = sp.name;
 			const testResult = await TestAndSaveMaclawLLMProviders(
-				dlgProviders as corelib.MaclawLLMProvider[],
+				savingProviders as corelib.MaclawLLMProvider[],
 				saveName,
 				saveName,
 			);
@@ -993,14 +1006,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             // are reflected before model assignments refresh.
             try {
                 if (!await refreshProviderList()) {
-                    setDlgProviders(dlgProviders);
-                    setProviders(dlgProviders.map((p: LLMProvider) => ({ ...p })));
+                    setDlgProviders(savingProviders);
+                    setProviders(savingProviders.map((p: LLMProvider) => ({ ...p })));
                 }
             } catch {
                 // The backend completed the save before returning success; a
                 // failed refresh leaves the editable snapshot intact.
-                setDlgProviders(dlgProviders);
-                setProviders(dlgProviders.map((p: LLMProvider) => ({ ...p })));
+                setDlgProviders(savingProviders);
+                setProviders(savingProviders.map((p: LLMProvider) => ({ ...p })));
             }
             setDlgDirty(false);
             setCurrentName(saveName);
@@ -1041,7 +1054,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             : t("Provider list unavailable", "服务商列表不可用"))
         : isNone
         ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
-        : currentName;
+        : presetProviderDisplayName(lang, currentName);
 
     return (
         <div className="llm-config-panel">
@@ -1141,7 +1154,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 
             {isNone && !hasHubEntitlement && (
                 <div className="llm-config-alert llm-config-alert--danger">
-                    提示 {t("Without a provider, MaClaw remote will be disabled.", "未配置服务商时，MaClaw 远程能力将不可用。")}
+                    {t("Without a provider, MaClaw remote will be disabled.", "未配置服务商时，MaClaw 远程能力将不可用。")}
                 </div>
             )}
 
@@ -1194,15 +1207,16 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     const isHubProvider = hasHubEntitlement && p.name === HUB_SERVICE_PROVIDER_NAME;
                                     const active = isHubProvider ? dlgHubSelected : dlgSelectedIdx === i;
                                     const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : undefined;
+                                    const providerLabel = presetProviderDisplayName(lang, p.name);
                                     return (
                                         <span key={i} className="llm-config-provider-chip-slot">
                                         <button
                                             className={"llm-config-provider-chip" + (active ? " is-active" : "") + (isHubProvider ? " is-hub" : "")}
-                                            aria-label={tag ? `${p.name} ${tag}` : p.name}
+                                            aria-label={tag ? `${providerLabel} ${tag}` : providerLabel}
                                             onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)}
                                         >
                                             {p.connection_test_passed === true && <span className="llm-config-provider-chip__dot" aria-hidden="true" />}
-                                            {PROVIDER_LOGOS[p.name] ?? null}{p.name}
+                                            {PROVIDER_LOGOS[p.name] ?? null}{providerLabel}
                                             {tag && <span className="llm-config-provider-chip__tag">{tag}</span>}
                                         </button>
                                         {/* §7.1: only a provider that passed its own connection test and is not
@@ -1241,7 +1255,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                             provider even though it is not selectable here. */}
                         {dlgIsNone && (currentIsLocalImport ? (
                             <div className="llm-config-alert llm-config-alert--info" role="status">
-                                {t(`The assistant currently uses the locally imported ${currentName}. Local imports are not managed here; pick another provider to switch.`, `助手当前使用本地导入的 ${currentName}。本地导入不在服务商管理范围内，选择其它服务商即可切换。`, `助手當前使用本地匯入的 ${currentName}。本地匯入不在服務商管理範圍內，選擇其它服務商即可切換。`)}
+                                {t(`The assistant currently uses the locally imported ${presetProviderDisplayName(lang, currentName)}. Local imports are not managed here; pick another provider to switch.`, `助手当前使用本地导入的 ${currentName}。本地导入不在服务商管理范围内，选择其它服务商即可切换。`, `助手當前使用本地匯入的 ${currentName}。本地匯入不在服務商管理範圍內，選擇其它服務商即可切換。`)}
                             </div>
                         ) : (
                             <div className="llm-config-alert llm-config-alert--danger">
@@ -1294,7 +1308,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                         >
                                             <option value="">{t("-- Select a known provider to auto-fill --", "-- 选择已知服务商自动填充 --")}</option>
                                             {KNOWN_OPENAI_ENDPOINTS.map(ep => (
-                                                <option key={ep.name} value={ep.name}>{ep.name} — {ep.model}</option>
+                                                <option key={ep.name} value={ep.name}>{presetProviderDisplayName(lang, ep.name)} — {ep.model}</option>
                                             ))}
                                         </select>
                                     </div>
@@ -1329,42 +1343,36 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     never persists. */}
                                 {!dlgProvider.import_source && !isQoderProvider(dlgProvider.name) && !isTraeProvider(dlgProvider.name) && !isLobsterAIProvider(dlgProvider.name) && <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>User-Agent</label>
-                                    {(() => {
-                                        const currentAgent = selectableAgentType(dlgProvider);
-                                        const isCustom = !isKnownUserAgent(currentAgent);
-                                        return (<>
-                                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                                                {KNOWN_USER_AGENTS.map(ua => (
-                                                    <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)}
-                                                        className={"llm-config-option-btn" + (currentAgent === ua ? " is-active" : "")}>
-                                                        {ua}
-                                                    </button>
-                                                ))}
-                                                <button
-                                                    onClick={() => dlgUpdateField("agent_type", isCustom ? currentAgent : customAgentSeedForProvider(dlgProvider))}
-                                                    className={"llm-config-option-btn" + (isCustom ? " is-active" : "")}>
-                                                    {t("Custom", "\u81ea\u5b9a\u4e49", "\u81ea\u8a02")}
-                                                </button>
-                                                {isCustom && (
-                                                    <input style={{ ...inputStyle, flex: 1, minWidth: 120, margin: 0 }}
-                                                        value={editableCustomAgentValue(dlgProvider)}
-                                                        onChange={e => dlgUpdateField("agent_type", e.target.value)}
-                                                        onBlur={e => dlgUpdateField("agent_type", commitCustomAgentValue(dlgProvider, e.target.value))}
-                                                        placeholder={t("Custom User-Agent", "\u81ea\u5b9a\u4e49 User-Agent", "\u81ea\u8a02 User-Agent")}
-                                                        autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
-                                                )}
-                                            </div>
-                                            <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
-                                                {currentAgent === "claude code 2.0"
-                                                    ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi, Zhipu Coding)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\u3001\u667a\u8c31\u7f16\u7a0b\uff09")
-                                                    : currentAgent === "Kilo Code"
-                                                        ? t("For providers requiring Kilo Code client identity.", "\u9002\u7528\u4e8e\u9700\u8981 Kilo Code \u5ba2\u6237\u7aef\u8eab\u4efd\u7684\u670d\u52a1\u5546\u3002", "\u9069\u7528\u65bc\u9700\u8981 Kilo Code \u5ba2\u6236\u7aef\u8eab\u5206\u7684\u670d\u52d9\u5546\u3002")
-                                                    : isCustom
-                                                        ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u5206\u3002")
-                                                        : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "\u5927\u591a\u6570\u670d\u52a1\u5546\u4f7f\u7528 OpenClaw \u8eab\u4efd\uff08\u5982\u667a\u8c31\u9f99\u867e\uff09")}
-                                            </p>
-                                        </>);
-                                    })()}
+                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                                        {KNOWN_USER_AGENTS.map(ua => (
+                                            <button key={ua} onClick={() => customUserAgent.selectPreset(ua, value => dlgUpdateField("agent_type", value))}
+                                                className={"llm-config-option-btn" + (customUserAgent.presetActive(ua) ? " is-active" : "")}>
+                                                {ua}
+                                            </button>
+                                        ))}
+                                        <button
+                                            onClick={() => customUserAgent.selectCustom(value => dlgUpdateField("agent_type", value))}
+                                            className={"llm-config-option-btn" + (customUserAgent.isCustom ? " is-active" : "")}>
+                                            {t("Custom", "\u81ea\u5b9a\u4e49", "\u81ea\u8a02")}
+                                        </button>
+                                        {customUserAgent.isCustom && (
+                                            <input style={{ ...inputStyle, flex: 1, minWidth: 120, margin: 0 }}
+                                                value={customUserAgent.inputValue}
+                                                onChange={e => customUserAgent.onInputChange(e.target.value, value => dlgUpdateField("agent_type", value))}
+                                                onBlur={e => customUserAgent.onInputBlur(e.target.value, value => dlgUpdateField("agent_type", value))}
+                                                placeholder={t("Custom User-Agent", "\u81ea\u5b9a\u4e49 User-Agent", "\u81ea\u8a02 User-Agent")}
+                                                autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                        )}
+                                    </div>
+                                    <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                        {!customUserAgent.editing && customUserAgent.currentAgent === "claude code 2.0"
+                                            ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi, Zhipu Coding)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\u3001\u667a\u8c31\u7f16\u7a0b\uff09")
+                                            : !customUserAgent.editing && customUserAgent.currentAgent === "Kilo Code"
+                                                ? t("For providers requiring Kilo Code client identity.", "\u9002\u7528\u4e8e\u9700\u8981 Kilo Code \u5ba2\u6237\u7aef\u8eab\u4efd\u7684\u670d\u52a1\u5546\u3002", "\u9069\u7528\u65bc\u9700\u8981 Kilo Code \u5ba2\u6236\u7aef\u8eab\u5206\u7684\u670d\u52d9\u5546\u3002")
+                                            : customUserAgent.isCustom
+                                                ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u5206\u3002")
+                                                : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "\u5927\u591a\u6570\u670d\u52a1\u5546\u4f7f\u7528 OpenClaw \u8eab\u4efd\uff08\u5982\u667a\u8c31\u9f99\u867e\uff09")}
+                                    </p>
                                 </div>}
 
                                 {!dlgProvider.import_source && dlgProvider.is_custom && (
@@ -1445,7 +1453,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                                 <option value={dlgProvider.model}>{dlgProvider.model}</option>
                                             )}
                                             {providerModels.map(m => (
-                                                <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                                <option key={m.id} value={m.id}>{m.name && m.name !== m.id ? `${localizeModelNote(lang || "", m.name)} (${m.id})` : m.id}</option>
                                             ))}
                                         </select>
                                     ) : dlgProvider.auth_type === "sso" ? (
@@ -1457,7 +1465,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                                     <option value={dlgProvider.model}>{dlgProvider.model}</option>
                                                 )}
                                                 {codegenModels.map(m => (
-                                                    <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                                    <option key={m.id} value={m.id}>{m.name && m.name !== m.id ? `${localizeModelNote(lang || "", m.name)} (${m.id})` : m.id}</option>
                                                 ))}
                                             </select>
                                         ) : (
@@ -1478,6 +1486,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                             onOpenChange={setProviderModelListOpen}
                                             onChange={value => dlgUpdateField("model", value)}
                                             onFetch={handleFetchProviderModels}
+                                            lang={lang || ""}
                                             t={t}
                                         />
                                     )}
@@ -1551,7 +1560,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                         {/* Pinned action bar */}
                         <div className="llm-config-dialog__footer">
                             <LLMConfigDialogFooter
-                                dirty={dlgDirty}
+                                dirty={dlgDirty || customUserAgent.pending}
                                 error={dlgFailureReason}
                                 errorTitle={dlgFailureTitle}
                                 hubSelected={dlgHubSelected}
@@ -1561,7 +1570,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                 oauthBusy={oauthBusy}
                                 saving={dlgSaving}
                                 t={t}
-                                tested={dlgTested}
+                                tested={dlgTested && !customUserAgent.pending}
                                 onCancel={closeDialog}
                                 onSave={dlgHandleSave}
                                 onSaveHub={dlgHandleSaveHubService}

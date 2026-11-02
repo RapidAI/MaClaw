@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -207,7 +208,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	codingWorkbench := h.isPureCodingWorkbenchSession(msg.UserID)
 	onProgress = suppressCodingWorkbenchStatusProgress(onProgress, codingWorkbench)
 	if onProgress != nil && !codingWorkbench {
-		onProgress("[Status] 已接收任务，正在准备执行路径")
+		onProgress(imThinkingStatus(h.imUILang(), i18n.MsgStatusTaskReceived))
 	}
 
 	// The agent loop has its own heartbeat ticker (startAgentLoopHeartbeat).
@@ -218,7 +219,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return preflight.Response
 	}
 	if onProgress != nil && !codingWorkbench {
-		onProgress("[Status] 会话预检完成，正在准备上下文")
+		onProgress(imThinkingStatus(h.imUILang(), i18n.MsgStatusPreflightDone))
 	}
 
 	// Document bodies are expanded later, after turn routing has selected the
@@ -275,7 +276,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return &IMAgentResponse{}
 	}
 	if onProgress != nil && !codingWorkbench {
-		onProgress("[Status] 会话已就绪，正在确定执行方式")
+		onProgress(imThinkingStatus(h.imUILang(), i18n.MsgStatusSessionReady))
 	}
 	clearAssistantBinding := activateAssistantBindingForTurn(msg.UserID, bindingScope)
 	defer clearAssistantBinding()
@@ -299,7 +300,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return finalizeIMEntryHostResponse(entryContext.Response, requestID, msg.UserID)
 	}
 	if onProgress != nil && !codingWorkbench {
-		onProgress("[Status] 上下文已准备，正在启动任务")
+		onProgress(imThinkingStatus(h.imUILang(), i18n.MsgStatusContextReady))
 	}
 	// Host-side post-recording ASR (and similar) must not hold state.mu: the
 	// serialization acquire timeout is 60s and long ASR would block the session.

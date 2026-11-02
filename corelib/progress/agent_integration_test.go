@@ -153,6 +153,20 @@ func TestProgressPusherNoteActivitySuppressesSilenceHeartbeat(t *testing.T) {
 	}
 }
 
+func TestAgentProgressTrackerSummaryUsesItsLanguage(t *testing.T) {
+	tracker := NewAgentProgressTrackerLang(nil, "task", "search", nil, "mn")
+	defer tracker.Stop()
+	got := tracker.ProgressSummary()
+	if strings.Contains(got, "分") || strings.Contains(got, "秒") || !strings.Contains(got, "Боловсруулж") || !strings.Contains(got, "сек") {
+		t.Fatalf("summary = %q", got)
+	}
+	zh := NewAgentProgressTracker(nil, "task", "search", nil)
+	defer zh.Stop()
+	if got := zh.ProgressSummary(); !strings.Contains(got, "秒") {
+		t.Fatalf("default summary = %q", got)
+	}
+}
+
 func TestClassifyComplexity(t *testing.T) {
 	tests := []struct {
 		intent   string

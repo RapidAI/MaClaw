@@ -85,6 +85,14 @@ type stickyCodingWorkbenchMemory struct {
 	SkipNextPlan bool `json:"skip_next_plan,omitempty"`
 	// StepStatuses is live Todo status for the active multi-step plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// LastOutcome is the finished turn's terminal result as a workflow-status
+	// word ("completed" | "failed" | "interrupted" | "cancelled"), written with
+	// LastOutcomeAtUnix by the same turn that produced it. The task list
+	// projects it onto the task row: a pure coding workbench turn often enters
+	// no runtime ledger and leaves no V2 workflow, so without this the row
+	// falls through to has_output and shows a failed run as completed.
+	LastOutcome       string `json:"last_outcome,omitempty"`
+	LastOutcomeAtUnix int64  `json:"last_outcome_at_unix,omitempty"`
 	// PlanRunStarted is set once the checklist leaves the unstarted approval.
 	// Reopen puts unfinished steps back to pending for the next run. Pending
 	// alone must not look like a plan that never started, or the next
@@ -585,8 +593,18 @@ func stickyRememberSessionPlan(mem *stickyCodingWorkbenchMemory, userText string
 	}
 }
 
-func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, userText string, result *CodingSubAgentResult) {
-	if h == nil || result == nil {
+// recordStickyLocalCodingTurn records one finished local workbench turn.
+// outcome is the turn verdict derived from the plan's step results; when the
+// caller has none, the executor result decides. A turn that produced neither
+// records nothing, so an aborted dispatch cannot overwrite the last outcome.
+func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, userText string, result *CodingSubAgentResult, outcome string) {
+	if h == nil {
+		return
+	}
+	if outcome == "" && result != nil {
+		outcome = codingWorkbenchTurnOutcomeLocal(result.Status)
+	}
+	if result == nil && outcome == "" {
 		return
 	}
 	// Persist: flushes mem-only step status updates from the turn.
@@ -603,53 +621,126 @@ func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, user
 		mem.ProjectPath = path
 		mem.LastUserText = strings.TrimSpace(userText)
 		stickyRememberSessionPlan(mem, userText)
-		mem.TurnCount++
-		summary := strings.TrimSpace(result.Summary)
-		if summary == "" {
-			summary = strings.TrimSpace(result.Error)
+		if result != nil {
+			mem.TurnCount++
+			summary := strings.TrimSpace(result.Summary)
+			if summary == "" {
+				summary = strings.TrimSpace(result.Error)
+			}
+			mem.LastSummary = summary
+			mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, result.FilesModified...))
+			mem.FilesCreated = uniqueSortedSubAgentStrings(append(mem.FilesCreated, result.FilesCreated...))
+			if len(mem.FilesModified) > 40 {
+				mem.FilesModified = mem.FilesModified[len(mem.FilesModified)-40:]
+			}
+			if len(mem.FilesCreated) > 40 {
+				mem.FilesCreated = mem.FilesCreated[len(mem.FilesCreated)-40:]
+			}
 		}
-		mem.LastSummary = summary
-		mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, result.FilesModified...))
-		mem.FilesCreated = uniqueSortedSubAgentStrings(append(mem.FilesCreated, result.FilesCreated...))
-		if len(mem.FilesModified) > 40 {
-			mem.FilesModified = mem.FilesModified[len(mem.FilesModified)-40:]
-		}
-		if len(mem.FilesCreated) > 40 {
-			mem.FilesCreated = mem.FilesCreated[len(mem.FilesCreated)-40:]
-		}
+		setStickyCodingTurnOutcome(mem, outcome)
 	})
 }
 
-func (h *IMMessageHandler) recordStickyRemoteCodingTurn(userID, userText string, result *RemoteCodingSubAgentResult) {
-	if h == nil || result == nil {
+// recordStickyRemoteCodingTurn records one finished remote workbench turn.
+// outcome is the plan-derived verdict, for the same reason as the local twin.
+func (h *IMMessageHandler) recordStickyRemoteCodingTurn(userID, userText string, result *RemoteCodingSubAgentResult, outcome string) {
+	if h == nil {
+		return
+	}
+	if outcome == "" && result != nil {
+		outcome = codingWorkbenchTurnOutcomeRemote(result.Status)
+	}
+	if result == nil && outcome == "" {
 		return
 	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.Kind = "remote"
 		mem.LastUserText = strings.TrimSpace(userText)
 		stickyRememberSessionPlan(mem, userText)
-		mem.TurnCount++
-		summary := strings.TrimSpace(result.Summary)
-		if summary == "" {
-			summary = strings.TrimSpace(result.Error)
+		if result != nil {
+			mem.TurnCount++
+			summary := strings.TrimSpace(result.Summary)
+			if summary == "" {
+				summary = strings.TrimSpace(result.Error)
+			}
+			if summary == "" {
+				summary = fmt.Sprintf("status=%s iterations=%d", result.Status, result.Iterations)
+			}
+			mem.LastSummary = summary
+			if len(result.FilesModified) > 0 {
+				mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, result.FilesModified...))
+			}
+			if len(result.FilesCreated) > 0 {
+				mem.FilesCreated = uniqueSortedSubAgentStrings(append(mem.FilesCreated, result.FilesCreated...))
+			}
+			if len(mem.FilesModified) > 40 {
+				mem.FilesModified = mem.FilesModified[len(mem.FilesModified)-40:]
+			}
+			if len(mem.FilesCreated) > 40 {
+				mem.FilesCreated = mem.FilesCreated[len(mem.FilesCreated)-40:]
+			}
 		}
-		if summary == "" {
-			summary = fmt.Sprintf("status=%s iterations=%d", result.Status, result.Iterations)
-		}
-		mem.LastSummary = summary
-		if len(result.FilesModified) > 0 {
-			mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, result.FilesModified...))
-		}
-		if len(result.FilesCreated) > 0 {
-			mem.FilesCreated = uniqueSortedSubAgentStrings(append(mem.FilesCreated, result.FilesCreated...))
-		}
-		if len(mem.FilesModified) > 40 {
-			mem.FilesModified = mem.FilesModified[len(mem.FilesModified)-40:]
-		}
-		if len(mem.FilesCreated) > 40 {
-			mem.FilesCreated = mem.FilesCreated[len(mem.FilesCreated)-40:]
-		}
+		setStickyCodingTurnOutcome(mem, outcome)
 	})
+}
+
+// setStickyCodingTurnOutcome records the finished turn's terminal result. An
+// empty outcome is not a verdict (skipped, waiting on children, aborted before
+// dispatch): the last recorded one stays, so a skipped tail cannot flatter a
+// failed turn.
+func setStickyCodingTurnOutcome(mem *stickyCodingWorkbenchMemory, outcome string) {
+	if mem == nil || outcome == "" {
+		return
+	}
+	mem.LastOutcome = outcome
+	mem.LastOutcomeAtUnix = time.Now().Unix()
+}
+
+// codingWorkbenchTurnOutcomeFromPlan decides the turn verdict from the plan
+// report. A failed step fails the turn even when the executor's own status
+// says success or the last step to finish passed: parallel waves run several
+// steps at once, and the skipped tail of a broken plan is not a pass either.
+// Failure also outranks cancellation, matching the header badge order, so a
+// stop after a failed step cannot make the two surfaces disagree.
+func codingWorkbenchTurnOutcomeFromPlan(executorOutcome string, failedSteps int, cancelled bool) string {
+	if failedSteps > 0 {
+		return "failed"
+	}
+	if cancelled {
+		return "cancelled"
+	}
+	return executorOutcome
+}
+
+// codingWorkbenchTurnOutcomeLocal maps a local coding turn's executor status
+// to the durable workflow-status word the task list already understands.
+func codingWorkbenchTurnOutcomeLocal(status TaskExecStatus) string {
+	switch status {
+	case TaskExecPassed:
+		return "completed"
+	case TaskExecFailed:
+		return "failed"
+	case TaskExecInterrupted:
+		return "interrupted"
+	default:
+		return ""
+	}
+}
+
+// codingWorkbenchTurnOutcomeRemote is the remote turn variant.
+func codingWorkbenchTurnOutcomeRemote(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success":
+		return "completed"
+	case "failed":
+		return "failed"
+	case "cancelled", "canceled":
+		return "cancelled"
+	case "interrupted":
+		return "interrupted"
+	default:
+		return ""
+	}
 }
 
 // markStickyCodingSessionFullAccess enables session-scoped path full-access for

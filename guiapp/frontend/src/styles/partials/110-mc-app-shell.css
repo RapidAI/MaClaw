@@ -1175,6 +1175,39 @@ button.mc-workbench-status-card__im:focus-visible {
   border-radius: var(--radius-md);
 }
 .mc-workbench-status-card__row { border: 0; padding: 2px 0; background: transparent; color: var(--theme-text-secondary); font: inherit; font-size: 12px; text-align: left; }
+/* Mongolian status copy is one label and one number per line, so a narrow
+   sidebar does not have to fit a full phrase beside the value. */
+.mc-workbench-status-card__row.mc-workbench-status-card__mn-stack {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 2px;
+  height: auto;
+}
+.mc-workbench-status-card__row.mc-workbench-status-card__mn-stack > .mc-workbench-status-card__mn-line {
+  flex: 0 0 auto;
+  white-space: normal;
+  width: 100%;
+  min-width: 0;
+}
+.mc-workbench-status-card__mn-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  line-height: 1.45;
+}
+.mc-workbench-status-card__mn-line > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 400;
+  color: inherit;
+  text-align: left;
+}
 button.mc-workbench-status-card__row { cursor: pointer; }
 button.mc-workbench-status-card__row:hover:not(:disabled) { color: var(--theme-text-primary); }
 button.mc-workbench-status-card__row:active:not(:disabled) { color: var(--mc-accent, #2e75cb); }
@@ -1186,6 +1219,29 @@ button.mc-workbench-status-card__row:focus-visible {
 button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-workbench-status-card__row > span { flex-shrink: 0; white-space: nowrap; }
 .mc-workbench-status-card__row strong { color: var(--theme-text-primary); font-size: 13px; font-weight: 650; text-align: right; }
+.mc-workbench-status-card__mn-stack .mc-workbench-status-card__mn-line > strong {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: visible;
+  text-align: right;
+}
+.mc-workbench-status-card__row > strong.mc-workbench-status-card__mn-jobs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  column-gap: 10px;
+  row-gap: 2px;
+  min-width: 0;
+  overflow: visible;
+  text-align: right;
+  line-height: 1.45;
+}
+.mc-workbench-status-card__mn-jobs > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .mc-workbench-status-card__limits { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.55; }
 .mc-workbench-status-card__limits > span { display: block; white-space: nowrap; }
 .mc-workbench-status-card__jobs-row { min-height: 28px; }
@@ -2181,12 +2237,19 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-summary-status { margin: 0 0 6px; color: var(--theme-text-muted); font-size: 12px; }
 .mc-task-summary-status[data-status='incomplete'] { color: var(--theme-danger, #a33b32); }
 .mc-task-artifacts { margin-top: 10px; }
-.mc-task-artifacts__label { margin-bottom: 8px; color: var(--theme-text-muted); font-size: 12px; }
-.mc-task-artifacts__row { display: flex; flex-wrap: wrap; gap: 8px; }
-.mc-task-artifact-item { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; }
+.mc-task-artifacts__label { margin-bottom: 8px; color: var(--theme-text-muted); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.mc-task-artifacts__row { display: flex; flex-wrap: wrap; gap: 12px; }
+.mc-task-artifact-item { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 100%; min-width: 0; }
+.mc-task-artifact-item__head { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }
+/* Compound selectors out-rank the shared .mc-task-result-card__actions rules
+   below regardless of file order — colors still come from the shared + dark
+   rules, only sizing/spacing are per-file here. */
+.mc-task-artifact-item__actions.mc-task-result-card__actions { margin-top: 0; gap: 6px; }
+.mc-task-artifact-item__actions.mc-task-result-card__actions button { min-height: 26px; padding: 0 10px; border-radius: 8px; font-size: 11.5px; transition: border-color 120ms ease, color 120ms ease, background 120ms ease; }
+.mc-task-artifact-item__actions button:focus-visible { outline: 2px solid color-mix(in srgb, var(--mc-accent, #2e75cb) 45%, transparent); outline-offset: 1px; }
 .mc-task-artifact {
-  display: inline-flex; align-items: center; gap: 8px; max-width: 240px; min-width: 0;
-  padding: 8px 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-lg);
+  display: inline-flex; align-items: center; gap: 8px; max-width: 260px; min-width: 0;
+  padding: 8px 12px; border: 1px solid var(--theme-border); border-radius: var(--radius-lg);
   background: var(--theme-surface); color: var(--theme-text-primary); text-decoration: none;
 }
 .mc-task-artifact:hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); }
@@ -2194,7 +2257,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none;
   border-radius: var(--radius-md); background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb); font-size: 14px;
 }
-.mc-task-artifact__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.mc-task-artifact__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
 .mc-task-artifact__open { flex: none; color: var(--theme-text-muted); font-size: 12px; }
 .mc-task-artifacts__more {
   margin-top: 8px; padding: 0; border: none; background: transparent; color: var(--theme-text-secondary);
@@ -4958,6 +5021,37 @@ body.companion-pdf-translation-dragging * {
   padding: 0 10px 9px;
   color: var(--theme-text-primary, #24364e);
   white-space: pre-wrap;
+}
+/* Editing pins the card width. A textarea's intrinsic width would otherwise
+   stretch a max-content pop to the length of the draft. */
+.companion-pdf-translation-pop[data-annotation-editing="true"] {
+  width: min(280px, var(--page-w, 280px));
+}
+.companion-pdf-translation-edit {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 4.6em;
+  max-height: 140px;
+  margin: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: var(--theme-surface-muted, #f4f7fb);
+  box-shadow: inset 0 0 0 1px var(--theme-border, #d5e0ef);
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  resize: none;
+  outline: none;
+}
+.companion-pdf-translation-edit:focus {
+  box-shadow: inset 0 0 0 1px var(--theme-primary, #2e75cb);
+}
+.companion-pdf-translation-body[data-sized="true"] .companion-pdf-translation-edit {
+  height: 100%;
+  min-height: 0;
+  max-height: none;
 }
 .companion-pdf-translation-clip {
   display: block;

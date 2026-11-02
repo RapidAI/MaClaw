@@ -4,7 +4,7 @@ import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { ExpertDefinition } from "./expertTypes";
 import { expertTabId, expertWelcomeMessageText } from "./expertTypes";
-import { expertSessionKey } from "./aiAssistantPanelSessionUtils";
+import { expertTaskSessionKey } from "./aiAssistantPanelSessionUtils";
 import { dispatchOpenLatexDocument, latexRelativePathForProject } from "./latexDocumentOpen";
 import { createLatexDocumentForTask, isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../utils/latexTemplates";
 import { AbandonUnopenedFreshLatexTask, StartWorkflowTemplateInTab } from "../../../wailsjs/go/main/App";
@@ -955,7 +955,7 @@ export function usePendingAssistantTabOpen({
                 return;
             }
 
-            const sessionKey = expertSessionKey(expertId) || undefined;
+            const sessionKey = expertTaskSessionKey(expertId, projectPath) || undefined;
             saveTabStateForExpertRef.current?.(tab.id, {
                 history: [{
                     id: `expert-welcome-${expertId}`,

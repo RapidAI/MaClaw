@@ -1715,6 +1715,12 @@ func (a *App) applyUserDataMigrationConfig(incoming map[string]interface{}) (int
 	if err := json.Unmarshal(mergedRaw, &restored); err != nil {
 		return 0, 0, nil, fmt.Errorf("validate migrated system configuration: %w", err)
 	}
+	// Skip-runtime already leaves this key out of the package overlay. Keep the
+	// explicit assignment so a package that still carries the field cannot
+	// make the next launch repeat first-run setup.
+	if current.OnboardingDone {
+		restored.OnboardingDone = true
+	}
 	secretCount := len(userDataMigrationSecretPaths(incoming, ""))
 	if err := a.saveUserDataMigrationConfig(restored); err != nil {
 		return 0, 0, nil, fmt.Errorf("restore system configuration: %w", err)

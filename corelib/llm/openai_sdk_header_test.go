@@ -110,6 +110,16 @@ func TestOpenAISDKSendsOpenCodeSessionHeader(t *testing.T) {
 		if got := req.Header.Get("x-opencode-client"); got != "cli" {
 			t.Fatalf("x-opencode-client = %q", got)
 		}
+		session := req.Header.Get(corelib.OpenCodeSessionHeader)
+		if got := req.Header.Get(corelib.OpenCodeSessionIDHeader); got != session {
+			t.Fatalf("x-opencode-session-id = %q, want %q", got, session)
+		}
+		if got := req.Header.Get(corelib.OpenCodeRequestHeader); got != corelib.OpenCodeClientRequestID(session, "request") {
+			t.Fatalf("x-opencode-request = %q", got)
+		}
+		if got := req.Header.Get("x-opencode-project"); got != "global" {
+			t.Fatalf("x-opencode-project = %q", got)
+		}
 		return openAISDKHeaderResponse(req), nil
 	})}
 

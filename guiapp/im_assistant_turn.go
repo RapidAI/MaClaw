@@ -162,6 +162,10 @@ func (h *IMMessageHandler) buildAgentLoopAssistantTurn(ctx *LoopContext, choice 
 	}
 	// A tool call owns this turn. The thought stays in 思考过程. Copying it
 	// into content puts it in the chat bubble and in the next model request.
+	// OpenCode free models also echo that thought in the content field.
+	if len(choice.Message.ToolCalls) > 0 && strings.TrimSpace(msgContent) == strings.TrimSpace(msgReasoning) {
+		msgContent = ""
+	}
 	if msgContent == "" && msgReasoning != "" && len(choice.Message.ToolCalls) == 0 {
 		msgContent = msgReasoning
 	}

@@ -6,6 +6,7 @@ import { colors } from "./styles";
 import { inputStyle } from "./LLMConfigPanelShared";
 import type { LLMProvider } from "./LLMConfigPanelShared";
 import { panelText } from '../../i18n/mnPanel';
+import { presetProviderDisplayName } from './presetProviderLabel';
 
 type MoAStatsSnapshot = {
     fanouts?: number;
@@ -472,7 +473,7 @@ export function MoAConfigSection({ lang, providers }: Props) {
                                     <option value="">{t("Not used", "不选")}</option>
                                     {providerNames.map((n) => (
                                         <option key={n} value={n}>
-                                            {n}
+                                            {presetProviderDisplayName(lang, n)}
                                         </option>
                                     ))}
                                 </select>

@@ -103,13 +103,11 @@ describe('Maclaw provider quick-fill catalog', () => {
             [{ id: 'old-model', name: 'Old' }],
             { model: 'TeleChat3-438B-A24B', models: ['TeleChat3-438B-A24B', 'Xing4.0-29B-A4B'] },
         ).map(model => model.id)).toEqual(['TeleChat3-438B-A24B', 'Xing4.0-29B-A4B']);
+        const namedCatalog = [{ id: 'TeleChat3-438B-A24B', name: '旗舰' }, { id: 'Xing4.0-29B-A4B', name: '轻量' }];
         expect(nextProviderModelChoices(
-            [{ id: 'TeleChat3-438B-A24B', name: '旗舰' }, { id: 'Xing4.0-29B-A4B', name: '轻量' }],
+            namedCatalog,
             { model: 'TeleChat3-438B-A24B', models: ['TeleChat3-438B-A24B', 'Xing4.0-29B-A4B'] },
-        )).toEqual([
-            { id: 'TeleChat3-438B-A24B', name: '旗舰' },
-            { id: 'Xing4.0-29B-A4B', name: '轻量' },
-        ]);
+        )).toBe(namedCatalog);
     });
 });
 

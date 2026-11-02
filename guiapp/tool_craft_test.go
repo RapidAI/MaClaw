@@ -921,7 +921,7 @@ func TestExecuteScriptWithContextInjectsExtraEnvWithoutProcessMutation(t *testin
 		t.Fatalf("write script: %v", err)
 	}
 
-	out, err := executeScriptWithContext(context.Background(), scriptPath, language, t.TempDir(), 30, runtimes, map[string]string{key: "from-extra"})
+	out, err := executeScriptWithContext(context.Background(), scriptPath, language, t.TempDir(), 30, runtimes, map[string]string{key: "from-extra"}, false)
 	if err != nil {
 		t.Fatalf("executeScriptWithContext() error = %v; output=%s", err, out)
 	}

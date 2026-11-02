@@ -632,3 +632,30 @@ func TestInstalledMCPRepeatExtendsUntilItsCeiling(t *testing.T) {
 		t.Fatal("installed MCP stopped because a call count was reached")
 	}
 }
+
+func TestCommittedRepeatCapabilityIsTheWriteNotThePoll(t *testing.T) {
+	for _, capability := range []CapabilityID{
+		CapabilityDocumentWriteOffice,
+		CapabilityDocumentRenderPDF,
+		CapabilityFSWriteLocal,
+		CapabilityFSDeleteLocal,
+		CapabilityKnowledgeIngestLocal,
+		CapabilityRepoMutateVCS,
+	} {
+		if !CommittedRepeatCapability(capability) {
+			t.Fatalf("%s commits its arguments", capability)
+		}
+	}
+	for _, capability := range []CapabilityID{
+		CapabilityShellExecuteLocal,
+		CapabilityShellExecuteRemoteHost,
+		CapabilityFSReadLocal,
+		CapabilityInformationFetchWeb,
+		CapabilityComputerControlDesktop,
+		CapabilityBrowserControlWeb,
+	} {
+		if CommittedRepeatCapability(capability) {
+			t.Fatalf("%s is a poll, not a commit", capability)
+		}
+	}
+}

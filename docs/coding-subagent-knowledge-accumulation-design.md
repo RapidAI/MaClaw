@@ -127,7 +127,7 @@ type CodingExperience struct {
 
 ### 3.5 Scope 分区（通用 vs 语言专属）
 
-经验按 `Scope` 字段分为三层，检索时按当前任务的语言/框架过滤：
+经验按 `Scope` 字段分为三层，检索时按语言/项目过滤；框架提示只参与排序，不会过滤结果：
 
 ```go
 const (
@@ -235,7 +235,7 @@ func (r *SubAgentTaskRunner) RunCurrentTask(ctx context.Context) TaskRunResult {
 | `on_retry_success` | 仅"失败→重试→成功"时沉淀（最有价值的经验） |
 | `off` | 关闭自动沉淀 |
 
-默认：`on_retry_success`（最保守，避免初期噪音）
+默认：`on_success`（每个成功任务提取候选；候选仍需确认或 auto 观测晋升才会进入召回）
 
 ### 4.3 经验提取流程
 
@@ -291,10 +291,10 @@ func (r *SubAgentTaskRunner) extractAndSaveExperience(ctx context.Context, task 
 
 配置项 `coding_knowledge_auto_save_mode`：
 - `observe`（默认）：提取经验但标记为 `candidate` 状态，不参与自动召回，需用户在面板中确认后升级为 `active`
-- `auto`：提取后直接标记为 `active`，参与自动召回
+- `auto`：提取仍先落 `candidate`；同一经验在 `coding_knowledge_auto_promote_observations`（默认 2）个不同 runtime task 中被独立观测、且 provenance 校验通过后，自动晋升为 `active` 并参与召回
 - `off`：关闭自动沉淀
 
-用户可随时在面板中切换。积累了信任度后再打开 `auto`。
+用户可随时在面板中切换。单次 LLM 提取永远不会直接进入 prompt；`auto` 只是把“两次独立观测后的晋升”交给宿主执行。
 
 ## 5. 读取路径：经验召回
 
@@ -419,6 +419,8 @@ SubAgent 工具列表新增两个只读工具：
 }
 ```
 
+主 agent 直接调用 `coding_knowledge_search` 时，执行器用会话 owner 绑定的项目路径（没有则用桌面当前项目）限定 `project` scope，避免串项目；同时从 `go.mod`、`package.json`、`requirements.txt`、`Cargo.toml`、`pom.xml` 等清单推断框架提示。框架匹配只提高排序权重（任意 scope 均可加分，且最多加分一次），不会过滤结果；推断失败时退化为纯文本检索。主 agent 没有明确任务语言时，项目主语言只作为排序提示（`PreferredLanguage`，权重低于严格语言匹配），不会过滤其他语言的经验。任务没有给出源文件时，SubAgent 同样把项目清单推断的主语言作为排序提示而不是过滤条件；多语言仓库（如同时存在 `go.mod` 和 `package.json`）直接返回空提示。项目路径比较会忽略尾部分隔符和斜杠风格，Windows 下忽略大小写，避免同一项目因配置写法不同而漏召回或重复入候选。项目级检索在宽召回没有命中当前项目时会额外查询该项目切片，避免其他项目的高分记录把本地经验挤出候选池。
+
 ## 6. 置信度机制
 
 ### 6.1 置信度计算
@@ -458,6 +460,8 @@ func updateConfidence(exp *CodingExperience, taskSucceeded bool) {
     exp.UpdatedAt = time.Now()
 }
 ```
+
+基础设施类失败（provider 429/5xx、LLM 超时/连接失败）不写回失败置信度，也不触发经验提取。否则网络或额度问题会被误判为“经验不可用”，把可靠的规则降级。主 agent 直接编码轮同样只把真实执行失败的验证命令当作负面证据。
 
 ### 6.2 召回过滤
 
@@ -636,7 +640,10 @@ func (c *AppConfig) CodingKnowledgeDefaults() {
         c.CodingKnowledgeAutoSaveMode = "observe" // 初始保守
     }
     if c.CodingKnowledgeSaveStrategy == "" {
-        c.CodingKnowledgeSaveStrategy = "on_retry_success" // 最有价值的经验
+        c.CodingKnowledgeSaveStrategy = "on_success" // 成功任务提取候选，仍需确认/观测晋升
+    }
+    if c.CodingKnowledgeAutoPromoteObservations <= 0 {
+        c.CodingKnowledgeAutoPromoteObservations = 2 // auto 模式的独立观测阈值
     }
     if c.CodingKnowledgeMaxPerProject <= 0 {
         c.CodingKnowledgeMaxPerProject = 200

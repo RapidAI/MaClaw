@@ -59,7 +59,7 @@ func TestRecordStickyLocalCodingTurnAndClear(t *testing.T) {
 		Summary:       "implemented login handler",
 		FilesModified: []string{"auth.go"},
 		FilesCreated:  []string{"auth_test.go"},
-	})
+	}, "")
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	if mem.TurnCount != 1 || mem.Kind != "local" {
 		t.Fatalf("memory after first turn = %+v", mem)
@@ -75,7 +75,7 @@ func TestRecordStickyLocalCodingTurnAndClear(t *testing.T) {
 	h.recordStickyLocalCodingTurn(userID, "D:/repo", "add logout", &CodingSubAgentResult{
 		Summary:       "implemented logout",
 		FilesModified: []string{"session.go"},
-	})
+	}, "")
 	mem = h.getStickyCodingWorkbenchMemory(userID)
 	if mem.TurnCount != 2 {
 		t.Fatalf("turn count = %d", mem.TurnCount)
@@ -96,7 +96,7 @@ func TestRecordStickyRemoteCodingTurn(t *testing.T) {
 	h.recordStickyRemoteCodingTurn(userID, "deploy fix", &RemoteCodingSubAgentResult{
 		Status:  "success",
 		Summary: "updated remote service",
-	})
+	}, "")
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	if mem.Kind != "remote" || mem.TurnCount != 1 {
 		t.Fatalf("remote memory = %+v", mem)
@@ -439,7 +439,7 @@ func TestClearStickyCodingEnvironmentDropsMemoryAndPending(t *testing.T) {
 	userID := stickyTestUserID(t)
 	h.markStickyCodingSessionFullAccess(userID, "local", "D:/repo")
 	h.rearmStickyLocalCodingEnvironment(userID, "D:/repo")
-	h.recordStickyLocalCodingTurn(userID, "D:/repo", "hi", &CodingSubAgentResult{Summary: "done"})
+	h.recordStickyLocalCodingTurn(userID, "D:/repo", "hi", &CodingSubAgentResult{Summary: "done"}, "")
 	h.clearStickyCodingEnvironment(userID)
 	if h.hasPendingTemplateSubAgentExecution(userID) {
 		t.Fatal("pending should be cleared")
@@ -554,7 +554,7 @@ func TestStickyCodingWorkbenchMemoryDiskPersistence(t *testing.T) {
 		Summary:       "added feature X",
 		FilesModified: []string{"main.go"},
 		FilesCreated:  []string{"main_test.go"},
-	})
+	}, "")
 	h1.markStickyCodingSessionFullAccess(userID, "local", dir)
 
 	path := stickyCodingMemoryFilePath(userID)
@@ -596,7 +596,7 @@ func TestRecordStickyRemoteCodingTurnIncludesFiles(t *testing.T) {
 		Summary:       "patched service",
 		FilesModified: []string{"/app/server.go"},
 		FilesCreated:  []string{"/app/server_test.go"},
-	})
+	}, "")
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	if mem.Kind != "remote" || mem.TurnCount != 1 {
 		t.Fatalf("mem = %+v", mem)
@@ -797,14 +797,14 @@ func TestStickySessionPlanPreservedAcrossTurns(t *testing.T) {
 	userID := stickyTestUserID(t)
 	h.recordStickyLocalCodingTurn(userID, "D:/repo", "Build auth module with JWT", &CodingSubAgentResult{
 		Summary: "scaffolded auth package",
-	})
+	}, "")
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	if mem.SessionPlan != "Build auth module with JWT" {
 		t.Fatalf("session plan = %q", mem.SessionPlan)
 	}
 	h.recordStickyLocalCodingTurn(userID, "D:/repo", "add refresh token", &CodingSubAgentResult{
 		Summary: "added refresh endpoint",
-	})
+	}, "")
 	mem = h.getStickyCodingWorkbenchMemory(userID)
 	if mem.SessionPlan != "Build auth module with JWT" {
 		t.Fatalf("session plan should stay original, got %q", mem.SessionPlan)

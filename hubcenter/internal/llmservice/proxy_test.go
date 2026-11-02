@@ -3554,6 +3554,12 @@ func TestProxyStreamErrorFromDataRecognizesErrorShapes(t *testing.T) {
 			data:    `{"choices":[{"delta":{"content":"ok"},"index":0}]}`,
 			wantErr: false,
 		},
+		{
+			name:     "devin failure after headers",
+			data:     `{"devin_stream_error":true,"choices":[{"delta":{"content":"model rejected"},"index":0}]}`,
+			wantErr:  true,
+			wantText: "model rejected",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

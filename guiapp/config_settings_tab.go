@@ -93,6 +93,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"coding_knowledge_max_total",
 		"coding_knowledge_max_reviewed_per_project",
 		"coding_knowledge_max_reviewed_tokens_per_project",
+		"coding_knowledge_auto_promote_observations",
 	},
 	// Self-loading panels — empty DTO (dedicated APIs).
 	"latex":            {},

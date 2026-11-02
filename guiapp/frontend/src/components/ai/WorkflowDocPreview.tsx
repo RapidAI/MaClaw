@@ -508,7 +508,9 @@ const PHASE_ZH_OVERRIDES: Record<string, { zhHans: string; zhHant: string }> = {
 };
 
 function workflowPhaseLabel(lang: string | undefined, phaseID: string, phaseLabelMap: Map<string, string>): string {
-    const resolvedLang = normalizeLang(lang);
+    // 与组件内其他标签一致：lang 省略时回落产品默认表面语言（简体中文），
+    // 让 PHASE_ZH_OVERRIDES 在缺省渲染下也生效。
+    const resolvedLang = normalizeLang(lang || "zh-Hans");
     const canonical = normalizeWorkflowPhaseID(phaseID) || phaseID;
     const metadataLabel = phaseLabelMap.get(phaseID) || phaseLabelMap.get(canonical);
     const override = PHASE_ZH_OVERRIDES[canonical];
@@ -915,7 +917,9 @@ function WorkflowProgressBoard({
                         : (isCurrent ? theme.accentColor : undefined);
                     const phaseLabel = workflowPhaseLabel(lang, pid, phaseLabelMap);
                     const statusLabel = workflowPhaseStatusLabel(lang, cardState.status);
-                    const ariaSeparator = (isChineseLang(lang) ? "，" : ", ");
+                    // 标签文案在 lang 为空时兜底 zh-Hans，分隔符必须跟同一语言，
+                    // 否则会出现「中文标签 + 半角逗号」的混排 aria-label。
+                    const ariaSeparator = (isChineseLang(lang || "zh-Hans") ? "，" : ", ");
                     return (
                         <button
                             key={pid}

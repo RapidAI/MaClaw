@@ -1313,28 +1313,37 @@ describe("renderContentWithCodeBlocks", () => {
         });
     });
 
-    it("asks the composer to continue editing instead of opening the file", () => {
+    it("reveals the file in Explorer instead of opening it", () => {
         const path = "C:\\Users\\me\\report.docx";
-        const seen: string[] = [];
-        const onContinue = (event: Event) => {
-            seen.push(String((event as CustomEvent<{ path?: string }>).detail?.path || ""));
-        };
-        window.addEventListener("maclaw:continue-edit-task-result", onContinue);
-        try {
-            render(<div>{renderMessage({
-                id: "saved-local-continue",
-                role: "assistant",
-                content: "文档已生成",
-                localFilePath: path,
-                timestamp: Date.now(),
-            }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+        render(<div>{renderMessage({
+            id: "saved-local-reveal",
+            role: "assistant",
+            content: "文档已生成",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-            fireEvent.click(screen.getByTestId("task-result-continue-btn"));
-            expect(seen).toEqual([path]);
-            expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
-        } finally {
-            window.removeEventListener("maclaw:continue-edit-task-result", onContinue);
-        }
+        fireEvent.click(screen.getByTestId("task-result-reveal-btn"));
+        expect(showItemInFolderMock).toHaveBeenCalledWith(path);
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+    });
+
+    it("gives every artifact its own action row in multi-file results", () => {
+        const first = "C:\\Users\\me\\deck.pptx";
+        const second = "C:\\Users\\me\\speech.docx";
+        render(<div>{renderMessage({
+            id: "saved-local-multi",
+            role: "assistant",
+            content: "文档已生成",
+            localFilePaths: [first, second],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        expect(screen.getByTestId("task-result-reveal-btn")).toBeTruthy();
+        expect(screen.getByTestId("task-result-export-btn-1")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("task-result-reveal-btn-1"));
+        expect(showItemInFolderMock).toHaveBeenCalledWith(second);
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
     });
 
     it("dispatches an in-app preview event from the task-result Preview button", () => {
@@ -1385,7 +1394,7 @@ describe("renderContentWithCodeBlocks", () => {
             expect(screen.queryByText("notes.txt")).toBeNull();
             fireEvent.click(screen.getByTestId("task-result-preview-btn"));
             expect(seen).toEqual([docPath]);
-            expect(screen.getByTestId("task-result-preview-btn").getAttribute("title")).toBe("report.docx");
+            expect(screen.getByTestId("task-result-preview-btn-1")).toBeTruthy();
         } finally {
             window.removeEventListener("maclaw:preview-task-result", onPreview);
         }

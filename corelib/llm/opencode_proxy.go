@@ -14,11 +14,12 @@ import (
 
 var errOpenCodeEmptyResponse = fmt.Errorf("opencode returned an empty response")
 
-// PrepareOpenCodeChatBody rewrites one OpenCode provider request.
-// A stored key is a paid account and is forwarded with that key. An empty key
-// is the anonymous free tier. The model id picks Zen or the Go gateway.
-// Responses-only models are marked on the returned config and leave the chat
-// body unchanged so the Responses builder can read the original messages.
+// PrepareOpenCodeChatBody rewrites one OpenCode provider request onto the
+// OpenCode 2 inference gateway. A -free model id stays on the standard
+// inference gateway; it is not replaced by the metered Go id. An empty key is
+// the anonymous free tier. Responses-only models are marked on the returned
+// config and leave the chat body unchanged so the Responses builder can read
+// the original messages.
 func PrepareOpenCodeChatBody(cfg corelib.MaclawLLMConfig, body map[string]interface{}) (corelib.MaclawLLMConfig, bool) {
 	if body == nil || !corelib.IsOpenCodeURL(cfg.URL) {
 		return cfg, false
@@ -31,8 +32,13 @@ func PrepareOpenCodeChatBody(cfg corelib.MaclawLLMConfig, body map[string]interf
 			body["model"] = model
 		}
 	}
+	wire := corelib.OpenCodeWireModel(cfg.URL, cfg.Key, model)
+	if wire != "" {
+		body["model"] = wire
+		model = wire
+	}
 	cfg.Model = model
-	cfg.URL = corelib.OpenCodeUpstreamBase(cfg.URL, model)
+	cfg.URL = corelib.OpenCodeUpstreamBaseFor(cfg.URL, model, cfg.Key)
 	if corelib.OpenCodeUsesResponsesAPI(cfg.URL, model) {
 		cfg.WireAPI = "responses"
 		return cfg, true
@@ -45,6 +51,7 @@ func PrepareOpenCodeChatBody(cfg corelib.MaclawLLMConfig, body map[string]interf
 // OpenAI chat JSON payload. Zen free models stream upstream; that stream is
 // collected into one JSON response.
 func ForwardOpenCodeChat(ctx context.Context, cfg corelib.MaclawLLMConfig, body map[string]interface{}, client *http.Client) ([]byte, int, error) {
+	callerTools := OpenAIDeclaredToolNames(body["tools"])
 	cfg, ok := PrepareOpenCodeChatBody(cfg, body)
 	if !ok {
 		return nil, 0, fmt.Errorf("not an opencode provider")
@@ -66,6 +73,11 @@ func ForwardOpenCodeChat(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 	if err != nil {
 		// A cut stream can already contain visible text or a tool call.
 		// Returning that partial result stops the caller from retrying it.
+		if corelib.OpenCodeZenAgentModel(model) && resp != nil {
+			for i := range resp.Choices {
+				resp.Choices[i] = PresentOpenCodeFreeChoice(callerTools, resp.Choices[i])
+			}
+		}
 		if data, ok := openCodePartialResponse(resp); ok {
 			return data, status, nil
 		}
@@ -73,6 +85,11 @@ func ForwardOpenCodeChat(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 	}
 	if resp == nil {
 		return nil, status, errOpenCodeEmptyResponse
+	}
+	if corelib.OpenCodeZenAgentModel(model) {
+		for i := range resp.Choices {
+			resp.Choices[i] = PresentOpenCodeFreeChoice(callerTools, resp.Choices[i])
+		}
 	}
 	data, err := marshalOpenCodeResponse(resp)
 	if err != nil {
@@ -92,6 +109,9 @@ func forwardOpenCodeResponses(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	}
 	if resp == nil {
 		return nil, http.StatusOK, errOpenCodeEmptyResponse
+	}
+	for i := range resp.Choices {
+		resp.Choices[i] = NormalizeOpenCodeFreeChoice(resp.Choices[i])
 	}
 	data, err := marshalOpenCodeResponse(resp)
 	if err != nil {

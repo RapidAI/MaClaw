@@ -15,6 +15,8 @@ extern const uint8_t _binary_cjk24_ext_bin_end[];
 
 static atomic_int s_missing;
 
+const char *buddy_font_rev(void) { return "cjk24-ext1"; }
+
 // Forward declarations: the curved-text helpers below are defined before the
 // static glyph lookup helpers further down.
 static int utf8_decode(const char *s, uint32_t *out);

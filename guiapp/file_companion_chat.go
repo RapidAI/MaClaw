@@ -429,20 +429,38 @@ func (a *App) recordCompanionEvent(name, data string) {
 	st.events = append(st.events, recordedCompanionEvent{Name: name, Data: data})
 }
 
+// fileCompanionWebLookupPrompt is the literature-lookup contract. It is short
+// on purpose: the PDF prompt already explains page tools and pdf_generate,
+// and repeating that contract made the model follow the shorter copy.
+func fileCompanionWebLookupPrompt() string {
+	return "文献比对用 web_search 和 web_fetch：前者检索公开网页，后者打开结果里的 http 或 https 链接阅读正文。query 只放题名、作者或短检索词，不要粘贴正文。这两个工具只读公开网络，不能下载文件，不能访问内网，也不能使用浏览器登录态。没有检索到就说明没核实到，不要把未核实的背景知识写成检索结果。"
+}
+
+// fileCompanionSharedToolPrompt introduces the one tool list on documents
+// whose older prompt forbade tools. forbidOtherTools keeps the sentence those
+// prompts are tested for. The PDF prompt must not contain that sentence.
+func fileCompanionSharedToolPrompt(forbidOtherTools bool) string {
+	text := "所有文档使用同一套工具。读正文用 read_document，不要传路径。它支持 Word、Excel、PowerPoint、PDF、纯文本、Markdown、EPUB、MOBI 和邮件。长文用返回的 offset 续读。read_document 读不出需要的结构时，用 craft_tool 生成一次性脚本，从当前文档提取或整理数据。task 只描述要提取什么，不要粘贴正文，不要写路径，也不要带网址。脚本不能修改当前文件。" + fileCompanionWebLookupPrompt() + "pdf_read_pages、pdf_render_page、pdf_extract_images、pdf_restore 只在当前文件是 PDF 时可用。pdf_generate 对所有文档都可用：用户要笔记、讲义、总结或复习提纲时，把完整正文放进 markdown。回答里只写一句说明并让用户点产出物卡片的「保存」，不要再抄一遍正文，也不要指定保存路径。只有 pdf_generate 返回了结果，才可以说文件已经生成。"
+	if forbidOtherTools {
+		text += "除了这一套工具，不要使用工具去读写本机其它文件或执行命令。"
+	}
+	return text
+}
+
 func fileCompanionPrompt(name, ext string) string {
 	base := "你是文件伴读。只讨论当前打开的这一个文件：" + name + "。不要引用其他文件。用户没有要求生成新文件时，不要声称已经生成或发送了 PDF。"
 	switch strings.ToLower(ext) {
 	case ".pdf":
-		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 裁出某一页上的插图（Figure / 图）和图注，不包含同页正文和表格；pdf_extract_images 提取文档内嵌位图。要看某一张图时传 figure（图号，如 1）。不传 figure 时，该页有图注就只返回裁好的图。只有用户明确要看整页版式时才传 full=true。不要为了展示一张图去要整页。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。扫描页没有文字层时，pdf_read_pages 会先用本机 PP-OCRv6 识别再返回文字。不要安装其他识别引擎。用户要把扫描版转成按原版式重新生成的 PDF 时，调用 pdf_restore。它用本机版面分析、PP-OCRv6 和已经接入的公式模型重做每一页：正文每一行按识别到的原位置写回，公式还原到公式框里，插图从扫描图里裁出来放回原处，有线表格恢复成表格。不覆盖当前打开的文件。单次最多 16 页，没做完就再调用一次。只有 pdf_restore 返回了结果，才可以说已经生成。不要安装其他识别引擎。用户要成品文件（笔记、讲义、总结、复习提纲、复习 PDF）时，调用 pdf_generate，把完整的成品正文放进 markdown，标题放进 title；正文里可以写「图N」指代这一轮的原图，宿主会把这些图附在 PDF 末尾。回答里只写一句说明并让用户点产出物卡片的「保存」，不要把正文再抄一遍，也不要贴出文件的完整路径（只有用户明确问文件在哪时才给）。文件由宿主写进它自己的结果目录，宿主会把它作为「产出物」放在回答下面，用户可以点「保存」自己选目录；你不能指定保存路径，也不要声称已经保存到了某个目录。只有 pdf_generate 返回了结果，才可以说文件已经生成。如果用户只是明确要把这段回答原样存成 PDF，告诉他点回答下面的「导出为 PDF」，不要调用 pdf_generate。"
+		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 裁出某一页上的插图（Figure / 图）和图注，不包含同页正文和表格；pdf_extract_images 提取文档内嵌位图。要看某一张图时传 figure（图号，如 1）。不传 figure 时，该页有图注就只返回裁好的图。只有用户明确要看整页版式时才传 full=true。不要为了展示一张图去要整页。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。扫描页没有文字层时，pdf_read_pages 会先用本机 PP-OCRv6 识别再返回文字。不要安装其他识别引擎。用户要把扫描版转成按原版式重新生成的 PDF 时，调用 pdf_restore。它用本机版面分析、PP-OCRv6 和已经接入的公式模型重做每一页：正文每一行按识别到的原位置写回，公式还原到公式框里，插图从扫描图里裁出来放回原处，有线表格恢复成表格。不覆盖当前打开的文件。单次最多 16 页，没做完就再调用一次。只有 pdf_restore 返回了结果，才可以说已经生成。不要安装其他识别引擎。用户要成品文件（笔记、讲义、总结、复习提纲、复习 PDF）时，调用 pdf_generate，把完整的成品正文放进 markdown，标题放进 title；正文里可以写「图N」指代这一轮的原图，宿主会把这些图附在 PDF 末尾。回答里只写一句说明并让用户点产出物卡片的「保存」，不要把正文再抄一遍，也不要贴出文件的完整路径（只有用户明确问文件在哪时才给）。文件由宿主写进它自己的结果目录，宿主会把它作为「产出物」放在回答下面，用户可以点「保存」自己选目录；你不能指定保存路径，也不要声称已经保存到了某个目录。只有 pdf_generate 返回了结果，才可以说文件已经生成。如果用户只是明确要把这段回答原样存成 PDF，告诉他点回答下面的「导出为 PDF」，不要调用 pdf_generate。整篇文本用 read_document，不要传路径；按页、看图和扫描识别仍用上面的 PDF 工具。内置阅读不够时用 craft_tool 生成一次性脚本提取当前文档里的结构。task 只描述要提取什么，不要粘贴正文，不要写路径，也不要带网址。脚本不能修改当前文件。" + fileCompanionWebLookupPrompt()
 	case ".xlsx":
-		return base + "不要使用工具。如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
+		return base + fileCompanionSharedToolPrompt(true) + "如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
 	case ".pptx":
-		return base + "不要使用工具。如果用户要求修改这个幻灯片，只返回一个完整的 JSON 对象 {\"title\":\"\",\"slides\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 slides JSON。"
+		return base + fileCompanionSharedToolPrompt(true) + "如果用户要求修改这个幻灯片，只返回一个完整的 JSON 对象 {\"title\":\"\",\"slides\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 slides JSON。"
 	case ".mp4", ".m4v", ".webm", ".mov", ".avi", ".mkv",
 		".mp3", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".flac":
-		return base + "不要使用工具。当前提示里只有文件名，没有画面、字幕或转写。用中文直接回答，不要复述系统说明，也不要写出分析步骤。不要在没有证据时编造情节、人名或数字。不要声称已经生成了笔记或 PDF。如果用户想要笔记，告诉他们点「生成笔记」或发送「生成笔记」。"
+		return base + fileCompanionSharedToolPrompt(true) + "当前提示里只有文件名，没有画面、字幕或转写。用中文直接回答，不要复述系统说明，也不要写出分析步骤。不要在没有证据时编造情节、人名或数字。不要凭文件名调用 pdf_generate 编一份笔记。如果用户想要笔记，告诉他们点「生成笔记」或发送「生成笔记」。"
 	default:
-		return base + "不要使用工具。用户选中一段并要求翻译或改写时，只返回改写后的文字。宿主会把这段文字追加到选区之后，原文保留。"
+		return base + fileCompanionSharedToolPrompt(true) + "用户选中一段并要求翻译或改写时，只返回改写后的文字。宿主会把这段文字追加到选区之后，原文保留。"
 	}
 }
 

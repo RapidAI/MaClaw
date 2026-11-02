@@ -2,6 +2,7 @@ import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import type { ProviderEndpoint } from '../../config/providerCatalog';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { PROVIDER_LOGOS } from '../remote/providerLogos';
+import { presetProviderDisplayName } from '../remote/presetProviderLabel';
 
 type ProviderFilter = 'all' | 'china' | 'global';
 
@@ -15,6 +16,7 @@ type ProviderSelectorDialogProps = {
     setSelectedProvider: Dispatch<SetStateAction<ProviderEndpoint | null>>;
     hoveredProvider: HoveredProvider;
     setHoveredProvider: Dispatch<SetStateAction<HoveredProvider>>;
+    lang?: string;
     t: (key: string) => string;
     localizeText: (en: string, zhHans: string, zhHant: string) => string;
     onConfirm: (provider?: ProviderEndpoint) => void;
@@ -47,6 +49,7 @@ export const ProviderSelectorDialog = ({
     setSelectedProvider,
     hoveredProvider,
     setHoveredProvider,
+    lang,
     t,
     localizeText,
     onConfirm,
@@ -107,7 +110,7 @@ export const ProviderSelectorDialog = ({
                                 <div className="provider-selector-card-title">
                                     <span className="provider-selector-region" title={provider.region === 'china' ? t("chinaProviders") : t("globalProviders")}>{provider.region === 'china' ? 'CN' : 'GL'}</span>
                                     {PROVIDER_LOGOS[provider.name] ?? null}
-                                    <span className="provider-selector-name">{provider.name}</span>
+                                    <span className="provider-selector-name">{presetProviderDisplayName(lang, provider.name)}</span>
                                 </div>
                             </button>
                         );

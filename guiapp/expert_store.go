@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/configdb"
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 	"github.com/google/uuid"
 )
 
@@ -117,6 +122,12 @@ func (s *expertStore) loadLocked() (expertStoreFile, error) {
 // writeLocked persists atomically: write tmp file in the same dir, then rename.
 func (s *expertStore) writeLocked(f expertStoreFile) error {
 	path := s.path()
+	// testHomeDir isolates Hub credentials only. This store still points at
+	// the signed-in experts.json unless a test swaps it, and the desktop app
+	// would upload those rows on the next list.
+	if err := refuseAmbientExpertProfileWrite(path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create experts dir: %w", err)
 	}
@@ -136,6 +147,93 @@ func (s *expertStore) writeLocked(f expertStoreFile) error {
 		return fmt.Errorf("rename experts store: %w", err)
 	}
 	return nil
+}
+
+var (
+	// ambientExpertProfilePaths is filled before tests run. Resolving it on
+	// the first write would open config.db while the caller holds the store lock.
+	ambientExpertProfilePaths []string
+	// ambientExpertProfileTestPath adds one path to the signed-in profile
+	// set for a test that must not touch the real experts.json.
+	ambientExpertProfileTestPath atomic.Value // string
+)
+
+func init() {
+	if testing.Testing() {
+		ambientExpertProfilePaths = canonicalExpertProfilePaths(collectAmbientExpertProfilePaths())
+	}
+}
+
+func refuseAmbientExpertProfileWrite(path string) error {
+	if !testing.Testing() || !expertStorePathIsAmbientProfile(path) {
+		return nil
+	}
+	return fmt.Errorf("refusing to modify the signed-in expert profile from a test")
+}
+
+func expertStorePathIsAmbientProfile(path string) bool {
+	clean := filepath.Clean(path)
+	if extra, ok := ambientExpertProfileTestPath.Load().(string); ok && extra != "" && pathsEqual(clean, filepath.Clean(extra)) {
+		return true
+	}
+	for _, candidate := range ambientExpertProfilePaths {
+		if pathsEqual(clean, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalExpertProfilePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := map[string]struct{}{}
+	add := func(path string) {
+		path = filepath.Clean(path)
+		if path == "" || path == "." {
+			return
+		}
+		key := path
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(path)
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, path)
+	}
+	for _, path := range paths {
+		add(path)
+		// Keep both spellings when the profile directory is a link, so a
+		// later write of either path still matches without a syscall.
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			add(resolved)
+		}
+	}
+	return out
+}
+
+// collectAmbientExpertProfilePaths reads the fixed config home, not a test's
+// SetMaclawBaseDir override, so a redirected data dir does not hide the real file.
+func collectAmbientExpertProfilePaths() []string {
+	var paths []string
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		paths = append(paths, filepath.Join(home, ".maclaw", "data", "experts", "experts.json"))
+	}
+	var configured string
+	if configdb.ReadValue(maclawpath.DefaultBaseDir(), "data_dir", &configured) {
+		if dir := strings.TrimSpace(configured); dir != "" {
+			paths = append(paths, filepath.Join(dir, "data", "experts", "experts.json"))
+		}
+	}
+	return paths
+}
+
+func pathsEqual(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // List returns the stored (user) experts and the tombstone map.

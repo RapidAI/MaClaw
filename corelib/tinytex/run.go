@@ -19,20 +19,49 @@ const (
 	engineCommandTimeout = 2 * time.Minute
 	// tlmgrCommandTimeout matches one 编译预览 package install.
 	tlmgrCommandTimeout = 5 * time.Minute
+	// tlmgrSelfUpdateTimeout is one infra update. On Windows, perl only
+	// writes temp\updater-w32; tlmgr.bat applies it afterwards, and that
+	// copy is larger than one package install.
+	tlmgrSelfUpdateTimeout = 30 * time.Minute
 )
 
-func reviewedCommandTimeout(bin string) time.Duration {
+func reviewedCommandTimeout(bin string, args ...string) time.Duration {
 	base := strings.TrimSuffix(filepath.Base(bin), filepath.Ext(bin))
 	if strings.EqualFold(base, "tlmgr") {
+		if tlmgrUpdatingSelf(args) {
+			return tlmgrSelfUpdateTimeout
+		}
 		return tlmgrCommandTimeout
 	}
 	return engineCommandTimeout
 }
 
+// tlmgrUpdatingSelf reports `tlmgr update --self`. A package whose name
+// happens to be --self must not inherit the infra budget.
+func tlmgrUpdatingSelf(args []string) bool {
+	sawUpdate := false
+	for _, arg := range args {
+		if arg == "update" {
+			sawUpdate = true
+			continue
+		}
+		if sawUpdate && arg == "--self" {
+			return true
+		}
+	}
+	return false
+}
+
+// RunReviewed is the per-command budget used by 编译预览 and build_verify.
+// The caller's context still caps the whole job.
+func RunReviewed(ctx context.Context, bin, dir string, args ...string) (string, int, error) {
+	return runReviewed(ctx, bin, dir, args...)
+}
+
 // runReviewed applies the per-command budget around RunCommand. The directory
 // budget still caps the whole build.
 func runReviewed(ctx context.Context, bin, dir string, args ...string) (string, int, error) {
-	return runLimited(ctx, reviewedCommandTimeout(bin), bin, dir, args...)
+	return runLimited(ctx, reviewedCommandTimeout(bin, args...), bin, dir, args...)
 }
 
 func runLimited(ctx context.Context, limit time.Duration, bin, dir string, args ...string) (string, int, error) {
@@ -54,6 +83,20 @@ func runLimited(ctx context.Context, limit time.Duration, bin, dir string, args 
 // image. call receives that argv as separate arguments, not a command
 // string supplied by the model.
 func RunCommand(ctx context.Context, bin, dir string, args ...string) (string, int, error) {
+	return runCommand(ctx, bin, dir, nil, args...)
+}
+
+// RunCommandWithPath is RunCommand with directories placed in front of PATH.
+// update-tlmgr-latest finds this tree by running kpsewhich, so the TinyTeX
+// bin directory has to precede the updater's own folder and any other TeX.
+func RunCommandWithPath(ctx context.Context, bin, dir string, prepend []string, args ...string) (string, int, error) {
+	return runCommand(ctx, bin, dir, prepend, args...)
+}
+
+func runCommand(ctx context.Context, bin, dir string, prepend []string, args ...string) (string, int, error) {
+	if err := prepareTlmgrLaunch(bin, args); err != nil {
+		return "", -1, err
+	}
 	cmdName, cmdArgs := commandArgs(bin, args)
 	cmd := tool.CommandContext(ctx, cmdName, cmdArgs...)
 	// cmd.exe re-parses its command line. Go's argv quoting does not hide
@@ -64,8 +107,15 @@ func RunCommand(ctx context.Context, bin, dir string, args ...string) (string, i
 		dir = filepath.Dir(bin)
 	}
 	cmd.Dir = dir
-	binDir := filepath.Dir(bin)
-	cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	front := make([]string, 0, len(prepend)+1)
+	for _, entry := range prepend {
+		entry = strings.TrimSpace(entry)
+		if entry != "" {
+			front = append(front, entry)
+		}
+	}
+	front = append(front, filepath.Dir(bin))
+	cmd.Env = append(os.Environ(), "PATH="+strings.Join(front, string(os.PathListSeparator))+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(out), 0, nil

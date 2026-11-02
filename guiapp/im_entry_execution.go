@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -116,7 +117,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// Immediate UI feedback before history/prompt preparation. These are safe
 	// execution milestones, not model chain-of-thought.
 	if opts.OnProgress != nil && !codingWorkbench {
-		opts.OnProgress("[Status] " + imEarlyProgressText)
+		opts.OnProgress(imThinkingStatus(h.imUILang(), i18n.MsgProgressAck))
 	}
 
 	// Load conversation history in parallel with loop-context + profile classify.
@@ -444,12 +445,6 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		if rewritten := semanticGovernedEffectPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
 			semanticIntent = rewritten
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			// An explicit send is a new delivery too. The open task's spent
-			// mailbox count belongs to its own send, so it must not clamp the
-			// need this rewrite just promoted.
-			if rewritten.HasLabel(intent.LabelMailboxSend) {
-				loopCtx.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
-			}
 			logGovernedEffectPlanning(msg.UserID, rewritten.Reason)
 		}
 		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
@@ -465,28 +460,6 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			semanticIntent = rewritten
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 			log.Printf("[semantic-routing] fetched document read user=%q", msg.UserID)
-		}
-		// A deictic send ("也发给他") names the recipient, not the channel.
-		// Once this session has mailed through a configured mailbox, a
-		// follow-up may continue that channel; the lightweight model decides
-		// semantically, so the behavior does not depend on the language or a
-		// phrase list. The mail tool must be on the surface for the model to
-		// deliver at all.
-		//
-		// A pending answer resolves a host question (a card, a draft, a
-		// missing input); the resume plan owns that turn. Do not classify the
-		// answer as a new delivery sentence.
-		pendingAnswer := strings.TrimSpace(opts.AskUserContext) != "" || strings.TrimSpace(opts.PendingUserReplyContext) != ""
-		if !pendingAnswer && loopCtx.mailboxSendAllowed() {
-			if rewritten := h.semanticAnaphoricMailboxFollowUp(semanticIntent, msg.UserID, msg.Text, history); rewritten != nil {
-				semanticIntent = rewritten
-				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-				// The open task already spent its mailbox grant last turn. That
-				// spent count is not this send's quota; leaving it on the carried
-				// ceiling would clamp the mailbox need away before planning.
-				loopCtx.dropSemanticResidueCeiling(string(tool.CapabilityMessageSendMailbox))
-				log.Printf("[semantic-routing] anaphoric mailbox delivery user=%q", msg.UserID)
-			}
 		}
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)
@@ -509,12 +482,14 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	applyChatTaskWorkerExecutionProfile(loopCtx)
 	loopCtxElapsed := time.Since(loopCtxStart)
 	if opts.OnProgress != nil && !codingWorkbench {
-		if loopCtx.Runtime.Execution.IsDirect() {
-			opts.OnProgress("[Status] 已匹配直接执行能力，正在处理")
-		} else if loopCtx.Runtime.Execution.IsLight() {
-			opts.OnProgress("[Status] 已选择快速执行路径，正在构建请求")
-		} else {
-			opts.OnProgress("[Status] 已选择完整执行路径，正在构建请求")
+		lang := h.imUILang()
+		switch {
+		case loopCtx.Runtime.Execution.IsDirect():
+			opts.OnProgress(imThinkingStatus(lang, i18n.MsgStatusDirectMatched))
+		case loopCtx.Runtime.Execution.IsLight():
+			opts.OnProgress(imThinkingStatus(lang, i18n.MsgStatusFastPath))
+		default:
+			opts.OnProgress(imThinkingStatus(lang, i18n.MsgStatusFullPath))
 		}
 	}
 
@@ -549,7 +524,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 
 	promptStart := time.Now()
 	if opts.OnProgress != nil && !codingWorkbench {
-		opts.OnProgress("[Status] 正在整理上下文并准备模型请求")
+		opts.OnProgress(imThinkingStatus(h.imUILang(), i18n.MsgStatusPrepareModel))
 	}
 	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.PhasePrompt, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
 	// A share discussion answer is published to all readers. The host's chat

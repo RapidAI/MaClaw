@@ -5,10 +5,17 @@
 #include "esp_timer.h"
 #include "nvs.h"
 
+#include "buddy_mood.h"
 #include "buddy_protocol_generated.h"
 
 static SemaphoreHandle_t s_lock;
 static buddy_view_t s_view;
+/* Host-supplied stale bits. The tick ORs these with "no frame for 60s" and
+ * recomputes every pass, so a resumed heartbeat drops a mark the host did not
+ * send. Latching it would leave 数据陈旧 / 旧 on the glass: an unchanged census
+ * is not resent. */
+static bool s_reported_stale;
+static bool s_reported_weather_stale;
 
 static int64_t now_ms(void) {
     return esp_timer_get_time() / 1000;
@@ -24,6 +31,9 @@ void buddy_state_init(void) {
     s_view.last_host_ms = now_ms() - BUDDY_OFFLINE_MS;
     s_view.online = false;
     s_view.missing_glyphs = 0;
+    s_view.pet_explicit = -1;
+    s_reported_stale = false;
+    s_reported_weather_stale = false;
 }
 
 void buddy_state_lock(void) {
@@ -53,7 +63,8 @@ void buddy_state_note_host(void) {
 }
 
 void buddy_state_apply_state(const buddy_counts_t *counts, const buddy_task_t *current,
-                             int current_count, bool stale, uint64_t seq) {
+                             int current_count, const buddy_attention_t *attention, bool stale,
+                             uint64_t seq) {
     if (!counts) return;
     buddy_state_lock();
     s_view.counts = *counts;
@@ -63,6 +74,11 @@ void buddy_state_apply_state(const buddy_counts_t *counts, const buddy_task_t *c
     for (int i = 0; i < current_count; ++i) {
         s_view.current[i] = current[i];
     }
+    memset(&s_view.attention, 0, sizeof(s_view.attention));
+    if (attention && attention->title[0]) {
+        s_view.attention = *attention;
+    }
+    s_reported_stale = stale;
     s_view.stale = stale;
     s_view.has_state = true;
     s_view.state_seq = seq;
@@ -72,17 +88,24 @@ void buddy_state_apply_state(const buddy_counts_t *counts, const buddy_task_t *c
     buddy_state_unlock();
 }
 
-void buddy_state_apply_weather(const char *summary, int temperature_c, const char *location,
+bool buddy_state_apply_weather(const char *summary, int temperature_c, const char *location,
                                bool stale) {
+    const char *next_summary = summary ? summary : "";
+    const char *next_location = location ? location : "";
     buddy_state_lock();
-    strlcpy(s_view.weather_summary, summary ? summary : "", sizeof(s_view.weather_summary));
-    strlcpy(s_view.weather_location, location ? location : "", sizeof(s_view.weather_location));
+    const bool stored_changed = strcmp(s_view.weather_summary, next_summary) != 0 ||
+                                strcmp(s_view.weather_location, next_location) != 0 ||
+                                s_view.weather_temp != temperature_c;
+    strlcpy(s_view.weather_summary, next_summary, sizeof(s_view.weather_summary));
+    strlcpy(s_view.weather_location, next_location, sizeof(s_view.weather_location));
     s_view.weather_temp = temperature_c;
+    s_reported_weather_stale = stale;
     s_view.weather_stale = stale;
     s_view.has_weather = s_view.weather_summary[0] != '\0';
     s_view.last_host_ms = now_ms();
     s_view.online = true;
     buddy_state_unlock();
+    return stored_changed;
 }
 
 void buddy_state_apply_clock(const char *date, const char *weekday) {
@@ -121,6 +144,12 @@ void buddy_state_clear_prompt(void) {
     buddy_state_unlock();
 }
 
+void buddy_state_set_pet(const char *state) {
+    buddy_state_lock();
+    s_view.pet_explicit = buddy_mood_parse(state);
+    buddy_state_unlock();
+}
+
 void buddy_state_add_missing(int count) {
     if (count <= 0) return;
     buddy_state_lock();
@@ -131,12 +160,14 @@ void buddy_state_add_missing(int count) {
 void buddy_state_tick(void) {
     const int64_t now = now_ms();
     buddy_state_lock();
-    s_view.online = (now - s_view.last_host_ms) < BUDDY_OFFLINE_MS;
-    if (s_view.has_state && (now - s_view.last_host_ms) >= BUDDY_STALE_MS) {
-        s_view.stale = true;
+    const int64_t quiet_for = now - s_view.last_host_ms;
+    const bool quiet = quiet_for >= BUDDY_STALE_MS;
+    s_view.online = quiet_for < BUDDY_OFFLINE_MS;
+    if (s_view.has_state) {
+        s_view.stale = s_reported_stale || quiet;
     }
-    if (s_view.has_weather && (now - s_view.last_host_ms) >= BUDDY_STALE_MS) {
-        s_view.weather_stale = true;
+    if (s_view.has_weather) {
+        s_view.weather_stale = s_reported_weather_stale || quiet;
     }
     if (s_view.celebrate_active &&
         (now - s_view.celebrate_start_ms) >= (int64_t)s_view.celebrate_seconds * 1000) {
@@ -166,6 +197,7 @@ bool buddy_state_weather_load(void) {
     strlcpy(s_view.weather_location, saved.location, sizeof(s_view.weather_location));
     s_view.weather_temp = saved.temperature_c;
     s_view.has_weather = true;
+    s_reported_weather_stale = true;
     s_view.weather_stale = true;
     buddy_state_unlock();
     return true;

@@ -1,3 +1,5 @@
+import type { Theme } from "./aiAssistantPanelTheme";
+
 export type ChatTaskStatus = "queued" | "running" | "needs_input" | "done" | "failed" | "canceled" | "interrupted" | string;
 
 export interface ChatTaskView {
@@ -120,6 +122,54 @@ export function chatTaskCardMessage(task: ChatTaskView, timestamp = Date.now()):
         localFilePaths: task.artifactPaths,
         timestamp,
     };
+}
+
+/**
+ * Card/tray title for people. Dispatch titles are the first 72 runes of the
+ * worker prompt, which often opens with a working-directory banner the
+ * dispatcher prepended ("工作目录：C:\…\作业。任务两步：1) …"). The job is
+ * the interesting part; the path is chrome. Unknown shapes pass through.
+ */
+export function chatTaskDisplayTitle(task: Pick<ChatTaskView, "title">): string {
+    const raw = String(task.title || "").trim();
+    let title = raw
+        .replace(/^(?:工作目录|Working directory)\s*[：:][^。\n]*?(?:[。]\s*|[.]\s|\n+)\s*/i, "")
+        .replace(/^任务[一二两三四五六七八九十\d]+\s*步\s*[：:]\s*/, "")
+        .replace(/^Task\s+steps?\s*[：:]\s*/i, "")
+        .trim();
+    if (!title) title = raw;
+    return title;
+}
+
+export type ChatTaskTone = "accent" | "attention" | "good" | "bad" | "muted";
+
+/** Tokens the card and tray need to tint task status. Structural so callers can pass any Theme. */
+export type ChatTaskToneTheme = Pick<Theme, "btnColor" | "errorText" | "textMuted" | "isDark">;
+
+export function chatTaskStatusTone(status: string): ChatTaskTone {
+    switch (status) {
+        case "running":
+        case "queued":
+            return "accent";
+        case "needs_input":
+            return "attention";
+        case "done":
+            return "good";
+        case "failed":
+            return "bad";
+        default:
+            return "muted";
+    }
+}
+
+export function chatTaskToneColor(theme: ChatTaskToneTheme, tone: ChatTaskTone): string {
+    switch (tone) {
+        case "accent": return theme.btnColor || "#2563eb";
+        case "attention": return theme.isDark ? "#fbbf24" : "#b45309";
+        case "good": return theme.isDark ? "#4ade80" : "#15803d";
+        case "bad": return theme.errorText || "#dc2626";
+        default: return theme.textMuted;
+    }
 }
 
 export function chatTaskCardSummary(task: ChatTaskView): string {

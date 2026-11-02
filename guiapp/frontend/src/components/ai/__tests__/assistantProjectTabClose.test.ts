@@ -45,7 +45,8 @@ describe("closeAssistantProjectTab", () => {
         }));
 
         expect(abandonSkillRecording).toHaveBeenCalledTimes(1);
-        expect(closeTab).toHaveBeenCalledWith("tab-1");
+        // 无 options 时实现显式透传 undefined，运行语义与省略相同。
+        expect(closeTab).toHaveBeenCalledWith("tab-1", undefined);
     });
 
     it("leaves another tab's recording alone", () => {

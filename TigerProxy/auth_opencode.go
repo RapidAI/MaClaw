@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // OpenCodeLoginInfo is returned when the OpenCode key page has been opened.
@@ -277,9 +279,12 @@ func (u openCodeUpstream) DoModels(ctx context.Context, endpoint, apiKey, _ stri
 }
 
 func (u openCodeUpstream) DoChatCompletions(ctx context.Context, endpoint, apiKey, clientName string, body []byte, accept string, stream bool) (*http.Response, error) {
-	endpoint = openCodeGoEndpoint(endpoint)
 	body = codegenproxy.PrepareOpenAICompatChatBody(body)
 	body = codegenproxy.StripCodexClientMarkers(endpoint, body)
+	if resp, handled, err := u.serveOpenCodeFree(ctx, endpoint, apiKey, body, stream); handled {
+		return resp, err
+	}
+	endpoint = openCodeGoEndpoint(endpoint)
 	var upstreamStream bool
 	endpoint, body, upstreamStream = finishOpenCodeChat(endpoint, body, stream)
 	session := openCodeSessionForBody(body)
@@ -296,6 +301,104 @@ func (u openCodeUpstream) DoChatCompletions(ctx context.Context, endpoint, apiKe
 	return u.collectOpenCodeNonStream(resp)
 }
 
+// serveOpenCodeFree answers a Zen free model on opencode.ai with the same
+// identified client the Maclaw GUI and HubCenter use. A local test server
+// is left on the ordinary path. handled is true once that client was used.
+func (u openCodeUpstream) serveOpenCodeFree(ctx context.Context, endpoint, apiKey string, body []byte, stream bool) (*http.Response, bool, error) {
+	model, forwarded, ok := openCodeFreeClientRequest(endpoint, body)
+	if !ok {
+		return nil, false, nil
+	}
+	parsed, err := corellm.CompleteOpenCodeFreeClient(corellm.OpenCodeFreeCallContext(ctx, apiKey), forwarded)
+	if err != nil {
+		var httpErr *corellm.HTTPStatusError
+		if errors.As(err, &httpErr) {
+			return jsonHTTPResponse(httpErr.StatusCode, httpErr.Body), true, nil
+		}
+		return nil, true, err
+	}
+	resp, err := openCodeFreeClientResponse(model, parsed, openCodeRequestToolNames(body), stream)
+	return resp, true, err
+}
+
+// openCodeFreeClientRequest selects a free-catalog id on opencode.ai and
+// rewrites retired ids such as big-pickle. Other hosts stay unchanged so
+// tests can still observe the request they stub.
+func openCodeFreeClientRequest(endpoint string, body []byte) (model string, forwarded []byte, ok bool) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Host == "" || !corelib.IsOpenCodeHost(parsed.Hostname()) {
+		return "", nil, false
+	}
+	model = corelib.OpenCodeWireModel(endpoint, "", openCodeBodyModel(body))
+	if !corelib.IsOpenCodeZenFreeModel(model) {
+		return "", nil, false
+	}
+	return model, rewriteOpenCodeModelValue(body, model), true
+}
+
+func openCodeRequestToolNames(body []byte) []string {
+	var payload struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(payload.Tools))
+	for _, raw := range payload.Tools {
+		var item map[string]any
+		if json.Unmarshal(raw, &item) != nil {
+			continue
+		}
+		if name := openAIFunctionToolName(item); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func openCodeFreeClientResponse(model string, parsed *corellm.Response, callerTools []string, stream bool) (*http.Response, error) {
+	if parsed == nil {
+		return nil, fmt.Errorf("opencode free client returned an empty response")
+	}
+	for i := range parsed.Choices {
+		parsed.Choices[i] = corellm.PresentOpenCodeFreeChoice(callerTools, parsed.Choices[i])
+	}
+	id := strings.TrimSpace(parsed.ResponseID)
+	if id == "" {
+		id = "chatcmpl-opencode"
+	}
+	raw, err := json.Marshal(struct {
+		ID      string           `json:"id"`
+		Object  string           `json:"object"`
+		Model   string           `json:"model"`
+		Choices []corellm.Choice `json:"choices"`
+		Usage   *corellm.Usage   `json:"usage,omitempty"`
+	}{
+		ID:      id,
+		Object:  "chat.completion",
+		Model:   model,
+		Choices: parsed.Choices,
+		Usage:   parsed.Usage,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !stream {
+		return jsonHTTPResponse(http.StatusOK, raw), nil
+	}
+	sse, ok := chatCompletionJSONToSSE(raw)
+	if !ok {
+		return jsonHTTPResponse(http.StatusBadGateway, raw), nil
+	}
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        http.StatusText(http.StatusOK),
+		Header:        http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:          io.NopCloser(bytes.NewReader(sse)),
+		ContentLength: int64(len(sse)),
+	}, nil
+}
+
 func (u openCodeUpstream) collectLimitBytes() int {
 	if u.collectLimit > 0 {
 		return u.collectLimit
@@ -303,10 +406,9 @@ func (u openCodeUpstream) collectLimitBytes() int {
 	return 10 << 20
 }
 
-// finishOpenCodeChat sends glm-5.3-flash-free and deepseek-v4.1-flash-free to
-// Zen. Those ids are absent from the Go gateway. Zen accepts them when the
-// session id uses the descending layout and the body streams with bash and
-// read. Other models stay on the Go gateway.
+// finishOpenCodeChat is the path for a host that is not opencode.ai, and for
+// metered models. opencode.ai free-catalog ids are sent by serveOpenCodeFree
+// before this runs. A local test server still comes through here.
 func finishOpenCodeChat(endpoint string, body []byte, stream bool) (string, []byte, bool) {
 	body = rewriteOpenCodeZenFreeModel(body)
 	if openCodeZenFreeModel(openCodeBodyModel(body)) {
@@ -758,6 +860,9 @@ func chatCompletionJSONToSSE(raw []byte) ([]byte, bool) {
 	}
 	if calls, ok := indexedChatToolCalls(msg["tool_calls"]); ok {
 		delta["tool_calls"] = calls
+	}
+	if reasoning, _ := msg["reasoning_content"].(string); reasoning != "" {
+		delta["reasoning_content"] = reasoning
 	}
 	finish, _ := choice["finish_reason"].(string)
 	if finish == "" {

@@ -864,7 +864,10 @@ function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
 }
 
 /** Render a Mermaid fenced block while keeping an inspectable source fallback. */
-export function AssistantMermaidDiagram({ code, theme, lang }: { code: string; theme: Theme; lang?: string }) {
+export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code: string; theme: Theme; lang?: string }) {
+    // lang 省略时回落到产品默认表面语言（简体中文）：面板总是显式传 lang，
+    // 单独渲染（预览 / 测试）不该变成英文界面。
+    const lang = langProp || "zh-Hans";
     const [svg, setSvg] = React.useState("");
     const [error, setError] = React.useState("");
     const [zoom, setZoom] = React.useState(DEFAULT_MERMAID_ZOOM);

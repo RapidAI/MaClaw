@@ -9,7 +9,7 @@ function wailsErrorText(err: unknown): string {
     return String(err || "");
 }
 
-export function TaskResultExportButton({ filePath, lang }: { filePath: string; lang: string }) {
+export function TaskResultExportButton({ filePath, lang, testIdSuffix = "" }: { filePath: string; lang: string; testIdSuffix?: string }) {
     const [status, setStatus] = React.useState<"idle" | "busy" | "done" | "error">("idle");
     const [errorMsg, setErrorMsg] = React.useState("");
     const [savedPath, setSavedPath] = React.useState("");
@@ -73,7 +73,7 @@ export function TaskResultExportButton({ filePath, lang }: { filePath: string; l
     return (
         <button
             type="button"
-            data-testid="task-result-export-btn"
+            data-testid={`task-result-export-btn${testIdSuffix}`}
             title={title}
             aria-busy={status === "busy"}
             aria-live="polite"

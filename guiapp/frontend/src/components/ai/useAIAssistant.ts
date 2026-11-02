@@ -6,7 +6,7 @@ import type { AgentView } from "./agentViewTypes";
 import { appendPromptHistory, normalizePromptHistory, promptHistoryFromPersisted, PROMPT_HISTORY_LIMIT, type PromptHistoryAttachment, type PromptHistoryEntry } from "./promptHistory";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
-import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, fileTerminalResponseWithoutRound, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
+import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertTaskSessionKey, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, fileTerminalResponseWithoutRound, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay, type RolePrefixStreamCursor } from "./rolePrefixDisplay";
 import { isHistoryResetCommandText } from "./composeAction";
@@ -206,7 +206,7 @@ function projectPathFromSessionKey(sessionKey?: string): string {
 }
 
 function deriveSendSessionKey(options?: SendMessageOptions): string {
-    const expertKey = expertSessionKey(options?.expert_id);
+    const expertKey = expertTaskSessionKey(options?.expert_id, options?.project_path);
     if (expertKey) return expertKey;
     const sessionKey = projectSessionKey(options?.project_path);
     return sessionKey || 'desktop-user';
@@ -689,20 +689,29 @@ const MAX_LIVE_CODING_PROGRESS_MESSAGES = 20;
 // independent cap so reducing the tool tray does not hide useful milestones.
 const MAX_REASONING_STATUS_MESSAGES = 30;
 const HEARTBEAT_PROGRESS_TEXT = "__heartbeat__";
-const GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXT = "收到，正在处理";
+const GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXTS = new Set([
+    "收到，正在处理",
+    "Got it, working on it...",
+    "Хүлээн авлаа, боловсруулж байна...",
+]);
 
 function isHeartbeatProgressText(progressText: unknown): boolean {
     return String(progressText || '').trim() === HEARTBEAT_PROGRESS_TEXT;
+}
+
+function stripProgressStatusLabel(text: string): string {
+    return text
+        .replace(/^\[Status\]\s*/i, "")
+        .replace(/^\[Төлөв\]\s*/u, "")
+        .replace(/^(?:\[|〔|【)\s*(?:进度|progress)\s*(?:\]|〕|】)\s*/i, "");
 }
 
 function shouldHideProgressText(progressText: string): boolean {
     const trimmed = progressText.trim();
     if (!trimmed) return true;
     // A bare acknowledgement adds no task detail; retain meaningful milestones instead.
-    const withoutStatusLabel = trimmed
-        .replace(/^\[Status\]\s*/i, "")
-        .replace(/^(?:\[|〔|【)\s*(?:进度|progress)\s*(?:\]|〕|】)\s*/i, "");
-    if (withoutStatusLabel === GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXT) return true;
+    const withoutStatusLabel = stripProgressStatusLabel(trimmed);
+    if (GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXTS.has(withoutStatusLabel)) return true;
     if (trimmed.includes("命令仍在执行中")) return true;
     return isHeartbeatProgressText(trimmed);
 }
@@ -5892,12 +5901,17 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const renderableTerminal = hasRenderableTerminalPayload(normalized);
             if (!round || round.phase === 'idle') {
                 // The live placeholder is gone. The payload is still this
-                // session's turn record, and this request has ended.
-                if (!round && fileTerminalResponseWithoutRound({
-                    hasRound: false,
-                    sessionKey: eventSessionKey,
-                    renderable: renderableTerminal,
-                })) {
+                // session's turn record, and this request has ended. Filed
+                // only when it belongs to the transcript being written:
+                // another task's outcome must not surface here (it shows in
+                // its own tab instead, same rule as the recovery path).
+                if (!round
+                    && isMatchingSessionEvent(normalized, activeSessionKeyForEvents())
+                    && fileTerminalResponseWithoutRound({
+                        hasRound: false,
+                        sessionKey: eventSessionKey,
+                        renderable: renderableTerminal,
+                    })) {
                     const assistantMessageId = nextId();
                     setMessages(prev => {
                         if (responseRequestId && hasRoundMessage(prev, '', responseRequestId)) {
@@ -6457,7 +6471,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (!isSessionScopedAction) return options;
         const activeSessionKey = activeSessionKeyForEvents();
         const activeExpertId = expertIdFromSessionKey(activeSessionKey);
-        if (activeExpertId) return { ...(options || {}), expert_id: activeExpertId };
+        if (activeExpertId) {
+            const taskPath = projectPathFromSessionKey(activeSessionKey);
+            const routed: SendMessageOptions = { ...(options || {}), expert_id: activeExpertId };
+            if (taskPath) routed.project_path = taskPath;
+            return routed;
+        }
         const activeProjectPath = projectPathFromSessionKey(activeSessionKey);
         if (!activeProjectPath) return options;
         return { ...(options || {}), project_path: activeProjectPath };

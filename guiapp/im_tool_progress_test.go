@@ -218,6 +218,14 @@ func TestStyleIMIntermediateProgress(t *testing.T) {
 	if !strings.HasPrefix(en, "[Status] ") {
 		t.Fatalf("got %q, want English status label", en)
 	}
+	toolMN := "Багаж · Файл унших\nnotes.md"
+	if styleIMIntermediateProgress("mn", toolMN) != toolMN {
+		t.Fatalf("mongolian tool card should pass through, got %q", styleIMIntermediateProgress("mn", toolMN))
+	}
+	fullPath := imThinkingStatus("mn", i18n.MsgStatusFullPath)
+	if !strings.HasPrefix(fullPath, "[Status] ") || strings.Contains(fullPath, "执行") {
+		t.Fatalf("thinking status = %q", fullPath)
+	}
 	live := "[LiveStatus:llm-retry] 重试 1/5：API 暂时不可用，2 秒后重试"
 	if styleIMIntermediateProgress("zh", live) != live {
 		t.Fatalf("live status marker must stay at the start, got %q", styleIMIntermediateProgress("zh", live))

@@ -14,13 +14,16 @@ import (
 )
 
 const (
-	OpenCodeSessionHeader = "x-opencode-session"
-	openCodeSeedByteLimit = 8192
-	// OpenCodeClientVersion is the semver carried in the official client's
-	// User-Agent, `opencode/${InstallationVersion}` from
-	// packages/opencode/src/session/llm/request.ts. The Zen free-tier gate
-	// rejects a bare "opencode" and any version below 1.17.0.
-	OpenCodeClientVersion = "1.18.31"
+	OpenCodeSessionHeader   = "x-opencode-session"
+	OpenCodeSessionIDHeader = "x-opencode-session-id"
+	OpenCodeRequestHeader   = "x-opencode-request"
+	OpenCodeProjectHeader = "x-opencode-project"
+	OpenCodeProjectGlobal = "global"
+	openCodeSeedByteLimit   = 8192
+	// OpenCodeClientVersion is the token after "opencode/" in the User-Agent
+	// the OpenCode 2 client sends: opencode/latest/<semver>/cli.
+	// A bare "opencode" is rejected.
+	OpenCodeClientVersion = "latest/2.2.5/cli"
 	openCodeBase62        = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
 
@@ -113,7 +116,18 @@ func OpenCodeDescendingSessionID(parts ...string) string {
 	return openCodeClientSessionIDAt(time.Now().UTC().Truncate(time.Hour), openCodeDescendingTimeHex, parts...)
 }
 
+// OpenCodeClientRequestID is the x-opencode-request value produced by
+// Identifier.ascending("message"): "msg_" plus the same 12 hex + 14 base62
+// body as a session id. The same parts stay on one id until the hour changes.
+func OpenCodeClientRequestID(parts ...string) string {
+	return openCodePrefixedIDAt("msg_", time.Now().UTC().Truncate(time.Hour), openCodeTimeHex, parts...)
+}
+
 func openCodeClientSessionIDAt(now time.Time, timeHex func(int64) string, parts ...string) string {
+	return openCodePrefixedIDAt("ses_", now, timeHex, parts...)
+}
+
+func openCodePrefixedIDAt(prefix string, now time.Time, timeHex func(int64) string, parts ...string) string {
 	h := sha256.New()
 	wrote := false
 	for _, part := range parts {
@@ -149,7 +163,7 @@ func openCodeClientSessionIDAt(now time.Time, timeHex func(int64) string, parts 
 	if allSame {
 		random[len(random)-1] = openCodeBase62[(int(same)+1)%len(openCodeBase62)]
 	}
-	return "ses_" + timeHex(now.UnixMilli()) + string(random[:])
+	return prefix + timeHex(now.UnixMilli()) + string(random[:])
 }
 
 // openCodeTimeHex encodes milliseconds the way Identifier.create does:
@@ -377,27 +391,6 @@ func openCodeFreeTierSessionID(id string) bool {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
 }
 
-func isOfficialOpenCodeSessionID(id string) bool {
-	const hexLen, tailLen = 12, 14
-	if len(id) != len("ses_")+hexLen+tailLen || !strings.HasPrefix(id, "ses_") {
-		return false
-	}
-	body := id[len("ses_"):]
-	for i := 0; i < hexLen; i++ {
-		c := body[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	for i := hexLen; i < hexLen+tailLen; i++ {
-		c := body[i]
-		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
-			return false
-		}
-	}
-	return true
-}
-
 // rewriteOpenCodeUserAgent runs only after the request host is already known
 // to be OpenCode. It does not parse the URL again: the caller made that check.
 func rewriteOpenCodeUserAgent(req *http.Request, agent string) {
@@ -411,7 +404,7 @@ func rewriteOpenCodeUserAgent(req *http.Request, agent string) {
 	if !strings.EqualFold(ua, "opencode") {
 		return
 	}
-	req.Header.Set("User-Agent", "opencode/"+OpenCodeClientVersion)
+	req.Header.Set("User-Agent", OpenCodeClientUserAgent("opencode"))
 }
 
 // SetOpenCodeSessionHeaderIfNeeded stamps x-opencode-session on requests to
@@ -466,7 +459,64 @@ func ApplyOpenCodeSessionHeader(req *http.Request, cfg MaclawLLMConfig) {
 		if strings.TrimSpace(req.Header.Get("x-opencode-client")) == "" {
 			req.Header.Set("x-opencode-client", "cli")
 		}
+		stampOpenCodeClientHeaders(req)
 	}
+}
+
+// stampOpenCodeClientHeaders adds the headers packages/opencode/src/session/llm/request.ts
+// sets for an opencode provider: the message id, the project, and a session-id mirror.
+func stampOpenCodeClientHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	sessionID := strings.TrimSpace(req.Header.Get(OpenCodeSessionHeader))
+	if sessionID != "" && strings.TrimSpace(req.Header.Get(OpenCodeSessionIDHeader)) == "" {
+		req.Header.Set(OpenCodeSessionIDHeader, sessionID)
+	}
+	if !isOfficialOpenCodeMessageID(req.Header.Get(OpenCodeRequestHeader)) {
+		req.Header.Set(OpenCodeRequestHeader, openCodeWireRequestID(sessionID))
+	}
+	if strings.TrimSpace(req.Header.Get(OpenCodeProjectHeader)) == "" {
+		req.Header.Set(OpenCodeProjectHeader, OpenCodeProjectGlobal)
+	}
+}
+
+func openCodeWireRequestID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return OpenCodeClientRequestID()
+	}
+	return OpenCodeClientRequestID(sessionID, "request")
+}
+
+func isOfficialOpenCodeMessageID(id string) bool {
+	return isOfficialOpenCodePrefixedID(id, "msg_")
+}
+
+func isOfficialOpenCodeSessionID(id string) bool {
+	return isOfficialOpenCodePrefixedID(id, "ses_")
+}
+
+func isOfficialOpenCodePrefixedID(id, prefix string) bool {
+	const hexLen, tailLen = 12, 14
+	id = strings.TrimSpace(id)
+	if len(id) != len(prefix)+hexLen+tailLen || !strings.HasPrefix(id, prefix) {
+		return false
+	}
+	body := id[len(prefix):]
+	for i := 0; i < hexLen; i++ {
+		c := body[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	for i := hexLen; i < hexLen+tailLen; i++ {
+		c := body[i]
+		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
 }
 
 func openCodeModelID(model string) string {
@@ -493,8 +543,9 @@ func IsOpenCodeZenFreeModel(model string) bool {
 }
 
 // OpenCodeZenAgentModel reports a Zen free model that rejects a request
-// unless it streams and advertises the official bash and read tools.
-// Every Zen-only free id is gated this way. Go-native free ids are not.
+// unless it streams and advertises the official tool set: shell plus at
+// least five known names (read, glob, grep, edit, write). Every Zen-only
+// free id is gated this way. Go-native free ids are not.
 func OpenCodeZenAgentModel(model string) bool {
 	if openCodeModelID(model) == "big-pickle" {
 		return false
@@ -504,7 +555,7 @@ func OpenCodeZenAgentModel(model string) bool {
 
 // OpenCodeUsesResponsesAPI reports Zen free models that reject Chat
 // Completions and the Anthropic messages API. They answer on the Responses
-// API when the request streams and includes the official bash and read tools.
+// API when the request streams and includes the official tool set.
 func OpenCodeUsesResponsesAPI(rawURL, model string) bool {
 	if !IsOpenCodeURL(rawURL) {
 		return false
@@ -512,25 +563,39 @@ func OpenCodeUsesResponsesAPI(rawURL, model string) bool {
 	return openCodeModelID(model) == "muse-spark-1.2-contributor-free"
 }
 
-// OpenCodeChatEndpoint sends Zen-only free models to /zen/v1 and every other
-// OpenCode model to /zen/go/v1. URLs that are not OpenCode are returned as given.
+// OpenCodeWireModel is the model id sent upstream. A -free id and its metered
+// twin are different models: the suffix is kept, so a free model is never
+// rewritten onto the Go model that draws allowance. The retired big-pickle id
+// is the free GLM catalog name.
+func OpenCodeWireModel(rawURL, key, model string) string {
+	_, _ = rawURL, key
+	id := openCodeModelID(model)
+	if id == "" {
+		return ""
+	}
+	if id == "big-pickle" {
+		return "glm-5.3-flash-free"
+	}
+	return id
+}
+
+// OpenCodeChatEndpoint sends the request to the OpenCode 2 inference gateway
+// selected by the saved URL and the model. Free-catalog ids stay on the
+// standard inference gateway with that same id. Metered ids use Go. URLs that
+// are not OpenCode are returned as given.
 func OpenCodeChatEndpoint(rawURL, model string) string {
+	return OpenCodeChatEndpointFor(rawURL, model, "")
+}
+
+// OpenCodeChatEndpointFor is OpenCodeChatEndpoint with the provider key. An
+// empty key is the anonymous free tier.
+func OpenCodeChatEndpointFor(rawURL, model, key string) string {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed.Host == "" || !IsOpenCodeHost(parsed.Hostname()) {
 		return rawURL
 	}
-	path := parsed.EscapedPath()
-	const zenPrefix = "/zen/v1"
-	const goPrefix = "/zen/go/v1"
-	free := IsOpenCodeZenFreeModel(model)
-	switch {
-	case free && (path == goPrefix || strings.HasPrefix(path, goPrefix+"/")):
-		parsed.Path = zenPrefix + strings.TrimPrefix(path, goPrefix)
-	case !free && (path == zenPrefix || strings.HasPrefix(path, zenPrefix+"/")):
-		parsed.Path = goPrefix + strings.TrimPrefix(path, zenPrefix)
-	default:
-		return rawURL
-	}
+	suffix := openCodePathSuffix(parsed.EscapedPath())
+	parsed.Path = openCodeRoutePath(openCodeUsesGo(rawURL, model, key), suffix)
 	parsed.RawPath = ""
 	if parsed.Scheme == "" {
 		parsed.Scheme = "https"
@@ -539,11 +604,63 @@ func OpenCodeChatEndpoint(rawURL, model string) string {
 }
 
 // OpenCodeUpstreamBase is the SDK base URL for model. A chat completions
-// suffix is removed so the client appends it once.
+// suffix is removed so the client appends it once. An empty key is the
+// anonymous free tier.
 func OpenCodeUpstreamBase(rawURL, model string) string {
-	endpoint := strings.TrimRight(OpenCodeChatEndpoint(rawURL, model), "/")
+	return OpenCodeUpstreamBaseFor(rawURL, model, "")
+}
+
+// OpenCodeUpstreamBaseFor is OpenCodeUpstreamBase with the provider key.
+func OpenCodeUpstreamBaseFor(rawURL, model, key string) string {
+	endpoint := strings.TrimRight(OpenCodeChatEndpointFor(rawURL, model, key), "/")
 	endpoint = strings.TrimSuffix(endpoint, "/chat/completions")
+	endpoint = strings.TrimSuffix(endpoint, "/responses")
 	return strings.TrimRight(endpoint, "/")
+}
+
+func openCodeUsesGo(rawURL, model, key string) bool {
+	if !IsOpenCodeURL(rawURL) {
+		return false
+	}
+	// The -free catalog entry is not the metered Go model. Sending the shorter
+	// id draws Go allowance, so a free id never follows the Go route.
+	if IsOpenCodeZenFreeModel(model) {
+		return false
+	}
+	_ = key
+	return true
+}
+
+func openCodePathSuffix(path string) string {
+	for _, prefix := range []string{
+		"/zen/go/v1",
+		"/zen/v1",
+		"/inference/go/openai/v1",
+		"/inference/openai/v1",
+		"/inference/go/v1",
+		"/inference/v1",
+	} {
+		if path == prefix {
+			return ""
+		}
+		if strings.HasPrefix(path, prefix+"/") {
+			return path[len(prefix):]
+		}
+	}
+	return ""
+}
+
+func openCodeRoutePath(goGateway bool, suffix string) string {
+	if suffix == "/models" {
+		if goGateway {
+			return "/inference/go/v1/models"
+		}
+		return "/inference/v1/models"
+	}
+	if goGateway {
+		return "/inference/go/openai/v1" + suffix
+	}
+	return "/inference/openai/v1" + suffix
 }
 
 func newOpenCodeSessionUUID(raw []byte, version byte) string {

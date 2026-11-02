@@ -6,6 +6,8 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "sdkconfig.h"
+
 #include "buddy_display.h"
 #include "buddy_pet.h"
 #include "buddy_protocol.h"
@@ -19,11 +21,17 @@ static void ui_task(void *arg) {
     int prev_page = -1;
     for (;;) {
         buddy_state_tick();
-        buddy_display_tick();
 
         buddy_view_t view;
         buddy_state_get(&view);
         const int page = buddy_ui_page(&view);
+        // A running task or an error page is not idle. Counting those frames
+        // as activity keeps the backlight up; the idle timer starts once the
+        // glass returns to standby.
+        if (page == BUDDY_PAGE_TASKS || page == BUDDY_PAGE_PROMPT) {
+            buddy_display_note_activity();
+        }
+        buddy_display_tick();
 
         // One sound per meaningful page transition. Boot (prev_page < 0) is
         // silent, and returning from the celebration to the task page does not
@@ -38,6 +46,26 @@ static void ui_task(void *arg) {
             }
         }
         prev_page = page;
+
+        // One chime when a new row needs a look. The same id stays quiet.
+        // Clearing the row arms the next appearance. This page does not hold
+        // the backlight; accepting the state frame already lit it once.
+        static char chimed_id[24];
+        static char chimed_title[BUDDY_TITLE_BYTES + 1];
+        if (view.attention.title[0]) {
+            const bool same = view.attention.id[0]
+                                  ? strcmp(chimed_id, view.attention.id) == 0
+                                  : chimed_id[0] == '\0' &&
+                                        strcmp(chimed_title, view.attention.title) == 0;
+            if (view.online && !same) {
+                buddy_sound_event(BUDDY_SOUND_ATTENTION);
+                strlcpy(chimed_id, view.attention.id, sizeof(chimed_id));
+                strlcpy(chimed_title, view.attention.title, sizeof(chimed_title));
+            }
+        } else {
+            chimed_id[0] = '\0';
+            chimed_title[0] = '\0';
+        }
 
         buddy_ui_render(&view, esp_timer_get_time() / 1000);
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -67,7 +95,11 @@ void app_main(void) {
     ESP_ERROR_CHECK(buddy_protocol_start());
 
     if (touch_err != ESP_OK) {
+#if CONFIG_BUDDY_PANEL_NV3023_240
+        buddy_protocol_send_log("warn", "front key unavailable");
+#else
         buddy_protocol_send_log("warn", "touch controller unavailable");
+#endif
     }
     if (sound_err != ESP_OK) {
         buddy_protocol_send_log("warn", "sound codec unavailable");

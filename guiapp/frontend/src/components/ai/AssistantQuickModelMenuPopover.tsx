@@ -24,6 +24,7 @@ import { modelIdsEqual } from "./assistantQuickModelMenu";
 import type { Theme } from "./aiAssistantPanelTheme";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { capabilityBandName, capabilityModelMenuLabel, capabilityMultiplierFor, orderCapabilityModels } from "../../utils/capabilityModelLabel";
+import { presetProviderDisplayName } from "../remote/presetProviderLabel";
 
 const MENU_MIN_WIDTH = 200;
 const MENU_MAX_WIDTH = 300;
@@ -52,6 +53,7 @@ export type AssistantQuickModelMenuPopoverProps = {
     showCapabilityDefaults?: boolean;
     currentModel?: string;
     modelsLoading?: boolean;
+    lang?: string;
     /** Stable provider id (legacy callers may supply a display name as fallback). */
     onSelectProvider: (providerID: string) => void;
     onSelectModel: (modelId: string) => void;
@@ -106,6 +108,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
     showCapabilityDefaults = false,
     currentModel,
     modelsLoading,
+    lang = "",
     onSelectProvider,
     onSelectModel,
     onClose,
@@ -367,14 +370,15 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                     <div
                         data-testid="qs-model-menu-current-provider"
                         style={itemStyle({ active: true, focused: false, interactive: false })}
-                        title={currentProvider.name}
+                        title={presetProviderDisplayName(lang, currentProvider.name)}
                     >
                         <span aria-hidden="true" style={checkColStyle}>✓</span>
-                        <span style={labelStyleBase}>{currentProvider.name}</span>
+                        <span style={labelStyleBase}>{presetProviderDisplayName(lang, currentProvider.name)}</span>
                     </div>
                     {switchableProviders.map((p, i) => {
                         const index = i; // providers come first in actions
                         const focused = index === activeIndex;
+                        const providerLabel = presetProviderDisplayName(lang, p.name);
                         return (
                             <button
                                 key={String(p.id || p.name)}
@@ -384,7 +388,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                                 aria-selected={false}
                                 data-qs-option-index={index}
                                 style={itemStyle({ active: false, focused, interactive: true })}
-                                title={p.name}
+                                title={providerLabel}
                                 onMouseEnter={() => {
                                     skipScrollRef.current = true;
                                     setActive(index);
@@ -392,7 +396,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                                 onClick={() => onSelectProvider(String(p.id || p.name).trim())}
                             >
                                 <span aria-hidden="true" style={checkColStyle} />
-                                <span style={labelStyleBase}>{p.name}</span>
+                                <span style={labelStyleBase}>{providerLabel}</span>
                             </button>
                         );
                     })}

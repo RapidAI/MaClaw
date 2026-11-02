@@ -3,10 +3,15 @@ import { describe, expect, it } from 'vitest';
 import {
     CODEGEN_USER_AGENT,
     KNOWN_USER_AGENTS,
+    agentIdentityUnchanged,
+    canonicalAgentType,
     commitCustomAgentValue,
     customAgentSeedForProvider,
+    withLiveAgentType,
     editableCustomAgentValue,
     effectiveAgentType,
+    explicitCustomAgentValue,
+    isExplicitCustomAgent,
     isKnownUserAgent,
     selectableAgentType,
 } from '../userAgent';
@@ -62,6 +67,13 @@ describe('userAgent helpers', () => {
             expect(selectableAgentType(provider({ agent_type: 'TigerClaw' }))).toBe(CODEGEN_USER_AGENT);
             expect(selectableAgentType(provider({ agent_type: CODEGEN_USER_AGENT }))).toBe(CODEGEN_USER_AGENT);
         });
+
+        it('selects the preset chip for case and legacy spellings', () => {
+            expect(canonicalAgentType('cursor')).toBe('Cursor');
+            expect(canonicalAgentType('  OPENCLAW ')).toBe('openclaw');
+            expect(selectableAgentType(provider({ agent_type: 'opencode' }))).toBe('OpenCode');
+            expect(selectableAgentType(provider({ agent_type: 'claude-code/2.0.0' }))).toBe('claude code 2.0');
+        });
     });
 
     describe('isKnownUserAgent', () => {
@@ -92,6 +104,63 @@ describe('userAgent helpers', () => {
             expect(isKnownUserAgent('')).toBe(false);
             expect(isKnownUserAgent('custom-client')).toBe(false);
             expect(isKnownUserAgent('my-agent')).toBe(false);
+        });
+    });
+
+    describe('isExplicitCustomAgent', () => {
+        it('is false for an empty default and for preset identities', () => {
+            expect(isExplicitCustomAgent(provider({}))).toBe(false);
+            expect(isExplicitCustomAgent(provider({ agent_type: '' }))).toBe(false);
+            expect(isExplicitCustomAgent(provider({ agent_type: 'openclaw' }))).toBe(false);
+            expect(isExplicitCustomAgent(provider({ agent_type: 'Claude Code' }))).toBe(false);
+            expect(isExplicitCustomAgent(provider({ agent_type: 'tigerclaw' }))).toBe(false);
+        });
+
+        it('is true for a typed identity such as workbuddy', () => {
+            expect(isExplicitCustomAgent(provider({ agent_type: 'workbuddy' }))).toBe(true);
+            expect(isExplicitCustomAgent(provider({ agent_type: '  my-agent  ' }))).toBe(true);
+        });
+    });
+
+    describe('withLiveAgentType', () => {
+        const row = (agentType: string, passed = true) => ({
+            name: 'Custom1',
+            agent_type: agentType,
+            connection_test_passed: passed,
+        });
+
+        it('leaves the list untouched when the live agent is the stored or default identity', () => {
+            const implicit = [{ name: 'Custom1', agent_type: '', connection_test_passed: true }];
+            expect(withLiveAgentType(implicit, 0, 'openclaw')).toBe(implicit);
+            const saved = [row('workbuddy')];
+            expect(withLiveAgentType(saved, 0, 'workbuddy')).toBe(saved);
+            const cased = [row('cursor')];
+            expect(withLiveAgentType(cased, 0, 'Cursor')).toBe(cased);
+        });
+
+        it('leaves a provider default and a display alias untouched', () => {
+            const claude = [{ name: 'Custom1', import_source: 'claude_code', agent_type: '', connection_test_passed: true }];
+            expect(withLiveAgentType(claude, 0, 'claude code 2.0')).toBe(claude);
+            const codegen = [{ name: 'CodeGen', auth_type: 'sso', agent_type: '', connection_test_passed: true }];
+            expect(withLiveAgentType(codegen, 0, 'QAgent')).toBe(codegen);
+            const alias = [row('Claude Code')];
+            expect(withLiveAgentType(alias, 0, 'claude code 2.0')).toBe(alias);
+            expect(agentIdentityUnchanged({ name: 'Custom1', agent_type: 'cursor' }, 'Cursor')).toBe(true);
+        });
+
+        it('applies a real identity change and requires a new connection test', () => {
+            const saved = [row('workbuddy')];
+            expect(withLiveAgentType(saved, 0, 'myagent')).toEqual([
+                { name: 'Custom1', agent_type: 'myagent', connection_test_passed: false },
+            ]);
+        });
+    });
+
+    describe('explicitCustomAgentValue', () => {
+        it('returns the trimmed custom identity and nothing for a preset', () => {
+            expect(explicitCustomAgentValue(provider({ agent_type: '  workbuddy  ' }))).toBe('workbuddy');
+            expect(explicitCustomAgentValue(provider({ agent_type: 'openclaw' }))).toBe('');
+            expect(explicitCustomAgentValue(provider({ agent_type: '' }))).toBe('');
         });
     });
 

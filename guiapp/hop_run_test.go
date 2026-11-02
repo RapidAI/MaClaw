@@ -1,12 +1,41 @@
 package guiapp
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+var errHopExecutionUnreadable = errors.New("plan execution store is unavailable")
+
+type hopUnreadableExecutionStore struct{}
+
+func (hopUnreadableExecutionStore) Acquire(tool.PlanExecutionRecord) (tool.PlanExecutionRecord, bool, error) {
+	return tool.PlanExecutionRecord{}, false, errHopExecutionUnreadable
+}
+
+func (hopUnreadableExecutionStore) Complete(tool.InvocationScope, string, tool.PlanExecutionState, string, string, time.Time) (tool.PlanExecutionRecord, error) {
+	return tool.PlanExecutionRecord{}, errHopExecutionUnreadable
+}
+
+func (hopUnreadableExecutionStore) SettleAwaitingReceipt(tool.InvocationScope, string, tool.PlanExecutionState, string, string, time.Time) (tool.PlanExecutionRecord, error) {
+	return tool.PlanExecutionRecord{}, errHopExecutionUnreadable
+}
+
+func (hopUnreadableExecutionStore) Execution(tool.InvocationScope, string) (tool.PlanExecutionRecord, error) {
+	return tool.PlanExecutionRecord{}, errHopExecutionUnreadable
+}
+
+func (hopUnreadableExecutionStore) Succeeded(tool.InvocationScope) (map[string]bool, error) {
+	return nil, errHopExecutionUnreadable
+}
+
+func (hopUnreadableExecutionStore) ReconcileStaleRunning(time.Time, time.Duration) (int, error) {
+	return 0, errHopExecutionUnreadable
+}
 
 func newHopRunTestSurface(t *testing.T) (*semanticCallSurface, tool.PlanExecutionStore) {
 	t.Helper()
@@ -138,6 +167,24 @@ func TestHopRunRequiredUnmetAndOptionalNeeds(t *testing.T) {
 	sibling := tool.PlannedSelection{ID: "sibling", NeedID: tool.RepeatSiblingNeedID("need:shell", 1)}
 	if hopSelectionRequired(sibling, nil, false) {
 		t.Fatal("repeat sibling became a separate completion obligation")
+	}
+	companion := tool.PlannedSelection{
+		ID:          "acquire",
+		NeedID:      "need:artifact.acquire.remote:47dfffbc86c8",
+		EvidenceIDs: []string{"intent:archetype_bundle"},
+		FitProof:    tool.FitProof{MatchedCapability: tool.CapabilityArtifactAcquireRemote},
+	}
+	if hopSelectionRequired(companion, nil, false) {
+		t.Fatal("archetype companion became required when optionality could not be recomputed")
+	}
+	baseline := tool.PlannedSelection{
+		ID:          "baseline-shell",
+		NeedID:      "need:zz-baseline:shell.execute.local:abc",
+		EvidenceIDs: []string{"intent:baseline_workspace"},
+		FitProof:    tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal},
+	}
+	if hopSelectionRequired(baseline, nil, false) {
+		t.Fatal("baseline workspace offer became a required effect")
 	}
 }
 
@@ -427,6 +474,255 @@ func TestHopRunFailedWebSearchSettlesWhenFetchSucceeds(t *testing.T) {
 	}
 	if !cb.RequiredEffectUnsettled() || settled.Remaining != 1 {
 		t.Fatalf("shell must still block, remaining=%d unsettled=%v", settled.Remaining, cb.RequiredEffectUnsettled())
+	}
+}
+
+func TestHopRunPendingWebSearchSettlesWhenFetchSucceeds(t *testing.T) {
+	newSurface := func(t *testing.T) (*semanticCallSurface, *sharedAgentLoopCallbacks, func(id string, state tool.PlanExecutionState)) {
+		t.Helper()
+		plan := tool.ToolPlan{
+			RootTaskID: "root-resume-weather",
+			ID:         "plan-resume-weather",
+			Selections: []tool.PlannedSelection{
+				{ID: "search", NeedID: "need:information.search.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+				{ID: "fetch", NeedID: "need:information.fetch.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationFetchWeb}},
+			},
+		}
+		store := tool.NewMemoryPlanExecutionStore()
+		issuer, err := tool.NewRandomInvocationIssuer()
+		if err != nil {
+			t.Fatal(err)
+		}
+		executor, err := tool.NewPlanExecutor(issuer, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		surface := &semanticCallSurface{
+			plan: plan,
+			scope: tool.InvocationScope{
+				RootTaskID: "root-resume-weather", PlanID: "plan-resume-weather",
+				SessionID: "session-resume", TurnID: "turn-resume", PrincipalID: "user-resume",
+			},
+			executor:  executor,
+			completed: map[string]bool{},
+		}
+		cb := &sharedAgentLoopCallbacks{semanticSurface: surface, checkpointRunID: "run-resume-weather", userText: "继续上次未完成任务"}
+		complete := func(id string, state tool.PlanExecutionState) {
+			t.Helper()
+			if _, _, err := store.Acquire(tool.PlanExecutionRecord{Scope: surface.scope, SelectionID: id}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Complete(surface.scope, id, state, "digest", "", time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return surface, cb, complete
+	}
+	_, fresh, completeFresh := newSurface(t)
+	completeFresh("fetch", tool.PlanExecutionSucceeded)
+	settled := fresh.hopRunSnapshot()
+	if !settled.Steps[0].Superseded || settled.Steps[0].Status != HopStepPending || settled.Steps[0].Evidence.State != "" {
+		t.Fatalf("fetch success must discharge a search this plan never started, without inventing an execution: %#v", settled.Steps[0])
+	}
+	if settled.Remaining != 0 || fresh.RequiredEffectUnsettled() {
+		t.Fatalf("recovered lookup still open: remaining=%d unsettled=%v", settled.Remaining, fresh.RequiredEffectUnsettled())
+	}
+	if got := hopMissingRequiredEffects(settled); len(got) != 0 {
+		t.Fatalf("discharged search still listed as missing: %#v", got)
+	}
+	if final := finalizeHopRun(settled, agent.LoopResult{}); final.Status != "completed" {
+		t.Fatalf("final=%#v", final)
+	}
+
+	_, noFetch, _ := newSurface(t)
+	if got := noFetch.hopRunSnapshot(); got.Steps[0].Superseded || got.Steps[0].Status != HopStepPending || !noFetch.RequiredEffectUnsettled() {
+		t.Fatalf("a search with no fetch must stay owed: %#v remaining=%d", got.Steps[0], got.Remaining)
+	}
+
+	_, failedFetch, completeFailed := newSurface(t)
+	completeFailed("fetch", tool.PlanExecutionFailed)
+	if got := failedFetch.hopRunSnapshot(); got.Steps[0].Superseded || !failedFetch.RequiredEffectUnsettled() {
+		t.Fatalf("a failed fetch is not the fact: %#v", got.Steps[0])
+	}
+}
+
+func TestHopRunFetchDoesNotSettleASecondWebSearch(t *testing.T) {
+	plan := tool.ToolPlan{
+		RootTaskID: "root-two-searches",
+		ID:         "plan-two-searches",
+		Selections: []tool.PlannedSelection{
+			{ID: "beijing", NeedID: "need:information.search.web:beijing", FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "shanghai", NeedID: "need:information.search.web:shanghai", FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "fetch", NeedID: "need:information.fetch.web:page", FitProof: tool.FitProof{MatchedCapability: hopInformationFetchWeb}},
+		},
+	}
+	store := tool.NewMemoryPlanExecutionStore()
+	issuer, err := tool.NewRandomInvocationIssuer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := tool.NewPlanExecutor(issuer, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	surface := &semanticCallSurface{
+		plan: plan,
+		scope: tool.InvocationScope{
+			RootTaskID: "root-two-searches", PlanID: "plan-two-searches",
+			SessionID: "session-two", TurnID: "turn-two", PrincipalID: "user-two",
+		},
+		executor:  executor,
+		completed: map[string]bool{},
+	}
+	complete := func(id string, state tool.PlanExecutionState) {
+		t.Helper()
+		if _, _, err := store.Acquire(tool.PlanExecutionRecord{Scope: surface.scope, SelectionID: id}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Complete(surface.scope, id, state, "digest", "", time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete("fetch", tool.PlanExecutionSucceeded)
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	got := cb.hopRunSnapshot()
+	if got.Steps[0].Superseded || got.Steps[1].Superseded || !cb.RequiredEffectUnsettled() {
+		t.Fatalf("one fetch must not discharge two unstarted searches: %#v %#v", got.Steps[0], got.Steps[1])
+	}
+	complete("beijing", tool.PlanExecutionFailed)
+	got = cb.hopRunSnapshot()
+	if got.Steps[0].Superseded || got.Steps[0].Status != HopStepFailed || got.Steps[1].Superseded || !cb.RequiredEffectUnsettled() {
+		t.Fatalf("a second required search keeps both facts open: %#v %#v", got.Steps[0], got.Steps[1])
+	}
+	complete("shanghai", tool.PlanExecutionFailed)
+	got = cb.hopRunSnapshot()
+	if got.Steps[0].Superseded || got.Steps[1].Superseded || got.Remaining != 2 || !cb.RequiredEffectUnsettled() {
+		t.Fatalf("one fetch must not discharge two failed searches: %#v %#v remaining=%d", got.Steps[0], got.Steps[1], got.Remaining)
+	}
+}
+
+func TestHopRunOptionalSearchRepeatDoesNotSplitTheLookup(t *testing.T) {
+	base := "need:information.search.web:weather"
+	plan := tool.ToolPlan{
+		RootTaskID: "root-resume-weather",
+		ID:         "plan-resume-repeat",
+		Selections: []tool.PlannedSelection{
+			{ID: "search", NeedID: base, FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "search-2", NeedID: tool.RepeatSiblingNeedID(base, 1), FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "fetch", NeedID: "need:information.fetch.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationFetchWeb}},
+		},
+	}
+	store := tool.NewMemoryPlanExecutionStore()
+	issuer, err := tool.NewRandomInvocationIssuer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := tool.NewPlanExecutor(issuer, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	surface := &semanticCallSurface{
+		plan: plan,
+		scope: tool.InvocationScope{
+			RootTaskID: "root-resume-weather", PlanID: "plan-resume-repeat",
+			SessionID: "session-resume", TurnID: "turn-resume", PrincipalID: "user-resume",
+		},
+		executor:  executor,
+		completed: map[string]bool{"fetch": true},
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	got := cb.hopRunSnapshot()
+	if !got.Steps[0].Superseded || got.Steps[0].Status != HopStepPending || got.Remaining != 0 || cb.RequiredEffectUnsettled() {
+		t.Fatalf("one required search plus an unused repeat still settles on the fetch: %#v remaining=%d", got.Steps[0], got.Remaining)
+	}
+	if got.Steps[1].Required || got.Steps[1].Superseded {
+		t.Fatalf("the repeat slot is not a second fact: %#v", got.Steps[1])
+	}
+}
+
+func TestHopRunUnreadableSearchStaysOpenWhenFetchSucceeds(t *testing.T) {
+	plan := tool.ToolPlan{
+		RootTaskID: "root-resume-weather",
+		ID:         "plan-resume-unreadable",
+		Selections: []tool.PlannedSelection{
+			{ID: "search", NeedID: "need:information.search.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "fetch", NeedID: "need:information.fetch.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationFetchWeb}},
+		},
+	}
+	issuer, err := tool.NewRandomInvocationIssuer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := tool.NewPlanExecutor(issuer, hopUnreadableExecutionStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	surface := &semanticCallSurface{
+		plan: plan,
+		scope: tool.InvocationScope{
+			RootTaskID: "root-resume-weather", PlanID: "plan-resume-unreadable",
+			SessionID: "session-resume", TurnID: "turn-resume", PrincipalID: "user-resume",
+		},
+		executor:  executor,
+		completed: map[string]bool{"fetch": true},
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	got := cb.hopRunSnapshot()
+	step := got.Steps[0]
+	if step.Superseded || step.Status != HopStepUnsettled || step.Evidence.State != tool.PlanExecutionUnknown || !cb.RequiredEffectUnsettled() {
+		t.Fatalf("a search whose record could not be read stays open: %#v", step)
+	}
+	if _, ok := surface.hopEvidence[hopEvidenceKey(surface, "search")]; ok {
+		t.Fatal("an unreadable execution must not be cached")
+	}
+}
+
+func TestHopRunAcquiredWebSearchStaysOpenWhenFetchSucceeds(t *testing.T) {
+	plan := tool.ToolPlan{
+		RootTaskID: "root-resume-weather",
+		ID:         "plan-resume-running",
+		Selections: []tool.PlannedSelection{
+			{ID: "search", NeedID: "need:information.search.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "fetch", NeedID: "need:information.fetch.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationFetchWeb}},
+		},
+	}
+	store := tool.NewMemoryPlanExecutionStore()
+	issuer, err := tool.NewRandomInvocationIssuer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := tool.NewPlanExecutor(issuer, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	surface := &semanticCallSurface{
+		plan: plan,
+		scope: tool.InvocationScope{
+			RootTaskID: "root-resume-weather", PlanID: "plan-resume-running",
+			SessionID: "session-resume", TurnID: "turn-resume", PrincipalID: "user-resume",
+		},
+		executor:  executor,
+		completed: map[string]bool{},
+	}
+	if _, _, err := store.Acquire(tool.PlanExecutionRecord{Scope: surface.scope, SelectionID: "search"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Acquire(tool.PlanExecutionRecord{Scope: surface.scope, SelectionID: "fetch"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Complete(surface.scope, "fetch", tool.PlanExecutionSucceeded, "digest", "", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	got := cb.hopRunSnapshot()
+	if got.Steps[0].Superseded || got.Steps[0].Status != HopStepRunning || !cb.RequiredEffectUnsettled() {
+		t.Fatalf("a search this plan already started is not replaced by the fetch: %#v", got.Steps[0])
+	}
+	if webSearchRecoveredByFetch(tool.PlanExecutionUnknown, true) || webSearchRecoveredByFetch(tool.PlanExecutionAwaitingReceipt, true) || webSearchRecoveredByFetch(tool.PlanExecutionRunning, true) {
+		t.Fatal("an acquired search record stays the attempt")
+	}
+	if webSearchRecoveredByFetch(tool.PlanExecutionFailed, false) || webSearchRecoveredByFetch("", false) || !webSearchRecoveredByFetch(tool.PlanExecutionFailed, true) || !webSearchRecoveredByFetch("", true) {
+		t.Fatal("fetch recovers a failed or unstarted search only when it is the plan's single required search")
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -804,5 +805,666 @@ func TestRunLoopUnrenderedDenialWithoutPriorSuccessStaysGeneric(t *testing.T) {
 	}
 	if strings.Contains(denial, "already ran successfully") {
 		t.Fatalf("never-executed tool must not claim an earlier success: %q", denial)
+	}
+}
+
+// landedCommitCallbacks is a one-shot surface whose success is a commit, not a
+// poll. A repeat of the same payload must not publish another wave.
+type landedCommitCallbacks struct {
+	renewingSurfaceCallbacks
+	poll map[string]bool
+}
+
+func (m *landedCommitCallbacks) IdenticalSuccessIsPoll(name string) bool {
+	return m != nil && m.poll[strings.TrimSpace(name)]
+}
+
+func TestRunLoopLandedCommitDoesNotOpenAnotherWave(t *testing.T) {
+	payloads := []string{
+		`{"path":"deck.pptx","theme":"clean"}`,
+		`{"theme":"clean","path":"deck.pptx"}`,
+		`{"path":"other.pptx","theme":"clean"}`,
+		`{"path":"other.pptx","theme":"clean"}`,
+	}
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount <= len(payloads) {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   fmt.Sprintf("call_%d", callCount),
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      "office",
+										"arguments": payloads[callCount-1],
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		} else {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]interface{}{"role": "assistant", "content": "写好了"}, "finish_reason": "stop"},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &landedCommitCallbacks{renewingSurfaceCallbacks: renewingSurfaceCallbacks{consumedGrantSurfaceCallbacks: consumedGrantSurfaceCallbacks{mockCallbacks: mockCallbacks{
+		config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:     8,
+		sysPrompt:   "test",
+		toolResult:  "published",
+		toolOutcome: ToolExecutionOutcomeOK,
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{
+				"name":       "office",
+				"parameters": map[string]interface{}{"type": "object"},
+			}},
+		},
+	}}}}
+	result := RunLoop(cb, "做一份演示", nil, nil)
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.HardExit || result.Text != "写好了" {
+		t.Fatalf("result = %+v, want the model to finish after the revision", result)
+	}
+	if len(cb.toolCalls) != 2 || len(cb.toolArgs) != 2 {
+		t.Fatalf("executed %d calls args=%v, want the original and the revision only", len(cb.toolCalls), cb.toolArgs)
+	}
+	if !strings.Contains(cb.toolArgs[0], "deck.pptx") || strings.Contains(cb.toolArgs[0], "other.pptx") {
+		t.Fatalf("first execution = %s", cb.toolArgs[0])
+	}
+	if !strings.Contains(cb.toolArgs[1], "other.pptx") {
+		t.Fatalf("revision was not the second execution: %s", cb.toolArgs[1])
+	}
+	if cb.opens != 1 {
+		t.Fatalf("waves opened = %d, want one wave for the changed payload", cb.opens)
+	}
+	var toolTexts []string
+	for _, entry := range result.HistoryDelta {
+		if entry.Role != "tool" {
+			continue
+		}
+		text, _ := entry.Content.(string)
+		toolTexts = append(toolTexts, text)
+	}
+	if len(toolTexts) < 3 {
+		t.Fatalf("tool results = %#v", toolTexts)
+	}
+	if !strings.Contains(toolTexts[1], "本次没有再次执行") || strings.Contains(toolTexts[1], "listed on the next request") {
+		t.Fatalf("duplicate payload must skip without inviting another call, got %q", toolTexts[1])
+	}
+	if !strings.Contains(toolTexts[2], "listed on the next request") {
+		t.Fatalf("changed payload must still open a wave, got %q", toolTexts[2])
+	}
+}
+
+func TestRunLoopPollStillOpensTheNextWave(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount <= 3 {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   fmt.Sprintf("call_%d", callCount),
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      "ssh",
+										"arguments": `{"command":"status"}`,
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		} else {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]interface{}{"role": "assistant", "content": "还在跑"}, "finish_reason": "stop"},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &landedCommitCallbacks{
+		poll: map[string]bool{"ssh": true},
+		renewingSurfaceCallbacks: renewingSurfaceCallbacks{consumedGrantSurfaceCallbacks: consumedGrantSurfaceCallbacks{mockCallbacks: mockCallbacks{
+			config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:     8,
+			sysPrompt:   "test",
+			toolResult:  "running",
+			toolOutcome: ToolExecutionOutcomeOK,
+			tools: []map[string]interface{}{
+				{"type": "function", "function": map[string]interface{}{
+					"name":       "ssh",
+					"parameters": map[string]interface{}{"type": "object"},
+				}},
+			},
+		}}},
+	}
+	result := RunLoop(cb, "看一下任务", nil, nil)
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if len(cb.toolCalls) != 2 {
+		t.Fatalf("ssh executed %d times, want the first check and the check after the wave", len(cb.toolCalls))
+	}
+	if cb.opens != 1 {
+		t.Fatalf("waves opened = %d, want the status poll to keep renewing", cb.opens)
+	}
+	for _, entry := range result.HistoryDelta {
+		text, _ := entry.Content.(string)
+		if strings.Contains(text, "本次没有再次执行") {
+			t.Fatalf("a status poll was treated as an already-landed commit: %q", text)
+		}
+	}
+}
+
+// residentCommitCallbacks keeps the tool listed and treats it as a commit.
+// Outcomes are scripted so a later identical call can be distinguished from
+// a real failure of a different payload.
+type residentCommitCallbacks struct {
+	mockCallbacks
+	executions int
+}
+
+func (m *residentCommitCallbacks) BuildTools(string) []map[string]interface{} { return m.tools }
+
+func (m *residentCommitCallbacks) IdenticalSuccessIsPoll(name string) bool {
+	return strings.TrimSpace(name) == "bash"
+}
+
+func (m *residentCommitCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	m.executions++
+	if name == "bash" {
+		return ToolExecutionResult{Result: "ok", Outcome: ToolExecutionOutcomeOK}
+	}
+	if strings.Contains(args, "a.pptx") {
+		return ToolExecutionResult{Result: "published", Outcome: ToolExecutionOutcomeOK}
+	}
+	return ToolExecutionResult{Result: "Error: write failed", Outcome: ToolExecutionOutcomeError}
+}
+
+func TestRunLoopCommitSkipDoesNotClearFailureStreak(t *testing.T) {
+	const failuresBeforeSkip = 7
+	type call struct{ name, args string }
+	calls := []call{{name: "office", args: `{"path":"a.pptx"}`}}
+	for i := 0; i < failuresBeforeSkip; i++ {
+		calls = append(calls,
+			call{name: "office", args: `{"path":"b.pptx"}`},
+			call{name: "bash", args: `{"command":"true"}`},
+		)
+	}
+	calls = append(calls,
+		call{name: "office", args: `{"path":"a.pptx"}`},
+		call{name: "office", args: `{"path":"b.pptx"}`},
+	)
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount <= len(calls) {
+			step := calls[callCount-1]
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   fmt.Sprintf("call_%d", callCount),
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      step.name,
+										"arguments": step.args,
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		} else {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]interface{}{"role": "assistant", "content": "还在改另一份"}, "finish_reason": "stop"},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &residentCommitCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   24,
+		sysPrompt: "test",
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{
+				"name": "office", "parameters": map[string]interface{}{"type": "object"},
+			}},
+			{"type": "function", "function": map[string]interface{}{
+				"name": "bash", "parameters": map[string]interface{}{"type": "object"},
+			}},
+		},
+	}}
+	result := RunLoop(cb, "改两份演示", nil, nil)
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	// a.pptx once, b.pptx seven times, bash seven times, the repeat of a.pptx
+	// skipped, then b.pptx once more.
+	if cb.executions != failuresBeforeSkip*2+2 {
+		t.Fatalf("executions = %d, want %d", cb.executions, failuresBeforeSkip*2+2)
+	}
+	var sawGuidance bool
+	for _, entry := range result.HistoryDelta {
+		text, _ := entry.Content.(string)
+		if strings.Contains(text, "已连续失败") {
+			sawGuidance = true
+		}
+	}
+	if !sawGuidance {
+		t.Fatalf("skipping the already-written file cleared the failure streak: %#v", result.HistoryDelta)
+	}
+}
+
+type allowCountCallbacks struct {
+	residentCommitCallbacks
+	callAllows int
+}
+
+func (m *allowCountCallbacks) IsToolCallAllowed(string, string) (bool, string) {
+	m.callAllows++
+	return true, ""
+}
+
+func TestRunLoopSameBatchDuplicateIsNotAuthorized(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount == 1 {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "",
+							"tool_calls": []map[string]interface{}{
+								{"id": "call_1", "type": "function", "function": map[string]interface{}{
+									"name": "office", "arguments": `{"path":"a.pptx","theme":"clean"}`,
+								}},
+								{"id": "call_2", "type": "function", "function": map[string]interface{}{
+									"name": "office", "arguments": `{"theme":"clean","path":"a.pptx"}`,
+								}},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		} else {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]interface{}{"role": "assistant", "content": "写好了"}, "finish_reason": "stop"},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &allowCountCallbacks{residentCommitCallbacks: residentCommitCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   6,
+		sysPrompt: "test",
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{
+				"name": "office", "parameters": map[string]interface{}{"type": "object"},
+			}},
+		},
+	}}}
+	result := RunLoop(cb, "做一份演示", nil, nil)
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if cb.executions != 1 {
+		t.Fatalf("executions = %d, want the first call only", cb.executions)
+	}
+	if cb.callAllows != 1 {
+		t.Fatalf("authorization checks = %d, want the duplicate to skip before the host can open another wave", cb.callAllows)
+	}
+}
+
+func TestRunLoopLandedCommitHandoffDoesNotDemandTheSameCall(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var content string
+		var toolCalls []map[string]interface{}
+		switch callCount {
+		case 1:
+			toolCalls = []map[string]interface{}{
+				{"id": "call_1", "type": "function", "function": map[string]interface{}{
+					"name": "office", "arguments": `{"path":"a.pptx"}`,
+				}},
+			}
+		case 2:
+			content = "额度已用完，请发一条消息。"
+		default:
+			content = "写好了"
+		}
+		message := map[string]interface{}{"role": "assistant", "content": content}
+		if len(toolCalls) > 0 {
+			message["tool_calls"] = toolCalls
+		}
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": message, "finish_reason": "stop"},
+			},
+		}
+		if len(toolCalls) > 0 {
+			resp["choices"].([]map[string]interface{})[0]["finish_reason"] = "tool_calls"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &residentCommitCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   6,
+		sysPrompt: "test",
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{
+				"name": "office", "parameters": map[string]interface{}{"type": "object"},
+			}},
+		},
+	}}
+	result := RunLoop(cb, "做一份演示", nil, nil)
+	if result.Error != "" || result.Text != "写好了" {
+		t.Fatalf("result = %+v", result)
+	}
+	var nudge string
+	for _, entry := range result.HistoryDelta {
+		text, _ := entry.Content.(string)
+		if strings.Contains(text, "不要再调用") {
+			nudge = text
+		}
+	}
+	if nudge == "" || strings.Contains(nudge, "请直接调用") || !strings.Contains(nudge, "已在本轮工具列表中") {
+		t.Fatalf("handoff after a landed commit must not demand the same call, got %q", nudge)
+	}
+}
+
+func TestRunLoopLandedCommitHandoffDoesNotRepublish(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var content string
+		var toolCalls []map[string]interface{}
+		switch callCount {
+		case 1:
+			toolCalls = []map[string]interface{}{
+				{"id": "call_1", "type": "function", "function": map[string]interface{}{
+					"name": "office", "arguments": `{"path":"a.pptx"}`,
+				}},
+			}
+		case 2:
+			content = "额度已用完，请发一条消息。"
+		default:
+			content = "写好了"
+		}
+		message := map[string]interface{}{"role": "assistant", "content": content}
+		if len(toolCalls) > 0 {
+			message["tool_calls"] = toolCalls
+		}
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": message, "finish_reason": "stop"},
+			},
+		}
+		if len(toolCalls) > 0 {
+			resp["choices"].([]map[string]interface{})[0]["finish_reason"] = "tool_calls"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &landedCommitCallbacks{renewingSurfaceCallbacks: renewingSurfaceCallbacks{consumedGrantSurfaceCallbacks: consumedGrantSurfaceCallbacks{mockCallbacks: mockCallbacks{
+		config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:     6,
+		sysPrompt:   "test",
+		toolResult:  "published",
+		toolOutcome: ToolExecutionOutcomeOK,
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{
+				"name": "office", "parameters": map[string]interface{}{"type": "object"},
+			}},
+		},
+	}}}}
+	result := RunLoop(cb, "做一份演示", nil, nil)
+	if result.Error != "" || result.Text != "写好了" {
+		t.Fatalf("result = %+v", result)
+	}
+	if cb.opens != 0 {
+		t.Fatalf("waves opened = %d, a landed commit must not be republished when the model only says the quota is used up", cb.opens)
+	}
+	var nudge string
+	for _, entry := range result.HistoryDelta {
+		text, _ := entry.Content.(string)
+		if strings.Contains(text, "没有再次列入") {
+			nudge = text
+		}
+	}
+	if nudge == "" || strings.Contains(nudge, "请直接调用") {
+		t.Fatalf("unlisted landed commit handoff = %q", nudge)
+	}
+}
+
+// failOpenPollCallbacks classifies only the first observation as a commit.
+// A later lookup fails open and reports a poll, which must not rewrite.
+type failOpenPollCallbacks struct {
+	residentCommitCallbacks
+	lookups int
+}
+
+func (m *failOpenPollCallbacks) IdenticalSuccessIsPoll(string) bool {
+	m.lookups++
+	return m.lookups > 1
+}
+
+func TestRunLoopLandedCommitSurvivesFailOpenPoll(t *testing.T) {
+	callCount := 0
+	args := []string{`{"path":"a.pptx","theme":"clean"}`, `{"theme":"clean","path":"a.pptx"}`}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount <= len(args) {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   fmt.Sprintf("call_%d", callCount),
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      "office",
+										"arguments": args[callCount-1],
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		} else {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]interface{}{"role": "assistant", "content": "写好了"}, "finish_reason": "stop"},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &failOpenPollCallbacks{residentCommitCallbacks: residentCommitCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   6,
+		sysPrompt: "test",
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{
+				"name": "office", "parameters": map[string]interface{}{"type": "object"},
+			}},
+		},
+	}}}
+	result := RunLoop(cb, "做一份演示", nil, nil)
+	if result.Error != "" || result.Text != "写好了" {
+		t.Fatalf("result = %+v", result)
+	}
+	if cb.executions != 1 {
+		t.Fatalf("executions = %d, a later poll classification must not rewrite the landed payload", cb.executions)
+	}
+}
+
+func TestRunLoopFailOpenSkipStillStopsTheRepeat(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{
+							{
+								"id":   fmt.Sprintf("call_%d", callCount),
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "office",
+									"arguments": `{"path":"a.pptx"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &failOpenPollCallbacks{residentCommitCallbacks: residentCommitCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   8,
+		sysPrompt: "test",
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{
+				"name": "office", "parameters": map[string]interface{}{"type": "object"},
+			}},
+		},
+	}}}
+	result := RunLoop(cb, "做一份演示", nil, nil)
+	if cb.executions != 1 {
+		t.Fatalf("executions = %d, want one write", cb.executions)
+	}
+	if !result.HardExit || !strings.Contains(result.Text, "停止重复") {
+		t.Fatalf("result = %+v, the repeat must stop even when later lookups say poll", result)
+	}
+}
+
+func TestRunLoopSkippedRepeatDoesNotAskTheModelToContinue(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role": "assistant", "content": "",
+						"tool_calls": []map[string]interface{}{{
+							"id": fmt.Sprintf("call_%d", callCount), "type": "function",
+							"function": map[string]interface{}{
+								"name": "office", "arguments": `{"path":"a.pptx"}`,
+							},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &residentCommitCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   8,
+		sysPrompt: "test",
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{
+				"name": "office", "parameters": map[string]interface{}{"type": "object"},
+			}},
+		},
+	}}
+	result := RunLoop(cb, "做一份演示", nil, nil)
+	if cb.executions != 1 {
+		t.Fatalf("executions = %d, want one write", cb.executions)
+	}
+	if !result.HardExit {
+		t.Fatalf("result = %+v, want the repeat to stop", result)
+	}
+	for _, entry := range result.HistoryDelta {
+		text, _ := entry.Content.(string)
+		if strings.Contains(text, "若任务还要继续") {
+			t.Fatalf("a skipped repeat must not be told to continue: %q", text)
+		}
 	}
 }

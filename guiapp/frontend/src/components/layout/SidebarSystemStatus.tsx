@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenMeter } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
-import { isChineseLang, localizeText } from '../../i18n';
+import { isChineseLang, localizeText, normalizeLang } from '../../i18n';
 import {
     aggregateIMConnectionKind,
     connectionStatusGlyphKind,
@@ -19,6 +19,7 @@ import {
 import { formatWorkbenchTaskCountLine, type WorkbenchTaskCounts } from './backgroundTaskCount';
 import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderName, foregroundRoleSeparatesTurn, type ContactedProfileSummary } from '../../utils/contactedModelRoute';
 import { capabilityBandName, capabilityModelMenuLabel, capabilityMultiplierFor, orderCapabilityModels } from '../../utils/capabilityModelLabel';
+import { presetProviderDisplayName } from '../remote/presetProviderLabel';
 
 export type LLMProfileStatusSummary = {
     profile: 'assistant' | 'coding';
@@ -152,6 +153,28 @@ const CREDIT_SEPARATOR = ` ${String.fromCharCode(0x00b7)} `;
 const DROPDOWN_CHECK = '\u2713';
 
 const textForLang = localizeText;
+
+function mongolianStatus(lang: string): boolean {
+    return normalizeLang(lang) === 'mn';
+}
+
+/** Short labels for the narrow status card. Hover text keeps the full phrase. */
+const MN_STATUS = {
+    fiveHour: '5ц',
+    fiveHourDetail: '5 цаг',
+    fiveHourRollingDetail: 'Сүүлийн 5 цаг',
+    daily: 'Өдөр',
+    dailyDetail: 'Өдрийн хязгаар',
+    openService: 'Үйлчилгээ нээх',
+    background: 'Арын',
+    scheduled: 'Хуваарь',
+    scheduledDetail: 'Хуваарьт',
+    passthrough: 'Дамжуулалт',
+    openTasks: 'Даалгаврын хяналт нээх',
+    tasks: 'Даалгавар',
+} as const;
+
+type WorkbenchLimitLine = { label: string; value: string; text: string; detail?: string };
 
 type IMChannelSnapshot = { label: string; status: string };
 
@@ -294,7 +317,8 @@ export const SidebarSystemStatus = ({
 }: SidebarSystemStatusProps) => {
     const menuShowsCapabilityFee = availableProviders[0]?.isHubService === true;
     const modelFeeLabel = (modelId: string, showDefault = menuShowsCapabilityFee) => capabilityModelMenuLabel(modelId, capabilityMultiplierFor(modelId, modelMultipliers), showDefault);
-    const baseProviderLabel = String(sidebarCurrentProviderTokenUsage.provider || '').trim()
+    const baseProviderCanonical = String(sidebarCurrentProviderTokenUsage.provider || '').trim();
+    const baseProviderLabel = presetProviderDisplayName(lang, baseProviderCanonical)
         || textForLang(lang, 'Not configured', '\u672a\u914d\u7f6e', '\u672a\u8a2d\u5b9a');
     const moaBadge = moaSticky?.active
         ? textForLang(lang, 'council', '\u4f1a\u8bca', '\u6703\u8a3a')
@@ -323,7 +347,8 @@ export const SidebarSystemStatus = ({
         const provider = String(summary?.provider_name || '').trim();
         const model = String(summary?.model || '').trim();
         const modelLabel = model ? modelFeeLabel(model, profileShowsCapabilityFee(provider)) : '';
-        return provider && modelLabel ? `${provider}${CREDIT_SEPARATOR}${modelLabel}` : fallback;
+        const providerLabelText = presetProviderDisplayName(lang, provider);
+        return provider && modelLabel ? `${providerLabelText}${CREDIT_SEPARATOR}${modelLabel}` : fallback;
     };
     const assistantSummary = profileSummaries?.assistant;
     const codingSummary = profileSummaries?.coding;
@@ -433,7 +458,10 @@ export const SidebarSystemStatus = ({
     // this also preserves the legacy directory ordering.
     const menuCurrentProvider = availableProviders[0];
     const menuCurrentProviderID = String(menuCurrentProvider?.id || menuCurrentProvider?.name || '').trim();
-    const menuCurrentProviderName = String(menuCurrentProvider?.name || '').trim() || baseProviderLabel;
+    const menuCurrentProviderCanonical = String(menuCurrentProvider?.name || '').trim();
+    const menuCurrentProviderName = menuCurrentProviderCanonical
+        ? presetProviderDisplayName(lang, menuCurrentProviderCanonical)
+        : baseProviderLabel;
     const switchableProviders = dropdownOpen
         ? availableProviders.filter(p => String(p.id || p.name || '').trim() !== menuCurrentProviderID)
         : [];
@@ -636,6 +664,22 @@ export const SidebarSystemStatus = ({
         passthrough: textForLang(lang, 'Passthrough', '直通', '直通'),
         bot: 'Bot',
     };
+    const mnStatus = mongolianStatus(lang);
+    const mnJobEntries = mnStatus ? [
+        { visible: MN_STATUS.background, detail: MN_STATUS.background, value: resolvedWorkbenchTaskCounts.background },
+        { visible: MN_STATUS.scheduled, detail: MN_STATUS.scheduledDetail, value: resolvedWorkbenchTaskCounts.scheduled },
+        { visible: MN_STATUS.passthrough, detail: MN_STATUS.passthrough, value: resolvedWorkbenchTaskCounts.passthrough },
+        ...(typeof resolvedWorkbenchTaskCounts.bot === 'number'
+            ? [{ visible: 'Bot', detail: 'Bot', value: resolvedWorkbenchTaskCounts.bot }]
+            : []),
+    ] : [];
+    const mnJobCount = (label: string, value: number) => `${label} ${Number(value) || 0}`;
+    const mnJobsTitle = mnStatus
+        ? `${backgroundTaskLabel}: ${mnJobEntries.map((entry) => mnJobCount(entry.detail, entry.value)).join(', ')}`
+        : '';
+    const mnJobsAria = mnStatus && onOpenBackgroundTasks
+        ? `${mnJobsTitle}. ${MN_STATUS.openTasks}`
+        : mnJobsTitle;
     const jobsMainText = formatWorkbenchTaskCountLine(
         {
             background: resolvedWorkbenchTaskCounts.background,
@@ -731,31 +775,52 @@ export const SidebarSystemStatus = ({
         }).filter(Boolean).join(CREDIT_SEPARATOR);
     })();
     // The workbench card stacks the two limits on separate right-aligned lines
-    // instead of joining them with a separator.
+    // instead of joining them with a separator. Mongolian keeps only a short
+    // label on the left and the number on the right.
     const newUserLimitCardLines = (() => {
-        const lines: string[] = [];
+        const lines: WorkbenchLimitLine[] = [];
         newUserLimitCards.forEach((card) => {
             if (card.fiveHourLimit <= 0 && card.dailyLimit <= 0) return;
-            const prefix = newUserLimitCards.length > 1 ? `${card.serviceGroupID} ` : '';
+            const grouped = newUserLimitCards.length > 1 && !!card.serviceGroupID;
+            const pushLine = (label: string, available: number, limit: number, detail?: string) => {
+                const value = `${formatSidebarCredit(available)}/${formatSidebarCredit(limit)}`;
+                // Mongolian puts the short quota name first so a narrow row
+                // ellipsizes the group id, not "5ц" or "Өдөр".
+                const withGroup = (text: string) => grouped
+                    ? (mnStatus ? `${text} ${card.serviceGroupID}` : `${card.serviceGroupID} ${text}`)
+                    : text;
+                lines.push({
+                    label: withGroup(label),
+                    value,
+                    text: `${withGroup(label)} ${value}`,
+                    detail: detail ? withGroup(detail) : undefined,
+                });
+            };
             if (card.fiveHourLimit > 0) {
-                const label = card.fiveHourRolling
-                    ? textForLang(lang, '5h limit', '近5小时限额', '近5小時限額')
-                    : textForLang(lang, '5h limit', '5小时限额', '5小時限額');
-                const available = limitAvailable(card.fiveHourLimit, card.fiveHourUsed, card.heldCredits);
-                lines.push(`${prefix}${label} ${formatSidebarCredit(available)}/${formatSidebarCredit(card.fiveHourLimit)}`);
+                const label = mnStatus
+                    ? MN_STATUS.fiveHour
+                    : (card.fiveHourRolling
+                        ? textForLang(lang, '5h limit', '近5小时限额', '近5小時限額')
+                        : textForLang(lang, '5h limit', '5小时限额', '5小時限額'));
+                const detail = mnStatus
+                    ? (card.fiveHourRolling ? MN_STATUS.fiveHourRollingDetail : MN_STATUS.fiveHourDetail)
+                    : undefined;
+                pushLine(label, limitAvailable(card.fiveHourLimit, card.fiveHourUsed, card.heldCredits), card.fiveHourLimit, detail);
             }
             if (card.dailyLimit > 0) {
-                const available = limitAvailable(card.dailyLimit, card.dailyUsed, card.heldCredits);
-                lines.push(`${prefix}${textForLang(lang, 'Daily limit', '今日限额', '今日限額')} ${formatSidebarCredit(available)}/${formatSidebarCredit(card.dailyLimit)}`);
+                const label = mnStatus ? MN_STATUS.daily : textForLang(lang, 'Daily limit', '今日限额', '今日限額');
+                pushLine(label, limitAvailable(card.dailyLimit, card.dailyUsed, card.heldCredits), card.dailyLimit, mnStatus ? MN_STATUS.dailyDetail : undefined);
             }
         });
         return lines;
     })();
     const showNewUserBenefit = !!newUserLimitCardCompactDetails;
     const planLimitsLabel = textForLang(lang, 'Plan limits', '套餐额度', '方案額度');
-    const planLimitsTitle = showNewUserBenefit
-        ? `${planLimitsLabel}${CREDIT_SEPARATOR}${newUserLimitCardCompactDetails}${CREDIT_SEPARATOR}${textForLang(lang, 'Click to open Service Redeem', '点击前往服务兑换', '點擊前往服務兌換')}`
-        : '';
+    const planLimitsTitle = !showNewUserBenefit
+        ? ''
+        : mnStatus
+            ? `${planLimitsLabel}: ${newUserLimitCardLines.map((line) => `${line.detail || line.label} ${line.value}`).join(', ')}${openServiceRedeemPage ? `. ${MN_STATUS.openService}` : ''}`
+            : `${planLimitsLabel}${CREDIT_SEPARATOR}${newUserLimitCardCompactDetails}${CREDIT_SEPARATOR}${textForLang(lang, 'Click to open Service Redeem', '点击前往服务兑换', '點擊前往服務兌換')}`;
     const creditTitle = sidebarHubCredits
         ? textForLang(lang, 'Expires', '\u6709\u6548\u671f', '\u6709\u6548\u671f') + ': ' + formatSidebarHubExpiry(sidebarHubCredits)
             + CREDIT_SEPARATOR + textForLang(lang, 'Total', '\u603b\u91cf', '\u7e3d\u91cf') + ' ' + formatSidebarHubTotalCredits(sidebarHubCredits)
@@ -780,9 +845,12 @@ export const SidebarSystemStatus = ({
     // the quick picker is the live model on that same assignment.
     const foregroundSeparatesTurn = foregroundRoleSeparatesTurn(activeProfile, profileSummaries);
     const configuredModel = String((foregroundSeparatesTurn ? routedModel : currentModel) || routedModel || currentModel || '').trim();
-    const workbenchProviderLabel = routedProviderName || baseProviderLabel;
+    const workbenchProviderCanonical = routedProviderName || baseProviderCanonical;
+    const workbenchProviderLabel = workbenchProviderCanonical
+        ? presetProviderDisplayName(lang, workbenchProviderCanonical)
+        : baseProviderLabel;
     const configuredModelLabel = configuredModel
-        ? modelFeeLabel(configuredModel, menuShowsCapabilityFee || workbenchIsOfficial || profileShowsCapabilityFee(workbenchProviderLabel))
+        ? modelFeeLabel(configuredModel, menuShowsCapabilityFee || workbenchIsOfficial || profileShowsCapabilityFee(workbenchProviderCanonical))
         : '';
     const workbenchModelLabel = configuredModelLabel
         ? `${workbenchProviderLabel}：${configuredModelLabel}`
@@ -879,34 +947,56 @@ export const SidebarSystemStatus = ({
                 {workbenchIsOfficial && newUserLimitCardLines.length > 0 && (
                     <button
                         type="button"
-                        className="mc-workbench-status-card__row"
+                        className={`mc-workbench-status-card__row${mnStatus ? ' mc-workbench-status-card__mn-stack' : ''}`}
                         onClick={openServiceRedeemPage}
                         disabled={!openServiceRedeemPage}
                         title={planLimitsTitle}
                         aria-label={planLimitsTitle}
                     >
-                        <span>{planLimitsLabel}</span>
-                        <strong className="mc-workbench-status-card__limits">
-                            {newUserLimitCardLines.map((line, index) => (
-                                <span key={index}>{line}</span>
-                            ))}
-                        </strong>
+                        {mnStatus ? newUserLimitCardLines.map((line, index) => (
+                            <span key={index} className="mc-workbench-status-card__mn-line">
+                                <span>{line.label}</span>
+                                <strong>{line.value}</strong>
+                            </span>
+                        )) : (
+                            <>
+                                <span>{planLimitsLabel}</span>
+                                <strong className="mc-workbench-status-card__limits">
+                                    {newUserLimitCardLines.map((line, index) => (
+                                        <span key={index}>{line.text}</span>
+                                    ))}
+                                </strong>
+                            </>
+                        )}
                     </button>
                 )}
                 <button
                     type="button"
                     data-testid="workbench-task-counts"
                     className="mc-workbench-status-card__row mc-workbench-status-card__jobs-row"
-                    title={workbenchTaskCountText}
-                    aria-label={workbenchTaskRowAria}
+                    title={mnStatus ? mnJobsTitle : workbenchTaskCountText}
+                    aria-label={mnStatus ? mnJobsAria : workbenchTaskRowAria}
                     onClick={onOpenBackgroundTasks}
                     disabled={!onOpenBackgroundTasks}
                 >
-                    <span>{backgroundTaskLabel}</span>
-                    <strong className="mc-workbench-status-card__jobs">
-                        <span className="mc-workbench-status-card__jobs-main">{jobsMainText}</span>
-                        {botCountSegment ? <span className="mc-workbench-status-card__jobs-bot">{botCountSegment}</span> : null}
-                    </strong>
+                    {mnStatus ? (
+                        <>
+                            <span>{MN_STATUS.tasks}</span>
+                            <strong className="mc-workbench-status-card__mn-jobs">
+                                {mnJobEntries.map((entry) => (
+                                    <span key={entry.visible}>{mnJobCount(entry.visible, entry.value)}</span>
+                                ))}
+                            </strong>
+                        </>
+                    ) : (
+                        <>
+                            <span>{backgroundTaskLabel}</span>
+                            <strong className="mc-workbench-status-card__jobs">
+                                <span className="mc-workbench-status-card__jobs-main">{jobsMainText}</span>
+                                {botCountSegment ? <span className="mc-workbench-status-card__jobs-bot">{botCountSegment}</span> : null}
+                            </strong>
+                        </>
+                    )}
                 </button>
             </section>
             <div className="sidebar-system-status__panel">
@@ -1054,20 +1144,23 @@ export const SidebarSystemStatus = ({
                                     </div>
                                 )}
                                 {/* Switchable providers */}
-                                {switchableProviders.map(p => (
+                                {switchableProviders.map(p => {
+                                    const providerLabel = presetProviderDisplayName(lang, p.name);
+                                    return (
                                     <button
                                             key={String(p.id || p.name)}
                                         type="button"
                                         className="sidebar-system-status__provider-dropdown-item"
                                         role="option"
                                         aria-selected="false"
-                                        title={p.name}
+                                        title={providerLabel}
                                             onClick={() => handleSelectProvider(String(p.id || p.name).trim())}
                                     >
                                         <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" />
-                                        <span className="sidebar-system-status__provider-dropdown-label">{p.name}</span>
+                                        <span className="sidebar-system-status__provider-dropdown-label">{providerLabel}</span>
                                     </button>
-                                ))}
+                                    );
+                                })}
                                 {/* Models for the current provider */}
                                 {!profileQuickReadOnly && onSwitchModel && (modelOptions.length > 0 || modelsLoading || currentModel) && (
                                     <>

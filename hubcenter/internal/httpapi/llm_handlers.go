@@ -10,7 +10,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,15 +24,6 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 )
-
-type llmModelListResponse struct {
-	Data []struct {
-		ID string `json:"id"`
-	} `json:"data"`
-	Models []struct {
-		ID string `json:"id"`
-	} `json:"models"`
-}
 
 var llmProviderProbeHTTPClient = &http.Client{Timeout: 20 * time.Second}
 
@@ -423,10 +413,10 @@ func adminProbeLLMProviderModels(svc *llmservice.Service, proxyCfg *llmservice.P
 			if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(probeProvider, proxyCfg.NodeID) {
 				models, err = llmservice.ProbeProviderModelsWithScope(r.Context(), proxyCfg, &probeProvider, probeProvider.APIURL, probeProvider.APIKey, probeProvider.Protocol)
 			} else {
-				models, err = probeLLMProviderModels(r.Context(), probeProvider.APIURL, probeProvider.APIKey, probeProvider.Protocol, probeProvider.AgentType)
+				models, err = probeLLMProviderModels(r.Context(), probeProvider.Name, probeProvider.APIURL, probeProvider.APIKey, probeProvider.Protocol, probeProvider.AgentType)
 			}
 		} else {
-			models, err = probeLLMProviderModels(r.Context(), req.APIURL, req.APIKey, req.Protocol, agentType)
+			models, err = probeLLMProviderModels(r.Context(), "", req.APIURL, req.APIKey, req.Protocol, agentType)
 		}
 		if err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -436,77 +426,8 @@ func adminProbeLLMProviderModels(svc *llmservice.Service, proxyCfg *llmservice.P
 	}
 }
 
-func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol, agentType string) ([]string, error) {
-	apiURL = openCodeCatalogBase(apiURL, agentType)
-	if corelib.IsOpenCodeURL(apiURL) {
-		agent := llmservice.RequestAgentType(agentType)
-		if agent == "" || strings.EqualFold(agent, "openclaw") {
-			agentType = "OpenCode"
-		}
-	}
-	if apiURL == "" {
-		return nil, fmt.Errorf("api_url is required")
-	}
-	endpoint, err := llmModelsEndpoint(apiURL, protocol)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	if strings.EqualFold(protocol, "anthropic") {
-		if apiKey != "" {
-			req.Header.Set("x-api-key", apiKey)
-		}
-		req.Header.Set("anthropic-version", "2023-06-01")
-	} else if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	req.Header.Set("Accept", "application/json")
-	probeCfg := corelib.MaclawLLMConfig{URL: apiURL, AgentType: llmservice.RequestAgentType(agentType)}
-	if ua := probeCfg.UserAgent(); ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
-	corelib.ApplyOpenCodeSessionHeader(req, probeCfg)
-	resp, err := llmProviderProbeHTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(body))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return nil, fmt.Errorf("probe failed: %s", msg)
-	}
-	var parsed llmModelListResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var models []string
-	for _, item := range parsed.Data {
-		id := strings.TrimSpace(item.ID)
-		if id != "" && !seen[id] {
-			seen[id] = true
-			models = append(models, id)
-		}
-	}
-	for _, item := range parsed.Models {
-		id := strings.TrimSpace(item.ID)
-		if id != "" && !seen[id] {
-			seen[id] = true
-			models = append(models, id)
-		}
-	}
-	sort.Strings(models)
-	return models, nil
+func probeLLMProviderModels(ctx context.Context, providerName, apiURL, apiKey, protocol, agentType string) ([]string, error) {
+	return llmservice.ProbeProviderModels(ctx, llmProviderProbeHTTPClient, providerName, apiURL, apiKey, protocol, agentType)
 }
 
 // openCodeCatalogBase lists Zen models for an OpenCode provider. A Go gateway
@@ -514,29 +435,6 @@ func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol, agent
 // that is the anonymous free tier. A paid key is sent when the admin saved one.
 func openCodeCatalogBase(apiURL, agentType string) string {
 	return llmservice.OpenCodeCatalogURL(apiURL, agentType)
-}
-
-func llmModelsEndpoint(apiURL, protocol string) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(apiURL))
-	if err != nil {
-		return "", err
-	}
-	path := strings.TrimRight(u.Path, "/")
-	if strings.HasSuffix(path, "/models") {
-		return u.String(), nil
-	}
-	if strings.HasSuffix(path, "/chat/completions") {
-		path = strings.TrimSuffix(path, "/chat/completions")
-	}
-	if strings.EqualFold(protocol, "anthropic") {
-		if !strings.HasSuffix(path, "/v1") {
-			path += "/v1"
-		}
-		u.Path = path + "/models"
-		return u.String(), nil
-	}
-	u.Path = path + "/models"
-	return u.String(), nil
 }
 
 // adminTestLLMProviderChat performs an end-to-end chat completion test against
@@ -714,6 +612,11 @@ func providerTestConfig(cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderC
 	if strings.TrimSpace(cfg.AgentType) == "" {
 		cfg.AgentType = llmservice.RequestAgentType(provider.AgentType)
 	}
+	// Only a Devin provider gets its name copied. The status check otherwise
+	// sees an empty name and misses a provider that is Devin by name alone.
+	if strings.TrimSpace(cfg.ProviderName) == "" && llmservice.IsDevinProvider(provider.Name, firstNonEmpty(provider.APIURL, cfg.URL)) {
+		cfg.ProviderName = strings.TrimSpace(provider.Name)
+	}
 	return llmservice.WithMemberUpstreamOverrides(cfg, provider)
 }
 
@@ -750,6 +653,7 @@ func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig
 	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
 		client = lobsterai.WrapClient(client)
 	}
+	client = llmservice.DevinHTTPClient(client, cfg.ProviderName, cfg.URL)
 	resp, err := client.Do(httpReq)
 	latencyMs = time.Since(start).Milliseconds()
 	if err != nil {

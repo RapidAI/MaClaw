@@ -367,44 +367,59 @@ func semanticNeedsForPetitionExpansionLookup(needs []tool.CapabilityNeed, ctx co
 // A petition re-plan rebuilds needs from the classification, which also
 // rebuilds archetype companions the lookup budget had already omitted. The
 // expansion validator rejects those companions and rejects a child that lost
-// a parent family. The whitelist keeps exactly the families the parent
-// already published plus the petitioned label's own templates.
+// a parent family.
 type semanticPetitionParentFamiliesKey struct{}
+
+// semanticPetitionParentNeedIDsKey is the parent plan's exact selection
+// identities. The expansion validator compares need identities, so the child
+// whitelist must too: keeping a whole repeat family lets the child publish an
+// extra sibling the parent never selected, and the validator then rejects the
+// entire expansion (production 2026-10-31: a mailbox_send petition failed
+// with "adds a need outside the petitioned label" after a lookup/document
+// task, so the only rescue for the missing mail tool was lost).
+type semanticPetitionParentNeedIDsKey struct{}
 
 func withSemanticPetitionParentFamilies(ctx context.Context, plan tool.ToolPlan) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	families := make(map[string]struct{}, len(plan.Selections))
+	needIDs := make(map[string]struct{}, len(plan.Selections))
 	for _, selection := range plan.Selections {
 		id := strings.TrimSpace(selection.NeedID)
 		if id == "" {
-			id = strings.TrimSpace(selection.ID)
+			// A selection id is "selection:"+need id. The validator compares
+			// need identities, so the fallback drops that prefix instead of
+			// storing a name that can never match a child need.
+			id = strings.TrimPrefix(strings.TrimSpace(selection.ID), "selection:")
 		}
+		if id == "" {
+			continue
+		}
+		needIDs[id] = struct{}{}
 		if family := tool.RepeatFamilyKey(id); family != "" {
 			families[family] = struct{}{}
 		}
 	}
-	return context.WithValue(ctx, semanticPetitionParentFamiliesKey{}, families)
+	ctx = context.WithValue(ctx, semanticPetitionParentFamiliesKey{}, families)
+	return context.WithValue(ctx, semanticPetitionParentNeedIDsKey{}, needIDs)
 }
 
 func semanticNeedsForPetitionWhitelist(needs []tool.CapabilityNeed, ctx context.Context) []tool.CapabilityNeed {
 	if ctx == nil || !semanticPetitionExpansion(ctx) {
 		return needs
 	}
-	families, _ := ctx.Value(semanticPetitionParentFamiliesKey{}).(map[string]struct{})
+	parentNeedIDs, _ := ctx.Value(semanticPetitionParentNeedIDsKey{}).(map[string]struct{})
 	label, hasLabel := ctx.Value(semanticPetitionedLabelKey{}).(intent.IntentLabel)
-	if len(families) == 0 && (!hasLabel || label == "") {
+	if len(parentNeedIDs) == 0 && (!hasLabel || label == "") {
 		return needs
 	}
 	templates := imSemanticIntentRuleSet[label]
 	kept := make([]tool.CapabilityNeed, 0, len(needs))
 	for _, need := range needs {
-		if family := tool.RepeatFamilyKey(need.ID); family != "" {
-			if _, ok := families[family]; ok {
-				kept = append(kept, need)
-				continue
-			}
+		if _, parent := parentNeedIDs[need.ID]; parent {
+			kept = append(kept, need)
+			continue
 		}
 		for _, template := range templates {
 			if need.Capability == template.Capability && sameSemanticQualifiers(need.Qualifiers, template.Qualifiers) {

@@ -138,6 +138,111 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(limits?.textContent).toContain('今日限额 1007/2000');
     });
 
+    it('stacks short Mongolian labels beside the numbers in the status card', () => {
+        const openServiceRedeemPage = vi.fn();
+        render(
+            <SidebarSystemStatus
+                lang="mn"
+                maclawLLMOnline={false}
+                remoteActivationStatus={{ activated: false }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                backgroundTaskCount={0}
+                workbenchTaskCounts={{ background: 0, scheduled: 0, passthrough: 0 }}
+                botTaskCount={2}
+                onOpenBackgroundTasks={vi.fn()}
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw\u5b98\u65b9', isHubService: true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
+                sidebarHubCredits={{
+                    ...baseCredits,
+                    newUserLimitCards: [{ serviceGroupID: 'g1', fiveHourLimit: 500, fiveHourUsed: 6, fiveHourRolling: true, fiveHourResetAt: '', dailyLimit: 1000, dailyUsed: 6, dailyResetAt: '', permanent: false, expiresAt: '', status: '', retryAfterSeconds: 0, retryAfterAt: '' }],
+                }}
+                formatSidebarTokens={(value) => String(value)}
+                formatSidebarHubExpiry={() => ''}
+                formatSidebarHubTotalCredits={() => ''}
+                formatSidebarHubUsedCredits={() => ''}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText=""
+                noHubAuthorizationText=""
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+                openServiceRedeemPage={openServiceRedeemPage}
+            />,
+        );
+
+        const limits = screen.getByRole('button', { name: /Багцын хязгаар/ });
+        expect(limits.textContent).toContain('5ц');
+        expect(limits.textContent).toContain('494/500');
+        expect(limits.textContent).toContain('Өдөр');
+        expect(limits.textContent).toContain('994/1000');
+        expect(limits.textContent).not.toContain('5 цагийн хязгаар');
+        expect(limits.textContent).not.toContain('Daily limit');
+        expect(limits.getAttribute('title')).toContain('Сүүлийн 5 цаг 494/500');
+        expect(limits.getAttribute('title')).toContain('Өдрийн хязгаар 994/1000');
+        expect(limits.getAttribute('title')).toContain('Үйлчилгээ нээх');
+        expect(limits.getAttribute('title')).not.toContain('Click to open');
+        expect(limits.querySelectorAll('.mc-workbench-status-card__mn-line')).toHaveLength(2);
+        fireEvent.click(limits);
+        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+
+        const jobs = screen.getByTestId('workbench-task-counts');
+        const jobCounts = Array.from(jobs.querySelectorAll('.mc-workbench-status-card__mn-jobs > span')).map((node) => node.textContent);
+        expect(jobCounts).toEqual(['Арын 0', 'Хуваарь 0', 'Дамжуулалт 0', 'Bot 2']);
+        expect(jobs.textContent).toContain('Даалгавар');
+        expect(jobs.textContent).not.toContain('Background');
+        expect(jobs.textContent).not.toContain('Арын даалгавар');
+        expect(jobs.querySelector('.mc-workbench-status-card__mn-jobs')).toBeTruthy();
+        expect(jobs.getAttribute('title')).toBe('Арын даалгавар: Арын 0, Хуваарьт 0, Дамжуулалт 0, Bot 2');
+        expect(jobs.getAttribute('aria-label')).toBe('Арын даалгавар: Арын 0, Хуваарьт 0, Дамжуулалт 0, Bot 2. Даалгаврын хяналт нээх');
+
+        const tokens = screen.getByTestId('workbench-token-period');
+        expect(tokens.textContent).toContain('Нийт token');
+        fireEvent.click(tokens);
+        expect(tokens.textContent).toContain('Өнөөдөр');
+        expect(tokens.textContent).not.toContain("Today's tokens");
+        fireEvent.click(tokens);
+        expect(tokens.textContent).toContain('Долоо хоног');
+        expect(tokens.textContent).not.toContain("This week's tokens");
+        fireEvent.click(tokens);
+        expect(tokens.textContent).toContain('Энэ сар');
+        expect(tokens.textContent).not.toContain("This month's tokens");
+    });
+
+    it('keeps the Mongolian quota name ahead of a service group id', () => {
+        render(
+            <SidebarSystemStatus
+                lang="mn"
+                maclawLLMOnline={false}
+                remoteActivationStatus={{ activated: false }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw\u5b98\u65b9', isHubService: true, input: 0, output: 0, total: 0 }}
+                sidebarHubCredits={{
+                    ...baseCredits,
+                    newUserLimitCards: [
+                        { serviceGroupID: 'alpha', fiveHourLimit: 10, fiveHourUsed: 0, fiveHourRolling: false, fiveHourResetAt: '', dailyLimit: 0, dailyUsed: 0, dailyResetAt: '', permanent: true, expiresAt: '', status: 'active', retryAfterSeconds: 0, retryAfterAt: '' },
+                        { serviceGroupID: 'beta', fiveHourLimit: 20, fiveHourUsed: 0, fiveHourRolling: false, fiveHourResetAt: '', dailyLimit: 0, dailyUsed: 0, dailyResetAt: '', permanent: true, expiresAt: '', status: 'active', retryAfterSeconds: 0, retryAfterAt: '' },
+                    ],
+                }}
+                formatSidebarTokens={String}
+                formatSidebarHubExpiry={() => ''}
+                formatSidebarHubTotalCredits={() => ''}
+                formatSidebarHubUsedCredits={() => ''}
+                formatSidebarCredit={String}
+                unlimitedHubCreditText=""
+                noHubAuthorizationText=""
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        const labels = Array.from(document.querySelectorAll('.mc-workbench-status-card__mn-line > span')).map((node) => node.textContent);
+        expect(labels).toEqual(['5ц alpha', '5ц beta']);
+    });
+
     it('opens the service redeem page when the plan limits row is clicked', () => {
         const { openServiceRedeemPage } = renderStatus({
             ...baseCredits,

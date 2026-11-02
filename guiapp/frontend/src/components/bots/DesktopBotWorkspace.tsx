@@ -836,6 +836,7 @@ function copy(lang: string) {
             demoRedistill: 'Re-distill',
             demoTitlePlaceholder: 'Demo title (optional)',
             demoNarratePlaceholder: 'What this step is doing',
+            demoNotesPlaceholder: 'Notes (optional)',
             demoBusy: 'Working…',
             takeoverHint: 'Fullscreen the desktop and take the keyboard from the bot.',
             takeoverBusyHint: 'This bot is using its desktop. Take over to stop it and take the keyboard.',
@@ -1048,6 +1049,7 @@ function copy(lang: string) {
             demoRedistill: '重新提煉',
             demoTitlePlaceholder: '演示標題（可選）',
             demoNarratePlaceholder: '說明這一步在做什麼',
+            demoNotesPlaceholder: '備註（可選）',
             demoBusy: '處理中…',
             takeoverHint: '全螢幕顯示桌面，並把鍵盤交給你。',
             takeoverBusyHint: '這個 Bot 正在操作桌面。接管會先停下它。',
@@ -1258,6 +1260,7 @@ function copy(lang: string) {
         demoRedistill: '重新提炼',
         demoTitlePlaceholder: '演示标题（可选）',
         demoNarratePlaceholder: '说明这一步在做什么',
+        demoNotesPlaceholder: '备注（可选）',
         demoBusy: '处理中…',
         takeoverHint: '全屏显示桌面，并把键盘交给你。',
         takeoverBusyHint: '这个 Bot 正在操作桌面。接管会先停下它。',
@@ -6989,6 +6992,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     redistill: text.demoRedistill,
                                     titlePlaceholder: text.demoTitlePlaceholder,
                                     narratePlaceholder: text.demoNarratePlaceholder,
+                                    notesPlaceholder: text.demoNotesPlaceholder,
                                     busy: text.demoBusy,
                                 }}
                             />
@@ -6999,7 +7003,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         <button
                                             type="button"
                                             data-testid="desktop-bot-panel-stop"
-                                            className="desktop-bot-chat__takeover"
+                                            className="desktop-bot-chat__stop"
                                             onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'panel-stop')}
                                         >{text.stopBot}</button>
                                     </>

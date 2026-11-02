@@ -585,6 +585,26 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
     @media (prefers-reduced-motion: reduce) {
         .ai-update-notice-button { animation: none; }
     }
+    @keyframes chat-task-spin { to { transform: rotate(360deg); } }
+    @keyframes chat-task-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    .chat-task-spin { animation: chat-task-spin 0.9s linear infinite; }
+    .chat-task-dot-live { animation: chat-task-dot-pulse 1.5s ease-in-out infinite; }
+    .chat-task-ghost { background: transparent; }
+    .chat-task-ghost:hover:not(:disabled) { background: rgba(148, 163, 184, 0.16); }
+    .chat-task-ghost:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 40%, transparent); outline-offset: 1px; }
+    .chat-task-primary {
+        background: color-mix(in srgb, currentColor 8%, transparent);
+        border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+        cursor: pointer;
+    }
+    .chat-task-primary:hover:not(:disabled) { background: color-mix(in srgb, currentColor 16%, transparent); }
+    .chat-task-primary:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 45%, transparent); outline-offset: 1px; }
+    .chat-task-primary:disabled { opacity: 0.45; cursor: default; }
+    .chat-task-chip-x { background: transparent; opacity: 0.72; }
+    .chat-task-chip-x:hover { background: rgba(239, 68, 68, 0.14); color: #dc2626; opacity: 1; }
+    @media (prefers-reduced-motion: reduce) {
+        .chat-task-spin, .chat-task-dot-live { animation: none; }
+    }
 `;
 
 export function getTitleBarToolButtonStyle(t: Theme, variant: "default" | "danger" | "active" = "default"): React.CSSProperties {

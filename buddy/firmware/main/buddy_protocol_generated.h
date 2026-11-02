@@ -22,6 +22,7 @@
 #define BUDDY_MSG_CLOCK "clock"
 #define BUDDY_MSG_HEARTBEAT "heartbeat"
 #define BUDDY_MSG_HELLO "hello"
+#define BUDDY_MSG_INPUT "input"
 #define BUDDY_MSG_LOG "log"
 #define BUDDY_MSG_PET "pet"
 #define BUDDY_MSG_SOUND "sound"

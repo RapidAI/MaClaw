@@ -629,6 +629,16 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	if err != nil {
 		return nil, err
 	}
+	if parsed, _, _, ferr, handled := llm.TryOpenCodeFreeClient(ctx, cfg, data, client, nil); handled {
+		if ferr != nil {
+			return nil, ferr
+		}
+		if parsed == nil || len(parsed.Choices) == 0 {
+			return nil, fmt.Errorf("no response from model")
+		}
+		msg := parsed.Choices[0].Message
+		return finishSimpleLLMText(msg.Content, msg.ReasoningContent, parsed.Choices[0].FinishReason), nil
+	}
 	traceFields := llm.RequestTraceLogFields(req.Context())
 	upstreamModel := cfg.UpstreamModel()
 	log.Printf("[LLM] POST %s model=%s configured_model=%s protocol=%s simple=true structured=%t %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, opts.ResponseFormat != nil, traceFields)

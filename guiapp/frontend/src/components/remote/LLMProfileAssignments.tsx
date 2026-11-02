@@ -6,6 +6,7 @@ import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
 import { SuggestCombobox } from "../ui/SuggestCombobox";
 import { capabilityBandName, hubOfficialModelAliases, officialModelAlias } from "../../utils/capabilityModelLabel";
 import { panelText } from "../../i18n/mnPanel";
+import { presetProviderDisplayName } from "./presetProviderLabel";
 import type { AgentProviderSwitchTarget } from "./agentProviderSwitchOffer";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
@@ -318,7 +319,9 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     // assistant provider/model makes coding appear to keep the old choice
     // until after Save + reload, which contradicts the follow relationship.
     const followingAssistantProvider = providerByID.get(providerLookupKey(assistant?.provider_id));
-    const followingAssistantProviderName = followingAssistantProvider?.name || t("No provider", "未配置服务商");
+    const followingAssistantProviderName = followingAssistantProvider?.name
+        ? presetProviderDisplayName(lang, followingAssistantProvider.name)
+        : t("No provider", "未配置服务商");
     const followingAssistantModel = (followingAssistantProvider?.is_hub_service
         ? officialModelAlias(assistant?.model || "")
         : String(assistant?.model || "").trim()) || t("No model", "未配置模型");
@@ -649,7 +652,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                 <select aria-label={selectorAria(profile, "provider")}
                     value={value.provider_id || ""} onChange={e => setProvider(profile, e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
                     <option value="">{profile === "caption" ? t("Not used", "不使用") : t("Select provider", "选择服务商")}</option>
-                    {providers.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    {providers.map(provider => <option key={provider.id} value={provider.id}>{presetProviderDisplayName(lang, provider.name)}</option>)}
                 </select>
             </div>
             <div>
@@ -737,6 +740,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
 
     const captionVision = visionSelection("caption");
     const assistantSwitchModelLabel = modelFieldValue(assistant?.provider_id, assistant?.model).trim();
+    const assistantSwitchName = presetProviderDisplayName(lang, assistantSwitchHint?.name);
     return wrapSection(<>
         {providers.length === 0 && <div role="status" className="llm-profile-assignments__state llm-profile-assignments__state--soft">
             {t("No eligible providers yet. Test and save a provider in Provider management, or keep using the current assistant provider.", "暂无可用服务商。请先在服务商管理中检测并保存，或继续使用当前助手服务商。")}
@@ -751,22 +755,22 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                             {/* The visible sentence follows the draft model. A live region that includes it would re-announce on every keystroke. */}
                             <div role="status" className="sr-only">
                                 {t(
-                                    `“${assistantSwitchHint.name}” is selected and is not saved yet. Choose a model and save for it to take effect.`,
-                                    `已选中「${assistantSwitchHint.name}」，尚未保存。请选择模型并保存配置，即可生效。`,
-                                    `已選中「${assistantSwitchHint.name}」，尚未保存。請選擇模型並保存配置，即可生效。`,
+                                    `“${assistantSwitchName}” is selected and is not saved yet. Choose a model and save for it to take effect.`,
+                                    `已选中「${assistantSwitchName}」，尚未保存。请选择模型并保存配置，即可生效。`,
+                                    `已選中「${assistantSwitchName}」，尚未保存。請選擇模型並保存配置，即可生效。`,
                                 )}
                             </div>
                             <div>
                                 {assistantSwitchModelLabel
                                     ? t(
-                                        `“${assistantSwitchHint.name}” is selected with model “${assistantSwitchModelLabel}”, and is not saved yet. Choose a model and save for it to take effect.`,
-                                        `已选中「${assistantSwitchHint.name}」，模型为「${assistantSwitchModelLabel}」，尚未保存。请选择模型并保存配置，即可生效。`,
-                                        `已選中「${assistantSwitchHint.name}」，模型為「${assistantSwitchModelLabel}」，尚未保存。請選擇模型並保存配置，即可生效。`,
+                                        `“${assistantSwitchName}” is selected with model “${assistantSwitchModelLabel}”, and is not saved yet. Choose a model and save for it to take effect.`,
+                                        `已选中「${assistantSwitchName}」，模型为「${assistantSwitchModelLabel}」，尚未保存。请选择模型并保存配置，即可生效。`,
+                                        `已選中「${assistantSwitchName}」，模型為「${assistantSwitchModelLabel}」，尚未保存。請選擇模型並保存配置，即可生效。`,
                                     )
                                     : t(
-                                        `“${assistantSwitchHint.name}” is selected as the assistant provider and is not saved yet. Choose a model and save for it to take effect.`,
-                                        `已选中「${assistantSwitchHint.name}」作为 Agent 的服务商，尚未保存。请选择模型并保存配置，即可生效。`,
-                                        `已選中「${assistantSwitchHint.name}」作為 Agent 的服務商，尚未保存。請選擇模型並保存配置，即可生效。`,
+                                        `“${assistantSwitchName}” is selected as the assistant provider and is not saved yet. Choose a model and save for it to take effect.`,
+                                        `已选中「${assistantSwitchName}」作为 Agent 的服务商，尚未保存。请选择模型并保存配置，即可生效。`,
+                                        `已選中「${assistantSwitchName}」作為 Agent 的服務商，尚未保存。請選擇模型並保存配置，即可生效。`,
                                     )}
                             </div>
                             <button type="button" onClick={() => void save()} disabled={saving} className="llm-config-btn llm-config-btn--primary" style={{ marginTop: 8 }}>
@@ -830,7 +834,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                             {inherits
                                 ? <div aria-live="polite" style={{ color: colors.textSecondary, fontSize: "0.74rem" }}>{foregroundUsesAssistant && assistantSelectionPending
                                     ? <>{t("Effective after save: ", "保存后生效：")}{followingAssistantProviderName} · {followingAssistantModel}</>
-                                    : <>{t("Effective now: ", "当前生效：", "目前生效：")}{!isGrounder && summary?.provider_name ? `${summary.provider_name} · ` : ""}{shown}</>}</div>
+                                    : <>{t("Effective now: ", "当前生效：", "目前生效：")}{!isGrounder && summary?.provider_name ? `${presetProviderDisplayName(lang, summary.provider_name)} · ` : ""}{shown}</>}</div>
                                 : <SuggestCombobox
                                     listboxId={`${key}-role-models`}
                                     ariaLabel={aria}

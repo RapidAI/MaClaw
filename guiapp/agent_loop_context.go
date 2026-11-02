@@ -54,6 +54,17 @@ type LoopContext struct {
 	semanticTurnReplacementCancels      map[uint64]context.CancelFunc
 	nextSemanticTurnReplacementCancelID uint64
 	backgroundTaskBoundaryExtensionKeys map[string]struct{}
+	// codingKnowledgeRecallIDs are coding experiences returned by the main
+	// agent's coding_knowledge_search during the current semantic turn. They
+	// are provisional usage evidence: only a delegated runtime task can supply
+	// the verified outcome that changes confidence.
+	codingKnowledgeRecallGeneration uint64
+	codingKnowledgeRecallIDs        []string
+	// mainAgentCodingEvidence accumulates digested material tool events for a
+	// main-agent direct coding turn. It uses its own mutex because the tool
+	// dispatch may hash events while the turn mutex is held elsewhere.
+	mainAgentCodingMu       sync.Mutex
+	mainAgentCodingEvidence *mainAgentCodingEvidenceState
 
 	Conversation []interface{}             // this loop's conversation messages
 	History      []agent.ConversationEntry // loaded history (for chat loops)
@@ -807,6 +818,10 @@ func (c *LoopContext) ReplaceSemanticTurn() {
 	}
 	c.mu.Lock()
 	c.semanticTurnGeneration++
+	// Provisional knowledge-recall evidence belongs to the prior turn. Drop it
+	// now instead of waiting for the next note to notice the generation change.
+	c.codingKnowledgeRecallGeneration = c.semanticTurnGeneration
+	c.codingKnowledgeRecallIDs = nil
 	fences := make([]func(), 0, len(c.semanticTurnFences))
 	for _, fence := range c.semanticTurnFences {
 		fences = append(fences, fence)
@@ -908,6 +923,78 @@ func (c *LoopContext) SemanticTurnGeneration() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.semanticTurnGeneration
+}
+
+const maxCodingKnowledgeRecallIDsPerTurn = 64
+
+// noteCodingKnowledgeRecallIDs records experiences returned by the main
+// agent's coding knowledge search. generation is the turn generation captured
+// when the tool call started: a late result from a replaced turn is dropped
+// instead of contaminating the new turn.
+func (c *LoopContext) noteCodingKnowledgeRecallIDs(generation uint64, ids []string) {
+	if c == nil || len(ids) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation != c.semanticTurnGeneration {
+		return
+	}
+	if c.codingKnowledgeRecallGeneration != c.semanticTurnGeneration {
+		c.codingKnowledgeRecallGeneration = c.semanticTurnGeneration
+		c.codingKnowledgeRecallIDs = nil
+	}
+	c.codingKnowledgeRecallIDs = appendUniqueExperienceIDs(c.codingKnowledgeRecallIDs, ids)
+	if len(c.codingKnowledgeRecallIDs) > maxCodingKnowledgeRecallIDsPerTurn {
+		c.codingKnowledgeRecallIDs = c.codingKnowledgeRecallIDs[len(c.codingKnowledgeRecallIDs)-maxCodingKnowledgeRecallIDsPerTurn:]
+	}
+}
+
+// snapshotCodingKnowledgeRecallIDs returns a copy for observation/tests. It
+// does not consume the evidence, so a later delegation in the same turn can
+// still record it.
+func (c *LoopContext) snapshotCodingKnowledgeRecallIDs() []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.codingKnowledgeRecallGeneration != c.semanticTurnGeneration {
+		return nil
+	}
+	return append([]string(nil), c.codingKnowledgeRecallIDs...)
+}
+
+// takeCodingKnowledgeRecallIDs consumes the current turn's evidence. The
+// delegated runtime task is the only verified outcome, so consuming on record
+// prevents a later delegation from double-counting the same search result.
+func (c *LoopContext) takeCodingKnowledgeRecallIDs() []string {
+	if c == nil {
+		return nil
+	}
+	return c.takeCodingKnowledgeRecallIDsForGeneration(c.SemanticTurnGeneration())
+}
+
+// takeCodingKnowledgeRecallIDsForGeneration consumes evidence only when the
+// delegation still belongs to the generation that started it. A result that
+// arrives after the turn was replaced must not touch the new turn's IDs.
+func (c *LoopContext) takeCodingKnowledgeRecallIDsForGeneration(generation uint64) []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation != c.semanticTurnGeneration {
+		return nil
+	}
+	if c.codingKnowledgeRecallGeneration != c.semanticTurnGeneration {
+		c.codingKnowledgeRecallGeneration = c.semanticTurnGeneration
+		c.codingKnowledgeRecallIDs = nil
+		return nil
+	}
+	ids := append([]string(nil), c.codingKnowledgeRecallIDs...)
+	c.codingKnowledgeRecallIDs = nil
+	return ids
 }
 
 // RegisterSemanticTurnFence associates durable authority cleanup with exactly

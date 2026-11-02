@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -21,29 +22,49 @@ type expertHubClient struct {
 	httpClient *http.Client
 }
 
+// expertHubSyncBlockedInTest reports whether this App must not touch the
+// signed-in tenant's expert catalog. Package tests build &App{} and call
+// SaveExpert; without a test home, LoadConfig is the developer machine's real
+// Hub login. Hub errors are best-effort, so those calls used to publish
+// fixtures into the tenant and every later install merged them back.
+// In-memory credentials are not an opt-in. Only an isolated test home is.
+func expertHubSyncBlockedInTest(a *App) bool {
+	return testing.Testing() && (a == nil || strings.TrimSpace(a.testHomeDir) == "")
+}
+
+// expertHubSyncInlineForTest runs the Hub reconciliation on the caller goroutine
+// during package tests. Production keeps it in the background. A detached
+// goroutine can outlive the test, after defaultExpertStore is restored to the
+// signed-in profile, and upload that profile.
+func expertHubSyncInlineForTest() bool {
+	return testing.Testing()
+}
+
 func (a *App) newExpertHubClient() (*expertHubClient, error) {
-	hubURL, token, err := a.getHubCredentials()
+	if expertHubSyncBlockedInTest(a) {
+		return nil, fmt.Errorf("expert hub sync refused: test process has no isolated config")
+	}
+	cfg, err := a.LoadConfig()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load config: %w", err)
 	}
-	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
-	if hubURL == "" || strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("Hub is not connected")
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	token := strings.TrimSpace(cfg.RemoteMachineToken)
+	if hubURL == "" {
+		return nil, fmt.Errorf("Hub URL not configured")
 	}
-	machineID := ""
-	if cfg, err := a.LoadConfig(); err == nil {
-		machineID = firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID)
+	if token == "" {
+		return nil, fmt.Errorf("Hub token not configured")
 	}
+	machineID := firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID)
 	if machineID == "" {
 		return nil, fmt.Errorf("machine id missing; register to Hub first")
 	}
 	return &expertHubClient{
-		baseURL:   hubURL,
-		machineID: machineID,
-		token:     token,
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		baseURL:    hubURL,
+		machineID:  machineID,
+		token:      token,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
 

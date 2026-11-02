@@ -8,8 +8,31 @@ import (
 	"strings"
 	"testing"
 
+	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
+
+func TestOpenCodeChatSSEKeepsToolNameAndReasoning(t *testing.T) {
+	sse := openCodeChatSSE("deepseek-v4.1-flash-free", "", "think", "tool_calls", []corellm.ToolCall{{
+		ID: "call_1", Type: "function",
+		Function: corellm.ToolCallFunction{Name: "bash", Arguments: `{"command":"python gen.py"}`},
+	}}, nil)
+	if !strings.Contains(sse, `"name":"bash"`) || !strings.Contains(sse, `"reasoning_content":"think"`) || strings.Contains(sse, `"content":"think"`) {
+		t.Fatalf("sse = %s", sse)
+	}
+}
+
+func TestOpenCodeZenFreeWireModelRewritesBigPickle(t *testing.T) {
+	if got := openCodeZenFreeWireModel([]byte(`{"model":"big-pickle"}`), "big-pickle"); got != "glm-5.3-flash-free" {
+		t.Fatalf("payload wire = %s", got)
+	}
+	if got := openCodeZenFreeWireModel(nil, "opencode/deepseek-v4.1-flash-free"); got != "deepseek-v4.1-flash-free" {
+		t.Fatalf("caller wire = %s", got)
+	}
+	if got := openCodeZenFreeWireModel([]byte(`{"model":"deepseek-v4.1-flash"}`), "deepseek-v4.1-flash"); got != "deepseek-v4.1-flash" {
+		t.Fatalf("metered wire = %s", got)
+	}
+}
 
 func TestPlanOpenCodeStreamAppliesMemberExtraAfterZenRewrite(t *testing.T) {
 	plan, ok, err := planOpenCodeStream(&llmpool.ProviderConfig{
@@ -51,14 +74,43 @@ func TestTryForwardOpenCodeKeepsPaidOnChatGateway(t *testing.T) {
 	if err != nil || !handled || resp == nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("handled=%v err=%v resp=%#v", handled, err, resp)
 	}
-	if sawPath != "/zen/go/v1/chat/completions" || sawAuth != "Bearer sk-paid" {
+	if sawPath != "/inference/go/openai/v1/chat/completions" || sawAuth != "Bearer sk-paid" {
 		t.Fatalf("path=%s auth=%s", sawPath, sawAuth)
 	}
-	if strings.Contains(sawBody, `"name":"bash"`) || strings.Contains(sawBody, `"stream":true`) {
+	if strings.Contains(sawBody, `"name":"shell"`) || strings.Contains(sawBody, `"stream":true`) {
 		t.Fatalf("paid body = %s", sawBody)
 	}
 	if !strings.Contains(string(resp.Body), "PAID") || !strings.Contains(string(resp.Body), `"model":"alias"`) {
 		t.Fatalf("response = %s", resp.Body)
+	}
+}
+
+func TestTryForwardOpenCodeKeyedFreeModelStaysFree(t *testing.T) {
+	var sawPath, sawAuth, sawBody string
+	client := openCodeTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		sawAuth = r.Header.Get("Authorization")
+		raw, _ := io.ReadAll(r.Body)
+		sawBody = string(raw)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"PING\"}}]}\n\ndata: [DONE]\n\n")
+	})
+	body := map[string]any{"model": "deepseek-v4.1-flash-free", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+	resp, handled, err := tryForwardOpenCode(context.Background(), client, &llmpool.ProviderConfig{
+		ID: "oc", APIURL: "https://opencode.ai/zen/go/v1", APIKey: "oc_sk_test", AgentType: "OpenCode",
+	}, body, "deepseek-v4.1-flash-free", "", false)
+	if err != nil || !handled || resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("handled=%v err=%v resp=%#v", handled, err, resp)
+	}
+	if sawPath != "/inference/openai/v1/chat/completions" || sawAuth != "Bearer oc_sk_test" {
+		t.Fatalf("path=%s auth=%s", sawPath, sawAuth)
+	}
+	if !strings.Contains(sawBody, `"model":"deepseek-v4.1-flash-free"`) {
+		t.Fatalf("body = %s", sawBody)
+	}
+	metered := strings.ReplaceAll(sawBody, `"model":"deepseek-v4.1-flash-free"`, "")
+	if strings.Contains(metered, "deepseek-v4.1-flash") {
+		t.Fatalf("free id was rewritten to the metered model: %s", sawBody)
 	}
 }
 
@@ -79,10 +131,10 @@ func TestTryForwardOpenCodeFreeOmitsKeyAndKeepsCallerBody(t *testing.T) {
 	if err != nil || !handled || resp == nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("handled=%v err=%v resp=%#v", handled, err, resp)
 	}
-	if sawPath != "/zen/v1/chat/completions" || sawAuth != "" {
+	if sawPath != "/inference/openai/v1/chat/completions" || sawAuth != "" {
 		t.Fatalf("path=%s auth=%q", sawPath, sawAuth)
 	}
-	if !strings.Contains(sawBody, `"stream":true`) || !strings.Contains(sawBody, `"name":"bash"`) {
+	if !strings.Contains(sawBody, `"stream":true`) || !strings.Contains(sawBody, `"name":"shell"`) {
 		t.Fatalf("free body = %s", sawBody)
 	}
 	if _, leaked := body["tools"]; leaked {
@@ -116,7 +168,7 @@ func TestTryForwardOpenCodeFreeRetriesGatewayError(t *testing.T) {
 
 func TestForwardProviderCompletionCollectsFreeTierStream(t *testing.T) {
 	client := openCodeTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/zen/v1/chat/completions" {
+		if r.URL.Path != "/inference/openai/v1/chat/completions" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -140,7 +192,7 @@ func TestPlanOpenCodeStreamDoesNotMutateCaller(t *testing.T) {
 	if err != nil || !ok || plan.responses {
 		t.Fatalf("ok=%v responses=%v err=%v", ok, plan.responses, err)
 	}
-	if plan.endpoint != "https://opencode.ai/zen/v1/chat/completions" {
+	if plan.endpoint != "https://opencode.ai/inference/openai/v1/chat/completions" {
 		t.Fatalf("endpoint = %s", plan.endpoint)
 	}
 	if _, leaked := body["tools"]; leaked {

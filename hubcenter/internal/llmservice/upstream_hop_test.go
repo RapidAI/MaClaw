@@ -3,6 +3,7 @@ package llmservice
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -559,6 +560,98 @@ func TestHopStreamMeasuresUsageFromSSE(t *testing.T) {
 	}
 	if !strings.Contains(dst.buf.String(), "hi") {
 		t.Fatalf("stream body = %q", dst.buf.String())
+	}
+}
+
+func TestProbeProviderModelsAcceptsCatalogLargerThan2MB(t *testing.T) {
+	const pricing = `"pricing":{"in":1,"out":2,"note":"`
+	pad := strings.Repeat("x", 320)
+	var b strings.Builder
+	b.WriteString(`{"object":"list","data":[`)
+	const n = 8000
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"id":"model-%04d",%s%s"}}`, i, pricing, pad)
+	}
+	b.WriteString(`]}`)
+	raw := b.String()
+	if len(raw) <= 2<<20 {
+		t.Fatalf("fixture = %d bytes, need more than 2MiB", len(raw))
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, raw)
+	}))
+	t.Cleanup(upstream.Close)
+
+	models, err := ProbeProviderModels(context.Background(), upstream.Client(), "cheaperinference", upstream.URL+"/v1", "test-key", "openai", "")
+	if err != nil {
+		t.Fatalf("probe catalog of %d bytes: %v", len(raw), err)
+	}
+	last := ""
+	if len(models) > 0 {
+		last = models[len(models)-1]
+	}
+	first := ""
+	if len(models) > 0 {
+		first = models[0]
+	}
+	if len(models) != n || first != "model-0000" || last != fmt.Sprintf("model-%04d", n-1) {
+		t.Fatalf("models len=%d first=%q last=%q", len(models), first, last)
+	}
+}
+
+func TestParseModelCatalogIDs(t *testing.T) {
+	raw := `{
+		"object":"list",
+		"pricing_version":"sha",
+		"data":[
+			{"id":" zed ","pricing":{"id":"hidden","in":1}},
+			{"id":"  "},
+			{"id":"alpha"},
+			{"id":"alpha","note":{"models":[{"id":"nested"}]}}
+		],
+		"models":[{"id":"alpha"},{"id":"mid"}]
+	}`
+	models, err := ParseModelCatalog(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := strings.Join(models, ",")
+	if got != "alpha,mid,zed" {
+		t.Fatalf("models = %q", got)
+	}
+
+	exact := `{"data":[{"id":"only"}]}`
+	models, err = parseModelCatalogIDs(strings.NewReader(exact), int64(len(exact)))
+	if err != nil || len(models) != 1 || models[0] != "only" {
+		t.Fatalf("exact fit models=%v err=%v", models, err)
+	}
+	if _, err := parseModelCatalogIDs(strings.NewReader(exact), int64(len(exact))-1); err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("short limit err = %v", err)
+	}
+	fat := `{"data":[{"id":"m","note":"` + strings.Repeat("y", 80) + `"}]}`
+	if _, err := parseModelCatalogIDs(strings.NewReader(fat), 32); err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("fat catalog err = %v", err)
+	}
+}
+
+func TestProbeProviderModelsReportsUpstreamError(t *testing.T) {
+	body := "upstream down\n" + strings.Repeat("x", 64<<10)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(upstream.Close)
+	_, err := ProbeProviderModels(context.Background(), upstream.Client(), "cheaperinference", upstream.URL+"/v1", "test-key", "openai", "")
+	if err == nil || !strings.Contains(err.Error(), "upstream down") || strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

@@ -108,6 +108,14 @@ type LLMProviderFailover interface {
 	FailoverLLMProvider(ctx context.Context, current corelib.MaclawLLMConfig, err error) (corelib.MaclawLLMConfig, bool)
 }
 
+// LLMSelectionRefresh lets a host replace the model while a turn is waiting
+// to retry an unavailable service. The turn otherwise keeps the model it
+// started with, so a switch in settings is invisible until the next send.
+// ok is false when current is still the selection to keep.
+type LLMSelectionRefresh interface {
+	RefreshLLMSelection(current corelib.MaclawLLMConfig) (corelib.MaclawLLMConfig, bool)
+}
+
 // llmErrStatus returns the HTTP status carried by an LLM error, or 0.
 func llmErrStatus(err error) int {
 	var sc interface{ HTTPStatusCode() int }
@@ -125,6 +133,42 @@ func applyRefreshedLLMAuth(dst, src corelib.MaclawLLMConfig) corelib.MaclawLLMCo
 		dst.AuthType = src.AuthType
 	}
 	return dst
+}
+
+// LLMSelectionChanged reports a different model endpoint. A new access token
+// or a larger context budget is not a person switching models.
+func LLMSelectionChanged(current, next corelib.MaclawLLMConfig) bool {
+	if strings.TrimSpace(next.URL) == "" || strings.TrimSpace(next.Model) == "" {
+		return false
+	}
+	return strings.TrimSpace(current.Model) != strings.TrimSpace(next.Model) ||
+		strings.TrimRight(strings.TrimSpace(current.URL), "/") != strings.TrimRight(strings.TrimSpace(next.URL), "/") ||
+		strings.TrimSpace(current.ProviderName) != strings.TrimSpace(next.ProviderName) ||
+		strings.TrimSpace(current.ProviderID) != strings.TrimSpace(next.ProviderID)
+}
+
+func refreshedLLMSelection(cb LoopCallbacks, current corelib.MaclawLLMConfig) (corelib.MaclawLLMConfig, bool) {
+	refresher, ok := cb.(LLMSelectionRefresh)
+	if !ok {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	next, changed := refresher.RefreshLLMSelection(current)
+	if !changed || !LLMSelectionChanged(current, next) {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	return next, true
+}
+
+func adoptRefreshedLLMSelection(cb LoopCallbacks, cfg, agg *corelib.MaclawLLMConfig) bool {
+	next, ok := refreshedLLMSelection(cb, *cfg)
+	if !ok {
+		return false
+	}
+	log.Printf("[agent-loop] model selection changed during retry from %q to %q", cfg.Model, next.Model)
+	*cfg = next
+	*agg = next
+	cb.OnProgress(llmRetryLiveStatus("已改用当前模型，继续当前任务。"))
+	return true
 }
 
 type ToolExecutionOutcome string
@@ -1297,13 +1341,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	var lastToolOutcome toolOutcome // structured outcome of last tool execution
 
 	// Drift detection: track recent tool calls to detect loops.
-	type toolCallRecord struct {
-		name    string
-		args    string
-		result  string
-		success bool
-	}
 	var recentCalls []toolCallRecord
+	// landedCommits remembers a successful commit payload for the whole turn.
+	// recentCalls only keeps the last eight, so a later identical write would
+	// otherwise run again after unrelated polls. A steer clears it: the
+	// replacement attempt is allowed to apply the same arguments.
+	var landedCommits map[string]struct{}
 	// succeededToolNames records tools that completed successfully at least
 	// once in this loop. When a later request surface no longer renders such a
 	// name (for example a consumed one-shot grant), the denial must say the
@@ -1315,6 +1358,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	succeededToolNames := map[string]struct{}{}
 	const driftWindow = 4 // check last N calls for repetition
 	consecutiveSame := 0
+	// notedCommit is the commit identity we already told the model not to
+	// repeat. The next identical success stops the turn. A different payload
+	// replaces the note so a real revision can proceed.
+	notedCommit := ""
 
 	// Consecutive same-tool failure detection: catches non-repeating failure
 	// loops where the agent keeps trying different approaches with the same
@@ -1466,6 +1513,8 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			consecutiveEmpty = 0
 			consecutiveSame = 0
 			recentCalls = nil
+			clear(landedCommits)
+			notedCommit = ""
 		}
 		// Mid-loop conversation transformation (e.g., compaction).
 		if transformed := h.TransformConversation(conversation); transformed != nil {
@@ -2186,11 +2235,23 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					break
 				}
 				backoff, kind := continuation.next(err, time.Now())
-				if kind == llmContinueStop {
-					break
-				}
 				rotated := false
-				if !didAuthRefresh && llm.IsTransientTokenValidationError(err) {
+				// A 503 keep-going wait used to resend the model this turn
+				// started with. Read the saved selection once here, and once
+				// more when the retry is actually sent. The sleep itself does
+				// not watch it. The fast/keep-going budget is for one endpoint.
+				// Once it is spent, a saved-model change still gets one attempt,
+				// because that is a different service rather than another wait
+				// on the dead one.
+				switchedSelection := false
+				if kind == llmContinueStop {
+					if !adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
+						break
+					}
+					rotated = true
+					switchedSelection = true
+				}
+				if !rotated && !didAuthRefresh && llm.IsTransientTokenValidationError(err) {
 					didAuthRefresh = true
 					if refresher, ok := cb.(LLMAuthRefresh); ok {
 						if next, didRotate := refresher.RefreshLLMAuth(requestCtx); didRotate {
@@ -2212,6 +2273,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						}
 					}
 				}
+				if !rotated && adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
+					rotated = true
+					switchedSelection = true
+				}
 				if rotated {
 					backoff = 0
 				}
@@ -2228,8 +2293,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", continuation.fast, maxLLMRetries, backoff, err)
 						cb.OnProgress(LLMRetryWaitStatus(continuation.fast, maxLLMRetries, backoff, llm.IsTransientTokenValidationError(err)))
 					}
-				} else {
+				} else if switchedSelection {
+					log.Printf("[agent-loop] retrying immediately on the current model %q (attempt %d/%d)", cfg.Model, continuation.fast, maxLLMRetries)
+				} else if didAuthRefresh {
 					log.Printf("[agent-loop] LLM token-validation error, retrying immediately after credential refresh (attempt %d/%d): %v", continuation.fast, maxLLMRetries, err)
+				} else {
+					log.Printf("[agent-loop] retrying immediately (attempt %d/%d): %v", continuation.fast, maxLLMRetries, err)
 				}
 				interruptedForReplan := false
 				// The HTTP call has already finished. Holding a foreground
@@ -2314,6 +2383,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				if requestBaseCtx.Err() != nil || cb.ShouldStop() {
 					finishRequest(err)
 					return finish(LoopResult{Error: "cancelled during LLM retry", Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
+				}
+				// The wait does not watch the saved model. If this attempt already
+				// adopted the new selection, the send uses that. Otherwise read
+				// once here, which is also the read that covers a switch during
+				// the countdown.
+				if !switchedSelection && adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
+					rotated = true
 				}
 				// A retry is a fresh HTTP operation, so it gets a fresh deadline from
 				// the active route. In particular, do not reuse an already-expired
@@ -2531,7 +2607,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		appendLoopDisplayReasoning(&displayReasoning, reasoningContent)
 		visibleContent := choice.Message.Content
 		content := visibleContent
-		if strings.TrimSpace(content) == "" && reasoningContent != "" {
+		// A tool-call turn keeps its thought in reasoning_content. Copying that
+		// trace into content is what showed up as the chat reply.
+		if strings.TrimSpace(content) == "" && reasoningContent != "" && len(choice.Message.ToolCalls) == 0 {
 			content = reasoningContent
 		}
 		content = StripRolePrefixHallucination(content)
@@ -2563,6 +2641,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				content = ""
 				blankBecauseNameless = true
 			}
+		}
+		// The free client shows the official OpenCode tool names. Map them onto
+		// the Maclaw executors that the live weather-PDF run actually used.
+		if openCodeFreeAgentRequest(aggCFG) {
+			choice.Message.ToolCalls = rewriteOpenCodeAgentToolCalls(choice.Message.ToolCalls)
+		}
+		if len(choice.Message.ToolCalls) > 0 && strings.TrimSpace(content) == strings.TrimSpace(reasoningContent) {
+			content = ""
 		}
 
 		// A guide can land while this response is still being classified.
@@ -3133,13 +3219,22 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					if name := lastRepeatToolName(historyDelta); name != "" {
 						// A spent wave is republished when the host can.
 						// A tool still on this request does not need that
-						// publication: the model can call it now. A tool the
-						// host removed, including a consumed one-shot, is not.
+						// publication: the model can call it now. A commit
+						// that already landed is not republished here either.
+						// The same arguments must not be invited back onto
+						// the list; a different payload opens a wave when
+						// the model actually sends it.
 						listed := toolCallNameWasRendered(tools, name)
-						if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(name) {
-							listed = true
+						// The map is filled only when a commit succeeded.
+						// A later grant lookup can fail open and call the
+						// same name a poll; that must not publish another wave.
+						landed := commitNameLanded(landedCommits, name)
+						if !landed {
+							if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(name) {
+								listed = true
+							}
 						}
-						if listed {
+						if listed || landed {
 							repeatWaveName = name
 						}
 					}
@@ -3148,6 +3243,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					repeatAutoContinues++
 					disposeSurface(ToolSurfaceResponseSettled)
 					nudge := fmt.Sprintf("[系统] %s 已再次列入本轮工具列表。当前任务还要继续用它，请直接调用，不要要求用户再发消息，也不要说额度已用完。", repeatWaveName)
+					if commitNameLanded(landedCommits, repeatWaveName) {
+						if toolCallNameWasRendered(tools, repeatWaveName) {
+							nudge = fmt.Sprintf("[系统] %s 已在本轮工具列表中。已经成功执行过的参数不要再调用。若还要改结果，换参数再调用；若已经完成，直接回答。不要说额度已用完，也不要要求用户再发消息。", repeatWaveName)
+						} else {
+							nudge = fmt.Sprintf("[系统] %s 刚才的参数已经成功执行，没有再次列入。不要用相同参数再调用，也不要说额度已用完。若还要改结果，换参数再调用；若已经完成，直接回答。", repeatWaveName)
+						}
+					}
 					conversation = append(conversation, map[string]interface{}{
 						"role":    "user",
 						"content": nudge,
@@ -3305,6 +3407,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			syntheticFailure := false
 			replanSkip := false
 			toolExecuted := false
+			commitSkipped := false
 			policyRejected := false
 			// A steer that arrives after this batch has started still owns every
 			// remaining call. Checked first so a name missing from this request
@@ -3330,133 +3433,165 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// implementations. S0.5 hosts, generic callbacks, and future hosts then
 				// share the same exact rendered-name admission rule before any executor
 				// (including the epoch-less compatibility fallback) can run.
-				if !toolCallNameWasRendered(tools, tc.Function.Name) {
-					tool.RecordUnrenderedToolCallDenial()
-					denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
-					hostDirective := false
-					// surfaceGrant is a host publication of a name that was not
-					// executed. The first one is the next step. A repeat of a
-					// name that still has not run did not change the surface.
-					surfaceGrant := false
-					if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
-						// A budgeted repeat family can publish one more invocation
-						// when the model asks again. One-shot tools stay on the
-						// consumed-grant denial. The grant opened here is on the
-						// next request; this call still does not execute.
-						if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(tc.Function.Name) {
-							denial = repeatWaveContinuedMessage(tc.Function.Name)
-							repeatWaveName = strings.TrimSpace(tc.Function.Name)
-							hostDirective = true
-							surfaceGrant = true
-						} else {
-							tool.RecordConsumedGrantDenial()
-							denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
-						}
-					} else if petitioner, ok := cb.(ToolCallPetitioner); ok {
-						// A governed host may rescue a call that names a real cataloged
-						// tool the planner failed to render, or explain why a planned
-						// name stays off this request. The call still does not execute,
-						// so the outcome stays an error. granted widens the surface for
-						// the next iteration. A non-empty message replaces the generic
-						// absence denial either way, so a successor that is waiting on
-						// a predecessor is not described as a tool that does not exist.
-						granted, message := petitioner.PetitionToolCall(tc.Function.Name)
-						if source, ok := cb.(petitionSystemPromptSource); ok {
-							if prompt := strings.TrimSpace(source.PetitionSystemPrompt()); prompt != "" {
-								replaceConversationSystemPrompt(conversation, prompt)
-							}
-						}
-						if text := strings.TrimSpace(message); text != "" {
-							if granted {
-								tool.RecordPetitionGrant()
-								surfaceGrant = true
-							}
-							denial = text
-							// The call did not run. A non-empty host message is the
-							// next step (re-issue this name, or run the predecessor
-							// it names). Empty-response recovery must follow that
-							// text instead of treating it as a failed execution.
-							// Only a grant publishes a surface. An explanation that
-							// leaves the name off the list is still a miss.
-							hostDirective = true
-						}
-					}
-					execResult := ToolExecutionResult{
-						Result:  denial,
-						Outcome: ToolExecutionOutcomeError,
-					}
-					result := execResult.Result
-					lastToolName = tc.Function.Name
-					lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
-					lastToolOutcome.directive = hostDirective
-					record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
-					recentCalls = append(recentCalls, record)
-					if len(recentCalls) > driftWindow*2 {
-						recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
-					}
-					conversation = append(conversation, map[string]interface{}{
-						"role":         "tool",
-						"tool_call_id": tc.ID,
-						"content":      result,
-					})
-					historyDelta = append(historyDelta, ConversationEntry{
-						Role:        "tool",
-						Content:     result,
-						ToolCallID:  tc.ID,
-						ToolName:    tc.Function.Name,
-						ToolOutcome: string(execResult.Outcome),
-					})
-					grantName := strings.TrimSpace(tc.Function.Name)
-					if surfaceGrant && grantName != "" {
-						if _, seen := surfaceGrantWithoutExecution[grantName]; seen {
-							batchProgressMiss = true
-						} else {
-							surfaceGrantWithoutExecution[grantName] = struct{}{}
+				if !toolCallNameWasRendered(tools, tc.Function.Name) && !OpenCodeFreeHostTool(aggCFG, tc.Function.Name) {
+					// This payload already committed, and the grant it spent is
+					// gone from this request. Opening another wave here tells
+					// the model the turn is unfinished and to call again, so
+					// the same artifact is republished every iteration. A
+					// different payload still falls through and can open a wave.
+					if commitPayloadLanded(landedCommits, tc.Function.Name, argsJSON) {
+						log.Printf("[agent-loop] commit %q already landed; not opening another wave", strings.TrimSpace(tc.Function.Name))
+						commitSkipped = true
+						execResult = ToolExecutionResult{
+							Result:  repeatedCommitSkippedMessage(tc.Function.Name),
+							Outcome: ToolExecutionOutcomeOK,
 						}
 					} else {
-						batchProgressMiss = true
-					}
-					continue
-				}
-				// Hard-stop on oversized tool arguments (parity with GUI stream/exec gates).
-				// Without this, complete non-stream LLM responses can deliver huge args that
-				// never hit the streaming accumulator limit and thrash the loop until maxIter.
-				if argSize := len(argsJSON); argSize > llm.MaxToolArgumentsBytes {
-					toolName := strings.TrimSpace(tc.Function.Name)
-					if toolName == "" {
-						toolName = "unknown"
-					}
-					log.Printf("[agent-loop] rejected oversized tool arguments tool=%q args_len=%d limit=%d", toolName, argSize, llm.MaxToolArgumentsBytes)
-					_ = wsBatch.apply(workingState)
-					if abandoner, ok := h.(ToolBatchAbandoner); ok {
-						abandoner.OnToolBatchAbandoned(batchMeta)
-					}
-					disposeSurface(ToolSurfaceResponseAbandoned)
-					return finish(LoopResult{
-						Error:      fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, llm.MaxToolArgumentsBytes),
-						Iterations: iteration + 1,
-						ToolCalls:  totalToolCalls,
-						HardExit:   true,
-					})
-				}
-				execResult, syntheticFailure = validateLoopToolArguments(tc.Function.Name, argsJSON)
-				if !syntheticFailure {
-					execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
-					// Light misroute recovery only changes this request's prompt profile;
-					// it must not make an unrendered provider function executable. The
-					// rendered-name fence above runs first, so a profile upgrade can never
-					// reinterpret an omitted/hallucinated call as part of this surface.
-					if policyRejected && !lightUpgraded && isLightToolDenyResult(execResult) {
-						if tryLightProfileToolRetry(cb, userText, isFirstTurn, tc.Function.Name, &tools, conversation) {
-							lightUpgraded = true
-							execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+						tool.RecordUnrenderedToolCallDenial()
+						denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
+						hostDirective := false
+						// surfaceGrant is a host publication of a name that was not
+						// executed. The first one is the next step. A repeat of a
+						// name that still has not run did not change the surface.
+						surfaceGrant := false
+						if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
+							// A budgeted repeat family can publish one more invocation
+							// when the model asks again. One-shot tools stay on the
+							// consumed-grant denial. The grant opened here is on the
+							// next request; this call still does not execute.
+							if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(tc.Function.Name) {
+								denial = repeatWaveContinuedMessage(tc.Function.Name)
+								repeatWaveName = strings.TrimSpace(tc.Function.Name)
+								hostDirective = true
+								surfaceGrant = true
+							} else {
+								tool.RecordConsumedGrantDenial()
+								denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
+							}
+						} else if petitioner, ok := cb.(ToolCallPetitioner); ok {
+							// A governed host may rescue a call that names a real cataloged
+							// tool the planner failed to render, or explain why a planned
+							// name stays off this request. The call still does not execute,
+							// so the outcome stays an error. granted widens the surface for
+							// the next iteration. A non-empty message replaces the generic
+							// absence denial either way, so a successor that is waiting on
+							// a predecessor is not described as a tool that does not exist.
+							granted, message := petitioner.PetitionToolCall(tc.Function.Name)
+							if source, ok := cb.(petitionSystemPromptSource); ok {
+								if prompt := strings.TrimSpace(source.PetitionSystemPrompt()); prompt != "" {
+									replaceConversationSystemPrompt(conversation, prompt)
+								}
+							}
+							if text := strings.TrimSpace(message); text != "" {
+								if granted {
+									tool.RecordPetitionGrant()
+									surfaceGrant = true
+								}
+								denial = text
+								// The call did not run. A non-empty host message is the
+								// next step (re-issue this name, or run the predecessor
+								// it names). Empty-response recovery must follow that
+								// text instead of treating it as a failed execution.
+								// Only a grant publishes a surface. An explanation that
+								// leaves the name off the list is still a miss.
+								hostDirective = true
+							}
 						}
+						execResult := ToolExecutionResult{
+							Result:  denial,
+							Outcome: ToolExecutionOutcomeError,
+						}
+						result := execResult.Result
+						lastToolName = tc.Function.Name
+						lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
+						lastToolOutcome.directive = hostDirective
+						record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
+						recentCalls = append(recentCalls, record)
+						if len(recentCalls) > driftWindow*2 {
+							recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
+						}
+						conversation = append(conversation, map[string]interface{}{
+							"role":         "tool",
+							"tool_call_id": tc.ID,
+							"content":      result,
+						})
+						historyDelta = append(historyDelta, ConversationEntry{
+							Role:        "tool",
+							Content:     result,
+							ToolCallID:  tc.ID,
+							ToolName:    tc.Function.Name,
+							ToolOutcome: string(execResult.Outcome),
+						})
+						grantName := strings.TrimSpace(tc.Function.Name)
+						if surfaceGrant && grantName != "" {
+							if _, seen := surfaceGrantWithoutExecution[grantName]; seen {
+								batchProgressMiss = true
+							} else {
+								surfaceGrantWithoutExecution[grantName] = struct{}{}
+							}
+						} else {
+							batchProgressMiss = true
+						}
+						continue
 					}
-					if !policyRejected {
-						cb.OnToolCall(tc.Function.Name)
-						execResult = executeAuthorizedLoopToolCallWithContext(cb, tc.Function.Name, argsJSON, tc.ID, executionContext)
-						cb.OnToolResult(tc.Function.Name)
-						toolExecuted = true
+				}
+				if !commitSkipped {
+					// Authorize only after this check. A host may publish the
+					// next sibling while deciding the name is allowed, and the
+					// grant for this request can already have been spent by an
+					// earlier call in the same batch. The tool list is still
+					// the one frozen for the request, so the name still looks
+					// rendered. Publishing that sibling puts the same artifact
+					// back on the next request.
+					if commitPayloadLanded(landedCommits, tc.Function.Name, argsJSON) {
+						log.Printf("[agent-loop] commit %q already landed; not authorizing again", strings.TrimSpace(tc.Function.Name))
+						commitSkipped = true
+						execResult = ToolExecutionResult{
+							Result:  repeatedCommitSkippedMessage(tc.Function.Name),
+							Outcome: ToolExecutionOutcomeOK,
+						}
+					} else if argSize := len(argsJSON); argSize > llm.MaxToolArgumentsBytes {
+						toolName := strings.TrimSpace(tc.Function.Name)
+						if toolName == "" {
+							toolName = "unknown"
+						}
+						log.Printf("[agent-loop] rejected oversized tool arguments tool=%q args_len=%d limit=%d", toolName, argSize, llm.MaxToolArgumentsBytes)
+						_ = wsBatch.apply(workingState)
+						if abandoner, ok := h.(ToolBatchAbandoner); ok {
+							abandoner.OnToolBatchAbandoned(batchMeta)
+						}
+						disposeSurface(ToolSurfaceResponseAbandoned)
+						return finish(LoopResult{
+							Error:      fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, llm.MaxToolArgumentsBytes),
+							Iterations: iteration + 1,
+							ToolCalls:  totalToolCalls,
+							HardExit:   true,
+						})
+					} else {
+						execResult, syntheticFailure = validateLoopToolArguments(tc.Function.Name, argsJSON)
+						if !syntheticFailure {
+							execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+							// Light misroute recovery only changes this request's prompt profile;
+							// it must not make an unrendered provider function executable. The
+							// rendered-name fence above runs first, so a profile upgrade can never
+							// reinterpret an omitted/hallucinated call as part of this surface.
+							if policyRejected && !lightUpgraded && isLightToolDenyResult(execResult) {
+								if tryLightProfileToolRetry(cb, userText, isFirstTurn, tc.Function.Name, &tools, conversation) {
+									lightUpgraded = true
+									execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+								}
+							}
+							if policyRejected && OpenCodeFreeHostTool(aggCFG, tc.Function.Name) {
+								policyRejected = false
+								execResult = ToolExecutionResult{}
+							}
+							if !policyRejected {
+								cb.OnToolCall(tc.Function.Name)
+								execResult = executeAuthorizedLoopToolCallWithContext(cb, tc.Function.Name, argsJSON, tc.ID, executionContext)
+								cb.OnToolResult(tc.Function.Name)
+								toolExecuted = true
+							}
+						}
 					}
 				}
 			}
@@ -3540,7 +3675,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 			// Determine success for outcome tracking.
 			toolSuccess := lastToolOutcome.kind == toolOutcomeOK
-			batchHadSuccess = batchHadSuccess || toolSuccess
+			// A refused repeat did not apply anything. It must not erase a
+			// no-progress streak or a run of failures on this same tool.
+			if toolSuccess && !commitSkipped {
+				batchHadSuccess = true
+			}
 			// A steer skipped this call before it ran. It is not a failed
 			// attempt: counting it would burn the no-progress budget and could
 			// hard-stop the turn before the replacement request is sent.
@@ -3560,7 +3699,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// failure, injected "诊断并改范围", and the model petitioned a
 			// browser provider this route does not have.
 			guardRejected := execResult.Outcome != ToolExecutionOutcomeOK && hostGuardRejection(result)
-			if !WorkingStateDisabled() && !replanSkip && !policyRejected && !guardRejected && workingState != nil {
+			if !WorkingStateDisabled() && !replanSkip && !policyRejected && !guardRejected && !commitSkipped && workingState != nil {
 				wsBatch.note(workingState, tc.Function.Name, argsJSON, execResult.Outcome)
 			}
 			if toolExecuted && !replanSkip && !policyRejected && !guardRejected {
@@ -3628,7 +3767,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						HardExit:   true,
 					})
 				}
-			} else if !replanSkip && toolSuccess && tc.Function.Name == lastFailedTool {
+			} else if !replanSkip && toolSuccess && !commitSkipped && tc.Function.Name == lastFailedTool {
 				// Success of the previously-failing tool resets the counter.
 				consecutiveSameToolFailures = 0
 				lastFailedTool = ""
@@ -3638,10 +3777,32 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// Drift detection deliberately tracks the raw result. Projection is a
 			// model-context concern and must not make distinct runtime outputs look
 			// identical to the loop detector.
-			record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result, success: toolSuccess}
+			record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result, success: toolSuccess, poll: true}
+			if commitSkipped {
+				// The payload is already in the landed set, which is why this
+				// call did not run. A later grant lookup can fail open and
+				// report a poll; recording that would hide the repeat from
+				// the stop, and the model would keep calling until the
+				// iteration cap.
+				record.success = true
+				record.poll = false
+				record.skipped = true
+			} else if obs, ok := cb.(RepeatObservation); ok {
+				record.poll = obs.IdenticalSuccessIsPoll(tc.Function.Name)
+			}
 			recentCalls = append(recentCalls, record)
 			if len(recentCalls) > driftWindow*2 {
 				recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
+			}
+			// Only a dispatcher invocation lands a payload. A skip is not a
+			// second commit, and a poll can be repeated while a job runs.
+			if toolExecuted && record.success && !record.poll {
+				if landedCommits == nil {
+					landedCommits = map[string]struct{}{}
+				}
+				if key, ok := commitPayloadKey(tc.Function.Name, argsJSON); ok {
+					landedCommits[key] = struct{}{}
+				}
 			}
 
 			// Project exactly once, after every runtime consumer has observed the
@@ -3706,10 +3867,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// telemetry/model routing, not durable recovery.
 		if committer, ok := h.(ToolBatchCommitter); ok {
 			batch := append([]ConversationEntry(nil), historyDelta[batchDeltaStart:]...)
+			// The pre-tool checkpoint is provisional. This commit can see the
+			// paired results, so a mailbox call the host already resolved is
+			// not recorded again as an uncertain external send.
 			batchMeta = ToolBatchMetadata{
 				Sequence:        toolBatchSequence,
-				LastToolName:    lastToolName,
-				SideEffectState: sideEffectStateForToolBatch(choice.Message.ToolCalls),
+				LastToolName:    committedCheckpointToolName(choice.Message.ToolCalls, batch, lastToolName),
+				SideEffectState: sideEffectStateForCommittedBatch(choice.Message.ToolCalls, batch),
 			}
 			if err := committer.OnToolBatchCommitted(batch, batchMeta); err != nil {
 				disposeSurface(ToolSurfaceResponseAbandoned)
@@ -3861,33 +4025,42 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 		// Drift detection: check if the last N calls are the same tool+args+result.
 		// Same input + same output = dead loop. Same input + different output = polling (OK).
+		// An identical successful commit is not a poll. The first repeat is
+		// told that the result already stands, so the model can take the next
+		// step. The same commit again ends the turn. A user steer that arrived
+		// during the batch wins over that stop.
+		if id, seen := repeatedSuccessfulCommit(recentCalls); seen >= 2 && !llmReplanAlreadyRequested(cb) {
+			// Two identical commits get one warning so the model can move on.
+			// A third, including three in the same batch, is the loop.
+			// A skip already returned that warning as its tool result. A
+			// second note that says to keep going is what makes the model
+			// call the same payload again.
+			last := recentCalls[len(recentCalls)-1]
+			if notedCommit == id || seen >= 3 {
+				log.Printf("[agent-loop] drift detected: commit %q repeated with the same arguments", last.name)
+				disposeSurface(ToolSurfaceToolBatchSettled)
+				return finish(LoopResult{
+					Text:       "相同参数已经执行成功，停止重复。要改结果，请换参数。",
+					Iterations: iteration + 1,
+					ToolCalls:  totalToolCalls,
+					HardExit:   true,
+				})
+			}
+			notedCommit = id
+			if !last.skipped {
+				name := last.name
+				log.Printf("[agent-loop] commit %q repeated with the same arguments; telling the model the result stands", name)
+				note := fmt.Sprintf("[系统] 工具 %s 已用相同参数成功执行，该结果仍然有效。不要用相同参数再调用它。若任务还要继续，改参数或做下一步；若已经完成，直接回答。", name)
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": note,
+				})
+				historyDelta = append(historyDelta, HostUserEntry(note))
+			}
+		}
 		if len(recentCalls) >= driftWindow {
 			tail := recentCalls[len(recentCalls)-driftWindow:]
-			allSame := true
-			allSameResult := true
-			for i := 1; i < len(tail); i++ {
-				if tail[i].name != tail[0].name || tail[i].args != tail[0].args {
-					allSame = false
-					break
-				}
-				if tail[i].result != tail[0].result {
-					allSameResult = false
-				}
-			}
-			allSucceeded := allSame && allSameResult
-			if allSucceeded {
-				for i := range tail {
-					if !tail[i].success {
-						allSucceeded = false
-						break
-					}
-				}
-			}
-			// A quiet successful poll is not a dead loop. Telling the model to
-			// stop and explain a limit is what it repeats as a used-up quota
-			// while the job is still running. A streak that did not succeed
-			// still gets one hint.
-			if allSame && allSameResult && !allSucceeded {
+			if driftFailureHint(tail) {
 				consecutiveSame++
 				// One identical window is enough: the no-progress breaker stops
 				// the turn at 5 misses, so guidance that waited for two windows
@@ -4139,6 +4312,14 @@ type RepeatWaveOpener interface {
 	OpenNextRepeatWave(name string) bool
 }
 
+// RepeatObservation separates a status poll from a commit. An identical
+// successful poll is still unfinished work. An identical successful commit
+// already applied those arguments. Hosts that do not implement this keep
+// every identical success as a poll.
+type RepeatObservation interface {
+	IdenticalSuccessIsPoll(name string) bool
+}
+
 // AnswerHandsWorkBack reports a closing reply that leaves the task for the
 // user to restart. The loop uses the same check before it keeps the turn open.
 func AnswerHandsWorkBack(content string) bool {
@@ -4370,7 +4551,7 @@ func sideEffectStateForToolBatch(calls []llm.ToolCall) string {
 // preToolSideEffectState classifies a batch before any call runs. Known
 // read-only batches stay "none" so a process restart does not present them as
 // an uncertain external mutation. Anything else stays externally uncertain
-// until the commit records the outcome.
+// until sideEffectStateForCommittedBatch records the paired outcome.
 // preToolCheckpointToolName records an external send even when it is not the
 // first call. A crash during the batch then keeps that send visible. A batch
 // with no such call still records the first tool.
@@ -4393,6 +4574,63 @@ func preToolSideEffectState(calls []llm.ToolCall) string {
 		return "none"
 	}
 	return "external_uncertain"
+}
+
+// sideEffectStateForCommittedBatch is the post-result class. mailbox_send and
+// mailbox_delete leave the uncertain set once every paired result is a known
+// outcome. A missing result, an uncertain result, and an open confirmation
+// stay uncertain. im_message, send_file, send_to_im, and every other name
+// keep the name-based class.
+func sideEffectStateForCommittedBatch(calls []llm.ToolCall, entries []ConversationEntry) string {
+	remaining := make([]llm.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		name := strings.ToLower(strings.TrimSpace(call.Function.Name))
+		switch name {
+		case "mailbox_send", "mailbox_delete":
+			if MailboxMutationResultsKnown(name, entries) {
+				continue
+			}
+		}
+		remaining = append(remaining, call)
+	}
+	if len(remaining) == 0 {
+		return "none"
+	}
+	return sideEffectStateForToolBatch(remaining)
+}
+
+// committedCheckpointToolName names the effect that is still open after the
+// paired results. An unresolved mailbox mutation wins, then a channel send.
+// A mailbox call whose results are already known does not hide either of those.
+func committedCheckpointToolName(calls []llm.ToolCall, entries []ConversationEntry, executedLast string) string {
+	unresolvedMailbox := ""
+	channelSend := ""
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Function.Name)
+		switch strings.ToLower(name) {
+		case "mailbox_send", "mailbox_delete":
+			if unresolvedMailbox == "" && !MailboxMutationResultsKnown(name, entries) {
+				unresolvedMailbox = name
+			}
+		case "im_message", "send_file", "send_to_im":
+			if channelSend == "" {
+				channelSend = name
+			}
+		}
+	}
+	if unresolvedMailbox != "" {
+		return unresolvedMailbox
+	}
+	if channelSend != "" {
+		return channelSend
+	}
+	if strings.TrimSpace(executedLast) != "" {
+		return strings.TrimSpace(executedLast)
+	}
+	if len(calls) > 0 {
+		return strings.TrimSpace(calls[0].Function.Name)
+	}
+	return ""
 }
 
 func projectLoopToolResult(cb LoopCallbacks, name string, result ToolExecutionResult) string {
@@ -4454,6 +4692,134 @@ func invalidLoopToolArgumentNames(calls []llm.ToolCall) []string {
 // for a retry the guard will reject again.
 func hostGuardRejection(result string) bool {
 	return strings.HasPrefix(strings.TrimSpace(result), "[system rejected]")
+}
+
+// toolCallRecord is one executed call in the drift window. It lives outside
+// RunLoop so the commit-vs-poll rule can be tested without a model.
+// poll is true unless the host classified the capability as a commit.
+type toolCallRecord struct {
+	name    string
+	args    string
+	result  string
+	success bool
+	poll    bool
+	skipped bool
+}
+
+// driftFailureHint reports a window of identical calls that did not succeed.
+// A successful poll is not a hint: the same output can be a job that is
+// still running.
+func driftFailureHint(tail []toolCallRecord) bool {
+	if len(tail) < 2 {
+		return false
+	}
+	for i := 1; i < len(tail); i++ {
+		if tail[i].name != tail[0].name || !sameCallArgs(tail[i].args, tail[0].args) || tail[i].result != tail[0].result {
+			return false
+		}
+	}
+	for i := range tail {
+		if tail[i].success {
+			return false
+		}
+	}
+	return true
+}
+
+// repeatedSuccessfulCommit reports that the latest call is a commit whose
+// arguments and receipt already occurred in this turn. Polls are ignored.
+// The identity is stable across JSON key order.
+func repeatedSuccessfulCommit(calls []toolCallRecord) (id string, seen int) {
+	if len(calls) == 0 {
+		return "", 0
+	}
+	last := calls[len(calls)-1]
+	if !last.success || last.poll {
+		return "", 0
+	}
+	id = commitIdentity(last)
+	for _, call := range calls {
+		if call.success && !call.poll && commitIdentity(call) == id {
+			seen++
+		}
+	}
+	return id, seen
+}
+
+func commitIdentity(call toolCallRecord) string {
+	args := call.args
+	if canonical, ok := canonicalCallArgs(call.args); ok {
+		args = canonical
+	}
+	return call.name + "\n" + args + "\n" + call.result
+}
+
+// commitPayloadKey identifies a commit by tool name and canonical arguments.
+// The receipt is not part of the key: a later skip uses a different sentence,
+// and the payload is what must not be applied twice.
+func commitPayloadKey(name, args string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", false
+	}
+	if canonical, ok := canonicalCallArgs(args); ok {
+		return name + "\n" + canonical, true
+	}
+	return name + "\n" + args, true
+}
+
+// commitPayloadLanded reports a payload stored after a commit succeeded.
+// A later grant lookup that fails open and reports a poll must not run it again.
+func commitPayloadLanded(landed map[string]struct{}, name, args string) bool {
+	key, ok := commitPayloadKey(name, args)
+	if !ok || landed == nil {
+		return false
+	}
+	_, yes := landed[key]
+	return yes
+}
+
+func commitNameLanded(landed map[string]struct{}, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || len(landed) == 0 {
+		return false
+	}
+	prefix := name + "\n"
+	for key := range landed {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func repeatedCommitSkippedMessage(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	return fmt.Sprintf("[系统] 工具 %s 的这些参数已经成功执行过，本次没有再次执行。该结果仍然有效。不要用相同参数再调用；要改结果，换参数。", name)
+}
+
+func sameCallArgs(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ca, oka := canonicalCallArgs(a)
+	cb, okb := canonicalCallArgs(b)
+	return oka && okb && ca == cb
+}
+
+func canonicalCallArgs(raw string) (string, bool) {
+	var value interface{}
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return "", false
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
 }
 
 func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionResult, bool) {

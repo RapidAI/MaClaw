@@ -1650,6 +1650,7 @@ func TestChatTaskProgressAndEmptyResult(t *testing.T) {
 		"〔进度〕收到，正在处理",
 		"[Status] This is taking a while; I'll notify you when done.",
 		"Still working: Still processing (elapsed 5m50s)...",
+		"[Төлөв] Хэвээр ажиллаж байна: Боловсруулж байна (1 мин 30 сек өнгөрлөө)...",
 	} {
 		if _, ok := chatTaskProgressMilestone(silence); ok {
 			t.Fatalf("silence was kept: %q", silence)
@@ -1765,5 +1766,94 @@ func TestChatTaskGuidanceDoesNotOfferStopAsAnEscape(t *testing.T) {
 	}
 	if strings.Contains(stopDescription, "Call this whenever the user wants") {
 		t.Fatal("tool description still offers stop as a general escape")
+	}
+}
+
+func TestChatTaskTitleCleansDispatcherBanner(t *testing.T) {
+	cases := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{
+			name:   "chinese banner and step lead",
+			prompt: `工作目录：C:\Users\ma139\Desktop\作业。任务两步： 1) 生成 Word 讲稿文档：把「演讲稿 完整版 SDG1 Brazil」`,
+			want:   "1) 生成 Word 讲稿文档：把「演讲稿 完整版 SDG1 Brazil」",
+		},
+		{
+			name:   "english banner and steps",
+			prompt: `Working directory: C:\work. Task steps: export the deck`,
+			want:   "export the deck",
+		},
+		{
+			name:   "full-width space after the step colon",
+			prompt: `工作目录：C:\Users\ma139\Desktop\作业。任务两步：　1) 生成 Word 讲稿文档`,
+			want:   "1) 生成 Word 讲稿文档",
+		},
+		{
+			name:   "banner only keeps the raw text",
+			prompt: `工作目录：C:\a。`,
+			want:   `工作目录：C:\a。`,
+		},
+		{
+			name:   "plain title passes through",
+			prompt: "总结部分",
+			want:   "总结部分",
+		},
+		{
+			name:   "empty falls back to the placeholder",
+			prompt: "   ",
+			want:   "This work",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chatTaskTitle(tc.prompt); got != tc.want {
+				t.Fatalf("chatTaskTitle(%q) = %q, want %q", tc.prompt, got, tc.want)
+			}
+		})
+	}
+	long := `工作目录：C:\Users\ma139\Desktop\作业。任务两步： ` + strings.Repeat("生成讲稿", 30)
+	got := chatTaskTitle(long)
+	if !strings.HasSuffix(got, "…") || utf8.RuneCountInString(got) > 73 {
+		t.Fatalf("long cleaned title not truncated to 72 runes: %q", got)
+	}
+	if strings.Contains(got, "工作目录") {
+		t.Fatalf("cleaned title still carries the banner: %q", got)
+	}
+}
+
+func TestChatTaskTitleEqualsMatchesBannerAndCleanedForms(t *testing.T) {
+	stored := "1) 生成 Word 讲稿文档：把「演讲稿 完整版 SDG1 Brazil」"
+	banner := `工作目录：C:\Users\ma139\Desktop\作业。任务两步： ` + stored
+	if !chatTaskTitleEquals(stored, banner) {
+		t.Fatal("steer by the banner-prefixed request no longer matches the cleaned stored title")
+	}
+	if !chatTaskTitleEquals(banner, stored) {
+		t.Fatal("steer matching is not symmetric for banner-prefixed titles")
+	}
+	if !chatTaskTitleEquals("总结部分", "总结部分") {
+		t.Fatal("plain equal titles stopped matching")
+	}
+	if chatTaskTitleEquals("总结部分", "别的任务") {
+		t.Fatal("unrelated titles match")
+	}
+}
+
+func TestOpenTaskForSteerMatchesCleanedStoredTitle(t *testing.T) {
+	r := &chatTaskRegistry{tasks: map[string]*chatTaskRecord{
+		"ct-1": {ID: "ct-1", SessionKey: "desktop-user", Title: "1) 生成 Word 讲稿文档", Status: chatTaskRunning},
+		"ct-2": {ID: "ct-2", SessionKey: "other-user", Title: "1) 生成 Word 讲稿文档", Status: chatTaskRunning},
+		"ct-3": {ID: "ct-3", SessionKey: "desktop-user", Title: "1) 生成 Word 讲稿文档", Status: chatTaskDone},
+	}}
+	task, err := r.openTaskForSteer("desktop-user", "", `工作目录：C:\Users\ma139\Desktop\作业。任务两步： 1) 生成 Word 讲稿文档`)
+	if err != nil {
+		t.Fatalf("steer by banner title failed: %v", err)
+	}
+	if task.ID != "ct-1" {
+		t.Fatalf("matched %q, want ct-1 (session-scoped, non-terminal)", task.ID)
+	}
+	if _, err := r.openTaskForSteer("desktop-user", "", "不存在的任务"); err == nil {
+		t.Fatal("unmatched title should error")
 	}
 }

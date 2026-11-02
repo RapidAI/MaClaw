@@ -40,6 +40,45 @@ func (s *CodingSubAgent) SetKnowledgeStores(codingKB *knowledge.CodingKnowledgeS
 	s.generalKB = generalKB
 }
 
+type codingKnowledgeRecallContextKey struct{}
+
+// codingKnowledgeRecallSink binds the turn generation at tool-call start. A
+// late result from a replaced turn must not append to the new turn.
+type codingKnowledgeRecallSink struct {
+	loop       *LoopContext
+	generation uint64
+}
+
+// withCodingKnowledgeRecallContext gives the main-agent knowledge tool a
+// turn-scoped place to record which experiences it returned. The value is a
+// LoopContext, not a grant: without a delegated runtime task it cannot change
+// confidence.
+func withCodingKnowledgeRecallContext(ctx context.Context, loop *LoopContext) context.Context {
+	if loop == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, codingKnowledgeRecallContextKey{}, codingKnowledgeRecallSink{
+		loop:       loop,
+		generation: loop.SemanticTurnGeneration(),
+	})
+}
+
+func codingKnowledgeRecallLoopContext(ctx context.Context) *LoopContext {
+	if ctx == nil {
+		return nil
+	}
+	sink, _ := ctx.Value(codingKnowledgeRecallContextKey{}).(codingKnowledgeRecallSink)
+	return sink.loop
+}
+
+func codingKnowledgeRecallGeneration(ctx context.Context) uint64 {
+	if ctx == nil {
+		return 0
+	}
+	sink, _ := ctx.Value(codingKnowledgeRecallContextKey{}).(codingKnowledgeRecallSink)
+	return sink.generation
+}
+
 // ---------------------------------------------------------------------------
 // System prompt injection
 // ---------------------------------------------------------------------------
@@ -73,20 +112,47 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 	}
 
 	projectPath := c.subagent.projectPath
+	taskFiles := []string(nil)
+	if c.task != nil {
+		taskFiles = c.task.Files
+	}
+	frameworks := inferCodingFrameworks(projectPath, taskFiles)
+	preferredLanguage := ""
+	if taskLanguage == "" {
+		// High-level tasks often list no source files. The project manifest is
+		// still a useful language prior, but only as a ranking hint: guessing a
+		// strict language here could hide the other half of a mixed repository.
+		preferredLanguage = inferCodingProjectLanguage(projectPath)
+	}
 
 	// 1. Coding knowledge (experiences), plus read-only enterprise technical assets.
 	var pack knowledge.ContextPackResult
 	if c.subagent.codingKB != nil {
-		if got, err := c.subagent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
-			Query:       taskQuery,
-			Language:    taskLanguage,
-			ProjectPath: projectPath,
-			MaxItems:    4,
-			MaxChars:    1500,
-			MaxTokens:   750,
-		}); err == nil {
-			pack = got
+		loadPack := func(query string) knowledge.ContextPackResult {
+			got, err := c.subagent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
+				Query:             query,
+				Language:          taskLanguage,
+				PreferredLanguage: preferredLanguage,
+				Frameworks:        frameworks,
+				ProjectPath:       projectPath,
+				MaxItems:          4,
+				MaxChars:          1500,
+				MaxTokens:         750,
+			})
+			if err != nil {
+				return knowledge.ContextPackResult{}
+			}
 			c.noteRecalledExperienceIDs(contextPackSourceIDs(got))
+			return got
+		}
+		pack = loadPack(taskQuery)
+		// A retry or continuation often carries its only useful failure text in
+		// the previous outputs, not in the unchanged task wording. Use that as
+		// a fallback query only when the task query found nothing.
+		if len(pack.Items) == 0 {
+			if fallback := codingKnowledgeFallbackQuery(c.prevOutputs...); fallback != "" {
+				pack = loadPack(fallback)
+			}
 		}
 	}
 	if c.subagent.handler != nil && c.subagent.handler.app != nil {
@@ -246,16 +312,27 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 	if c.task != nil {
 		taskLanguage = inferLanguageFromTaskFiles(c.task.Files)
 	}
+	taskFiles := []string(nil)
+	if c.task != nil {
+		taskFiles = c.task.Files
+	}
+	frameworks := inferCodingFrameworks(c.subagent.projectPath, taskFiles)
+	preferredLanguage := ""
+	if taskLanguage == "" {
+		preferredLanguage = inferCodingProjectLanguage(c.subagent.projectPath)
+	}
 
 	var experiences []knowledge.CodingExperience
 	var err error
 	if c.subagent.codingKB != nil {
 		experiences, err = c.subagent.codingKB.SearchExperiences(ctx, knowledge.CodingSearchOptions{
-			Query:       query,
-			Language:    taskLanguage,
-			ProjectPath: c.subagent.projectPath,
-			Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
-			Limit:       5,
+			Query:             query,
+			Language:          taskLanguage,
+			PreferredLanguage: preferredLanguage,
+			Frameworks:        frameworks,
+			ProjectPath:       c.subagent.projectPath,
+			Status:            []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
+			Limit:             5,
 		})
 	}
 	var app *App
@@ -508,33 +585,55 @@ func parseCodingSubAgentToolArgs(argsJSON string) map[string]interface{} {
 // the registry (IM/desktop) dispatch. Callers layer their own transport
 // parsing, recall tracking, and language inference on top; the search itself —
 // coding-KB store lookup, app-side finish/merge, and hit formatting — lives
-// here exactly once. The returned experience list lets the remote caller keep
-// its recalled-experience audit; registry callers can ignore it.
-func runCodingKnowledgeSearch(app *App, kb *knowledge.CodingKnowledgeStore, query, language, projectPath string) (string, []knowledge.CodingExperience) {
+// here exactly once. The second return value is the local writer-owned
+// evidence list: enterprise read-only items may appear in the rendered text but
+// can never produce a local recall outcome.
+func runCodingKnowledgeSearch(app *App, kb *knowledge.CodingKnowledgeStore, query, language, projectPath string, limit int) (string, []knowledge.CodingExperience) {
 	if app == nil && kb == nil {
 		return "编程知识库未配置。暂无可用的编码经验。", nil
 	}
+	limit = normalizeCodingKnowledgeSearchLimit(limit)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	var experiences []knowledge.CodingExperience
-	var err error
+	var localExperiences []knowledge.CodingExperience
+	var localErr error
 	if kb != nil {
-		experiences, err = kb.SearchExperiences(ctx, knowledge.CodingSearchOptions{
-			Query:       query,
-			Language:    language,
-			ProjectPath: projectPath,
-			Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
-			Limit:       5,
+		frameworks := inferCodingFrameworks(projectPath, nil)
+		preferredLanguage := ""
+		if strings.TrimSpace(language) == "" {
+			// The caller has no task-specific language, but the project still
+			// provides a useful ranking hint. Keep Language empty so project and
+			// other-language guidance remain searchable.
+			preferredLanguage = inferCodingProjectLanguage(projectPath)
+		}
+		localExperiences, localErr = kb.SearchExperiences(ctx, knowledge.CodingSearchOptions{
+			Query:             query,
+			Language:          language,
+			PreferredLanguage: preferredLanguage,
+			Frameworks:        frameworks,
+			ProjectPath:       projectPath,
+			Status:            []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
+			Limit:             limit,
 		})
 	}
-	experiences, err = finishCodingKnowledgeSearch(app, ctx, experiences, err, query, language, projectPath, 5)
+	merged, err := finishCodingKnowledgeSearch(app, ctx, localExperiences, localErr, query, language, projectPath, limit)
 	if err != nil {
-		return fmt.Sprintf("编程知识库当前不可用；请继续通过 ssh_read_file、ssh_bash 和验证命令完成任务。(%v)", err), experiences
+		return fmt.Sprintf("编程知识库当前不可用；请继续通过 ssh_read_file、ssh_bash 和验证命令完成任务。(%v)", err), localExperiences
 	}
-	if len(experiences) == 0 {
-		return fmt.Sprintf("未找到与 %q 相关的编码经验。", query), experiences
+	if len(merged) == 0 {
+		return fmt.Sprintf("未找到与 %q 相关的编码经验。", query), localExperiences
 	}
-	return formatCodingExperienceSearchHits(experiences), experiences
+	return formatCodingExperienceSearchHits(merged), localExperiences
+}
+
+func normalizeCodingKnowledgeSearchLimit(limit int) int {
+	if limit <= 0 {
+		return 5
+	}
+	if limit > 20 {
+		return 20
+	}
+	return limit
 }
 
 func finishCodingKnowledgeSearch(app *App, ctx context.Context, local []knowledge.CodingExperience, localErr error, query, language, projectPath string, limit int) ([]knowledge.CodingExperience, error) {
@@ -572,6 +671,11 @@ func formatCodingExperienceSearchHits(experiences []knowledge.CodingExperience) 
 	b.WriteString(fmt.Sprintf("找到 %d 条相关编码经验：\n\n", len(experiences)))
 	for i, exp := range experiences {
 		b.WriteString(fmt.Sprintf("%d. **%s** [%s/%s] (置信度: %.1f)\n", i+1, exp.Title, exp.Scope, exp.Category, exp.Confidence))
+		if exp.ID != "" {
+			// The tool description promises citable hits. Keep the ID visible so
+			// the agent can cite the exact experience (and reviewers can find it).
+			b.WriteString(fmt.Sprintf("   经验ID: %s\n", exp.ID))
+		}
 		if exp.TriggerCondition != "" {
 			b.WriteString(fmt.Sprintf("   触发条件: %s\n", exp.TriggerCondition))
 		}
@@ -596,6 +700,30 @@ func formatCodingExperienceSearchHits(experiences []knowledge.CodingExperience) 
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// codingKnowledgeFallbackQuery builds a bounded recall query from prior turn
+// outputs. It keeps the most recent text because a retry's failure summary is
+// usually the last item, and caps the result so the FTS query stays focused.
+func codingKnowledgeFallbackQuery(texts ...string) string {
+	runes := make([]rune, 0, 512)
+	for _, text := range texts {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		if len(runes) > 0 {
+			runes = append(runes, '\n')
+		}
+		runes = append(runes, []rune(text)...)
+		if len(runes) > 800 {
+			runes = runes[len(runes)-800:]
+		}
+	}
+	if len(runes) > 400 {
+		runes = runes[len(runes)-400:]
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 func contextPackSourceIDs(pack knowledge.ContextPackResult) []string {

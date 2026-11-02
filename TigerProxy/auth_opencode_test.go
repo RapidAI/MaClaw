@@ -15,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestOpenCodeAuthModeIsListed(t *testing.T) {
@@ -553,8 +554,8 @@ func TestOpenCodeStreamWrapsJSONCompletion(t *testing.T) {
 			t.Fatalf("wrapped stream missing %s: %s", want, got)
 		}
 	}
-	kept, ok := chatCompletionJSONToSSE([]byte(`{"choices":[{"delta":null,"message":{"role":"assistant","content":"kept"}}]}`))
-	if !ok || !bytes.Contains(kept, []byte("kept")) || bytes.Contains(kept, []byte(`"delta":null`)) {
+	kept, ok := chatCompletionJSONToSSE([]byte(`{"choices":[{"delta":null,"message":{"role":"assistant","content":"kept","reasoning_content":"thought"}}]}`))
+	if !ok || !bytes.Contains(kept, []byte("kept")) || !bytes.Contains(kept, []byte("thought")) || bytes.Contains(kept, []byte(`"delta":null`)) {
 		t.Fatalf("message was dropped: %s", kept)
 	}
 }
@@ -627,6 +628,70 @@ func TestOpenCodeGoGatewayRewritesZenRequests(t *testing.T) {
 	})
 	if served.ModelID != "cat-jam-free" || len(served.Models) != 1 {
 		t.Fatalf("served free model = %+v", served)
+	}
+}
+
+func TestOpenCodeFreeClientResponseMapsMaclawTools(t *testing.T) {
+	parsed := &corellm.Response{Choices: []corellm.Choice{{
+		FinishReason: "stop",
+		Message: corellm.Message{
+			Role:             "assistant",
+			Content:          "think",
+			ReasoningContent: "think",
+			ToolCalls: []corellm.ToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				Function: corellm.ToolCallFunction{
+					Name:      "shell",
+					Arguments: `{"command":"python gen.py","workdir":"D:\\oc-empty","timeout":120000}`,
+				},
+			}},
+		},
+	}}}
+	resp, err := openCodeFreeClientResponse("deepseek-v4.1-flash-free", parsed, []string{"bash"}, false)
+	if err != nil || resp == nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+	if !strings.Contains(text, `"name":"bash"`) || !strings.Contains(text, `working_dir`) || !strings.Contains(text, `timeout\":120`) || !strings.Contains(text, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("response = %s", text)
+	}
+	if strings.Contains(text, `"name":"shell"`) || strings.Contains(text, `"content":"think"`) {
+		t.Fatalf("official name or thought leaked: %s", text)
+	}
+	kept, err := openCodeFreeClientResponse("deepseek-v4.1-flash-free", &corellm.Response{Choices: []corellm.Choice{{
+		Message: corellm.Message{Role: "assistant", ToolCalls: []corellm.ToolCall{{
+			ID: "call_2", Type: "function",
+			Function: corellm.ToolCallFunction{Name: "shell", Arguments: `{"command":"ls","workdir":"/tmp"}`},
+		}}},
+	}}}, []string{"shell"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptBody, _ := io.ReadAll(kept.Body)
+	if !strings.Contains(string(keptBody), `"name":"shell"`) || strings.Contains(string(keptBody), `"name":"bash"`) {
+		t.Fatalf("declared shell was rewritten: %s", keptBody)
+	}
+}
+
+func TestOpenCodeFreeClientRequestStaysOffLocalHosts(t *testing.T) {
+	if _, _, ok := openCodeFreeClientRequest("http://127.0.0.1:9/v1/chat/completions", []byte(`{"model":"deepseek-v4.1-flash-free"}`)); ok {
+		t.Fatal("local host was sent to the identified client")
+	}
+	model, body, ok := openCodeFreeClientRequest("https://opencode.ai/zen/go/v1/chat/completions", []byte(`{"model":"big-pickle","messages":[{"role":"user","content":"hi"}]}`))
+	if !ok || model != "glm-5.3-flash-free" || !bytes.Contains(body, []byte(`"model":"glm-5.3-flash-free"`)) {
+		t.Fatalf("big-pickle model=%s ok=%v body=%s", model, ok, body)
+	}
+	if _, _, ok := openCodeFreeClientRequest("https://opencode.ai/zen/go/v1/chat/completions", []byte(`{"model":"deepseek-v4.1-flash"}`)); ok {
+		t.Fatal("metered model was treated as free")
+	}
+	if _, _, ok := openCodeFreeClientRequest("https://opencode.ai/zen/go/v1/chat/completions", []byte(`{"model":"cat-jam-free"}`)); ok {
+		t.Fatal("go-native free model was treated as zen free")
+	}
+	model, _, ok = openCodeFreeClientRequest("https://opencode.ai/inference/openai/v1/chat/completions", []byte(`{"model":"opencode/deepseek-v4.1-flash-free"}`))
+	if !ok || model != "deepseek-v4.1-flash-free" {
+		t.Fatalf("prefixed model=%s ok=%v", model, ok)
 	}
 }
 

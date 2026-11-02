@@ -28,7 +28,15 @@ type BuddyStatus = {
     device_fw?: string;
     device_board?: string;
     device_touch?: boolean;
+    device_key?: boolean;
     device_sound?: boolean;
+    device_width?: number;
+    device_height?: number;
+    device_round?: boolean;
+    device_panel?: string;
+    device_font?: string;
+    sound_master?: boolean;
+    state_latency_ms?: number;
     page?: string;
     last_state_at?: string;
     last_ack_at?: string;
@@ -38,18 +46,20 @@ type BuddyStatus = {
 };
 
 type SoundEvent = { enabled: boolean; effect: number };
-type SoundEventKey = 'running' | 'complete' | 'standby';
+type SoundEventKey = 'running' | 'complete' | 'standby' | 'attention';
 type SoundConfig = {
     master: boolean;
     running: SoundEvent;
     complete: SoundEvent;
     standby: SoundEvent;
+    attention?: SoundEvent;
 };
 
 const SOUND_EVENTS: Array<{ key: SoundEventKey; en: string; zh: string; tw: string }> = [
     { key: 'running', en: 'Running', zh: '运行中', tw: '執行中' },
     { key: 'complete', en: 'Completed', zh: '完成', tw: '完成' },
     { key: 'standby', en: 'Standby', zh: '待机', tw: '待機' },
+    { key: 'attention', en: 'Needs a look', zh: '需要查看', tw: '需要查看' },
 ];
 
 const SOUND_COUNT = 5;
@@ -57,13 +67,14 @@ const POLL_MS = 3000;
 const PORT_POLL_MS = 30000;
 
 function withEvent(cfg: SoundConfig, key: SoundEventKey, patch: Partial<SoundEvent>): SoundConfig {
-    return { ...cfg, [key]: { ...cfg[key], ...patch } };
+    const current = cfg[key] ?? { enabled: true, effect: 0 };
+    return { ...cfg, [key]: { ...current, ...patch } };
 }
 
 /**
  * USB companion display settings. The service lives in the Go process and
  * auto-detects a board, so this panel only shows state and lets the person
- * pick a port or disable the link before flashing.
+ * pick a port or turn the link off.
  */
 export function BuddySettingsSection({ lang }: { lang: string }) {
     const [status, setStatus] = useState<BuddyStatus | null>(null);
@@ -74,6 +85,7 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
     const [weatherNote, setWeatherNote] = useState('');
     const [petNote, setPetNote] = useState('');
     const [sound, setSound] = useState<SoundConfig | null>(null);
+    const deviceMaster = useRef<boolean | null>(null);
     const statusRequest = useRef<Promise<void> | null>(null);
     const portsRequest = useRef<Promise<void> | null>(null);
 
@@ -122,6 +134,17 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
             setError(err instanceof Error ? err.message : String(err));
         }
     }, []);
+
+    useEffect(() => {
+        if (!status?.connected || typeof status.sound_master !== 'boolean') return;
+        if (deviceMaster.current === null) {
+            deviceMaster.current = status.sound_master;
+            return;
+        }
+        if (deviceMaster.current === status.sound_master) return;
+        deviceMaster.current = status.sound_master;
+        void loadSound();
+    }, [status?.sound_master, loadSound]);
 
     useEffect(() => {
         void refresh();
@@ -226,12 +249,25 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
             ? ` · ${localizeText(lang, 'stale', '数据陈旧', '資料陳舊')}`
             : '';
     const touchNote =
-        status?.connected && status.device_touch === false
+        status?.connected && status.device_touch === false && status.device_key !== true
             ? ` · ${localizeText(lang, 'touch not detected', '触摸未检测到', '觸控未偵測到')}`
             : '';
+    const audioMissing = status?.connected && status.device_sound === false;
     const soundNote =
         status?.connected && status.device_sound === false
             ? ` · ${localizeText(lang, 'audio unavailable', '音效不可用', '音效不可用')}`
+            : '';
+    const latencyNote =
+        status?.connected && typeof status.state_latency_ms === 'number' && status.state_latency_ms >= 0
+            ? ` · ${status.state_latency_ms} ms`
+            : '';
+    const panelNote =
+        status?.connected && status.device_width && status.device_height
+            ? ` · ${status.device_width}×${status.device_height}${
+                  status.device_round ? localizeText(lang, ' round', ' 圆屏', ' 圓屏') : ''
+              }${status.device_panel ? ` · ${status.device_panel}` : ''}${
+                  status.device_font ? ` · ${status.device_font}` : ''
+              }`
             : '';
 
     return (
@@ -252,13 +288,19 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
                 </div>
 
                 <label className="buddy-settings__row">
-                    <input
-                        type="checkbox"
-                        checked={!!status?.enabled}
-                        disabled={busy || status === null}
-                        onChange={(event) => void toggle(event.target.checked)}
-                    />
-                    <span>{localizeText(lang, 'Enable companion link', '启用伴侣屏连接', '啟用伴侶螢幕連線')}</span>
+                    {status === null ? (
+                        <span>{localizeText(lang, 'Reading the link…', '正在读取连接状态…', '正在讀取連線狀態…')}</span>
+                    ) : (
+                        <>
+                            <input
+                                type="checkbox"
+                                checked={status.enabled}
+                                disabled={busy}
+                                onChange={(event) => void toggle(event.target.checked)}
+                            />
+                            <span>{localizeText(lang, 'Enable companion link', '启用伴侣屏连接', '啟用伴侶螢幕連線')}</span>
+                        </>
+                    )}
                 </label>
 
                 <label className="buddy-settings__row">
@@ -288,6 +330,8 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
                     {status?.port ? ` · ${status.port}` : ''}
                     {status?.device_board ? ` · ${status.device_board}` : ''}
                     {status?.device_fw ? ` · ${status.device_fw}` : ''}
+                    {panelNote}
+                    {latencyNote}
                     {status?.page ? ` · ${status.page}` : ''}
                     {touchNote}
                     {soundNote}
@@ -312,11 +356,28 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
                     <div className="buddy-settings__group-title">
                         {localizeText(lang, 'Notification sounds', '音效', '音效')}
                     </div>
+                    {status?.device_touch || status?.device_key ? (
+                        <p className="buddy-settings__hint">
+                            {status?.device_key
+                                ? localizeText(
+                                      lang,
+                                      'Short-press the front key to cycle tasks. Hold it to mute.',
+                                      '短按正面按键切换当前任务，长按切换静音。',
+                                      '短按正面按鍵切換目前任務，長按切換靜音。',
+                                  )
+                                : localizeText(
+                                      lang,
+                                      'Short-press the screen to cycle tasks. Hold it to mute.',
+                                      '短按屏幕切换当前任务，长按切换静音。',
+                                      '短按螢幕切換目前任務，長按切換靜音。',
+                                  )}
+                        </p>
+                    ) : null}
                     <label className="buddy-settings__row">
                         <input
                             type="checkbox"
                             checked={!!sound?.master}
-                            disabled={!sound}
+                            disabled={!sound || audioMissing}
                             onChange={(event) =>
                                 sound && void saveSound({ ...sound, master: event.target.checked })
                             }
@@ -325,13 +386,13 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
                     </label>
                     {SOUND_EVENTS.map((event) => {
                         const current = sound?.[event.key];
-                        const disabled = !sound || !sound.master || !current?.enabled;
+                        const disabled = !sound || audioMissing || !sound.master || !current?.enabled;
                         return (
                             <label className="buddy-settings__row" key={event.key}>
                                 <input
                                     type="checkbox"
                                     checked={!!current?.enabled}
-                                    disabled={!sound || !sound.master}
+                                    disabled={!sound || audioMissing || !sound.master}
                                     onChange={(e) =>
                                         sound &&
                                         void saveSound(

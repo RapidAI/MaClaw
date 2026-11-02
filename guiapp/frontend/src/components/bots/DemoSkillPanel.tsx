@@ -41,9 +41,20 @@ type Props = {
         redistill: string;
         titlePlaceholder: string;
         narratePlaceholder: string;
+        notesPlaceholder: string;
         busy: string;
     };
 };
+
+/* btoa over a small window; fromCharCode spread blows the stack on long audio. */
+function bytesToBase64(buf: ArrayBuffer): string {
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+}
 
 /**
  * Demonstrate-and-narrate recording panel (MACLAW_DEMO_SKILL stage 4).
@@ -89,7 +100,7 @@ export function DemoSkillPanel({ botId, labels }: Props) {
         try {
             await fn();
         } catch (e) {
-            setStatus(String(e));
+            setStatus(e instanceof Error && e.message ? e.message : String(e));
         } finally {
             setBusy(false);
         }
@@ -106,7 +117,6 @@ export function DemoSkillPanel({ botId, labels }: Props) {
         setTimeline(null);
         setSkillName('');
         setSkillContent('');
-        setStatus(labels.start);
     });
 
     const onNarrate = () => run(async () => {
@@ -118,7 +128,6 @@ export function DemoSkillPanel({ botId, labels }: Props) {
             return;
         }
         setNarration('');
-        setStatus(labels.narrate);
     });
 
     const onPushToTalk = () => run(async () => {
@@ -140,7 +149,7 @@ export function DemoSkillPanel({ botId, labels }: Props) {
         stream.getTracks().forEach(t => t.stop());
         const blob = await done;
         const buf = await blob.arrayBuffer();
-        const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        const b64 = bytesToBase64(buf);
         const out = await NarrateDesktopDemoRecording(botId, '', b64, blob.type || 'audio/webm') as { error?: string; text?: string };
         if (out?.error) {
             setStatus(out.error);
@@ -161,7 +170,6 @@ export function DemoSkillPanel({ botId, labels }: Props) {
         if (tl?.id) {
             void loadThumbs(tl.id, (tl.events || []).filter(e => e.kind === 'screenshot' && e.ref).map(e => e.ref as string));
         }
-        setStatus(labels.stop);
     });
 
     const onDistill = () => run(async () => {
@@ -175,7 +183,6 @@ export function DemoSkillPanel({ botId, labels }: Props) {
         }
         setSkillName(out.item?.name || '');
         setSkillContent(out.item?.content || '');
-        setStatus(labels.distill + (out.item?.name ? `: ${out.item.name}` : ''));
     });
 
     const onSaveEdit = () => run(async () => {
@@ -202,43 +209,51 @@ export function DemoSkillPanel({ botId, labels }: Props) {
     });
 
     return (
-        <div className="demo-skill-panel" style={{ padding: 8, borderTop: '1px solid var(--border, #333)' }}>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>{labels.demoSkill}</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <section className="demo-skill" aria-label={labels.demoSkill}>
+            <div className="demo-skill__head">
+                <span className={'demo-skill__badge' + (recording ? ' is-recording' : '')} aria-hidden="true" />
+                <span className="demo-skill__title">{labels.demoSkill}</span>
+            </div>
+
+            <div className="demo-skill__row">
                 <input
+                    className="demo-skill__input"
                     value={title}
                     onChange={e => setTitle(e.target.value)}
                     placeholder={labels.titlePlaceholder}
                     disabled={recording || busy}
-                    style={{ flex: 1, minWidth: 120 }}
                 />
                 {!recording ? (
-                    <button type="button" disabled={busy || !botId} onClick={onStart}>{labels.start}</button>
+                    <button type="button" className="demo-skill__btn demo-skill__btn--primary" disabled={busy || !botId} onClick={onStart}>{labels.start}</button>
                 ) : (
-                    <button type="button" disabled={busy} onClick={onStop}>{labels.stop}</button>
+                    <button type="button" className="demo-skill__btn demo-skill__btn--danger" disabled={busy} onClick={onStop}>{labels.stop}</button>
                 )}
             </div>
+
             {recording && (
-                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <div className="demo-skill__row">
                     <input
+                        className="demo-skill__input"
                         value={narration}
                         onChange={e => setNarration(e.target.value)}
                         placeholder={labels.narratePlaceholder}
-                        style={{ flex: 1 }}
                         onKeyDown={e => { if (e.key === 'Enter') onNarrate(); }}
                     />
-                    <button type="button" disabled={busy} onClick={onNarrate}>{labels.narrate}</button>
-                    <button type="button" disabled={busy || !asrAvailable} onClick={onPushToTalk}>{labels.pushToTalk}</button>
+                    <button type="button" className="demo-skill__btn" disabled={busy} onClick={onNarrate}>{labels.narrate}</button>
+                    <button type="button" className="demo-skill__btn" disabled={busy || !asrAvailable} onClick={onPushToTalk}>{labels.pushToTalk}</button>
                 </div>
             )}
+
             {timeline && (
-                <div style={{ marginTop: 8 }}>
-                    <div style={{ display: 'flex', gap: 4, overflowX: 'auto', marginBottom: 6 }}>
-                        {shotRefs.map(ref => (
-                            <img key={ref} src={thumbs[ref]} alt={ref} title={ref} style={{ height: 48, background: '#111' }} />
-                        ))}
-                    </div>
-                    <pre style={{ maxHeight: 160, overflow: 'auto', fontSize: 11, background: 'rgba(0,0,0,.2)', padding: 6 }}>
+                <div className="demo-skill__result">
+                    {shotRefs.length ? (
+                        <div className="demo-skill__thumbs">
+                            {shotRefs.map(ref => (
+                                <img key={ref} src={thumbs[ref]} alt={ref} title={ref} />
+                            ))}
+                        </div>
+                    ) : null}
+                    <pre className="demo-skill__timeline">
                         {(timeline.events || []).slice(0, 80).map((e, i) => {
                             const label = e.kind === 'screenshot' ? `画面 ${e.ref}` : e.kind === 'narration' ? `旁白 ${e.text}` :
                                 e.kind === 'focus' ? `焦点 ${e.app || ''} ${e.window || ''}` :
@@ -246,28 +261,37 @@ export function DemoSkillPanel({ botId, labels }: Props) {
                             return `${i + 1}. ${label}\n`;
                         }).join('')}
                     </pre>
-                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                        <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="notes" style={{ flex: 1 }} />
-                        <button type="button" disabled={busy} onClick={onDistill}>{labels.distill}</button>
+                    <div className="demo-skill__row">
+                        <input
+                            className="demo-skill__input"
+                            value={notes}
+                            onChange={e => setNotes(e.target.value)}
+                            placeholder={labels.notesPlaceholder}
+                        />
+                        <button type="button" className="demo-skill__btn demo-skill__btn--primary" disabled={busy} onClick={onDistill}>{labels.distill}</button>
                     </div>
                 </div>
             )}
+
             {skillName && (
-                <div style={{ marginTop: 8 }}>
-                    <div style={{ marginBottom: 4 }}>{skillName}</div>
+                <div className="demo-skill__result">
+                    <div className="demo-skill__skill-name">{skillName}</div>
                     <textarea
+                        className="demo-skill__textarea"
                         value={skillContent}
                         onChange={e => setSkillContent(e.target.value)}
                         rows={8}
-                        style={{ width: '100%', fontFamily: 'inherit', fontSize: 12 }}
                     />
-                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                        <button type="button" disabled={busy} onClick={onSaveEdit}>{labels.edit}</button>
-                        <button type="button" disabled={busy} onClick={onRedistill}>{labels.redistill}</button>
+                    <div className="demo-skill__row">
+                        <button type="button" className="demo-skill__btn" disabled={busy} onClick={onSaveEdit}>{labels.edit}</button>
+                        <button type="button" className="demo-skill__btn" disabled={busy} onClick={onRedistill}>{labels.redistill}</button>
                     </div>
                 </div>
             )}
-            {(status || busy) && <div style={{ marginTop: 6, opacity: 0.8 }}>{busy ? labels.busy : status}</div>}
-        </div>
+
+            {(status || busy) && (
+                <p className="demo-skill__status" role="status">{busy ? labels.busy : status}</p>
+            )}
+        </section>
     );
 }

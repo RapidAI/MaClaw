@@ -197,6 +197,9 @@ func TestApplyOpenCodeSessionHeaderOnHubManagedURL(t *testing.T) {
 	if got := req.Header.Get(OpenCodeSessionHeader); got != "hub-conv" {
 		t.Fatalf("hub-managed session header = %q, want hub-conv", got)
 	}
+	if got := req.Header.Get(OpenCodeRequestHeader); got != "" {
+		t.Fatalf("hub-managed request header = %q, want empty", got)
+	}
 }
 
 func TestOpenCodeSessionHeaderForConfig(t *testing.T) {
@@ -226,6 +229,16 @@ func TestApplyOpenCodeClientIdentityOnlyOnOpenCodeHost(t *testing.T) {
 	}
 	if req.Header.Get("x-opencode-client") != "cli" {
 		t.Fatalf("x-opencode-client = %q", req.Header.Get("x-opencode-client"))
+	}
+	session := req.Header.Get(OpenCodeSessionHeader)
+	if got := req.Header.Get(OpenCodeSessionIDHeader); got != session {
+		t.Fatalf("x-opencode-session-id = %q, want %q", got, session)
+	}
+	if got := req.Header.Get(OpenCodeRequestHeader); got != OpenCodeClientRequestID(session, "request") {
+		t.Fatalf("x-opencode-request = %q", got)
+	}
+	if got := req.Header.Get(OpenCodeProjectHeader); got != "global" {
+		t.Fatalf("x-opencode-project = %q", got)
 	}
 
 	again, err := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/go/v1/chat/completions", nil)
@@ -263,6 +276,9 @@ func TestApplyOpenCodeClientIdentityOnlyOnOpenCodeHost(t *testing.T) {
 	}
 	if got := glm.Header.Get(OpenCodeSessionHeader); got != "" {
 		t.Fatalf("GLM session header = %q, want empty", got)
+	}
+	if got := glm.Header.Get(OpenCodeRequestHeader); got != "" {
+		t.Fatalf("GLM request header = %q, want empty", got)
 	}
 }
 

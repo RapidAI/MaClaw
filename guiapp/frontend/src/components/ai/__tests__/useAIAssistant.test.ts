@@ -5698,6 +5698,13 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.find(message => message.role === 'assistant')?.reasoning || '').not.toContain('收到，正在处理');
 
         await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Status] Хүлээн авлаа, боловсруулж байна...' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Төлөв] Хүлээн авлаа, боловсруулж байна...' });
+        });
+        expect(result.current.progressMessages).toEqual([]);
+        expect(result.current.messages.find(message => message.role === 'assistant')?.reasoning || '').not.toContain('Хүлээн авлаа');
+
+        await act(async () => {
             emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '正在生成报告' });
         });
 

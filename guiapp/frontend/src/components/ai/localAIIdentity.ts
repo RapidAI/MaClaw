@@ -1,5 +1,5 @@
 import type { AITab } from "./AITabTypes";
-import { localizeText } from "../../i18n";
+import { normalizeLang } from "../../i18n";
 
 export const LEGACY_LOCAL_AI_PARTICIPANT_ID = "local-maclaw";
 // Display names avoid consumer "AI persona" branding; this is the local worker node.
@@ -73,7 +73,13 @@ export function hasLocalAIParticipant(tab: Pick<AITab, "participants" | "localPa
 }
 
 export function localAINameForLang(lang?: string): string {
-    return localizeText(lang, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT);
+    // The identity label is product naming (Local / 本机 / 本機) and stays
+    // untranslated in every locale — isLocalAIName recognizes exactly these
+    // spellings, so the generic mnInline 'Local' entry must not catch it.
+    const kind = normalizeLang(lang);
+    if (kind === "zh-Hans") return LOCAL_AI_DISPLAY_NAME_ZH_HANS;
+    if (kind === "zh-Hant") return LOCAL_AI_DISPLAY_NAME_ZH_HANT;
+    return LOCAL_AI_DISPLAY_NAME_EN;
 }
 
 export function localExecutorParticipantID(value: LocalGroupExecutorRegistration | null | undefined): string {

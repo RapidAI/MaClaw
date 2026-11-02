@@ -567,6 +567,478 @@
     color: var(--theme-danger, #d92d20);
 }
 
+/* 「性格与说话风格」弹窗：SOUL / MEMORY / 分段规则按字段块垂直排布，
+   标签行带字数计数，折叠区块统一成圆角卡片。骨架复用 custom-dialog，
+   只是加宽到 640px 并接管内部表单样式。 */
+.modal-content.custom-dialog.bot-style-dialog {
+    width: min(640px, calc(100vw - 40px));
+}
+
+.bot-style-dialog__form {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.bot-style-dialog__loading {
+    margin: 0;
+    color: var(--theme-text-muted, #667085);
+    font-size: 13px;
+}
+
+/* 提示横幅（风格层关闭 / 默认已变更）：要注意的事，不是错误。 */
+.bot-style-dialog__warn {
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning, #aa5d05) 30%, transparent);
+    border-radius: 8px;
+    background: var(--theme-warning-bg, rgba(217, 119, 6, 0.07));
+    color: var(--theme-warning, #aa5d05);
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+.bot-style-dialog__section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 6px;
+}
+
+.bot-style-dialog__label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--theme-text-primary, #1d2939);
+}
+
+.bot-style-dialog__count {
+    flex-shrink: 0;
+    color: var(--theme-text-muted, #667085);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.bot-style-dialog__textarea {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 60px;
+    padding: 9px 12px;
+    border: 1px solid var(--theme-border, #e4e7ec);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #1d2939);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.6;
+    resize: vertical;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.bot-style-dialog__textarea--part {
+    min-height: 52px;
+}
+
+.bot-style-dialog__textarea:focus {
+    outline: none;
+    border-color: var(--theme-primary, #2f6fbc);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #2f6fbc) 16%, transparent);
+}
+
+.bot-style-dialog__textarea:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.bot-style-dialog__textarea::placeholder {
+    color: var(--theme-text-muted, #98a2b3);
+    opacity: 1;
+}
+
+.bot-style-dialog__hint {
+    margin: 6px 0 0;
+    color: var(--theme-text-muted, #667085);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.bot-style-dialog__hint--flush {
+    margin: 0;
+}
+
+/* 折叠区块（分段规则 / 历史版本）：统一成一张圆角卡片，摘要行带箭头。 */
+.bot-style-dialog__details {
+    border: 1px solid var(--theme-border, #e4e7ec);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+}
+
+.bot-style-dialog__summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--theme-text-primary, #1d2939);
+    border-radius: 10px;
+}
+
+.bot-style-dialog__summary::-webkit-details-marker {
+    display: none;
+}
+
+.bot-style-dialog__summary::after {
+    content: "";
+    width: 7px;
+    height: 7px;
+    margin-left: auto;
+    flex-shrink: 0;
+    border-right: 1.5px solid var(--theme-text-muted, #667085);
+    border-bottom: 1.5px solid var(--theme-text-muted, #667085);
+    transform: rotate(45deg);
+    transition: transform 120ms ease;
+}
+
+.bot-style-dialog__details[open] > .bot-style-dialog__summary::after {
+    transform: rotate(225deg);
+}
+
+.bot-style-dialog__summary:hover {
+    background: var(--theme-surface-muted, #f2f4f7);
+}
+
+.bot-style-dialog__summary:focus-visible {
+    outline: 2px solid var(--theme-primary, #2f6fbc);
+    outline-offset: -2px;
+}
+
+.bot-style-dialog__summary-chip {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--theme-surface-muted, #f2f4f7);
+    color: var(--theme-text-secondary, #475467);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 1.6;
+}
+
+.bot-style-dialog__details-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 12px 14px 14px;
+    border-top: 1px solid var(--theme-border-subtle, #eaecf0);
+}
+
+/* 分段规则：相邻字段块用分隔线，不再一张卡一个框。 */
+.bot-style-dialog__part + .bot-style-dialog__part {
+    padding-top: 14px;
+    border-top: 1px solid var(--theme-border-subtle, #eaecf0);
+}
+
+.bot-style-dialog__part-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+    margin-bottom: 6px;
+}
+
+/* 分段的计数推到行尾，与上方 SOUL / MEMORY 的计数对齐。 */
+.bot-style-dialog__part-head .bot-style-dialog__count {
+    margin-left: auto;
+}
+
+.bot-style-dialog__part-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--theme-text-primary, #1d2939);
+}
+
+.bot-style-dialog__part-id {
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--theme-surface-muted, #f2f4f7);
+    color: var(--theme-text-muted, #667085);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.bot-style-dialog__part-off {
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--theme-warning-bg, rgba(217, 119, 6, 0.07));
+    color: var(--theme-warning, #aa5d05);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.6;
+}
+
+/* 历史版本：版本号 + 时间 + 行内恢复按钮。 */
+.bot-style-dialog__history {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.bot-style-dialog__history li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    font-size: 12.5px;
+    color: var(--theme-text-secondary, #475467);
+}
+
+.bot-style-dialog__history li + li {
+    border-top: 1px solid var(--theme-border-subtle, #eaecf0);
+}
+
+.bot-style-dialog__version {
+    flex-shrink: 0;
+    font-weight: 600;
+    color: var(--theme-text-primary, #1d2939);
+    font-variant-numeric: tabular-nums;
+}
+
+.bot-style-dialog__history-time {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bot-style-dialog__restore {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding: 3px 10px;
+    border: 1px solid var(--theme-border, #e4e7ec);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--theme-text-secondary, #475467);
+    font-size: 12px;
+    line-height: 1.5;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+}
+
+.bot-style-dialog__restore:hover:not(:disabled) {
+    background: var(--theme-surface-muted, #f2f4f7);
+    color: var(--theme-text-primary, #1d2939);
+}
+
+.bot-style-dialog__restore:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* 「演示录成技能」面板：与主界面同一套主题变量与圆角卡片语言。
+   结构：标题行（状态徽标）→ 标题输入 + 主按钮 → 旁白行 → 时间线结果卡。
+   面板自身已有 16px 水平内边距，这里只留垂直间距，让各行与面板内容对齐。 */
+.demo-skill {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 0 2px;
+    border-top: 1px solid var(--theme-border-subtle, #eaecf0);
+    background: var(--theme-surface, #fff);
+}
+
+.demo-skill__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+/* 状态徽标：待机是中性点，录制中变红并呼吸。 */
+.demo-skill__badge {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--theme-border, #d0d5dd);
+}
+
+.demo-skill__badge.is-recording {
+    background: var(--theme-danger, #d92d20);
+    animation: desktop-bot-pulse 1.4s ease-in-out infinite;
+}
+
+.demo-skill__title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--theme-text-primary, #101828);
+}
+
+.demo-skill__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.demo-skill__input {
+    flex: 1;
+    min-width: 0;
+    min-height: 32px;
+    padding: 6px 10px;
+    border: 1px solid var(--theme-border, #d0d5dd);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #101828);
+    font-family: inherit;
+    font-size: 12.5px;
+    line-height: 1.5;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.demo-skill__input:focus {
+    outline: none;
+    border-color: var(--mc-accent, #2f6fbc);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mc-accent, #2f6fbc) 16%, transparent);
+}
+
+.demo-skill__input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.demo-skill__input::placeholder {
+    color: var(--theme-text-muted, #98a2b3);
+    opacity: 1;
+}
+
+/* 按钮三态：默认描边（同操作区按钮）、主操作填充主题蓝、停止用危险色。 */
+.demo-skill__btn {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    border: 1px solid var(--theme-border, #d0d5dd);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #101828);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.5;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.demo-skill__btn:hover:not(:disabled) {
+    background: var(--theme-surface-muted, #f2f4f7);
+}
+
+.demo-skill__btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+.demo-skill__btn--primary {
+    background: var(--mc-accent, #2f6fbc);
+    border-color: transparent;
+    color: var(--theme-on-primary, #fff);
+}
+
+.demo-skill__btn--primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 88%, #000);
+    border-color: transparent;
+}
+
+.demo-skill__btn--danger {
+    background: var(--theme-danger-bg, rgba(217, 45, 32, 0.07));
+    border-color: color-mix(in srgb, var(--theme-danger, #d92d20) 38%, transparent);
+    color: var(--theme-danger, #d92d20);
+}
+
+.demo-skill__btn--danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-danger, #d92d20) 12%, var(--theme-surface, #fff));
+}
+
+/* 录制结果：缩略图条 + 时间线终端卡 + 提炼行，装在一张圆角卡片里。 */
+.demo-skill__result {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border, #e4e7ec);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+}
+
+.demo-skill__thumbs {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+}
+
+.demo-skill__thumbs img {
+    height: 44px;
+    flex-shrink: 0;
+    border: 1px solid var(--theme-border, #e4e7ec);
+    border-radius: 6px;
+    background: var(--theme-page-bg, #fff);
+}
+
+.demo-skill__timeline {
+    margin: 0;
+    max-height: 150px;
+    overflow: auto;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border-subtle, #eaecf0);
+    border-radius: 8px;
+    background: var(--theme-page-bg, #fafbfc);
+    color: var(--theme-text-secondary, #475467);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.demo-skill__skill-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--theme-text-primary, #101828);
+    word-break: break-word;
+}
+
+.demo-skill__textarea {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border, #d0d5dd);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #101828);
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1.55;
+    resize: vertical;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.demo-skill__textarea:focus {
+    outline: none;
+    border-color: var(--mc-accent, #2f6fbc);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mc-accent, #2f6fbc) 16%, transparent);
+}
+
+.demo-skill__status {
+    margin: 0;
+    color: var(--theme-text-muted, #667085);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
 /* Bot 设置弹窗的样式在文件末尾的「Bot 设置弹窗（模型 / 网络）」一节。 */
 
 /* 主区：会话面板。消息区滚动，输入条钉在这一列底部。 */
@@ -798,6 +1270,17 @@
     background: var(--mc-accent, #2f6fbc);
     border-color: transparent;
     color: var(--theme-on-primary, #fff);
+}
+
+/* 面板里的「停止」是打断 Bot 的危险操作：危险色，不沿用接管的 accent 蓝。 */
+.desktop-bot-chat__ops .desktop-bot-chat__stop {
+    background: var(--theme-danger-bg, rgba(217, 45, 32, 0.07));
+    border-color: color-mix(in srgb, var(--theme-danger, #d92d20) 38%, transparent);
+    color: var(--theme-danger, #d92d20);
+}
+
+.desktop-bot-chat__ops .desktop-bot-chat__stop:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-danger, #d92d20) 12%, var(--theme-surface, #fff));
 }
 
 /* 用户靠右、看得出的主题蓝；Bot 靠左、白卡片。和助手会话同一套表面。 */

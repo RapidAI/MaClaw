@@ -561,20 +561,18 @@ func TestFileCompanionPaperTurnHasNoWriter(t *testing.T) {
 	_, doc := seedCompanionTestFile(t, app, "report.pdf", "%PDF-1.4\n")
 	h := &IMMessageHandler{app: app}
 	tools := h.fileCompanionClosedSurfaceTools("file-companion:" + doc.SessionID)
-	kept := fileCompanionWithoutGenerateTool(tools)
+	kept := fileCompanionPaperSurfaceTools(tools)
+	names := map[string]bool{}
 	for _, tool := range kept {
 		fn, _ := tool["function"].(map[string]interface{})
 		name, _ := fn["name"].(string)
-		if name == fileCompanionToolGenerate {
-			t.Fatal("the paper turn still offers the writer")
-		}
+		names[name] = true
 	}
-	if len(kept) != len(tools)-1 {
-		t.Fatalf("paper turn tools = %d, want %d", len(kept), len(tools)-1)
+	if names[fileCompanionToolGenerate] || names[fileCompanionToolCraft] || names[fileCompanionToolWebSearch] || names[fileCompanionToolWebFetch] {
+		t.Fatalf("the paper turn still offers a writer or web lookup: %v", names)
 	}
-	// The read tools stay: a paper interpretation may still read a page.
-	if len(kept) == 0 {
-		t.Fatal("the paper turn lost every tool")
+	if !names[fileCompanionToolReadPages] || !names[fileCompanionToolRestore] {
+		t.Fatal("the paper turn lost the page tools")
 	}
 	// A typed question is not a paper turn.
 	if fileCompanionPaperTurnText("帮我整理成笔记 PDF") {

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -140,7 +141,31 @@ type FileCompanionLibraryList struct {
 	// NotesReview is true when a reader note waits for the host to pass or
 	// ignore it before the host agent sees it.
 	NotesReview bool `json:"notesReview"`
+	// Syncing is true when this answer is the library already stored on disk
+	// and a cloud refresh is still copying shares. The panel paints this
+	// immediately; the refresh pushes the finished list when it is done.
+	Syncing bool `json:"syncing,omitempty"`
+	// SyncGen orders answers on screen. A disk read taken while a refresh is
+	// still copying shares keeps the generation from the start of that refresh.
+	// The hub index and the finished list publish strictly newer ones, so a
+	// disk answer cannot cover the index whichever result the window applies
+	// first.
+	SyncGen uint64 `json:"syncGen,omitempty"`
 }
+
+// fileCompanionLibraryListInline keeps a list call on the cloud refresh. Tests
+// use that so one call still imports and probes. The app returns the stored
+// library first and refreshes in the background, because the refresh downloads
+// documents and the panel was waiting on 正在读取 until every download finished.
+var fileCompanionLibraryListInline bool
+
+var fileCompanionLibrarySyncRunning atomic.Bool
+
+var fileCompanionLibrarySyncGen atomic.Uint64
+
+// fileCompanionLibrarySyncEpoch is the generation disk answers keep while the
+// current refresh is running. The hub index publishes a newer one.
+var fileCompanionLibrarySyncEpoch atomic.Uint64
 
 // FileCompanionShareResult is the link created for the open file.
 type FileCompanionShareResult struct {
@@ -348,6 +373,128 @@ func fileCompanionWriteAtomicFile(dest string, body []byte, mode os.FileMode) er
 // ListFileCompanionLibrary returns this machine's reading history and, when
 // the Hub login is present, shares this person created or imported.
 func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
+	if fileCompanionLibraryListInline {
+		return a.listFileCompanionLibrary()
+	}
+	// Stamp the generation before the disk read. While a refresh is running,
+	// every disk answer keeps the generation from the start of that refresh.
+	// The hub index published during the read is newer and stays on screen
+	// even when this answer is applied first.
+	started := a.startFileCompanionLibrarySync()
+	running := started || fileCompanionLibrarySyncRunning.Load()
+	var gen uint64
+	if running {
+		gen = fileCompanionLibrarySyncEpoch.Load()
+	} else {
+		gen = fileCompanionLibrarySyncGen.Load()
+	}
+	listed := a.listFileCompanionLibraryStored()
+	listed.SyncGen = gen
+	if running || fileCompanionLibrarySyncRunning.Load() {
+		listed.Syncing = true
+	}
+	return listed, nil
+}
+
+// publishFileCompanionLibraryCatalog shows the hub index while file bodies are
+// still downloading. The synchronous list used by tests keeps a single result.
+func (a *App) publishFileCompanionLibraryCatalog(items []FileCompanionLibraryItem, notice string) {
+	if a == nil || fileCompanionLibraryListInline {
+		return
+	}
+	if items == nil {
+		items = []FileCompanionLibraryItem{}
+	}
+	expiredNow := time.Now().UTC()
+	for i := range items {
+		if items[i].Source == "cloud" {
+			items[i].Expired = fileCompanionShareExpiredAt(items[i].ExpiresAt, expiredNow)
+		}
+	}
+	listed := FileCompanionLibraryList{
+		Items:       items,
+		Notice:      notice,
+		Syncing:     true,
+		SyncGen:     fileCompanionLibrarySyncGen.Add(1),
+		NotesReply:  a.fileCompanionNotesReply.Load(),
+		NotesReview: a.fileCompanionNotesReview.Load(),
+	}
+	if fileCompanionLibraryCatalogHook != nil {
+		fileCompanionLibraryCatalogHook(listed)
+	}
+	a.emitEvent("file-companion:library", listed)
+}
+
+// fileCompanionLibraryCatalogHook observes the hub index in tests, before the
+// refresh downloads file bodies. Production leaves it nil.
+var fileCompanionLibraryCatalogHook func(FileCompanionLibraryList)
+
+// startFileCompanionLibrarySync runs one cloud refresh off the list call. A
+// second open while it is still copying shares gets the stored library and
+// the same refresh, instead of waiting for the downloads.
+func (a *App) startFileCompanionLibrarySync() bool {
+	if a == nil || fileCompanionLibraryListInline {
+		return false
+	}
+	if !fileCompanionLibrarySyncRunning.CompareAndSwap(false, true) {
+		return false
+	}
+	// Disk answers keep this generation until the refresh publishes the hub
+	// index and, later, the finished list.
+	fileCompanionLibrarySyncEpoch.Store(fileCompanionLibrarySyncGen.Load())
+	go func() {
+		defer fileCompanionLibrarySyncRunning.Store(false)
+		listed, err := a.listFileCompanionLibrary()
+		if err != nil {
+			return
+		}
+		listed.Syncing = false
+		listed.SyncGen = fileCompanionLibrarySyncGen.Add(1)
+		a.emitEvent("file-companion:library", listed)
+	}()
+	return true
+}
+
+// listFileCompanionLibraryStored is the library this machine can already show.
+// It does not call the Hub and does not download. A refresh that is copying
+// shares keeps the disk: writing the pre-refresh rows here would cover files
+// that refresh just stored.
+func (a *App) listFileCompanionLibraryStored() FileCompanionLibraryList {
+	empty := FileCompanionLibraryList{Items: []FileCompanionLibraryItem{}}
+	if a == nil {
+		return empty
+	}
+	fileCompanionLibraryMu.Lock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	if !ok {
+		fileCompanionLibraryMu.Unlock()
+		return empty
+	}
+	if !fileCompanionLibrarySyncRunning.Load() {
+		var changed bool
+		items, changed = dropMissingFileCompanionLibrary(items)
+		if len(items) > fileCompanionLibraryCap {
+			items = trimFileCompanionLibrary(items, fileCompanionLibraryCap)
+			changed = true
+		}
+		if changed {
+			_ = a.writeFileCompanionLibraryLocked(items)
+		}
+	}
+	fileCompanionLibraryMu.Unlock()
+	if items == nil {
+		items = []FileCompanionLibraryItem{}
+	}
+	expiredNow := time.Now().UTC()
+	for i := range items {
+		if items[i].Source == "cloud" {
+			items[i].Expired = fileCompanionShareExpiredAt(items[i].ExpiresAt, expiredNow)
+		}
+	}
+	return FileCompanionLibraryList{Items: items, NotesReply: a.fileCompanionNotesReply.Load(), NotesReview: a.fileCompanionNotesReview.Load()}
+}
+
+func (a *App) listFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	empty := FileCompanionLibraryList{Items: []FileCompanionLibraryItem{}}
 	if a == nil {
 		return empty, errors.New("app unavailable")
@@ -449,6 +596,10 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 			leftRemoved, leftPurge := a.finishAbandonedShareCopies(remote, removedTokens)
 			removed = append(removed, leftRemoved...)
 			purgePaths = append(purgePaths, leftPurge...)
+			// The panel can show the hub index before the file bodies arrive.
+			// Pull still decides from items, so this copy must not share its
+			// backing array with the downloads.
+			a.publishFileCompanionLibraryCatalog(append([]FileCompanionLibraryItem(nil), items...), notice)
 			updates = a.pullNewerFileCompanionShares(hub, viewer, items, previous)
 			fileCompanionLibraryMu.Lock()
 			if fresh, freshOK = a.readFileCompanionLibraryLocked(); freshOK {
@@ -1686,6 +1837,10 @@ func (a *App) ImportFileCompanionShare(link, password string) (FileCompanionLibr
 		}
 		return FileCompanionLibraryItem{}, err
 	}
+	// This account just read the project. A password refusal remembered for
+	// an earlier automatic install must not keep the row unimported after the
+	// file is removed.
+	fileCompanionShareUnblockPull(token)
 	return item, nil
 }
 

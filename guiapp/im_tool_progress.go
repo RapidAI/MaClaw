@@ -89,10 +89,7 @@ func isIMToolStatusText(text string) bool {
 		return false
 	}
 	// Check both locales without allocating for common empty/progress paths.
-	if strings.HasPrefix(trimmed, i18n.T(i18n.MsgToolStatusLabel, "zh")) {
-		return true
-	}
-	return strings.HasPrefix(trimmed, i18n.T(i18n.MsgToolStatusLabel, "en"))
+	return hasProgressLabelPrefix(trimmed, i18n.MsgToolStatusLabel)
 }
 
 func normalizeToolProgressName(toolName string) string {
@@ -433,14 +430,25 @@ func styleIMIntermediateProgress(lang, text string) string {
 }
 
 func isIMProgressStatusText(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
+	return hasProgressLabelPrefix(strings.TrimSpace(text), i18n.MsgProgressStatusLabel)
+}
+
+// imThinkingStatus is a desktop reasoning milestone. The "[Status] " prefix
+// is the protocol the thinking panel matches; only the sentence is translated.
+func imThinkingStatus(lang, key string) string {
+	return "[Status] " + i18n.T(key, lang)
+}
+
+func hasProgressLabelPrefix(text, key string) bool {
+	if text == "" {
 		return false
 	}
-	if strings.HasPrefix(trimmed, i18n.T(i18n.MsgProgressStatusLabel, "zh")) {
-		return true
+	for _, lang := range []string{"zh", "en", "mn"} {
+		if prefix := i18n.T(key, lang); prefix != "" && strings.HasPrefix(text, prefix) {
+			return true
+		}
 	}
-	return strings.HasPrefix(trimmed, i18n.T(i18n.MsgProgressStatusLabel, "en"))
+	return false
 }
 
 func filteredToolProgressCallback(lang, toolName string, onProgress tool.ProgressCallback, debug bool) tool.ProgressCallback {

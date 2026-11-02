@@ -1,12 +1,79 @@
 package guiapp
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestExpertStoreRefusesSignedInProfileWrite(t *testing.T) {
+	paths := collectAmbientExpertProfilePaths()
+	if len(paths) == 0 {
+		t.Fatal("no signed-in expert profile path")
+	}
+	path := paths[0]
+	const sentinel = "expert-test-must-not-persist"
+	store := newExpertStore(path)
+	err := store.Save(ExpertDefinition{
+		ID: sentinel, Name: "nope",
+		CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+	})
+	if err == nil || !strings.Contains(err.Error(), "signed-in expert profile") {
+		t.Fatalf("signed-in profile write err=%v", err)
+	}
+	// A full-file comparison is not safe: the desktop app may save this file
+	// during the test. Only the sentinel id would mean this call wrote it.
+	if after, readErr := os.ReadFile(path); readErr == nil && bytes.Contains(after, []byte(`"`+sentinel+`"`)) {
+		removeSentinelExpert(t, path, sentinel)
+		t.Fatal("sentinel was written into the signed-in profile")
+	}
+	temp := newExpertStore(filepath.Join(t.TempDir(), "experts.json"))
+	if err := temp.Save(ExpertDefinition{
+		ID: "expert-temp", Name: "temp",
+		CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeSentinelExpert(t *testing.T, path, id string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	var file expertStoreFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Error(err)
+		return
+	}
+	kept := file.Experts[:0]
+	found := false
+	for _, expert := range file.Experts {
+		if expert.ID == id {
+			found = true
+			continue
+		}
+		kept = append(kept, expert)
+	}
+	if !found {
+		return
+	}
+	file.Experts = kept
+	raw, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Error(err)
+	}
+}
 
 func TestExpertHubUpsertResultAppliedCompatibility(t *testing.T) {
 	var legacy expertHubUpsertResult

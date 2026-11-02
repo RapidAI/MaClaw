@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 )
 
 func TestExpireStaleInFlightTaskCreatesRecoverySlot(t *testing.T) {
@@ -333,6 +335,643 @@ func TestLaterCheckpointKeepsUncertainExternalSend(t *testing.T) {
 	}
 }
 
+func TestKnownMailboxResultRetiresProvisionalExternalLatch(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "发邮件"}}, "发邮件", "/project", "run-missing", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: "listed", ToolName: "bash"},
+	}, "发邮件", "/project", "run-missing", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "bash", SideEffectState: "local_committed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "mailbox_send" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("missing mailbox result was retired: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send"},
+	}, "发邮件", "/project", "run-known", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "mailbox_send" || recovered.SideEffectState != "none" || recovered.RecoveryMode != "resume_context" {
+		t.Fatalf("known non-send stayed uncertain: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: "[system unknown] " + mailbox.MsgUncertain, ToolName: "mailbox_send"},
+	}, "发邮件", "/project", "run-uncertain", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: "[system unknown] " + mailbox.MsgUncertain, ToolName: "mailbox_send"},
+		{Role: "tool", Content: "listed", ToolName: "bash"},
+	}, "发邮件", "/project", "run-uncertain", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "bash", SideEffectState: "local_committed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "mailbox_send" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("uncertain mailbox result was retired: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发到微信"},
+		{Role: "tool", Content: notConfigured, ToolName: "im_message"},
+	}, "发到微信", "/project", "run-im", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "im_message", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "im_message" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("im_message latch followed a mailbox sentence: %#v", recovered)
+	}
+}
+
+func TestKnownMailboxResultLetsLaterCheckpointAdvance(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	entries := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: "[system rejected] " + mailbox.MsgNotConfigured, ToolName: "mailbox_send"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, entries, "发邮件", "/project", "run-known", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entries = append(entries, ConversationEntry{Role: "tool", Content: "listed", ToolName: "bash"})
+	if err := cm.PersistInFlightCheckpoint(userID, entries, "发邮件", "/project", "run-known", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "bash", SideEffectState: "local_committed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "bash" || recovered.SideEffectState != "local_committed" {
+		t.Fatalf("known mailbox result kept the provisional latch: %#v", recovered)
+	}
+}
+
+func TestResolvedMailboxLatchKeepsTheRemainingEffect(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "发邮件"}}, "发邮件", "/project", "run-local", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send"},
+		{Role: "tool", Content: "ok", ToolName: "bash"},
+	}, "发邮件", "/project", "run-local", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "bash", SideEffectState: "local_committed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "bash" || recovered.SideEffectState != "local_committed" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("known mailbox result erased the local edit: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "发邮件"}}, "发邮件", "/project", "run-im", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send"},
+		{Role: "tool", Content: "sent", ToolName: "im_message"},
+	}, "发邮件", "/project", "run-im", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "im_message", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "im_message" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("known mailbox result erased the channel send: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "发邮件"}}, "发邮件", "/project", "run-none", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send"},
+	}, "发邮件", "/project", "run-none", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "mailbox_send" || recovered.SideEffectState != "none" || recovered.RecoveryMode != "resume_context" {
+		t.Fatalf("committed known mailbox result stayed uncertain: %#v", recovered)
+	}
+}
+
+func TestHistorySaveRestoresOlderMailboxRowsWithoutSettlingTheLatch(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	trimmed := []ConversationEntry{{Role: "user", Content: "这一轮的摘要"}}
+	if err := cm.PersistInFlightCheckpoint(userID, trimmed, "发邮件", "/project", "run-second", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wider := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "old-known"},
+		{Role: "tool", Content: `__ASK_USER__{"question":"发送这封邮件？"}`, ToolName: "mailbox_send", ToolCallID: "new-confirm"},
+		{Role: "user", Content: "这一轮的摘要"},
+	}
+	cm.Save(userID, wider)
+	held := cm.ConsumeInFlightRecovery(userID)
+	if held.LastToolName != "mailbox_send" || held.SideEffectState != "external_uncertain" || held.MailboxUncertainDropped || !held.MailboxResultBaselineSet || held.MailboxResultBaseline != 2 {
+		t.Fatalf("restored history settled the latch: %#v", held)
+	}
+	if MailboxLatchSettled(held.LastToolName, wider, held.MailboxResultBaseline, held.MailboxResultBaselineSet) {
+		t.Fatal("restored older mailbox rows settled the unreported send")
+	}
+	if got := cm.Load(userID); len(got) != len(wider) || got[1].ToolCallID != "old-known" {
+		t.Fatalf("wider history was not stored: %#v", got)
+	}
+}
+
+func TestSecondMailboxSendKeepsProvisionalLatch(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	known := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: "[system rejected] " + mailbox.MsgNotConfigured, ToolName: "mailbox_send"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, known, "发邮件", "/project", "run-first", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun(userID, "run-first"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, known, "发邮件", "/project", "run-second", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	held := cm.ConsumeInFlightRecovery(userID)
+	if held.LastToolName != "mailbox_send" || held.SideEffectState != "external_uncertain" || !held.MailboxResultBaselineSet || held.MailboxResultBaseline != 1 {
+		t.Fatalf("second send pre-tool latch = %#v", held)
+	}
+
+	retried := append(append([]ConversationEntry{}, known...), ConversationEntry{
+		Role: "tool", Content: "[system rejected] " + mailbox.MsgNotConfigured, ToolName: "mailbox_send",
+	})
+	if err := cm.PersistInFlightCheckpoint(userID, known, "发邮件", "/project", "run-third", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, retried, "发邮件", "/project", "run-third", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settled := cm.ConsumeInFlightRecovery(userID)
+	if settled.LastToolName != "mailbox_send" || settled.SideEffectState != "none" || settled.RecoveryMode != "resume_context" {
+		t.Fatalf("second known result stayed latched: %#v", settled)
+	}
+}
+
+func TestTrimmedCheckpointRetiresNewKnownMailboxResult(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	full := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "old-known-1"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "old-known-2"},
+		{Role: "assistant", Content: "尚未配置"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, full, "发邮件", "/project", "run-first", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun(userID, "run-first"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next send's pre-tool checkpoint stores a tail that does not share a
+	// prefix with the saved branch. saveEntriesLocked replaces the tree. The
+	// old rows are still the same calls, so this rewrite is not a new result.
+	rewritten := []ConversationEntry{
+		{Role: "user", Content: "之前的工作摘要"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "old-known-1"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "old-known-2"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, rewritten, "发邮件", "/project", "run-second", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	held := cm.ConsumeInFlightRecovery(userID)
+	if held.LastToolName != "mailbox_send" || held.SideEffectState != "external_uncertain" || !held.MailboxResultBaselineSet || held.MailboxResultBaseline != 2 {
+		t.Fatalf("trimmed pre-tool latch = %#v", held)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, rewritten, "发邮件", "/project", "run-third", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The committed tail keeps only the new known result. The branch count
+	// falls from 2 to 1. That result is still this call's outcome.
+	tail := []ConversationEntry{
+		{Role: "user", Content: "这一轮的摘要"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, tail, "发邮件", "/project", "run-third", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settled := cm.ConsumeInFlightRecovery(userID)
+	if settled.LastToolName != "mailbox_send" || settled.SideEffectState != "none" || settled.RecoveryMode != "resume_context" || settled.MailboxResultBaselineSet {
+		t.Fatalf("trimmed known result stayed latched: %#v", settled)
+	}
+	got := cm.Load(userID)
+	if len(got) != 2 || got[1].ToolCallID != "new-known" {
+		t.Fatalf("trimmed tail was not the active branch: %#v", got)
+	}
+}
+
+func TestTrimmedCheckpointKeepsDroppedUncertainMailboxResult(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	uncertain := "[system unknown] " + mailbox.MsgUncertain
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: uncertain, ToolName: "mailbox_send", ToolCallID: "old-uncertain"},
+	}, "发邮件", "/project", "run-uncertain", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "这一轮的摘要"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known"},
+	}, "发邮件", "/project", "run-uncertain", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "mailbox_send" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("dropped uncertain mailbox result was retired: %#v", recovered)
+	}
+}
+
+func TestDroppedUncertainMailboxResultSticksAcrossTheNextKnownSend(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	uncertain := "[system unknown] " + mailbox.MsgUncertain
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	full := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: uncertain, ToolName: "mailbox_send", ToolCallID: "old-uncertain"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, full, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The next checkpoint is the trimmed tail. The uncertain row is gone
+	// before this call reports.
+	tail := []ConversationEntry{{Role: "user", Content: "这一轮的摘要"}}
+	if err := cm.PersistInFlightCheckpoint(userID, tail, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reported := append(tail, ConversationEntry{
+		Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known",
+	})
+	if err := cm.PersistInFlightCheckpoint(userID, reported, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 3, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun(userID, "run-mail"); err != nil {
+		t.Fatal(err)
+	}
+	held := cm.ConsumeInFlightRecovery(userID)
+	if held.LastToolName != "mailbox_send" || held.SideEffectState != "external_uncertain" || held.RecoveryMode != "requires_review" || !held.MailboxUncertainDropped {
+		t.Fatalf("dropped uncertain mailbox result was retired: %#v", held)
+	}
+}
+
+func TestDroppedMailboxConfirmationLetsTheNextKnownResultRetire(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	confirm := `__ASK_USER__{"question":"发送这封邮件？"}`
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	full := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: confirm, ToolName: "mailbox_send", ToolCallID: "old-confirm"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, full, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tail := []ConversationEntry{{Role: "user", Content: "这一轮的摘要"}}
+	if err := cm.PersistInFlightCheckpoint(userID, tail, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	trimmed := sh.sessions[userID]
+	trimmedEffect, trimmedDropped := trimmed.inFlightSideEffect, trimmed.inFlightMailboxUncertainDropped
+	sh.mu.Unlock()
+	if trimmedEffect != "external_uncertain" || trimmedDropped {
+		t.Fatalf("trimmed confirmation stuck the latch: effect=%q dropped=%v", trimmedEffect, trimmedDropped)
+	}
+	reported := append(tail, ConversationEntry{
+		Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known",
+	})
+	if err := cm.PersistInFlightCheckpoint(userID, reported, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 3, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sh.mu.Lock()
+	settled := sh.sessions[userID]
+	gotTool, gotEffect, dropped := settled.inFlightLastTool, settled.inFlightSideEffect, settled.inFlightMailboxUncertainDropped
+	sh.mu.Unlock()
+	if gotTool != "mailbox_send" || gotEffect != "none" || dropped {
+		t.Fatalf("known result after a trimmed confirmation = tool=%q effect=%q dropped=%v", gotTool, gotEffect, dropped)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun(userID, "run-mail"); err != nil {
+		t.Fatal(err)
+	}
+	if held := cm.ConsumeInFlightRecovery(userID); held.Task != "" || held.LastToolName != "" || held.MailboxUncertainDropped {
+		t.Fatalf("completion left the marker: %#v", held)
+	}
+}
+
+func TestTrimmedConfirmationAndKnownResultRetireTogether(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	confirm := `__ASK_USER__{"question":"发送这封邮件？"}`
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: confirm, ToolName: "mailbox_send", ToolCallID: "old-confirm"},
+	}, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// One save drops the card and records this call's known refusal. The
+	// baseline must not keep that refusal as an already-seen result.
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "这一轮的摘要"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known"},
+	}, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settled := cm.ConsumeInFlightRecovery(userID)
+	if settled.LastToolName != "mailbox_send" || settled.SideEffectState != "none" || settled.RecoveryMode != "resume_context" || settled.MailboxUncertainDropped || settled.MailboxResultBaselineSet {
+		t.Fatalf("confirmation dropped beside a known result stayed latched: %#v", settled)
+	}
+}
+
+func TestKnownResultRetiresWhileConfirmationStaysOnTheBranch(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	confirm := `__ASK_USER__{"question":"发送这封邮件？"}`
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	card := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: confirm, ToolName: "mailbox_send", ToolCallID: "old-confirm"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, card, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	opened := sh.sessions[userID]
+	openedEffect := opened.inFlightSideEffect
+	sh.mu.Unlock()
+	if openedEffect != "external_uncertain" {
+		t.Fatalf("confirmation-only history retired the latch: %q", openedEffect)
+	}
+	kept := append(append([]ConversationEntry{}, card...), ConversationEntry{
+		Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known",
+	})
+	if err := cm.PersistInFlightCheckpoint(userID, kept, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settled := cm.ConsumeInFlightRecovery(userID)
+	if settled.LastToolName != "mailbox_send" || settled.SideEffectState != "none" || settled.RecoveryMode != "resume_context" || settled.MailboxUncertainDropped || settled.MailboxResultBaselineSet {
+		t.Fatalf("known result beside a visible confirmation stayed latched: %#v", settled)
+	}
+}
+
+func TestNewConfirmationDoesNotRetireTheCurrentSend(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	known := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "old-known"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, known, "发邮件", "/project", "run-first", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun(userID, "run-first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, known, "发邮件", "/project", "run-second", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withCard := append(append([]ConversationEntry{}, known...), ConversationEntry{
+		Role: "tool", Content: `__ASK_USER__{"question":"发送这封邮件？"}`, ToolName: "mailbox_send", ToolCallID: "new-confirm",
+	})
+	if err := cm.PersistInFlightCheckpoint(userID, withCard, "发邮件", "/project", "run-second", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	held := cm.ConsumeInFlightRecovery(userID)
+	if held.LastToolName != "mailbox_send" || held.SideEffectState != "external_uncertain" || held.RecoveryMode != "requires_review" || held.MailboxUncertainDropped || !held.MailboxResultBaselineSet || held.MailboxResultBaseline != 2 {
+		t.Fatalf("new confirmation retired the current send: %#v", held)
+	}
+}
+
+func TestTrimmedUnrecognizedMailboxResultStaysLatched(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: "天气晴", ToolName: "mailbox_send", ToolCallID: "old-unknown"},
+	}, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "这一轮的摘要"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known"},
+	}, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	held := cm.ConsumeInFlightRecovery(userID)
+	if held.LastToolName != "mailbox_send" || held.SideEffectState != "external_uncertain" || held.RecoveryMode != "requires_review" || held.MailboxUncertainDropped {
+		t.Fatalf("unrecognized mailbox result was retired: %#v", held)
+	}
+}
+
+func TestSaveAndCompletePreservesDroppedUncertainMailboxSlot(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "conversation.json")
+	cm := NewPersistentConversationMemory(storePath)
+	const userID = "desktop-user"
+	uncertain := "[system unknown] " + mailbox.MsgUncertain
+	full := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: uncertain, ToolName: "mailbox_send", ToolCallID: "old-uncertain"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, full, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tail := []ConversationEntry{{Role: "user", Content: "这一轮的摘要"}}
+	if err := cm.PersistInFlightCheckpoint(userID, tail, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pause := append(tail, ConversationEntry{
+		Role: "tool", Content: `__ASK_USER__{"question":"发送这封邮件？"}`, ToolName: "mailbox_send", ToolCallID: "confirm-1",
+	})
+	if err := cm.SaveAndCompleteInFlightCheckpointForRun(userID, "run-mail", pause); err != nil {
+		t.Fatal(err)
+	}
+	cm.Stop()
+
+	reloaded := NewPersistentConversationMemory(storePath)
+	defer reloaded.Stop()
+	slot := reloaded.GetUnfinishedSlot(userID)
+	if slot == nil || !slot.MailboxUncertainDropped || slot.LastToolName != "mailbox_send" || slot.SideEffectState != "external_uncertain" || slot.RecoveryMode != "requires_review" || slot.Source != UnfinishedTaskSlotSourceInFlightRecovery {
+		t.Fatalf("dropped uncertain review slot = %#v", slot)
+	}
+	if slot.EvidenceScopeKey != inFlightRunScopeKey("run-mail") {
+		t.Fatalf("scope = %q", slot.EvidenceScopeKey)
+	}
+	if got := reloaded.ConsumeInFlightRecovery(userID); got.Task != "" {
+		t.Fatalf("pause left the in-flight marker: %#v", got)
+	}
+}
+
+func TestSaveAndCompleteMailboxConfirmationLeavesNoSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "发邮件"}}, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pause := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: `__ASK_USER__{"question":"发送这封邮件？"}`, ToolName: "mailbox_send", ToolCallID: "confirm-1"},
+	}
+	if err := cm.SaveAndCompleteInFlightCheckpointForRun(userID, "run-mail", pause); err != nil {
+		t.Fatal(err)
+	}
+	if slot := cm.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("confirmation pause opened a review slot: %#v", slot)
+	}
+	if got := cm.ConsumeInFlightRecovery(userID); got.Task != "" {
+		t.Fatalf("confirmation pause left the marker: %#v", got)
+	}
+}
+
+func TestMixedMailboxResultsKeepProvisionalLatch(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: "[system rejected] " + mailbox.MsgNotConfigured, ToolName: "mailbox_send"},
+		{Role: "tool", Content: mailbox.MsgUncertain, ToolName: "mailbox_send"},
+	}, "发邮件", "/project", "run-mixed", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "mailbox_send" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("mixed mailbox results retired the latch: %#v", recovered)
+	}
+}
+
 func TestRecoveryModeForSideEffectRequiresReviewUnlessReadOnly(t *testing.T) {
 	for _, sideEffect := range []string{"", "local_committed", "external_uncertain", "unknown"} {
 		if got := recoveryModeForSideEffect(sideEffect); got != "requires_review" {
@@ -531,6 +1170,173 @@ func TestPromoteReadOnlyCheckpointResumesContextWithoutSideEffectReview(t *testi
 	}
 }
 
+func TestReloadDropsSettledMailboxLatch(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "conversation.json")
+	const userID = "desktop-user"
+	confirm := `__ASK_USER__{"question":"发送这封邮件？"}`
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	entries := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: confirm, ToolName: "mailbox_send", ToolCallID: "old-confirm"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known"},
+	}
+	cm := NewPersistentConversationMemory(storePath)
+	cm.Save(userID, entries)
+	cm.UpsertUnfinishedSlot(userID, &UnfinishedTaskSlot{
+		SlotID: "interrupted-mail", UserID: userID, Status: UnfinishedTaskSlotStatusInterrupted,
+		LastTask: "发邮件", LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+		RecoveryMode: "requires_review", Source: UnfinishedTaskSlotSourceInFlightRecovery,
+	})
+	cm.Stop()
+
+	reloaded := NewPersistentConversationMemory(storePath)
+	defer reloaded.Stop()
+	if slot := reloaded.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("settled mailbox slot survived reload: %#v", slot)
+	}
+	if loaded := reloaded.Load(userID); len(loaded) != len(entries) {
+		t.Fatalf("history changed: %#v", loaded)
+	}
+
+	markerPath := filepath.Join(dir, "marker.json")
+	marker := NewPersistentConversationMemory(markerPath)
+	if err := marker.PersistInFlightCheckpoint(userID, entries, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	marker.Stop()
+	reloadedMarker := NewPersistentConversationMemory(markerPath)
+	defer reloadedMarker.Stop()
+	if slot := reloadedMarker.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("settled mailbox marker became a slot: %#v", slot)
+	}
+	if task, _ := reloadedMarker.ConsumeInFlightTask(userID); task != "" {
+		t.Fatalf("settled mailbox marker survived reload: %q", task)
+	}
+}
+
+func TestReloadKeepsUnreportedMailboxLatch(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "conversation.json")
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	known := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "old-known"},
+	}
+	cm := NewPersistentConversationMemory(storePath)
+	if err := cm.PersistInFlightCheckpoint(userID, known, "发邮件", "/project", "run-first", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun(userID, "run-first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, known, "发邮件", "/project", "run-second", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cm.Stop()
+
+	reloaded := NewPersistentConversationMemory(storePath)
+	defer reloaded.Stop()
+	slot := reloaded.GetUnfinishedSlot(userID)
+	if slot == nil || slot.LastToolName != "mailbox_send" || slot.SideEffectState != "external_uncertain" || slot.RecoveryMode != "requires_review" || !slot.MailboxResultBaselineSet {
+		t.Fatalf("unreported second send = %#v", slot)
+	}
+}
+
+func TestLeaseExpiryDropsSettledMailboxLatch(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	entries := []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: `__ASK_USER__{"question":"发送这封邮件？"}`, ToolName: "mailbox_send", ToolCallID: "old-confirm"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, entries, "发邮件", "/project", "run-mail", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	sh.sessions[userID].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	if slot := cm.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("settled mailbox lease opened a slot: %#v", slot)
+	}
+	if task, _ := cm.ConsumeInFlightTask(userID); task != "" {
+		t.Fatalf("settled mailbox marker survived the lease: %q", task)
+	}
+}
+
+func TestPromoteDropsParkedSettledMailboxSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	cm.Save(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: `__ASK_USER__{"question":"发送这封邮件？"}`, ToolName: "mailbox_send", ToolCallID: "old-confirm"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known"},
+	})
+	cm.UpsertUnfinishedSlot(userID, &UnfinishedTaskSlot{
+		SlotID: "dropped-uncertain", UserID: userID, Status: UnfinishedTaskSlotStatusInterrupted,
+		LastToolName: "mailbox_send", SideEffectState: "external_uncertain", RecoveryMode: "requires_review",
+		Source: UnfinishedTaskSlotSourceInFlightRecovery, MailboxUncertainDropped: true, LastTask: "可能已发出",
+	})
+	cm.UpsertUnfinishedSlot(userID, &UnfinishedTaskSlot{
+		SlotID: "settled-mail", UserID: userID, Status: UnfinishedTaskSlotStatusInterrupted,
+		LastToolName: "mailbox_send", SideEffectState: "external_uncertain", RecoveryMode: "requires_review",
+		Source: UnfinishedTaskSlotSourceInFlightRecovery, LastTask: "发邮件",
+	})
+	cm.UpsertUnfinishedSlot(userID, &UnfinishedTaskSlot{
+		SlotID: "unreported-mail", UserID: userID, Status: UnfinishedTaskSlotStatusInterrupted,
+		LastToolName: "mailbox_send", SideEffectState: "external_uncertain", RecoveryMode: "requires_review",
+		Source: UnfinishedTaskSlotSourceInFlightRecovery, LastTask: "再发一次",
+		MailboxResultBaseline: 2, MailboxResultBaselineSet: true,
+	})
+	cm.SetInFlightTaskForRun(userID, "newer task", "/project", "run-new")
+	if promoted := cm.PromoteRecoverableCheckpoints(time.Now()); promoted != 1 {
+		t.Fatalf("promoted = %d, want the unsettled marker", promoted)
+	}
+	if slot := cm.GetUnfinishedSlot(userID); slot == nil || slot.LastTask != "newer task" {
+		t.Fatalf("current slot = %#v", slot)
+	}
+	var ids []string
+	for _, slot := range cm.UnfinishedSlots() {
+		if slot == nil || slot.UserID != userID {
+			continue
+		}
+		ids = append(ids, slot.SlotID)
+		if slot.SlotID == "settled-mail" {
+			t.Fatalf("parked settled mailbox slot survived: %#v", slot)
+		}
+	}
+	want := map[string]bool{"dropped-uncertain": false, "unreported-mail": false}
+	for _, id := range ids {
+		if _, ok := want[id]; ok {
+			want[id] = true
+		}
+	}
+	for id, found := range want {
+		if !found {
+			t.Fatalf("slot %s missing from %#v", id, ids)
+		}
+	}
+}
+
 func TestPromoteCheckpointReplacesResolvedSlot(t *testing.T) {
 	cm := NewConversationMemory()
 	defer cm.Stop()
@@ -675,6 +1481,56 @@ func TestPersistInFlightCheckpointSupersedesSameRunLeaseSlot(t *testing.T) {
 	task, _ := cm.ConsumeInFlightTask("user")
 	if task != "继续" {
 		t.Fatalf("marker = %q, want the continuing run", task)
+	}
+}
+
+func TestSameRunCheckpointKeepsDroppedUncertainFromLeaseSlot(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	const runID = "run-mail"
+	uncertain := "[system unknown] " + mailbox.MsgUncertain
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发邮件"},
+		{Role: "tool", Content: uncertain, ToolName: "mailbox_send", ToolCallID: "old-uncertain"},
+	}, "发邮件", "/project", runID, InFlightCheckpoint{
+		Sequence: 1, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "这一轮的摘要"},
+	}, "发邮件", "/project", runID, InFlightCheckpoint{
+		Sequence: 2, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	sh.sessions[userID].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.mu.Unlock()
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	if slot := cm.GetUnfinishedSlot(userID); slot == nil || !slot.MailboxUncertainDropped {
+		t.Fatalf("lease slot = %#v", slot)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "这一轮的摘要"},
+		{Role: "tool", Content: notConfigured, ToolName: "mailbox_send", ToolCallID: "new-known"},
+	}, "发邮件", "/project", runID, InFlightCheckpoint{
+		Sequence: 3, LastToolName: "mailbox_send", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if slot := cm.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("continuing run left the lease slot: %#v", slot)
+	}
+	held := cm.ConsumeInFlightRecovery(userID)
+	if held.LastToolName != "mailbox_send" || held.SideEffectState != "external_uncertain" || held.RecoveryMode != "requires_review" || !held.MailboxUncertainDropped {
+		t.Fatalf("lease slot dropped the uncertain delivery: %#v", held)
 	}
 }
 

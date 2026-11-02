@@ -185,6 +185,16 @@ function textOf(record: Record<string, unknown>, camel: string, pascal: string):
     return typeof value === "string" ? value : "";
 }
 
+function companionLibraryPaint(listed: unknown): { items: CompanionLibraryItem[]; notice: string; syncing: boolean } {
+    const record = listed && typeof listed === "object" ? listed as Record<string, unknown> : {};
+    const raw = Array.isArray(record.items) ? record.items : Array.isArray(record.Items) ? record.Items : [];
+    return {
+        items: raw.map(readItem).filter((item): item is CompanionLibraryItem => item !== null),
+        notice: textOf(record, "notice", "Notice"),
+        syncing: record.syncing === true || record.Syncing === true,
+    };
+}
+
 function boolOf(record: Record<string, unknown>, camel: string, pascal: string): boolean {
     const value = record[camel] ?? record[pascal];
     return value === true;
@@ -422,6 +432,30 @@ function readUpdates(raw: unknown): CompanionShareUpdate[] {
             replaceMessages: hasMessages,
         };
     }).filter((item): item is CompanionShareUpdate => item !== null);
+}
+
+// A cloud refresh can finish while an older list call is still returning the
+// disk it read at the start. The older answer must not cover the refresh.
+// Disk answers taken during one refresh share the generation from its start,
+// and the first of them wins, so a slower read cannot cover a newer one. The
+// hub index is a newer generation. The next refresh reuses the finished
+// list's generation for its own disk answer, so a file opened after that list
+// still appears; a late copy of the finished list must not cover it.
+let companionLibrarySeenGen = -1;
+let companionLibrarySeenSyncing = false;
+
+export function takeCompanionLibraryList(listed: unknown): boolean {
+    const record = listed && typeof listed === "object" ? listed as Record<string, unknown> : null;
+    if (!record) return false;
+    const genRaw = record.syncGen ?? record.SyncGen;
+    const gen = typeof genRaw === "number" ? genRaw : 0;
+    const syncing = record.syncing === true || record.Syncing === true;
+    if (gen < companionLibrarySeenGen) return false;
+    // The snapshot already on screen is this refresh. Keep it.
+    if (gen === companionLibrarySeenGen && companionLibrarySeenSyncing) return false;
+    companionLibrarySeenGen = gen;
+    companionLibrarySeenSyncing = syncing;
+    return true;
 }
 
 export function companionLibrarySync(raw: unknown): { updates: CompanionShareUpdate[]; removed: string[]; removedHosts: Record<string, string> } {
@@ -871,7 +905,7 @@ export function CompanionLibraryView({
     onOpen: (path: string) => void;
     onExit: () => void;
     onShareUpdated?: (update: CompanionShareUpdate) => void;
-    onListed?: (listed: unknown) => void;
+    onListed?: (listed: unknown) => boolean | void;
     onShareProject: (path: string) => void;
     // A cloud row this person created opens 修改 instead of 分享: the link
     // already exists, so the dialog edits it rather than making another.
@@ -887,9 +921,11 @@ export function CompanionLibraryView({
     dialogOpen?: boolean;
 }) {
     if (lang) setCompanionUiLang(lang);
-    const [items, setItems] = useState<CompanionLibraryItem[]>([]);
-    const [notice, setNotice] = useState("");
-    const [loading, setLoading] = useState(true);
+    const seeded = companionLibraryPaint(listedSnapshot);
+    const [items, setItems] = useState<CompanionLibraryItem[]>(seeded.items);
+    const [notice, setNotice] = useState(seeded.notice);
+    const [loading, setLoading] = useState(listedSnapshot == null);
+    const [syncing, setSyncing] = useState(seeded.syncing);
     const [rowBusy, setRowBusy] = useState<Record<string, string>>({});
     const { showConfirm } = useDialog();
     const updatedRef = useRef(onShareUpdated);
@@ -909,26 +945,36 @@ export function CompanionLibraryView({
     const deleteGate = useRef(false);
     // The last list object this view painted. The window echoes it back as
     // listedSnapshot; comparing identity keeps that echo from painting twice.
-    const appliedListRef = useRef<unknown>(null);
+    const appliedListRef = useRef<unknown>(listedSnapshot ?? null);
+    const paintedRef = useRef(listedSnapshot != null);
 
-    const applyList = useCallback((listed: unknown) => {
-        const record = listed && typeof listed === "object" ? listed as Record<string, unknown> : {};
-        const next = Array.isArray(record.items) ? record.items : Array.isArray(record.Items) ? record.Items : [];
-        setItems(next.map(readItem).filter((item): item is CompanionLibraryItem => item !== null));
-        setNotice(textOf(record, "notice", "Notice"));
+    const applyList = useCallback((listed: unknown, alreadyTaken = false) => {
+        if (!alreadyTaken && !takeCompanionLibraryList(listed)) return;
+        const paint = companionLibraryPaint(listed);
+        setItems(paint.items);
+        setNotice(paint.notice);
+        setSyncing(paint.syncing);
+        paintedRef.current = true;
     }, []);
 
     const reload = useCallback(async () => {
         const started = libraryDeleteGen?.current ?? 0;
-        setLoading(true);
+        if (!paintedRef.current) setLoading(true);
         try {
             const listed = await ListFileCompanionLibrary() as { items?: unknown[]; Items?: unknown[]; updates?: unknown; Updates?: unknown; removed?: unknown; Removed?: unknown };
             if (libraryDeleteGen && libraryDeleteGen.current !== started) return;
+            // The window records this generation once, then paints the open
+            // document. Taking it here as well dropped notes and share bindings
+            // whenever this view's read finished first.
+            const handoff = listedRef.current;
+            if (handoff) {
+                if (handoff(listed) === false) return;
+                appliedListRef.current = listed;
+                applyList(listed, true);
+                return;
+            }
             appliedListRef.current = listed;
             applyList(listed);
-            // The open document reads this same list. Notes, a newer transcript,
-            // and a removed copy have to land while the view is the one refreshing.
-            listedRef.current?.(listed);
         } catch (err) {
             setNotice(libraryError(err));
         } finally {
@@ -947,7 +993,7 @@ export function CompanionLibraryView({
         if (listedSnapshot === undefined || listedSnapshot === null) return;
         if (appliedListRef.current === listedSnapshot) return;
         appliedListRef.current = listedSnapshot;
-        applyList(listedSnapshot);
+        applyList(listedSnapshot, true);
     }, [listedSnapshot, applyList]);
 
     useEffect(() => {
@@ -1274,7 +1320,11 @@ export function CompanionLibraryView({
                     <div className="file-companion-dialog-heading">
                         <h2 id="file-companion-library-title">{cs("文档管理")}</h2>
                         <p className="file-companion-dialog-sub">
-                            {items.length > 0 ? companionFill(getCompanionUiLang(), "每个项目包含文档、高亮和讨论，共 ${count} 个", { count: items.length }) : cs("每个项目包含文档、高亮和讨论，还没有项目")}
+                            {items.length > 0
+                                ? companionFill(getCompanionUiLang(), "每个项目包含文档、高亮和讨论，共 ${count} 个", { count: items.length })
+                                : loading || syncing
+                                    ? cs("每个项目包含文档、高亮和讨论")
+                                    : cs("每个项目包含文档、高亮和讨论，还没有项目")}
                         </p>
                     </div>
                     <div className="file-companion-dialog-head-actions">
@@ -1303,16 +1353,17 @@ export function CompanionLibraryView({
                 <div className="file-companion-dialog-body">
                     {notice ? <p className="file-companion-library-notice" data-testid="file-companion-library-notice" role="status">{cs(notice)}</p> : null}
                     {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
+                    {syncing && !loading ? <p className="file-companion-library-note">{cs("正在同步云端分享")}</p> : null}
                     <section className="file-companion-library-section" data-testid="file-companion-library-local" aria-label={cs("本机项目")}>
                         <h3 className="file-companion-dialog-label">{cs("本机项目")}<span className="file-companion-dialog-optional">{localItems.length}</span></h3>
                         {localItems.length === 0
-                            ? <p className="file-companion-library-empty">{cs("还没有本机项目 — 打开或导入一个文档开始")}</p>
+                            ? (loading || syncing ? null : <p className="file-companion-library-empty">{cs("还没有本机项目 — 打开或导入一个文档开始")}</p>)
                             : <div className="file-companion-project-list">{localItems.map(renderRow)}</div>}
                     </section>
                     <section className="file-companion-library-section" data-testid="file-companion-library-cloud" aria-label={cs("云端项目")}>
                         <h3 className="file-companion-dialog-label">{cs("云端项目")}<span className="file-companion-dialog-optional">{cloudItems.length}</span></h3>
                         {cloudItems.length === 0
-                            ? <p className="file-companion-library-empty">{cs("还没有云端项目 — 分享后会出现在这里")}</p>
+                            ? (loading || syncing ? null : <p className="file-companion-library-empty">{cs("还没有云端项目 — 分享后会出现在这里")}</p>)
                             : <div className="file-companion-project-list">{cloudItems.map(renderRow)}</div>}
                     </section>
                 </div>

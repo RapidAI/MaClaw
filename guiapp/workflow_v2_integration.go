@@ -3486,6 +3486,27 @@ func goalContinuationFailedStart(userText string, resp *IMAgentResponse) *IMAgen
 	return resp
 }
 
+// localCodingTurnOutcome derives one local workbench turn's durable verdict
+// from the plan runner's per-step results. Any failed step fails the turn,
+// including a parallel wave whose last-finishing step passed; a plan where
+// nothing actually ran records no verdict.
+func localCodingTurnOutcome(results []v2.TaskRunResult, ctx context.Context) string {
+	passed, failed := 0, 0
+	for _, rr := range results {
+		switch rr.Status {
+		case v2.TaskFailed:
+			failed++
+		case v2.TaskPassed:
+			passed++
+		}
+	}
+	executorOutcome := ""
+	if passed > 0 && failed == 0 {
+		executorOutcome = "completed"
+	}
+	return codingWorkbenchTurnOutcomeFromPlan(executorOutcome, failed, ctx != nil && ctx.Err() != nil)
+}
+
 // runCodingTemplateSubAgent executes the pure-coding workbench turn.
 // Complex requests may be auto-planned into multiple ordered TaskItems and
 // executed sequentially via TaskRunner; simple requests stay single-task.
@@ -4121,7 +4142,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	if sourcePreview {
 		emittedPreview = emitCodingWorkbenchSourcePreview(h.app, codeSessionID, projectPath, previewModified, previewCreated, stickyFiles, false, true, previewRoutePath)
 	}
-	h.recordStickyLocalCodingTurn(userID, projectPath, recordUserText, lastCodingResult)
+	h.recordStickyLocalCodingTurn(userID, projectPath, recordUserText, lastCodingResult, localCodingTurnOutcome(runResults, runCtx))
 	// A shell write the tool audit did not record is not previewed and is not
 	// persisted here. This merge only keeps a path when emit returned files
 	// that the turn audit and sticky history both missed.
@@ -4753,7 +4774,6 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 
 	applyRemoteCodingTurnFileAudit(result, turnFilesModified, turnFilesCreated)
-	h.recordStickyRemoteCodingTurn(userID, recordUserText, result)
 	h.accumulateStickyCodingUsage(userID, totalInTok, totalOutTok, totalCost)
 	if postTurn := runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_turn"); postTurn.Report != "" {
 		log.Printf("[coding-hooks] remote post_turn: %s", truncateRunesV2(postTurn.Report, 200))
@@ -4777,6 +4797,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if result != nil {
 		resultStatus = result.Status
 	}
+	// Record the turn verdict after the plan counts: a failed step fails the
+	// turn even when the remote executor reports success for the last step.
+	h.recordStickyRemoteCodingTurn(userID, recordUserText, result,
+		codingWorkbenchTurnOutcomeFromPlan(codingWorkbenchTurnOutcomeRemote(resultStatus), failedSteps, cancelled))
 	statusText := formatRemoteCodingPlanStatusText(planned, resultStatus, totalSteps, passedSteps, failedSteps, skippedSteps, remoteCtx.Maintenance)
 	log.Printf("[workflow-v2] remote coding complete: %s", statusText)
 	report := formatCodingWorkbenchUserAnswer(decision.Kind, runResults, cancelled)

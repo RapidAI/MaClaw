@@ -71,6 +71,10 @@ func TestKnowledgeImageOCRAdapterHonorsDisabledSetting(t *testing.T) {
 }
 
 func TestConfiguredKnowledgeImageDescriberIndexesOCRForImageSearch(t *testing.T) {
+	// ocrConfiguredEnabled reads ocr_enabled from the real home configdb;
+	// isolate so a user's disabled OCR cannot fail this test.
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	ctx := context.Background()
 	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
 	if err != nil {

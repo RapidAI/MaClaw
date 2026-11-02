@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -110,7 +111,7 @@ func (h *IMMessageHandler) dispatchAgentLoopLLMRound(opts agentLoopLLMDispatchOp
 		// precise explanation for the remaining wait when provider time-to-first-
 		// token dominates the turn.
 		if opts.OnProgress != nil {
-			opts.OnProgress("[Status] 模型请求已发送，正在等待响应")
+			opts.OnProgress(imThinkingStatus(h.imUILang(), i18n.MsgStatusModelWaiting))
 		}
 	}
 	llmRound := h.executeAgentLoopLLMRound(agentLoopLLMRoundOptions{

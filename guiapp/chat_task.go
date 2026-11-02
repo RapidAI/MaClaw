@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -2212,8 +2213,49 @@ func applyChatTaskWorkerExecutionProfile(ctx *LoopContext) {
 	ctx.semanticTurnAnswerOnly = false
 }
 
+// Dispatcher prompt chrome the model copies into dispatch requests
+// ("工作目录：C:\…\作业。任务两步：1) …"). Titles show the job, not the path;
+// stripping before the 72-rune cut also spends the budget on the job.
+// [\s\p{Zs}] mirrors the JS \s class: full-width separators (U+3000) after
+// "：" are common in Chinese prompts and Go's ASCII \s would keep them.
+var (
+	chatTaskBannerRe   = regexp.MustCompile(`^(?:工作目录|Working directory)[\s\p{Zs}]*[：:][^。\n]*?(?:[。][\s\p{Zs}]*|[.][\s\p{Zs}]|\n+)[\s\p{Zs}]*`)
+	chatTaskStepLeadRe = regexp.MustCompile(`^任务[一二两三四五六七八九十\d]+[\s\p{Zs}]*步[\s\p{Zs}]*[：:][\s\p{Zs}]*`)
+	chatTaskStepsRe    = regexp.MustCompile(`(?i)^Task[\s\p{Zs}]+steps?[\s\p{Zs}]*[：:][\s\p{Zs}]*`)
+)
+
+// chatTaskDisplayTitle mirrors the frontend chatTaskDisplayTitle: a banner-only
+// title falls back to the raw text instead of collapsing to empty.
+func chatTaskDisplayTitle(title string) string {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return trimmed
+	}
+	cleaned := chatTaskBannerRe.ReplaceAllString(trimmed, "")
+	cleaned = chatTaskStepLeadRe.ReplaceAllString(cleaned, "")
+	cleaned = chatTaskStepsRe.ReplaceAllString(cleaned, "")
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return trimmed
+	}
+	return cleaned
+}
+
+// chatTaskTitleEquals matches a steer/lookup title against a stored task title
+// both raw and display-cleaned: the model may quote either the dispatch
+// request it composed (with the working-directory banner) or the cleaned title
+// the card, tray, and status replies show.
+func chatTaskTitleEquals(stored, asked string) bool {
+	stored = strings.TrimSpace(stored)
+	asked = strings.TrimSpace(asked)
+	if strings.EqualFold(stored, asked) {
+		return true
+	}
+	return strings.EqualFold(chatTaskDisplayTitle(stored), chatTaskDisplayTitle(asked))
+}
+
 func chatTaskTitle(prompt string) string {
-	title := truncateChatTaskText(strings.TrimSpace(prompt), 72)
+	title := truncateChatTaskText(chatTaskDisplayTitle(prompt), 72)
 	if title == "" {
 		return "This work"
 	}

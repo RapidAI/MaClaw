@@ -518,6 +518,16 @@ func TestCloudWorkspaceOpenReenrollSurvivesExpiredRequestContext(t *testing.T) {
 func TestCloudWorkspaceOpenKeepsChineseMessageWhenReenrollFails(t *testing.T) {
 	resetCloudWorkspaceAuthRecovery()
 	t.Cleanup(resetCloudWorkspaceAuthRecovery)
+	// 机器授权错误文案走 cloudWorkspaceTr：设为中文才能断言「授权已失效」。
+	prevLang := agentViewCurrentLang.Load()
+	setAgentViewLang("zh-Hans")
+	t.Cleanup(func() {
+		if prevLang != nil {
+			agentViewCurrentLang.Store(prevLang)
+		} else {
+			setAgentViewLang("en")
+		}
+	})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"code":"MACHINE_UNAUTHORIZED","message":"machine authorization required"}`))

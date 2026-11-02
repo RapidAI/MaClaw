@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TokenBankCreateShare, TokenBankListShareAudiences, TokenBankSyncShareModels } from '../../wailsjs/go/main/App';
 import { localizeText } from '../i18n/langSelect';
+import { presetProviderDisplayName } from './remote/presetProviderLabel';
 import { useDialog } from './CustomDialog';
 import {
     AudiencePickList,
@@ -617,7 +618,7 @@ export function TokenBankShareDialog({ lang, request, probe, onClose, onShared, 
             <div className="tbk-modal">
                 <h3 className="tbk-modal__title">{adjusting ? t('Adjust models', '调整模型', '調整模型') : t('Share provider', '分享服务商', '分享服務商')}</h3>
                 <p className="tbk-modal__sub">
-                    {request.providerName} · {tokenBankDisplayURL(request.apiURL)}
+                    {presetProviderDisplayName(lang, request.providerName)} · {tokenBankDisplayURL(request.apiURL)}
                 </p>
                 {newModels.length > 0 ? (
                     <p className="tbk-new-models" role="status">

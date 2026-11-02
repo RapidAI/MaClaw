@@ -13,7 +13,7 @@ const creditsAssetMaxPayloadBytes = 256 << 10
 // GetCreditsAssetAccount returns the signed-in user's market Credits balance.
 // The session credential remains in the native process via marketRequest.
 func (a *App) GetCreditsAssetAccount() (map[string]interface{}, error) {
-	data, err := a.marketRequest(http.MethodGet, "/api/v1/credits/account", nil, "", creditsAssetMaxPayloadBytes, creditsAssetMaxPayloadBytes, "Credits")
+	data, err := a.marketRequest("", http.MethodGet, "/api/v1/credits/account", nil, "", creditsAssetMaxPayloadBytes, creditsAssetMaxPayloadBytes, "Credits")
 	if err != nil {
 		return nil, err
 	}
@@ -27,7 +27,7 @@ func (a *App) GetCreditsAssetTransactions(offset int) (map[string]interface{}, e
 		offset = 0
 	}
 	path := fmt.Sprintf("/api/v1/credits/account/transactions?limit=100&offset=%d", offset)
-	data, err := a.marketRequest(http.MethodGet, path, nil, "", creditsAssetMaxPayloadBytes, creditsAssetMaxPayloadBytes, "Credits")
+	data, err := a.marketRequest("", http.MethodGet, path, nil, "", creditsAssetMaxPayloadBytes, creditsAssetMaxPayloadBytes, "Credits")
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func (a *App) RedeemCreditsCard(code string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := a.marketRequest(http.MethodPost, "/api/v1/credits/redeem", bytes.NewReader(body), "application/json", creditsAssetMaxPayloadBytes, creditsAssetMaxPayloadBytes, "Credits")
+	data, err := a.marketRequest("", http.MethodPost, "/api/v1/credits/redeem", bytes.NewReader(body), "application/json", creditsAssetMaxPayloadBytes, creditsAssetMaxPayloadBytes, "Credits")
 	if err != nil {
 		return nil, err
 	}

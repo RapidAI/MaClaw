@@ -26,7 +26,7 @@ const (
 // Pet Store. Reusing this boundary means neither the HubCenter session nor an
 // installable package crosses into the WebView.
 func (a *App) expertMarketRequest(method, path string, body io.Reader, contentType string) ([]byte, error) {
-	return a.marketRequest(method, path, body, contentType, expertMarketMaxRequestBytes, expertMarketMaxResponseBytes, "Expert Market")
+	return a.marketRequest(a.resolveExpertMarketBase(), method, path, body, contentType, expertMarketMaxRequestBytes, expertMarketMaxResponseBytes, "Expert Market")
 }
 
 func (a *App) ListExpertMarketListings(query, sort string, page, pageSize int) (map[string]interface{}, error) {
@@ -89,7 +89,7 @@ func (a *App) GetExpertMarketAccount() (map[string]interface{}, error) {
 	// A market install is a receiver-owned local state. Enrich both account
 	// collections so the UI can distinguish an entitlement from an installed
 	// copy and offer the correct action.
-	a.markExpertMarketListingsInstalled(result, "uploads", "purchases")
+	a.markExpertMarketListingsInstalled(result, "uploads", "purchases", "received")
 	return result, nil
 }
 
@@ -257,7 +257,7 @@ func (a *App) UninstallExpertMarketListing(localExpertID string) error {
 // caller has selected it in the native UI. Builtins are rejected by the
 // existing package exporter, and the package never crosses into the WebView.
 func (a *App) SubmitExpertMarketListing(expertID, version string, price int64, visibility string) (map[string]interface{}, error) {
-	return a.submitExpertMarketListing(expertID, version, price, visibility, false)
+	return a.submitExpertMarketListing(expertID, version, price, visibility, false, "")
 }
 
 // SubmitExpertMarketListingWithDistribution is an explicit author grant for
@@ -265,10 +265,17 @@ func (a *App) SubmitExpertMarketListing(expertID, version string, price int64, v
 // It is deliberately a separate method so older GUI builds keep the safe
 // default (no platform distribution) without changing their wire contract.
 func (a *App) SubmitExpertMarketListingWithDistribution(expertID, version string, price int64, visibility string, platformDistribution bool) (map[string]interface{}, error) {
-	return a.submitExpertMarketListing(expertID, version, price, visibility, platformDistribution)
+	return a.submitExpertMarketListing(expertID, version, price, visibility, platformDistribution, "")
 }
 
-func (a *App) submitExpertMarketListing(expertID, version string, price int64, visibility string, platformDistribution bool) (map[string]interface{}, error) {
+// SubmitExpertMarketListingToUsers shares a local expert with one or more
+// people identified by phone number or email. The identifiers are global and
+// are not limited to a Hub or tenant.
+func (a *App) SubmitExpertMarketListingToUsers(expertID, version, targets string) (map[string]interface{}, error) {
+	return a.submitExpertMarketListing(expertID, version, 0, "users", false, targets)
+}
+
+func (a *App) submitExpertMarketListing(expertID, version string, price int64, visibility string, platformDistribution bool, targets string) (map[string]interface{}, error) {
 	if price < 0 || price > 999999 {
 		return nil, fmt.Errorf("price must be 0-999999 credits")
 	}
@@ -276,8 +283,12 @@ func (a *App) submitExpertMarketListing(expertID, version string, price int64, v
 	if visibility == "" {
 		visibility = "public"
 	}
-	if visibility != "public" && visibility != "private" {
-		return nil, fmt.Errorf("visibility must be public or private")
+	if visibility != "public" && visibility != "private" && visibility != "users" {
+		return nil, fmt.Errorf("visibility must be public, private, or users")
+	}
+	targets = strings.TrimSpace(targets)
+	if visibility == "users" && targets == "" {
+		return nil, fmt.Errorf("enter at least one phone number or email")
 	}
 	dir := filepath.Join(a.GetDataDir(), "expert-market-drafts")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -315,6 +326,11 @@ func (a *App) submitExpertMarketListing(expertID, version string, price int64, v
 	}
 	if err := mw.WriteField("platform_distribution", strconv.FormatBool(platformDistribution)); err != nil {
 		return nil, err
+	}
+	if visibility == "users" {
+		if err := mw.WriteField("share_targets", targets); err != nil {
+			return nil, err
+		}
 	}
 	part, err := mw.CreateFormFile("package", filepath.Base(path))
 	if err != nil {

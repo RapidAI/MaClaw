@@ -34,20 +34,39 @@ export function CodingKnowledgeStatsBar({ lang, stats, capacityMax, autoSaveMode
                         <span className="prog-tools__kb-stat-value">{stats?.candidate_count || 0}</span>
                         <span className="prog-tools__kb-stat-label">{localizeText(lang, 'Candidate', '候选', '候選')}</span>
                     </div>
+                    <div className="prog-tools__kb-stat" data-type="recall">
+                        <span className="prog-tools__kb-stat-value">{stats?.recall_count || 0}</span>
+                        <span className="prog-tools__kb-stat-label">{localizeText(lang, 'Recalls', '召回', '召回')}</span>
+                    </div>
+                    {(stats?.recall_count || 0) > 0 ? (
+                        <div className="prog-tools__kb-stat" data-type="recall-success">
+                            <span className="prog-tools__kb-stat-value">
+                                {Math.round(((stats?.recall_success_count || 0) / stats.recall_count) * 100)}%
+                            </span>
+                            <span className="prog-tools__kb-stat-label">{localizeText(lang, 'Recall OK', '召回成功率', '召回成功率')}</span>
+                        </div>
+                    ) : null}
                 </div>
             ) : (
                 <div className="prog-tools__kb-stats-empty" role="status">
                     {localizeText(lang, 'Knowledge base is empty — experiences will be collected as you code.', '知识库为空，编程时将自动积累经验。', '知識庫為空，程式設計時將自動積累經驗。')}
                 </div>
             )}
-            {autoSaveMode === 'auto' && (stats?.candidate_count || 0) > 0 ? (
+            {(stats?.candidate_count || 0) > 0 ? (
                 <div className="prog-tools__kb-action-msg" role="status">
-                    {localizeText(
-                        lang,
-                        `${stats.candidate_count} candidate(s) awaiting review.`,
-                        `${stats.candidate_count} 条候选经验待审核。`,
-                        `${stats.candidate_count} 條候選經驗待審核。`,
-                    )}
+                    {autoSaveMode === 'auto'
+                        ? localizeText(
+                            lang,
+                            `${stats.candidate_count} candidate(s) below the auto-promotion threshold or awaiting review.`,
+                            `${stats.candidate_count} 条候选经验待达到观测阈值或人工确认。`,
+                            `${stats.candidate_count} 條候選經驗待達到觀測閾值或人工確認。`,
+                        )
+                        : localizeText(
+                            lang,
+                            `${stats.candidate_count} candidate(s) awaiting review.`,
+                            `${stats.candidate_count} 条候选经验待审核。`,
+                            `${stats.candidate_count} 條候選經驗待審核。`,
+                        )}
                 </div>
             ) : null}
         </>

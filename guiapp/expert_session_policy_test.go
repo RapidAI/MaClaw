@@ -20,6 +20,7 @@ func TestExpertIDFromUserID(t *testing.T) {
 		{"desktop-user:D:/proj/demo", ""},
 		{"", ""},
 		{"desktop-user:expert:", ""},
+		{"desktop-user:expert:builtin-paper-polish:task:C:/Users/ma139/book", "builtin-paper-polish"},
 	}
 	for _, c := range cases {
 		if got := expertIDFromUserID(c.userID); got != c.want {
@@ -28,6 +29,16 @@ func TestExpertIDFromUserID(t *testing.T) {
 	}
 	if got := expertIDFromUserID(expertSessionUserID("expert-1-x")); got != "expert-1-x" {
 		t.Fatalf("roundtrip failed, got %q", got)
+	}
+	taskKey := expertTaskSessionUserID("expert-1-x", `C:\Users\ma139\book\.`)
+	if got := expertIDFromUserID(taskKey); got != "expert-1-x" {
+		t.Fatalf("task key id = %q, key %q", got, taskKey)
+	}
+	if taskKey != "desktop-user:expert:expert-1-x:task:C:/Users/ma139/book" {
+		t.Fatalf("task key = %q", taskKey)
+	}
+	if got := projectPathFromExpertTaskUserID(taskKey); normalizeProjectSessionPath(got) != normalizeProjectSessionPath(`C:/Users/ma139/book`) {
+		t.Fatalf("task path = %q", got)
 	}
 }
 
@@ -249,6 +260,10 @@ func TestNormalizeAIAssistantSessionUserIDExpert(t *testing.T) {
 	got, err = normalizeAIAssistantSessionUserID(" desktop-user:expert:expert-1-x ")
 	if err != nil || got != "desktop-user:expert:expert-1-x" {
 		t.Fatalf("trimmed expert key: got=%q err=%v", got, err)
+	}
+	got, err = normalizeAIAssistantSessionUserID(`desktop-user:expert:expert-1-x:task:C:\Users\ma139\book`)
+	if err != nil || got != "desktop-user:expert:expert-1-x:task:C:/Users/ma139/book" {
+		t.Fatalf("expert task key: got=%q err=%v", got, err)
 	}
 	// Existing behaviors unchanged.
 	if got, err = normalizeAIAssistantSessionUserID(""); err != nil || got != "" {

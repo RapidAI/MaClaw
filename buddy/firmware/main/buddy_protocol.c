@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
 
+#include "buddy_bpt1.h"
 #include "buddy_display.h"
 #include "buddy_font.h"
 #include "buddy_pet.h"
@@ -60,20 +61,25 @@ void buddy_protocol_send_hello(void) {
     cJSON_AddStringToObject(root, "fw", FW_VERSION);
     cJSON_AddStringToObject(root, "board", BOARD_NAME);
     cJSON *disp = cJSON_AddObjectToObject(root, "disp");
-    cJSON_AddNumberToObject(disp, "w", BUDDY_DISPLAY_WIDTH);
-    cJSON_AddNumberToObject(disp, "h", BUDDY_DISPLAY_HEIGHT);
-    cJSON_AddBoolToObject(disp, "round", BUDDY_DISPLAY_ROUND != 0);
+    cJSON_AddNumberToObject(disp, "w", buddy_display_glass_width());
+    cJSON_AddNumberToObject(disp, "h", buddy_display_glass_height());
+    cJSON_AddBoolToObject(disp, "round", buddy_display_glass_round());
+    cJSON_AddStringToObject(disp, "panel", buddy_display_panel_id());
+    cJSON_AddStringToObject(disp, "font", buddy_font_rev());
     cJSON_AddBoolToObject(root, "touch", buddy_touch_available());
+    cJSON_AddBoolToObject(root, "key", buddy_key_available());
     cJSON_AddBoolToObject(root, "sound_available", buddy_sound_available());
+    cJSON_AddStringToObject(root, "asset_mode", "bpt1");
     send_json(root);
 }
 
-void buddy_protocol_send_state_ack(bool applied, const char *page, int missing_glyphs) {
+void buddy_protocol_send_state_ack(bool applied, const char *page, int missing_glyphs, int64_t ts_ms) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", BUDDY_MSG_STATE_ACK);
     cJSON_AddBoolToObject(root, "applied", applied);
     cJSON_AddStringToObject(root, "page", page ? page : "standby");
     cJSON_AddNumberToObject(root, "missing_glyphs", missing_glyphs);
+    if (ts_ms > 0) cJSON_AddNumberToObject(root, "ts_ms", (double)ts_ms);
     send_json(root);
 }
 
@@ -95,6 +101,39 @@ void buddy_protocol_send_log(const char *level, const char *msg) {
     cJSON_AddStringToObject(root, "type", BUDDY_MSG_LOG);
     cJSON_AddStringToObject(root, "level", level ? level : "info");
     cJSON_AddStringToObject(root, "msg", msg ? msg : "");
+    send_json(root);
+}
+
+static void add_sound_event(cJSON *sound, const char *name, bool enabled, int effect) {
+    cJSON *event = cJSON_AddObjectToObject(sound, name);
+    cJSON_AddBoolToObject(event, "enabled", enabled);
+    cJSON_AddNumberToObject(event, "effect", effect);
+}
+
+void buddy_protocol_send_input(const char *gesture, int index) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", BUDDY_MSG_INPUT);
+    cJSON_AddNumberToObject(root, "proto", BUDDY_PROTO_VERSION);
+    cJSON *input = cJSON_AddObjectToObject(root, "input");
+    cJSON_AddStringToObject(input, "gesture", gesture ? gesture : "tap");
+    cJSON_AddStringToObject(input, "page", buddy_protocol_current_page());
+    cJSON_AddNumberToObject(input, "index", index);
+    send_json(root);
+}
+
+void buddy_protocol_send_sound(void) {
+    buddy_sound_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    buddy_sound_get_config(&cfg);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", BUDDY_MSG_SOUND);
+    cJSON_AddNumberToObject(root, "proto", BUDDY_PROTO_VERSION);
+    cJSON *sound = cJSON_AddObjectToObject(root, "sound");
+    cJSON_AddBoolToObject(sound, "master", cfg.master);
+    add_sound_event(sound, "running", cfg.enabled[BUDDY_SOUND_RUNNING], cfg.effect[BUDDY_SOUND_RUNNING]);
+    add_sound_event(sound, "complete", cfg.enabled[BUDDY_SOUND_COMPLETE], cfg.effect[BUDDY_SOUND_COMPLETE]);
+    add_sound_event(sound, "standby", cfg.enabled[BUDDY_SOUND_STANDBY], cfg.effect[BUDDY_SOUND_STANDBY]);
+    add_sound_event(sound, "attention", cfg.enabled[BUDDY_SOUND_ATTENTION], cfg.effect[BUDDY_SOUND_ATTENTION]);
     send_json(root);
 }
 
@@ -131,6 +170,12 @@ static int get_int(cJSON *root, const char *name, int fallback) {
     return cJSON_IsNumber(item) ? item->valueint : fallback;
 }
 
+static int64_t get_i64(cJSON *root, const char *name) {
+    cJSON *item = obj(root, name);
+    if (!cJSON_IsNumber(item)) return 0;
+    return (int64_t)item->valuedouble;
+}
+
 static bool get_bool(cJSON *root, const char *name, bool fallback) {
     cJSON *item = obj(root, name);
     if (cJSON_IsBool(item)) return cJSON_IsTrue(item);
@@ -164,10 +209,12 @@ static void seq_reset(void) {
 static void handle_state(cJSON *root) {
     cJSON *counts_json = obj(root, "counts");
     if (!cJSON_IsObject(counts_json)) {
+        buddy_display_note_activity();
         buddy_state_set_prompt("收到无效的任务数据");
-        buddy_protocol_send_state_ack(false, "prompt", 0);
+        buddy_protocol_send_state_ack(false, "prompt", 0, 0);
         return;
     }
+    const int64_t ts_ms = get_i64(root, "ts_ms");
     buddy_counts_t counts = {
         .total = get_int(counts_json, "total", 0),
         .in_progress = get_int(counts_json, "in_progress", 0),
@@ -178,9 +225,10 @@ static void handle_state(cJSON *root) {
     };
     const int sum = counts.in_progress + counts.pending + counts.paused + counts.done + counts.failed;
     if (counts.total < 0 || sum != counts.total) {
+        buddy_display_note_activity();
         buddy_state_set_prompt("任务计数不一致，已暂停显示");
         buddy_protocol_send_log("error", "counts invariant broken");
-        buddy_protocol_send_state_ack(false, "prompt", 0);
+        buddy_protocol_send_state_ack(false, "prompt", 0, ts_ms);
         return;
     }
 
@@ -188,6 +236,8 @@ static void handle_state(cJSON *root) {
     const bool has_seq = cJSON_IsNumber(seq_json);
     const uint64_t seq = has_seq ? (uint64_t)seq_json->valuedouble : 0;
     if (!seq_accept(seq, has_seq)) {
+        // A replay must not reset the idle timer. The glass stays dim while
+        // the host retries a sequence the device has already applied.
         buddy_protocol_send_log("warn", "stale seq ignored");
         return;
     }
@@ -208,13 +258,29 @@ static void handle_state(cJSON *root) {
             current[count].progress = cJSON_IsNumber(progress) ? (float)progress->valuedouble : -1.0f;
             if (current[count].progress < -1.0f) current[count].progress = -1.0f;
             if (current[count].progress > 1.0f) current[count].progress = 1.0f;
+            get_string(entry, "phase", current[count].phase, sizeof(current[count].phase));
+            get_string(entry, "elapsed", current[count].elapsed, sizeof(current[count].elapsed));
             count++;
         }
     }
 
-    buddy_state_apply_state(&counts, current, count, get_bool(root, "stale", false), seq);
+    buddy_attention_t attention;
+    memset(&attention, 0, sizeof(attention));
+    cJSON *att = obj(root, "attention");
+    if (cJSON_IsObject(att)) {
+        get_string(att, "kind", attention.kind, sizeof(attention.kind));
+        get_string(att, "id", attention.id, sizeof(attention.id));
+        get_string(att, "title", attention.title, sizeof(attention.title));
+        if (strcmp(attention.kind, "pending") != 0 && strcmp(attention.kind, "failed") != 0 &&
+            strcmp(attention.kind, "paused") != 0) {
+            attention.title[0] = '\0';
+        }
+    }
+
+    buddy_display_note_activity();
+    buddy_state_apply_state(&counts, current, count, &attention, get_bool(root, "stale", false), seq);
     buddy_state_clear_prompt();
-    buddy_protocol_send_state_ack(true, buddy_protocol_current_page(), buddy_font_missing_total(false));
+    buddy_protocol_send_state_ack(true, buddy_protocol_current_page(), buddy_font_missing_total(false), ts_ms);
 }
 
 static void handle_ambient(cJSON *root) {
@@ -230,9 +296,10 @@ static void handle_ambient(cJSON *root) {
         return;
     }
     get_string(weather, "location", location, sizeof(location));
-    buddy_state_apply_weather(summary, get_int(weather, "temperatureC", 0), location,
-                              get_bool(root, "stale", false));
-    buddy_state_weather_save();
+    if (buddy_state_apply_weather(summary, get_int(weather, "temperatureC", 0), location,
+                                  get_bool(root, "stale", false))) {
+        buddy_state_weather_save();
+    }
 }
 
 static void handle_clock(cJSON *root) {
@@ -282,6 +349,8 @@ static void handle_sound(cJSON *root) {
                       &cfg.effect[BUDDY_SOUND_COMPLETE]);
     parse_sound_event(sound, "standby", &cfg.enabled[BUDDY_SOUND_STANDBY],
                       &cfg.effect[BUDDY_SOUND_STANDBY]);
+    parse_sound_event(sound, "attention", &cfg.enabled[BUDDY_SOUND_ATTENTION],
+                      &cfg.effect[BUDDY_SOUND_ATTENTION]);
     buddy_sound_set_config(&cfg);
 }
 
@@ -323,13 +392,13 @@ static void handle_hello(cJSON *root) {
     if (proto != BUDDY_PROTO_VERSION) {
         buddy_state_set_prompt("主机与设备协议版本不匹配");
         buddy_protocol_send_log("error", "protocol version mismatch");
-        buddy_protocol_send_state_ack(false, "prompt", 0);
+        buddy_protocol_send_state_ack(false, "prompt", 0, 0);
         return;
     }
     buddy_state_clear_prompt();
     seq_reset();
     buddy_protocol_send_hello();
-    buddy_protocol_send_state_ack(true, buddy_protocol_current_page(), 0);
+    buddy_protocol_send_state_ack(true, buddy_protocol_current_page(), 0, 0);
 }
 
 static int s_parse_warnings;
@@ -357,9 +426,14 @@ static void handle_line(const char *line) {
     }
 
     buddy_state_note_host();
-    // Heartbeats keep the link "online" but must not hold the backlight on;
-    // otherwise the idle screen-off policy could never trigger.
-    if (strcmp(type, BUDDY_MSG_HEARTBEAT) != 0) {
+    // Heartbeats, the minute clock, and weather refreshes keep the link and
+    // the standby page current. They must not hold the backlight on, or the
+    // idle dim would never happen while the host is connected. A task update,
+    // a celebration, a mute, or a new session does light the glass.
+    // State frames light the glass from handle_state, and only when the frame
+    // is applied or shown as an error. A stale sequence is ignored there.
+    if (strcmp(type, BUDDY_MSG_CELEBRATE) == 0 || strcmp(type, BUDDY_MSG_SOUND) == 0 ||
+        strcmp(type, BUDDY_MSG_HELLO) == 0) {
         buddy_display_note_activity();
     }
 
@@ -380,7 +454,13 @@ static void handle_line(const char *line) {
     } else if (strcmp(type, BUDDY_MSG_HEARTBEAT) == 0) {
         // note_host above is the whole effect
     } else if (strcmp(type, BUDDY_MSG_PET) == 0) {
-        // Emotion hints are not rendered yet; waking the screen is enough.
+        const char *state = "";
+        cJSON *pet = obj(root, "pet");
+        if (cJSON_IsObject(pet)) {
+            cJSON *item = obj(pet, "state");
+            if (cJSON_IsString(item) && item->valuestring) state = item->valuestring;
+        }
+        buddy_state_set_pet(state);
     } else if (strcmp(type, BUDDY_MSG_STATE_ACK) == 0 || strcmp(type, BUDDY_MSG_LOG) == 0) {
         // Host never sends these; tolerate a misconfigured peer.
     } else {
@@ -389,39 +469,109 @@ static void handle_line(const char *line) {
     cJSON_Delete(root);
 }
 
+static char s_line[BUDDY_MAX_LINE_BYTES + 1];
+static size_t s_line_len;
+static bool s_line_overflow;
+
+static void rx_line_byte(char c) {
+    if (c == '\n') {
+        if (s_line_overflow) {
+            s_line_overflow = false;
+            s_line_len = 0;
+            log_parse_warning("line too long");
+            return;
+        }
+        if (s_line_len > 0) {
+            s_line[s_line_len] = '\0';
+            handle_line(s_line);
+        }
+        s_line_len = 0;
+        return;
+    }
+    if (c == '\r') return;
+    if (s_line_overflow) return;
+    if (s_line_len >= BUDDY_MAX_LINE_BYTES) {
+        s_line_overflow = true;
+        s_line_len = 0;
+        return;
+    }
+    s_line[s_line_len++] = c;
+}
+
+static void handle_bpt1(const uint8_t *buf, int len) {
+    // Binary frames never pass through the JSON line parser, which is what
+    // marks the host alive. A pet transfer blocks heartbeats for several
+    // seconds; without this the glass flips to offline mid-download.
+    buddy_state_note_host();
+    buddy_bpt1_info_t info;
+    const uint8_t *data = NULL;
+    if (buddy_bpt1_parse(buf, len, &info, &data) < 0 || !data) {
+        buddy_protocol_send_log("warn", "pet frame rejected");
+        return;
+    }
+    const buddy_pet_chunk_result_t result =
+        buddy_pet_chunk(info.frame, info.frames, info.width, info.height, info.offset, info.total,
+                        info.crc32, info.frame_ms, data, (size_t)info.data_len);
+    if (result == BUDDY_PET_CHUNK_REJECTED) {
+        buddy_protocol_send_log("warn", "pet frame rejected");
+        return;
+    }
+    buddy_protocol_send_asset_ack(info.frame, info.offset + info.data_len, result == BUDDY_PET_CHUNK_READY);
+    if (result == BUDDY_PET_CHUNK_READY) {
+        buddy_protocol_send_log("info", "pet asset ready");
+    }
+}
+
 static void rx_task(void *arg) {
     (void)arg;
-    static char s_line[BUDDY_MAX_LINE_BYTES + 1];
-    size_t len = 0;
-    bool overflow = false;
     uint8_t chunk[128];
+    uint8_t bin[BUDDY_BPT1_MAX_FRAME];
+    int bin_len = 0;
+    int bin_need = 0;
 
     for (;;) {
         const int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), pdMS_TO_TICKS(200));
         for (int i = 0; i < n; ++i) {
-            const char c = (char)chunk[i];
-            if (c == '\n') {
-                if (overflow) {
-                    overflow = false;
-                    len = 0;
-                    log_parse_warning("line too long");
+            const uint8_t c = chunk[i];
+            // A raw pet frame starts with 'B' only at a line boundary. JSON
+            // lines start with '{', so the two never share a byte.
+            if (bin_need == 0 && s_line_len == 0 && !s_line_overflow && c == 'B') {
+                bin_need = BUDDY_BPT1_PREFIX;
+                bin_len = 0;
+            }
+            if (bin_need > 0) {
+                if (bin_len >= BUDDY_BPT1_MAX_FRAME) {
+                    bin_need = 0;
+                    bin_len = 0;
+                    log_parse_warning("pet frame too long");
                     continue;
                 }
-                if (len > 0) {
-                    s_line[len] = '\0';
-                    handle_line(s_line);
+                bin[bin_len++] = c;
+                if (bin_len == BUDDY_BPT1_MAGIC_LEN &&
+                    memcmp(bin, BUDDY_BPT1_MAGIC, BUDDY_BPT1_MAGIC_LEN) != 0) {
+                    for (int j = 0; j < bin_len; ++j) rx_line_byte((char)bin[j]);
+                    bin_need = 0;
+                    bin_len = 0;
+                    continue;
                 }
-                len = 0;
+                if (bin_len == BUDDY_BPT1_PREFIX) {
+                    const int data_len = bin[24] | (bin[25] << 8);
+                    if (data_len <= 0 || data_len > BUDDY_BPT1_MAX_DATA) {
+                        bin_need = 0;
+                        bin_len = 0;
+                        log_parse_warning("pet frame length");
+                        continue;
+                    }
+                    bin_need = BUDDY_BPT1_PREFIX + data_len;
+                }
+                if (bin_len == bin_need && bin_len > BUDDY_BPT1_PREFIX) {
+                    handle_bpt1(bin, bin_len);
+                    bin_need = 0;
+                    bin_len = 0;
+                }
                 continue;
             }
-            if (c == '\r') continue;
-            if (overflow) continue;
-            if (len >= BUDDY_MAX_LINE_BYTES) {
-                overflow = true;
-                len = 0;
-                continue;
-            }
-            s_line[len++] = c;
+            rx_line_byte((char)c);
         }
     }
 }

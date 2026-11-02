@@ -323,3 +323,204 @@ func TestHostResolvedUnsettledExitRetiresRecoveryMarker(t *testing.T) {
 		t.Fatal("an unrelated unfinished exit must keep the marker")
 	}
 }
+
+// A local skill can write the presentation without calling the office or
+// current-channel adapters. The host then attaches that file and clears the
+// visible required_effect_unsettled error. The plan has to accept the same
+// file, or the recovery marker stays and the next message is an interrupted task.
+func TestHostAttachedPresentationSettlesOfficePlan(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:document.write.office:deck", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+		{
+			ID: "deliver", NeedID: "need:deliver",
+			Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+			FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel", QualifierBindings: map[string]string{"format": "file"}},
+		},
+		{
+			ID: "acquire", NeedID: "need:artifact.acquire.remote:47dfffbc86c8",
+			EvidenceIDs: []string{"intent:archetype_bundle"},
+			FitProof:    tool.FitProof{MatchedCapability: tool.CapabilityArtifactAcquireRemote},
+		},
+	}
+	surface.completed = map[string]bool{}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface, checkpointRunID: "run-ppt"}
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("unexecuted office plan was already settled")
+	}
+	resp := &IMAgentResponse{
+		LocalFilePath: `C:\Users\ma139\Desktop\作业\SDG1_Brazil_BolsaFamilia_final.pptx`,
+		Error:         "required_effect_unsettled",
+	}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.Error != "" {
+		t.Fatalf("attached presentation kept the loop error %q", resp.Error)
+	}
+	if !surface.completed["office"] || !surface.completed["deliver"] {
+		t.Fatalf("file did not close office and delivery: %#v", surface.completed)
+	}
+	if surface.completed["acquire"] {
+		t.Fatal("presentation closed an unrelated download")
+	}
+	if cb.RequiredEffectUnsettled() {
+		t.Fatalf("plan still open after the file was accepted: %#v", cb.hopRunSnapshot())
+	}
+	result := agent.LoopResult{Error: "required_effect_unsettled", HardExit: true}
+	if !sharedLoopTurnSettled(result, resp, cb) {
+		t.Fatal("settled presentation left the recovery marker")
+	}
+}
+
+func TestHostAttachedPresentationDoesNotSettleOtherEffects(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:document.write.office:deck", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+		{ID: "pdf", NeedID: "need:document.generate.file:report", FitProof: tool.FitProof{MatchedCapability: "document.generate.file"}},
+		{ID: "shell", NeedID: "need:shell", FitProof: tool.FitProof{MatchedCapability: "shell.execute.remote_host"}},
+		{
+			ID: "pdf-deliver", NeedID: "need:pdf-deliver",
+			Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+			FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel", QualifierBindings: map[string]string{"format": "pdf"}},
+		},
+	}
+	surface.completed = map[string]bool{}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	resp := &IMAgentResponse{LocalFilePath: `C:\work\deck.pptx`}
+	cb.settleHostProducedPlanEffects(resp)
+	if !surface.completed["office"] {
+		t.Fatal("pptx did not close office write")
+	}
+	if surface.completed["pdf"] || surface.completed["pdf-deliver"] || surface.completed["shell"] {
+		t.Fatalf("pptx closed the wrong selections: %#v", surface.completed)
+	}
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("remote shell was treated as done because a presentation existed")
+	}
+	kept := &IMAgentResponse{LocalFilePath: `C:\work\deck.pptx`, Error: "cancelled"}
+	cb.settleHostProducedPlanEffects(kept)
+	if surface.completed["pdf"] {
+		t.Fatal("a kept failure accepted the presentation as a PDF")
+	}
+}
+
+func TestHostAttachedFileLeavesRecordedFailureAlone(t *testing.T) {
+	surface, store := newHopRunTestSurface(t)
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:document.write.office:deck", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+		{
+			ID: "deliver", NeedID: "need:deliver",
+			Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+			FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel", QualifierBindings: map[string]string{"format": "file"}},
+		},
+		{ID: "pdf", NeedID: "need:document.generate.file:report", FitProof: tool.FitProof{MatchedCapability: "document.generate.file"}},
+	}
+	surface.completed = map[string]bool{}
+	if _, _, err := store.Acquire(tool.PlanExecutionRecord{Scope: surface.scope, SelectionID: "office"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Complete(surface.scope, "office", tool.PlanExecutionFailed, "", "office_write_failed", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	resp := &IMAgentResponse{LocalFilePath: `C:\work\deck.pptx`, FileName: "other.pdf"}
+	cb.settleHostProducedPlanEffects(resp)
+	if surface.completed["office"] || surface.completed["pdf"] {
+		t.Fatalf("a recorded failure or a foreign file name was accepted: %#v", surface.completed)
+	}
+	if !surface.completed["deliver"] {
+		t.Fatal("the attached presentation did not close the unstarted file delivery")
+	}
+
+	notesSurface, _ := newHopRunTestSurface(t)
+	notesSurface.plan.Selections = surface.plan.Selections
+	notesSurface.completed = map[string]bool{}
+	notes := &sharedAgentLoopCallbacks{semanticSurface: notesSurface}
+	notes.settleHostProducedPlanEffects(&IMAgentResponse{LocalFilePath: `C:\work\演讲稿.txt`})
+	if len(notesSurface.completed) != 0 {
+		t.Fatalf("a notes file closed the document plan: %#v", notesSurface.completed)
+	}
+}
+
+func TestHostAttachedFileLeavesCachedUnknownAlone(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:document.write.office:deck", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+	}
+	surface.completed = map[string]bool{}
+	surface.hopEvidence = map[string]HopStepEvidence{
+		hopEvidenceKey(surface, "office"): {State: tool.PlanExecutionUnknown, ReasonCode: "selection_execution_unknown"},
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	cb.settleHostProducedPlanEffects(&IMAgentResponse{LocalFilePath: `C:\work\deck.pptx`})
+	if surface.completed["office"] {
+		t.Fatal("an unknown office attempt was marked done because a presentation was attached")
+	}
+}
+
+// A presentation discharges the office write it matches. It does not make the
+// rest of the plan finished, and the visible error stays until nothing
+// required is left. A file name with no bytes is not that presentation.
+func TestHostAttachedFileKeepsUnsettledWorkVisible(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:document.write.office:deck", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+		{ID: "shell", NeedID: "need:shell", FitProof: tool.FitProof{MatchedCapability: "shell.execute.remote_host"}},
+	}
+	surface.completed = map[string]bool{}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	resp := &IMAgentResponse{
+		LocalFilePath: `C:\work\deck.pptx`,
+		FileName:      "deck.pptx",
+		Error:         "required_effect_unsettled",
+	}
+	attachSharedLoopArtifacts(resp, cb)
+	if !surface.completed["office"] || surface.completed["shell"] {
+		t.Fatalf("presentation settled the wrong steps: %#v", surface.completed)
+	}
+	if resp.Error != "required_effect_unsettled" {
+		t.Fatalf("error = %q, want the remaining shell to stay visible", resp.Error)
+	}
+	result := agent.LoopResult{Error: "required_effect_unsettled", HardExit: true}
+	if sharedLoopTurnSettled(result, resp, cb) {
+		t.Fatal("an open shell retired the recovery marker")
+	}
+
+	nameOnly, _ := newHopRunTestSurface(t)
+	nameOnly.plan.Selections = []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:document.write.office:deck", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+	}
+	nameOnly.completed = map[string]bool{}
+	named := &sharedAgentLoopCallbacks{semanticSurface: nameOnly}
+	named.settleHostProducedPlanEffects(&IMAgentResponse{FileName: "deck.pptx", Error: "required_effect_unsettled"})
+	if nameOnly.completed["office"] {
+		t.Fatal("a file name without bytes closed the office write")
+	}
+
+	// The path list is the attachment even when the single-path field was not
+	// copied. Settlement and the visible error have to follow that same list.
+	pathsOnly, _ := newHopRunTestSurface(t)
+	pathsOnly.plan.Selections = []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:document.write.office:deck", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+		{
+			ID: "deliver", NeedID: "need:deliver",
+			Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+			FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel", QualifierBindings: map[string]string{"format": "file"}},
+		},
+	}
+	pathsOnly.completed = map[string]bool{}
+	paths := &sharedAgentLoopCallbacks{semanticSurface: pathsOnly}
+	resp = &IMAgentResponse{
+		LocalFilePaths: []string{`C:\work\notes.txt`, `C:\work\deck.pptx`},
+		Error:          "required_effect_unsettled",
+	}
+	attachSharedLoopArtifacts(resp, paths)
+	if !pathsOnly.completed["office"] || !pathsOnly.completed["deliver"] {
+		t.Fatalf("path list did not close office and delivery: %#v", pathsOnly.completed)
+	}
+	if resp.Error != "" {
+		t.Fatalf("settled path list kept the loop error %q", resp.Error)
+	}
+	if !sharedLoopTurnSettled(result, resp, paths) {
+		t.Fatal("settled path list left the recovery marker")
+	}
+}

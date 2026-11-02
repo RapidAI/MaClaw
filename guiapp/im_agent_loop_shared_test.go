@@ -87,6 +87,33 @@ func TestOpenNextRepeatWaveExtendsSingleFileWrite(t *testing.T) {
 	}
 }
 
+func TestIdenticalSuccessIsPollFollowsCommitCapability(t *testing.T) {
+	office := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: "selection:need:document.write.office:deck", NeedID: "need:document.write.office:deck",
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice},
+		}}},
+		grants:        map[string]tool.InvocationGrant{},
+		retiredGrants: map[string]tool.InvocationGrant{"office": {SelectionID: "selection:need:document.write.office:deck"}},
+	}}
+	if office.IdenticalSuccessIsPoll("office") {
+		t.Fatal("an office write commits its arguments; the same receipt is not a poll")
+	}
+	shell := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: "selection:need:shell.execute.remote_host:job", NeedID: "need:shell.execute.remote_host:job",
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost},
+		}}},
+		retiredGrants: map[string]tool.InvocationGrant{"ssh": {SelectionID: "selection:need:shell.execute.remote_host:job"}},
+	}}
+	if !shell.IdenticalSuccessIsPoll("ssh") {
+		t.Fatal("a remote command with the same output can still be a running job")
+	}
+	if (&sharedAgentLoopCallbacks{}).IdenticalSuccessIsPoll("office") != true {
+		t.Fatal("a host with no surface must keep identical success as a poll")
+	}
+}
+
 // The handoff path used to append the next call only in process memory.
 // The route still held the published wave, so issuing that call failed
 // route_state_grant_binding_mismatch and the tool left the list.
@@ -1263,6 +1290,124 @@ func TestSharedAgentLoopEscalatesForContextOnlyReasoningRoute(t *testing.T) {
 	}
 	if got, want := cb.llmCfg.EffectiveContextTokens(), 320_000; got != want {
 		t.Fatalf("effective context = %d, want %d", got, want)
+	}
+}
+
+func TestRefreshLLMSelectionKeepsTheTurnUntilTheSavedModelChanges(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: "Local",
+		HubRoleModels: corelib.MaclawLLMHubRoleModels{
+			Foreground:  "auto",
+			Background:  "worker-model",
+			ComputerUse: "auto",
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	base, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &IMMessageHandler{app: app}
+	cb := &sharedAgentLoopCallbacks{
+		handler:  h,
+		userID:   "file-companion:paper",
+		platform: desktopLaunchFileCompanion,
+		userText: "这篇文档是什么",
+		loopCtx:  &LoopContext{Kind: LoopKindChat, Platform: desktopLaunchFileCompanion},
+		roleBase: base,
+		llmCfg:   base,
+	}
+	if _, ok := cb.RefreshLLMSelection(base); ok {
+		t.Fatal("an unchanged selection must stay on the model this retry started with")
+	}
+	loaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.MaclawLLMProfiles.Assistant.Model = "vision-model"
+	if err := app.SaveConfig(loaded); err != nil {
+		t.Fatal(err)
+	}
+	next, ok := cb.RefreshLLMSelection(base)
+	if !ok || next.Model != "vision-model" {
+		t.Fatalf("retry should adopt the saved model, ok=%v cfg=%+v", ok, next)
+	}
+	if _, ok := cb.RefreshLLMSelection(next); ok {
+		t.Fatal("the wait should not switch again once it is on the saved model")
+	}
+	image := &sharedAgentLoopCallbacks{
+		handler:  h,
+		userText: "看一下这张图",
+		loopCtx:  cb.loopCtx,
+		roleBase: base,
+		llmCfg:   base,
+		routeAttachments: []MessageAttachment{{
+			Type: "image", FileName: "scan.jpg", MimeType: "image/jpeg", Data: "trusted",
+		}},
+	}
+	imageNext, ok := image.RefreshLLMSelection(base)
+	if !ok || imageNext.Model != "vision-model" {
+		t.Fatalf("image retry should adopt the saved model, ok=%v cfg=%+v", ok, imageNext)
+	}
+	if image.route.Task != string(llm.TaskVision) {
+		t.Fatalf("image retry route = %+v, want vision", image.route)
+	}
+}
+
+func TestPrepareAgentLoopStartStateKeepsStagedImageForRetryRoute(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scan.png")
+	raw, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	text := "看一下这张图\n\n" + agent.FilePathPromptPrefix + "\n" + path + "\n"
+	state := (&IMMessageHandler{}).prepareAgentLoopStartState(agentLoopStartOptions{
+		Context:  NewLoopContext("picker-image-retry", 3, nil),
+		UserID:   "user-1",
+		UserText: text,
+		Platform: "desktop",
+	})
+	defer state.Cleanup()
+	if !semanticTurnHasImageAttachment(state.RouteAttachments) {
+		t.Fatalf("retry route attachments = %+v, want the picker image staged at turn start", state.RouteAttachments)
+	}
+}
+
+func TestRefreshLLMSelectionKeepsTheCurrentModelWhenRereadFails(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders: roleTestProviders(),
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "missing", Model: "nope"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	if _, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground); err == nil {
+		t.Fatal("setup: a missing provider should not resolve")
+	}
+	base := corelib.MaclawLLMConfig{
+		URL: "https://old.example/v1", Model: "old-model", ProviderName: "Old", ProviderID: "old",
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:  &IMMessageHandler{app: app},
+		loopCtx:  &LoopContext{Kind: LoopKindChat},
+		roleBase: base,
+		llmCfg:   base,
+	}
+	if _, ok := cb.RefreshLLMSelection(base); ok {
+		t.Fatal("a failed reread must not replace the model this retry is using")
+	}
+	if cb.llmCfg.Model != "old-model" {
+		t.Fatalf("cfg model = %q, want the model the retry started with", cb.llmCfg.Model)
 	}
 }
 

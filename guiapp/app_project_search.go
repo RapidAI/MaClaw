@@ -1217,13 +1217,12 @@ func (a *App) lookupOrCreateExpertTask(expertID, expertName, workingDir string) 
 	return a.insertExpertTaskRecord(expertID, expertName, workingDir), ""
 }
 
-// createFreshExpertTask always allocates a new task for an expert launch. The
-// expert tab is one shared session, so the wizard uses this to give every launch
-// its own conversation: the transcript of the task being left is archived onto
-// that task, then the shared session is cleared for the new task. Unless
-// keepExpertSession is set, the cutover happens here. A scheduled launch sets
-// the flag so the turn still running on this session is not cancelled; the open
-// path clears it later.
+// createFreshExpertTask always allocates a new task for an expert launch.
+// The agent loop belongs to that task's own session, so creating a task never
+// cancels a turn that is still running. The expert tab file is one visible
+// transcript: unless keepExpertSession is set, the task being left is archived
+// and the tab file is cleared so the new task opens empty. The flag only
+// preserves that visible transcript for a scheduled launch.
 //
 // taskName is the wizard's short instruction title. It keeps several tasks of
 // the same expert distinguishable; an empty value keeps the expert name.
@@ -1246,17 +1245,18 @@ func (a *App) createFreshExpertTask(expertID, expertName, workingDir, taskName s
 	if strings.TrimSpace(result.ProjectPath) == "" {
 		return ProjectSearchResult{}, fmt.Errorf("expert task creation failed")
 	}
-	// A scheduled launch must not cancel the turn that is still using this
-	// session. The open path archives and clears once that turn is idle.
+	// A scheduled launch keeps the visible transcript until its open path runs.
+	// The previous task's agent session is a different key and is not touched.
 	if keepExpertSession {
 		return result, nil
 	}
-	// Copy the shared transcript and the agent memory onto the task being left,
-	// then clear the shared session. The archive is saved after the clear so an
-	// empty expert file with the same project path cannot outrank it.
+	// Archive the visible tab, then clear that file only. Do not cancel a loop
+	// or wipe a session: the previous task keeps running on its own key.
+	// The archive is saved after the clear so an empty expert file with the
+	// same project path cannot outrank it.
 	conversation, createdAt := a.readExpertConversation(expertID)
 	a.archiveExpertSessionMemory(expertID, previous)
-	a.resetExpertConversation(expertID)
+	a.clearExpertTabTranscript(expertID)
 	a.saveExpertTaskArchive(previous, conversation, createdAt)
 	return result, nil
 }
@@ -1304,6 +1304,46 @@ func (a *App) archiveExpertSessionMemory(expertID, projectPath string) {
 		return
 	}
 	handler.memory.Save(projectSessionOwnerID(normalizeProjectSessionPath(projectPath)), append([]agent.ConversationEntry(nil), entries...))
+}
+
+// adoptSharedExpertMemory moves a pre-task expert transcript onto the task
+// that already owned it. Sessions created before per-task keys kept the
+// conversation on the expert id. A new task must not receive that transcript,
+// and a loop still publishing on the expert id must not be rehomed: its final
+// save would land on the key it captured at start.
+func (a *App) adoptSharedExpertMemory(handler *IMMessageHandler, expertID, projectPath string) {
+	if a == nil || handler == nil || handler.memory == nil {
+		return
+	}
+	expertID = strings.TrimSpace(expertID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	taskKey := expertTaskSessionUserID(expertID, projectPath)
+	shared := expertSessionUserID(expertID)
+	if expertID == "" || projectPath == "" || taskKey == "" || taskKey == shared {
+		return
+	}
+	if len(handler.memory.Load(taskKey)) > 0 {
+		return
+	}
+	if ctx := handler.getSessionLoopCtx(shared); ctx != nil && !ctx.IsCancelled() {
+		return
+	}
+	value, ok := a.expertSessionTaskPaths.Load(shared)
+	if !ok {
+		return
+	}
+	bound, _ := value.(string)
+	bound = normalizeProjectSessionPath(bound)
+	if bound == "" || !sameNormalizedPath(bound, projectPath) {
+		return
+	}
+	entries := handler.memory.Load(shared)
+	if len(entries) == 0 {
+		return
+	}
+	handler.memory.Save(taskKey, append([]agent.ConversationEntry(nil), entries...))
+	handler.memory.Clear(shared)
+	log.Printf("[expert] adopted shared session onto task expert=%s project=%q", expertID, projectPath)
 }
 
 // saveExpertTaskArchive stores an expert transcript on the task it belongs to.
@@ -1375,27 +1415,24 @@ func sessionSnapshotHasUserTurn(conversation []interface{}) bool {
 	return false
 }
 
-// resetExpertConversation drops the shared expert transcript and the
-// directory the previous task's tools were bound to. A new task then starts
-// empty and gets pinned to its own workspace.
-func (a *App) resetExpertConversation(expertID string) {
+// clearExpertTabTranscript empties the visible expert tab file. It does not
+// cancel an agent loop or clear session memory. Creating a task uses this so
+// the new view starts empty while any other task of the same expert keeps
+// running. The tab working directory is cleared with the file: the next send
+// would otherwise restore it onto the new task.
+func (a *App) clearExpertTabTranscript(expertID string) bool {
 	if a == nil {
-		return
+		return false
 	}
 	expertID = strings.TrimSpace(expertID)
 	if expertID == "" {
-		return
+		return false
 	}
 	tabID := expertTabSessionID(expertID)
 	persist := a.ensureProjectTabSessionPersist()
 	if err := persist.ClearSessionConversation(tabID); err != nil {
 		log.Printf("[expert] clear transcript expert=%q: %v", expertID, err)
 	}
-	// The shared expert file must not keep the previous task's path. An empty
-	// snapshot with that path would outrank the archived transcript. Its
-	// working directory must not survive either: the next send would restore
-	// it through bindAssistantTabWorkingDir and run the new task's tools in
-	// the previous task's workspace.
 	if session, err := persist.LoadSession(tabID); err == nil && session != nil {
 		changed := false
 		if strings.TrimSpace(session.ProjectPath) != "" {
@@ -1412,9 +1449,21 @@ func (a *App) resetExpertConversation(expertID string) {
 			}
 		}
 	}
+	a.tabWorkingDirOverrides.Delete(tabID)
+	return true
+}
+
+// resetExpertConversation drops the shared expert transcript and cancels the
+// session that has no task path. Delete, hide and archive of the task that
+// owned that session use this. A per-task session is cancelled by
+// cancelProjectTaskLoop, which knows the path being removed.
+func (a *App) resetExpertConversation(expertID string) {
+	if !a.clearExpertTabTranscript(expertID) {
+		return
+	}
+	expertID = strings.TrimSpace(expertID)
 	owner := expertSessionUserID(expertID)
 	a.assistantSessionWorkingDirs.Delete(owner)
-	a.tabWorkingDirOverrides.Delete(tabID)
 	a.expertSessionTaskPaths.Delete(owner)
 	var handler *IMMessageHandler
 	if hub := a.hubClient(); hub != nil {
@@ -4527,10 +4576,19 @@ func isTaskManagementRecord(rec memory.ProjectRecord) bool {
 // from the memory ProjectIndex. Hide/archive prefs and fork workspaces stay
 // excluded. Returns the number of records written.
 func (a *App) recoverManagedTaskRecordsFromDisk() int {
-	if a == nil || a.memoryStore == nil {
+	if a == nil {
 		return 0
 	}
-	pi := a.memoryStore.ProjectIndex()
+	// Snapshot the store once under its mutex: a data-dir switch stops and
+	// nils a.memoryStore concurrently, so re-reading the field after the slow
+	// per-directory loop flushes/upserts on a nil store and panics.
+	a.memoryStoreMu.Lock()
+	store := a.memoryStore
+	a.memoryStoreMu.Unlock()
+	if store == nil {
+		return 0
+	}
+	pi := store.ProjectIndex()
 	var restoreOnChanged func(string)
 	if pi != nil {
 		restoreOnChanged = pi.OnChanged
@@ -4552,21 +4610,21 @@ func (a *App) recoverManagedTaskRecordsFromDisk() int {
 			continue
 		}
 		taskDir := normalizeProjectSessionPath(filepath.Join(tasksRoot, entry.Name()))
-		if a.recoverOneManagedTaskFromDisk(pi, taskDir) {
+		if a.recoverOneManagedTaskFromDisk(store, pi, taskDir) {
 			recovered++
 		}
 	}
 	if recovered == 0 {
 		return 0
 	}
-	if err := a.memoryStore.Flush(); err != nil {
+	if err := store.Flush(); err != nil {
 		log.Printf("[project_search] recover managed tasks flush failed: %v", err)
 	}
 	a.emitProjectIndexChanged("")
 	return recovered
 }
 
-func (a *App) recoverOneManagedTaskFromDisk(pi *memory.ProjectIndex, taskDir string) bool {
+func (a *App) recoverOneManagedTaskFromDisk(store *memory.Store, pi *memory.ProjectIndex, taskDir string) bool {
 	if !a.isManagedRecentTaskWorkspacePath(taskDir) {
 		return false
 	}
@@ -4600,7 +4658,7 @@ func (a *App) recoverOneManagedTaskFromDisk(pi *memory.ProjectIndex, taskDir str
 	}
 	tags := append([]string{taskLegacyManualTag, taskLegacyRecentTag, taskDir}, extraTags...)
 	createdAt, updatedAt := recoveredTaskTimes(content, taskFile)
-	result, upsertErr := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+	result, upsertErr := store.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
 		Title:            title,
 		Content:          content,
 		Tags:             tags,
@@ -5014,6 +5072,16 @@ func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath st
 	if runtimeState := codingLedgerStatusForTask(result.ProjectPath, result.Tags, activeByRef, ledgerUpdated, shared, liveOwners); ledgerReplacesWorkflowSnapshot(result.ActiveWorkflow, runtimeState) {
 		result.ActiveWorkflow = runtimeState
 	}
+	// A coding workbench turn that ended without a ledger row or a V2 workflow
+	// still has an outcome: the workbench memory records it. A failed turn must
+	// reach the row as failed, not fall through to the has_output fallback that
+	// files the task as completed. A live or waiting snapshot cannot be
+	// replaced, so nothing is read for it.
+	if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
+		if outcome := a.stickyCodingTurnOutcomeForTask(result.ProjectPath, result.Tags); workbenchOutcomeSupersedes(outcome, result.ActiveWorkflow) {
+			result.ActiveWorkflow = outcome
+		}
+	}
 	// A dated ledger or snapshot is the outcome only while nothing newer
 	// is waiting. An undated ledger still wins over a snapshot that is not
 	// live: callers that pass a status without a time are stating that
@@ -5359,6 +5427,63 @@ func ledgerReplacesWorkflowSnapshot(snapshot, ledger *ProjectWorkflowState) bool
 		return ledger.UpdatedAt.After(snapshot.UpdatedAt)
 	}
 	return !terminalWorkflowIsNewer(snapshot, ledger)
+}
+
+// stickyCodingTurnOutcomeForTask projects the coding workbench's last turn
+// outcome into a task-row status. A pure coding workbench turn often enters no
+// runtime ledger and never creates a V2 workflow, so a failed turn would
+// otherwise leave the row with no durable fact and the list would show the
+// task as completed from its has_output fallback. Only coding rows read this:
+// an ordinary chat task must not inherit an outcome from a workbench memory
+// that merely shares the session.
+func (a *App) stickyCodingTurnOutcomeForTask(projectPath string, tags []string) *ProjectWorkflowState {
+	if a == nil || codingRuntimeRefForTaskTags(tags) == "" {
+		return nil
+	}
+	ownerID := projectSessionOwnerID(projectPath)
+	var mem stickyCodingWorkbenchMemory
+	if h := a.imHandler; h != nil {
+		mem = h.getStickyCodingWorkbenchMemory(ownerID)
+	} else if loaded, found, _ := loadStickyCodingWorkbenchMemoryFromDisk(ownerID); found {
+		mem = loaded
+	}
+	outcome := strings.ToLower(strings.TrimSpace(mem.LastOutcome))
+	switch outcome {
+	case "completed", "failed", "interrupted", "cancelled", "canceled":
+	default:
+		return nil
+	}
+	if mem.LastOutcomeAtUnix <= 0 {
+		return nil
+	}
+	return &ProjectWorkflowState{
+		Status:      outcome,
+		ProjectPath: projectPath,
+		UpdatedAt:   time.Unix(mem.LastOutcomeAtUnix, 0),
+	}
+}
+
+// workbenchOutcomeSupersedes reports that the workbench turn outcome is the
+// newer fact for the row. A live or awaiting-user snapshot is the current
+// truth and stays; an undated outcome says nothing about recency and never
+// replaces anything. The outcome is written at turn end, which is at or after
+// the last ledger or snapshot write of that same turn, so an exact tie goes to
+// the outcome — otherwise a step that finished in the same second could keep
+// a failed turn looking completed.
+func workbenchOutcomeSupersedes(outcome, state *ProjectWorkflowState) bool {
+	if outcome == nil || outcome.UpdatedAt.IsZero() {
+		return false
+	}
+	if state == nil {
+		return true
+	}
+	if projectWorkflowSnapshotActive(state) {
+		return false
+	}
+	if state.UpdatedAt.IsZero() {
+		return true
+	}
+	return !outcome.UpdatedAt.Before(state.UpdatedAt)
 }
 
 func pausedOrInterruptedWorkflow(state *ProjectWorkflowState) bool {
@@ -5951,10 +6076,23 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 	}
 	a.ensureInteractionInfra()
 	hubClient := a.ensureHubClient()
-	var entries []agent.ConversationEntry
+	var handler *IMMessageHandler
 	if hubClient != nil {
-		if handler := hubClient.ensureIMHandler(); handler != nil && handler.memory != nil {
-			entries = handler.memory.Load(projectSessionOwnerID(projectPath))
+		handler = hubClient.ensureIMHandler()
+	}
+	loadMemory := func(key string) []agent.ConversationEntry {
+		if handler == nil || handler.memory == nil || strings.TrimSpace(key) == "" {
+			return nil
+		}
+		return handler.memory.Load(key)
+	}
+	entries := loadMemory(projectSessionOwnerID(projectPath))
+	// An expert task's live transcript is stored on its own session key.
+	// Older archives still live on the project-path owner and stay the
+	// fallback when the task key has no turns yet.
+	if expertID := a.expertIDForTaskPath(projectPath); expertID != "" {
+		if taskEntries := loadMemory(expertTaskSessionUserID(expertID, projectPath)); conversationEntriesHaveTurns(taskEntries) {
+			entries = taskEntries
 		}
 	}
 	items := make([]ProjectConversationHistoryItem, 0, len(entries))
@@ -6033,6 +6171,19 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 		}
 	}
 	return items
+}
+
+func conversationEntriesHaveTurns(entries []agent.ConversationEntry) bool {
+	for _, entry := range entries {
+		role := strings.ToLower(strings.TrimSpace(entry.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		if stringifyProjectConversationContent(entry.Content) != "" || strings.TrimSpace(entry.ReasoningContent) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func projectConversationHistoryHasTurns(items []ProjectConversationHistoryItem) bool {
@@ -6336,11 +6487,41 @@ func (a *App) cancelProjectTaskLoop(projectPath string) {
 			handler = hub.currentIMHandler()
 		}
 	}
-	if cancelProjectTaskLoopForHandler(handler, projectPath) {
+	cancelled := cancelProjectTaskLoopForHandler(handler, projectPath)
+	if expertID := a.expertIDForTaskPath(projectPath); expertID != "" {
+		taskUser := expertTaskSessionUserID(expertID, projectPath)
+		if taskUser != "" && taskUser != ownerID && cancelPublishedSessionAsync(handler, taskUser) {
+			cancelled = true
+		}
+	}
+	if cancelled {
 		log.Printf("[project_search] cancel project task loop requested project=%q", projectPath)
 	} else {
 		log.Printf("[project_search] cancel project task loop skipped project=%q reason=no_active_loop", projectPath)
 	}
+}
+
+// cancelPublishedSessionAsync stops the loop published on userID without
+// waiting for it to unwind. Hide, delete and archive use it for the expert
+// task session, which is not the project-path owner id.
+func cancelPublishedSessionAsync(handler *IMMessageHandler, userID string) bool {
+	userID = strings.TrimSpace(userID)
+	if handler == nil || userID == "" {
+		return false
+	}
+	ctx := handler.getSessionLoopCtx(userID)
+	if ctx == nil || ctx.IsCancelled() {
+		return false
+	}
+	go func() {
+		taskText, err := handler.CancelSessionForUser(userID)
+		if err != nil {
+			log.Printf("[project_search] cancel session failed user=%q err=%v", userID, err)
+			return
+		}
+		log.Printf("[project_search] cancel session done user=%q task=%q", userID, truncateForLog(taskText, 120))
+	}()
+	return true
 }
 
 func cancelProjectTaskLoopForHandler(handler *IMMessageHandler, projectPath string) bool {
@@ -6782,6 +6963,18 @@ func (a *App) DeleteTask(projectPath string) error {
 		// Adapters retain project-scoped document bridge state independently of
 		// the workflow store, so a deleted task must not keep one alive.
 		handler.workflowV2Adapters.Delete(ownerID)
+		// Stop this task's own expert session. Another task of the same expert
+		// has a different key and keeps running.
+		if taskExpertID := a.expertIDForTaskPath(projectPath); taskExpertID != "" {
+			taskUser := expertTaskSessionUserID(taskExpertID, projectPath)
+			if taskUser != "" && taskUser != ownerID {
+				_, _ = handler.CancelSessionForUser(taskUser)
+				if handler.memory != nil {
+					handler.memory.Clear(taskUser)
+				}
+				handler.clearPerUserSessionState(taskUser)
+			}
+		}
 	}
 	// The project owner is also the key for frozen prompt snapshots, event
 	// routing, and other process-local state. Clear it even if the IM handler
@@ -7912,6 +8105,22 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 		a.tabWorkingDirMu.Unlock()
 		return fmt.Errorf("cannot create directory %s: %w", newDir, err)
 	}
+	// The expert tab is shared. A directory that belongs to another task of
+	// this expert must update the chip only. Writing it onto the session that
+	// last sent would move that task's tools into the new task's workspace.
+	if expertID := expertIDFromUserID(ownerID); expertID != "" {
+		ownerPath := projectPathFromExpertTaskUserID(ownerID)
+		if ownerPath != "" && a.dirBelongsToOtherExpertTask(expertID, ownerPath, newDir) {
+			if err := a.persistAssistantTabWorkingDir(tabID, "", newDir); err != nil {
+				a.tabWorkingDirMu.Unlock()
+				return err
+			}
+			a.tabWorkingDirOverrides.Store(tabID, newDir)
+			a.tabWorkingDirMu.Unlock()
+			log.Printf("[SetTabWorkingDir] expert tab dir left the previous task in place tab=%s owner=%q dir=%q", tabID, ownerID, newDir)
+			return nil
+		}
+	}
 	// Commit the durable source of truth before publishing the in-memory value.
 	// If the write fails, returning an error must leave this tab's active tools
 	// on its previous directory rather than creating a hidden transient override.
@@ -7935,8 +8144,76 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	return nil
 }
 
+func (a *App) expertTaskDirMatches(projectPath, dir string) bool {
+	dir = normalizeProjectSessionPath(dir)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if dir == "" || projectPath == "" {
+		return false
+	}
+	if sameNormalizedPath(dir, projectPath) {
+		return true
+	}
+	return sameNormalizedPath(dir, a.recentTaskExecutionProjectPath(projectPath))
+}
+
+// dirBelongsToOtherExpertTask reports that dir is the workspace of a different
+// task of expertID. A custom folder the user picked for the current task does
+// not match any task record and returns false.
+func (a *App) dirBelongsToOtherExpertTask(expertID, ownerPath, dir string) bool {
+	expertID = strings.TrimSpace(expertID)
+	ownerPath = normalizeProjectSessionPath(ownerPath)
+	if a == nil || expertID == "" || normalizeProjectSessionPath(dir) == "" {
+		return false
+	}
+	if a.expertTaskDirMatches(ownerPath, dir) {
+		return false
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil || a.memoryStore.ProjectIndex() == nil {
+		return false
+	}
+	for _, rec := range a.memoryStore.ProjectIndex().ListAllMatching(func(rec memory.ProjectRecord) bool {
+		return projectRecordHasTag(rec, taskSourceExpertPrefix+expertID)
+	}) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || sameNormalizedPath(path, ownerPath) {
+			continue
+		}
+		if a.expertTaskDirMatches(path, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionOwnerForProjectPath is the agent session that owns this task.
+// An expert task's tools and transcript live on its task key. A copy keeps
+// the project-path session, because that chat is not the expert's.
+func (a *App) sessionOwnerForProjectPath(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	if expertID := a.expertIDForTaskPath(projectPath); expertID != "" && !a.explicitTaskCopy(projectPath) {
+		return expertTaskSessionUserID(expertID, projectPath)
+	}
+	return projectSessionOwnerID(projectPath)
+}
+
+func (a *App) explicitTaskCopy(projectPath string) bool {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil || a.memoryStore.ProjectIndex() == nil {
+		return false
+	}
+	rec := a.memoryStore.ProjectIndex().Get(normalizeProjectSessionPath(projectPath))
+	return rec != nil && projectRecordHasTag(*rec, taskCopyTag)
+}
+
 // assistantOwnerForTab resolves the runtime owner and optional task path for a
-// directory-bearing tab. Expert tabs have a session owner but no task path.
+// directory-bearing tab. An expert tab uses the task session bound by the
+// latest send, so the directory chip reaches that task rather than the shared
+// expert id. A project tab opened for an older expert task uses that task's
+// session, so the chip and a later send reach the turn that is still running.
 func (a *App) assistantOwnerForTab(tabID string) (ownerID, projectPath string) {
 	tabID = strings.TrimSpace(tabID)
 	if tabID == "" {
@@ -7945,6 +8222,11 @@ func (a *App) assistantOwnerForTab(tabID string) (ownerID, projectPath string) {
 	if strings.HasPrefix(tabID, "expert-") {
 		expertID := strings.TrimSpace(strings.TrimPrefix(tabID, "expert-"))
 		if expertIDPattern.MatchString(expertID) {
+			if owner, ok := a.expertTabSessionOwners.Load(tabID); ok {
+				if ownerID, _ = owner.(string); expertIDFromUserID(ownerID) == expertID {
+					return ownerID, projectPathFromExpertTaskUserID(ownerID)
+				}
+			}
 			return expertSessionUserID(expertID), ""
 		}
 	}
@@ -7952,7 +8234,7 @@ func (a *App) assistantOwnerForTab(tabID string) (ownerID, projectPath string) {
 		projectPath, _ = cached.(string)
 		projectPath = normalizeProjectSessionPath(projectPath)
 		if projectPath != "" {
-			return projectSessionOwnerID(projectPath), projectPath
+			return a.sessionOwnerForProjectPath(projectPath), projectPath
 		}
 	}
 	// Restored project tabs are created from the persisted index and do not call
@@ -7969,7 +8251,7 @@ func (a *App) assistantOwnerForTab(tabID string) (ownerID, projectPath string) {
 		projectPath = normalizeProjectSessionPath(session.ProjectPath)
 		if projectPath != "" {
 			a.tabProjectPaths.Store(tabID, projectPath)
-			return projectSessionOwnerID(projectPath), projectPath
+			return a.sessionOwnerForProjectPath(projectPath), projectPath
 		}
 	}
 	return "", ""
@@ -8049,10 +8331,84 @@ func (a *App) resolveLatexExpertProjectPath(expertID string) string {
 	return normalizeProjectSessionPath(created.ProjectPath)
 }
 
+// applyExpertTabWorkingDir copies the shared expert tab's directory onto this
+// task only when that directory already belongs to it. The tab is one file for
+// every task of the expert, so a directory left by the previous task must not
+// become this task's workspace. A follow-up send on a task that already claimed
+// its binding still picks up a directory the user chose from the chip.
+func (a *App) applyExpertTabWorkingDir(tabID, userID, projectPath string) {
+	if a == nil {
+		return
+	}
+	tabID = strings.TrimSpace(tabID)
+	userID = strings.TrimSpace(userID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if tabID == "" || userID == "" || projectPath == "" {
+		return
+	}
+	if claimed, ok := a.expertSessionTaskPaths.Load(userID); ok {
+		bound, _ := claimed.(string)
+		owner, ownerOK := a.expertTabSessionOwners.Load(tabID)
+		currentOwner, _ := owner.(string)
+		// The chip writes the shared tab. Copy it only while this task is the
+		// one that last owned the tab. Another task's send publishes its own
+		// directory there, and a later send of this task must keep its binding.
+		if ownerOK && currentOwner == userID && sameNormalizedPath(bound, projectPath) {
+			tabDir := normalizeProjectSessionPath(a.assistantTabWorkingDir(tabID))
+			// An empty tab is a new task clearing the shared chip. Copying that
+			// empties this task's tools directory. A directory recorded for
+			// another task of this expert was published on the same chip.
+			if tabDir == "" || a.dirBelongsToOtherExpertTask(expertIDFromUserID(userID), projectPath, tabDir) {
+				return
+			}
+			a.bindAssistantTabWorkingDir(tabID, userID)
+			return
+		}
+	}
+	tabDir := normalizeProjectSessionPath(a.assistantTabWorkingDir(tabID))
+	if tabDir == "" {
+		return
+	}
+	own := normalizeProjectSessionPath(a.recentTaskWorkingDir(projectPath))
+	if own == "" {
+		own = normalizeProjectSessionPath(a.recentTaskExecutionProjectPath(projectPath))
+	}
+	if own != "" && sameNormalizedPath(tabDir, own) {
+		a.bindAssistantTabWorkingDir(tabID, userID)
+	}
+}
+
+// publishExpertOwnerDirToTab makes the shared expert tab show this task's
+// directory. Switching back to a task must not leave the chip on the other
+// task's folder, and must not change the directory the tools are already using.
+func (a *App) publishExpertOwnerDirToTab(tabID, userID, projectPath string) {
+	if a == nil {
+		return
+	}
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	a.publishExpertOwnerDirToTabLocked(tabID, userID, projectPath)
+}
+
+func (a *App) publishExpertOwnerDirToTabLocked(tabID, userID, projectPath string) {
+	tabID = strings.TrimSpace(tabID)
+	dir := normalizeProjectSessionPath(a.BoundWorkingDirForOwner(userID))
+	if tabID == "" || dir == "" || sameNormalizedPath(a.assistantTabWorkingDir(tabID), dir) {
+		return
+	}
+	if err := a.persistAssistantTabWorkingDir(tabID, projectPath, dir); err != nil {
+		log.Printf("[expert] publish task workspace tab=%s dir=%q err=%v", tabID, dir, err)
+		return
+	}
+	a.tabWorkingDirOverrides.Store(tabID, dir)
+}
+
 // bindExpertTaskWorkspace points an expert session at the task workspace that
 // holds its files. Expert owners do not encode a project path, so without this
 // their tools inherit the desktop directory while the preview reads the task
 // workspace. A directory the user already chose for this expert is left alone.
+// The process default (~/.maclaw/workspace when nothing is configured) is not
+// that choice: an explicit task directory replaces it.
 func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
 	if a == nil {
 		return
@@ -8062,11 +8418,16 @@ func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
 	if userID == "" || projectPath == "" || expertIDFromUserID(userID) == "" {
 		return
 	}
-	if a.BoundWorkingDirForOwner(userID) != "" {
+	explicit := normalizeProjectSessionPath(a.recentTaskWorkingDir(projectPath))
+	if a.expertWorkingDirShouldStay(userID, explicit) {
 		a.expertSessionTaskPaths.Store(userID, projectPath)
+		a.publishExpertOwnerDirToTab(tabID, userID, projectPath)
 		return
 	}
-	dir := normalizeProjectSessionPath(a.recentTaskExecutionProjectPath(projectPath))
+	dir := explicit
+	if dir == "" {
+		dir = normalizeProjectSessionPath(a.recentTaskExecutionProjectPath(projectPath))
+	}
 	if dir == "" {
 		return
 	}
@@ -8075,12 +8436,20 @@ func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
 		return
 	}
 	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		// The directory chip reloads this stable id. An unbound call would
+		// leave the old default on that file, and the next reload would put
+		// the session back there.
+		tabID = expertTabSessionID(expertIDFromUserID(userID))
+	}
 	a.tabWorkingDirMu.Lock()
 	defer a.tabWorkingDirMu.Unlock()
-	if a.BoundWorkingDirForOwner(userID) != "" {
+	if a.expertWorkingDirShouldStay(userID, explicit) {
 		a.expertSessionTaskPaths.Store(userID, projectPath)
+		a.publishExpertOwnerDirToTabLocked(tabID, userID, projectPath)
 		return
 	}
+	previous := normalizeProjectSessionPath(a.BoundWorkingDirForOwner(userID))
 	if tabID != "" {
 		if err := a.persistAssistantTabWorkingDir(tabID, projectPath, dir); err != nil {
 			log.Printf("[expert] task workspace persist tab=%s dir=%q err=%v", tabID, dir, err)
@@ -8090,6 +8459,45 @@ func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
 	}
 	a.assistantSessionWorkingDirs.Store(userID, dir)
 	a.expertSessionTaskPaths.Store(userID, projectPath)
+	if previous != "" && previous != dir {
+		log.Printf("[expert] task workspace replaces process default owner=%s from=%q to=%q", userID, previous, dir)
+	}
+}
+
+// expertWorkingDirShouldStay reports that this expert already has a directory
+// the user chose. The process default is not a per-task choice: a tagged
+// working directory replaces it, and a task with no tag uses its own workspace.
+func (a *App) expertWorkingDirShouldStay(userID, explicit string) bool {
+	current := normalizeProjectSessionPath(a.BoundWorkingDirForOwner(userID))
+	if current == "" {
+		return false
+	}
+	if sameNormalizedPath(current, explicit) {
+		return true
+	}
+	return !isProcessDefaultWorkspacePath(current)
+}
+
+// liveExpertTaskPath is the newest visible task for an expert. A send that
+// omitted the task path still executes in that task's directory.
+func (a *App) liveExpertTaskPath(expertID string) string {
+	expertID = strings.TrimSpace(expertID)
+	if a == nil || expertID == "" {
+		return ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec, ok := a.newestVisibleExpertTask(pi, taskSourceExpertPrefix+expertID)
+	if !ok {
+		return ""
+	}
+	return normalizeProjectSessionPath(rec.ProjectPath)
 }
 
 // releaseStaleExpertTaskWorkspace drops a working-directory binding that
@@ -8114,18 +8522,21 @@ func (a *App) releaseStaleExpertTaskWorkspace(userID, projectPath, tabID string)
 	}
 	boundPath, _ := value.(string)
 	boundPath = normalizeProjectSessionPath(boundPath)
-	if boundPath == "" || boundPath == projectPath {
+	if boundPath == "" || sameNormalizedPath(boundPath, projectPath) {
 		return
 	}
 	currentDir := normalizeProjectSessionPath(a.BoundWorkingDirForOwner(userID))
 	oldTaskDir := normalizeProjectSessionPath(a.recentTaskExecutionProjectPath(boundPath))
-	if currentDir != "" && oldTaskDir != "" && currentDir != oldTaskDir {
+	if currentDir != "" && oldTaskDir != "" && !sameNormalizedPath(currentDir, oldTaskDir) {
 		// The session was pointed somewhere other than the old task's own
 		// workspace, which is a user choice. Keep it and record the new task.
 		a.expertSessionTaskPaths.Store(userID, projectPath)
 		return
 	}
 	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		tabID = expertTabSessionID(expertIDFromUserID(userID))
+	}
 	a.tabWorkingDirMu.Lock()
 	a.assistantSessionWorkingDirs.Delete(userID)
 	if tabID != "" {
@@ -8324,9 +8735,24 @@ func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
 	} else {
 		ownerID, _ := a.assistantOwnerForTab(tabID)
 		if ownerID != "" {
-			a.bindAssistantTabWorkingDir(tabID, ownerID)
-			dir = a.EffectiveWorkingDirForOwner(ownerID)
-			isDefault = a.assistantTabWorkingDir(tabID) == ""
+			if taskPath := projectPathFromExpertTaskUserID(ownerID); taskPath != "" {
+				// Reading the chip must not copy the shared tab onto this task.
+				// The tab can hold another task's directory, or be empty after
+				// a new task cleared it. Either one would move or drop the
+				// directory this task's tools are already using.
+				a.applyExpertTabWorkingDir(tabID, ownerID, taskPath)
+				if tabDir := normalizeProjectSessionPath(a.assistantTabWorkingDir(tabID)); tabDir != "" {
+					dir = tabDir
+					isDefault = false
+				} else {
+					dir = a.EffectiveWorkingDirForOwner(ownerID)
+					isDefault = true
+				}
+			} else {
+				a.bindAssistantTabWorkingDir(tabID, ownerID)
+				dir = a.EffectiveWorkingDirForOwner(ownerID)
+				isDefault = a.assistantTabWorkingDir(tabID) == ""
+			}
 		}
 	}
 

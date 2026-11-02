@@ -304,6 +304,36 @@ describe('ExpertMarketDialog', () => {
         expect(document.querySelector('.expert-market-balance')?.textContent).not.toContain('0 Credits');
     });
 
+    it('installs an expert shared by phone or email without purchasing it', async () => {
+        vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({
+            credits: 80,
+            purchases: [],
+            uploads: [],
+            received: [{ ...listing, id: 'expert-shared', name: 'Shared analyst', owner_email: 'phone:8613800138000', visibility: 'users', status: 'shared' }],
+        });
+        render(<DialogProvider><ExpertMarketDialog lang="zh-Hans" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
+        expect(await screen.findByText('分享给我的专家')).toBeTruthy();
+        const shared = screen.getByText('Shared analyst').closest('.expert-market-card');
+        expect(shared).toBeTruthy();
+        expect(shared?.textContent).toMatch(/来自 13800138000/);
+        expect(shared?.closest('.expert-market-grid')).toBeTruthy();
+        fireEvent.click(within(shared as HTMLElement).getByRole('button', { name: '安装' }));
+        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-shared'));
+        expect(AppAPI.PurchaseExpertMarketListing).not.toHaveBeenCalled();
+    });
+
+    it('shows how many people a specified-user submission was shared with', async () => {
+        vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({
+            credits: 80,
+            purchases: [],
+            uploads: [{ ...listing, id: 'expert-shared-out', name: 'Shared out', status: 'shared', visibility: 'users', share_targets: ['8613800138000', 'friend@example.com'] }],
+        });
+        render(<DialogProvider><ExpertMarketDialog lang="zh-Hans" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
+        const status = await screen.findByText('指定用户 · 2 人');
+        expect(status.getAttribute('title')).toBe('13800138000、friend@example.com');
+        expect(screen.getByRole('button', { name: '删除指定分享' })).toBeTruthy();
+    });
+
     it('shows a submitted expert from the account response in My library', async () => {
         vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({
             credits: 80,
@@ -341,45 +371,59 @@ describe('ExpertMarketDialog', () => {
         expect(within(screen.getByRole('group', { name: 'Actions for My submitted expert' })).queryByRole('button', { name: 'Install' })).toBeNull();
     });
 
-    it('shows submissions as eight cards per page and paginates the remaining cards', async () => {
-        const uploads = Array.from({ length: 9 }, (_, index) => ({
+    it('shows each library list as three rows per page and paginates the rest', async () => {
+        const uploads = Array.from({ length: 13 }, (_, index) => ({
             ...listing,
             id: `expert-submitted-${index + 1}`,
             name: `Submitted expert ${index + 1}`,
             status: 'listed',
         }));
-        vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({ credits: 80, purchases: [], uploads });
+        const received = Array.from({ length: 13 }, (_, index) => ({
+            ...listing,
+            id: `expert-received-${index + 1}`,
+            name: `Received expert ${index + 1}`,
+            owner_email: 'friend@example.com',
+            visibility: 'users',
+            status: 'shared',
+        }));
+        vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({ credits: 80, purchases: [], uploads, received });
         render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
-        expect(await screen.findByText('Submitted expert 8')).toBeTruthy();
-        expect(screen.queryByText('Submitted expert 9')).toBeNull();
-        expect(screen.getByText('9 total')).toBeTruthy();
-        expect(screen.getByText('Page 1 of 2')).toBeTruthy();
+        expect(await screen.findByText('Submitted expert 12')).toBeTruthy();
+        expect(screen.getByText('Received expert 12')).toBeTruthy();
+        expect(screen.queryByText('Submitted expert 13')).toBeNull();
+        expect(screen.queryByText('Received expert 13')).toBeNull();
+        expect(screen.getByText('Received expert 1').closest('.expert-market-card')).toBeTruthy();
+        expect(screen.getAllByText('13 total')).toHaveLength(2);
 
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-        expect(await screen.findByText('Submitted expert 9')).toBeTruthy();
+        fireEvent.click(within(screen.getByRole('navigation', { name: 'My submissions pages' })).getByRole('button', { name: 'Next' }));
+        expect(await screen.findByText('Submitted expert 13')).toBeTruthy();
         expect(screen.queryByText('Submitted expert 1')).toBeNull();
-        expect(screen.getByText('Page 2 of 2')).toBeTruthy();
+        expect(screen.getByText('Received expert 1')).toBeTruthy();
+
+        fireEvent.click(within(screen.getByRole('navigation', { name: 'Shared with me pages' })).getByRole('button', { name: 'Next' }));
+        expect(await screen.findByText('Received expert 13')).toBeTruthy();
+        expect(screen.queryByText('Received expert 1')).toBeNull();
     });
 
     it('returns to the last valid submissions page after account reconciliation shrinks the list', async () => {
-        const nineUploads = Array.from({ length: 9 }, (_, index) => ({
+        const nineUploads = Array.from({ length: 13 }, (_, index) => ({
             ...listing,
             id: `expert-submitted-${index + 1}`,
             name: `Submitted expert ${index + 1}`,
             status: 'listed',
         }));
-        const eightUploads = nineUploads.slice(0, 8);
+        const eightUploads = nineUploads.slice(0, 12);
         vi.mocked(AppAPI.GetExpertMarketAccount)
             .mockResolvedValueOnce({ credits: 80, purchases: [listing], uploads: nineUploads })
             .mockResolvedValueOnce({ credits: 80, purchases: [listing], uploads: eightUploads });
         render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
         fireEvent.click(await screen.findByRole('button', { name: 'Next' }));
-        expect(await screen.findByText('Submitted expert 9')).toBeTruthy();
+        expect(await screen.findByText('Submitted expert 13')).toBeTruthy();
 
-        fireEvent.click(within(screen.getByText('Reviewed analyst').closest('.expert-market-row')!).getByRole('button', { name: 'Install' }));
+        fireEvent.click(within(screen.getByText('Reviewed analyst').closest('.expert-market-card')!).getByRole('button', { name: 'Install' }));
         await waitFor(() => expect(AppAPI.GetExpertMarketAccount).toHaveBeenCalledTimes(2));
         expect(await screen.findByText('Submitted expert 1')).toBeTruthy();
-        expect(screen.queryByText('Submitted expert 9')).toBeNull();
+        expect(screen.queryByText('Submitted expert 13')).toBeNull();
         expect(screen.queryByLabelText('My submissions pages')).toBeNull();
     });
 
@@ -448,7 +492,7 @@ describe('ExpertMarketDialog', () => {
             .mockResolvedValueOnce({ credits: 80, uploads: [{ ...listing, id: 'expert-submitted', name: 'My pending expert', status: 'pending_review' }], purchases: [listing] })
             .mockRejectedValueOnce(new Error('temporary account outage'));
         render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
-        const install = within((await screen.findByText('Reviewed analyst')).closest('.expert-market-row')!).getByRole('button', { name: 'Install' });
+        const install = within((await screen.findByText('Reviewed analyst')).closest('.expert-market-card')!).getByRole('button', { name: 'Install' });
         await act(async () => { fireEvent.click(install); });
         await waitFor(() => expect(AppAPI.GetExpertMarketAccount).toHaveBeenCalledTimes(2));
         expect(screen.getByText('My pending expert')).toBeTruthy();

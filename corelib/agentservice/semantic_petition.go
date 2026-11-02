@@ -111,7 +111,8 @@ func ValidatePetitionExpansion(parent, child coretool.ToolPlan, templates []Inte
 			}
 		}
 		if !matched {
-			return fmt.Errorf("semantic petition expansion adds a need outside the petitioned label")
+			return fmt.Errorf("semantic petition expansion adds a need outside the petitioned label: capability=%s qualifiers=%v need=%s",
+				selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings, needID)
 		}
 		added++
 	}

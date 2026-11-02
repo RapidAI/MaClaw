@@ -1,5 +1,5 @@
 import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { CodingKnowledgeCapacity, CodingKnowledgeConfirm, CodingKnowledgeContributeToOrg, CodingKnowledgeCreateRevisionCandidate, CodingKnowledgeDelete, CodingKnowledgeEvict, CodingKnowledgeExportToFile, CodingKnowledgeGet, CodingKnowledgeGraduateToSteering, CodingKnowledgeImportFromFile, CodingKnowledgeLifecycle, CodingKnowledgeList, CodingKnowledgeMarkConflict, CodingKnowledgeResetFile, CodingKnowledgeSearch, CodingKnowledgeStats, CodingKnowledgeUpdate, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, SelectCodingKnowledgeExportPath, SelectCodingKnowledgeImportFile } from '../../../wailsjs/go/main/App';
+import { CodingKnowledgeCapacity, CodingKnowledgeConfirm, CodingKnowledgeConfirmMany, CodingKnowledgeContributeToOrg, CodingKnowledgeCreateRevisionCandidate, CodingKnowledgeDelete, CodingKnowledgeEvict, CodingKnowledgeExportToFile, CodingKnowledgeGet, CodingKnowledgeGraduateToSteering, CodingKnowledgeImportFromFile, CodingKnowledgeLifecycle, CodingKnowledgeList, CodingKnowledgeMarkConflict, CodingKnowledgeResetFile, CodingKnowledgeSearch, CodingKnowledgeStats, CodingKnowledgeUpdate, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, SelectCodingKnowledgeExportPath, SelectCodingKnowledgeImportFile } from '../../../wailsjs/go/main/App';
 import { corelib, knowledge } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { useDialog } from '../CustomDialog';
@@ -37,6 +37,8 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
     const [auditEvents, setAuditEvents] = useState<knowledge.CodingExperienceLifecycleEvent[]>([]);
     const [actionMessage, setActionMessage] = useState('');
     const [selectedIDs, setSelectedIDs] = useState<string[]>([]);
+    const [selectedReviewIDs, setSelectedReviewIDs] = useState<string[]>([]);
+    const [bulkConfirming, setBulkConfirming] = useState(false);
     const [techLibs, setTechLibs] = useState<Array<{ id?: string; name?: string }>>([]);
     const [contributeLibraryID, setContributeLibraryID] = useState('');
     const [contributeSummary, setContributeSummary] = useState('');
@@ -46,13 +48,19 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
     // Explicit union: the fallback literal alone would infer `"observe"` and make
     // the `autoSaveMode === 'auto'` check below look unreachable.
     const autoSaveMode = cfgVal<'observe' | 'auto' | 'off'>(config, 'coding_knowledge_auto_save_mode', 'observe');
-    const saveStrategy = cfgVal(config, 'coding_knowledge_save_strategy', 'on_retry_success');
+    const saveStrategy = cfgVal(config, 'coding_knowledge_save_strategy', 'on_success');
     const maxTotal = cfgVal(config, 'coding_knowledge_max_total', 1000);
     const maxPerProject = cfgVal(config, 'coding_knowledge_max_per_project', 200);
 	const maxReviewedPerProject = cfgVal(config, 'coding_knowledge_max_reviewed_per_project', 100);
 	const maxReviewedTokensPerProject = cfgVal(config, 'coding_knowledge_max_reviewed_tokens_per_project', 30000);
+	const autoPromoteObservations = Math.max(2, Number(cfgVal<number>(config, 'coding_knowledge_auto_promote_observations', 2)) || 2);
     const patch = (p: Record<string, any>) => saveConfigPatch(config, setConfig, p, versionRef);
     const debouncedSearch = useDebouncedValue(searchQuery, 350);
+    // Candidates that already carry enough independent observations for the
+    // configured promotion threshold. This is the one-click review shortcut.
+    const readyCandidateIDs = experiences
+        .filter(exp => exp.status === 'candidate' && Number(exp.observation_count || 0) >= autoPromoteObservations)
+        .map(exp => exp.id);
 
     const loadStats = useCallback(async () => {
         try {
@@ -79,7 +87,13 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             } else {
                 results = await CodingKnowledgeList({ limit: 100, ...tabFilter });
             }
-            if (mountedRef.current) setExperiences(results || []);
+            if (mountedRef.current) {
+                setExperiences(results || []);
+                // A confirmed/removed candidate must not stay selected in the
+                // bulk review action.
+                const candidateIDs = new Set((results || []).filter((item: any) => item?.status === 'candidate').map((item: any) => item.id));
+                setSelectedReviewIDs(prev => prev.filter(id => candidateIDs.has(id)));
+            }
         } catch (err) {
             if (mountedRef.current) {
                 setActionMessage(actionError(err, lang, 'Failed to load experiences.', '无法加载经验列表。', '無法載入經驗列表。'));
@@ -91,6 +105,7 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
 
     useEffect(() => () => { mountedRef.current = false; }, []);
     useEffect(() => { void loadStats(); void loadExperiences(); }, [loadStats, loadExperiences]);
+    useEffect(() => { setSelectedReviewIDs([]); }, [activeTab, debouncedSearch]);
     useEffect(() => {
         void DigitalAssetListContributableLibraries('technical').then(items => {
             if (!mountedRef.current) return;
@@ -126,6 +141,45 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             setActionMessage(actionError(err, lang, 'Confirm failed.', '确认失败。', '確認失敗。'));
         }
     };
+
+    const confirmCandidateIDs = async (ids: string[]) => {
+        if (!ids.length) return;
+        const confirmed = await showConfirm(
+            textForLang(
+                lang,
+                `Confirm ${ids.length} candidate(s)? They join automatic recall immediately.`,
+                `确认 ${ids.length} 条候选经验？确认后将立即参与自动召回。`,
+                `確認 ${ids.length} 條候選經驗？確認後將立即參與自動召回。`,
+            ),
+            textForLang(lang, 'Confirm candidates', '确认候选', '確認候選'),
+        );
+        if (!confirmed) return;
+        setBulkConfirming(true);
+        try {
+            const result = await CodingKnowledgeConfirmMany(ids);
+            const ok = result?.confirmed?.length || 0;
+            const failed = result?.failed?.length || 0;
+            const firstFailure = String(result?.failed?.[0]?.error || '').trim().slice(0, 200);
+            setActionMessage(failed > 0
+                ? textForLang(
+                    lang,
+                    `Confirmed ${ok}; ${failed} failed.${firstFailure ? ` First error: ${firstFailure}` : ''}`,
+                    `已确认 ${ok} 条，${failed} 条失败。${firstFailure ? `首个错误：${firstFailure}` : ''}`,
+                    `已確認 ${ok} 條，${failed} 條失敗。${firstFailure ? `首個錯誤：${firstFailure}` : ''}`,
+                )
+                : textForLang(lang, `Confirmed ${ok} candidate(s).`, `已确认 ${ok} 条候选经验。`, `已確認 ${ok} 條候選經驗。`));
+            setSelectedReviewIDs(prev => prev.filter(id => !ids.includes(id)));
+            void loadStats();
+            void loadExperiences();
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Bulk confirm failed.', '批量确认失败。', '批量確認失敗。'));
+        } finally {
+            if (mountedRef.current) setBulkConfirming(false);
+        }
+    };
+
+    const handleConfirmSelected = () => void confirmCandidateIDs(selectedReviewIDs);
+    const handleConfirmReady = () => void confirmCandidateIDs(readyCandidateIDs);
 
     const handleMarkConflict = async (id: string) => {
         const reason = await showPrompt(
@@ -255,6 +309,10 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
         setSelectedIDs(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
     };
 
+    const toggleReviewSelection = (id: string) => {
+        setSelectedReviewIDs(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    };
+
     const handleExport = async () => {
         try {
             const path = await SelectCodingKnowledgeExportPath();
@@ -310,19 +368,38 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                 <div className="prog-tools__kb-config-item">
                     <label className="prog-tools__kb-config-label" htmlFor={`${uid}-auto-save`}>{textForLang(lang, 'Auto-save', '自动沉淀', '自動沉澱')}</label>
                     <select id={`${uid}-auto-save`} className="prog-tools__select" value={autoSaveMode} onChange={(e) => patch({ coding_knowledge_auto_save_mode: e.target.value })}>
-                        <option value="observe">{textForLang(lang, 'Observe (candidate)', '观察（候选）', '觀察（候選）')}</option>
-                        <option value="auto">{textForLang(lang, 'Auto (review required)', '自动（需审核）', '自動（需審核）')}</option>
+                        <option value="observe">{textForLang(lang, 'Observe (candidate only)', '观察（只写候选）', '觀察（只寫候選）')}</option>
+                        <option value="auto">{textForLang(lang, 'Auto (after enough observations)', '自动（观测达标后生效）', '自動（觀測達標後生效）')}</option>
                         <option value="off">{textForLang(lang, 'Off', '关闭', '關閉')}</option>
                     </select>
                 </div>
                 <div className="prog-tools__kb-config-item">
                     <label className="prog-tools__kb-config-label" htmlFor={`${uid}-strategy`}>{textForLang(lang, 'Strategy', '策略', '策略')}</label>
                     <select id={`${uid}-strategy`} className="prog-tools__select" value={saveStrategy} onChange={(e) => patch({ coding_knowledge_save_strategy: e.target.value })}>
-                        <option value="on_retry_success">{textForLang(lang, 'On retry success', '重试成功时', '重試成功時')}</option>
                         <option value="on_success">{textForLang(lang, 'On success', '成功时', '成功時')}</option>
+                        <option value="on_retry_success">{textForLang(lang, 'On retry success', '重试成功时', '重試成功時')}</option>
                         <option value="always">{textForLang(lang, 'Always', '始终', '始終')}</option>
                         <option value="off">{textForLang(lang, 'Off', '关闭', '關閉')}</option>
                     </select>
+                </div>
+                <div className="prog-tools__kb-config-item">
+                    <label className="prog-tools__kb-config-label" htmlFor={`${uid}-auto-promote`} title={textForLang(lang, 'Only applies in Auto mode. Independent runtime tasks required before a candidate becomes active.', '仅在“自动”模式下生效：同一经验在多少个独立任务中出现后自动生效。', '僅在「自動」模式下生效：同一經驗在多少個獨立任務中出現後自動生效。')}>
+                        {textForLang(lang, 'Auto-promote after', '自动晋升观测次数', '自動晉升觀測次數')}
+                    </label>
+                    <input
+                        id={`${uid}-auto-promote`}
+                        type="number"
+                        min={2}
+                        max={20}
+                        className="prog-tools__select"
+                        aria-label={textForLang(lang, 'Auto-promote observations', '自动晋升观测次数', '自動晉升觀測次數')}
+                        value={autoPromoteObservations}
+                        onChange={(e) => {
+                            const raw = Number(e.target.value) || 0;
+                            const next = raw === 0 ? 0 : Math.min(20, Math.max(2, raw));
+                            patch({ coding_knowledge_auto_promote_observations: next });
+                        }}
+                    />
                 </div>
                 <div className="prog-tools__kb-config-item">
                     <label className="prog-tools__kb-config-label" htmlFor={`${uid}-max-total`}>{textForLang(lang, 'Max total', '总数上限', '總數上限')}</label>
@@ -373,6 +450,29 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             <div className="prog-tools__kb-actions">
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleExport()}>{textForLang(lang, 'Export', '导出', '匯出')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleImport()}>{textForLang(lang, 'Import', '导入', '匯入')}</button>
+                {selectedReviewIDs.length > 0 ? (
+                    <button
+                        type="button"
+                        className="prog-tools__kb-btn prog-tools__kb-btn--confirm"
+                        onClick={() => void handleConfirmSelected()}
+                        disabled={bulkConfirming}
+                    >
+                        {bulkConfirming
+                            ? textForLang(lang, 'Confirming...', '确认中...', '確認中...')
+                            : textForLang(lang, `Confirm selected (${selectedReviewIDs.length})`, `确认所选（${selectedReviewIDs.length}）`, `確認所選（${selectedReviewIDs.length}）`)}
+                    </button>
+                ) : readyCandidateIDs.length > 0 ? (
+                    <button
+                        type="button"
+                        className="prog-tools__kb-btn prog-tools__kb-btn--confirm"
+                        onClick={() => void handleConfirmReady()}
+                        disabled={bulkConfirming}
+                    >
+                        {bulkConfirming
+                            ? textForLang(lang, 'Confirming...', '确认中...', '確認中...')
+                            : textForLang(lang, `Confirm ready (${readyCandidateIDs.length})`, `确认达标候选（${readyCandidateIDs.length}）`, `確認達標候選（${readyCandidateIDs.length}）`)}
+                    </button>
+                ) : null}
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleContribute()}>{textForLang(lang, 'Submit to organization', '投稿到组织', '投稿到組織')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleEvict()}>{textForLang(lang, 'Run eviction', '执行淘汰', '執行淘汰')}</button>
                 <button
@@ -416,6 +516,20 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                         onChange={(e) => setSearchQuery(e.target.value)}
                         aria-label={textForLang(lang, 'Search knowledge base', '搜索知识库', '搜尋知識庫')}
                     />
+                    {experiences.some((exp) => exp.status === 'candidate') ? (
+                        <button
+                            type="button"
+                            className="prog-tools__kb-btn"
+                            onClick={() => {
+                                const ids = experiences.filter((exp) => exp.status === 'candidate').map((exp) => exp.id);
+                                setSelectedReviewIDs(prev => prev.length === ids.length ? [] : ids);
+                            }}
+                        >
+                            {selectedReviewIDs.length > 0 && selectedReviewIDs.length === experiences.filter((exp) => exp.status === 'candidate').length
+                                ? textForLang(lang, 'Clear review selection', '清除审核选择', '清除審核選擇')
+                                : textForLang(lang, 'Select all candidates', '全选候选', '全選候選')}
+                        </button>
+                    ) : null}
                 </div>
             </div>
 
@@ -432,7 +546,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                     experiences.map((exp) => (
                         <div key={exp.id} className="prog-tools__kb-item" data-status={exp.status} role="listitem">
                             <div className="prog-tools__kb-item-main">
-                                {(exp.status === 'active' || exp.status === 'verified') ? (
+                                {exp.status === 'candidate' ? (
+                                    <input type="checkbox" checked={selectedReviewIDs.includes(exp.id)} onChange={() => toggleReviewSelection(exp.id)} aria-label={textForLang(lang, 'Select for review', '选择审核', '選擇審核')} />
+                                ) : (exp.status === 'active' || exp.status === 'verified') ? (
                                     <input type="checkbox" checked={selectedIDs.includes(exp.id)} onChange={() => toggleSelected(exp.id, exp.status)} aria-label={textForLang(lang, 'Select for organization', '选择投稿', '選擇投稿')} />
                                 ) : null}
                                 <span className="prog-tools__kb-item-title">{exp.title}</span>
@@ -441,6 +557,16 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                                 {exp.category && <span className="prog-tools__kb-tag">{exp.category}</span>}
                                 {exp.scope && <span className="prog-tools__kb-tag">{exp.scope}{exp.language ? `:${exp.language}` : ''}</span>}
                                 {exp.recall_count > 0 && <span className="prog-tools__kb-tag prog-tools__kb-tag--count">{exp.recall_count}×</span>}
+                                {exp.status === 'candidate' && Number(exp.observation_count || 0) > 0 && (
+                                    <span
+                                        className="prog-tools__kb-tag prog-tools__kb-tag--count"
+                                        title={textForLang(lang, 'Independent runtime observations; auto-promoted after the configured threshold.', '独立 runtime 任务观测次数；达到配置阈值后自动生效。', '獨立 runtime 任務觀測次數；達到配置閾值後自動生效。')}
+                                    >
+                                        {autoSaveMode === 'auto'
+                                            ? `${exp.observation_count}/${autoPromoteObservations}`
+                                            : textForLang(lang, `${exp.observation_count} obs`, `${exp.observation_count} 次观测`, `${exp.observation_count} 次觀測`)}
+                                    </span>
+                                )}
                             </div>
                             <div className="prog-tools__kb-item-actions">
                                 <button type="button" className="prog-tools__kb-btn" onClick={() => void openEditor(exp.id)}>{textForLang(lang, 'Edit', '编辑', '編輯')}</button>

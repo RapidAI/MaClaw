@@ -265,6 +265,11 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 		if a.toolRouter != nil {
 			a.toolRouter.SetEmbedder(noop)
 		}
+		codingKnowledgeStoreMu.Lock()
+		if a.codingKnowledgeStore != nil {
+			a.codingKnowledgeStore.Inner().UseEmbedder(noop)
+		}
+		codingKnowledgeStoreMu.Unlock()
 		if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
 			if handler := a.remoteSessions.hubClient.currentIMHandler(); handler != nil && handler.toolBuilder != nil {
 				handler.toolBuilder.SetEmbedder(noop)
@@ -389,6 +394,11 @@ func (a *App) detachLocalEmbedder() {
 	if a.toolRouter != nil {
 		a.toolRouter.SetEmbedder(noop)
 	}
+	codingKnowledgeStoreMu.Lock()
+	if a.codingKnowledgeStore != nil {
+		a.codingKnowledgeStore.Inner().UseEmbedder(noop)
+	}
+	codingKnowledgeStoreMu.Unlock()
 	if a.unifiedClassifier != nil {
 		a.unifiedClassifier.SetEmbedder(noop)
 	}
@@ -447,9 +457,18 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 // downloadModelFromWithEvent is the same as downloadModelFrom but allows specifying
 // a custom Wails event name for progress reporting.
 func (a *App) downloadModelFromWithEvent(url, destPath string, emitErrors bool, eventName string) error {
+	return a.downloadModelFromWithEventContext(context.Background(), url, destPath, emitErrors, eventName)
+}
+
+// downloadModelFromWithEventContext is downloadModelFromWithEvent bounded by
+// parent. The 30-minute cap still applies. A cancelled parent stops the body.
+func (a *App) downloadModelFromWithEventContext(parent context.Context, url, destPath string, emitErrors bool, eventName string) error {
+	if parent == nil {
+		parent = context.Background()
+	}
 	tmpPath := destPath + ".tmp"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -563,6 +582,13 @@ func (a *App) downloadModelFromWithEvent(url, destPath string, emitErrors bool, 
 }
 
 func (a *App) emitDownloadProgressNamed(eventName string, pct int, downloaded, total int64, errMsg string) {
+	if a == nil {
+		return
+	}
+	if eventName == latexProgressEvent || eventName == latexUpdaterProgressEvent {
+		a.noteLatexDownloadProgress(pct, downloaded, total, errMsg)
+		return
+	}
 	if a.ctx == nil {
 		return
 	}
@@ -687,6 +713,14 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	}
 	knowledgeAutoRecallStoreMu.Unlock()
 	a.ensureKnowledgeEmbeddingRefresh(emb)
+
+	// Coding experiences use the same embedder for semantic recall. This also
+	// covers stores opened before embedding activation.
+	codingKnowledgeStoreMu.Lock()
+	if a.codingKnowledgeStore != nil {
+		a.codingKnowledgeStore.Inner().SetEmbedder(emb)
+	}
+	codingKnowledgeStoreMu.Unlock()
 
 	// Wire embedder into tool router (enables hybrid retrieval).
 	if a.toolRouter != nil {

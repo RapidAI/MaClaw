@@ -598,10 +598,10 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 		result.RuntimeHandoff = true
 	}
 	if result != nil && strings.EqualFold(result.Status, "success") && r.handler != nil {
-		persistLocalizationExperience(r.handler.app, r.codingKB, r.projectDir, taskDescription, result.Localization, result.CommandsRun, result.RuntimeTaskID)
+		persistLocalizationExperience(r.handler.app, execution.codingKB, execution.projectDir, taskDescription, result.Localization, result.CommandsRun, result.RuntimeTaskID)
 	}
 	if result != nil {
-		finalizeRemoteCodingKnowledge(r, taskDescription, result)
+		finalizeRemoteCodingKnowledge(&execution, taskDescription, result, execution.readOnlyInquiry)
 	}
 	return result
 }
@@ -6171,16 +6171,26 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 	var pack knowledge.ContextPackResult
 	language := inferRemoteCodingLanguage(c)
 	if c.agent.codingKB != nil {
-		if got, err := c.agent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
-			Query:       taskQuery,
-			Language:    language,
-			ProjectPath: c.agent.projectDir,
-			MaxItems:    4,
-			MaxChars:    1500,
-			MaxTokens:   750,
-		}); err == nil {
-			pack = got
+		loadPack := func(query string) knowledge.ContextPackResult {
+			got, err := c.agent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
+				Query:       query,
+				Language:    language,
+				ProjectPath: c.agent.projectDir,
+				MaxItems:    4,
+				MaxChars:    1500,
+				MaxTokens:   750,
+			})
+			if err != nil {
+				return knowledge.ContextPackResult{}
+			}
 			c.noteRecalledExperienceIDs(contextPackSourceIDs(got))
+			return got
+		}
+		pack = loadPack(taskQuery)
+		if len(pack.Items) == 0 {
+			if fallback := codingKnowledgeFallbackQuery(c.taskContext); fallback != "" {
+				pack = loadPack(fallback)
+			}
 		}
 	}
 	if c.agent.handler != nil && c.agent.handler.app != nil {
@@ -6239,7 +6249,7 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 	if c.agent.handler != nil {
 		app = c.agent.handler.app
 	}
-	text, experiences := runCodingKnowledgeSearch(app, c.agent.codingKB, query, inferRemoteCodingLanguage(c), c.agent.projectDir)
+	text, experiences := runCodingKnowledgeSearch(app, c.agent.codingKB, query, inferRemoteCodingLanguage(c), c.agent.projectDir, 5)
 	c.noteRecalledExperiences(experiences)
 	return text
 }

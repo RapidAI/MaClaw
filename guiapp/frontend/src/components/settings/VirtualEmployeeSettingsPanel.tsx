@@ -451,7 +451,10 @@ const normalizeSensitivePolicy = (policy: string): SensitiveQueryPolicy => {
     : "confirm";
 };
 
-export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
+export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang: langProp }: Props) {
+  // lang 省略时回落到产品默认表面语言（简体中文）：设置页总是显式传 lang，
+  // 单独渲染不回退英文。
+  const lang = langProp || "zh-Hans";
   const c = copy(lang);
   const sectionId = useId();
   const [name, setName] = useState("");

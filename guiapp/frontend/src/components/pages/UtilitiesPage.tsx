@@ -449,6 +449,9 @@ export const UtilitiesPage = ({
     // Library toolbar: local search + marketplace-style source filter chips.
     const [expertSearch, setExpertSearch] = useState('');
     const [expertFilter, setExpertFilter] = useState<'all' | 'system' | 'custom'>('all');
+    const [expertPage, setExpertPage] = useState(1);
+    const [expertColumns, setExpertColumns] = useState(4);
+    const expertGridRef = useRef<HTMLDivElement | null>(null);
     const [expertMarketUploads, setExpertMarketUploads] = useState<Record<string, { id: string; status: string; visibility: string }>>({});
     const meetingStartingRef = useRef(false);
     const vscodeStartingRef = useRef(false);
@@ -613,6 +616,17 @@ export const UtilitiesPage = ({
     const expertLibraryEmpty = visibleExperts.industry.length === 0
         && visibleExperts.local.length === 0
         && (expertSearch.trim() !== '' || expertFilter !== 'all');
+    // Four rows per page. Column count follows the same auto-fill grid, so a
+    // narrower window pages fewer cards instead of showing more than four rows.
+    const expertPageSize = Math.max(1, expertColumns) * 4;
+    const expertLibraryCount = visibleExperts.industry.length + visibleExperts.local.length;
+    const expertPageCount = Math.max(1, Math.ceil(expertLibraryCount / expertPageSize));
+    const expertPageIndex = Math.min(expertPage, expertPageCount);
+    const expertPageStart = (expertPageIndex - 1) * expertPageSize;
+    const pageIndustry = visibleExperts.industry.slice(expertPageStart, expertPageStart + expertPageSize);
+    const pageLocalSkip = Math.max(0, expertPageStart - visibleExperts.industry.length);
+    const pageLocal = visibleExperts.local.slice(pageLocalSkip, pageLocalSkip + expertPageSize - pageIndustry.length);
+    const expertEntriesInGrid = expertPageSize - pageIndustry.length - pageLocal.length >= 2;
 
     const loadExpertMarketUploads = useCallback(async () => {
         const requestID = ++expertMarketUploadsRequestRef.current;
@@ -625,7 +639,7 @@ export const UtilitiesPage = ({
                 const localID = String(upload?.local_expert_id || '').trim();
                 const listingID = String(upload?.id || '').trim();
                 const status = String(upload?.status || '').trim();
-                const visibility = String(upload?.visibility || (status === 'private' ? 'private' : 'public')).trim();
+                const visibility = String(upload?.visibility || (status === 'private' ? 'private' : status === 'shared' ? 'users' : 'public')).trim();
                 // Keep unlisted submissions in the card state. Otherwise the
                 // card would offer Share again and allow a duplicate listing.
                 if (localID && listingID) next[localID] = { id: listingID, status, visibility };
@@ -660,6 +674,34 @@ export const UtilitiesPage = ({
         void loadExpertMarketUploads();
     }, [active, view, loadExpertMarketUploads, showExpertSurface]);
 
+    useEffect(() => { setExpertPage(1); }, [expertSearch, expertFilter]);
+    useEffect(() => { setExpertPage(page => Math.min(page, expertPageCount)); }, [expertPageCount]);
+    useEffect(() => {
+        const node = expertGridRef.current;
+        if (!node) return;
+        const measure = () => {
+            let columns = 4;
+            try {
+                if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 560px)').matches) {
+                    columns = 1;
+                } else {
+                    const width = node.clientWidth;
+                    if (width < 32) return;
+                    const minTrack = Math.min(236, width);
+                    columns = Math.max(1, Math.floor((width + 14) / (minTrack + 14)));
+                }
+            } catch {
+                columns = 4;
+            }
+            setExpertColumns(current => current === columns ? current : columns);
+        };
+        measure();
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(measure);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, [showExpertSurface, view]);
+
     const handleWithdrawExpertMarketListing = useCallback(async (expert: ExpertDefinition) => {
         const listing = expertMarketUploads[expert.id];
         if (!listing || expertPackageBusyRef.current) return;
@@ -693,10 +735,15 @@ export const UtilitiesPage = ({
 
     const handleDeletePrivateExpertMarketListing = useCallback(async (expert: ExpertDefinition) => {
         const listing = expertMarketUploads[expert.id];
-        if (!listing || listing.status !== 'private' || expertPackageBusyRef.current) return;
+        const sharedWithUsers = listing?.status === 'shared' || listing?.visibility === 'users';
+        if (!listing || expertPackageBusyRef.current || (!sharedWithUsers && listing.status !== 'private')) return;
         const confirmed = await showConfirm(
-            tailText(lang ?? "", 'This cannot be undone. The private share will be permanently removed from your market submissions.', '删除后无法恢复。该私有分享会从你的市场提交中永久移除。'),
-            tailText(lang ?? "", 'Delete private share', '删除私有分享'),
+            sharedWithUsers
+                ? tailText(lang ?? "", 'This cannot be undone. The selected users will no longer be able to install this expert.', '删除后无法恢复。指定用户将不能再安装这个专家。')
+                : tailText(lang ?? "", 'This cannot be undone. The private share will be permanently removed from your market submissions.', '删除后无法恢复。该私有分享会从你的市场提交中永久移除。'),
+            sharedWithUsers
+                ? tailText(lang ?? "", 'Delete share', '删除指定分享')
+                : tailText(lang ?? "", 'Delete private share', '删除私有分享'),
             { confirmText: tailText(lang ?? "", 'Delete permanently', '永久删除'), cancelText: tailText(lang ?? "", 'Cancel', '取消'), confirmVariant: 'danger' },
         );
         if (!confirmed) return;
@@ -705,7 +752,9 @@ export const UtilitiesPage = ({
         setError('');
         try {
             const mod = await getApp();
-            if (!mod?.DeletePrivateExpertMarketListing) throw new Error(tailText(lang ?? "", 'Deleting private shares is not supported by this build', '当前版本不支持删除私有分享'));
+            if (!mod?.DeletePrivateExpertMarketListing) throw new Error(sharedWithUsers
+                ? tailText(lang ?? "", 'Deleting selected-user shares is not supported by this build', '当前版本不支持删除指定分享')
+                : tailText(lang ?? "", 'Deleting private shares is not supported by this build', '当前版本不支持删除私有分享'));
             await mod.DeletePrivateExpertMarketListing(listing.id);
             // Remove both the local state and any mutation override. The next
             // account refresh may be stale, so keep a deletion sentinel until
@@ -1146,6 +1195,12 @@ export const UtilitiesPage = ({
         expertFilterEmpty: lang === 'zh-Hant'
             ? '沒有符合條件的專家，試試其他篩選或關鍵詞'
             : tailText(lang ?? "", 'No experts match this filter or search', '没有符合条件的专家，试试其他筛选或关键词'),
+        expertPageLabel: lang === 'zh-Hant' ? '專家列表分頁' : tailText(lang ?? "", 'Expert list pages', '专家列表分页'),
+        expertPagePrev: lang === 'zh-Hant' ? '上一頁' : tailText(lang ?? "", 'Previous', '上一页'),
+        expertPageNext: lang === 'zh-Hant' ? '下一頁' : tailText(lang ?? "", 'Next', '下一页'),
+        expertPageStatus: (page: number, total: number) => lang === 'zh-Hant'
+            ? `第 ${page} / ${total} 頁`
+            : tailText(lang ?? "", `Page ${page} of ${total}`, `第 ${page} / ${total} 页`),
     }), [isZh, lang, mode]);
 
     const handleMeetingRecord = useCallback(async () => {
@@ -1915,6 +1970,36 @@ export const UtilitiesPage = ({
                 </button>
             </div>
         );
+        const expertEntryCards = <>
+            <button
+                type="button"
+                className="utilities-expert-card utilities-expert-card--new"
+                data-testid="utilities-expert-new-card"
+                onClick={() => setExpertEditor({ mode: 'new' })}
+            >
+                <span className="utilities-expert-card__new-icon" aria-hidden>
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                        <path d="M8 3.2v9.6M3.2 8h9.6" />
+                    </svg>
+                </span>
+                <span>{t.expertNew}</span>
+            </button>
+            <button
+                type="button"
+                className="utilities-expert-card utilities-expert-card--import"
+                data-testid="utilities-expert-import"
+                onClick={() => { void handleImportExpertPackage(); }}
+                disabled={expertPackageBusy}
+                aria-busy={expertPackageBusy || undefined}
+            >
+                <span className="utilities-expert-card__new-icon" aria-hidden>
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M8 2.5v7.5M4.8 7.2 8 10.4l3.2-3.2M3 13h10" />
+                    </svg>
+                </span>
+                <span>{t.expertImport}</span>
+            </button>
+        </>;
         return (
             <div className="utilities-page" data-testid="utilities-page" data-mode={mode}>
                 <div className="utilities-page__header">
@@ -2003,8 +2088,8 @@ export const UtilitiesPage = ({
                             >{label}</button>
                         ))}
                     </div>
-                    <div className="utilities-experts__grid">
-						{visibleExperts.industry.map((expert) => {
+                    <div className="utilities-experts__grid" ref={expertGridRef}>
+						{pageIndustry.map((expert) => {
 							const installed = !!expert.industry_installed;
 							const autoInstalling = !!expert.industry_auto_installing;
 							const autoInstallFailed = !!expert.industry_auto_install_failed;
@@ -2021,7 +2106,7 @@ export const UtilitiesPage = ({
 								</div>
 							);
 						})}
-                        {visibleExperts.local.map((expert) => (
+                        {pageLocal.map((expert) => (
                             <div key={expert.id} className="utilities-expert-card" data-testid={`utilities-expert-card-${expert.id}`}>
                                 <button
                                     type="button"
@@ -2086,6 +2171,14 @@ export const UtilitiesPage = ({
                                                     disabled={expertPackageBusy}
                                                     onClick={() => { void handleWithdrawExpertMarketListing(expert); }}
                                                 >{tailText(lang ?? "", 'Unlist', '下架')}</button>
+                                            ) : expertMarketUploads[expert.id].status === 'shared' || expertMarketUploads[expert.id].visibility === 'users' ? (
+                                                <button
+                                                    type="button"
+                                                    data-testid={`utilities-expert-delete-share-${expert.id}`}
+                                                    className="utilities-expert-card__action utilities-expert-card__action--danger"
+                                                    disabled={expertPackageBusy}
+                                                    onClick={() => { void handleDeletePrivateExpertMarketListing(expert); }}
+                                                >{tailText(lang ?? "", 'Delete share', '删除指定分享')}</button>
                                             ) : (
                                                 <button
                                                     type="button"
@@ -2116,35 +2209,14 @@ export const UtilitiesPage = ({
                             </div>
                         ))}
                         {expertLibraryEmpty ? <div className="utilities-experts__empty" data-testid="utilities-experts-empty">{t.expertFilterEmpty}</div> : null}
-                        <button
-                            type="button"
-                            className="utilities-expert-card utilities-expert-card--new"
-                            data-testid="utilities-expert-new-card"
-                            onClick={() => setExpertEditor({ mode: 'new' })}
-                        >
-                            <span className="utilities-expert-card__new-icon" aria-hidden>
-                                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                                    <path d="M8 3.2v9.6M3.2 8h9.6" />
-                                </svg>
-                            </span>
-                            <span>{t.expertNew}</span>
-                        </button>
-                        <button
-                            type="button"
-                            className="utilities-expert-card utilities-expert-card--import"
-                            data-testid="utilities-expert-import"
-                            onClick={() => { void handleImportExpertPackage(); }}
-                            disabled={expertPackageBusy}
-                            aria-busy={expertPackageBusy || undefined}
-                        >
-                            <span className="utilities-expert-card__new-icon" aria-hidden>
-                                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M8 2.5v7.5M4.8 7.2 8 10.4l3.2-3.2M3 13h10" />
-                                </svg>
-                            </span>
-                            <span>{t.expertImport}</span>
-                        </button>
+                        {expertEntriesInGrid ? expertEntryCards : null}
                     </div>
+                    {expertPageCount > 1 ? <nav className="utilities-experts__pager" aria-label={t.expertPageLabel}>
+                        <button type="button" disabled={expertPageIndex <= 1} onClick={() => setExpertPage(page => Math.max(1, page - 1))}>{t.expertPagePrev}</button>
+                        <span>{t.expertPageStatus(expertPageIndex, expertPageCount)}</span>
+                        <button type="button" disabled={expertPageIndex >= expertPageCount} onClick={() => setExpertPage(page => Math.min(expertPageCount, page + 1))}>{t.expertPageNext}</button>
+                    </nav> : null}
+                    {expertEntriesInGrid ? null : <div className="utilities-experts__grid utilities-experts__entries">{expertEntryCards}</div>}
                 </div> : null}
                 {expertDeleteTarget ? (
                     <ConfirmDialog
@@ -2214,7 +2286,7 @@ export const UtilitiesPage = ({
                         // deleted one.
                         deletedExpertMarketUploadsRef.current.delete(localID);
                         const status = String(listing.status || 'pending_review');
-                        const submitted = { id: listingID, status, visibility: String(listing.visibility || (status === 'private' ? 'private' : 'public')) };
+                        const submitted = { id: listingID, status, visibility: String(listing.visibility || (status === 'private' ? 'private' : status === 'shared' ? 'users' : 'public')) };
                         expertMarketUploadOverridesRef.current[localID] = submitted;
                         setExpertMarketUploads(current => ({
                             ...current,

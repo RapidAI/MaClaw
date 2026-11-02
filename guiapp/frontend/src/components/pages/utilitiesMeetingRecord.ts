@@ -20,7 +20,13 @@ export function meetingRecordCommand(lang?: string): string {
 
 /** Base label without timestamp (for UI copy). */
 export function meetingRecordBaseTitle(lang?: string): string {
-    return localizeText(lang, 'Meeting notes', '会议记录', '會議記錄');
+    // Task titles are session labels: per this module's no-translation rule
+    // (same as the recording command markers), the mn label stays English —
+    // mnInline's generic 'Meeting notes' entry must not catch it.
+    const kind = normalizeLang(lang);
+    if (kind === 'zh-Hant') return '會議記錄';
+    if (kind === 'zh-Hans') return '会议记录';
+    return 'Meeting notes';
 }
 
 /** Compact local stamp so repeated sessions stay distinguishable in the task list. */

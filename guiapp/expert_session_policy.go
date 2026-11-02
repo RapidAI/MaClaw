@@ -19,17 +19,45 @@ import (
 // Expert session policy: resolve an expert persona from a session userID and
 // apply its tool/skill allow-lists.
 //
-// Expert sessions use userID "desktop-user:expert:<expertId>" (see
-// SendAIAssistantMessage). The persona swap itself lives in im_system_prompt.go;
-// this file owns the reverse lookup plus the allow-list filters.
+// An expert with no task path uses userID "desktop-user:expert:<expertId>".
+// A task of that expert uses "desktop-user:expert:<expertId>:task:<path>" so
+// one task cannot cancel another by resetting a shared live session. The
+// persona swap itself lives in im_system_prompt.go; this file owns the
+// reverse lookup plus the allow-list filters.
 // ---------------------------------------------------------------------------
 
 // expertSessionUserIDPrefix prefixes expert session userIDs.
 const expertSessionUserIDPrefix = desktopUserID + ":expert:"
 
-// expertSessionUserID builds the session userID for an expert tab.
+// expertTaskSessionMark separates the expert id from the task path. Expert
+// ids cannot contain ":", so the first mark is unambiguous.
+const expertTaskSessionMark = ":task:"
+
+// expertSessionUserID builds the session userID for an expert with no task path.
 func expertSessionUserID(expertID string) string {
 	return expertSessionUserIDPrefix + strings.TrimSpace(expertID)
+}
+
+// canonicalExpertTaskPath is the path segment of an expert task session key.
+// Both sides of the desktop use forward slashes, so a Windows bind and the
+// frontend key name the same session.
+func canonicalExpertTaskPath(projectPath string) string {
+	path := normalizeProjectSessionPath(projectPath)
+	if path == "" {
+		return ""
+	}
+	return strings.ReplaceAll(path, "\\", "/")
+}
+
+// expertTaskSessionUserID is the agent session owned by one expert task.
+// An empty path stays on the expert key, which has no task to isolate.
+func expertTaskSessionUserID(expertID, projectPath string) string {
+	base := expertSessionUserID(expertID)
+	path := canonicalExpertTaskPath(projectPath)
+	if strings.TrimSpace(expertID) == "" || path == "" {
+		return base
+	}
+	return base + expertTaskSessionMark + path
 }
 
 // expertTabSessionID mirrors the frontend expertTabId() (expertTypes.ts):
@@ -38,14 +66,33 @@ func expertTabSessionID(expertID string) string {
 	return "expert-" + strings.TrimSpace(expertID)
 }
 
-// expertIDFromUserID extracts the expert id from an expert session userID;
-// returns "" for non-expert userIDs.
+// expertIDFromUserID extracts the expert id from an expert session userID,
+// including a per-task key. Returns "" for non-expert userIDs.
 func expertIDFromUserID(userID string) string {
 	userID = strings.TrimSpace(userID)
 	if !strings.HasPrefix(userID, expertSessionUserIDPrefix) {
 		return ""
 	}
-	return strings.TrimSpace(strings.TrimPrefix(userID, expertSessionUserIDPrefix))
+	rest := strings.TrimSpace(strings.TrimPrefix(userID, expertSessionUserIDPrefix))
+	if cut := strings.Index(rest, expertTaskSessionMark); cut >= 0 {
+		rest = strings.TrimSpace(rest[:cut])
+	}
+	return rest
+}
+
+// projectPathFromExpertTaskUserID returns the task path stored in a per-task
+// expert session key, or "" when the key is not task-scoped.
+func projectPathFromExpertTaskUserID(userID string) string {
+	userID = strings.TrimSpace(userID)
+	if !strings.HasPrefix(userID, expertSessionUserIDPrefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(userID, expertSessionUserIDPrefix)
+	cut := strings.Index(rest, expertTaskSessionMark)
+	if cut < 0 {
+		return ""
+	}
+	return normalizeProjectSessionPath(rest[cut+len(expertTaskSessionMark):])
 }
 
 // expertDefCacheTTL bounds how long a resolved expert definition is reused.

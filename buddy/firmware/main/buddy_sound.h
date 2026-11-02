@@ -9,7 +9,8 @@ enum {
     BUDDY_SOUND_RUNNING = 0,
     BUDDY_SOUND_COMPLETE = 1,
     BUDDY_SOUND_STANDBY = 2,
-    BUDDY_SOUND_EVENT_COUNT = 3,
+    BUDDY_SOUND_ATTENTION = 3,
+    BUDDY_SOUND_EVENT_COUNT = 4,
 };
 
 typedef struct {
@@ -29,6 +30,10 @@ bool buddy_sound_available(void);
 /** Stores and persists the host-selected sound configuration. */
 void buddy_sound_set_config(const buddy_sound_config_t *cfg);
 void buddy_sound_get_config(buddy_sound_config_t *out);
+
+/** Flips the master switch, persists it, and returns the new value.
+ * A missing config lock leaves the device silent and returns false. */
+bool buddy_sound_toggle_master(void);
 
 /** Plays the configured effect for an event if the master and event switches
  * are on. Never blocks. */

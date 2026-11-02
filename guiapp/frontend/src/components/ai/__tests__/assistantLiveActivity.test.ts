@@ -539,6 +539,15 @@ describe('assistantLiveActivity', () => {
             modelId: 'auto',
             isHubService: true,
         })).toBe('MaClaw official auto model');
+        expect(assistantLiveActivityObject('accessing_model', 'mn', {
+            providerName: '智谱编程',
+            modelId: 'glm-5.3',
+        })).toBe('Zhipu glm-5.3 загвар');
+        expect(assistantLiveActivityObject('accessing_model', 'mn', {
+            providerName: 'hub-official',
+            modelId: 'auto',
+            isHubService: true,
+        })).toBe('MaClaw auto загвар');
         expect(assistantLiveActivityObject('calling_tool', 'zh-Hans', { toolName: 'ssh' })).toBe('');
         expect(assistantLiveActivityObject('calling_tool', 'zh-Hans', { toolName: 'nsfc-figure' })).toBe('');
         expect(assistantLiveActivityObject('remote_exec', 'zh-Hans', { toolName: 'ssh' })).toBe('ssh 工具');

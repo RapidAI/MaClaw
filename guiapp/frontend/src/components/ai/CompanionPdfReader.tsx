@@ -57,6 +57,8 @@ import {
     finishPdfTranslation,
     clampPdfTranslationPlace,
     loadPdfTranslationDrafts,
+    capPdfAnnotationDraft,
+    clipPdfAnnotationBody,
     loadPdfTranslations,
     newPdfTranslationId,
     notifyPdfAnnotationsChanged,
@@ -519,7 +521,7 @@ function markAt(marks: PdfMark[], page: number, x: number, y: number): PdfMark |
     return null;
 }
 
-type PdfMenuGlyphKind = "highlight" | "translate" | "copy" | "check" | "close" | "erase" | "note" | "bookmark";
+type PdfMenuGlyphKind = "highlight" | "translate" | "copy" | "check" | "close" | "erase" | "note" | "bookmark" | "discard";
 
 function PdfMenuGlyph({ kind }: { kind: PdfMenuGlyphKind }) {
     if (kind === "highlight") {
@@ -569,6 +571,14 @@ function PdfMenuGlyph({ kind }: { kind: PdfMenuGlyphKind }) {
         return (
             <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M7 4h10a1 1 0 0 1 1 1v15l-6-3.2L6 20V5a1 1 0 0 1 1-1z" />
+            </svg>
+        );
+    }
+    if (kind === "discard") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M9 7 4 12l5 5" />
+                <path d="M4 12h8.5a5 5 0 0 1 5 5" />
             </svg>
         );
     }
@@ -875,9 +885,22 @@ function PdfSelectionMenu({
                                 rows={3}
                                 placeholder={tailText(lang, "Write a note…", "写批注…")}
                                 style={{ resize: "vertical", minHeight: 64, font: "inherit", padding: "6px 8px" }}
-                                onChange={(event) => setAnnotationText(event.target.value)}
+                                onChange={(event) => {
+                                    const next = capPdfAnnotationDraft(event.target.value);
+                                    // At the budget, another character clips back to the same
+                                    // string. React then skips the update and the extra
+                                    // character stays on screen.
+                                    if (next !== event.target.value) event.target.value = next;
+                                    setAnnotationText(next);
+                                }}
                                 onKeyDown={(event) => {
                                     if (event.key === "Escape") {
+                                        // Escape dismisses an IME candidate. The draft stays.
+                                        // Stop the key so a fullscreen reader does not also exit.
+                                        if (pdfImeKey(event)) {
+                                            event.stopPropagation();
+                                            return;
+                                        }
                                         event.preventDefault();
                                         event.stopPropagation();
                                         setAnnotationOpen(false);
@@ -885,6 +908,8 @@ function PdfSelectionMenu({
                                         return;
                                     }
                                     if (event.key === "Enter" && !event.shiftKey) {
+                                        // Enter confirms an IME candidate. The note is not done.
+                                        if (pdfImeKey(event)) return;
                                         event.preventDefault();
                                         submitAnnotation();
                                     }
@@ -1326,6 +1351,271 @@ function PdfDrawingLayer({
     );
 }
 
+// Enter while an IME candidate is open must not save the note. keyCode 229 is
+// the signal some Windows editors send when isComposing is still false.
+function pdfImeKey(event: React.KeyboardEvent): boolean {
+    const native = event.nativeEvent;
+    return native.isComposing || native.keyCode === 229;
+}
+
+/**
+ * The open translation or note card. Edit and copy state live here so a
+ * keystroke does not reconcile the page's text layer.
+ */
+function PdfTranslationCard({
+    lang,
+    note,
+    above,
+    popStyle,
+    sized,
+    onToggle,
+    onUpdate,
+    onDragMouseDown,
+    onResizeMouseDown,
+    onEditingChange,
+}: {
+    lang: string;
+    note: ShownTranslation;
+    above: boolean;
+    popStyle: React.CSSProperties | undefined;
+    sized: boolean;
+    onToggle: () => void;
+    onUpdate: (id: string, text: string) => void;
+    onDragMouseDown: (event: React.MouseEvent) => void;
+    onResizeMouseDown: (event: React.MouseEvent) => void;
+    onEditingChange: (editing: boolean) => void;
+}) {
+    const annotation = note.kind === "annotation";
+    const canEdit = annotation && !note.pending && !note.shared;
+    const [editing, setEditing] = useState(false);
+    const [draft, setDraft] = useState("");
+    const [copied, setCopied] = useState(false);
+    const [copyFailed, setCopyFailed] = useState(false);
+    const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const alive = useRef(true);
+    useEffect(() => {
+        alive.current = true;
+        return () => {
+            alive.current = false;
+            if (copiedTimer.current) clearTimeout(copiedTimer.current);
+        };
+    }, []);
+    const stop = (event: React.MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+    };
+    const finishEdit = (next: boolean) => {
+        setEditing(next);
+        if (!next) setDraft("");
+        onEditingChange(next);
+    };
+    const commit = () => {
+        const body = clipPdfAnnotationBody(draft);
+        if (!body) return;
+        finishEdit(false);
+        // An unchanged body must not announce a share sync.
+        if (body !== note.translation) onUpdate(note.id, body);
+    };
+    const copyLabel = copyFailed
+        ? tailText(lang, "Copy failed", "复制失败")
+        : copied
+            ? tailText(lang, "Copied", "已复制")
+            : (annotation ? tailText(lang, "Copy note", "复制批注") : tailText(lang, "Copy translation", "复制译文"));
+    return (
+        <span
+            className={above ? "companion-pdf-translation-pop companion-pdf-translation-pop--above" : "companion-pdf-translation-pop"}
+            role="dialog"
+            aria-label={annotation ? tailText(lang, "Note", "批注") : tailText(lang, "Translation", "译文")}
+            data-testid={`pdf-translate-pop-${note.id}`}
+            data-pdf-translation-pop=""
+            data-annotation-editing={editing ? "true" : undefined}
+            style={popStyle}
+            onMouseDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+                if (!editing || event.key !== "Escape") return;
+                event.stopPropagation();
+                if (pdfImeKey(event)) return;
+                event.preventDefault();
+                finishEdit(false);
+            }}
+        >
+            <span className="companion-pdf-translation-chrome" onMouseDown={onDragMouseDown}>
+                <span
+                    className="companion-pdf-translation-grip"
+                    data-pdf-translation-grip=""
+                    title={tailText(lang, "Drag", "拖动")}
+                    aria-hidden="true"
+                />
+                <span className="companion-pdf-translation-head">
+                    <span className="companion-pdf-translation-kicker">
+                        {annotation ? tailText(lang, "Note", "批注") : note.pending ? tailText(lang, "Translating…", "正在翻译") : tailText(lang, "Chinese translation", "中文译文")}
+                    </span>
+                    <span className="companion-pdf-translation-actions">
+                        {editing ? (
+                            <>
+                                <button
+                                    type="button"
+                                    className="companion-pdf-translation-action"
+                                    data-testid={`pdf-annotation-edit-confirm-${note.id}`}
+                                    title={tailText(lang, "Confirm edit", "确定")}
+                                    aria-label={tailText(lang, "Confirm edit", "确定")}
+                                    disabled={!draft.trim()}
+                                    onMouseDown={stop}
+                                    onClick={commit}
+                                >
+                                    <PdfMenuGlyph kind="check" />
+                                </button>
+                                <button
+                                    type="button"
+                                    className="companion-pdf-translation-action"
+                                    data-testid={`pdf-annotation-edit-discard-${note.id}`}
+                                    title={tailText(lang, "Discard edit", "放弃")}
+                                    aria-label={tailText(lang, "Discard edit", "放弃")}
+                                    onMouseDown={stop}
+                                    onClick={() => finishEdit(false)}
+                                >
+                                    <PdfMenuGlyph kind="discard" />
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                {canEdit ? (
+                                    <button
+                                        type="button"
+                                        className="companion-pdf-translation-action"
+                                        data-testid={`pdf-annotation-edit-${note.id}`}
+                                        title={tailText(lang, "Edit note", "编辑批注")}
+                                        aria-label={tailText(lang, "Edit note", "编辑批注")}
+                                        onMouseDown={stop}
+                                        onClick={() => {
+                                            setDraft(note.translation);
+                                            finishEdit(true);
+                                        }}
+                                    >
+                                        <PdfMenuGlyph kind="note" />
+                                    </button>
+                                ) : null}
+                                <button
+                                    type="button"
+                                    className="companion-pdf-translation-action"
+                                    data-testid={`pdf-translate-copy-${note.id}`}
+                                    data-copy-state={copyFailed ? "failed" : copied ? "copied" : undefined}
+                                    title={copyLabel}
+                                    aria-label={copyLabel}
+                                    disabled={note.pending || !note.translation}
+                                    onMouseDown={stop}
+                                    onClick={() => {
+                                        void copyTextToClipboard(note.translation).then((ok) => {
+                                            if (!alive.current) return;
+                                            if (copiedTimer.current) clearTimeout(copiedTimer.current);
+                                            if (!ok) {
+                                                setCopied(false);
+                                                setCopyFailed(true);
+                                                copiedTimer.current = setTimeout(() => {
+                                                    if (alive.current) setCopyFailed(false);
+                                                }, 1600);
+                                                return;
+                                            }
+                                            setCopyFailed(false);
+                                            setCopied(true);
+                                            copiedTimer.current = setTimeout(() => {
+                                                if (alive.current) setCopied(false);
+                                            }, 1400);
+                                        });
+                                    }}
+                                >
+                                    <PdfMenuGlyph kind={copied ? "check" : "copy"} />
+                                </button>
+                                <button
+                                    type="button"
+                                    className="companion-pdf-translation-action"
+                                    data-testid={`pdf-translate-close-${note.id}`}
+                                    title={tailText(lang, "Close", "关闭")}
+                                    aria-label={annotation ? tailText(lang, "Close note", "关闭批注") : tailText(lang, "Close translation", "关闭译文")}
+                                    onMouseDown={stop}
+                                    onClick={onToggle}
+                                >
+                                    <PdfMenuGlyph kind="close" />
+                                </button>
+                            </>
+                        )}
+                    </span>
+                </span>
+            </span>
+            <span className="companion-pdf-translation-body" data-sized={sized ? "true" : undefined} style={sized ? { flex: "1 1 auto", minHeight: 0, overflow: "auto" } : undefined}>
+                {editing ? (
+                    <textarea
+                        className="companion-pdf-translation-edit"
+                        data-testid={`pdf-annotation-edit-input-${note.id}`}
+                        data-pdf-annotation-edit=""
+                        value={draft}
+                        autoFocus
+                        rows={3}
+                        aria-label={tailText(lang, "Edit note", "编辑批注")}
+                        onChange={(event) => {
+                            const next = capPdfAnnotationDraft(event.target.value);
+                            if (next !== event.target.value) event.target.value = next;
+                            setDraft(next);
+                        }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                                event.stopPropagation();
+                                if (pdfImeKey(event)) return;
+                                event.preventDefault();
+                                finishEdit(false);
+                                return;
+                            }
+                            if (event.key === "Enter" && !event.shiftKey) {
+                                if (pdfImeKey(event)) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                commit();
+                            }
+                        }}
+                    />
+                ) : (
+                    <>
+                        {!note.pending && note.clipped ? <span className="companion-pdf-translation-clip">{tailText(lang, "Only the first 4,000 characters were translated", "仅翻译了前 4000 字")}</span> : null}
+                        {note.pending ? (
+                            <span className="companion-pdf-translation-skeleton" aria-hidden="true">
+                                <span />
+                                <span />
+                                <span />
+                            </span>
+                        ) : note.translation}
+                    </>
+                )}
+            </span>
+            {!note.pending && note.text ? (
+                <span className="companion-pdf-translation-source" style={sized ? { flex: "0 0 auto" } : undefined} title={note.text}>
+                    <span className="companion-pdf-translation-source-label">{tailText(lang, "Source", "原文")}</span>
+                    {note.text}
+                </span>
+            ) : null}
+            <span
+                data-pdf-translation-resize=""
+                title={tailText(lang, "Resize", "调整大小")}
+                aria-hidden="true"
+                onMouseDown={onResizeMouseDown}
+                style={{
+                    position: "absolute",
+                    right: 2,
+                    bottom: 2,
+                    width: 14,
+                    height: 14,
+                    cursor: "nwse-resize",
+                    zIndex: 4,
+                    borderRight: "2px solid currentColor",
+                    borderBottom: "2px solid currentColor",
+                    opacity: 0.45,
+                    pointerEvents: "auto",
+                }}
+            />
+        </span>
+    );
+}
+
 function PdfPageView({
     lang,
     pdf,
@@ -1343,6 +1633,7 @@ function PdfPageView({
     onToggleNote,
     onPlaceNote,
     onResizeNote,
+    onUpdateAnnotation,
     bookmarks,
     onJumpBookmark,
     active,
@@ -1363,6 +1654,7 @@ function PdfPageView({
     onToggleNote: (id: string) => void;
     onPlaceNote: (id: string, place: PdfTranslationPlace | null) => void;
     onResizeNote: (id: string, size: PdfTranslationSize | null) => void;
+    onUpdateAnnotation: (id: string, text: string) => void;
     bookmarks: PdfBookmark[];
     onJumpBookmark: (bookmark: PdfBookmark) => void;
     active: boolean;
@@ -1374,11 +1666,11 @@ function PdfPageView({
     // The live offset is imperative. A re-render commits the last saved place
     // and would pull the card back before the pointer is released.
     const dragVisualRef = useRef<{ span: HTMLElement; x: number; y: number } | null>(null);
-    const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [page, setPage] = useState<PdfPage | null>(null);
     const [popAbove, setPopAbove] = useState(false);
-    const [copiedId, setCopiedId] = useState("");
-    const [copyFailedId, setCopyFailedId] = useState("");
+    // Flips only when edit mode starts or ends, so the card can be scrolled
+    // into view without re-rendering the page on each keystroke.
+    const [noteEditing, setNoteEditing] = useState(false);
     const [items, setItems] = useState<PdfTextItem[]>([]);
     const [natural, setNatural] = useState({ width: 612, height: 792 });
 
@@ -1482,11 +1774,14 @@ function PdfPageView({
         if (hidden <= 1 || popScrollKey.current === key) return;
         popScrollKey.current = key;
         scroller.scrollTop += hidden;
-    }, [openNoteId, openHere?.translation, openHere?.pending, openHere?.clipped, openHere?.place?.x, openHere?.place?.y, openHere?.place?.above, width, viewport.width, viewport.height]);
+    }, [openNoteId, noteEditing, openHere?.translation, openHere?.pending, openHere?.clipped, openHere?.place?.x, openHere?.place?.y, openHere?.place?.above, width, viewport.width, viewport.height]);
+
+    useEffect(() => {
+        setNoteEditing(false);
+    }, [openNoteId]);
 
     useEffect(() => () => {
         dragStopRef.current?.();
-        if (copiedTimer.current) clearTimeout(copiedTimer.current);
     }, []);
 
     const startPopDrag = (event: React.MouseEvent, note: ShownTranslation) => {
@@ -1782,112 +2077,18 @@ function PdfPageView({
                             </button>
                         ) : null}
                         {iconHere && index === 0 && openNoteId === note.id ? (
-                            <span
-                                className={(note.place ? note.place.above === true : popAbove) ? "companion-pdf-translation-pop companion-pdf-translation-pop--above" : "companion-pdf-translation-pop"}
-                                role="dialog"
-                                aria-label={annotation ? tailText(lang, "Note", "批注") : tailText(lang, "Translation", "译文")}
-                                data-testid={`pdf-translate-pop-${note.id}`}
-                                data-pdf-translation-pop=""
-                                style={popStyle}
-                                onMouseDown={(event) => event.stopPropagation()}
-                            >
-                                <span
-                                    className="companion-pdf-translation-chrome"
-                                    onMouseDown={(event) => startPopDrag(event, note)}
-                                >
-                                <span
-                                    className="companion-pdf-translation-grip"
-                                    data-pdf-translation-grip=""
-                                    title={tailText(lang, "Drag", "拖动")}
-                                    aria-hidden="true"
-                                />
-                                <span className="companion-pdf-translation-head">
-                                    <span className="companion-pdf-translation-kicker">
-                                        {annotation ? tailText(lang, "Note", "批注") : note.pending ? tailText(lang, "Translating…", "正在翻译") : tailText(lang, "Chinese translation", "中文译文")}
-                                    </span>
-                                    <span className="companion-pdf-translation-actions">
-                                        <button
-                                            type="button"
-                                            className="companion-pdf-translation-action"
-                                            data-testid={`pdf-translate-copy-${note.id}`}
-                                            data-copy-state={copyFailedId === note.id ? "failed" : copiedId === note.id ? "copied" : undefined}
-                                            title={copyFailedId === note.id ? tailText(lang, "Copy failed", "复制失败") : copiedId === note.id ? tailText(lang, "Copied", "已复制") : (annotation ? tailText(lang, "Copy note", "复制批注") : tailText(lang, "Copy translation", "复制译文"))}
-                                            aria-label={copyFailedId === note.id ? tailText(lang, "Copy failed", "复制失败") : copiedId === note.id ? tailText(lang, "Copied", "已复制") : (annotation ? tailText(lang, "Copy note", "复制批注") : tailText(lang, "Copy translation", "复制译文"))}
-                                            disabled={note.pending || !note.translation}
-                                            onMouseDown={(event) => {
-                                                event.preventDefault();
-                                                event.stopPropagation();
-                                            }}
-                                            onClick={() => {
-                                                void copyTextToClipboard(note.translation).then((ok) => {
-                                                    if (copiedTimer.current) clearTimeout(copiedTimer.current);
-                                                    if (!ok) {
-                                                        setCopiedId("");
-                                                        setCopyFailedId(note.id);
-                                                        copiedTimer.current = setTimeout(() => setCopyFailedId(""), 1600);
-                                                        return;
-                                                    }
-                                                    setCopyFailedId("");
-                                                    setCopiedId(note.id);
-                                                    copiedTimer.current = setTimeout(() => setCopiedId(""), 1400);
-                                                });
-                                            }}
-                                        >
-                                            <PdfMenuGlyph kind={copiedId === note.id ? "check" : "copy"} />
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className="companion-pdf-translation-action"
-                                            data-testid={`pdf-translate-close-${note.id}`}
-                                            title={tailText(lang, "Close", "关闭")}
-                                            aria-label={annotation ? tailText(lang, "Close note", "关闭批注") : tailText(lang, "Close translation", "关闭译文")}
-                                            onMouseDown={(event) => {
-                                                event.preventDefault();
-                                                event.stopPropagation();
-                                            }}
-                                            onClick={() => onToggleNote(note.id)}
-                                        >
-                                            <PdfMenuGlyph kind="close" />
-                                        </button>
-                                    </span>
-                                </span>
-                                </span>
-                                <span className="companion-pdf-translation-body" style={sized ? { flex: "1 1 auto", minHeight: 0, overflow: "auto" } : undefined}>
-                                    {!note.pending && note.clipped ? <span className="companion-pdf-translation-clip">{tailText(lang, "Only the first 4,000 characters were translated", "仅翻译了前 4000 字")}</span> : null}
-                                    {note.pending ? (
-                                        <span className="companion-pdf-translation-skeleton" aria-hidden="true">
-                                            <span />
-                                            <span />
-                                            <span />
-                                        </span>
-                                    ) : note.translation}
-                                </span>
-                                {!note.pending && note.text ? (
-                                    <span className="companion-pdf-translation-source" style={sized ? { flex: "0 0 auto" } : undefined} title={note.text}>
-                                        <span className="companion-pdf-translation-source-label">{tailText(lang, "Source", "原文")}</span>
-                                        {note.text}
-                                    </span>
-                                ) : null}
-                                <span
-                                    data-pdf-translation-resize=""
-                                    title={tailText(lang, "Resize", "调整大小")}
-                                    aria-hidden="true"
-                                    onMouseDown={(event) => startPopResize(event, note)}
-                                    style={{
-                                        position: "absolute",
-                                        right: 2,
-                                        bottom: 2,
-                                        width: 14,
-                                        height: 14,
-                                        cursor: "nwse-resize",
-                                        zIndex: 4,
-                                        borderRight: "2px solid currentColor",
-                                        borderBottom: "2px solid currentColor",
-                                        opacity: 0.45,
-                                        pointerEvents: "auto",
-                                    }}
-                                />
-                            </span>
+                            <PdfTranslationCard
+                                lang={lang}
+                                note={note}
+                                above={note.place ? note.place.above === true : popAbove}
+                                popStyle={popStyle}
+                                sized={sized}
+                                onToggle={() => onToggleNote(note.id)}
+                                onUpdate={onUpdateAnnotation}
+                                onDragMouseDown={(event) => startPopDrag(event, note)}
+                                onResizeMouseDown={(event) => startPopResize(event, note)}
+                                onEditingChange={setNoteEditing}
+                            />
                         ) : null}
                     </span>
                 ));
@@ -2841,6 +3042,10 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         if (!openNoteId) return undefined;
         const onKey = (event: KeyboardEvent) => {
             if (event.key !== "Escape") return;
+            // Escape anywhere in an open edit drops the draft and leaves the
+            // card up. The card handles that; this listener must not close it.
+            const target = event.target as HTMLElement | null;
+            if (target?.closest?.("[data-annotation-editing='true']")) return;
             event.preventDefault();
             event.stopPropagation();
             setOpenNoteId("");
@@ -3091,6 +3296,22 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         setMenu(null);
         window.getSelection()?.removeAllRanges();
         notifyPdfAnnotationsChanged(absPath);
+    };
+
+    // Rewrites the note body and announces it the same way a new note does, so
+    // a hosted share pushes the text to participants. A received note is the
+    // host's copy; the next project sync would replace a local edit, so it is
+    // left unchanged and is not announced.
+    const updateAnnotation = (id: string, noteText: string) => {
+        const body = clipPdfAnnotationBody(noteText);
+        if (!id || !body) return;
+        const stored = loadPdfTranslations(pathRef.current);
+        const target = stored.find((item) => item.id === id);
+        if (!target || target.kind !== "annotation" || target.shared) return;
+        if (target.translation === body) return;
+        const next = stored.map((item) => (item.id === id ? { ...item, translation: body } : item));
+        savePdfTranslations(pathRef.current, next);
+        notifyPdfAnnotationsChanged(pathRef.current);
     };
 
     const resizeNote = (id: string, size: PdfTranslationSize | null) => {
@@ -3450,6 +3671,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                         onToggleNote={toggleNote}
                         onPlaceNote={placeNote}
                         onResizeNote={resizeNote}
+                        onUpdateAnnotation={updateAnnotation}
                         bookmarks={bookmarks}
                         onJumpBookmark={jumpBookmark}
                         active={page === 1 || seen[page] === true}

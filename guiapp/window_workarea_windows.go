@@ -37,6 +37,11 @@ var (
 	procGetWindowThreadProcessIdWA = workAreaUser32.NewProc("GetWindowThreadProcessId")
 	procIsWindowVisibleWA          = workAreaUser32.NewProc("IsWindowVisible")
 	procGetCurrentProcessIdWA      = workAreaKernel32.NewProc("GetCurrentProcessId")
+	procShowWindowRestore          = workAreaUser32.NewProc("ShowWindow")
+	procGetWindowLongWRestore      = workAreaUser32.NewProc("GetWindowLongW")
+	procSetWindowLongWRestore      = workAreaUser32.NewProc("SetWindowLongW")
+	procSendMessageWRestore        = workAreaUser32.NewProc("SendMessageW")
+	procGetClientRectRestore       = workAreaUser32.NewProc("GetClientRect")
 )
 
 const (
@@ -46,6 +51,13 @@ const (
 	swpNoActivate           = 0x0010
 	gwOwner                 = 4 // GW_OWNER — skip owned popups/tool windows
 	swShowMaximized         = 3 // SW_SHOWMAXIMIZED — keep clamp from restoring
+	swShowNormal            = 1 // SW_SHOWNORMAL
+	swRestore               = 9 // SW_RESTORE — leaves WS_MAXIMIZE before SetWindowPos
+	swpFrameChanged         = 0x0020
+	wsMaximizeStyle         = 0x01000000
+	wmSizeRestore           = 0x0005
+	sizeRestored            = 0
+	spiGetWorkArea          = 0x0030 // primary monitor work origin; workspace coords use it
 )
 
 type workAreaRect struct {
@@ -87,6 +99,10 @@ var (
 	clampRunMu  sync.Mutex
 	lastClampAt time.Time
 	clampMinGap = 40 * time.Millisecond
+
+	// windowGeometryMu keeps clamp and restore from applying two rects at once.
+	// The 80ms/250ms reassert otherwise overlaps the first restore.
+	windowGeometryMu sync.Mutex
 
 	// enumSearch holds state for the single EnumWindows callback.
 	// Go's syscall.NewCallback pins forever — create it once only.
@@ -176,6 +192,10 @@ func (a *App) ClampMaximizedWindowToWorkArea() {
 	if a == nil || a.ctx == nil {
 		return
 	}
+	// Same lock as restore, and acquired before findMainWindowHWND, so the
+	// two calls cannot lock the enum mutex in opposite orders.
+	windowGeometryMu.Lock()
+	defer windowGeometryMu.Unlock()
 
 	hwnd := findMainWindowHWND()
 	if hwnd == 0 {
@@ -338,6 +358,245 @@ func windowRectOverflowsWorkArea(cur, work workAreaRect) bool {
 	// Overflow under taskbar / off-screen edges.
 	return cur.Left < work.Left-1 || cur.Top < work.Top-1 ||
 		cur.Right > work.Right+1 || cur.Bottom > work.Bottom+1
+}
+
+// scaleLogicalToPhysical converts a Wails WindowGetSize value (96-DPI logical
+// pixels) into the physical pixels SetWindowPos expects.
+func scaleLogicalToPhysical(px int, dpi uint32) int {
+	if px <= 0 {
+		return 0
+	}
+	if dpi == 0 {
+		dpi = defaultWindowsDPI
+	}
+	return (px * int(dpi)) / int(defaultWindowsDPI)
+}
+
+// planRestoredPlacement rewrites a placement that is still SW_SHOWMAXIMIZED.
+// Any other show command, including minimized, is left alone. normal and
+// target are both workspace coordinates. A rect already within 2px is kept
+// so a rounding difference does not replace the OS workspace rect. Any other
+// position or size is replaced so SetWindowPlacement cannot flash the
+// work-area frame.
+func planRestoredPlacement(current uint32, normal, target workAreaRect) (workAreaRect, uint32, bool) {
+	if current != swShowMaximized {
+		return normal, current, false
+	}
+	tw := int(target.Right - target.Left)
+	th := int(target.Bottom - target.Top)
+	if tw <= 0 || th <= 0 {
+		return normal, current, false
+	}
+	if rectsNear(normal, target) {
+		return normal, swShowNormal, true
+	}
+	return target, swShowNormal, true
+}
+
+func rectsNear(a, b workAreaRect) bool {
+	return abs32(a.Left-b.Left) <= 2 && abs32(a.Top-b.Top) <= 2 &&
+		abs32(a.Right-b.Right) <= 2 && abs32(a.Bottom-b.Bottom) <= 2
+}
+
+// RestoreMainWindowGeometry leaves the maximized state and applies the
+// pre-maximize screen rect, then asks WebView2 to fill that client area.
+//
+// WindowSetSize/MoveWindow while WS_MAXIMIZE is still set does not shrink the
+// visible frame. WebView2 then keeps a restored-size view anchored to the
+// bottom-right, and the rest of the frameless window paints the native
+// background (#f3f5f7). width and height are logical pixels, the same values
+// WindowGetSize returns. x and y are screen pixels from WindowGetPosition.
+func (a *App) RestoreMainWindowGeometry(x, y, width, height int) {
+	if !restoreMainWindowGeometry(x, y, width, height) {
+		log.Printf("[window] restore %d,%d %dx%d failed", x, y, width, height)
+	}
+}
+
+func restoreMainWindowGeometry(x, y, width, height int) bool {
+	if width < 160 || height < 120 {
+		return false
+	}
+	windowGeometryMu.Lock()
+	defer windowGeometryMu.Unlock()
+	hwnd := findMainWindowHWND()
+	if hwnd == 0 {
+		return false
+	}
+	// A reassert at 80ms/250ms must not pull a window the user just minimized
+	// back onto the desktop.
+	if iconic, _, _ := procIsIconicWA.Call(hwnd); iconic != 0 {
+		return true
+	}
+	// WindowGetSize was captured on this monitor. Read its DPI before
+	// SW_RESTORE, which can jump to the placement monitor and report another scale.
+	dpi := windowDPI(hwnd)
+	pw := scaleLogicalToPhysical(width, dpi)
+	ph := scaleLogicalToPhysical(height, dpi)
+	if pw < 160 || ph < 120 {
+		return false
+	}
+	if info, found := monitorInfoForRect(rectFromOrigin(x, y, pw, ph)); found {
+		x, y = placeOriginInWorkArea(x, y, pw, ph, info.RcMonitor, info.RcWork)
+	}
+	zoomed, _, _ := procIsZoomedWA.Call(hwnd)
+	if zoomed == 0 && windowOuterNear(hwnd, x, y, pw, ph) {
+		// Already restored. ShowWindow would steal focus. Still clear a
+		// leftover SW_SHOWMAXIMIZED placement, then put the screen rect back
+		// because SetWindowPlacement positions from workspace coordinates.
+		if markPlacementShownNormal(hwnd, x, y, pw, ph) {
+			if !setWindowScreenRect(hwnd, x, y, pw, ph) || !windowOuterNear(hwnd, x, y, pw, ph) {
+				return false
+			}
+			refitWebViewAfterRestore(hwnd)
+		}
+		return true
+	}
+	leaveMaximizedForRestore(hwnd)
+	// Measure after SW_RESTORE. That call already generated WM_SIZE, so a
+	// later SetWindowPos to the same outer size will not. The WebView can
+	// still be sitting in the bottom-right until something refits it.
+	beforeW, beforeH := windowOuterSize(hwnd)
+	if !setWindowScreenRect(hwnd, x, y, pw, ph) {
+		return false
+	}
+	// SetWindowPlacement applies rcNormalPosition and can undo the screen
+	// point above. Put the target rect back when the show command changes.
+	if markPlacementShownNormal(hwnd, x, y, pw, ph) && !setWindowScreenRect(hwnd, x, y, pw, ph) {
+		return false
+	}
+	if zoomed, _, _ := procIsZoomedWA.Call(hwnd); zoomed != 0 {
+		return false
+	}
+	// SetWindowPos can report success and leave the maximized frame in place.
+	// Refitting then reads that client rect and pins the page to its corner.
+	if !windowOuterNear(hwnd, x, y, pw, ph) {
+		return false
+	}
+	afterW, afterH := windowOuterSize(hwnd)
+	// A real size change already went through WM_SIZE. Refit only when that
+	// message was skipped, or when the before-size could not be measured.
+	if beforeW <= 0 || beforeH <= 0 || (beforeW == afterW && beforeH == afterH) {
+		refitWebViewAfterRestore(hwnd)
+	}
+	log.Printf("[window] restored normal frame to %d,%d %dx%d (logical %dx%d dpi %d)", x, y, pw, ph, width, height, dpi)
+	return true
+}
+
+func windowOuterNear(hwnd uintptr, x, y, width, height int) bool {
+	var rc workAreaRect
+	if ok, _, _ := procGetWindowRectWA.Call(hwnd, uintptr(unsafe.Pointer(&rc))); ok == 0 {
+		return false
+	}
+	return abs32(rc.Left-int32(x)) <= 2 && abs32(rc.Top-int32(y)) <= 2 &&
+		abs32((rc.Right-rc.Left)-int32(width)) <= 2 && abs32((rc.Bottom-rc.Top)-int32(height)) <= 2
+}
+
+func windowOuterSize(hwnd uintptr) (int, int) {
+	var rc workAreaRect
+	if ok, _, _ := procGetWindowRectWA.Call(hwnd, uintptr(unsafe.Pointer(&rc))); ok == 0 {
+		return 0, 0
+	}
+	return int(rc.Right - rc.Left), int(rc.Bottom - rc.Top)
+}
+
+func setWindowScreenRect(hwnd uintptr, x, y, width, height int) bool {
+	px, py := screenPositionParams(x, y)
+	flags := uintptr(swpNoZOrder | swpNoActivate | swpFrameChanged)
+	ret, _, _ := procSetWindowPosWA.Call(hwnd, 0, px, py, uintptr(width), uintptr(height), flags)
+	return ret != 0
+}
+
+func windowDPI(hwnd uintptr) uint32 {
+	if hwnd != 0 && procGetDpiForWindowInset.Find() == nil {
+		if dpi, _, _ := procGetDpiForWindowInset.Call(hwnd); dpi != 0 {
+			return uint32(dpi)
+		}
+	}
+	return defaultWindowsDPI
+}
+
+func leaveMaximizedForRestore(hwnd uintptr) {
+	zoomed, _, _ := procIsZoomedWA.Call(hwnd)
+	if zoomed == 0 {
+		// Already normal. SW_RESTORE would activate the window again on the
+		// 80ms/250ms reassert and steal focus.
+		return
+	}
+	procShowWindowRestore.Call(hwnd, swRestore)
+	zoomed, _, _ = procIsZoomedWA.Call(hwnd)
+	if zoomed == 0 {
+		return
+	}
+	// SW_RESTORE can no-op when clamp stored ShowCmd=SW_SHOWMAXIMIZED.
+	// Clear the style so the following SetWindowPos is allowed to shrink.
+	// GWL_STYLE is -16. Sign-extend it; a bare negative constant does not fit in uintptr.
+	gwlStyle := ^uintptr(15)
+	style, _, _ := procGetWindowLongWRestore.Call(hwnd, gwlStyle)
+	if style&wsMaximizeStyle == 0 {
+		return
+	}
+	procSetWindowLongWRestore.Call(hwnd, gwlStyle, style&^uintptr(wsMaximizeStyle))
+}
+
+func markPlacementShownNormal(hwnd uintptr, x, y, targetW, targetH int) bool {
+	place, ok := readWindowPlacement(hwnd)
+	if !ok {
+		return false
+	}
+	// rcNormalPosition is workspace coordinates. Screen points differ by the
+	// primary work-area origin (taskbar on the top or left).
+	ox, oy := primaryWorkOrigin()
+	target := screenRectToWorkspace(rectFromOrigin(x, y, targetW, targetH), ox, oy)
+	nextRect, nextCmd, update := planRestoredPlacement(place.ShowCmd, place.NormalPosition, target)
+	if !update {
+		return false
+	}
+	place.NormalPosition = nextRect
+	place.ShowCmd = nextCmd
+	place.Length = uint32(unsafe.Sizeof(place))
+	ret, _, _ := procSetWindowPlacementWA.Call(hwnd, uintptr(unsafe.Pointer(&place)))
+	return ret != 0
+}
+
+func refitWebViewAfterRestore(hwnd uintptr) {
+	// chromium.Resize reads the client rect itself. This message only has to
+	// reach the size handler when SetWindowPos did not change the outer size
+	// (the WebView is already stuck in the bottom-right of a matching frame).
+	var client workAreaRect
+	if ok, _, _ := procGetClientRectRestore.Call(hwnd, uintptr(unsafe.Pointer(&client))); ok == 0 {
+		return
+	}
+	w := client.Right - client.Left
+	h := client.Bottom - client.Top
+	if w <= 0 || h <= 0 {
+		return
+	}
+	// WM_SIZE packs the client size into two 16-bit words. A side that does not
+	// fit is left at 0; the refit reads the client rect itself.
+	var lparam uintptr
+	if w > 0 && h > 0 && w <= 0xFFFF && h <= 0xFFFF {
+		lparam = uintptr(uint32(w) | uint32(h)<<16)
+	}
+	procSendMessageWRestore.Call(hwnd, wmSizeRestore, sizeRestored, lparam)
+}
+
+func primaryWorkOrigin() (int32, int32) {
+	var rc workAreaRect
+	r, _, _ := procSystemParametersInfoW.Call(spiGetWorkArea, 0, uintptr(unsafe.Pointer(&rc)), 0)
+	if r == 0 {
+		return 0, 0
+	}
+	return rc.Left, rc.Top
+}
+
+// screenRectToWorkspace converts a screen rect into the workspace coordinates
+// WINDOWPLACEMENT stores. origin is the primary monitor work-area origin.
+func screenRectToWorkspace(screen workAreaRect, originX, originY int32) workAreaRect {
+	screen.Left -= originX
+	screen.Top -= originY
+	screen.Right -= originX
+	screen.Bottom -= originY
+	return screen
 }
 
 // SetMainWindowScreenPosition moves the main window to a screen point from

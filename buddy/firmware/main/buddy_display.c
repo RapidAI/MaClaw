@@ -75,6 +75,7 @@ static SemaphoreHandle_t s_transfer_done;
 static uint16_t *s_fb;
 static int64_t s_last_activity_ms;
 static bool s_awake = true;
+static bool s_dimmed;
 
 // DMA staging area: esp_lcd needs an internal bounce buffer because PSRAM DMA
 // is not usable on either panel's SPI path. Sized for the panel, not the
@@ -240,6 +241,22 @@ esp_err_t buddy_display_init(void) {
 uint16_t *buddy_display_framebuffer(void) { return s_fb; }
 int buddy_display_width(void) { return CANVAS_WIDTH; }
 int buddy_display_height(void) { return CANVAS_HEIGHT; }
+int buddy_display_glass_width(void) { return LCD_WIDTH; }
+int buddy_display_glass_height(void) { return LCD_HEIGHT; }
+bool buddy_display_glass_round(void) {
+#if CONFIG_BUDDY_PANEL_NV3023_240
+    return false;
+#else
+    return true;
+#endif
+}
+const char *buddy_display_panel_id(void) {
+#if CONFIG_BUDDY_PANEL_NV3023_240
+    return "nv3023-240";
+#else
+    return "st77916-360";
+#endif
+}
 
 /* Copies one canvas row band into the stripe at canvas geometry, or a
  * nearest-neighbour reduction of it when the module is smaller than the
@@ -293,36 +310,42 @@ void buddy_display_flush_rows(int y0, int y1) {
 
 void buddy_display_note_activity(void) {
     s_last_activity_ms = esp_timer_get_time() / 1000;
-    if (!s_awake) {
+    if (!s_awake || s_dimmed) {
         set_backlight(BACKLIGHT_DEFAULT_PERCENT);
         s_awake = true;
+        s_dimmed = false;
     }
 }
 
 bool buddy_display_awake(void) { return s_awake; }
+bool buddy_display_resting(void) { return s_dimmed || !s_awake; }
 
 void buddy_display_wake(void) { buddy_display_note_activity(); }
 
 void buddy_display_tick(void) {
-    const int64_t idle_ms = (esp_timer_get_time() / 1000) - s_last_activity_ms;
-    static bool dimmed = false;
+    /* Re-read after deciding. A touch on the other task can land between the
+     * first sample and the backlight write; acting on the stale sample would
+     * dim or blank a glass the user just woke. */
+    int64_t idle_ms = (esp_timer_get_time() / 1000) - s_last_activity_ms;
     if (idle_ms >= BACKLIGHT_OFF_AFTER_MS) {
-        if (s_awake) {
+        idle_ms = (esp_timer_get_time() / 1000) - s_last_activity_ms;
+        if (idle_ms >= BACKLIGHT_OFF_AFTER_MS && s_awake) {
             set_backlight(0);
             s_awake = false;
-            dimmed = false;
+            s_dimmed = false;
         }
         return;
     }
     if (idle_ms >= BACKLIGHT_DIM_AFTER_MS) {
-        if (s_awake && !dimmed) {
+        idle_ms = (esp_timer_get_time() / 1000) - s_last_activity_ms;
+        if (idle_ms >= BACKLIGHT_DIM_AFTER_MS && s_awake && !s_dimmed) {
             set_backlight(BACKLIGHT_DIM_PERCENT);
-            dimmed = true;
+            s_dimmed = true;
         }
         return;
     }
-    if (dimmed) {
+    if (s_dimmed) {
         set_backlight(BACKLIGHT_DEFAULT_PERCENT);
-        dimmed = false;
+        s_dimmed = false;
     }
 }

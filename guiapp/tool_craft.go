@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
@@ -34,22 +35,30 @@ type craftRuntimeAvailability struct {
 }
 
 type craftToolRequest struct {
-	Task               string
-	OriginalTask       string
-	UserPrompt         string
-	Instructions       string
-	Language           string
-	RuntimeLanguage    string
-	WorkingDir         string
-	ExpectedArtifacts  []string
-	VerificationMode   string
-	RegisterPolicy     string
-	SkillName          string
-	Timeout            int
-	MaxAttempts        int
-	ExtraEnv           map[string]string
-	SaveAsSkill        bool
-	ShouldAutoRegister bool
+	Task                     string
+	OriginalTask             string
+	UserPrompt               string
+	Instructions             string
+	Language                 string
+	RuntimeLanguage          string
+	WorkingDir               string
+	ExpectedArtifacts        []string
+	VerificationMode         string
+	RegisterPolicy           string
+	SkillName                string
+	Timeout                  int
+	MaxAttempts              int
+	ExtraEnv                 map[string]string
+	SaveAsSkill              bool
+	ShouldAutoRegister       bool
+	OmitWorkingDirFromPrompt bool
+	MinimalEnv               bool
+	// OutputRuneLimit raises the execution-output cap. Zero keeps the
+	// historical 4096-byte cap used by ordinary craft_tool calls.
+	OutputRuneLimit int
+	// DiscardScript deletes the generated file after it runs. Companion
+	// extraction is one-shot and must not leave a script in the data directory.
+	DiscardScript bool
 }
 
 type craftAttemptResult struct {
@@ -312,6 +321,19 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 			lastAttempt = craftAttemptResult{Language: request.Language, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "LLM 未能生成有效脚本"}
 			break
 		}
+		if request.MinimalEnv && fileCompanionCraftScriptEscapes(script) {
+			lastAttempt = craftAttemptResult{
+				Script:              script,
+				Language:            request.Language,
+				Attempts:            attempt,
+				VerificationStatus:  craftVerificationExecutionFailed,
+				VerificationMessage: "脚本只能读取 FILE_COMPANION_DOCUMENT 指向的文档副本，不能走到上级目录，不能启动别的程序，也不能访问网络。请改成只读这个副本，并把结果打印到 stdout。",
+			}
+			if !shouldRetryCraftAttempt(request, lastAttempt, attempt, attempts) {
+				break
+			}
+			continue
+		}
 		if languageErr := validateCraftScriptLanguage(script, request.Language); languageErr != nil {
 			lastAttempt = craftAttemptResult{
 				Script:              script,
@@ -342,7 +364,7 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 		}
 
 		sendProgress(formatCraftExecutionProgress(request.Language, attempt, attempts, request.Timeout))
-		output, execErr := executeScriptWithContext(ctx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes, request.ExtraEnv)
+		output, execErr := executeScriptWithContext(ctx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes, request.ExtraEnv, request.MinimalEnv)
 		lastAttempt = craftAttemptResult{
 			ScriptPath: scriptPath,
 			Script:     script,
@@ -351,6 +373,7 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 			ExecErr:    execErr,
 			Attempts:   attempt,
 		}
+		craftDiscardScript(request, &lastAttempt)
 		verification := verifyCraftExecution(request, lastAttempt)
 		lastAttempt.VerificationStatus = verification.VerificationStatus
 		lastAttempt.VerificationMessage = verification.VerificationMessage
@@ -379,20 +402,24 @@ func buildCraftToolRequest(args map[string]interface{}, runtimes craftRuntimeAva
 	userPrompt := strings.TrimSpace(stringVal(args, "user_prompt"))
 	originalTask := strings.TrimSpace(firstNonEmptyCraftText(userPrompt, stringVal(args, "task"), stringVal(args, "instructions")))
 	request := craftToolRequest{
-		Task:              strings.TrimSpace(stringVal(args, "task")),
-		OriginalTask:      originalTask,
-		UserPrompt:        userPrompt,
-		Instructions:      strings.TrimSpace(stringVal(args, "instructions")),
-		Language:          strings.TrimSpace(stringVal(args, "language")),
-		WorkingDir:        strings.TrimSpace(stringVal(args, "working_dir")),
-		ExpectedArtifacts: normalizeCraftArtifactList(args["expected_artifacts"]),
-		VerificationMode:  strings.TrimSpace(stringVal(args, "verification_mode")),
-		RegisterPolicy:    strings.TrimSpace(stringVal(args, "register_policy")),
-		SkillName:         strings.TrimSpace(stringVal(args, "skill_name")),
-		Timeout:           resolveCraftToolTimeout(args, originalTask),
-		MaxAttempts:       intArg(args, "max_attempts", 2),
-		ExtraEnv:          cskill.ExtractRunExtraEnvFromArgs(args),
-		SaveAsSkill:       boolArg(args, "save_as_skill", true),
+		Task:                     strings.TrimSpace(stringVal(args, "task")),
+		OriginalTask:             originalTask,
+		UserPrompt:               userPrompt,
+		Instructions:             strings.TrimSpace(stringVal(args, "instructions")),
+		Language:                 strings.TrimSpace(stringVal(args, "language")),
+		WorkingDir:               strings.TrimSpace(stringVal(args, "working_dir")),
+		ExpectedArtifacts:        normalizeCraftArtifactList(args["expected_artifacts"]),
+		VerificationMode:         strings.TrimSpace(stringVal(args, "verification_mode")),
+		RegisterPolicy:           strings.TrimSpace(stringVal(args, "register_policy")),
+		SkillName:                strings.TrimSpace(stringVal(args, "skill_name")),
+		Timeout:                  resolveCraftToolTimeout(args, originalTask),
+		MaxAttempts:              intArg(args, "max_attempts", 2),
+		ExtraEnv:                 cskill.ExtractRunExtraEnvFromArgs(args),
+		SaveAsSkill:              boolArg(args, "save_as_skill", true),
+		OmitWorkingDirFromPrompt: boolArg(args, "omit_working_dir_from_prompt", false),
+		MinimalEnv:               boolArg(args, "minimal_env", false),
+		OutputRuneLimit:          craftOutputRuneLimit(args),
+		DiscardScript:            boolArg(args, "discard_script", false),
 	}
 	if request.RegisterPolicy == "" {
 		request.RegisterPolicy = craftRegisterPolicyAuto
@@ -636,19 +663,28 @@ func buildCraftSystemPrompt(request craftToolRequest, runtimes craftRuntimeAvail
 	builder.WriteString("\n要求：")
 	builder.WriteString("\n1. 优先使用标准库和系统已有能力，不要假设可以安装新依赖。")
 	builder.WriteString("\n2. 若必须依赖外部程序或库，先在脚本中检测；缺失时输出清晰错误并以非零状态退出。")
-	builder.WriteString("\n3. 若任务要求写文件，必须写到用户指定的精确路径，不要写到默认目录。")
+	hideMachine := request.MinimalEnv || request.OmitWorkingDirFromPrompt
+	if hideMachine {
+		builder.WriteString("\n3. 不要写新文件，也不要修改输入文件。只把结果打印到 stdout。")
+	} else {
+		builder.WriteString("\n3. 若任务要求写文件，必须写到用户指定的精确路径，不要写到默认目录。")
+	}
 	builder.WriteString("\n4. 脚本必须适合非交互执行，失败时打印明确错误到 stderr 并返回非零退出码。")
-	builder.WriteString("\n5. 若能自检，请在成功后打印最终产物路径或简短成功标记。")
+	if hideMachine {
+		builder.WriteString("\n5. 成功时只打印提取结果，不要打印本机路径或环境变量。")
+	} else {
+		builder.WriteString("\n5. 若能自检，请在成功后打印最终产物路径或简短成功标记。")
+	}
 	builder.WriteString("\n6. 不要输出说明、注释块模板或伪代码。")
 	builder.WriteString("\n7. 语言必须严格匹配所选运行时；不要输出其他语言的源码（例如 Python 运行时不得输出 JavaScript/Node 脚本）。")
 	builder.WriteString("\n运行时可用性：")
-	builder.WriteString("\n- python: " + craftRuntimeLabel(runtimes.Python))
-	builder.WriteString("\n- node: " + craftRuntimeLabel(runtimes.Node))
-	builder.WriteString("\n- bash: " + craftRuntimeLabel(runtimes.Bash))
-	builder.WriteString("\n- powershell: " + craftRuntimeLabel(runtimes.PowerShell))
+	builder.WriteString("\n- python: " + craftRuntimeLabelForPrompt(runtimes.Python, hideMachine))
+	builder.WriteString("\n- node: " + craftRuntimeLabelForPrompt(runtimes.Node, hideMachine))
+	builder.WriteString("\n- bash: " + craftRuntimeLabelForPrompt(runtimes.Bash, hideMachine))
+	builder.WriteString("\n- powershell: " + craftRuntimeLabelForPrompt(runtimes.PowerShell, hideMachine))
 	if previous.Attempts > 0 {
 		builder.WriteString("\n这是修复轮次，请基于上次失败原因修复，不要重复同样错误。")
-		if previous.VerificationStatus == craftVerificationArtifactMissing && previous.ArtifactPath != "" {
+		if previous.VerificationStatus == craftVerificationArtifactMissing && previous.ArtifactPath != "" && !hideMachine {
 			builder.WriteString("\n这是一次产物定向修复：不要只打印 artifact 行或成功提示，必须真正创建该文件，并保证该路径能被文件系统检测到。")
 			builder.WriteString("\n若脚本成功，必须在 stdout 输出精确一行：artifact: ")
 			builder.WriteString(previous.ArtifactPath)
@@ -661,7 +697,7 @@ func buildCraftUserPrompt(request craftToolRequest, previous craftAttemptResult)
 	var builder strings.Builder
 	builder.WriteString("任务描述：\n")
 	builder.WriteString(request.Task)
-	if request.WorkingDir != "" {
+	if request.WorkingDir != "" && !request.OmitWorkingDirFromPrompt {
 		builder.WriteString("\n\n工作目录：\n")
 		builder.WriteString(request.WorkingDir)
 	}
@@ -674,23 +710,27 @@ func buildCraftUserPrompt(request craftToolRequest, previous craftAttemptResult)
 		}
 	}
 	if previous.Attempts > 0 {
+		script := craftHideHostPaths(request, previous.Script)
+		output := craftHideHostPaths(request, previous.Output)
+		message := craftHideHostPaths(request, previous.VerificationMessage)
+		artifact := craftHideHostPaths(request, previous.ArtifactPath)
 		builder.WriteString("\n\n修复要求：\n")
 		builder.WriteString("- 必须基于上一次失败原因修复，不要重复之前的输出路径或成功判定逻辑。\n")
-		if previous.VerificationStatus == craftVerificationArtifactMissing && previous.ArtifactPath != "" {
+		if previous.VerificationStatus == craftVerificationArtifactMissing && artifact != "" && !request.OmitWorkingDirFromPrompt {
 			builder.WriteString("- 这次必须把最终产物写到这个精确路径：")
-			builder.WriteString(previous.ArtifactPath)
+			builder.WriteString(artifact)
 			builder.WriteString("\n")
 			builder.WriteString("- 成功后必须输出一行：artifact: ")
-			builder.WriteString(previous.ArtifactPath)
+			builder.WriteString(artifact)
 			builder.WriteString("\n")
 			builder.WriteString("- 不要只打印成功信息，必须确保该路径上的文件真实存在。\n")
 		}
 		builder.WriteString("\n上一次脚本：\n")
-		builder.WriteString(previous.Script)
+		builder.WriteString(script)
 		builder.WriteString("\n\n上一次执行输出：\n")
-		builder.WriteString(previous.Output)
+		builder.WriteString(output)
 		builder.WriteString("\n\n失败原因：\n")
-		builder.WriteString(previous.VerificationMessage)
+		builder.WriteString(message)
 		if strings.Contains(strings.ToLower(previous.VerificationMessage), "does not match the selected") {
 			builder.WriteString("\n\n上一次输出的语言与选定运行时不匹配。这次只输出选定语言的可执行源码，不要混入其他语言。")
 		}
@@ -699,10 +739,67 @@ func buildCraftUserPrompt(request craftToolRequest, previous craftAttemptResult)
 }
 
 func craftRuntimeLabel(path string) string {
+	return craftRuntimeLabelForPrompt(path, false)
+}
+
+// craftRuntimeLabelForPrompt reports whether a runtime exists. Companion
+// extraction hides the executable path so the script writer never sees the
+// user profile directory that Windows puts in a local install path.
+func craftRuntimeLabelForPrompt(path string, hidePath bool) string {
 	if strings.TrimSpace(path) == "" {
 		return "unavailable"
 	}
+	if hidePath {
+		return "available"
+	}
 	return path
+}
+
+// craftHideHostPaths removes the scratch directory, the document copy, and the
+// saved-script directory from a repair prompt. A traceback names the script
+// file, and that directory sits inside the host data folder.
+func craftHideHostPaths(request craftToolRequest, text string) string {
+	if !request.OmitWorkingDirFromPrompt || strings.TrimSpace(text) == "" {
+		return text
+	}
+	paths := make([]string, 0, 2+len(request.ExtraEnv))
+	if dir := strings.TrimSpace(request.WorkingDir); dir != "" {
+		paths = append(paths, dir)
+	}
+	if dir := strings.TrimSpace(craftedToolsDir()); dir != "" {
+		paths = append(paths, dir)
+	}
+	for _, value := range request.ExtraEnv {
+		if value = strings.TrimSpace(value); value != "" {
+			paths = append(paths, value)
+		}
+	}
+	if len(paths) == 0 {
+		return text
+	}
+	return fileCompanionRedactHostPaths(text, paths...)
+}
+
+func craftDiscardScript(request craftToolRequest, attempt *craftAttemptResult) {
+	if !request.DiscardScript || attempt == nil {
+		return
+	}
+	if path := strings.TrimSpace(attempt.ScriptPath); path != "" {
+		_ = os.Chmod(path, 0o644)
+		_ = os.Remove(path)
+	}
+	attempt.ScriptPath = ""
+}
+
+func craftOutputRuneLimit(args map[string]interface{}) int {
+	limit := intArg(args, "output_rune_limit", 0)
+	if limit <= 0 {
+		return 0
+	}
+	if limit > fileCompanionCraftOutputMaxRunes {
+		return fileCompanionCraftOutputMaxRunes
+	}
+	return limit
 }
 
 // validateCraftScriptLanguage catches obvious cross-language LLM output before
@@ -761,13 +858,15 @@ func shouldRetryCraftAttempt(request craftToolRequest, attempt craftAttemptResul
 func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAttemptResult, sendProgress func(string)) string {
 	var result strings.Builder
 	result.WriteString(fmt.Sprintf("脚本语言: %s\n", attempt.Language))
-	result.WriteString(fmt.Sprintf("脚本路径: %s\n", attempt.ScriptPath))
+	if attempt.ScriptPath != "" {
+		result.WriteString(fmt.Sprintf("脚本路径: %s\n", attempt.ScriptPath))
+	}
 	result.WriteString(fmt.Sprintf("attempts: %d\n", attempt.Attempts))
 	result.WriteString(fmt.Sprintf("verification: %s\n", craftVerificationPassed))
 	if attempt.ArtifactPath != "" {
 		result.WriteString(fmt.Sprintf("artifact: %s\n", attempt.ArtifactPath))
 	}
-	if output := truncateCraftOutput(attempt.Output); output != "" {
+	if output := truncateCraftOutputForRequest(attempt.Output, request); output != "" {
 		result.WriteString(fmt.Sprintf("\n--- 执行输出 ---\n%s\n", output))
 	}
 	result.WriteString("\n脚本执行成功")
@@ -845,7 +944,7 @@ func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResul
 	if attempt.ArtifactPath != "" {
 		result.WriteString(fmt.Sprintf("artifact: %s\n", attempt.ArtifactPath))
 	}
-	if output := truncateCraftOutput(attempt.Output); output != "" {
+	if output := truncateCraftOutputForRequest(attempt.Output, request); output != "" {
 		result.WriteString(fmt.Sprintf("\n--- 执行输出 ---\n%s\n", output))
 	}
 	message := strings.TrimSpace(firstNonEmptyCraftText(attempt.VerificationMessage, errorText(attempt.ExecErr), "脚本执行失败"))
@@ -867,14 +966,35 @@ func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResul
 }
 
 func truncateCraftOutput(output string) string {
+	return truncateCraftOutputForRequest(output, craftToolRequest{})
+}
+
+func truncateCraftOutputForRequest(output string, request craftToolRequest) string {
 	output = strings.TrimSpace(output)
 	if output == "" {
 		return ""
 	}
-	if len(output) > 4096 {
-		return output[:4096] + "\n... (输出已截断)"
+	const marker = "\n... (输出已截断)"
+	if request.OutputRuneLimit > 0 {
+		if utf8.RuneCountInString(output) > request.OutputRuneLimit {
+			return string([]rune(output)[:request.OutputRuneLimit]) + marker
+		}
+		return output
 	}
-	return output
+	// Ordinary craft_tool keeps a short byte cap. Cut back to a rune boundary
+	// so a multibyte character is not split in half.
+	const maxBytes = 4096
+	if len(output) <= maxBytes {
+		return output
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(output[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		cut = maxBytes
+	}
+	return output[:cut] + marker
 }
 
 func errorText(err error) string {
@@ -987,6 +1107,13 @@ func verifyCraftExecution(request craftToolRequest, attempt craftAttemptResult) 
 		return result
 	}
 	result.VerificationStatus = craftVerificationPassed
+	// Companion extraction prints the document. A line that happens to start
+	// with "artifact:" is body text, not a file the host should go looking for.
+	if request.MinimalEnv {
+		result.ArtifactPath = ""
+		result.VerificationMessage = "脚本执行成功。"
+		return result
+	}
 	if artifactPath != "" {
 		result.VerificationMessage = fmt.Sprintf("脚本执行成功，并检测到产物：%s", artifactPath)
 	} else {
@@ -1293,10 +1420,10 @@ func saveScript(script, language, task string) (string, error) {
 
 // executeScript runs a script file and returns its output.
 func executeScript(scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability) (string, error) {
-	return executeScriptWithContext(context.Background(), scriptPath, language, workingDir, timeout, runtimes, nil)
+	return executeScriptWithContext(context.Background(), scriptPath, language, workingDir, timeout, runtimes, nil, false)
 }
 
-func executeScriptWithContext(parent context.Context, scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability, extraEnv map[string]string) (string, error) {
+func executeScriptWithContext(parent context.Context, scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability, extraEnv map[string]string, minimalEnv bool) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
 	defer cancel()
 
@@ -1310,7 +1437,14 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 		// Default to the user-configured workspace or the active built-in workspace.
 		cmd.Dir = corelib.EffectiveWorkspaceDir()
 	}
-	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(os.Environ()), map[string]interface{}{"extra_env": extraEnv})
+	baseEnv := os.Environ()
+	if minimalEnv {
+		// Companion extraction must not inherit API keys, profiles, or home
+		// directories. Temp files stay in the scratch directory. The document
+		// path arrives through extraEnv.
+		baseEnv = craftMinimalCommandEnv(baseEnv, workingDir)
+	}
+	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(baseEnv), map[string]interface{}{"extra_env": extraEnv})
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -1338,6 +1472,56 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 		return b.String(), runErr
 	}
 	return b.String(), nil
+}
+
+// craftMinimalEnviron keeps the variables a script runtime needs to start and
+// drops everything else. PATH is omitted on purpose: the inherited value
+// usually contains the user profile. System directories are added again when
+// the command environment is built. Names are compared case-insensitively
+// because Windows environment keys are.
+func craftMinimalEnviron(base []string) []string {
+	allow := map[string]bool{
+		"PATHEXT":    true,
+		"SYSTEMROOT": true, "SYSTEMDRIVE": true, "WINDIR": true, "COMSPEC": true,
+		"TEMP": true, "TMP": true, "TMPDIR": true,
+		"LANG": true, "LC_ALL": true,
+	}
+	kept := make([]string, 0, len(allow))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || !allow[strings.ToUpper(key)] {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept
+}
+
+// craftMinimalCommandEnv is the companion script environment. TEMP points at
+// the scratch directory so a traceback or a temp file cannot reveal the user
+// profile path that Windows puts in the default TEMP.
+func craftMinimalCommandEnv(base []string, workingDir string) []string {
+	env := craftMinimalEnviron(base)
+	dir := strings.TrimSpace(workingDir)
+	if dir == "" {
+		return env
+	}
+	for _, key := range []string{"TEMP", "TMP", "TMPDIR"} {
+		env = craftSetEnv(env, key, dir)
+	}
+	return env
+}
+
+func craftSetEnv(env []string, key, value string) []string {
+	assignment := key + "=" + value
+	for i, item := range env {
+		name, _, ok := strings.Cut(item, "=")
+		if ok && strings.EqualFold(name, key) {
+			env[i] = assignment
+			return env
+		}
+	}
+	return append(env, assignment)
 }
 
 func buildCraftExecCommand(ctx context.Context, scriptPath, language string, runtimes craftRuntimeAvailability) (*exec.Cmd, error) {

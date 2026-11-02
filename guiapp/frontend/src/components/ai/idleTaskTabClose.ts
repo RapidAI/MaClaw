@@ -1,5 +1,5 @@
 import type { AITab, AITabState } from "./AITabTypes";
-import { expertIDFromTaskTags, expertSessionKey, isACPAssistantSessionKey, normalizeProjectSessionPath, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { expertIDFromTaskTags, expertSessionKey, expertTaskSessionKey, isACPAssistantSessionKey, normalizeProjectSessionPath, projectSessionKey } from "./aiAssistantPanelSessionUtils";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy } from "./codingTaskMode";
 import { expertTaskIsLive } from "../../utils/latexTemplates";
 import { taskStatusBucketFor, workflowStatusForTaskRow, type TaskManagementItem } from "../layout/SidebarTaskManagement";
@@ -90,8 +90,10 @@ function tabSessionKeys(tab: AITab): string[] {
         if (key && !keys.includes(key)) keys.push(key);
     }
     if (tab.type === "expert") {
-        const key = expertSessionKey(tab.expertId);
-        if (key && !keys.includes(key)) keys.push(key);
+        const legacy = expertSessionKey(tab.expertId);
+        const taskKey = expertTaskSessionKey(tab.expertId, tab.projectPath);
+        if (legacy && !keys.includes(legacy)) keys.push(legacy);
+        if (taskKey && !keys.includes(taskKey)) keys.push(taskKey);
     }
     return keys;
 }

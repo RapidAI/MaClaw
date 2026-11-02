@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -15,9 +16,13 @@ const hopRunSpecVersion = "hop-run/v1"
 const hopCurrentChannelDeliveryCapability = "artifact.deliver.current_channel"
 
 // A light lookup admits search and fetch as two ways to get the same fact.
-// Search is the required plan step. When every search engine times out, the
-// model is told to read the page with fetch. A trusted fetch success is the
-// fact the search step owed, so that failed search no longer blocks the turn.
+// Search is the required plan step. Fetch is the other admitted provider:
+// the model uses it when search times out, and a resume replans that one
+// search as a step this plan has not started. A trusted fetch success is
+// that fact only when the plan has a single required search, and that
+// search has not acquired its own record: it failed, or it was never
+// started. A second required search is a different fact, failed or not.
+// A search this plan has already acquired stays its own record.
 const (
 	hopInformationSearchWeb = "information.search.web"
 	hopInformationFetchWeb  = "information.fetch.web"
@@ -44,9 +49,9 @@ type HopRunStep struct {
 	Status      HopStepStatus `json:"status"`
 	// Superseded is set when this step did not reach a trusted success but
 	// the obligation was settled another way: a later sibling in the same
-	// repeat family succeeded, or a failed web search was recovered by a
-	// trusted web fetch in the same turn. The step keeps its own evidence
-	// for audit but no longer blocks the run.
+	// repeat family succeeded, or the web-search fact was delivered by a
+	// trusted web fetch. The step keeps its own evidence for audit but no
+	// longer blocks the run.
 	Superseded bool            `json:"superseded,omitempty"`
 	Evidence   HopStepEvidence `json:"evidence"`
 }
@@ -76,6 +81,7 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 	optional, optionalKnown := semanticSurfaceOptionalNeeds(surface)
 	satisfiedFamilies := satisfiedHopFamilies(surface)
 	fetchSettledSearch := informationFetchSucceeded(surface)
+	soleSearch := soleRequiredWebSearch(surface, optional, optionalKnown)
 	snapshot := &HopRunSnapshot{
 		SpecVersion: hopRunSpecVersion,
 		RunID:       c.checkpointRunID,
@@ -95,36 +101,14 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 			DependsOn:   append([]string(nil), selection.Requires...),
 			Status:      HopStepOptional,
 		}
-		evidenceKey := hopEvidenceKey(surface, selection.ID)
-		cached, cachedOK := surface.hopEvidence[evidenceKey]
-		if cachedOK {
-			step.Evidence = cached
-		} else if surface.executor != nil {
-			if record, err := surface.executor.Execution(surface.scope, selection.ID); err == nil {
-				step.Evidence = HopStepEvidence{State: record.State, ResultDigest: record.ResultDigest, ReasonCode: record.ReasonCode}
-				if record.State == tool.PlanExecutionSucceeded || record.State == tool.PlanExecutionFailed {
-					if surface.hopEvidence == nil {
-						surface.hopEvidence = map[string]HopStepEvidence{}
-					}
-					surface.hopEvidence[evidenceKey] = step.Evidence
-				}
-			}
-		}
-		if surface.completed[selection.ID] {
-			digest := ""
-			if step.Evidence.State == tool.PlanExecutionSucceeded {
-				digest = step.Evidence.ResultDigest
-			}
-			step.Evidence = HopStepEvidence{State: tool.PlanExecutionSucceeded, ResultDigest: digest}
-		}
+		step.Evidence = hopSelectionEvidence(surface, selection.ID)
 		// A required step whose repeat family another selection settled no
 		// longer blocks the run: the base attempt may fail while a later
 		// sibling succeeds, and the family need is then satisfied. The step
 		// keeps its own (failed/unsettled) evidence and is marked superseded.
 		superseded := required && step.Evidence.State != tool.PlanExecutionSucceeded && satisfiedFamilies[tool.RepeatFamilyID(selection.NeedID)]
-		if !superseded && fetchSettledSearch && required &&
-			step.Evidence.State == tool.PlanExecutionFailed &&
-			step.Capability == hopInformationSearchWeb {
+		if !superseded && fetchSettledSearch && required && step.Capability == hopInformationSearchWeb &&
+			webSearchRecoveredByFetch(step.Evidence.State, soleSearch) {
 			superseded = true
 		}
 		if superseded {
@@ -235,9 +219,89 @@ func hostTransportDeliveryStep(step HopRunStep) bool {
 		strings.EqualFold(capability, string(semanticSpecifiedTargetDeliveryCapability))
 }
 
+// webSearchRecoveredByFetch reports that a trusted fetch already delivered
+// the fact this required search owed. That is true only for the plan's
+// single required search, and only when that search failed or was never
+// started. One page read cannot settle a second search. A search this plan
+// has acquired — running, unknown, or awaiting a receipt — stays open.
+func webSearchRecoveredByFetch(state tool.PlanExecutionState, soleRequired bool) bool {
+	if !soleRequired {
+		return false
+	}
+	switch state {
+	case tool.PlanExecutionFailed, "":
+		return true
+	default:
+		return false
+	}
+}
+
+// soleRequiredWebSearch reports that the plan has exactly one required web
+// search. Optional repeat slots are not separate obligations. A second
+// required search is a different fact and stays owed after a fetch.
+func soleRequiredWebSearch(surface *semanticCallSurface, optional map[string]bool, optionalKnown bool) bool {
+	if surface == nil {
+		return false
+	}
+	required := 0
+	for _, selection := range surface.plan.Selections {
+		if string(selection.FitProof.MatchedCapability) != hopInformationSearchWeb {
+			continue
+		}
+		if !hopSelectionRequired(selection, optional, optionalKnown) {
+			continue
+		}
+		required++
+		if required > 1 {
+			return false
+		}
+	}
+	return required == 1
+}
+
+// hopSelectionEvidence is the execution fact the hop snapshot will show for
+// a selection, before that snapshot copies it onto the step. A host-completed
+// selection is a trusted success. A missing record is unstarted. A store read
+// that fails is not the same fact: it stays unknown, and it is not cached,
+// so a later read can still see the record. A terminal store record is
+// cached, so a later read does not ask the store again.
+func hopSelectionEvidence(surface *semanticCallSurface, selectionID string) HopStepEvidence {
+	if surface == nil {
+		return HopStepEvidence{}
+	}
+	evidenceKey := hopEvidenceKey(surface, selectionID)
+	var evidence HopStepEvidence
+	if cached, ok := surface.hopEvidence[evidenceKey]; ok {
+		evidence = cached
+	} else if surface.executor != nil {
+		record, err := surface.executor.Execution(surface.scope, selectionID)
+		switch {
+		case err == nil:
+			evidence = HopStepEvidence{State: record.State, ResultDigest: record.ResultDigest, ReasonCode: record.ReasonCode}
+			if record.State == tool.PlanExecutionSucceeded || record.State == tool.PlanExecutionFailed {
+				if surface.hopEvidence == nil {
+					surface.hopEvidence = map[string]HopStepEvidence{}
+				}
+				surface.hopEvidence[evidenceKey] = evidence
+			}
+		case errors.Is(err, tool.ErrPlanExecutionNotFound):
+		default:
+			evidence = HopStepEvidence{State: tool.PlanExecutionUnknown, ReasonCode: "execution_unreadable"}
+		}
+	}
+	if surface.completed[selectionID] {
+		digest := ""
+		if evidence.State == tool.PlanExecutionSucceeded {
+			digest = evidence.ResultDigest
+		}
+		evidence = HopStepEvidence{State: tool.PlanExecutionSucceeded, ResultDigest: digest}
+	}
+	return evidence
+}
+
 // informationFetchSucceeded reports a trusted information.fetch.web success
-// in this plan. That success is the recovery a light lookup uses after
-// information.search.web fails, so the failed search is no longer owed.
+// in this plan. The snapshot uses it only when one required search is the
+// fact that page can stand for.
 func informationFetchSucceeded(surface *semanticCallSurface) bool {
 	if surface == nil {
 		return false
@@ -246,21 +310,9 @@ func informationFetchSucceeded(surface *semanticCallSurface) bool {
 		if string(selection.FitProof.MatchedCapability) != hopInformationFetchWeb {
 			continue
 		}
-		if surface.completed[selection.ID] {
+		if hopSelectionEvidence(surface, selection.ID).State == tool.PlanExecutionSucceeded {
 			return true
 		}
-		evidenceKey := hopEvidenceKey(surface, selection.ID)
-		if cached, ok := surface.hopEvidence[evidenceKey]; ok && cached.State == tool.PlanExecutionSucceeded {
-			return true
-		}
-		if surface.executor == nil {
-			continue
-		}
-		record, err := surface.executor.Execution(surface.scope, selection.ID)
-		if err != nil || record.State != tool.PlanExecutionSucceeded {
-			continue
-		}
-		return true
 	}
 	return false
 }
@@ -288,29 +340,8 @@ func satisfiedHopFamilies(surface *semanticCallSurface) map[string]bool {
 		if family == "" || satisfied[family] {
 			continue
 		}
-		if surface.completed[selection.ID] {
+		if hopSelectionEvidence(surface, selection.ID).State == tool.PlanExecutionSucceeded {
 			satisfied[family] = true
-			continue
-		}
-		evidenceKey := hopEvidenceKey(surface, selection.ID)
-		if cached, ok := surface.hopEvidence[evidenceKey]; ok {
-			if cached.State == tool.PlanExecutionSucceeded {
-				satisfied[family] = true
-			}
-			continue
-		}
-		if surface.executor != nil {
-			if record, err := surface.executor.Execution(surface.scope, selection.ID); err == nil {
-				if record.State == tool.PlanExecutionSucceeded || record.State == tool.PlanExecutionFailed {
-					if surface.hopEvidence == nil {
-						surface.hopEvidence = map[string]HopStepEvidence{}
-					}
-					surface.hopEvidence[evidenceKey] = HopStepEvidence{State: record.State, ResultDigest: record.ResultDigest, ReasonCode: record.ReasonCode}
-				}
-				if record.State == tool.PlanExecutionSucceeded {
-					satisfied[family] = true
-				}
-			}
 		}
 	}
 	return satisfied
@@ -345,6 +376,13 @@ func completedWithSatisfiedFamilies(surface *semanticCallSurface) map[string]boo
 }
 
 func hopSelectionRequired(selection tool.PlannedSelection, optional map[string]bool, optionalKnown bool) bool {
+	// Archetype and baseline offers are not the task. Their evidence is on
+	// the selection. A failed optionality recompute must not promote them
+	// into obligations: that is how an unused download bundle kept a finished
+	// document turn open.
+	if tool.RepeatSelectionIsCompanion(selection) {
+		return false
+	}
 	if optionalKnown && optional[selection.NeedID] {
 		return false
 	}

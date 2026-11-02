@@ -370,8 +370,11 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 	cmd := exec.Command(shellName, shellArgs...)
 	cmd.Dir = workDir
 	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
-	// GBK/CP936 mojibake when commands output non-ASCII text.
-	cmd.Env = coretool.AppendNoWindowEnv(coretool.AppendUTF8Env(os.Environ()))
+	// GBK/CP936 mojibake when commands output non-ASCII text, and repair the
+	// command PATH the way the coding bash does: a machine whose PATH lacks
+	// the Go install must not fail `go build` in the general assistant too.
+	// The CLAUDE_SKILL_DIR append below stays after the augmentation.
+	cmd.Env = coretool.AugmentCommandEnv(coretool.AppendNoWindowEnv(coretool.AppendUTF8Env(os.Environ())))
 	if skillDir != "" {
 		cmd.Env = append(cmd.Env, "CLAUDE_SKILL_DIR="+skillDir)
 	}

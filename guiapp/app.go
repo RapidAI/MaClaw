@@ -265,10 +265,18 @@ type App struct {
 	// (listings, account, and rankings) from all exchanging the same expired
 	// session at once when the embedded market opens.
 	petStoreSessionRefreshMu sync.Mutex
-	skillLifecycle           *SkillLifecycleManager
-	gossipClient             *GossipClient
-	gossipAutoPublish        *AutoPublishTrigger
-	evolutionPipeline        *skill.EvolutionPipeline
+	// expertMarketBaseMu guards the HubCenter chosen for Expert Market reads.
+	// Official nodes do not all store that catalogue, so the first request
+	// probes them and keeps the node that actually has this account's listings.
+	expertMarketBaseMu    sync.Mutex
+	expertMarketBase      string
+	expertMarketBaseToken string
+	expertMarketBaseUntil time.Time
+	expertMarketProbe     chan struct{}
+	skillLifecycle        *SkillLifecycleManager
+	gossipClient          *GossipClient
+	gossipAutoPublish     *AutoPublishTrigger
+	evolutionPipeline     *skill.EvolutionPipeline
 	// evolutionAuditWriter is a narrow dependency-injection seam for lifecycle
 	// transaction tests. Production leaves it nil so strict audit events use the
 	// durable core sink; tests can deterministically fail the final-audit phase
@@ -430,7 +438,10 @@ type App struct {
 	aiTrace                          *AITraceService
 	taskOrchestrator2                *TaskOrchestrator2
 	// Buddy companion display over USB serial (see buddy_service.go).
-	buddyMu             sync.Mutex
+	buddyMu sync.Mutex
+	// buddyCfgWrite serializes buddy.json updates. A device sound report must
+	// not save a stale enabled=true over an uncheck that just released the port.
+	buddyCfgWrite       sync.Mutex
 	buddyRunner         *service.Runner
 	buddyCancel         context.CancelFunc
 	buddyDone           chan struct{}
@@ -573,11 +584,13 @@ type App struct {
 	// runtime session owner, which is the identity used by tools and prompts.
 	assistantSessionWorkingDirs sync.Map
 	// expertSessionTaskPaths records the task whose execution directory is
-	// bound to an expert session. When the same expert moves to a new task
-	// without its creation path resetting the binding (a scheduled launch
-	// created with KeepExpertSession), the old directory must not follow the
-	// new task. Keyed by expert owner userID.
+	// bound to an expert session. Keyed by that task's session userID. A new
+	// task has its own key, so another task's directory must not be copied
+	// onto it from the shared expert tab.
 	expertSessionTaskPaths sync.Map
+	// expertTabSessionOwners is the task session currently bound to an expert
+	// tab. The directory chip addresses a tab id; tools address the task session.
+	expertTabSessionOwners sync.Map
 
 	// ACP conversations need a private owner even when they use one workspace.
 	acpSessionWorkingDirs sync.Map // ACP ownerID -> normalized working directory
@@ -2816,6 +2829,11 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.installMermaidPDFRaster()
 	botNoticeApp.Store(a)
+	// Repair the command PATH for every corelib shell (background tasks,
+	// craft scripts) the way codingCommandEnv repairs the coding bash: a
+	// machine whose PATH lacks the Go install must not fail `go build` in
+	// the general assistant or a background task either.
+	installCorelibCommandEnvAugmenter()
 	// Picture PDFs have no text layer. Wire OCR before the first document read
 	// so auto-extract and office(read_document) share the local engine.
 	wireOfficeImagePDFOCR()
@@ -8373,6 +8391,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			if err != nil {
 				return corelib.AppConfig{}, err
 			}
+			// About → Clear registration sends this field alone. A larger patch
+			// is a settings snapshot and must not wipe a finished first run.
+			if !v && current.OnboardingDone && len(patch) != 1 {
+				log.Printf("[config] ignored bundled clear of onboarding_done keys=%d", len(patch))
+				break
+			}
 			cfg.OnboardingDone = v
 		case "prefer_beta_channel":
 			v, err := boolField(key, value)
@@ -9183,6 +9207,57 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				v = 8192
 			}
 			cfg.CodingCheckpointSidecarMaxMB = v
+		case "coding_knowledge_auto_save_mode":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			v = strings.ToLower(strings.TrimSpace(v))
+			switch v {
+			case "observe", "auto", "off":
+				cfg.CodingKnowledgeAutoSaveMode = v
+			default:
+				return corelib.AppConfig{}, fmt.Errorf("coding_knowledge_auto_save_mode must be observe, auto or off")
+			}
+		case "coding_knowledge_save_strategy":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			v = strings.ToLower(strings.TrimSpace(v))
+			switch v {
+			case "always", "on_success", "on_retry_success", "off":
+				cfg.CodingKnowledgeSaveStrategy = v
+			default:
+				return corelib.AppConfig{}, fmt.Errorf("coding_knowledge_save_strategy must be always, on_success, on_retry_success or off")
+			}
+		case "coding_knowledge_max_per_project":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 1 || v > 100_000 {
+				return corelib.AppConfig{}, fmt.Errorf("coding_knowledge_max_per_project must be between 1 and 100000")
+			}
+			cfg.CodingKnowledgeMaxPerProject = v
+		case "coding_knowledge_max_total":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 1 || v > 1_000_000 {
+				return corelib.AppConfig{}, fmt.Errorf("coding_knowledge_max_total must be between 1 and 1000000")
+			}
+			cfg.CodingKnowledgeMaxTotal = v
+		case "coding_knowledge_auto_promote_observations":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 || v > 20 {
+				return corelib.AppConfig{}, fmt.Errorf("coding_knowledge_auto_promote_observations must be between 0 and 20")
+			}
+			cfg.CodingKnowledgeAutoPromoteObservations = v
 		case "coding_knowledge_max_reviewed_per_project":
 			v, err := intField(key, value)
 			if err != nil {

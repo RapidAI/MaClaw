@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,6 +122,63 @@ func TestMilestoneBuffer_CompletedOutputSummary(t *testing.T) {
 	s = buf.CompletedOutputSummary()
 	if s != "step1, step2, step3 等 4 个步骤" {
 		t.Fatalf("expected truncated summary, got %q", s)
+	}
+}
+
+func TestFormatDurationUsesUILanguage(t *testing.T) {
+	if got := formatDuration(90*time.Second, "zh"); got != "1 分 30 秒" {
+		t.Fatalf("zh = %q", got)
+	}
+	if got := formatDuration(2*time.Minute, "zh"); got != "2 分钟" {
+		t.Fatalf("zh minutes = %q", got)
+	}
+	if got := formatDuration(45*time.Second, "en"); got != "45 sec" {
+		t.Fatalf("en seconds = %q", got)
+	}
+	if got := formatDuration(90*time.Second, "mn"); got != "1 мин 30 сек" {
+		t.Fatalf("mn = %q", got)
+	}
+	if got := formatDuration(2*time.Minute, "mn-MN"); strings.Contains(got, "分") || strings.Contains(got, "秒") || got != "2 мин" {
+		t.Fatalf("mn minutes = %q", got)
+	}
+	if got := formatDuration(2*time.Hour+30*time.Minute+10*time.Second, "zh"); got != "2 小时 30 分 10 秒" {
+		t.Fatalf("zh hours = %q", got)
+	}
+	if got := formatDuration(2*time.Hour, "mn"); got != "2 ц" || strings.Contains(got, "分") {
+		t.Fatalf("mn hours = %q", got)
+	}
+	if got := formatDuration(2*time.Hour+10*time.Second, "zh"); got != "2 小时 10 秒" {
+		t.Fatalf("zh hours without minutes = %q", got)
+	}
+	if got := formatDuration(2*time.Hour+10*time.Second, "mn"); got != "2 ц 10 сек" || strings.Contains(got, "0 мин") {
+		t.Fatalf("mn hours without minutes = %q", got)
+	}
+	if got := formatDuration(59*time.Minute+59*time.Second, "zh"); got != "59 分 59 秒" {
+		t.Fatalf("just under an hour = %q", got)
+	}
+	if got := formatDuration(time.Hour, "en"); got != "1 hr" {
+		t.Fatalf("exact hour = %q", got)
+	}
+	if got := formatDuration(time.Hour+time.Second, "mn"); got != "1 ц 1 сек" {
+		t.Fatalf("hour plus one second = %q", got)
+	}
+	if got := formatDuration(time.Hour+time.Minute+time.Second, "zh"); got != "1 小时 1 分 1 秒" {
+		t.Fatalf("hour minute second = %q", got)
+	}
+}
+
+func TestCompletedOutputSummaryLang(t *testing.T) {
+	buf := NewMilestoneBuffer(10)
+	buf.Reset("task", "coding", nil)
+	for _, summary := range []string{"a", "b", "c", "d"} {
+		buf.Record(Milestone{Time: time.Now(), Tool: "bash", Summary: summary, Completed: true})
+	}
+	if got := buf.CompletedOutputSummary(); got != "a, b, c 等 4 个步骤" {
+		t.Fatalf("zh = %q", got)
+	}
+	got := buf.CompletedOutputSummaryLang("mn")
+	if got != "a, b, c, 4 алхам" || strings.Contains(got, "步骤") {
+		t.Fatalf("mn = %q", got)
 	}
 }
 

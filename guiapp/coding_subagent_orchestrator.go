@@ -153,10 +153,14 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		log.Printf("[subagent-runner] T%d passed (%d iterations, %d tool calls, %d files, %d created)", displayIndex, result.Iterations, result.ToolCalls, len(result.FilesModified), len(result.FilesCreated))
 		turnCtx.Emit(onProgress, turnCtx.TaskEvent("completed", task, taskTitle))
 
-		// Trigger experience extraction and recall outcome (best-effort, async)
-		wasRetry := task.RetryCount > 0
-		r.recordRecalledExperienceOutcomes(result)
-		r.extractAndSaveExperience(task, result, wasRetry)
+		// Trigger experience extraction and recall outcome (best-effort, async).
+		// The shared execution boundary may already have done it; the marker
+		// prevents a second LLM extraction for the same result.
+		if !result.knowledgeFinalized {
+			wasRetry := task.RetryCount > 0
+			r.recordRecalledExperienceOutcomes(result)
+			r.extractAndSaveExperience(task, result, wasRetry)
+		}
 
 		return fmt.Sprintf("T%d: %s - completed\n%s", displayIndex, taskTitle, resultSummary), true
 
@@ -164,7 +168,7 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		// "always" experience capture learns from bounded failed Runtime
 		// attempts too. It remains candidate-only and still requires the
 		// durable evidence/provenance gate in the asynchronous writer.
-		if !isSubAgentTransientProviderError(resultError) {
+		if !isSubAgentTransientProviderError(resultError) && !result.knowledgeFinalized {
 			r.recordRecalledExperienceOutcomes(result)
 			r.extractAndSaveExperience(task, result, task.RetryCount > 0)
 		}
@@ -207,7 +211,9 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		// A Runtime-blocked attempt can carry useful verification/diff evidence.
 		// The persistence path independently rejects entries without a matching
 		// material Ledger event, so this never turns a bare skip into knowledge.
-		r.extractAndSaveExperience(task, result, task.RetryCount > 0)
+		if !result.knowledgeFinalized {
+			r.extractAndSaveExperience(task, result, task.RetryCount > 0)
+		}
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecSkipped, resultError) {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}

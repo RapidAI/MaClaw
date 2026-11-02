@@ -24,7 +24,7 @@ describe('AssistantWarmupSplash stages', () => {
     it('defaults to the connecting stage and shows the live status line', () => {
         const { container } = renderSplash();
         expect(stepStates(container)).toEqual(['active', 'todo', 'todo']);
-        expect(container.querySelector('.acb-warmup-progress__fill')?.getAttribute('style')).toContain('18%');
+        expect(container.querySelector('.acb-warmup-progress')).toBeNull();
         expect(screen.getByText('正在连接 Hub...')).toBeTruthy();
         expect(screen.getByTestId('warmup-brand')).toBeTruthy();
     });
@@ -32,15 +32,13 @@ describe('AssistantWarmupSplash stages', () => {
     it('marks earlier steps done and the current step active while loading', () => {
         const { container } = renderSplash('loading');
         expect(stepStates(container)).toEqual(['done', 'active', 'todo']);
-        expect(container.querySelector('.acb-warmup-progress__fill')?.getAttribute('style')).toContain('58%');
         expect(container.querySelector('.acb-warmup-step--done svg')).toBeTruthy();
         expect(container.querySelector('.acb-warmup-step--active')?.getAttribute('aria-current')).toBe('step');
     });
 
-    it('activates the final warm-up step with its progress share', () => {
+    it('activates the final warm-up step', () => {
         const { container } = renderSplash('warming');
         expect(stepStates(container)).toEqual(['done', 'done', 'active']);
-        expect(container.querySelector('.acb-warmup-progress__fill')?.getAttribute('style')).toContain('88%');
     });
 
     it('falls back to the connecting stage for ready/degraded (never rendered when ready)', () => {

@@ -695,7 +695,7 @@ func TestStreamSurfacesTrailerError(t *testing.T) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	text := string(raw)
-	if !strings.Contains(text, "model rejected") || !strings.Contains(text, "data: [DONE]") {
+	if !strings.Contains(text, "model rejected") || !strings.Contains(text, "data: [DONE]") || !strings.Contains(text, `"`+StreamErrorField+`"`) {
 		t.Fatalf("stream = %s", text)
 	}
 }
@@ -734,8 +734,8 @@ func TestStreamOpenFailureStillCompletes(t *testing.T) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	text := string(raw)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(text, "请先选择 Devin 模型") || !strings.Contains(text, "data: [DONE]") {
-		t.Fatalf("status %d body %s", resp.StatusCode, text)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get(StreamErrorHeader) == "" || !strings.Contains(text, "请先选择 Devin 模型") || !strings.Contains(text, "data: [DONE]") {
+		t.Fatalf("status %d header %q body %s", resp.StatusCode, resp.Header.Get(StreamErrorHeader), text)
 	}
 }
 

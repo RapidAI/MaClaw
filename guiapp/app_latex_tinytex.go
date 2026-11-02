@@ -15,7 +15,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tinytex"
 )
 
-const latexProgressEvent = "latex-tinytex-progress"
+const (
+	latexProgressEvent        = "latex-tinytex-progress"
+	latexUpdaterProgressEvent = "latex-tinytex-updater"
+)
 
 var errLatexDisabled = errors.New("latex tinytex disabled")
 
@@ -337,34 +340,217 @@ func (a *App) installTinyTeXScheme(dist string) error {
 			a.setLatexPhase("idle", 0, 0, 0, "")
 			return errLatexDisabled
 		}
+		repo = a.pinTLNet(repo)
 		log.Printf("[latex] tlmgr repository %s", repo)
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		out, err := runLatexTool(ctx, tlmgr, "option", "repository", repo)
-		cancel()
-		if err != nil {
-			last = fmt.Errorf("set repository %s: %w: %s", repo, err, clipLatexOutput(out))
+		if err := a.tlmgrSetRepository(tlmgr, repo); err != nil {
+			last = err
 			log.Printf("[latex] %v", last)
+			if latexSchemeBlocked(err) {
+				break
+			}
 			continue
 		}
-		ctx, cancel = context.WithTimeout(context.Background(), 60*time.Minute)
-		out, err = runLatexTool(ctx, tlmgr, "install", tinytex.Scheme)
-		cancel()
-		if err != nil {
-			last = fmt.Errorf("install %s from %s: %w: %s", tinytex.Scheme, repo, err, clipLatexOutput(out))
+		// TinyTeX-0 freezes tlmgr at the daily build. A newer tlnet refuses
+		// `tlmgr install` (Windows perl dies with status 255) until
+		// `tlmgr update --self` has run. On Windows that self-update only
+		// lands when tlmgr.bat runs temp\updater-w32 after perl exits, so
+		// this call has to go through the batch launcher FindTlmgr returns.
+		if err := a.ensureTlmgrCurrent(dist, &tlmgr, repo); err != nil {
+			last = err
 			log.Printf("[latex] %v", last)
+			if latexSchemeBlocked(err) {
+				break
+			}
 			continue
 		}
-		if tinytex.ArticlePresent(dist) {
-			return nil
+		if err := a.tlmgrInstallScheme(dist, tlmgr, repo); err != nil {
+			last = err
+			log.Printf("[latex] %v", last)
+			if latexSchemeBlocked(err) {
+				break
+			}
+			// Classify the tlmgr transcript. The error string keeps only a
+			// tail for the settings panel, and that tail can lose the banner.
+			recovery := tinytex.ClassifyTlmgrInstallFailure(latexTlmgrOutput(err))
+			if recovery == tinytex.TlmgrNextMirror {
+				continue
+			}
+			// Self-update reported success but install is still blocked.
+			// The usual cause is a Windows infra update that did not apply,
+			// or a redirector that moved between the two calls.
+			log.Printf("[latex] scheme install still blocked; running official tlmgr updater")
+			if rec := a.recoverTlmgr(context.Background(), dist, tlmgr, repo, recovery == tinytex.TlmgrOfficialUpgrade, true); rec != nil {
+				last = rec
+				log.Printf("[latex] %v", last)
+				if latexSchemeBlocked(rec) {
+					break
+				}
+				continue
+			}
+			if again, findErr := tinytex.FindTlmgr(dist); findErr == nil {
+				tlmgr = again
+			}
+			if err := a.tlmgrInstallScheme(dist, tlmgr, repo); err != nil {
+				last = err
+				log.Printf("[latex] %v", last)
+				if latexSchemeBlocked(err) {
+					break
+				}
+				continue
+			}
 		}
-		last = fmt.Errorf("%s install from %s did not provide article.cls", tinytex.Scheme, repo)
-		log.Printf("[latex] %v", last)
+		return nil
 	}
 	if last == nil {
 		last = fmt.Errorf("no CTAN repository available")
 	}
 	a.setLatexPhase("error", 0, 0, 0, last.Error())
 	return last
+}
+
+func (a *App) pinTLNet(repo string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), tinytex.TLNetResolveTimeout)
+	defer cancel()
+	pinned := strings.TrimRight(strings.TrimSpace(resolveLatexRepo(ctx, repo)), "/")
+	if pinned == "" {
+		return repo
+	}
+	if pinned != repo {
+		log.Printf("[latex] tlmgr repository %s resolved to %s", repo, pinned)
+	}
+	return pinned
+}
+
+func (a *App) tlmgrSetRepository(tlmgr, repo string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	out, err := invokeLatexTool(ctx, tlmgr, "", nil, "option", "repository", repo)
+	if err != nil {
+		return fmt.Errorf("set repository %s: %w: %s", repo, err, clipLatexOutput(out))
+	}
+	return nil
+}
+
+func (a *App) ensureTlmgrCurrent(dist string, tlmgr *string, repo string) error {
+	a.setLatexPhase("updating", 0, 0, 0, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	out, err := invokeLatexTool(ctx, *tlmgr, "", nil, "update", "--self")
+	cancel()
+	switch tinytex.ClassifyTlmgrSelfUpdate(err, string(out)) {
+	case tinytex.TlmgrReady:
+		if again, findErr := tinytex.FindTlmgr(dist); findErr == nil {
+			*tlmgr = again
+		}
+		return nil
+	case tinytex.TlmgrOfficialUpgrade:
+		log.Printf("[latex] TeX Live year is behind %s; official updater --upgrade", repo)
+		if rec := a.recoverTlmgr(context.Background(), dist, *tlmgr, repo, true, true); rec != nil {
+			return rec
+		}
+	case tinytex.TlmgrOfficialUpdater:
+		log.Printf("[latex] tlmgr update --self cannot continue against %s; official updater", repo)
+		if rec := a.recoverTlmgr(context.Background(), dist, *tlmgr, repo, false, true); rec != nil {
+			return rec
+		}
+	default:
+		return fmt.Errorf("tlmgr update --self from %s: %w: %s", repo, err, clipLatexOutput(out))
+	}
+	if again, findErr := tinytex.FindTlmgr(dist); findErr == nil {
+		*tlmgr = again
+	}
+	return nil
+}
+
+func (a *App) tlmgrInstallScheme(dist, tlmgr, repo string) error {
+	a.setLatexPhase("installing", 0, 0, 0, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	defer cancel()
+	out, err := invokeLatexTool(ctx, tlmgr, "", nil, "install", tinytex.Scheme)
+	if err != nil {
+		return &latexCommandError{
+			msg:    fmt.Sprintf("install %s from %s: %v: %s", tinytex.Scheme, repo, err, clipLatexOutput(out)),
+			output: string(out),
+			err:    err,
+		}
+	}
+	if tinytex.ArticlePresent(dist) {
+		return nil
+	}
+	return fmt.Errorf("%s install from %s did not provide article.cls", tinytex.Scheme, repo)
+}
+
+// useOfficialTlmgrUpdater makes InstallPackage use the same archive as the
+// scheme installer. 编译预览 and build_verify both reach InstallPackage.
+func (a *App) useOfficialTlmgrUpdater() {
+	if a == nil {
+		return
+	}
+	tinytex.SetApplyOfficialUpdater(func(ctx context.Context, dist, tlmgr, repo string, upgrade bool) error {
+		// Package installs must not move the settings-page phase. That page
+		// follows latexRuntime, which this call does not own.
+		return a.recoverTlmgr(ctx, dist, tlmgr, repo, upgrade, false)
+	})
+}
+
+// recoverTlmgr runs the official update-tlmgr-latest archive from repo.
+// Windows locks the running perl and batch files, so a failed in-tree
+// update cannot replace them. The archive locates this installation with
+// kpsewhich, which has to resolve to TinyTeX's own bin directory.
+// ctx bounds the download and the run. A nil ctx gets 30 minutes; a shorter
+// parent, such as 编译预览, still ends at that parent. announce is set for
+// the settings installer. A package install leaves the settings phase alone.
+func (a *App) recoverTlmgr(ctx context.Context, dist, tlmgrPath, repo string, upgrade, announce bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	url, err := tinytex.TlmgrUpdaterURL(repo, runtime.GOOS)
+	if err != nil {
+		return err
+	}
+	if announce {
+		// The download is not the scheme install. Keep the settings panel on
+		// the tlmgr update phase while the archive is fetched and applied.
+		a.setLatexPhase("updating", 0, 0, 0, "")
+	}
+	// dist/temp is where tlmgr.bat keeps updater-w32. The official archive
+	// must not live there: a leftover next to that script is what makes the
+	// batch file refuse to start. The parent of dist stays outside the tree
+	// whether the root is dist itself or dist/TinyTeX.
+	cacheDir := filepath.Join(filepath.Dir(dist), "maclaw-tlmgr-updater")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return err
+	}
+	dest := filepath.Join(cacheDir, tinytex.TlmgrUpdaterName(runtime.GOOS))
+	defer func() {
+		_ = os.Remove(dest)
+		_ = os.Remove(dest + ".tmp")
+		_ = os.Remove(cacheDir)
+	}()
+	_ = os.Remove(dest)
+	_ = os.Remove(dest + ".tmp")
+	log.Printf("[latex] downloading %s", url)
+	if err := fetchLatexFile(a, ctx, url, dest); err != nil {
+		return fmt.Errorf("download tlmgr updater from %s: %w", repo, err)
+	}
+	if err := tinytex.UpdaterOK(dest); err != nil {
+		_ = os.Remove(dest)
+		return fmt.Errorf("tlmgr updater from %s: %w", repo, err)
+	}
+	binDir := filepath.Dir(tlmgrPath)
+	perlDir := filepath.Join(dist, "tlpkg", "tlperl", "bin")
+	args := tinytex.TlmgrUpdaterArgs(upgrade)
+	var out []byte
+	if runtime.GOOS == "windows" {
+		out, err = invokeLatexTool(ctx, dest, dist, []string{binDir, perlDir}, args...)
+	} else {
+		out, err = invokeLatexTool(ctx, "sh", dist, []string{binDir}, append([]string{dest}, args...)...)
+	}
+	if err != nil {
+		return fmt.Errorf("tlmgr updater from %s: %w: %s", repo, err, clipLatexOutput(out))
+	}
+	return nil
 }
 
 func (a *App) verifyTinyTeXScheme(dist string) error {
@@ -406,10 +592,10 @@ func (a *App) setLatexPhase(phase string, pct int, downloaded, total int64, errM
 	latexRuntime.mu.Lock()
 	latexRuntime.phase = phase
 	latexRuntime.percent = pct
-	if downloaded > 0 || total > 0 {
-		latexRuntime.downloaded = downloaded
-		latexRuntime.total = total
-	}
+	// A phase change passes 0,0. Keeping the previous archive size would make
+	// the next poll paint the TinyTeX-0 bar onto "Updating tlmgr…".
+	latexRuntime.downloaded = downloaded
+	latexRuntime.total = total
 	latexRuntime.err = errMsg
 	latexRuntime.mu.Unlock()
 	if a == nil {
@@ -424,8 +610,45 @@ func (a *App) setLatexPhase(phase string, pct int, downloaded, total int64, errM
 	})
 }
 
+// noteLatexDownloadProgress folds a TinyTeX-0 or official-updater byte count
+// into the settings install. The panel polls latexRuntime and listens only to
+// latex-tinytex-progress. 编译预览 and build_verify leave the phase on ready,
+// so their updater download does not move that panel.
+func (a *App) noteLatexDownloadProgress(pct int, downloaded, total int64, errMsg string) {
+	if a == nil {
+		return
+	}
+	latexRuntime.mu.Lock()
+	phase := latexRuntime.phase
+	track := phase == "downloading" || phase == "updating"
+	if track && errMsg == "" {
+		latexRuntime.percent = pct
+		latexRuntime.downloaded = downloaded
+		latexRuntime.total = total
+	}
+	latexRuntime.mu.Unlock()
+	if !track {
+		return
+	}
+	if errMsg != "" {
+		a.setLatexPhase("error", pct, downloaded, total, errMsg)
+		return
+	}
+	a.emitEvent(latexProgressEvent, map[string]interface{}{
+		"phase":      phase,
+		"percent":    pct,
+		"downloaded": downloaded,
+		"total":      total,
+		"error":      "",
+	})
+}
+
 func runLatexTool(ctx context.Context, bin string, args ...string) ([]byte, error) {
-	out, code, err := tinytex.RunCommand(ctx, bin, "", args...)
+	return runLatexToolPath(ctx, bin, "", nil, args...)
+}
+
+func runLatexToolPath(ctx context.Context, bin, dir string, prepend []string, args ...string) ([]byte, error) {
+	out, code, err := tinytex.RunCommandWithPath(ctx, bin, dir, prepend, args...)
 	if err != nil {
 		return []byte(out), err
 	}
@@ -433,6 +656,70 @@ func runLatexTool(ctx context.Context, bin string, args ...string) ([]byte, erro
 		return []byte(out), fmt.Errorf("exit status %d", code)
 	}
 	return []byte(out), nil
+}
+
+// invokeLatexTool, fetchLatexFile, and resolveLatexRepo are the process,
+// download, and mirror-pin seams. Tests replace them; the defaults run the
+// real tlmgr, the shared downloader, and one redirect lookup.
+var invokeLatexTool = runLatexToolPath
+
+var fetchLatexFile = func(a *App, ctx context.Context, url, dest string) error {
+	return a.downloadModelFromWithEventContext(ctx, url, dest, false, latexUpdaterProgressEvent)
+}
+
+var resolveLatexRepo = tinytex.ResolveTLNet
+
+// latexCommandError keeps the full tlmgr transcript. Error is the clipped
+// line shown in settings; TlmgrOutput is what the recovery classifier reads.
+type latexCommandError struct {
+	msg    string
+	output string
+	err    error
+}
+
+func (e *latexCommandError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.msg
+}
+
+func (e *latexCommandError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func (e *latexCommandError) TlmgrOutput() string {
+	if e == nil {
+		return ""
+	}
+	return e.output
+}
+
+// latexSchemeBlocked reports a local updater script that the next mirror
+// cannot move. tlmgr.bat exits before perl when temp\updater-w32 remains,
+// and update --self fails at the rename when updater-w32.bat remains.
+func latexSchemeBlocked(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, tinytex.ErrStaleUpdater) {
+		return true
+	}
+	return tinytex.TlmgrOutputStaleUpdater(latexTlmgrOutput(err))
+}
+
+func latexTlmgrOutput(err error) string {
+	var carrier interface{ TlmgrOutput() string }
+	if errors.As(err, &carrier) && carrier != nil && carrier.TlmgrOutput() != "" {
+		return carrier.TlmgrOutput()
+	}
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func firstLatexLine(s string) string {

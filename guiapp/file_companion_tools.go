@@ -21,23 +21,40 @@ import (
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
 
-// The companion's closed tool surface: PDF helpers bound to the one open
-// document. Tool arguments carry no path on purpose — the open file is the
-// entire reach of these tools. pdf_restore writes a new selectable PDF under
-// the session results directory and does not modify the open file. pdf_generate
-// writes a new PDF of the model's own answer under the same directory.
+// The companion's closed tool surface is one list for every open document.
+// read_document reads that one file for Word, Excel, PowerPoint, PDF, text,
+// EPUB and the other formats the office reader already knows. PDF page tools
+// explain themselves when the file is not a PDF; web_search and web_fetch,
+// and pdf_generate, apply to every type. Tool arguments carry no path on
+// purpose. pdf_restore writes a new selectable PDF under the session results
+// directory and does not modify the open file. pdf_generate writes a new PDF
+// of the model's own answer under the same directory.
 // Figure tools write only into the session figure directory. Every tool-produced
 // image joins the turn's 图N list, so the reply displays it by reference
-// instead of restating a path.
+// instead of restating a path. A share discussion drops both writers: a
+// reader's note is untrusted and must not create a file on the host.
 const (
 	fileCompanionToolReadPages   = "pdf_read_pages"
 	fileCompanionToolRenderPage  = "pdf_render_page"
 	fileCompanionToolExtractImgs = "pdf_extract_images"
 	fileCompanionToolRestore     = "pdf_restore"
 	// fileCompanionToolGenerate writes one PDF from the model's own answer.
-	// It is the only tool here that writes, and it writes into the session's
-	// own results directory.
+	// It is the only notes writer here, and it writes into the session's
+	// own results directory. It does not require the open file to be a PDF.
 	fileCompanionToolGenerate = "pdf_generate"
+	// fileCompanionToolReadDocument reads the open file only. It covers Word,
+	// Excel, PowerPoint, PDF, text, EPUB and the other formats ToolReadDocument
+	// already parses. The model never supplies a path.
+	fileCompanionToolReadDocument = "read_document"
+	// fileCompanionToolCraft generates one script and runs it against the open
+	// document. The host chat can use it when the readers cannot see the
+	// structure. A participant note cannot: the script runs on the host.
+	fileCompanionToolCraft = "craft_tool"
+	// Public literature lookup. Same names the rest of the agent uses, narrowed
+	// at execution so a companion turn cannot save a file, open the browser
+	// profile, or reach a private host.
+	fileCompanionToolWebSearch = "web_search"
+	fileCompanionToolWebFetch  = "web_fetch"
 
 	// A turn's displayable 图N list is bounded: the model cannot flood the
 	// reply with renders, and numbering stays deterministic.
@@ -205,7 +222,8 @@ func fileCompanionToolDefinitions() []map[string]interface{} {
 
 func isFileCompanionHostTool(name string) bool {
 	switch strings.TrimSpace(name) {
-	case fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore, fileCompanionToolGenerate:
+	case fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore, fileCompanionToolGenerate,
+		fileCompanionToolReadDocument, fileCompanionToolCraft, fileCompanionToolWebSearch, fileCompanionToolWebFetch:
 		return true
 	}
 	return false
@@ -218,13 +236,35 @@ func fileCompanionPaperTurnText(text string) bool {
 	return strings.Contains(text, fileCompanionPaperMarker)
 }
 
-// fileCompanionWithoutGenerateTool drops the writer from a tool list.
+// fileCompanionWithoutGenerateTool drops the notes writer from a tool list.
 func fileCompanionWithoutGenerateTool(tools []map[string]interface{}) []map[string]interface{} {
+	return fileCompanionWithoutNamedTools(tools, fileCompanionToolGenerate)
+}
+
+// fileCompanionWithoutWebTools drops public lookup. A paper interpretation
+// stays inside the open document: the host writes its PDF, and the prompt
+// asks for search terms rather than live results.
+func fileCompanionWithoutWebTools(tools []map[string]interface{}) []map[string]interface{} {
+	return fileCompanionWithoutNamedTools(tools, fileCompanionToolWebSearch, fileCompanionToolWebFetch)
+}
+
+// fileCompanionPaperSurfaceTools is the paper button's list: page tools stay
+// so a scan can still be read. The notes writer, the script tool, and web
+// lookup stay off.
+func fileCompanionPaperSurfaceTools(tools []map[string]interface{}) []map[string]interface{} {
+	return fileCompanionWithoutNamedTools(fileCompanionWithoutWebTools(fileCompanionWithoutGenerateTool(tools)), fileCompanionToolCraft)
+}
+
+func fileCompanionWithoutNamedTools(tools []map[string]interface{}, names ...string) []map[string]interface{} {
+	drop := map[string]bool{}
+	for _, name := range names {
+		drop[name] = true
+	}
 	kept := make([]map[string]interface{}, 0, len(tools))
 	for _, tool := range tools {
 		fn, _ := tool["function"].(map[string]interface{})
 		name, _ := fn["name"].(string)
-		if strings.TrimSpace(name) == fileCompanionToolGenerate {
+		if drop[strings.TrimSpace(name)] {
 			continue
 		}
 		kept = append(kept, tool)
@@ -232,15 +272,27 @@ func fileCompanionWithoutGenerateTool(tools []map[string]interface{}) []map[stri
 	return kept
 }
 
-// fileCompanionReadOnlyTools drops every tool that creates a file. A share
-// discussion answers with a note, so the tools it may call only read.
+// fileCompanionToolWritesFile reports a companion tool that creates or rewrites
+// a file. The host's own chat may call these. A turn started from a
+// participant's note may not: the note is untrusted input.
+func fileCompanionToolWritesFile(name string) bool {
+	switch strings.TrimSpace(name) {
+	case fileCompanionToolRestore, fileCompanionToolGenerate, fileCompanionToolCraft:
+		return true
+	default:
+		return false
+	}
+}
+
+// fileCompanionReadOnlyTools drops every tool that creates a file. Participant
+// notes are answered with this list: reading and public lookup stay, writers
+// do not.
 func fileCompanionReadOnlyTools(tools []map[string]interface{}) []map[string]interface{} {
 	kept := make([]map[string]interface{}, 0, len(tools))
 	for _, tool := range tools {
 		fn, _ := tool["function"].(map[string]interface{})
 		name, _ := fn["name"].(string)
-		switch strings.TrimSpace(name) {
-		case fileCompanionToolRestore, fileCompanionToolGenerate:
+		if fileCompanionToolWritesFile(name) {
 			continue
 		}
 		kept = append(kept, tool)
@@ -248,29 +300,37 @@ func fileCompanionReadOnlyTools(tools []map[string]interface{}) []map[string]int
 	return kept
 }
 
-// fileCompanionShareDiscussionUserID reports the background share discussion
-// owner. Its input is a reader's note, so the answer is always a note: the
-// session may read the document but must not create or rewrite files.
+// fileCompanionShareDiscussionUserID reports the session that answers a
+// participant's note. The host's own companion chat is a different session
+// and keeps the full tool list.
 func fileCompanionShareDiscussionUserID(userID string) bool {
 	sessionID := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(userID), "file-companion:"))
 	return strings.HasPrefix(sessionID, "fcs_")
 }
 
+// fileCompanionUnifiedToolDefinitions is the one list every open document
+// gets. PDF-only tools stay on it; execution tells the model when the open
+// file is not a PDF, instead of hiding the tool and changing the contract.
+func fileCompanionUnifiedToolDefinitions() []map[string]interface{} {
+	defs := fileCompanionToolDefinitions()
+	defs = append(defs, fileCompanionReadDocumentDefinition(), fileCompanionCraftDefinition())
+	return append(defs, fileCompanionWebToolDefinitions()...)
+}
+
 // fileCompanionClosedSurfaceTools is the whole executable surface a companion
-// turn gets: the document tools when the open file is a PDF, and nothing
-// otherwise. The figures a markdown or docx needs already travel with the
-// turn itself. pdf_restore adds a new file and leaves the open PDF as it is.
+// turn gets. Every open document, whatever its type, receives the same list.
+// pdf_restore adds a new file and leaves the open PDF as it is. pdf_generate
+// writes the model's notes and does not need the source to be a PDF.
 // A share discussion session drops the tools that write files, so a reader's
-// note cannot turn into a generated document.
+// note cannot turn into a generated document or a restored scan.
 func (h *IMMessageHandler) fileCompanionClosedSurfaceTools(userID string) []map[string]interface{} {
 	if h == nil || h.app == nil {
 		return nil
 	}
-	canonical, err := h.app.fileCompanionOpenDocument(userID)
-	if err != nil || !strings.EqualFold(filepath.Ext(canonical), ".pdf") {
+	if _, err := h.app.fileCompanionOpenDocument(userID); err != nil {
 		return nil
 	}
-	defs := fileCompanionToolDefinitions()
+	defs := fileCompanionUnifiedToolDefinitions()
 	if !fileCompanionShareDiscussionUserID(userID) {
 		return defs
 	}
@@ -324,17 +384,29 @@ func (h *IMMessageHandler) runFileCompanionHostTool(userID, name, argsJSON strin
 		}
 		args = parsed
 	}
-	// The definition list already hides these from a discussion session; the
-	// execution gate keeps a model that names one anyway from writing a file.
-	if fileCompanionShareDiscussionUserID(userID) && (name == fileCompanionToolRestore || name == fileCompanionToolGenerate) {
-		return "分享讨论只能阅读文档，不能生成或改写文件。", false
+	// The list already hides writers from a participant note. This gate is the
+	// one that still runs if the model names pdf_restore or pdf_generate anyway.
+	if fileCompanionShareDiscussionUserID(userID) && fileCompanionToolWritesFile(name) {
+		return "参与者批注只能阅读和检索，不能生成或改写文件。", false
 	}
 	canonical, err := h.app.fileCompanionOpenDocument(userID)
 	if err != nil {
 		return "工具不可用：" + err.Error(), false
 	}
+	switch name {
+	case fileCompanionToolWebSearch:
+		return h.fileCompanionWebSearch(args)
+	case fileCompanionToolWebFetch:
+		return h.fileCompanionWebFetch(args)
+	case fileCompanionToolGenerate:
+		return h.app.fileCompanionToolGenerate(userID, canonical, args)
+	case fileCompanionToolReadDocument:
+		return h.fileCompanionReadDocument(canonical, args)
+	case fileCompanionToolCraft:
+		return h.fileCompanionCraftTool(userID, canonical, args)
+	}
 	if !strings.EqualFold(filepath.Ext(canonical), ".pdf") {
-		return "当前打开的不是 PDF，文档工具只支持 PDF。", false
+		return "当前打开的不是 PDF。pdf_read_pages、pdf_render_page、pdf_extract_images 和 pdf_restore 只支持 PDF。读正文用 read_document。文献检索用 web_search 和 web_fetch，笔记用 pdf_generate。", false
 	}
 	switch name {
 	case fileCompanionToolReadPages:
@@ -345,8 +417,6 @@ func (h *IMMessageHandler) runFileCompanionHostTool(userID, name, argsJSON strin
 		return h.app.fileCompanionToolExtractImages(userID, canonical, args)
 	case fileCompanionToolRestore:
 		return h.app.fileCompanionToolRestore(canonical, args)
-	case fileCompanionToolGenerate:
-		return h.app.fileCompanionToolGenerate(userID, canonical, args)
 	}
 	return "未知工具 " + name, false
 }
@@ -359,6 +429,10 @@ func fileCompanionToolProgressText(name, argsJSON string) string {
 		}
 	}
 	switch strings.TrimSpace(name) {
+	case fileCompanionToolReadDocument:
+		return "正在读取文档正文…"
+	case fileCompanionToolCraft:
+		return "正在用脚本提取文档数据…"
 	case fileCompanionToolReadPages:
 		return "正在读取文档页原文…"
 	case fileCompanionToolRenderPage:
@@ -378,6 +452,10 @@ func fileCompanionToolProgressText(name, argsJSON string) string {
 		return "正在把扫描页恢复成可选中的 PDF…"
 	case fileCompanionToolGenerate:
 		return "正在把正文写成 PDF…"
+	case fileCompanionToolWebSearch:
+		return "正在检索公开网页…"
+	case fileCompanionToolWebFetch:
+		return "正在打开公开网页…"
 	}
 	return "正在处理文档…"
 }

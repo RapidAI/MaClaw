@@ -62,7 +62,7 @@ func TestSpecMatchesConstants(t *testing.T) {
 	known := map[MessageType]bool{
 		TypeHello: true, TypeState: true, TypeAmbient: true, TypePet: true,
 		TypeHeartbeat: true, TypeAssetChunk: true, TypeClock: true, TypeCelebrate: true, TypeSound: true,
-		TypeStateAck: true, TypeLog: true, TypeAssetAck: true,
+		TypeStateAck: true, TypeLog: true, TypeAssetAck: true, TypeInput: true,
 	}
 	listed := map[MessageType]bool{}
 	for _, name := range append(append([]string{}, spec.Types.HostToDevice...), spec.Types.DeviceToHost...) {
@@ -116,6 +116,8 @@ func TestSanitizeClampsAndCaps(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		m.Current = append(m.Current, TaskItem{Title: strings.Repeat("任", 40), Progress: 5})
 	}
+	m.Current[0].Phase = strings.Repeat("阶", 20)
+	m.Current[0].Elapsed = strings.Repeat("分", 10)
 	m.Sanitize()
 	if len(m.Current) != MaxCurrent {
 		t.Fatalf("current=%d, want %d", len(m.Current), MaxCurrent)
@@ -127,6 +129,9 @@ func TestSanitizeClampsAndCaps(t *testing.T) {
 		if item.Progress != 1 {
 			t.Fatalf("progress=%v, want 1", item.Progress)
 		}
+	}
+	if len(m.Current[0].Phase) > MaxPhaseBytes || len(m.Current[0].Elapsed) > MaxElapsedBytes {
+		t.Fatalf("phase/elapsed not capped: %q %q", m.Current[0].Phase, m.Current[0].Elapsed)
 	}
 }
 
@@ -249,6 +254,13 @@ func TestValidateByType(t *testing.T) {
 		{"hello ok", &Message{Type: TypeHello, Proto: Version}, true},
 		{"hello no proto", &Message{Type: TypeHello}, false},
 		{"unknown", &Message{Type: "nope"}, false},
+		{"confirm ok", &Message{Type: TypeInput, Input: &Input{Gesture: "confirm"}}, true},
+		{"attention ok", &Message{Type: TypeState, Counts: &Counts{Total: 1, Pending: 1}, Attention: &Attention{Kind: "pending", Title: "需要确认"}}, true},
+		{"attention bad kind", &Message{Type: TypeState, Counts: &Counts{}, Attention: &Attention{Kind: "happy", Title: "x"}}, false},
+		{"phase too long", &Message{Type: TypeState, Counts: &Counts{Total: 1, InProgress: 1}, Current: []TaskItem{{Title: "a", Phase: strings.Repeat("阶", 20)}}}, false},
+		{"attention sound ok", &Message{Type: TypeSound, Sound: &SoundConfig{Attention: &SoundEventConfig{Enabled: true, Effect: 1}}}, true},
+		{"attention sound bad effect", &Message{Type: TypeSound, Sound: &SoundConfig{Attention: &SoundEventConfig{Enabled: true, Effect: 9}}}, false},
+		{"input bad gesture", &Message{Type: TypeInput, Input: &Input{Gesture: "swipe"}}, false},
 	}
 	for _, tc := range cases {
 		err := tc.msg.Validate()

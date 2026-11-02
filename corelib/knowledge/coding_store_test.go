@@ -135,6 +135,93 @@ func TestCodingKnowledgeStore_SaveAndGet(t *testing.T) {
 	}
 }
 
+func TestCodingProjectPathsEqualNormalizesFormatting(t *testing.T) {
+	if !CodingProjectPathsEqual("/repo/a/", "/repo/a") {
+		t.Fatal("trailing separator should not make project paths different")
+	}
+	if !CodingProjectPathsEqual(`D:\Repo\`, `D:/Repo`) {
+		t.Fatal("slash style should not make project paths different")
+	}
+	if CodingProjectPathsEqual("/repo/a", "/repo/b") {
+		t.Fatal("different projects must not compare equal")
+	}
+	if CodingProjectPathsEqual("", "/repo/a") {
+		t.Fatal("an empty project path must not match a real project")
+	}
+}
+
+func TestMatchesCodingSearchFilterNormalizesProjectPath(t *testing.T) {
+	exp := CodingExperience{Scope: CodingScopeProject, ProjectPath: "/repo/a/", Status: CodingStatusActive}
+	if !matchesCodingSearchFilter(exp, CodingSearchOptions{ProjectPath: "/repo/a"}) {
+		t.Fatal("project-scoped experience should match the same project with different formatting")
+	}
+	if matchesCodingSearchFilter(exp, CodingSearchOptions{ProjectPath: "/repo/b"}) {
+		t.Fatal("project-scoped experience must not match another project")
+	}
+	if !matchesCodingSearchFilter(exp, CodingSearchOptions{}) {
+		t.Fatal("empty project context must keep administrative listing behavior")
+	}
+}
+
+func TestWeightedScorePrefersLanguageHintWithoutFiltering(t *testing.T) {
+	opts := CodingSearchOptions{PreferredLanguage: "go"}
+	goScore := weightedScore(CodingExperience{
+		Scope: CodingScopeLanguage, Language: "go", Confidence: 1,
+	}, 1.0, opts)
+	pythonScore := weightedScore(CodingExperience{
+		Scope: CodingScopeLanguage, Language: "python", Confidence: 1,
+	}, 1.0, opts)
+	if goScore <= pythonScore {
+		t.Fatalf("preferred language score = %f, other language = %f; want preferred higher", goScore, pythonScore)
+	}
+	if !matchesCodingSearchFilter(CodingExperience{
+		Scope: CodingScopeLanguage, Language: "python", Status: CodingStatusActive,
+	}, opts) {
+		t.Fatal("a preferred language must not filter out other-language guidance")
+	}
+
+	explicit := weightedScore(CodingExperience{
+		Scope: CodingScopeLanguage, Language: "go", Confidence: 1,
+	}, 1.0, CodingSearchOptions{Language: "go"})
+	if explicit <= goScore {
+		t.Fatalf("explicit language score = %f, preferred hint = %f; want explicit higher", explicit, goScore)
+	}
+}
+
+func TestWeightedScorePrefersMatchingFramework(t *testing.T) {
+	opts := CodingSearchOptions{Language: "typescript", Frameworks: []string{"react"}}
+	react := weightedScore(CodingExperience{
+		Scope: CodingScopeLanguage, Language: "typescript", Frameworks: []string{"react"}, Confidence: 1,
+	}, 1.0, opts)
+	vue := weightedScore(CodingExperience{
+		Scope: CodingScopeLanguage, Language: "typescript", Frameworks: []string{"vue"}, Confidence: 1,
+	}, 1.0, opts)
+	if react <= vue {
+		t.Fatalf("matching framework score = %f, non-matching = %f; want matching higher", react, vue)
+	}
+}
+
+func TestWeightedScoreFrameworkHintWithoutLanguage(t *testing.T) {
+	opts := CodingSearchOptions{Frameworks: []string{"react"}}
+	withFramework := weightedScore(CodingExperience{
+		Scope: CodingScopeUniversal, Frameworks: []string{"react"}, Confidence: 1,
+	}, 1.0, opts)
+	withoutFramework := weightedScore(CodingExperience{
+		Scope: CodingScopeUniversal, Confidence: 1,
+	}, 1.0, opts)
+	if withFramework <= withoutFramework {
+		t.Fatalf("matching framework score = %f, non-matching = %f; want matching higher even without a language hint", withFramework, withoutFramework)
+	}
+
+	// One matching hint applies exactly one bonus; extra matches must not stack.
+	multiMatch := weightedScore(CodingExperience{
+		Scope: CodingScopeUniversal, Frameworks: []string{"react", "next"}, Confidence: 1,
+	}, 1.0, CodingSearchOptions{Frameworks: []string{"react", "next"}})
+	if multiMatch != withFramework {
+		t.Fatalf("multi-match score = %f, single-match score = %f; want no stacking", multiMatch, withFramework)
+	}
+}
+
 func TestCodingKnowledgeStore_SearchByLanguage(t *testing.T) {
 	store := openTestCodingStore(t)
 	ctx := context.Background()
@@ -319,6 +406,57 @@ func TestCodingKnowledgeStore_ConfidenceUpdate(t *testing.T) {
 	}
 	if got.FailureCount != 1 {
 		t.Errorf("failure_count=%d, want 1", got.FailureCount)
+	}
+}
+
+func TestCodingKnowledgeStore_StatsGroupsProjectPathVariants(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	for i, projectPath := range []string{"D:/repo", "D:/repo/", `D:\repo`} {
+		if _, err := store.SaveExperience(ctx, CodingExperience{
+			Title: fmt.Sprintf("variant %d", i), Scope: CodingScopeProject, ProjectPath: projectPath,
+			TriggerCondition: "stats path variant", Content: "stats must group path variants",
+			Status: CodingStatusActive,
+		}); err != nil {
+			t.Fatalf("SaveExperience(%q): %v", projectPath, err)
+		}
+	}
+	stats, err := store.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(stats.ByProject) != 1 {
+		t.Fatalf("by_project=%+v, want one normalized project bucket", stats.ByProject)
+	}
+	for _, count := range stats.ByProject {
+		if count != 3 {
+			t.Fatalf("by_project=%+v, want count 3", stats.ByProject)
+		}
+	}
+}
+
+func TestCodingKnowledgeStore_StatsIncludesRecallUsage(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	saved, err := store.SaveExperience(ctx, CodingExperience{
+		Title: "recall usage", Scope: CodingScopeUniversal, TriggerCondition: "usage stats", Content: "stats must expose recall outcomes", Status: CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	if err := recordTestRecallOutcome(t, store, saved.ID, true); err != nil {
+		t.Fatalf("RecordRecallOutcome(success): %v", err)
+	}
+	if err := recordTestRecallOutcome(t, store, saved.ID, false); err != nil {
+		t.Fatalf("RecordRecallOutcome(failure): %v", err)
+	}
+
+	stats, err := store.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.RecallCount != 2 || stats.RecallSuccessCount != 1 || stats.RecallFailureCount != 1 {
+		t.Fatalf("stats recall usage = %d/%d/%d, want 2/1/1", stats.RecallCount, stats.RecallSuccessCount, stats.RecallFailureCount)
 	}
 }
 
@@ -741,6 +879,28 @@ func TestCodingKnowledgeStore_ProjectReviewedExperienceUsagePaginatesAndCountsSt
 	}
 	if err := store.ConfirmCandidateWithBudget(ctx, third.ID, CodingExperienceBudget{MaxVerifiedCount: 2}); err == nil || !strings.Contains(err.Error(), "count budget exceeded") {
 		t.Fatalf("full project usage must enforce count budget, err=%v", err)
+	}
+}
+
+func TestCodingKnowledgeStore_ProjectReviewedUsageCountsPathVariants(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	const storedProject = "D:/work/project-budget-variant/"
+	const queriedProject = `D:\work\project-budget-variant`
+
+	if _, err := store.SaveExperience(ctx, CodingExperience{
+		Title: "variant path guidance", Scope: CodingScopeProject, ProjectPath: storedProject,
+		TriggerCondition: "budget path variant", Content: "must count under the normalized project",
+		Status: CodingStatusActive,
+	}); err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	count, _, err := store.projectReviewedExperienceUsage(ctx, "", queriedProject)
+	if err != nil {
+		t.Fatalf("projectReviewedExperienceUsage: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("reviewed count=%d, want 1 for the same project with different path formatting", count)
 	}
 }
 
@@ -1233,6 +1393,30 @@ func TestCodingKnowledgeStore_EvictExperiencePreservesAuditedAndReviewedRecords(
 	}
 }
 
+func TestCodingKnowledgeStore_EvictExperienceAllowsObservationOnlyCandidate(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	exp := saveTestRuntimeCandidate(t, store, "Observed candidate", "Repeated observation only.", "task-1")
+	if _, err := store.RecordCandidateObservation(ctx, exp.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-2", RuntimeAttemptID: "attempt-task-2", EvidenceDigest: "sha256:task-2",
+	}, noopObservationVerifier); err != nil {
+		t.Fatalf("RecordCandidateObservation: %v", err)
+	}
+	observed, err := store.GetExperience(ctx, exp.ID)
+	if err != nil {
+		t.Fatalf("GetExperience: %v", err)
+	}
+	if len(observed.LifecycleEvents) == 0 {
+		t.Fatal("observation evidence should be audited")
+	}
+	if err := store.EvictExperience(ctx, exp.ID); err != nil {
+		t.Fatalf("observation-only candidate should remain evictable: %v", err)
+	}
+	if _, err := store.GetExperience(ctx, exp.ID); err == nil {
+		t.Fatal("evicted observation-only candidate remains available")
+	}
+}
+
 func TestSanitizeExperienceForExportClearsLocalAuthority(t *testing.T) {
 	when := time.Now().UTC()
 	portable := SanitizeExperienceForExport(CodingExperience{
@@ -1569,6 +1753,69 @@ func TestCodingKnowledgeStore_ProjectRecallIncludesSharedAndExcludesOtherProject
 	}
 }
 
+func TestCodingKnowledgeStore_SearchProjectSliceSurvivesOtherProjectCrowding(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	dense := strings.Repeat("crowdout project ", 8)
+	for i := 0; i < 60; i++ {
+		if _, err := store.SaveExperience(ctx, CodingExperience{
+			Title:            fmt.Sprintf("other crowdout %d", i),
+			Scope:            CodingScopeProject,
+			ProjectPath:      fmt.Sprintf("/other/%d", i),
+			TriggerCondition: dense,
+			Content:          dense,
+			Status:           CodingStatusActive,
+		}); err != nil {
+			t.Fatalf("save other project %d: %v", i, err)
+		}
+	}
+	if _, err := store.SaveExperience(ctx, CodingExperience{
+		Title:            "mine crowdout",
+		Scope:            CodingScopeProject,
+		ProjectPath:      "/mine",
+		TriggerCondition: "project crowdout",
+		Content:          "keep this local guidance",
+		Status:           CodingStatusActive,
+	}); err != nil {
+		t.Fatalf("save current project: %v", err)
+	}
+
+	got, err := store.SearchExperiences(ctx, CodingSearchOptions{
+		Query: "project crowdout", ProjectPath: "/mine", Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("SearchExperiences: %v", err)
+	}
+	if len(got) != 1 || got[0].Title != "mine crowdout" {
+		t.Fatalf("project guidance was crowded out: %+v", got)
+	}
+}
+
+func TestCodingKnowledgeStore_ContextPackPrefersLanguageHintWithoutFiltering(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	for _, exp := range []CodingExperience{
+		{Title: "Go language hint", Scope: CodingScopeLanguage, Language: "go", TriggerCondition: "language hint boundary", Content: "language hint boundary guidance", Status: CodingStatusActive},
+		{Title: "Python language hint", Scope: CodingScopeLanguage, Language: "python", TriggerCondition: "language hint boundary", Content: "language hint boundary guidance", Status: CodingStatusActive},
+	} {
+		if _, err := store.SaveExperience(ctx, exp); err != nil {
+			t.Fatalf("SaveExperience(%q): %v", exp.Title, err)
+		}
+	}
+	pack, err := store.ContextPackForTask(ctx, CodingContextPackOptions{
+		Query: "language hint boundary", PreferredLanguage: "go", MaxItems: 2, MaxChars: 2000,
+	})
+	if err != nil {
+		t.Fatalf("ContextPackForTask: %v", err)
+	}
+	if len(pack.Items) != 2 {
+		t.Fatalf("context item count=%d, want both languages: %+v", len(pack.Items), pack.Items)
+	}
+	if pack.Items[0].Title != "Go language hint" {
+		t.Fatalf("preferred language did not rank first: %+v", pack.Items)
+	}
+}
+
 func TestCodingKnowledgeStore_ContextPackEnforcesTokenBudget(t *testing.T) {
 	store := openTestCodingStore(t)
 	ctx := context.Background()
@@ -1695,6 +1942,419 @@ func TestNewCodingKnowledgeStore_InvalidPath(t *testing.T) {
 	_, err := NewCodingKnowledgeStore("")
 	if err == nil {
 		t.Error("expected error for empty path")
+	}
+}
+
+func saveTestRuntimeCandidate(t *testing.T, store *CodingKnowledgeStore, title, content, taskID string) CodingExperience {
+	t.Helper()
+	exp, err := store.SaveRuntimeExperience(context.Background(), CodingExperience{
+		Title:                  title,
+		Category:               CodingCategoryPattern,
+		Scope:                  CodingScopeUniversal,
+		TriggerCondition:       strings.ToLower(title),
+		Content:                content,
+		SourceRuntimeTaskID:    taskID,
+		SourceRuntimeAttemptID: "attempt-" + taskID,
+		EvidenceDigest:         "sha256:" + taskID,
+	})
+	if err != nil {
+		t.Fatalf("SaveRuntimeExperience: %v", err)
+	}
+	return exp
+}
+
+func noopObservationVerifier(context.Context, CodingExperience) error { return nil }
+
+func codingTestContains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCodingKnowledgeStore_RecordCandidateObservationCountsDistinctTasks(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	exp := saveTestRuntimeCandidate(t, store, "Nil HTTP client", "Check the pooled client before reuse.", "task-1")
+	if exp.ObservationCount != 1 || len(exp.ObservationTaskIDs) != 1 {
+		t.Fatalf("initial observation evidence = %d/%v, want 1/[task-1]", exp.ObservationCount, exp.ObservationTaskIDs)
+	}
+
+	// Re-extraction from the source task is the same evidence unit.
+	updated, err := store.RecordCandidateObservation(ctx, exp.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-1", RuntimeAttemptID: "attempt-task-1", EvidenceDigest: "sha256:task-1",
+		FailedAttempts: []string{"retried blindly"},
+	}, noopObservationVerifier)
+	if err != nil {
+		t.Fatalf("RecordCandidateObservation same task: %v", err)
+	}
+	if updated.ObservationCount != 1 {
+		t.Fatalf("same-task observation count = %d, want 1", updated.ObservationCount)
+	}
+
+	updated, err = store.RecordCandidateObservation(ctx, exp.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-2", RuntimeAttemptID: "attempt-task-2", EvidenceDigest: "sha256:task-2",
+		FailedAttempts:    []string{"retried blindly"},
+		Contraindications: []string{"not for owned clients"},
+		Frameworks:        []string{"net/http"},
+		Labels:            []string{"conflicted", "net"},
+	}, noopObservationVerifier)
+	if err != nil {
+		t.Fatalf("RecordCandidateObservation task-2: %v", err)
+	}
+	if updated.ObservationCount != 2 {
+		t.Fatalf("distinct-task observation count = %d, want 2", updated.ObservationCount)
+	}
+	if !codingTestContains(updated.ObservationTaskIDs, "task-2") {
+		t.Fatalf("observation task IDs = %v, want task-2 included", updated.ObservationTaskIDs)
+	}
+	if !codingTestContains(updated.FailedAttempts, "retried blindly") {
+		t.Fatalf("failed attempts = %v, want merged attempt", updated.FailedAttempts)
+	}
+	if !codingTestContains(updated.Contraindications, "not for owned clients") {
+		t.Fatalf("contraindications = %v, want merged contraindication", updated.Contraindications)
+	}
+	if !codingTestContains(updated.Frameworks, "net/http") {
+		t.Fatalf("frameworks = %v, want merged framework", updated.Frameworks)
+	}
+	if !codingTestContains(updated.Labels, "net") {
+		t.Fatalf("labels = %v, want net", updated.Labels)
+	}
+	if codingTestContains(updated.Labels, "conflicted") {
+		t.Fatalf("labels = %v, managed lifecycle label must be stripped", updated.Labels)
+	}
+
+	// The same independent task must not inflate the count on retry.
+	again, err := store.RecordCandidateObservation(ctx, exp.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-2", RuntimeAttemptID: "attempt-task-2", EvidenceDigest: "sha256:task-2",
+	}, noopObservationVerifier)
+	if err != nil {
+		t.Fatalf("RecordCandidateObservation duplicate task-2: %v", err)
+	}
+	if again.ObservationCount != 2 {
+		t.Fatalf("duplicate task count = %d, want 2", again.ObservationCount)
+	}
+}
+
+func TestCodingKnowledgeStore_PromoteCandidateFromObservations(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	exp := saveTestRuntimeCandidate(t, store, "Nil HTTP client", "Check the pooled client before reuse.", "task-1")
+
+	promoted, err := store.PromoteCandidateFromObservations(ctx, exp.ID, 2, CodingExperienceBudget{}, noopObservationVerifier)
+	if err != nil {
+		t.Fatalf("promote below threshold: %v", err)
+	}
+	if promoted {
+		t.Fatal("a single observation must not promote a candidate")
+	}
+	if _, err := store.RecordCandidateObservation(ctx, exp.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-2", RuntimeAttemptID: "attempt-task-2", EvidenceDigest: "sha256:task-2",
+	}, noopObservationVerifier); err != nil {
+		t.Fatalf("RecordCandidateObservation: %v", err)
+	}
+	promoted, err = store.PromoteCandidateFromObservations(ctx, exp.ID, 2, CodingExperienceBudget{}, noopObservationVerifier)
+	if err != nil {
+		t.Fatalf("promote at threshold: %v", err)
+	}
+	if !promoted {
+		t.Fatal("two independent observations should promote the candidate")
+	}
+	got, err := store.GetExperience(ctx, exp.ID)
+	if err != nil {
+		t.Fatalf("GetExperience: %v", err)
+	}
+	if got.Status != CodingStatusActive {
+		t.Fatalf("status = %q, want active", got.Status)
+	}
+	if got.LastReviewedAt.IsZero() {
+		t.Fatal("auto promotion must record a review timestamp")
+	}
+	found := false
+	for _, event := range got.LifecycleEvents {
+		if event.Action == "candidate_auto_promoted" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("lifecycle events = %+v, want candidate_auto_promoted", got.LifecycleEvents)
+	}
+}
+
+func TestCodingKnowledgeStore_PromoteCandidateRequiresVerifiedProvenance(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	exp := saveTestRuntimeCandidate(t, store, "Nil HTTP client", "Check the pooled client before reuse.", "task-1")
+	if _, err := store.RecordCandidateObservation(ctx, exp.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-2", RuntimeAttemptID: "attempt-task-2", EvidenceDigest: "sha256:task-2",
+	}, noopObservationVerifier); err != nil {
+		t.Fatalf("RecordCandidateObservation: %v", err)
+	}
+	promoted, err := store.PromoteCandidateFromObservations(ctx, exp.ID, 2, CodingExperienceBudget{}, func(context.Context, CodingExperience) error {
+		return fmt.Errorf("stale evidence")
+	})
+	if err == nil || promoted {
+		t.Fatalf("stale provenance must block promotion (promoted=%v err=%v)", promoted, err)
+	}
+	got, _ := store.GetExperience(ctx, exp.ID)
+	if got.Status != CodingStatusCandidate {
+		t.Fatalf("status = %q, want candidate", got.Status)
+	}
+}
+
+func TestCodingKnowledgeStore_PromoteCandidateHonorsReviewedProjectBudget(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	if _, err := store.SaveExperience(ctx, CodingExperience{
+		Title: "Existing reviewed rule", Category: CodingCategoryConvention, Scope: CodingScopeProject,
+		ProjectPath: "/repo", Content: "Existing reviewed guidance.", Status: CodingStatusActive,
+	}); err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	candidate, err := store.SaveRuntimeExperience(ctx, CodingExperience{
+		Title: "New project rule", Category: CodingCategoryPattern, Scope: CodingScopeProject,
+		ProjectPath: "/repo", TriggerCondition: "new project rule", Content: "New project guidance.",
+		SourceRuntimeTaskID: "task-1", SourceRuntimeAttemptID: "attempt-task-1", EvidenceDigest: "sha256:task-1",
+	})
+	if err != nil {
+		t.Fatalf("SaveRuntimeExperience: %v", err)
+	}
+	if _, err := store.RecordCandidateObservation(ctx, candidate.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-2", RuntimeAttemptID: "attempt-task-2", EvidenceDigest: "sha256:task-2",
+	}, noopObservationVerifier); err != nil {
+		t.Fatalf("RecordCandidateObservation: %v", err)
+	}
+	promoted, err := store.PromoteCandidateFromObservations(ctx, candidate.ID, 2, CodingExperienceBudget{MaxVerifiedCount: 1}, noopObservationVerifier)
+	if err == nil || promoted {
+		t.Fatalf("budget overflow must block promotion (promoted=%v err=%v)", promoted, err)
+	}
+}
+
+func TestCodingKnowledgeStore_UpdateExperienceCannotForgeObservationEvidence(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	exp := saveTestRuntimeCandidate(t, store, "Nil HTTP client", "Check the pooled client before reuse.", "task-1")
+	if _, err := store.RecordCandidateObservation(ctx, exp.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-2", RuntimeAttemptID: "attempt-task-2", EvidenceDigest: "sha256:task-2",
+	}, noopObservationVerifier); err != nil {
+		t.Fatalf("RecordCandidateObservation: %v", err)
+	}
+	got, err := store.GetExperience(ctx, exp.ID)
+	if err != nil {
+		t.Fatalf("GetExperience: %v", err)
+	}
+
+	forged := got
+	forged.ObservationCount = 9
+	if err := store.UpdateExperience(ctx, forged); err == nil {
+		t.Fatal("editor must not rewrite observation count")
+	}
+	forged = got
+	forged.ObservationTaskIDs = []string{"forged-task"}
+	if err := store.UpdateExperience(ctx, forged); err == nil {
+		t.Fatal("editor must not rewrite observation task IDs")
+	}
+
+	edit := got
+	edit.ObservationCount = 0
+	edit.ObservationTaskIDs = nil
+	edit.Title = "Nil HTTP client (edited)"
+	if err := store.UpdateExperience(ctx, edit); err != nil {
+		t.Fatalf("normal edit: %v", err)
+	}
+	reloaded, err := store.GetExperience(ctx, exp.ID)
+	if err != nil {
+		t.Fatalf("GetExperience after edit: %v", err)
+	}
+	if reloaded.ObservationCount != 2 || len(reloaded.ObservationTaskIDs) != 2 {
+		t.Fatalf("observation evidence after edit = %d/%v, want 2/2", reloaded.ObservationCount, reloaded.ObservationTaskIDs)
+	}
+}
+
+func TestCodingKnowledgeStore_TurnEvidenceRoundTrip(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	evidence, err := store.RecordTurnEvidence(ctx, CodingTurnEvidence{
+		OwnerID: "owner", ProjectPath: "/repo", Status: CodingTurnStatusCompleted,
+		MaterialCount: 2, EvidenceDigest: "sha256:turn-1",
+	})
+	if err != nil {
+		t.Fatalf("RecordTurnEvidence: %v", err)
+	}
+	if evidence.ID == "" {
+		t.Fatal("turn evidence has no ID")
+	}
+	taskID := CodingTurnEvidenceTaskPrefix + evidence.ID
+	attemptID := CodingTurnEvidenceAttemptPrefix + evidence.ID
+	if err := store.VerifyTurnRecallEvidence(ctx, taskID, attemptID, "sha256:turn-1"); err != nil {
+		t.Fatalf("VerifyTurnRecallEvidence: %v", err)
+	}
+	if err := store.VerifyTurnRecallEvidence(ctx, taskID, attemptID, "sha256:wrong"); err == nil {
+		t.Fatal("wrong digest must not verify")
+	}
+	if err := store.VerifyTurnRecallEvidence(ctx, "turn:missing", "turn-attempt:missing", "sha256:x"); err == nil {
+		t.Fatal("missing turn evidence must not verify")
+	}
+
+	interrupted, err := store.RecordTurnEvidence(ctx, CodingTurnEvidence{
+		Status: CodingTurnStatusInterrupted, EvidenceDigest: "sha256:turn-2",
+	})
+	if err != nil {
+		t.Fatalf("RecordTurnEvidence interrupted: %v", err)
+	}
+	if err := store.VerifyTurnRecallEvidence(ctx, CodingTurnEvidenceTaskPrefix+interrupted.ID, CodingTurnEvidenceAttemptPrefix+interrupted.ID, "sha256:turn-2"); err == nil {
+		t.Fatal("interrupted turn evidence must not verify")
+	}
+	if _, err := store.RecordTurnEvidence(ctx, CodingTurnEvidence{Status: "ok", EvidenceDigest: "sha256:x"}); err == nil {
+		t.Fatal("invalid turn status must be rejected")
+	}
+}
+
+func TestCodingKnowledgeStore_RuntimeSaveDoesNotClobberExistingContent(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	first, err := store.SaveRuntimeExperience(ctx, CodingExperience{
+		Title: "Same guidance", Category: CodingCategoryPattern, Scope: CodingScopeUniversal,
+		TriggerCondition: "same trigger", Content: "Identical guidance body.",
+		SourceRuntimeTaskID: "task-1", SourceRuntimeAttemptID: "attempt-1", EvidenceDigest: "sha256:task-1",
+	})
+	if err != nil {
+		t.Fatalf("first SaveRuntimeExperience: %v", err)
+	}
+	second, err := store.SaveRuntimeExperience(ctx, CodingExperience{
+		Title: "Same guidance", Category: CodingCategoryPattern, Scope: CodingScopeUniversal,
+		TriggerCondition: "same trigger", Content: "Identical guidance body.",
+		SourceRuntimeTaskID: "task-2", SourceRuntimeAttemptID: "attempt-2", EvidenceDigest: "sha256:task-2",
+	})
+	if err != nil {
+		t.Fatalf("second SaveRuntimeExperience: %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("identical runtime saves collapsed onto %s and clobbered provenance", first.ID)
+	}
+	reloaded, err := store.GetExperience(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetExperience first: %v", err)
+	}
+	if reloaded.SourceRuntimeTaskID != "task-1" || reloaded.ObservationCount != 1 {
+		t.Fatalf("first record was overwritten: %+v", reloaded)
+	}
+}
+
+func TestCodingKnowledgeStore_ObservationEvidenceIsLocalOnly(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	exp := saveTestRuntimeCandidate(t, store, "Nil HTTP client", "Check the pooled client before reuse.", "task-1")
+	if _, err := store.RecordCandidateObservation(ctx, exp.ID, CodingExperienceObservation{
+		RuntimeTaskID: "task-2", RuntimeAttemptID: "attempt-task-2", EvidenceDigest: "sha256:task-2",
+	}, noopObservationVerifier); err != nil {
+		t.Fatalf("RecordCandidateObservation: %v", err)
+	}
+	exported := SanitizeExperienceForExport(exp)
+	if exported.ObservationCount != 0 || len(exported.ObservationTaskIDs) != 0 {
+		t.Fatalf("export leaked observation evidence: %d/%v", exported.ObservationCount, exported.ObservationTaskIDs)
+	}
+	imported, err := store.SaveImportedExperience(ctx, CodingExperience{
+		Title: "Imported rule", Category: CodingCategoryPattern, Scope: CodingScopeUniversal,
+		Content:                "Imported guidance.",
+		SourceRuntimeTaskID:    "foreign-task",
+		SourceRuntimeAttemptID: "foreign-attempt",
+		EvidenceDigest:         "sha256:foreign",
+		ObservationCount:       5,
+		ObservationTaskIDs:     []string{"foreign-task"},
+	})
+	if err != nil {
+		t.Fatalf("SaveImportedExperience: %v", err)
+	}
+	if imported.ObservationCount != 0 || len(imported.ObservationTaskIDs) != 0 {
+		t.Fatalf("import kept foreign observation evidence: %d/%v", imported.ObservationCount, imported.ObservationTaskIDs)
+	}
+}
+
+func TestBuildCodingRecallFallbackQueryKeepsSingleMeaningfulTerm(t *testing.T) {
+	if got := buildCodingRecallFallbackQuery("use a mutex"); got == "" || !strings.Contains(got, "mutex") {
+		t.Fatalf("fallback = %q, want the meaningful mutex term", got)
+	}
+	if got := buildCodingRecallFallbackQuery("the and or"); got != "" {
+		t.Fatalf("stopword-only fallback = %q, want empty", got)
+	}
+	if got := buildCodingRecallFallbackQuery("mutex"); got != "" {
+		t.Fatalf("single-term query fallback = %q, want empty (strict already handles it)", got)
+	}
+}
+
+func TestCodingKnowledgeStore_SearchExperiencesFallsBackToOR(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	active, err := store.SaveExperience(ctx, CodingExperience{
+		Title:            "Pooled HTTP client reuse",
+		Category:         CodingCategoryPattern,
+		Scope:            CodingScopeUniversal,
+		TriggerCondition: "pooled http client",
+		Content:          "Check the pooled HTTP client before reusing a connection.",
+		Status:           CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	candidate := saveTestRuntimeCandidate(t, store, "Panic guard", "Always check the pooled HTTP client before reuse.", "task-candidate")
+
+	hits, err := store.SearchExperiences(ctx, CodingSearchOptions{
+		Query: "fix a panic when reusing the pooled HTTP client",
+		Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("SearchExperiences: %v", err)
+	}
+	foundActive, foundCandidate := false, false
+	for _, hit := range hits {
+		if hit.ID == active.ID {
+			foundActive = true
+		}
+		if hit.ID == candidate.ID {
+			foundCandidate = true
+		}
+	}
+	if !foundActive {
+		t.Fatalf("OR recall fallback did not return the active experience: %+v", hits)
+	}
+	if foundCandidate {
+		t.Fatalf("candidate must stay out of automatic recall: %+v", hits)
+	}
+}
+
+func TestCodingKnowledgeStore_ContextPackIncludesAvoidLines(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	if _, err := store.SaveExperience(ctx, CodingExperience{
+		Title:            "HTTP timeout",
+		Category:         CodingCategoryPitfall,
+		Scope:            CodingScopeUniversal,
+		TriggerCondition: "http timeout",
+		Content:          "Set an explicit client timeout.",
+		FailedAttempts:   []string{"Retrying without a timeout hung the test."},
+		Status:           CodingStatusActive,
+	}); err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	pack, err := store.ContextPackForTask(ctx, CodingContextPackOptions{
+		Query: "http timeout", MaxItems: 2, MaxChars: 1000, MaxTokens: 500,
+	})
+	if err != nil {
+		t.Fatalf("ContextPackForTask: %v", err)
+	}
+	found := false
+	for _, item := range pack.Items {
+		if strings.Contains(item.Text, "避免:") && strings.Contains(item.Text, "hung the test") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("context pack omitted failed-attempt guidance: %+v", pack.Items)
 	}
 }
 

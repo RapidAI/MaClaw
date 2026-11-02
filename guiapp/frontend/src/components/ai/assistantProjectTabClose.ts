@@ -1,7 +1,7 @@
 import type { ChatMessage } from "./useAIAssistant";
 import { forgetAIAssistantSessionRounds } from "./useAIAssistant";
 import type { AITab, AITabState } from "./AITabTypes";
-import { expertSessionKey, messageBelongsToSessionOrLegacy, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { expertSessionKey, expertTaskSessionKey, messageBelongsToSessionOrLegacy, projectSessionKey } from "./aiAssistantPanelSessionUtils";
 import { mergeProjectRoundHistory, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
 
 type ProjectRound = { tabId: string | null; projectPath: string; sessionKey: string; baseline: number; seq?: number };
@@ -119,8 +119,10 @@ export function closeAssistantProjectTab(tabId: string, deps: AssistantProjectTa
     // Closing an expert removes its UI owner. Revoke hook-owned work before the
     // tab disappears, so a late file-picker result cannot land in a reopened session.
     if (tab?.type === "expert") {
-        const sessionKey = expertSessionKey(tab.expertId);
-        if (sessionKey) forgetAIAssistantSessionRounds(sessionKey);
+        const legacyKey = expertSessionKey(tab.expertId);
+        const taskKey = expertTaskSessionKey(tab.expertId, tab.projectPath);
+        if (legacyKey) forgetAIAssistantSessionRounds(legacyKey);
+        if (taskKey && taskKey !== legacyKey) forgetAIAssistantSessionRounds(taskKey);
     }
     clearProjectRoundTracking(tabId, deps);
     deps.previewStateMapRef.current.delete(tabId);

@@ -212,14 +212,10 @@ func (f *Frontend) Run(ctx context.Context) error {
 
 		if f.resizeDebouncer != nil {
 			f.resizeDebouncer(func() {
-				f.mainWindow.Invoke(func() {
-					f.chromium.Resize()
-					restackCompanionPlayer()
-				})
+				f.mainWindow.Invoke(f.refitWebViewOnSize)
 			})
 		} else {
-			f.chromium.Resize()
-			restackCompanionPlayer()
+			f.refitWebViewOnSize()
 		}
 	})
 
@@ -238,6 +234,19 @@ func (f *Frontend) Run(ctx context.Context) error {
 	}()
 	mainWindow.UpdateTheme()
 	return nil
+}
+
+// refitWebViewOnSize keeps the WebView on the client rect after a size change.
+// The controller caches the parent origin while maximized. PutBounds applies
+// that cache, which anchors the restored page to the bottom-right and leaves
+// the window background showing. Drop the cache first, then size the view.
+func (f *Frontend) refitWebViewOnSize() {
+	if f == nil || f.chromium == nil {
+		return
+	}
+	_ = f.chromium.NotifyParentWindowPositionChanged()
+	f.chromium.Resize()
+	restackCompanionPlayer()
 }
 
 func (f *Frontend) WindowClose() {

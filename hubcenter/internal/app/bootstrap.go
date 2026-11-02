@@ -215,12 +215,16 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		// Assign only a live recorder: a typed-nil *ha.Service stored in the
 		// interface would pass the handlers' nil check and then panic on use.
 		smCfg.PetStoreSync = haSvc
+		smCfg.ExpertMarketSync = haSvc
 	}
 	smHandlers := httpapi.NewSkillMarketHandlers(smCfg)
 	if haSvc != nil {
 		haSvc.SetPetStoreSnapshotApplier(smHandlers.ApplyPetStoreSnapshot)
 		haSvc.SetPetStoreMetricsApplier(smHandlers.ApplyPetStoreMetrics)
+		haSvc.SetExpertMarketSnapshotApplier(smHandlers.ApplyExpertMarketSnapshot)
+		haSvc.SetExpertMarketMetricsApplier(smHandlers.ApplyExpertMarketMetrics)
 		app.goBackground(func(ctx context.Context) { smHandlers.SeedPetStoreHASync(ctx) })
+		app.goBackground(func(ctx context.Context) { smHandlers.SeedExpertMarketHASync(ctx) })
 	}
 
 	app.goBackground(processor.Run)

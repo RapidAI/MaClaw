@@ -28,6 +28,14 @@ const (
 	// Match HA signed-body ceiling so vision payloads and large completions
 	// are not truncated mid-hop.
 	upstreamHopBodyLimit = 128 << 20
+	// modelCatalogBodyLimit caps an upstream GET /models body. Catalogs that
+	// embed per-model pricing (cheaperinference is about 2.6MB for ~570 models)
+	// exceed 2MiB. A shorter read truncates the JSON and Unmarshal reports
+	// "unexpected end of JSON input". 64MiB leaves room for that catalog to grow.
+	modelCatalogBodyLimit = 64 << 20
+	// probeErrorBodyLimit caps a non-2xx probe body so an error page cannot use
+	// the catalog read budget.
+	probeErrorBodyLimit = 8 << 10
 )
 
 // AccessNodeView is one HubCenter node shown in the provider access-scope picker.
@@ -565,7 +573,7 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 			}
 			writeJSONError(w, http.StatusBadGateway, "upstream stream ended before business data")
 		case upstreamHopKindProbe:
-			models, err := probeProviderModels(r.Context(), probeHTTPClient(cfg), provider.APIURL, provider.APIKey, provider.Protocol, provider.AgentType)
+			models, err := ProbeProviderModels(r.Context(), probeHTTPClient(cfg), provider.Name, provider.APIURL, provider.APIKey, provider.Protocol, provider.AgentType)
 			if err != nil {
 				writeJSONError(w, http.StatusBadGateway, err.Error())
 				return
@@ -623,7 +631,80 @@ func (w *hopStreamWriter) Flush() {
 	}
 }
 
-func probeProviderModels(ctx context.Context, client *http.Client, apiURL, apiKey, protocol, agentType string) ([]string, error) {
+// ParseModelCatalogResponse reads a probe response. A non-2xx body is capped
+// separately from the catalog limit. A 2xx body is parsed with ParseModelCatalog.
+func ParseModelCatalogResponse(statusCode int, status string, body io.Reader) ([]string, error) {
+	if statusCode < 200 || statusCode >= 300 {
+		return nil, fmt.Errorf("probe failed: %s", probeErrorMessage(status, body))
+	}
+	return ParseModelCatalog(body)
+}
+
+// ParseModelCatalog reads an upstream GET /models body and returns model ids.
+// The body is capped, then decoded into id fields only. encoding/json skips
+// the per-model pricing payload without retaining it. A body past the cap is
+// rejected instead of being parsed as truncated JSON.
+func ParseModelCatalog(r io.Reader) ([]string, error) {
+	return parseModelCatalogIDs(r, modelCatalogBodyLimit)
+}
+
+type modelCatalogItem struct {
+	ID string `json:"id"`
+}
+
+type modelCatalogDocument struct {
+	Data   []modelCatalogItem `json:"data"`
+	Models []modelCatalogItem `json:"models"`
+}
+
+func parseModelCatalogIDs(r io.Reader, limit int64) ([]string, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("model catalog exceeded %d bytes", limit)
+	}
+	var parsed modelCatalogDocument
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(parsed.Data)+len(parsed.Models))
+	models := make([]string, 0, len(parsed.Data)+len(parsed.Models))
+	appendModelID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		models = append(models, id)
+	}
+	for _, item := range parsed.Data {
+		appendModelID(item.ID)
+	}
+	for _, item := range parsed.Models {
+		appendModelID(item.ID)
+	}
+	sort.Strings(models)
+	return models, nil
+}
+
+func probeErrorMessage(status string, r io.Reader) string {
+	body, _ := io.ReadAll(io.LimitReader(r, probeErrorBodyLimit))
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		return status
+	}
+	return msg
+}
+
+// ProbeProviderModels lists model ids from an upstream /models endpoint.
+// The admin probe and a hopped probe both use this so the request and the
+// catalog limit stay the same.
+func ProbeProviderModels(ctx context.Context, client *http.Client, providerName, apiURL, apiKey, protocol, agentType string) ([]string, error) {
 	apiURL = OpenCodeCatalogURL(apiURL, agentType)
 	if corelib.IsOpenCodeURL(apiURL) {
 		agent := RequestAgentType(agentType)
@@ -656,51 +737,13 @@ func probeProviderModels(ctx context.Context, client *http.Client, apiURL, apiKe
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
+	client = DevinHTTPClient(client, providerName, apiURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(body))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return nil, fmt.Errorf("probe failed: %s", msg)
-	}
-	var parsed struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-		Models []struct {
-			ID string `json:"id"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var models []string
-	for _, item := range parsed.Data {
-		id := strings.TrimSpace(item.ID)
-		if id != "" && !seen[id] {
-			seen[id] = true
-			models = append(models, id)
-		}
-	}
-	for _, item := range parsed.Models {
-		id := strings.TrimSpace(item.ID)
-		if id != "" && !seen[id] {
-			seen[id] = true
-			models = append(models, id)
-		}
-	}
-	sort.Strings(models)
-	return models, nil
+	return ParseModelCatalogResponse(resp.StatusCode, resp.Status, resp.Body)
 }
 
 func hopModelsEndpoint(apiURL, protocol string) (string, error) {
@@ -1135,10 +1178,12 @@ func ProbeProviderModelsWithScope(ctx context.Context, cfg *ProxyConfig, provide
 		protocol = provider.Protocol
 	}
 	agentType := ""
+	providerName := ""
 	if provider != nil {
 		agentType = provider.AgentType
+		providerName = provider.Name
 	}
-	return probeProviderModels(ctx, &http.Client{Timeout: 20 * time.Second}, apiURL, apiKey, protocol, agentType)
+	return ProbeProviderModels(ctx, &http.Client{Timeout: 20 * time.Second}, providerName, apiURL, apiKey, protocol, agentType)
 }
 
 // ProviderChatTest is one saved-member probe. Node empty uses this node when

@@ -5,6 +5,7 @@ import { localizeText } from '../i18n/langSelect';
 import { tokenBankDisplayURL } from '../utils/hubcenterTokenBank';
 import { TokenBankShareChipButton, useTokenBankDepositBusy } from './remote/TokenBankShareChipButton';
 import { PROVIDER_LOGOS, isLobsterAIProvider, isQoderProvider, isTraeProvider } from './remote/providerLogos';
+import { presetProviderDisplayName } from './remote/presetProviderLabel';
 import {
     HUB_SERVICE_PROVIDER_NAME,
     listProviderModelsForShare,
@@ -259,8 +260,8 @@ function upgradeCrowded(current: string[], next: string[]): string[] {
     return current.map((label, index) => ((counts.get(label) ?? 0) > 1 ? next[index] : label));
 }
 
-function optionLabels(providers: LLMProvider[]): string[] {
-    const names = providers.map((item) => String(item?.name || '').trim());
+function optionLabels(providers: LLMProvider[], lang: string): string[] {
+    const names = providers.map((item) => presetProviderDisplayName(lang, item?.name));
     const nameCount = labelCounts(names);
     const build = (withScheme: boolean) => names.map((name, index) => {
         if ((nameCount.get(name) ?? 0) < 2) return name;
@@ -416,9 +417,9 @@ function ShareableProviderPick({
     const protocol = String(provider.protocol || '').trim();
     const credential = tokenBankShareCredential(provider);
     const shareProvider = { ...provider, name, url: apiURL, key: credential, protocol };
-    const labels = optionLabels(providers);
+    const labels = optionLabels(providers, lang);
     const selectedIndex = providers.findIndex((_, index) => providerRowKey(providers, index) === providerKey);
-    const selectedLabel = labels[selectedIndex] ?? name;
+    const selectedLabel = labels[selectedIndex] ?? presetProviderDisplayName(lang, name);
     const listId = useId();
     const fieldId = `${listId}-field`;
     const valueId = `${listId}-value`;
@@ -575,6 +576,7 @@ function ShareableProviderPick({
             >
                 {providers.map((item, index) => {
                     const rowName = String(item.name || '').trim();
+                    const rowLabel = presetProviderDisplayName(lang, rowName);
                     const active = index === highlight;
                     return (
                         <button
@@ -585,7 +587,7 @@ function ShareableProviderPick({
                             tabIndex={-1}
                             aria-selected={index === selectedIndex}
                             className={`tbk-provider-pick__option${active ? ' tbk-provider-pick__option--active' : ''}`}
-                            title={labels[index] !== rowName ? labels[index] : undefined}
+                            title={labels[index] !== rowLabel ? labels[index] : undefined}
                             onMouseEnter={() => setActiveIndex(index)}
                             onClick={() => choose(index)}
                         >

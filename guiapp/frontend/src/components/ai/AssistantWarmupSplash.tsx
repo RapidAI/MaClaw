@@ -5,10 +5,10 @@ import { chromeText } from "../../i18n/chromeText";
 /** Warm-up stages shown while the panel is not ready, in the order the
  * backend reports them (connecting → loading → warming → ready). The splash
  * disappears on ready/degraded, so those two never render a step. */
-const WARMUP_STEPS: ReadonlyArray<{ key: AIAssistantInitStatus; labelEn: string; labelZhHans: string; labelZhHant: string; progress: number }> = [
-    { key: "connecting", labelEn: "Connect", labelZhHans: "连接服务", labelZhHant: "連線服務", progress: 18 },
-    { key: "loading", labelEn: "Load components", labelZhHans: "加载组件", labelZhHant: "載入元件", progress: 58 },
-    { key: "warming", labelEn: "Warm up", labelZhHans: "预热就绪", labelZhHant: "預熱就緒", progress: 88 },
+const WARMUP_STEPS: ReadonlyArray<{ key: AIAssistantInitStatus; labelEn: string; labelZhHans: string; labelZhHant: string }> = [
+    { key: "connecting", labelEn: "Connect", labelZhHans: "连接服务", labelZhHant: "連線服務" },
+    { key: "loading", labelEn: "Load components", labelZhHans: "加载组件", labelZhHant: "載入元件" },
+    { key: "warming", labelEn: "Warm up", labelZhHans: "预热就绪", labelZhHant: "預熱就緒" },
 ];
 
 function warmupStageIndex(status: AIAssistantInitStatus | undefined): number {
@@ -22,27 +22,21 @@ function warmupStepLabel(step: (typeof WARMUP_STEPS)[number], lang: string): str
 
 interface AssistantWarmupSplashProps {
     initLabel: string;
-    /** Live warm-up stage; drives the stepper + progress. */
+    /** Live warm-up stage; drives the stepper. */
     initStatus?: AIAssistantInitStatus;
     lang: string;
     brandLine: React.ReactNode;
 }
 
-/** Pre-ready splash under the brand mark: staged progress bar, three-step
- * indicator and the live status line. All colors come from theme tokens so
- * light/dark schemes restyle it without component changes. */
+/** Pre-ready splash under the brand mark: three-step indicator and the live
+ * status line. All colors come from theme tokens so light/dark schemes
+ * restyle it without component changes. */
 export function AssistantWarmupSplash({ initLabel, initStatus, lang, brandLine }: AssistantWarmupSplashProps) {
     const current = warmupStageIndex(initStatus);
     return (
         <div className="acb-loading acb-warmup">
             {brandLine}
             <div className="acb-warmup-panel" role="status" aria-live="polite">
-                <div className="acb-warmup-progress" aria-hidden="true">
-                    <span
-                        className="acb-warmup-progress__fill"
-                        style={{ width: `${WARMUP_STEPS[current]?.progress ?? 18}%` }}
-                    />
-                </div>
                 <ol className="acb-warmup-steps">
                     {WARMUP_STEPS.map((step, index) => {
                         const state = index < current ? "done" : index === current ? "active" : "todo";

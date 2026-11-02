@@ -308,6 +308,26 @@ func continuableRepeatCapability(capability CapabilityID) bool {
 	}
 }
 
+// CommittedRepeatCapability reports a continuable capability whose success
+// is the commit of its arguments. The same arguments and the same receipt
+// are not a poll of the world: that commit already happened. Shell, read,
+// search, and desktop control stay polls, because the same call can observe
+// a job that is still running. The agent loop uses this to stop a dead
+// republish without treating a status check as a used-up quota.
+func CommittedRepeatCapability(capability CapabilityID) bool {
+	switch capability {
+	case CapabilityDocumentWriteOffice,
+		CapabilityDocumentRenderPDF,
+		CapabilityFSWriteLocal,
+		CapabilityFSDeleteLocal,
+		CapabilityKnowledgeIngestLocal,
+		CapabilityRepoMutateVCS:
+		return true
+	default:
+		return false
+	}
+}
+
 // IterativeInstalledMCP reports a selection that calls one installed MCP
 // tool. A record edit is several calls, and each settled call must leave the
 // next grant on the surface. A real MCP provider binding is enough: open

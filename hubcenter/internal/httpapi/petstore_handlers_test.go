@@ -1813,6 +1813,88 @@ func TestApplyPetStoreSnapshotAcceptsPausedDeletedAndPurgedStatuses(t *testing.T
 	}
 }
 
+func TestApplyPetStoreSnapshotCopiesRefundedEntitlementAndDownloads(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := skillmarket.NewStore(db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, DataDir: t.TempDir()})
+	archive := validPetStoreTestArchive(t, "refund-ha-pack")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	pack := petStoreSnapshotPack{
+		ID: "pet_refund_ha", OwnerID: "owner-1", OwnerEmail: "owner@example.test", SourcePackID: "refund-ha-pack",
+		Name: "Refund HA", Version: "1.0.0", Status: "active", PackageSize: int64(len(archive)),
+		DownloadCount: 1, PurchaseCount: 1, SalesAmount: 5,
+		CreatedAt: now, UpdatedAt: now, ZipBase64: base64.StdEncoding.EncodeToString(archive),
+	}
+	purchase := petStoreSnapshotPurchase{ID: "purchase_refund_ha", PackID: pack.ID, BuyerUserID: "buyer-1", BuyerEmail: "buyer@example.test", AmountPaid: 5, Status: "refunded", CreatedAt: now}
+	download := petStoreSnapshotDownload{ID: "pet_download_ha", PackID: pack.ID, DownloaderUserID: "buyer-1", CreatedAt: now}
+	raw, err := json.Marshal(petStoreSnapshot{Packs: []petStoreSnapshotPack{pack}, Purchases: []petStoreSnapshotPurchase{purchase}, Downloads: []petStoreSnapshotDownload{download}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ApplyPetStoreSnapshot(context.Background(), raw); err != nil {
+		t.Fatalf("apply refunded snapshot: %v", err)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT status FROM sm_pet_store_purchases WHERE id='purchase_refund_ha'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "refunded" {
+		t.Fatalf("purchase status=%q", status)
+	}
+	var events int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sm_pet_store_downloads WHERE id='pet_download_ha' AND pack_id='pet_refund_ha' AND downloader_user_id='buyer-1'`).Scan(&events); err != nil || events != 1 {
+		t.Fatalf("download events=%d err=%v", events, err)
+	}
+	purchase.Status = "active"
+	older, err := json.Marshal(petStoreSnapshot{Packs: []petStoreSnapshotPack{pack}, Purchases: []petStoreSnapshotPurchase{purchase}, Downloads: []petStoreSnapshotDownload{download}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ApplyPetStoreSnapshot(context.Background(), older); err != nil {
+		t.Fatalf("apply delayed active snapshot: %v", err)
+	}
+	if err := db.QueryRow(`SELECT status FROM sm_pet_store_purchases WHERE id='purchase_refund_ha'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "refunded" {
+		t.Fatalf("delayed snapshot restored entitlement: status=%q", status)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sm_pet_store_downloads WHERE pack_id='pet_refund_ha'`).Scan(&events); err != nil || events != 1 {
+		t.Fatalf("download events after replay=%d err=%v", events, err)
+	}
+
+	metrics, err := json.Marshal(map[string]any{
+		"id": "pet_refund_ha", "downloads": 2,
+		"event": petStoreSnapshotDownload{ID: "pet_download_ha_2", PackID: pack.ID, DownloaderUserID: "buyer-2", CreatedAt: now},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ApplyPetStoreMetrics(context.Background(), metrics); err != nil {
+		t.Fatalf("apply metrics: %v", err)
+	}
+	var downloads int64
+	if err := db.QueryRow(`SELECT download_count FROM sm_pet_store_packs WHERE id='pet_refund_ha'`).Scan(&downloads); err != nil || downloads != 2 {
+		t.Fatalf("download_count=%d err=%v", downloads, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sm_pet_store_downloads WHERE id='pet_download_ha_2'`).Scan(&events); err != nil || events != 1 {
+		t.Fatalf("metrics event=%d err=%v", events, err)
+	}
+	if err := h.ApplyPetStoreMetrics(context.Background(), metrics); err != nil {
+		t.Fatalf("replay metrics: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sm_pet_store_downloads WHERE pack_id='pet_refund_ha'`).Scan(&events); err != nil || events != 2 {
+		t.Fatalf("download events after metrics replay=%d err=%v", events, err)
+	}
+}
+
 func TestApplyPurgedPetStoreSnapshotRemovesArchiveAndRejectsOlderActiveSnapshot(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

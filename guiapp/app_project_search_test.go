@@ -1642,6 +1642,264 @@ func TestResetExpertConversationClearsThePreviousTaskWorkspace(t *testing.T) {
 	}
 }
 
+func TestBindExpertTaskWorkspaceReplacesProcessDefault(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	userDir := filepath.Join(t.TempDir(), "homework")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created := app.insertExpertTaskRecord("builtin-pptx-maker", "PPT", userDir)
+	if created.ProjectPath == "" {
+		t.Fatal("expert task creation failed")
+	}
+	owner := expertSessionUserID("builtin-pptx-maker")
+	tabID := expertTabSessionID("builtin-pptx-maker")
+	processDefault := corelib.EffectiveWorkspaceDir()
+	app.assistantSessionWorkingDirs.Store(owner, processDefault)
+	app.tabWorkingDirOverrides.Store(tabID, processDefault)
+
+	app.bindExpertTaskWorkspace(owner, tabID, created.ProjectPath)
+
+	if got := app.BoundWorkingDirForOwner(owner); normalizeProjectSessionPath(got) != normalizeProjectSessionPath(userDir) {
+		t.Fatalf("expert working dir = %q, want the task directory %q", got, userDir)
+	}
+
+	otherDir := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := app.insertExpertTaskRecord("builtin-pptx-maker", "PPT", otherDir)
+	app.bindExpertTaskWorkspace(owner, tabID, other.ProjectPath)
+	if got := app.BoundWorkingDirForOwner(owner); normalizeProjectSessionPath(got) != normalizeProjectSessionPath(userDir) {
+		t.Fatalf("a chosen directory was replaced: %q, want %q", got, userDir)
+	}
+}
+
+func TestExpertTaskDoesNotInheritAnotherTasksWorkspace(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	const expertID = "builtin-pptx-maker"
+	firstDir := filepath.Join(t.TempDir(), "first")
+	secondDir := filepath.Join(t.TempDir(), "second")
+	if err := os.MkdirAll(firstDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(secondDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := app.insertExpertTaskRecord(expertID, "PPT", firstDir)
+	second := app.insertExpertTaskRecord(expertID, "PPT", secondDir)
+	if first.ProjectPath == "" || second.ProjectPath == "" || first.ProjectPath == second.ProjectPath {
+		t.Fatalf("tasks = %q %q", first.ProjectPath, second.ProjectPath)
+	}
+	tabID := expertTabSessionID(expertID)
+	firstOwner := expertTaskSessionUserID(expertID, first.ProjectPath)
+	secondOwner := expertTaskSessionUserID(expertID, second.ProjectPath)
+	app.tabWorkingDirOverrides.Store(tabID, firstDir)
+	app.assistantSessionWorkingDirs.Store(firstOwner, firstDir)
+	app.expertSessionTaskPaths.Store(firstOwner, first.ProjectPath)
+	app.expertTabSessionOwners.Store(tabID, firstOwner)
+
+	app.applyExpertTabWorkingDir(tabID, secondOwner, second.ProjectPath)
+	if got := app.BoundWorkingDirForOwner(secondOwner); got != "" {
+		t.Fatalf("second task took the previous tab directory %q", got)
+	}
+	app.expertTabSessionOwners.Store(tabID, secondOwner)
+	app.bindExpertTaskWorkspace(secondOwner, tabID, second.ProjectPath)
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(secondOwner)); got != normalizeProjectSessionPath(secondDir) {
+		t.Fatalf("second task workspace = %q, want %q", got, secondDir)
+	}
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(firstOwner)); got != normalizeProjectSessionPath(firstDir) {
+		t.Fatalf("first task workspace changed to %q", got)
+	}
+
+	chip := filepath.Join(t.TempDir(), "chip")
+	if err := os.MkdirAll(chip, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app.tabWorkingDirOverrides.Store(tabID, chip)
+	app.applyExpertTabWorkingDir(tabID, secondOwner, second.ProjectPath)
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(secondOwner)); got != normalizeProjectSessionPath(chip) {
+		t.Fatalf("follow-up send ignored the chosen directory, got %q want %q", got, chip)
+	}
+
+	app.tabWorkingDirOverrides.Store(tabID, secondDir)
+	app.assistantSessionWorkingDirs.Store(secondOwner, secondDir)
+	app.applyExpertTabWorkingDir(tabID, firstOwner, first.ProjectPath)
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(firstOwner)); got != normalizeProjectSessionPath(firstDir) {
+		t.Fatalf("returning to the first task took the second workspace %q", got)
+	}
+	app.expertTabSessionOwners.Store(tabID, firstOwner)
+	app.bindExpertTaskWorkspace(firstOwner, tabID, first.ProjectPath)
+	if got := normalizeProjectSessionPath(app.assistantTabWorkingDir(tabID)); got != normalizeProjectSessionPath(firstDir) {
+		t.Fatalf("expert tab chip = %q, want the first task directory %q", got, firstDir)
+	}
+}
+
+func TestProjectTabOfExpertTaskUsesTheTaskSession(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	const expertID = "builtin-pptx-maker"
+	dir := filepath.Join(t.TempDir(), "deck")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created := app.insertExpertTaskRecord(expertID, "PPT", dir)
+	if created.ProjectPath == "" {
+		t.Fatal("expert task creation failed")
+	}
+	tabID := "proj-older-expert"
+	_ = app.CreateProjectTabSession(tabID, created.ProjectPath)
+	owner, path := app.assistantOwnerForTab(tabID)
+	wantOwner := expertTaskSessionUserID(expertID, created.ProjectPath)
+	if owner != wantOwner || normalizeProjectSessionPath(path) != normalizeProjectSessionPath(created.ProjectPath) {
+		t.Fatalf("owner = %q path = %q, want %q %q", owner, path, wantOwner, created.ProjectPath)
+	}
+	app.assistantSessionWorkingDirs.Store(owner, dir)
+	_ = app.GetTabWorkingDir(tabID)
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(owner)); got != normalizeProjectSessionPath(dir) {
+		t.Fatalf("reading the project tab cleared the task directory, got %q", got)
+	}
+}
+
+func TestSetTabWorkingDirDoesNotMoveAnotherExpertTask(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	const expertID = "builtin-pptx-maker"
+	firstDir := filepath.Join(t.TempDir(), "first")
+	secondDir := filepath.Join(t.TempDir(), "second")
+	custom := filepath.Join(t.TempDir(), "custom")
+	for _, dir := range []string{firstDir, secondDir, custom} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := app.insertExpertTaskRecord(expertID, "PPT", firstDir)
+	second := app.insertExpertTaskRecord(expertID, "PPT", secondDir)
+	if first.ProjectPath == "" || second.ProjectPath == "" {
+		t.Fatal("expert task creation failed")
+	}
+	tabID := expertTabSessionID(expertID)
+	firstOwner := expertTaskSessionUserID(expertID, first.ProjectPath)
+	app.expertTabSessionOwners.Store(tabID, firstOwner)
+	app.assistantSessionWorkingDirs.Store(firstOwner, firstDir)
+	app.expertSessionTaskPaths.Store(firstOwner, first.ProjectPath)
+
+	secondExec := app.recentTaskExecutionProjectPath(second.ProjectPath)
+	if err := app.SetTabWorkingDir(tabID, secondExec); err != nil {
+		t.Fatal(err)
+	}
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(firstOwner)); got != normalizeProjectSessionPath(firstDir) {
+		t.Fatalf("first task tools moved to %q", got)
+	}
+	if got := normalizeProjectSessionPath(app.assistantTabWorkingDir(tabID)); got != normalizeProjectSessionPath(secondExec) {
+		t.Fatalf("tab chip = %q, want %q", got, secondExec)
+	}
+	if got := normalizeProjectSessionPath(fmt.Sprint(app.GetTabWorkingDir(tabID)["path"])); got != normalizeProjectSessionPath(secondExec) {
+		t.Fatalf("chip read = %q, want %q", got, secondExec)
+	}
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(firstOwner)); got != normalizeProjectSessionPath(firstDir) {
+		t.Fatalf("reading the chip moved the first task to %q", got)
+	}
+	app.applyExpertTabWorkingDir(tabID, firstOwner, first.ProjectPath)
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(firstOwner)); got != normalizeProjectSessionPath(firstDir) {
+		t.Fatalf("follow-up send moved the first task to %q", got)
+	}
+	app.tabWorkingDirOverrides.Delete(tabID)
+	_ = app.GetTabWorkingDir(tabID)
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(firstOwner)); got != normalizeProjectSessionPath(firstDir) {
+		t.Fatalf("cleared chip dropped the first task directory, got %q", got)
+	}
+	app.tabWorkingDirOverrides.Store(tabID, secondExec)
+
+	if err := app.SetTabWorkingDir(tabID, custom); err != nil {
+		t.Fatal(err)
+	}
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(firstOwner)); got != normalizeProjectSessionPath(custom) {
+		t.Fatalf("chosen directory = %q, want %q", got, custom)
+	}
+}
+
+func TestBindExpertTaskWorkspaceUsesTaskWorkspaceWhenTagIsMissing(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.insertExpertTaskRecord("builtin-pptx-maker", "PPT", "")
+	if created.ProjectPath == "" {
+		t.Fatal("expert task creation failed")
+	}
+	want := normalizeProjectSessionPath(app.recentTaskExecutionProjectPath(created.ProjectPath))
+	if want == "" || isProcessDefaultWorkspacePath(want) {
+		t.Fatalf("task workspace = %q, want the task directory", want)
+	}
+	owner := expertSessionUserID("builtin-pptx-maker")
+	tabID := expertTabSessionID("builtin-pptx-maker")
+	processDefault := corelib.EffectiveWorkspaceDir()
+	app.assistantSessionWorkingDirs.Store(owner, processDefault)
+	app.tabWorkingDirOverrides.Store(tabID, processDefault)
+
+	app.bindExpertTaskWorkspace(owner, tabID, created.ProjectPath)
+
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(owner)); got != want {
+		t.Fatalf("expert working dir = %q, want task workspace %q", got, want)
+	}
+}
+
+func TestBindExpertTaskWorkspaceSurvivesTabReloadWithoutTabID(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	userDir := filepath.Join(t.TempDir(), "homework")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created := app.insertExpertTaskRecord("builtin-pptx-maker", "PPT", userDir)
+	if created.ProjectPath == "" {
+		t.Fatal("expert task creation failed")
+	}
+	owner := expertSessionUserID("builtin-pptx-maker")
+	tabID := expertTabSessionID("builtin-pptx-maker")
+	processDefault := corelib.EffectiveWorkspaceDir()
+	if err := app.persistAssistantTabWorkingDir(tabID, "", processDefault); err != nil {
+		t.Fatal(err)
+	}
+	app.assistantSessionWorkingDirs.Store(owner, processDefault)
+	app.tabWorkingDirOverrides.Store(tabID, processDefault)
+
+	app.bindExpertTaskWorkspace(owner, "", created.ProjectPath)
+
+	// The directory chip drops the in-memory override and reloads the tab file.
+	app.tabWorkingDirOverrides.Delete(tabID)
+	app.bindAssistantTabWorkingDir(tabID, owner)
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(owner)); got != normalizeProjectSessionPath(userDir) {
+		t.Fatalf("tab reload restored %q, want %q", got, userDir)
+	}
+}
+
+func TestReleaseStaleExpertTaskWorkspaceClearsFileWrittenWithoutTabID(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	userDir := filepath.Join(t.TempDir(), "homework")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	older := app.insertExpertTaskRecord("builtin-pptx-maker", "PPT", userDir)
+	newer := app.insertExpertTaskRecord("builtin-pptx-maker", "PPT", filepath.Join(t.TempDir(), "next"))
+	if older.ProjectPath == "" || newer.ProjectPath == "" {
+		t.Fatal("expert task creation failed")
+	}
+	owner := expertSessionUserID("builtin-pptx-maker")
+	tabID := expertTabSessionID("builtin-pptx-maker")
+	app.bindExpertTaskWorkspace(owner, "", older.ProjectPath)
+
+	app.releaseStaleExpertTaskWorkspace(owner, newer.ProjectPath, "")
+
+	app.tabWorkingDirOverrides.Delete(tabID)
+	app.bindAssistantTabWorkingDir(tabID, owner)
+	if got := app.BoundWorkingDirForOwner(owner); got != "" {
+		t.Fatalf("previous task directory survived the switch: %q", got)
+	}
+	session, err := app.ensureProjectTabSessionPersist().LoadSession(tabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session != nil && strings.TrimSpace(session.WorkingDir) != "" {
+		t.Fatalf("persisted working directory survived the switch: %q", session.WorkingDir)
+	}
+}
+
 func TestReleaseStaleExpertTaskWorkspaceForScheduledSwitch(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	older := app.insertExpertTaskRecord("expert-paper", "Paper reviewer", "")

@@ -33,6 +33,7 @@ const maxToolArgumentsBytes = MaxToolArgumentsBytes
 type HTTPStatusError struct {
 	StatusCode int
 	Body       []byte
+	RetryAfter string
 }
 
 func (e *HTTPStatusError) Error() string {
@@ -319,7 +320,7 @@ func omitOpenCodeZenAgentReasoning(cfg corelib.MaclawLLMConfig, body map[string]
 // receipt, and the chat body builder applies the same function, so the signed
 // manifest and the outbound payload stay identical.
 func PrepareOpenCodeZenAgentTools(cfg corelib.MaclawLLMConfig, tools []map[string]interface{}) []map[string]interface{} {
-	if !corelib.IsOpenCodeURL(cfg.URL) || !corelib.OpenCodeZenAgentModel(openCodeWireModel(cfg.UpstreamModel())) {
+	if !corelib.IsOpenCodeURL(cfg.URL) || !corelib.OpenCodeZenAgentModel(openCodeWireModel(cfg, cfg.UpstreamModel())) {
 		return tools
 	}
 	return ensureOpenCodeZenFreeTools(tools)
@@ -330,7 +331,7 @@ func applyOpenCodeZenFreeChat(cfg corelib.MaclawLLMConfig, body map[string]inter
 		return
 	}
 	model, _ := body["model"].(string)
-	model = openCodeWireModel(model)
+	model = openCodeWireModel(cfg, model)
 	if strings.TrimSpace(model) != "" {
 		body["model"] = model
 	}
@@ -363,7 +364,7 @@ func applyOpenCodeZenFreeResponses(cfg corelib.MaclawLLMConfig, body map[string]
 		return
 	}
 	model, _ := body["model"].(string)
-	model = openCodeWireModel(model)
+	model = openCodeWireModel(cfg, model)
 	if strings.TrimSpace(model) != "" {
 		body["model"] = model
 	}
@@ -381,18 +382,10 @@ func applyOpenCodeZenFreeResponses(cfg corelib.MaclawLLMConfig, body map[string]
 	}
 }
 
-// openCodeWireModel drops the opencode/ prefix and replaces the retired
-// big-pickle id with the Zen model that answers on this key.
-func openCodeWireModel(model string) string {
-	model = strings.TrimSpace(model)
-	const prefix = "opencode/"
-	if len(model) > len(prefix) && strings.EqualFold(model[:len(prefix)], prefix) {
-		model = strings.TrimSpace(model[len(prefix):])
-	}
-	if strings.EqualFold(model, "big-pickle") {
-		return "glm-5.3-flash-free"
-	}
-	return model
+// openCodeWireModel drops the opencode/ prefix and maps a free-catalog alias
+// onto the id the selected OpenCode 2 gateway accepts.
+func openCodeWireModel(cfg corelib.MaclawLLMConfig, model string) string {
+	return corelib.OpenCodeWireModel(cfg.URL, cfg.Key, model)
 }
 
 func openAIChatTools(value interface{}) []map[string]interface{} {
@@ -414,31 +407,78 @@ func openAIChatTools(value interface{}) []map[string]interface{} {
 }
 
 func ensureOpenCodeZenFreeTools(tools []map[string]interface{}) []map[string]interface{} {
-	bashParams := map[string]interface{}{
-		"command":     map[string]interface{}{"type": "string", "description": "The command to execute"},
-		"description": map[string]interface{}{"type": "string", "description": "Clear, concise description of what this command does"},
+	// The free-tier gate accepts a request that streams and names shell plus
+	// at least five tools from the official set. Schemas are not checked.
+	required := []struct {
+		name, description string
+		params            map[string]interface{}
+		required          []string
+	}{
+		{
+			name: "shell", description: "Executes a command in a persistent shell session.",
+			params: map[string]interface{}{
+				"command":     map[string]interface{}{"type": "string", "description": "The command to execute"},
+				"description": map[string]interface{}{"type": "string", "description": "Clear, concise description of what this command does"},
+			},
+			required: []string{"command", "description"},
+		},
+		{
+			name: "read", description: "Reads a file from the local filesystem.",
+			params: map[string]interface{}{
+				"filePath": map[string]interface{}{"type": "string", "description": "The path of the file to read"},
+			},
+			required: []string{"filePath"},
+		},
+		{
+			name: "glob", description: "Finds files by a glob pattern.",
+			params: map[string]interface{}{
+				"pattern": map[string]interface{}{"type": "string", "description": "Glob pattern to match"},
+			},
+			required: []string{"pattern"},
+		},
+		{
+			name: "grep", description: "Searches file contents for a pattern.",
+			params: map[string]interface{}{
+				"pattern": map[string]interface{}{"type": "string", "description": "Pattern to search for"},
+			},
+			required: []string{"pattern"},
+		},
+		{
+			name: "edit", description: "Replaces text in a file.",
+			params: map[string]interface{}{
+				"filePath":  map[string]interface{}{"type": "string", "description": "The path of the file to edit"},
+				"oldString": map[string]interface{}{"type": "string", "description": "Text to replace"},
+				"newString": map[string]interface{}{"type": "string", "description": "Replacement text"},
+			},
+			required: []string{"filePath", "oldString", "newString"},
+		},
+		{
+			name: "write", description: "Writes a file.",
+			params: map[string]interface{}{
+				"filePath": map[string]interface{}{"type": "string", "description": "The path of the file to write"},
+				"content":  map[string]interface{}{"type": "string", "description": "The file contents"},
+			},
+			required: []string{"filePath", "content"},
+		},
 	}
-	readParams := map[string]interface{}{
-		"filePath": map[string]interface{}{"type": "string", "description": "The path of the file to read"},
-	}
-	hasBash, hasRead := false, false
-	out := make([]map[string]interface{}, 0, len(tools)+2)
+	have := map[string]bool{}
+	out := make([]map[string]interface{}, 0, len(tools)+len(required))
 	for _, tool := range tools {
-		switch strings.ToLower(openAIChatFunctionName(tool)) {
-		case "bash":
-			hasBash = true
-			tool = openCodeZenToolWithParams(tool, bashParams, []string{"command", "description"})
-		case "read":
-			hasRead = true
-			tool = openCodeZenToolWithParams(tool, readParams, []string{"filePath"})
+		name := strings.ToLower(openAIChatFunctionName(tool))
+		have[name] = true
+		for _, spec := range required {
+			if name == spec.name {
+				tool = openCodeZenToolWithParams(tool, spec.params, spec.required)
+				break
+			}
 		}
 		out = append(out, tool)
 	}
-	if !hasBash {
-		out = append(out, openCodeZenFreeFunctionTool("bash", "Executes a bash command in a persistent shell session.", bashParams, []string{"command", "description"}))
-	}
-	if !hasRead {
-		out = append(out, openCodeZenFreeFunctionTool("read", "Reads a file from the local filesystem.", readParams, []string{"filePath"}))
+	for _, spec := range required {
+		if have[spec.name] {
+			continue
+		}
+		out = append(out, openCodeZenFreeFunctionTool(spec.name, spec.description, spec.params, spec.required))
 	}
 	return out
 }
@@ -656,7 +696,7 @@ func BuildOpenAIChatRequestData(
 	bodyMap := buildOpenAIChatRequestBody(cfg, messages, opts)
 	model, _ := bodyMap["model"].(string)
 	endpoint = BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
-	endpoint = corelib.OpenCodeChatEndpoint(endpoint, model)
+	endpoint = corelib.OpenCodeChatEndpointFor(endpoint, model, cfg.Key)
 	body, err = json.Marshal(bodyMap)
 	return endpoint, body, err
 }

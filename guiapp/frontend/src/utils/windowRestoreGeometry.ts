@@ -12,6 +12,10 @@ export type WindowGeometryAPI = {
     // Screen coordinates, the same space as WindowGetPosition. On Windows that
     // must not be Wails WindowSetPosition: it adds the monitor work-area origin.
     setPosition: (x: number, y: number) => void;
+    // Windows: leave the maximized state, apply this screen rect, and refit
+    // the WebView. Separate SetSize/SetPosition calls leave a maximized frame
+    // with the restored page anchored to the bottom-right.
+    restoreFrame?: (geometry: WindowRestoreGeometry) => void;
 };
 
 const MIN_RESTORE_WIDTH = 160;
@@ -53,11 +57,15 @@ export async function captureWindowRestoreGeometry(api: WindowGeometryAPI): Prom
 }
 
 export function applyWindowRestoreGeometry(
-    api: Pick<WindowGeometryAPI, "setSize" | "setPosition">,
+    api: Pick<WindowGeometryAPI, "setSize" | "setPosition" | "restoreFrame">,
     geometry: WindowRestoreGeometry | null,
 ): boolean {
     if (!geometry) return false;
     try {
+        if (api.restoreFrame) {
+            api.restoreFrame(geometry);
+            return true;
+        }
         api.setSize(geometry.width, geometry.height);
         api.setPosition(geometry.x, geometry.y);
         return true;

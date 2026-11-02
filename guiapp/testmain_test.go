@@ -15,5 +15,8 @@ func TestMain(m *testing.M) {
 	if strings.TrimSpace(os.Getenv("MACLAW_SHARED_AGENT_LOOP")) == "" {
 		_ = os.Setenv("MACLAW_SHARED_AGENT_LOOP", "0")
 	}
+	// A list in production returns the stored library and refreshes the cloud
+	// in the background. Tests observe the refresh on the same call.
+	fileCompanionLibraryListInline = true
 	os.Exit(m.Run())
 }

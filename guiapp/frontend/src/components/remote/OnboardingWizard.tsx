@@ -6,6 +6,8 @@ import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemot
 import { corelib } from '../../../wailsjs/go/models';
 import { cancelAllNativeOAuth, cancelNamedProviderOAuth, completeDevinPastedToken, oauthBrowserHelp, oauthSignInLabel, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
 import { PROVIDER_LOGOS } from "./providerLogos";
+import { presetProviderDisplayName } from "./presetProviderLabel";
+import { localizeModelNote } from "../../config/providerCatalog";
 import { useDialog } from '../CustomDialog';
 import { localizeHubServiceReason, localizeHubServiceRedeemError, mnApproxAfter, mnDurationUnit } from "../../utils/hubServiceI18n";
 import { normalizeLang } from "../../i18n/langSelect";
@@ -39,7 +41,8 @@ import {
 } from "./OnboardingWizardShared";
 import { formatProviderTestErrorOrFallback } from "./LLMConfigPanelShared";
 import { mergeHubCreditGrants } from "../../utils/hubCredits";
-import { KNOWN_USER_AGENTS, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, nextCustomAgentValue, selectableAgentType } from "./userAgent";
+import { KNOWN_USER_AGENTS, withLiveAgentType } from "./userAgent";
+import { useCustomUserAgentField } from "./useCustomUserAgentField";
 import { canSubmitEmailVerification, emailVerificationCooldownSeconds, normalizeEmailVerificationTarget, sanitizeEmailVerificationCode } from "./emailVerification";
 import { resetRegistrationVerification, resetVerificationForInvitationChange, type RegistrationTarget } from "./onboardingRegistration";
 import {
@@ -277,6 +280,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
+    const customUserAgent = useCustomUserAgentField(selectedProvider, selectedIdx);
     const [llmSaving, setLlmSaving] = useState(false);
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string; pending?: boolean } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
@@ -795,8 +799,9 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         try {
             // All credentials, including SSO, require a real inference probe.
             // Authentication alone must never make a provider assignable.
+            const savingProviders = withLiveAgentType(providers, selectedIdx, customUserAgent.agentForRequest);
             const testResult = await TestAndSaveMaclawLLMProviders(
-                providers as corelib.MaclawLLMProvider[],
+                savingProviders as corelib.MaclawLLMProvider[],
                 sp.name,
                 sp.name,
             );
@@ -1970,7 +1975,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                                     {codegenModels.map(m => (
                                                         <button key={m.id} onClick={() => setMaclawModel(m.id)} style={wizardSelectableChipStyle(maclawModel === m.id, "sm")}>
-                                                            {m.name}
+                                                            {localizeModelNote(lang, m.name)}
                                                         </button>
                                                     ))}
                                                 </div>
@@ -1984,7 +1989,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                                     {codegenModels.map(m => (
                                                         <button key={m.id} onClick={() => setClaudeCodeModel(m.id)} style={wizardSelectableChipStyle(claudeCodeModel === m.id, "sm")}>
-                                                            {m.name}
+                                                            {localizeModelNote(lang, m.name)}
                                                         </button>
                                                     ))}
                                                 </div>
@@ -2177,7 +2182,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                 transition: "all 0.15s",
                                                 display: "inline-flex", alignItems: "center", gap: 5,
                                             }}>
-                                                {PROVIDER_LOGOS[p.name] ?? null}{p.name}
+                                                {PROVIDER_LOGOS[p.name] ?? null}{presetProviderDisplayName(lang, p.name)}
                                             </button>
                                             {p.auth_type === "oauth" && (
                                                 <div style={{ fontSize: "0.62rem", color: colors.textMuted, marginTop: 2 }}>
@@ -2264,27 +2269,17 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                     <div style={{ marginBottom: 10 }}>
                                                         <label style={labelStyle}>User-Agent</label>
                                                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                                            {KNOWN_USER_AGENTS.map(ua => {
-                                                                const currentAgent = selectableAgentType(selectedProvider);
-                                                                const active = currentAgent === ua;
-                                                                return (
-                                                                    <button key={ua} onClick={() => updateField("agent_type", ua)} style={wizardSelectableChipStyle(active, "md")}>
-                                                                        {ua}
-                                                                    </button>
-                                                                );
-                                                            })}
-                                                            {(() => {
-                                                                const currentAgent = selectableAgentType(selectedProvider);
-                                                                const active = !isKnownUserAgent(currentAgent);
-                                                                return (
-                                                                    <button onClick={() => updateField("agent_type", active ? currentAgent : customAgentSeedForProvider(selectedProvider))} style={wizardSelectableChipStyle(active, "md")}>
-                                                                        {t("\u81ea\u5b9a\u4e49", "Custom", "\u81ea\u8a02")}
-                                                                    </button>
-                                                                );
-                                                            })()}
+                                                            {KNOWN_USER_AGENTS.map(ua => (
+                                                                <button key={ua} onClick={() => customUserAgent.selectPreset(ua, value => updateField("agent_type", value))} style={wizardSelectableChipStyle(customUserAgent.presetActive(ua), "md")}>
+                                                                    {ua}
+                                                                </button>
+                                                            ))}
+                                                            <button onClick={() => customUserAgent.selectCustom(value => updateField("agent_type", value))} style={wizardSelectableChipStyle(customUserAgent.isCustom, "md")}>
+                                                                {t("\u81ea\u5b9a\u4e49", "Custom", "\u81ea\u8a02")}
+                                                            </button>
                                                         </div>
-                                                        {!isKnownUserAgent(effectiveAgentType(selectedProvider)) && (
-                                                            <input style={{ ...inputStyle, marginTop: 8 }} value={editableCustomAgentValue(selectedProvider)} onChange={e => updateField("agent_type", nextCustomAgentValue(selectedProvider, e.target.value))} placeholder={t("\u81ea\u5b9a\u4e49 User-Agent", "Custom User-Agent", "\u81ea\u8a02 User-Agent")} autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                                        {customUserAgent.isCustom && (
+                                                            <input style={{ ...inputStyle, marginTop: 8 }} value={customUserAgent.inputValue} onChange={e => customUserAgent.onInputChange(e.target.value, value => updateField("agent_type", value))} onBlur={e => customUserAgent.onInputBlur(e.target.value, value => updateField("agent_type", value))} placeholder={t("\u81ea\u5b9a\u4e49 User-Agent", "Custom User-Agent", "\u81ea\u8a02 User-Agent")} autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
                                                         )}
                                                     </div>
                                                     <div style={{ marginBottom: 10 }}>

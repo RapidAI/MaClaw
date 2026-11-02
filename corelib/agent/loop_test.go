@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
@@ -2458,6 +2459,121 @@ func TestRunLoopRetryProgressNamesEachWait(t *testing.T) {
 	keepFlightAt := strings.Index(joined, fmt.Sprintf("正在重新请求模型（第 %d 次）", maxLLMRetries+1))
 	if keepAt < 0 || keepFlightAt < keepAt {
 		t.Fatalf("progress=%q, want the continuation request to replace its countdown", cb.progress)
+	}
+}
+
+type selectionRefreshCallbacks struct {
+	retryProgressCallbacks
+	mu             sync.Mutex
+	next           corelib.MaclawLLMConfig
+	enabled        bool
+	armOnCountdown bool
+}
+
+func (m *selectionRefreshCallbacks) RefreshLLMSelection(current corelib.MaclawLLMConfig) (corelib.MaclawLLMConfig, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.enabled || !LLMSelectionChanged(current, m.next) {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	return m.next, true
+}
+
+func (m *selectionRefreshCallbacks) arm() {
+	m.mu.Lock()
+	m.enabled = true
+	m.mu.Unlock()
+}
+
+func (m *selectionRefreshCallbacks) OnProgress(text string) {
+	m.retryProgressCallbacks.OnProgress(text)
+	if m.armOnCountdown && (strings.Contains(text, "秒后重试") || strings.Contains(text, "秒后继续")) {
+		m.arm()
+	}
+}
+
+func TestRunLoopRetryAdoptsModelSwitchedBeforeTheWait(t *testing.T) {
+	useLLMRetryBackoff(t, 2*time.Second)
+	live := corelib.MaclawLLMConfig{Model: "live-model"}
+	var cb *selectionRefreshCallbacks
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		if payload.Model == live.Model {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+			return
+		}
+		cb.arm()
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	live.URL = server.URL
+	cb = &selectionRefreshCallbacks{retryProgressCallbacks: retryProgressCallbacks{hostDeadlineCallbacks: hostDeadlineCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "old-model"},
+			maxIter:   1,
+			sysPrompt: "sys",
+		},
+		ctx: context.Background(),
+	}}, next: live}
+
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v progress=%q", result, cb.progress)
+	}
+	if time.Since(started) >= time.Second {
+		t.Fatalf("retry waited %s after the model had already changed", time.Since(started))
+	}
+	joined := strings.Join(cb.progress, "\n")
+	if strings.Contains(joined, "秒后") {
+		t.Fatalf("progress=%q, want no countdown once the current model is already the new one", cb.progress)
+	}
+	if !strings.Contains(joined, "已改用当前模型，继续当前任务。") {
+		t.Fatalf("progress=%q, want the switch sentence", cb.progress)
+	}
+}
+
+func TestRunLoopRetryAdoptsModelSwitchedDuringTheWait(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	live := corelib.MaclawLLMConfig{Model: "live-model"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		if payload.Model == live.Model {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+			return
+		}
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	live.URL = server.URL
+	cb := &selectionRefreshCallbacks{
+		retryProgressCallbacks: retryProgressCallbacks{hostDeadlineCallbacks: hostDeadlineCallbacks{
+			mockCallbacks: mockCallbacks{
+				config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "old-model"},
+				maxIter:   1,
+				sysPrompt: "sys",
+			},
+			ctx: context.Background(),
+		}},
+		next:           live,
+		armOnCountdown: true,
+	}
+
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v progress=%q", result, cb.progress)
+	}
+	joined := strings.Join(cb.progress, "\n")
+	if !strings.Contains(joined, "秒后") || !strings.Contains(joined, "已改用当前模型，继续当前任务。") {
+		t.Fatalf("progress=%q, want the countdown and then the switch on the retry send", cb.progress)
 	}
 }
 
@@ -6621,6 +6737,61 @@ func TestSideEffectStateForToolBatchFailsClosedForUnknownTools(t *testing.T) {
 				t.Fatalf("preToolSideEffectState(%v) = %q, want %q", tt.tools, got, pre)
 			}
 		})
+	}
+}
+
+func TestCommittedMailboxSideEffectFollowsPairedResult(t *testing.T) {
+	notConfigured := "[system rejected] " + mailbox.MsgNotConfigured
+	known := []ConversationEntry{{Role: "tool", ToolName: "mailbox_send", Content: notConfigured}}
+	uncertain := []ConversationEntry{{Role: "tool", ToolName: "mailbox_send", Content: "[system unknown] " + mailbox.MsgUncertain}}
+	confirm := []ConversationEntry{{Role: "tool", ToolName: "mailbox_send", Content: `__ASK_USER__ {"question":"发送?"}`}}
+	sent := []ConversationEntry{{Role: "tool", ToolName: "mailbox_send", Content: "邮件已发送"}}
+	calls := []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "mailbox_send"}}}
+
+	if got := preToolSideEffectState(calls); got != "external_uncertain" {
+		t.Fatalf("pre-tool mailbox_send = %q, want external_uncertain", got)
+	}
+	if got := sideEffectStateForToolBatch(calls); got != "external_uncertain" {
+		t.Fatalf("name-only mailbox_send = %q, want external_uncertain", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, known); got != "none" {
+		t.Fatalf("known non-send = %q, want none", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, sent); got != "none" {
+		t.Fatalf("known success = %q, want none", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, uncertain); got != "external_uncertain" {
+		t.Fatalf("uncertain result = %q", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, nil); got != "external_uncertain" {
+		t.Fatalf("missing result = %q", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, confirm); got != "external_uncertain" {
+		t.Fatalf("confirmation = %q", got)
+	}
+
+	withBash := []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: "mailbox_send"}},
+		{Function: llm.ToolCallFunction{Name: "bash"}},
+	}
+	if got := sideEffectStateForCommittedBatch(withBash, known); got != "local_committed" {
+		t.Fatalf("known mailbox + bash = %q, want local_committed", got)
+	}
+	withIM := []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: "mailbox_send"}},
+		{Function: llm.ToolCallFunction{Name: "im_message"}},
+	}
+	if got := sideEffectStateForCommittedBatch(withIM, known); got != "external_uncertain" {
+		t.Fatalf("known mailbox + im_message = %q", got)
+	}
+	if got := committedCheckpointToolName(withIM, known, "mailbox_send"); got != "im_message" {
+		t.Fatalf("channel send hidden by a resolved mailbox call: %q", got)
+	}
+	if got := committedCheckpointToolName(withIM, uncertain, "im_message"); got != "mailbox_send" {
+		t.Fatalf("unresolved mailbox hidden by im_message: %q", got)
+	}
+	if got := committedCheckpointToolName(calls, known, "mailbox_send"); got != "mailbox_send" {
+		t.Fatalf("resolved mailbox tool = %q", got)
 	}
 }
 

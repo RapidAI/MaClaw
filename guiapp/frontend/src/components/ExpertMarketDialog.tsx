@@ -17,10 +17,44 @@ import { tailText } from '../i18n/mnTail'
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type Listing = Record<string, any>;
 
-const LIBRARY_PAGE_SIZE = 8;
+const LIBRARY_ROWS_PER_PAGE = 3;
+
+function libraryColumnCount() {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 4;
+    try {
+        if (window.matchMedia('(max-width: 560px)').matches) return 1;
+        if (window.matchMedia('(max-width: 760px)').matches) return 2;
+    } catch {
+        return 4;
+    }
+    return 4;
+}
 
 const t = (lang: Lang, zh: string, en: string) => tailText(lang, en, zh);
+const contactLabel = (value: unknown) => {
+    const text = String(value || '').trim();
+    const body = text.toLowerCase().startsWith('phone:') ? text.slice('phone:'.length) : text;
+    if (!/^\d+$/.test(body)) return text;
+    if (body.startsWith('0086') && /^1[3-9]\d{9}$/.test(body.slice(4))) return body.slice(4);
+    if (body.startsWith('86') && /^1[3-9]\d{9}$/.test(body.slice(2))) return body.slice(2);
+    return body;
+};
 const number = (value: unknown) => Number(value || 0).toLocaleString();
+
+function ExpertMarketPager({ lang, label, page, pageCount, onPage }: {
+    lang: Lang;
+    label: string;
+    page: number;
+    pageCount: number;
+    onPage: (page: number) => void;
+}) {
+    if (pageCount <= 1) return null;
+    return <nav className="expert-market-pagination" aria-label={label}>
+        <button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>{t(lang, '上一页', 'Previous')}</button>
+        <span>{t(lang, `第 ${page} / ${pageCount} 页`, `Page ${page} of ${pageCount}`)}</span>
+        <button type="button" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>{t(lang, '下一页', 'Next')}</button>
+    </nav>;
+}
 const message = (err: unknown) => err instanceof Error ? err.message : String(err || 'Unknown error');
 const marketErrorText = (lang: Lang, err: unknown) => {
     const raw = message(err);
@@ -75,7 +109,13 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     const [confirmingID, setConfirmingID] = useState('');
     const [error, setError] = useState('');
     const [tab, setTab] = useState<'market' | 'library'>(initialTab);
+    const [columns, setColumns] = useState(libraryColumnCount);
+    const [cataloguePage, setCataloguePage] = useState(1);
+    const [cataloguePageCount, setCataloguePageCount] = useState(1);
+    const [receivedPage, setReceivedPage] = useState(1);
+    const [purchasesPage, setPurchasesPage] = useState(1);
     const [uploadsPage, setUploadsPage] = useState(1);
+    const pageSize = columns * LIBRARY_ROWS_PER_PAGE;
     const dialogRef = useRef<HTMLElement | null>(null);
     const marketTabRef = useRef<HTMLButtonElement | null>(null);
     const libraryTabRef = useRef<HTMLButtonElement | null>(null);
@@ -89,6 +129,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     closeRef.current = onClose;
 
     const purchases = useMemo(() => Array.isArray(account?.purchases) ? account.purchases as Listing[] : [], [account]);
+    const received = useMemo(() => Array.isArray(account?.received) ? account.received as Listing[] : [], [account]);
     const uploads = useMemo(() => (Array.isArray(account?.uploads) ? account.uploads as Listing[] : []).filter(entry => !deletedSubmissionIDs.has(String(entry.id || ''))).map(entry => {
         const status = submissionOverrides[String(entry.id || '')];
         return status ? { ...entry, status } : entry;
@@ -100,17 +141,57 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         openSettingsTab('assetManagement');
         onClose();
     };
-    const uploadPageCount = Math.max(1, Math.ceil(uploads.length / LIBRARY_PAGE_SIZE));
+    const uploadPageCount = Math.max(1, Math.ceil(uploads.length / pageSize));
+    const receivedPageCount = Math.max(1, Math.ceil(received.length / pageSize));
+    const purchasesPageCount = Math.max(1, Math.ceil(purchases.length / pageSize));
     const currentUploadsPage = Math.min(uploadsPage, uploadPageCount);
-    // Account reconciliation can reduce the number of submissions while the
-    // user is reading a later page. Persist the clamped page so a subsequent
-    // refresh cannot unexpectedly return them to a formerly selected page.
+    const currentReceivedPage = Math.min(receivedPage, receivedPageCount);
+    const currentPurchasesPage = Math.min(purchasesPage, purchasesPageCount);
+    // Account reconciliation can reduce a list while the user is reading a
+    // later page. Persist the clamped page so a subsequent refresh cannot
+    // unexpectedly return them to a formerly selected page.
     useEffect(() => {
         setUploadsPage(page => Math.min(page, uploadPageCount));
     }, [uploadPageCount]);
+    useEffect(() => {
+        setReceivedPage(page => Math.min(page, receivedPageCount));
+    }, [receivedPageCount]);
+    useEffect(() => {
+        setPurchasesPage(page => Math.min(page, purchasesPageCount));
+    }, [purchasesPageCount]);
+    useEffect(() => {
+        if (typeof window.matchMedia !== 'function') return;
+        let narrow: MediaQueryList;
+        let medium: MediaQueryList;
+        try {
+            narrow = window.matchMedia('(max-width: 560px)');
+            medium = window.matchMedia('(max-width: 760px)');
+        } catch {
+            return;
+        }
+        const update = () => {
+            const next = libraryColumnCount();
+            setColumns(current => current === next ? current : next);
+        };
+        update();
+        narrow.addEventListener?.('change', update);
+        medium.addEventListener?.('change', update);
+        return () => {
+            narrow.removeEventListener?.('change', update);
+            medium.removeEventListener?.('change', update);
+        };
+    }, []);
     const visibleUploads = useMemo(
-        () => uploads.slice((currentUploadsPage - 1) * LIBRARY_PAGE_SIZE, currentUploadsPage * LIBRARY_PAGE_SIZE),
-        [uploads, currentUploadsPage],
+        () => uploads.slice((currentUploadsPage - 1) * pageSize, currentUploadsPage * pageSize),
+        [uploads, currentUploadsPage, pageSize],
+    );
+    const visibleReceived = useMemo(
+        () => received.slice((currentReceivedPage - 1) * pageSize, currentReceivedPage * pageSize),
+        [received, currentReceivedPage, pageSize],
+    );
+    const visiblePurchases = useMemo(
+        () => purchases.slice((currentPurchasesPage - 1) * pageSize, currentPurchasesPage * pageSize),
+        [purchases, currentPurchasesPage, pageSize],
     );
     // The catalogue includes an entitlement flag so a user can immediately
     // install a previously acquired listing even when their account refresh is
@@ -121,7 +202,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     ]), [purchases, listings]);
     const installed = useMemo(() => {
         const current = new Map<string, string>();
-        [...purchases, ...uploads, ...listings].forEach(entry => {
+        [...purchases, ...received, ...uploads, ...listings].forEach(entry => {
             const listingID = String(entry.id || '');
             const localExpertID = String(entry.local_expert_id || '').trim();
             if (entry.installed === true && listingID && localExpertID) current.set(listingID, localExpertID);
@@ -131,7 +212,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             else current.delete(listingID);
         });
         return current;
-    }, [purchases, uploads, listings, installOverrides]);
+    }, [purchases, received, uploads, listings, installOverrides]);
 
     const setListingInstallState = (listingID: string, localExpertID = '') => {
         const installedNow = Boolean(localExpertID);
@@ -142,6 +223,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         setAccount(current => current ? {
             ...current,
             purchases: Array.isArray(current.purchases) ? current.purchases.map(update) : current.purchases,
+            received: Array.isArray(current.received) ? current.received.map(update) : current.received,
             uploads: Array.isArray(current.uploads) ? current.uploads.map(update) : current.uploads,
         } : current);
         setInstallOverrides(current => ({ ...current, [listingID]: localExpertID }));
@@ -153,8 +235,9 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         const requestID = ++catalogueRequestRef.current;
         setLoading(true); setError('');
         try {
-            const catalogue = await ListExpertMarketListings(submittedQuery, sort, 1, 30);
+            const catalogue = await ListExpertMarketListings(submittedQuery, sort, cataloguePage, pageSize);
             if (!mountedRef.current || requestID !== catalogueRequestRef.current) return;
+            setCataloguePageCount(Math.max(1, Number(catalogue?.total_pages) || 1));
             setListings(Array.isArray(catalogue?.experts) ? catalogue.experts : []);
         } catch (err) {
             if (!mountedRef.current || requestID !== catalogueRequestRef.current) return;
@@ -162,7 +245,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         } finally {
             if (mountedRef.current && requestID === catalogueRequestRef.current) setLoading(false);
         }
-    }, [lang, sort, submittedQuery]);
+    }, [cataloguePage, lang, pageSize, sort, submittedQuery]);
 
     const refreshAccount = useCallback(async () => {
         const requestID = ++accountRequestRef.current;
@@ -353,10 +436,13 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         confirmingRef.current = id;
         setConfirmingID(id);
         let confirmed = false;
+        const sharedWithUsers = String(listing.status || '') === 'shared' || String(listing.visibility || '') === 'users';
         try {
             confirmed = await showConfirm(
-                t(lang, '删除后无法恢复。该私有分享会从你的市场提交中永久移除。', 'This cannot be undone. The private share will be permanently removed from your market submissions.'),
-                t(lang, '删除私有分享', 'Delete private share'),
+                sharedWithUsers
+                    ? t(lang, '删除后无法恢复。指定用户将不能再安装这个专家。', 'This cannot be undone. The selected users will no longer be able to install this expert.')
+                    : t(lang, '删除后无法恢复。该私有分享会从你的市场提交中永久移除。', 'This cannot be undone. The private share will be permanently removed from your market submissions.'),
+                sharedWithUsers ? t(lang, '删除指定分享', 'Delete share') : t(lang, '删除私有分享', 'Delete private share'),
                 { confirmText: t(lang, '永久删除', 'Delete permanently'), cancelText: t(lang, '取消', 'Cancel'), confirmVariant: 'danger' },
             );
         } finally {
@@ -379,7 +465,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             } : current);
             void refreshAccount();
             onMarketChanged?.();
-        } catch (err) { await showAlert(marketErrorText(lang, err), t(lang, '删除私有分享失败', 'Delete private share failed')); } finally { setBusyID(''); }
+        } catch (err) { await showAlert(marketErrorText(lang, err), sharedWithUsers ? t(lang, '删除指定分享失败', 'Delete share failed') : t(lang, '删除私有分享失败', 'Delete private share failed')); } finally { setBusyID(''); }
     };
 
     const publish = async (listing: Listing) => {
@@ -387,9 +473,12 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         confirmingRef.current = id;
         setConfirmingID(id);
         let confirmed = false;
+        const sharedWithUsers = String(listing.status || '') === 'shared' || String(listing.visibility || '') === 'users';
         try {
             confirmed = await showConfirm(
-                t(lang, '公开后需要重新进入发布审核流程，审核通过后才会在市场展示。', 'Making this expert public submits it for review again. It will appear in the market only after approval.'),
+                sharedWithUsers
+                    ? t(lang, '转为公开后，指定用户会立即失去安装权限。专家需要重新审核，通过后才会出现在市场。', 'Selected users lose install access immediately. The expert must be reviewed again before it appears in the market.')
+                    : t(lang, '公开后需要重新进入发布审核流程，审核通过后才会在市场展示。', 'Making this expert public submits it for review again. It will appear in the market only after approval.'),
                 t(lang, '公开 AI 专家', 'Make AI Expert public'),
                 { confirmText: t(lang, '提交审核', 'Submit for review'), cancelText: t(lang, '取消', 'Cancel') },
             );
@@ -406,7 +495,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             setAccount(current => current ? {
                 ...current,
                 uploads: Array.isArray(current.uploads)
-                    ? current.uploads.map(entry => String(entry.id || '') === id ? { ...entry, visibility: 'public', status: 'pending_review' } : entry)
+                    ? current.uploads.map(entry => String(entry.id || '') === id ? { ...entry, visibility: 'public', status: 'pending_review', share_targets: sharedWithUsers ? [] : entry.share_targets } : entry)
                     : current.uploads,
             } : current);
             void refreshAccount();
@@ -461,6 +550,16 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         window.setTimeout(() => (selectedTab === 'market' ? marketTabRef : libraryTabRef).current?.focus(), 0);
     };
 
+    const renderLibraryCard = (listing: Listing, footnote: string) => {
+        const id = String(listing.id);
+        const isInstalled = installed.has(id);
+        return <article className="expert-market-card" key={id}>
+            <div className="expert-market-card-head"><div className="expert-market-card-icon" aria-hidden>{listing.icon || '🤖'}</div><div className="expert-market-card-copy"><h3 title={String(listing.name || '')}>{listing.name}</h3><span>v{listing.version}</span></div></div>
+            <p>{listing.description || t(lang, '暂无介绍', 'No description')}</p>
+            <footer><span className="expert-market-free" title={footnote}>{footnote}</span><button className={isInstalled ? 'expert-market-uninstall' : 'btn-primary'} type="button" disabled={!!busyID || !!confirmingID} onClick={() => void (isInstalled ? uninstall(listing) : install(listing))}>{busyID === id ? t(lang, '处理中…', 'Working…') : isInstalled ? t(lang, '卸载', 'Uninstall') : t(lang, '安装', 'Install')}</button></footer>
+        </article>;
+    };
+
     return <div className="expert-market-overlay" role="presentation">
         <section ref={dialogRef} className="expert-market-shell" role="dialog" aria-modal="true" aria-label={t(lang, 'AI 专家市场', 'AI Expert Market')}>
             <header className="expert-market-header"><div><h2>{t(lang, 'AI 专家市场', 'AI Expert Market')}</h2><p>{t(lang, '发现、获取并安装经过审核的 AI 专家。', 'Discover, get, and install reviewed AI experts.')}</p></div><button className="expert-market-close" type="button" aria-label={t(lang, '关闭', 'Close')} onClick={onClose}>×</button></header>
@@ -475,14 +574,27 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
                 </div>
             </div>
             {tab === 'market' ? <main id="expert-market-panel-market" className="expert-market-body" role="tabpanel" aria-labelledby="expert-market-tab-market">
-                <div className="expert-market-toolbar"><input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') setSubmittedQuery(query); }} placeholder={t(lang, '搜索专家或任务', 'Search experts or tasks')} aria-label={t(lang, '搜索专家', 'Search experts')} /><select value={sort} onChange={event => setSort(event.target.value)} aria-label={t(lang, '排序', 'Sort')}><option value="published">{t(lang, '最新发布', 'Newest')}</option><option value="downloads">{t(lang, '下载最多', 'Most downloads')}</option><option value="sales">{t(lang, '销售最高', 'Top sales')}</option></select><button type="button" onClick={() => setSubmittedQuery(query)}>{t(lang, '搜索', 'Search')}</button></div>
+                <div className="expert-market-toolbar"><input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { setCataloguePage(1); setSubmittedQuery(query); } }} placeholder={t(lang, '搜索专家或任务', 'Search experts or tasks')} aria-label={t(lang, '搜索专家', 'Search experts')} /><select value={sort} onChange={event => { setCataloguePage(1); setSort(event.target.value); }} aria-label={t(lang, '排序', 'Sort')}><option value="published">{t(lang, '最新发布', 'Newest')}</option><option value="downloads">{t(lang, '下载最多', 'Most downloads')}</option><option value="sales">{t(lang, '销售最高', 'Top sales')}</option></select><button type="button" onClick={() => { setCataloguePage(1); setSubmittedQuery(query); }}>{t(lang, '搜索', 'Search')}</button></div>
                 {error ? <div className="expert-market-message" role="alert">{error}<button type="button" onClick={() => void loadCatalogue()}>{t(lang, '重试', 'Retry')}</button></div> : null}
                 {loading ? <div className="expert-market-grid" role="status" aria-label={t(lang, '正在加载专家市场', 'Loading AI Expert Market')}><div className="expert-market-card expert-market-card--skeleton" aria-hidden="true"><div className="expert-market-card-head"><i className="expert-market-skeleton expert-market-skeleton--icon" /><div><i className="expert-market-skeleton expert-market-skeleton--title" /><i className="expert-market-skeleton expert-market-skeleton--version" /></div></div><i className="expert-market-skeleton expert-market-skeleton--description" /><i className="expert-market-skeleton expert-market-skeleton--description expert-market-skeleton--short" /><footer><i className="expert-market-skeleton expert-market-skeleton--price" /><i className="expert-market-skeleton expert-market-skeleton--action" /></footer></div><span className="sr-only">{t(lang, '正在加载专家市场…', 'Loading Expert Market…')}</span></div> : <div className="expert-market-grid">{listings.map(listing => { const id = String(listing.id); const isInstalled = installed.has(id); return <article className="expert-market-card" key={id}><div className="expert-market-card-head"><div className="expert-market-card-icon" aria-hidden>{listing.icon || '🤖'}</div><div className="expert-market-card-copy"><h3 title={String(listing.name || '')}>{listing.name}</h3><span>v{listing.version}</span></div></div><p>{listing.description || t(lang, '暂无介绍', 'No description')}</p><footer><span className={Number(listing.price) > 0 ? 'expert-market-price' : 'expert-market-free'}>{Number(listing.price) > 0 ? `${number(listing.price)} Credits` : t(lang, '免费', 'Free')}</span><button className={isInstalled ? 'expert-market-uninstall' : 'btn-primary'} type="button" disabled={!!busyID || !!confirmingID} onClick={() => void (isInstalled ? uninstall(listing) : owned.has(id) ? install(listing) : purchase(listing))}>{busyID === id ? t(lang, '处理中…', 'Working…') : isInstalled ? t(lang, '卸载', 'Uninstall') : owned.has(id) ? t(lang, '安装', 'Install') : t(lang, '获取', 'Get')}</button></footer></article>; })}</div>}
+                {!loading && !error && cataloguePageCount > 1 ? <ExpertMarketPager lang={lang} label={t(lang, '专家市场分页', 'Expert market pages')} page={cataloguePage} pageCount={cataloguePageCount} onPage={setCataloguePage} /> : null}
                 {!loading && !error && listings.length === 0 ? <div className="expert-market-empty">{t(lang, '还没有符合条件的 AI 专家。', 'No AI experts match your search.')}</div> : null}
             </main> : null}
             {tab === 'library' ? <main id="expert-market-panel-library" className="expert-market-body expert-market-library" role="tabpanel" aria-labelledby="expert-market-tab-library">
                 {accountLoading && !account ? <div className="expert-market-empty" role="status" aria-label={t(lang, '正在加载我的专家库', 'Loading my expert library')}>{t(lang, '正在加载我的专家库…', 'Loading your expert library…')}</div> : accountError && !account ? <div className="expert-market-message" role="alert"><span>{t(lang, '无法加载我的专家库：', 'Could not load your expert library: ')}{accountError}</span><button type="button" onClick={() => void refreshAccount()}>{t(lang, '重试', 'Retry')}</button></div> : <>
-                    <h3>{t(lang, '我的已购专家', 'My acquired experts')}</h3>{purchases.length ? purchases.map(listing => { const id = String(listing.id); const isInstalled = installed.has(id); return <div className="expert-market-row" key={id}><span aria-hidden>{listing.icon || '🤖'}</span><div><strong>{listing.name}</strong><small>v{listing.version} · {t(lang, '永久授权', 'Lifetime entitlement')}</small></div><button className={isInstalled ? 'expert-market-uninstall' : 'btn-primary'} disabled={!!busyID || !!confirmingID} type="button" onClick={() => void (isInstalled ? uninstall(listing) : install(listing))}>{busyID === id ? t(lang, '处理中…', 'Working…') : isInstalled ? t(lang, '卸载', 'Uninstall') : t(lang, '安装', 'Install')}</button></div>; }) : <div className="expert-market-empty">{t(lang, '还没有已购专家。', 'No acquired experts yet.')}</div>}
+                    {received.length ? <>
+                        <div className="expert-market-library-heading"><h3>{t(lang, '分享给我的专家', 'Shared with me')}</h3><span>{t(lang, `共 ${received.length} 个`, `${received.length} total`)}</span></div>
+                        <div className="expert-market-grid">{visibleReceived.map(listing => {
+                            const from = contactLabel(listing.owner_email);
+                            return renderLibraryCard(listing, from ? t(lang, `来自 ${from}`, `From ${from}`) : t(lang, '指定用户分享', 'Shared with you'));
+                        })}</div>
+                        <ExpertMarketPager lang={lang} label={t(lang, '分享给我的专家分页', 'Shared with me pages')} page={currentReceivedPage} pageCount={receivedPageCount} onPage={setReceivedPage} />
+                    </> : null}
+                    <div className="expert-market-library-heading"><h3>{t(lang, '我的已购专家', 'My acquired experts')}</h3>{purchases.length ? <span>{t(lang, `共 ${purchases.length} 个`, `${purchases.length} total`)}</span> : null}</div>
+                    {purchases.length ? <>
+                        <div className="expert-market-grid">{visiblePurchases.map(listing => renderLibraryCard(listing, t(lang, '永久授权', 'Lifetime entitlement')))}</div>
+                        <ExpertMarketPager lang={lang} label={t(lang, '我的已购专家分页', 'My acquired experts pages')} page={currentPurchasesPage} pageCount={purchasesPageCount} onPage={setPurchasesPage} />
+                    </> : <div className="expert-market-empty">{t(lang, '还没有已购专家。', 'No acquired experts yet.')}</div>}
                     <section className="expert-market-submissions" aria-labelledby="expert-market-submissions-title">
                         <div className="expert-market-library-heading"><h3 id="expert-market-submissions-title">{t(lang, '我的提交', 'My submissions')}</h3>{uploads.length ? <span>{t(lang, `共 ${uploads.length} 个`, `${uploads.length} total`)}</span> : null}</div>
                         {uploads.length ? <>
@@ -491,15 +603,17 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
                                 const isInstalled = installed.has(id);
                                 const canInstall = Boolean(id);
                                 const status = String(listing.status || '');
+                                const shareTargetCount = Array.isArray(listing.share_targets) ? listing.share_targets.length : 0;
+                                const shareTargetTitle = Array.isArray(listing.share_targets) ? listing.share_targets.map(contactLabel).filter(Boolean).join('、') : '';
                                 return <article className="expert-market-submission-card" key={id}>
-                                    <div className="expert-market-submission-card__head"><span aria-hidden>{listing.icon || '🤖'}</span><div><strong title={String(listing.name || '')}>{listing.name}</strong><small>{status === 'private' ? t(lang, '私有 · 仅自己可见', 'Private · only you can see it') : status === 'pending_review' ? t(lang, '待审核', 'Pending review') : status === 'listed' ? t(lang, '已上架', 'Listed') : status === 'unlisted' ? t(lang, '已下架', 'Unlisted') : status}</small></div></div>
+                                    <div className="expert-market-submission-card__head"><span aria-hidden>{listing.icon || '🤖'}</span><div><strong title={String(listing.name || '')}>{listing.name}</strong><small title={shareTargetTitle || undefined}>{status === 'private' ? t(lang, '私有 · 仅自己可见', 'Private · only you can see it') : status === 'shared' ? (shareTargetCount ? t(lang, `指定用户 · ${shareTargetCount} 人`, `Shared with ${shareTargetCount} users`) : t(lang, '指定用户', 'Shared with selected users')) : status === 'pending_review' ? t(lang, '待审核', 'Pending review') : status === 'listed' ? t(lang, '已上架', 'Listed') : status === 'unlisted' ? t(lang, '已下架', 'Unlisted') : status}</small></div></div>
                                     <div className="expert-market-submission-card__actions" role="group" aria-label={t(lang, `${listing.name || '专家'}的操作`, `Actions for ${listing.name || 'expert'}`)}>
                                         {canInstall && !isInstalled ? <button className="btn-primary expert-market-install" type="button" disabled={!!busyID || !!confirmingID} onClick={() => void install(listing)}>{busyID === id ? t(lang, '处理中…', 'Working…') : t(lang, '安装', 'Install')}</button> : null}
-                                        {status === 'private' ? <><button type="button" disabled={!!busyID || !!confirmingID} onClick={() => void publish(listing)}>{t(lang, '转为公开', 'Make public')}</button><button type="button" className="expert-market-uninstall" disabled={!!busyID || !!confirmingID} onClick={() => void deletePrivate(listing)}>{t(lang, '删除私有分享', 'Delete private share')}</button></> : status === 'listed' ? <><button type="button" disabled={!!busyID || !!confirmingID} onClick={() => void withdraw(listing)}>{t(lang, '下架', 'Unlist')}</button><button type="button" disabled={!!busyID || !!confirmingID} onClick={() => void makePrivate(listing)}>{t(lang, '转为私有', 'Make private')}</button></> : ['pending_review', 'approved', 'rejected'].includes(status) ? <button type="button" disabled={!!busyID || !!confirmingID} onClick={() => void makePrivate(listing)}>{t(lang, '转为私有', 'Make private')}</button> : null}
+                                        {status === 'private' || status === 'shared' ? <><button type="button" disabled={!!busyID || !!confirmingID} onClick={() => void publish(listing)}>{t(lang, '转为公开', 'Make public')}</button><button type="button" className="expert-market-uninstall" disabled={!!busyID || !!confirmingID} onClick={() => void deletePrivate(listing)}>{status === 'shared' ? t(lang, '删除指定分享', 'Delete share') : t(lang, '删除私有分享', 'Delete private share')}</button></> : status === 'listed' ? <><button type="button" disabled={!!busyID || !!confirmingID} onClick={() => void withdraw(listing)}>{t(lang, '下架', 'Unlist')}</button><button type="button" disabled={!!busyID || !!confirmingID} onClick={() => void makePrivate(listing)}>{t(lang, '转为私有', 'Make private')}</button></> : ['pending_review', 'approved', 'rejected'].includes(status) ? <button type="button" disabled={!!busyID || !!confirmingID} onClick={() => void makePrivate(listing)}>{t(lang, '转为私有', 'Make private')}</button> : null}
                                     </div>
                                 </article>;
                             })}</div>
-                            {uploadPageCount > 1 ? <nav className="expert-market-pagination" aria-label={t(lang, '我的提交分页', 'My submissions pages')}><button type="button" disabled={currentUploadsPage === 1} onClick={() => setUploadsPage(page => Math.max(1, page - 1))}>{t(lang, '上一页', 'Previous')}</button><span>{t(lang, `第 ${currentUploadsPage} / ${uploadPageCount} 页`, `Page ${currentUploadsPage} of ${uploadPageCount}`)}</span><button type="button" disabled={currentUploadsPage === uploadPageCount} onClick={() => setUploadsPage(page => Math.min(uploadPageCount, page + 1))}>{t(lang, '下一页', 'Next')}</button></nav> : null}
+                            <ExpertMarketPager lang={lang} label={t(lang, '我的提交分页', 'My submissions pages')} page={currentUploadsPage} pageCount={uploadPageCount} onPage={setUploadsPage} />
                         </> : <div className="expert-market-empty">{t(lang, '还没有提交的专家。', 'No expert submissions yet.')}</div>}
                     </section>
                 </>}

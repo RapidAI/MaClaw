@@ -10,6 +10,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "esp_err.h"
 #include "nvs.h"
 
 #include "buddy_i2c.h"
@@ -62,6 +63,8 @@ static i2c_master_dev_handle_t s_codec;
 static i2s_chan_handle_t s_tx;
 static QueueHandle_t s_queue;
 static SemaphoreHandle_t s_cfg_lock;
+static SemaphoreHandle_t s_nvs_lock;
+static uint32_t s_cfg_gen;
 static buddy_sound_config_t s_cfg;
 static bool s_available;
 
@@ -76,29 +79,75 @@ static buddy_sound_config_t default_config(void) {
     return cfg;
 }
 
+/* Three-event blob saved before the attention chime existed. A longer buffer
+ * still reads it; the new event keeps the default (on, first clip). */
+typedef struct {
+    bool master;
+    bool enabled[3];
+    int effect[3];
+} buddy_sound_config_v3_t;
+
+static void clamp_effects(buddy_sound_config_t *cfg) {
+    for (int i = 0; i < BUDDY_SOUND_EVENT_COUNT; ++i) {
+        if (cfg->effect[i] < 0 || cfg->effect[i] >= BUDDY_SOUND_COUNT) {
+            cfg->effect[i] = 0;
+        }
+    }
+}
+
 static void load_config(void) {
     s_cfg = default_config();
     nvs_handle_t h;
     if (nvs_open("buddy", NVS_READONLY, &h) != ESP_OK) return;
-    buddy_sound_config_t saved;
-    size_t len = sizeof(saved);
-    if (nvs_get_blob(h, "sound", &saved, &len) == ESP_OK && len == sizeof(saved)) {
-        s_cfg = saved;
-        for (int i = 0; i < BUDDY_SOUND_EVENT_COUNT; ++i) {
-            if (s_cfg.effect[i] < 0 || s_cfg.effect[i] >= BUDDY_SOUND_COUNT) {
-                s_cfg.effect[i] = 0;
-            }
+    uint8_t raw[sizeof(buddy_sound_config_t)];
+    size_t len = sizeof(raw);
+    const esp_err_t err = nvs_get_blob(h, "sound", raw, &len);
+    nvs_close(h);
+    if (err != ESP_OK) return;
+    if (len == sizeof(buddy_sound_config_t)) {
+        memcpy(&s_cfg, raw, len);
+    } else if (len == sizeof(buddy_sound_config_v3_t)) {
+        buddy_sound_config_v3_t old;
+        memcpy(&old, raw, sizeof(old));
+        s_cfg.master = old.master;
+        for (int i = 0; i < 3; ++i) {
+            s_cfg.enabled[i] = old.enabled[i];
+            s_cfg.effect[i] = old.effect[i];
         }
+    } else {
+        return;
     }
+    clamp_effects(&s_cfg);
+}
+
+static void save_config_copy(const buddy_sound_config_t *cfg) {
+    nvs_handle_t h;
+    if (nvs_open("buddy", NVS_READWRITE, &h) != ESP_OK) return;
+    (void)nvs_set_blob(h, "sound", cfg, sizeof(*cfg));
+    (void)nvs_commit(h);
     nvs_close(h);
 }
 
-static void save_config(void) {
-    nvs_handle_t h;
-    if (nvs_open("buddy", NVS_READWRITE, &h) != ESP_OK) return;
-    (void)nvs_set_blob(h, "sound", &s_cfg, sizeof(s_cfg));
-    (void)nvs_commit(h);
-    nvs_close(h);
+/* NVS commit takes long enough to hitch the UI task, which reads the config
+ * every frame. Copy under the config lock, write after releasing it, and
+ * repeat if a newer mute or host frame landed during the commit. */
+static void persist_config(void) {
+    if (!s_cfg_lock || !s_nvs_lock) return;
+    xSemaphoreTake(s_nvs_lock, portMAX_DELAY);
+    for (;;) {
+        buddy_sound_config_t copy;
+        uint32_t gen;
+        xSemaphoreTake(s_cfg_lock, portMAX_DELAY);
+        copy = s_cfg;
+        gen = s_cfg_gen;
+        xSemaphoreGive(s_cfg_lock);
+        save_config_copy(&copy);
+        xSemaphoreTake(s_cfg_lock, portMAX_DELAY);
+        const bool latest = gen == s_cfg_gen;
+        xSemaphoreGive(s_cfg_lock);
+        if (latest) break;
+    }
+    xSemaphoreGive(s_nvs_lock);
 }
 
 static bool codec_write(uint8_t reg, uint8_t value) {
@@ -294,7 +343,8 @@ static void sound_task(void *arg) {
 
 esp_err_t buddy_sound_init(void) {
     if (!s_cfg_lock) s_cfg_lock = xSemaphoreCreateMutex();
-    if (!s_cfg_lock) return ESP_ERR_NO_MEM;
+    if (!s_nvs_lock) s_nvs_lock = xSemaphoreCreateMutex();
+    if (!s_cfg_lock || !s_nvs_lock) return ESP_ERR_NO_MEM;
     load_config();
 
 #if SOUND_HAS_CODEC
@@ -341,8 +391,9 @@ void buddy_sound_set_config(const buddy_sound_config_t *cfg) {
             s_cfg.effect[i] = 0;
         }
     }
-    save_config();
+    s_cfg_gen++;
     xSemaphoreGive(s_cfg_lock);
+    persist_config();
 }
 
 void buddy_sound_get_config(buddy_sound_config_t *out) {
@@ -350,6 +401,17 @@ void buddy_sound_get_config(buddy_sound_config_t *out) {
     xSemaphoreTake(s_cfg_lock, portMAX_DELAY);
     *out = s_cfg;
     xSemaphoreGive(s_cfg_lock);
+}
+
+bool buddy_sound_toggle_master(void) {
+    if (!s_cfg_lock) return false;
+    xSemaphoreTake(s_cfg_lock, portMAX_DELAY);
+    s_cfg.master = !s_cfg.master;
+    const bool master = s_cfg.master;
+    s_cfg_gen++;
+    xSemaphoreGive(s_cfg_lock);
+    persist_config();
+    return master;
 }
 
 void buddy_sound_event(int event) {

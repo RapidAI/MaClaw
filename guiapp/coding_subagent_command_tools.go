@@ -374,21 +374,13 @@ func codingCommandEnv() []string {
 	if gitPath := passthroughRuntimeProgram("git"); filepath.IsAbs(gitPath) {
 		gitDir = filepath.Dir(gitPath)
 	}
-	// Detected compilers go in front of the process PATH so a WindowsApps
-	// alias cannot shadow them. MSVC is merged after that and prepends
-	// cl.exe, so link.exe from the toolset stays ahead of MinGW.
-	var compilers []string
-	if mingw := detectWindowsMinGWBin(); mingw != "" {
-		compilers = append(compilers, mingw)
-	}
-	if cmake := detectWindowsCMakeBin(); cmake != "" {
-		compilers = append(compilers, cmake)
-	}
-	if ninja := detectWindowsNinjaBin(); ninja != "" {
-		compilers = append(compilers, ninja)
-	}
-	if len(compilers) > 0 {
-		env = prependWindowsPathEntries(env, compilers...)
+	// Detected build-tool directories go in front of the process PATH so a
+	// WindowsApps alias cannot shadow them, and a machine whose PATH lacks
+	// the Go install can still run `go build ./...` at the step verify gate.
+	// MSVC is merged after that and prepends cl.exe, so link.exe from the
+	// toolset stays ahead of MinGW.
+	if dirs := probedWindowsCommandDirs(); len(dirs) > 0 {
+		env = prependWindowsPathEntries(env, dirs...)
 	}
 	env = mergeWindowsToolchainEnviron(env, windowsMSVCInjectedEnviron())
 	entries := []string{

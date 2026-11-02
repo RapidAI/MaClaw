@@ -13,8 +13,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -904,61 +906,231 @@ func (a *App) withoutSupersededRevokePaths(removed []string, superseded map[stri
 	return kept
 }
 
+const (
+	fileCompanionShareFetchSkip = iota // already stored, or not this machine's to retry
+	fileCompanionShareFetchYes
+	fileCompanionShareFetchHold // keep the stored revision; the hub number has no bytes here
+)
+
+// fileCompanionShareFetchDecision decides from this machine's stored file, not
+// from the account's host seat. The seat is only who may upload. A second
+// machine signed in to that account still has no project; that is the 未导入
+// row.
+//
+//   - no file: install the hub project. A private share this account did not
+//     create still needs its password. A refusal keeps the stored revision,
+//     so the hub number is not written without bytes. A copy this machine
+//     already stored is installed again when its file is gone. The same
+//     refusal also leaves an existing copy on its current revision.
+//   - the seat just moved here: fetch before this machine can upload, so the
+//     participant copy is not published over the previous host's revision.
+//   - a newer hub revision, and the file is an installed copy under
+//     library-files/<token>: replace that cache. The author's opened paper,
+//     outside that directory, keeps the revision already stored with it. A
+//     paper remembered after its cloud row was dropped keeps the hub revision.
+func (a *App) fileCompanionShareFetchDecision(item, prev FileCompanionLibraryItem, had, exists bool) int {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(item.Token) {
+		return fileCompanionShareFetchSkip
+	}
+	seatGained := item.HostKnown && item.Host && had && !fileCompanionItemIsHost(prev)
+	blocked := item.Visibility == "private" && !item.Mine && fileCompanionSharePullBlocked(item.Token, item.Revision)
+	if !exists {
+		if blocked {
+			return fileCompanionShareFetchHold
+		}
+		return fileCompanionShareFetchYes
+	}
+	if seatGained {
+		return fileCompanionShareFetchYes
+	}
+	if item.Revision <= prev.Revision {
+		return fileCompanionShareFetchSkip
+	}
+	// A newer hub revision of a private share this account cannot read stays
+	// on the bytes already here. Retrying the refusal on every refresh would
+	// take a download slot from copies this machine can store.
+	if blocked {
+		return fileCompanionShareFetchHold
+	}
+	if fileCompanionItemIsHost(item) && !a.fileCompanionShareInstalledCopy(item.Token, item.Path) {
+		// A row this machine already stored keeps that revision: the paper was
+		// not replaced. A file remembered after the cloud row was dropped has
+		// no older revision to restore, and rewinding it to zero would make
+		// the next sync publish the paper as a new revision.
+		if had {
+			return fileCompanionShareFetchHold
+		}
+		return fileCompanionShareFetchSkip
+	}
+	return fileCompanionShareFetchYes
+}
+
+// fileCompanionShareInstalledCopy reports whether path is the cache this
+// machine downloaded for token, rather than the paper the author opened.
+func (a *App) fileCompanionShareInstalledCopy(token, path string) bool {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(token) || strings.TrimSpace(path) == "" {
+		return false
+	}
+	root := filepath.Join(a.GetDataDir(), "file-companion", "library-files", token)
+	return companionFigureInsideDir(root, path)
+}
+
+// One library refresh downloads at most this many projects. The rest keep the
+// revision already stored on this machine and continue on the next refresh.
+const fileCompanionSharePullCap = 8
+
+// fileCompanionShareFetchRank orders work inside one refresh. A seat this
+// machine just accepted has to be current before it can upload. A missing
+// file this machine can read, including a copy it already stored, is next.
+// A private share that has never been stored here still needs a password and
+// waits behind those. A newer cache is last.
+func fileCompanionShareFetchRank(item, prev FileCompanionLibraryItem, had, exists bool) int {
+	if item.HostKnown && item.Host && had && !fileCompanionItemIsHost(prev) {
+		return 0
+	}
+	if !exists {
+		if item.Visibility == "private" && !item.Mine && !(had && prev.Revision > 0) {
+			return 2
+		}
+		return 1
+	}
+	return 3
+}
+
+// A private import that the hub rejected for a password. The value is the hub
+// revision that rejected it. A newer revision is tried again.
+var fileCompanionSharePullBlock = struct {
+	mu sync.Mutex
+	at map[string]int
+}{}
+
+func fileCompanionSharePullBlocked(token string, revision int) bool {
+	if revision <= 0 || !fileCompanionShareTokenMatch.MatchString(token) {
+		return false
+	}
+	fileCompanionSharePullBlock.mu.Lock()
+	defer fileCompanionSharePullBlock.mu.Unlock()
+	at, ok := fileCompanionSharePullBlock.at[token]
+	return ok && at >= revision
+}
+
+func fileCompanionShareBlockPull(token string, revision int) {
+	if revision <= 0 || !fileCompanionShareTokenMatch.MatchString(token) {
+		return
+	}
+	fileCompanionSharePullBlock.mu.Lock()
+	defer fileCompanionSharePullBlock.mu.Unlock()
+	if fileCompanionSharePullBlock.at == nil {
+		fileCompanionSharePullBlock.at = map[string]int{}
+	}
+	if revision > fileCompanionSharePullBlock.at[token] {
+		fileCompanionSharePullBlock.at[token] = revision
+	}
+}
+
+func fileCompanionShareUnblockPull(token string) {
+	fileCompanionSharePullBlock.mu.Lock()
+	defer fileCompanionSharePullBlock.mu.Unlock()
+	delete(fileCompanionSharePullBlock.at, token)
+}
+
+func fileCompanionSharePullNeedsPassword(err error) bool {
+	var status *fileCompanionShareStatus
+	if !errors.As(err, &status) || status == nil {
+		return false
+	}
+	if status.status != http.StatusUnauthorized && status.status != http.StatusForbidden {
+		return false
+	}
+	switch strings.TrimSpace(status.message) {
+	case "需要分享密码", "分享密码不正确":
+		return true
+	default:
+		return false
+	}
+}
+
+// restoreFileCompanionShareAttempt drops a hub revision this refresh did not
+// store. Merge has already copied that revision onto the row. Keeping it would
+// make the next refresh treat the old file as current and never download it.
+func restoreFileCompanionShareAttempt(item *FileCompanionLibraryItem, prev FileCompanionLibraryItem) {
+	if item == nil {
+		return
+	}
+	item.Revision = prev.Revision
+	if strings.TrimSpace(prev.Path) != "" {
+		item.Path = prev.Path
+		return
+	}
+	if !fileCompanionLibraryFileExists(item.Path) {
+		item.Path = ""
+	}
+}
+
 func (a *App) pullNewerFileCompanionShares(hub, viewer string, items []FileCompanionLibraryItem, previous map[string]FileCompanionLibraryItem) []FileCompanionShareUpdate {
-	updates := make([]FileCompanionShareUpdate, 0)
+	updates := make([]FileCompanionShareUpdate, 0, fileCompanionSharePullCap)
+	type shareFetch struct {
+		index int
+		rank  int
+		prev  FileCompanionLibraryItem
+	}
+	work := make([]shareFetch, 0)
 	for i := range items {
 		item := &items[i]
 		if item.Source != "cloud" || item.Token == "" {
 			continue
 		}
 		prev, had := previous[item.Token]
-		// A row that just gained the host seat was a participant a moment ago,
-		// so its copy can still be one revision behind the host who handed the
-		// seat over. Download the live project once before this machine starts
-		// uploading it, or the first sync would publish the older revision and
-		// drop what the previous host had already shared.
-		seatGained := item.HostKnown && item.Host && had && !fileCompanionItemIsHost(prev)
-		if fileCompanionItemIsHost(*item) && !seatGained {
+		exists := fileCompanionLibraryFileExists(item.Path)
+		switch a.fileCompanionShareFetchDecision(*item, prev, had, exists) {
+		case fileCompanionShareFetchHold:
+			restoreFileCompanionShareAttempt(item, prev)
+			continue
+		case fileCompanionShareFetchSkip:
 			continue
 		}
-		if len(updates) >= 8 {
+		work = append(work, shareFetch{index: i, rank: fileCompanionShareFetchRank(*item, prev, had, exists), prev: prev})
+	}
+	sort.SliceStable(work, func(i, j int) bool { return work[i].rank < work[j].rank })
+	started := map[int]bool{}
+	downloads := 0
+	for _, job := range work {
+		if downloads >= fileCompanionSharePullCap {
 			break
 		}
+		item := &items[job.index]
 		// Capture the generation before the download. Delete and import advance
 		// it under the same lock as their live write, and the commit below
 		// refuses to publish when it moved. A hidden share, or one this machine
 		// already stored at this revision, is not downloaded.
 		epoch, skip := a.fileCompanionSharePullPermit(*item)
 		if skip {
+			started[job.index] = true
 			continue
 		}
-		needs := item.Revision > prev.Revision
-		if seatGained || (item.Path == "" && item.Visibility != "private") {
-			needs = true
-		}
-		if !needs {
-			continue
-		}
+		downloads++
+		started[job.index] = true
 		update, err := a.pullFileCompanionShare(hub, viewer, *item, epoch)
 		if err != nil {
-			// Merge already copied the hub revision onto this row. Saving that
-			// revision makes the next refresh treat the failed download as
-			// stored and skip it. Put the revision and path back to the copy
-			// this machine had before the attempt. Notes stay on the row.
-			item.Revision = prev.Revision
-			if strings.TrimSpace(prev.Path) != "" {
-				item.Path = prev.Path
-			} else if !fileCompanionLibraryFileExists(item.Path) {
-				item.Path = ""
+			if fileCompanionSharePullNeedsPassword(err) {
+				fileCompanionShareBlockPull(item.Token, item.Revision)
 			}
+			restoreFileCompanionShareAttempt(item, job.prev)
 			continue
 		}
+		fileCompanionShareUnblockPull(item.Token)
 		item.Path = update.Path
 		item.Revision = update.Revision
 		if update.Name != "" {
 			item.Name = update.Name
 		}
 		updates = append(updates, update)
+	}
+	for _, job := range work {
+		if started[job.index] {
+			continue
+		}
+		restoreFileCompanionShareAttempt(&items[job.index], job.prev)
 	}
 	return updates
 }

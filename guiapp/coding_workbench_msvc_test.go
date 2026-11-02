@@ -226,6 +226,9 @@ func TestCodingCommandEnvIncludesDetectedCMake(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("cmake PATH injection is Windows-only")
 	}
+	// codingCommandEnv also probes go/node/python, which remember their
+	// directories; keep the registry out of the real data directory.
+	setRememberedToolPathsForTest(t)
 	bin := detectWindowsCMakeBin()
 	if bin == "" {
 		t.Skip("cmake is not installed")
@@ -637,6 +640,7 @@ func TestCodingCommandEnvPutsClOnPathWhenMSVCInstalled(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-only")
 	}
+	setRememberedToolPathsForTest(t)
 	tc := detectWindowsMSVCToolchain()
 	if tc == nil {
 		t.Skip("no MSVC toolchain on this host")

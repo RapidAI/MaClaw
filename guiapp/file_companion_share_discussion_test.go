@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -828,10 +829,10 @@ func TestFileCompanionShareDiscussionSessionFindsItsDocument(t *testing.T) {
 	for _, def := range tools {
 		names[toolName(def)] = true
 	}
-	if !names[fileCompanionToolReadPages] {
-		t.Fatal("the discussion session lost the read tool")
+	if !names[fileCompanionToolReadPages] || !names[fileCompanionToolReadDocument] || !names[fileCompanionToolWebSearch] || !names[fileCompanionToolWebFetch] {
+		t.Fatal("the discussion session lost a read tool")
 	}
-	if names[fileCompanionToolRestore] || names[fileCompanionToolGenerate] {
+	if names[fileCompanionToolRestore] || names[fileCompanionToolGenerate] || names[fileCompanionToolCraft] {
 		t.Fatalf("the discussion session can write files: %v", names)
 	}
 	if text, ok := handler.executeFileCompanionHostTool("file-companion:"+sessionID, fileCompanionToolGenerate, "{}"); ok || !strings.Contains(text, "只能阅读") {
@@ -1072,12 +1073,12 @@ func TestShareDiscussionPromptCarriesNoHostAssistantContext(t *testing.T) {
 func TestShareDiscussionReplyRedactsHostPaths(t *testing.T) {
 	canonical := filepath.Join(t.TempDir(), "paper.pdf")
 	dataDir := filepath.Join(t.TempDir(), "data")
-	reply := "文件在 " + canonical + "，目录 " + filepath.Dir(canonical) + "，结果 " + filepath.Join(dataDir, "file-companion", "results", "x.pdf")
+	reply := "文件在 " + canonical + "，目录 " + filepath.Dir(canonical) + "，结果 " + filepath.Join(dataDir, "file-companion", "results", "x.pdf") + "，转义 " + strings.ReplaceAll(canonical, `\`, `\\`)
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		reply += "，主目录 " + home
 	}
 	got := fileCompanionShareDiscussionRedact(reply, canonical, dataDir)
-	if strings.Contains(got, canonical) || strings.Contains(got, filepath.Dir(canonical)) || strings.Contains(got, dataDir) {
+	if strings.Contains(got, canonical) || strings.Contains(got, filepath.Dir(canonical)) || strings.Contains(got, dataDir) || strings.Contains(got, strings.ReplaceAll(canonical, `\`, `\\`)) {
 		t.Fatalf("redaction left a host path: %q", got)
 	}
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" && strings.Contains(got, home) {
@@ -1354,5 +1355,775 @@ func TestFileCompanionHostSeatGainPullsTheLiveRevision(t *testing.T) {
 		if !fileCompanionItemIsHost(item) {
 			t.Fatalf("a restarted row handed the host seat back: %+v", item)
 		}
+	}
+}
+
+// The same account on another machine holds the host seat and has none of the
+// files. The seat does not mean the project is already here, so the library
+// installs it, including a private share this account created. The paper this
+// machine itself opened stays put when the hub revision moves: that file is
+// the authoring copy, not a cache of the hub.
+func TestListFileCompanionLibraryImportsOwnSharesOnAnotherMachine(t *testing.T) {
+	const (
+		publicToken  = "cd_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+		privateToken = "cd_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+		keptToken    = "cd_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+	)
+	var mu sync.Mutex
+	imports := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			_, _ = io.WriteString(w, `{"notes_reply":true,"server_time":"`+time.Now().UTC().Format(time.RFC3339)+`","mine":[`+
+				`{"token":"`+publicToken+`","name":"public.pdf","owner":"me@example.com","host_label":"me@example.com","host":true,"admin":true,"visibility":"public","permanent":true,"revision":2},`+
+				`{"token":"`+privateToken+`","name":"private.pdf","owner":"me@example.com","host_label":"me@example.com","host":true,"admin":true,"visibility":"private","permanent":true,"revision":1},`+
+				`{"token":"`+keptToken+`","name":"kept.pdf","owner":"me@example.com","host_label":"me@example.com","host":true,"admin":true,"visibility":"public","permanent":true,"revision":5}`+
+				`],"received":[]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			// Path is /api/mobile/documents/shares/{token}/import.
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			token := ""
+			if len(parts) >= 2 {
+				token = parts[len(parts)-2]
+			}
+			mu.Lock()
+			imports[token]++
+			mu.Unlock()
+			body := "%PDF-public"
+			name := "public.pdf"
+			visibility := "public"
+			revision := "2"
+			switch token {
+			case privateToken:
+				body = "%PDF-private"
+				name = "private.pdf"
+				visibility = "private"
+				revision = "1"
+			case keptToken:
+				body = "%PDF-should-not"
+				name = "kept.pdf"
+				revision = "5"
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("X-Companion-Document-Name", name)
+			w.Header().Set("X-Companion-Document-Visibility", visibility)
+			w.Header().Set("X-Companion-Document-Revision", revision)
+			_, _ = w.Write([]byte(body))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	kept := filepath.Join(t.TempDir(), "kept.pdf")
+	if err := os.WriteFile(kept, []byte("%PDF-local-host"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: keptToken, Token: keptToken, Name: "kept.pdf", Path: kept,
+		Source: "cloud", Mine: true, Admin: true, Host: true, HostKnown: true,
+		Visibility: "public", Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]FileCompanionLibraryItem{}
+	for _, item := range listed.Items {
+		if item.Token != "" {
+			got[item.Token] = item
+		}
+	}
+	for _, token := range []string{publicToken, privateToken} {
+		row, ok := got[token]
+		if !ok || strings.TrimSpace(row.Path) == "" || !fileCompanionItemIsHost(row) {
+			t.Fatalf("own share stayed unimported: %+v", row)
+		}
+		body, err := os.ReadFile(row.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "%PDF-public"
+		if token == privateToken {
+			want = "%PDF-private"
+		}
+		if string(body) != want {
+			t.Fatalf("imported %s = %q", token, body)
+		}
+	}
+	mu.Lock()
+	if imports[publicToken] != 1 || imports[privateToken] != 1 || imports[keptToken] != 0 {
+		t.Fatalf("imports = %+v", imports)
+	}
+	mu.Unlock()
+	if row := got[keptToken]; row.Path != kept || row.Revision != 1 {
+		t.Fatalf("existing host copy was replaced: %+v", row)
+	}
+	if body, err := os.ReadFile(kept); err != nil || string(body) != "%PDF-local-host" {
+		t.Fatalf("existing host file = %q %v", body, err)
+	}
+
+	again, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if imports[publicToken] != 1 || imports[privateToken] != 1 || imports[keptToken] != 0 {
+		t.Fatalf("second list downloaded again: %+v", imports)
+	}
+	mu.Unlock()
+	for _, item := range again.Items {
+		if item.Token == publicToken || item.Token == privateToken {
+			if strings.TrimSpace(item.Path) == "" {
+				t.Fatalf("imported share lost its file: %+v", item)
+			}
+		}
+		if item.Token == keptToken && (item.Path != kept || item.Revision != 1) {
+			t.Fatalf("authoring paper took the hub revision: %+v", item)
+		}
+	}
+}
+
+// An installed copy is a cache of a hub revision. When the same account
+// publishes a newer revision from another machine, this machine replaces that
+// cache before it can upload the older one. The authoring paper is a different
+// path and is covered by the test above.
+func TestListFileCompanionLibraryRefreshesInstalledHostCopy(t *testing.T) {
+	const token = "cd_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+	imports := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"notes_reply":true,"server_time":"`+time.Now().UTC().Format(time.RFC3339)+`","mine":[{"token":"`+token+`","name":"shared.pdf","owner":"me@example.com","host":true,"admin":true,"visibility":"public","permanent":true,"revision":4}],"received":[]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			imports++
+			w.Header().Set("X-Companion-Document-Name", "shared.pdf")
+			w.Header().Set("X-Companion-Document-Visibility", "public")
+			w.Header().Set("X-Companion-Document-Revision", "4")
+			_, _ = w.Write([]byte("%PDF-from-other-machine"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	dir := filepath.Join(app.GetDataDir(), "file-companion", "library-files", token)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cached := filepath.Join(dir, "shared.pdf")
+	if err := os.WriteFile(cached, []byte("%PDF-cached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "shared.pdf", Path: cached,
+		Source: "cloud", Mine: true, Admin: true, Host: true, HostKnown: true,
+		Visibility: "public", Revision: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imports != 1 {
+		t.Fatalf("imports = %d", imports)
+	}
+	var row FileCompanionLibraryItem
+	for _, item := range listed.Items {
+		if item.Token == token {
+			row = item
+		}
+	}
+	if row.Revision != 4 || strings.TrimSpace(row.Path) == "" || !fileCompanionItemIsHost(row) {
+		t.Fatalf("installed copy was not refreshed: %+v", row)
+	}
+	body, err := os.ReadFile(row.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "%PDF-from-other-machine" {
+		t.Fatalf("cached project = %q", body)
+	}
+	if !app.fileCompanionShareInstalledCopy(token, row.Path) {
+		t.Fatalf("refreshed path left the share cache: %s", row.Path)
+	}
+}
+
+func TestFileCompanionShareFetchRank(t *testing.T) {
+	const token = "cd_e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+	paper := filepath.Join(t.TempDir(), "paper.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := FileCompanionLibraryItem{Token: token, Host: true, HostKnown: true, Path: paper}
+	participant := FileCompanionLibraryItem{Token: token, Host: false, HostKnown: true, Path: paper}
+	if fileCompanionShareFetchRank(host, participant, true, true) != 0 {
+		t.Fatal("a seat this machine just accepted has to be fetched first")
+	}
+	missing := FileCompanionLibraryItem{Token: token, Host: true, HostKnown: true, Mine: true}
+	if fileCompanionShareFetchRank(missing, FileCompanionLibraryItem{}, false, false) != 1 {
+		t.Fatal("a share with no file is an install")
+	}
+	secret := FileCompanionLibraryItem{Token: token, Visibility: "private", Mine: false}
+	if fileCompanionShareFetchRank(secret, FileCompanionLibraryItem{}, false, false) != 2 {
+		t.Fatal("a private share that needs a password waits behind installs")
+	}
+	stored := FileCompanionLibraryItem{Token: token, Visibility: "private", Mine: false, Revision: 3}
+	if fileCompanionShareFetchRank(stored, stored, true, false) != 1 {
+		t.Fatal("a private copy this machine already stored is installed again when the file is gone")
+	}
+	if fileCompanionShareFetchRank(host, host, true, true) != 3 {
+		t.Fatal("an existing file waits behind installs")
+	}
+}
+
+// A refresh stores at most fileCompanionSharePullCap projects. A share that
+// does not fit keeps the revision this machine already had. Writing the hub
+// revision early would make the next refresh treat the old file as current.
+func TestListFileCompanionLibraryLeavesRevisionUntilTheFileIsStored(t *testing.T) {
+	cachedToken := fmt.Sprintf("cd_%032x", 1)
+	fresh := make([]string, fileCompanionSharePullCap)
+	for i := range fresh {
+		fresh[i] = fmt.Sprintf("cd_%032x", i+2)
+	}
+	var mu sync.Mutex
+	imports := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			var b strings.Builder
+			b.WriteString(`{"notes_reply":true,"mine":[`)
+			for i, token := range fresh {
+				if i > 0 {
+					b.WriteByte(',')
+				}
+				fmt.Fprintf(&b, `{"token":"%s","name":"new.pdf","owner":"me@example.com","host":true,"admin":true,"visibility":"public","permanent":true,"revision":4,"created_at":"2026-10-25T00:00:00Z"}`, token)
+			}
+			fmt.Fprintf(&b, `,{"token":"%s","name":"cached.pdf","owner":"me@example.com","host":true,"admin":true,"visibility":"public","permanent":true,"revision":4,"created_at":"2020-01-01T00:00:00Z"}],"received":[]}`, cachedToken)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, b.String())
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			token := ""
+			if len(parts) >= 2 {
+				token = parts[len(parts)-2]
+			}
+			mu.Lock()
+			imports[token]++
+			mu.Unlock()
+			name := "new.pdf"
+			body := "%PDF-new"
+			if token == cachedToken {
+				name = "cached.pdf"
+				body = "%PDF-refreshed"
+			}
+			w.Header().Set("X-Companion-Document-Name", name)
+			w.Header().Set("X-Companion-Document-Visibility", "public")
+			w.Header().Set("X-Companion-Document-Revision", "4")
+			_, _ = w.Write([]byte(body))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	dir := filepath.Join(app.GetDataDir(), "file-companion", "library-files", cachedToken)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cached := filepath.Join(dir, "cached.pdf")
+	if err := os.WriteFile(cached, []byte("%PDF-cached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: cachedToken, Token: cachedToken, Name: "cached.pdf", Path: cached,
+		Source: "cloud", Mine: true, Admin: true, Host: true, HostKnown: true,
+		Visibility: "public", Revision: 1, OpenedAt: "2020-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Updates) != fileCompanionSharePullCap {
+		t.Fatalf("updates = %d", len(listed.Updates))
+	}
+	mu.Lock()
+	if imports[cachedToken] != 0 {
+		t.Fatalf("the share past the cap was downloaded: %+v", imports)
+	}
+	for _, token := range fresh {
+		if imports[token] != 1 {
+			t.Fatalf("installs = %+v", imports)
+		}
+	}
+	mu.Unlock()
+	var cachedRow FileCompanionLibraryItem
+	for _, item := range listed.Items {
+		if item.Token == cachedToken {
+			cachedRow = item
+		}
+		for _, token := range fresh {
+			if item.Token == token && strings.TrimSpace(item.Path) == "" {
+				t.Fatalf("install has no file: %+v", item)
+			}
+		}
+	}
+	if cachedRow.Revision != 1 || cachedRow.Path != cached {
+		t.Fatalf("unstored share took the hub revision: %+v", cachedRow)
+	}
+	if body, err := os.ReadFile(cached); err != nil || string(body) != "%PDF-cached" {
+		t.Fatalf("cached file = %q %v", body, err)
+	}
+
+	again, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if imports[cachedToken] != 1 {
+		t.Fatalf("the next refresh did not store the deferred share: %+v", imports)
+	}
+	for _, token := range fresh {
+		if imports[token] != 1 {
+			t.Fatalf("an installed share was downloaded again: %+v", imports)
+		}
+	}
+	mu.Unlock()
+	for _, item := range again.Items {
+		if item.Token != cachedToken {
+			continue
+		}
+		if item.Revision != 4 {
+			t.Fatalf("deferred revision = %d", item.Revision)
+		}
+		body, err := os.ReadFile(item.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != "%PDF-refreshed" {
+			t.Fatalf("deferred file = %q", body)
+		}
+	}
+}
+
+func TestFileCompanionSharePullNeedsPassword(t *testing.T) {
+	if !fileCompanionSharePullNeedsPassword(&fileCompanionShareStatus{status: http.StatusUnauthorized, message: "需要分享密码"}) {
+		t.Fatal("an empty password is a rejection")
+	}
+	if !fileCompanionSharePullNeedsPassword(&fileCompanionShareStatus{status: http.StatusForbidden, message: "分享密码不正确"}) {
+		t.Fatal("a wrong password is a rejection")
+	}
+	if fileCompanionSharePullNeedsPassword(&fileCompanionShareStatus{status: http.StatusUnauthorized, message: "请先登录 MaClaw Hub"}) {
+		t.Fatal("a login failure is retried")
+	}
+	if fileCompanionSharePullNeedsPassword(&fileCompanionShareStatus{status: http.StatusInternalServerError, message: "需要分享密码"}) {
+		t.Fatal("a server error is retried")
+	}
+}
+
+// A private share this account did not create stays unimported after the hub
+// asks for a password, and the next refresh does not spend a download on it.
+func TestListFileCompanionLibraryDoesNotRetryAPasswordRejection(t *testing.T) {
+	const (
+		own    = "cd_f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+		secret = "cd_a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+	)
+	fileCompanionShareUnblockPull(secret)
+	t.Cleanup(func() { fileCompanionShareUnblockPull(secret) })
+	var mu sync.Mutex
+	imports := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"notes_reply":true,"mine":[{"token":"`+own+`","name":"own.pdf","owner":"me@example.com","host":true,"admin":true,"visibility":"public","permanent":true,"revision":1,"created_at":"2026-10-25T00:00:00Z"}],"received":[{"token":"`+secret+`","name":"secret.pdf","owner":"other@example.com","host":false,"visibility":"private","permanent":true,"revision":3,"created_at":"2026-10-26T00:00:00Z"}]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			token := ""
+			if len(parts) >= 2 {
+				token = parts[len(parts)-2]
+			}
+			mu.Lock()
+			imports[token]++
+			mu.Unlock()
+			if token == secret {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"message":"需要分享密码"}`))
+				return
+			}
+			w.Header().Set("X-Companion-Document-Name", "own.pdf")
+			w.Header().Set("X-Companion-Document-Visibility", "public")
+			w.Header().Set("X-Companion-Document-Revision", "1")
+			_, _ = w.Write([]byte("%PDF-own"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if imports[own] != 1 || imports[secret] != 1 {
+		t.Fatalf("first imports = %+v", imports)
+	}
+	mu.Unlock()
+	var ownPath string
+	for _, item := range listed.Items {
+		if item.Token == own {
+			ownPath = item.Path
+		}
+		if item.Token == secret && strings.TrimSpace(item.Path) != "" {
+			t.Fatalf("password rejection was stored: %+v", item)
+		}
+	}
+	if strings.TrimSpace(ownPath) == "" {
+		t.Fatal("own share was not installed")
+	}
+	again, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if imports[own] != 1 || imports[secret] != 1 {
+		t.Fatalf("password rejection was retried: %+v", imports)
+	}
+	mu.Unlock()
+	for _, item := range again.Items {
+		if item.Token == secret && (item.Revision != 0 || strings.TrimSpace(item.Path) != "") {
+			t.Fatalf("password rejection stored the hub revision: %+v", item)
+		}
+	}
+}
+
+// A private share this machine already has is not downloaded again after the
+// hub refuses the password for a newer revision. The file and its revision stay.
+func TestListFileCompanionLibraryDoesNotRetryAPasswordRejectionOnAStoredCopy(t *testing.T) {
+	const token = "cd_c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9"
+	fileCompanionShareUnblockPull(token)
+	t.Cleanup(func() { fileCompanionShareUnblockPull(token) })
+	var mu sync.Mutex
+	imports := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"notes_reply":true,"mine":[],"received":[{"token":"`+token+`","name":"secret.pdf","owner":"other@example.com","host":false,"visibility":"private","permanent":true,"revision":3,"created_at":"2026-10-26T00:00:00Z"}]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			mu.Lock()
+			imports++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"需要分享密码"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	dest := filepath.Join(app.GetDataDir(), "file-companion", "library-files", token, "secret.pdf")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("%PDF-local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: token, Token: token, Name: "secret.pdf", Path: dest, Source: "cloud",
+		OpenedAt: "2026-10-26T00:00:00Z", Mine: false, Host: false, HostKnown: true,
+		Visibility: "private", Revision: 2,
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if imports != 1 {
+		t.Fatalf("imports = %d", imports)
+	}
+	mu.Unlock()
+	found := false
+	for _, item := range listed.Items {
+		if item.Token != token {
+			continue
+		}
+		found = true
+		if item.Revision != 2 {
+			t.Fatalf("revision = %d", item.Revision)
+		}
+		body, readErr := os.ReadFile(item.Path)
+		if readErr != nil || string(body) != "%PDF-local" {
+			t.Fatalf("file = %q %v", body, readErr)
+		}
+	}
+	if !found {
+		t.Fatal("stored copy disappeared")
+	}
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if imports != 1 {
+		t.Fatalf("password rejection was retried: %d", imports)
+	}
+	mu.Unlock()
+}
+
+// A private share this account already stored is installed again when the
+// file disappears. The revision on the row is not a copy of the bytes.
+func TestListFileCompanionLibraryRestoresAMissingPrivateCopy(t *testing.T) {
+	const token = "cd_b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8"
+	fileCompanionShareUnblockPull(token)
+	t.Cleanup(func() { fileCompanionShareUnblockPull(token) })
+	var mu sync.Mutex
+	imports := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"notes_reply":true,"mine":[],"received":[{"token":"`+token+`","name":"secret.pdf","owner":"other@example.com","host":false,"visibility":"private","permanent":true,"revision":3,"created_at":"2026-10-26T00:00:00Z"}]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			mu.Lock()
+			imports++
+			mu.Unlock()
+			w.Header().Set("X-Companion-Document-Name", "secret.pdf")
+			w.Header().Set("X-Companion-Document-Visibility", "private")
+			w.Header().Set("X-Companion-Document-Revision", "3")
+			_, _ = w.Write([]byte("%PDF-restored"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	dest := filepath.Join(app.GetDataDir(), "file-companion", "library-files", token, "secret.pdf")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("%PDF-old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: token, Token: token, Name: "secret.pdf", Path: dest, Source: "cloud",
+		OpenedAt: "2026-10-26T00:00:00Z", Mine: false, Visibility: "private", Revision: 3,
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dest); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if imports != 1 {
+		t.Fatalf("imports = %d", imports)
+	}
+	mu.Unlock()
+	var restored string
+	for _, item := range listed.Items {
+		if item.Token == token {
+			restored = item.Path
+		}
+	}
+	body, err := os.ReadFile(restored)
+	if err != nil || string(body) != "%PDF-restored" {
+		t.Fatalf("restored file = %q %v", body, err)
+	}
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if imports != 1 {
+		t.Fatalf("stored copy was downloaded again: %d", imports)
+	}
+	mu.Unlock()
+}
+
+// Opening 文档管理 returns the library already on disk. The cloud refresh,
+// including its downloads, keeps running after the call.
+func TestListFileCompanionLibraryReturnsTheStoredLibraryWhileTheCloudSyncs(t *testing.T) {
+	prev := fileCompanionLibraryListInline
+	fileCompanionLibraryListInline = false
+	release := make(chan struct{})
+	var closeRelease sync.Once
+	finish := func() {
+		closeRelease.Do(func() { close(release) })
+		deadline := time.Now().Add(5 * time.Second)
+		for fileCompanionLibrarySyncRunning.Load() && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		fileCompanionLibraryListInline = prev
+	}
+	var server *httptest.Server
+	t.Cleanup(func() {
+		finish()
+		if server != nil {
+			server.Close()
+		}
+	})
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares" {
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"notes_reply":true,"mine":[],"received":[]}`)
+	}))
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	paper := filepath.Join(app.testHomeDir, "local.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: "local:paper", Name: "local.pdf", Path: paper, Source: "local",
+		OpenedAt: "2026-10-25T00:00:00Z",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("list waited %s for the cloud refresh", time.Since(started))
+	}
+	if !listed.Syncing {
+		t.Fatal("the cloud refresh was not still running")
+	}
+	if len(listed.Items) != 1 || listed.Items[0].Name != "local.pdf" {
+		t.Fatalf("stored library = %+v", listed.Items)
+	}
+}
+
+// The hub index is shown before a file body is downloaded. A slow import must
+// not keep the share's name off the library.
+func TestListFileCompanionLibraryShowsTheHubIndexBeforeTheDownload(t *testing.T) {
+	const token = "cd_d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"
+	prevInline := fileCompanionLibraryListInline
+	prevHook := fileCompanionLibraryCatalogHook
+	fileCompanionLibraryListInline = false
+	release := make(chan struct{})
+	var closeRelease sync.Once
+	got := make(chan FileCompanionLibraryList, 1)
+	fileCompanionLibraryCatalogHook = func(listed FileCompanionLibraryList) {
+		select {
+		case got <- listed:
+		default:
+		}
+	}
+	var server *httptest.Server
+	t.Cleanup(func() {
+		closeRelease.Do(func() { close(release) })
+		deadline := time.Now().Add(5 * time.Second)
+		for fileCompanionLibrarySyncRunning.Load() && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if server != nil {
+			server.Close()
+		}
+		fileCompanionLibraryListInline = prevInline
+		fileCompanionLibraryCatalogHook = prevHook
+		if fileCompanionLibrarySyncRunning.Load() {
+			t.Errorf("cloud refresh did not finish")
+		}
+	})
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"notes_reply":true,"mine":[{"token":"`+token+`","name":"paper.pdf","owner":"me@example.com","host":true,"admin":true,"visibility":"public","permanent":true,"revision":1,"created_at":"2026-10-25T00:00:00Z"}],"received":[]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
+			<-release
+			w.Header().Set("X-Companion-Document-Name", "paper.pdf")
+			w.Header().Set("X-Companion-Document-Visibility", "public")
+			w.Header().Set("X-Companion-Document-Revision", "1")
+			_, _ = w.Write([]byte("%PDF-index"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case catalog := <-got:
+		if !catalog.Syncing {
+			t.Fatal("the index was published as a finished refresh")
+		}
+		if len(catalog.Items) != 1 || catalog.Items[0].Name != "paper.pdf" || strings.TrimSpace(catalog.Items[0].Path) != "" {
+			t.Fatalf("hub index = %+v", catalog.Items)
+		}
+		// A disk read that starts after the index is published has to stay
+		// behind it. The same generation would let that read cover the names
+		// when the window applies it first.
+		again, err := app.ListFileCompanionLibrary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !again.Syncing || again.SyncGen >= catalog.SyncGen || listed.SyncGen >= catalog.SyncGen {
+			t.Fatalf("disk gen %d/%d catalog gen %d", listed.SyncGen, again.SyncGen, catalog.SyncGen)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("hub index was not published before the download")
 	}
 }

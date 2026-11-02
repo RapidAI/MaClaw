@@ -25,6 +25,10 @@ const (
 	MaxCurrent = 5
 	// MaxTitleBytes is the maximum UTF-8 byte length of a task title.
 	MaxTitleBytes = 64
+	// MaxPhaseBytes is the maximum UTF-8 byte length of a phase label.
+	MaxPhaseBytes = 48
+	// MaxElapsedBytes is the maximum UTF-8 byte length of an age label.
+	MaxElapsedBytes = 16
 
 	// HeartbeatInterval is how often the host sends heartbeat frames.
 	HeartbeatInterval = 3
@@ -52,6 +56,7 @@ const (
 	TypeStateAck   MessageType = "state_ack"
 	TypeLog        MessageType = "log"
 	TypeAssetAck   MessageType = "asset_ack"
+	TypeInput      MessageType = "input"
 )
 
 // AssetAck reports how many bytes of one pet-asset frame the device has
@@ -117,6 +122,19 @@ type TaskItem struct {
 	ID       string  `json:"id,omitempty"`
 	Title    string  `json:"title"`
 	Progress float64 `json:"progress,omitempty"`
+	// Phase is the catalog display name. Empty when the phase is unknown.
+	Phase string `json:"phase,omitempty"`
+	// Elapsed is a host-formatted age such as "12 分钟". Empty when unknown.
+	Elapsed string `json:"elapsed,omitempty"`
+}
+
+// Attention is the single row the person needs to look at. Kind is pending,
+// failed, or paused, in that priority. The device shows its title; a double
+// tap still confirms only a pending row.
+type Attention struct {
+	Kind  string `json:"kind"`
+	ID    string `json:"id,omitempty"`
+	Title string `json:"title"`
 }
 
 // Weather mirrors guiapp.deviceAmbientWeather exactly.
@@ -126,11 +144,25 @@ type Weather struct {
 	Location     string `json:"location"`
 }
 
-// Display describes the device panel in the device hello frame.
+// Display describes the glass in the device hello frame. Width and height are
+// the panel, not the 360 compose buffer. Panel is a stable id such as
+// "st77916-360"; Font is the packed glyph-table revision.
 type Display struct {
-	Width  int  `json:"w"`
-	Height int  `json:"h"`
-	Round  bool `json:"round,omitempty"`
+	Width  int    `json:"w"`
+	Height int    `json:"h"`
+	Round  bool   `json:"round,omitempty"`
+	Panel  string `json:"panel,omitempty"`
+	Font   string `json:"font,omitempty"`
+}
+
+// Input is a glass gesture. Gesture is "tap", "hold", or "confirm".
+// "confirm" is a double tap and does not advance the carousel. Swipes stay
+// on the device. Index is the in-progress task now on screen, or -1 when
+// the page has no carousel entry. The host decides what to focus.
+type Input struct {
+	Gesture string `json:"gesture"`
+	Page    string `json:"page,omitempty"`
+	Index   *int   `json:"index,omitempty"`
 }
 
 // Pet asset transfer limits. The host sends 128x128 RGB565+A8 frames as
@@ -167,15 +199,18 @@ type Message struct {
 	Type      MessageType  `json:"type"`
 	Proto     int          `json:"proto,omitempty"`
 	Ts        int64        `json:"ts,omitempty"`
+	TsMS      int64        `json:"ts_ms,omitempty"`
 	Seq       uint64       `json:"seq,omitempty"`
 	Stale     bool         `json:"stale,omitempty"`
 	Counts    *Counts      `json:"counts,omitempty"`
 	Current   []TaskItem   `json:"current,omitempty"`
+	Attention *Attention   `json:"attention,omitempty"`
 	Weather   *Weather     `json:"weather,omitempty"`
 	Pet       *Pet         `json:"pet,omitempty"`
 	Clock     *Clock       `json:"clock,omitempty"`
 	Celebrate *Celebrate   `json:"celebrate,omitempty"`
 	Sound     *SoundConfig `json:"sound,omitempty"`
+	Input     *Input       `json:"input,omitempty"`
 	Asset     *AssetChunk  `json:"asset,omitempty"`
 	AssetAck  *AssetAck    `json:"asset_ack,omitempty"`
 
@@ -202,8 +237,12 @@ type Message struct {
 
 	// device hello: touch controller present (best-effort probe)
 	Touch bool `json:"touch,omitempty"`
+	// device hello: square module front key is being read
+	Key bool `json:"key,omitempty"`
 	// device hello: ES8311/I2S path initialized
 	SoundAvailable bool `json:"sound_available,omitempty"`
+	// device hello: "bpt1" selects raw pet frames; empty keeps base64 JSON.
+	AssetMode string `json:"asset_mode,omitempty"`
 }
 
 // Clock carries a pre-formatted local date so the device needs no timezone or
@@ -226,24 +265,41 @@ type SoundEventConfig struct {
 }
 
 // SoundConfig selects the notification sounds. Master=false silences every
-// event regardless of the per-event switches.
+// event regardless of the per-event switches. Attention is nil when an older
+// peer did not send the field; the host keeps its previous choice then.
 type SoundConfig struct {
-	Master   bool             `json:"master"`
-	Running  SoundEventConfig `json:"running"`
-	Complete SoundEventConfig `json:"complete"`
-	Standby  SoundEventConfig `json:"standby"`
+	Master    bool              `json:"master"`
+	Running   SoundEventConfig  `json:"running"`
+	Complete  SoundEventConfig  `json:"complete"`
+	Standby   SoundEventConfig  `json:"standby"`
+	Attention *SoundEventConfig `json:"attention,omitempty"`
 }
 
 // DefaultSoundConfig matches the firmware defaults: master on, every event on,
 // first effect selected.
 func DefaultSoundConfig() SoundConfig {
 	on := SoundEventConfig{Enabled: true, Effect: 0}
-	return SoundConfig{Master: true, Running: on, Complete: on, Standby: on}
+	att := on
+	return SoundConfig{Master: true, Running: on, Complete: on, Standby: on, Attention: &att}
+}
+
+// EnsureAttention fills a missing attention event with the firmware default
+// (on, first clip). An explicit disabled event is left alone.
+func (c *SoundConfig) EnsureAttention() {
+	if c == nil || c.Attention != nil {
+		return
+	}
+	on := SoundEventConfig{Enabled: true, Effect: 0}
+	c.Attention = &on
 }
 
 // Sanitize clamps every effect index into the embedded clip range.
 func (c *SoundConfig) Sanitize() {
-	for _, event := range []*SoundEventConfig{&c.Running, &c.Complete, &c.Standby} {
+	events := []*SoundEventConfig{&c.Running, &c.Complete, &c.Standby}
+	if c.Attention != nil {
+		events = append(events, c.Attention)
+	}
+	for _, event := range events {
 		if event.Effect < 0 || event.Effect >= SoundEffectCount {
 			event.Effect = 0
 		}
@@ -252,9 +308,13 @@ func (c *SoundConfig) Sanitize() {
 
 // Validate reports an effect index outside the embedded clip range.
 func (c SoundConfig) Validate() error {
-	for name, event := range map[string]SoundEventConfig{
+	events := map[string]SoundEventConfig{
 		"running": c.Running, "complete": c.Complete, "standby": c.Standby,
-	} {
+	}
+	if c.Attention != nil {
+		events["attention"] = *c.Attention
+	}
+	for name, event := range events {
 		if event.Effect < 0 || event.Effect >= SoundEffectCount {
 			return fmt.Errorf("buddy: sound.%s.effect %d outside 0..%d", name, event.Effect, SoundEffectCount-1)
 		}
@@ -267,6 +327,7 @@ func (c SoundConfig) Validate() error {
 type Snapshot struct {
 	Counts    Counts     `json:"counts"`
 	Current   []TaskItem `json:"current"`
+	Attention *Attention `json:"attention,omitempty"`
 	UpdatedAt int64      `json:"updated_at"`
 }
 
@@ -281,11 +342,24 @@ func (m *Message) Sanitize() {
 	}
 	for i := range m.Current {
 		m.Current[i].Title = TruncateTitle(m.Current[i].Title, MaxTitleBytes)
+		m.Current[i].Phase = TruncateTitle(m.Current[i].Phase, MaxPhaseBytes)
+		m.Current[i].Elapsed = TruncateTitle(m.Current[i].Elapsed, MaxElapsedBytes)
 		if m.Current[i].Progress < -1 {
 			m.Current[i].Progress = -1
 		}
 		if m.Current[i].Progress > 1 {
 			m.Current[i].Progress = 1
+		}
+	}
+	if m.Attention != nil {
+		switch m.Attention.Kind {
+		case "pending", "failed", "paused":
+			m.Attention.Title = TruncateTitle(m.Attention.Title, MaxTitleBytes)
+			if strings.TrimSpace(m.Attention.Title) == "" {
+				m.Attention = nil
+			}
+		default:
+			m.Attention = nil
 		}
 	}
 	if m.Weather != nil {
@@ -481,6 +555,25 @@ func (m *Message) Validate() error {
 			if len(t.Title) > MaxTitleBytes {
 				return fmt.Errorf("buddy: state.current[%d] title %d bytes exceeds %d", i, len(t.Title), MaxTitleBytes)
 			}
+			if len(t.Phase) > MaxPhaseBytes {
+				return fmt.Errorf("buddy: state.current[%d] phase %d bytes exceeds %d", i, len(t.Phase), MaxPhaseBytes)
+			}
+			if len(t.Elapsed) > MaxElapsedBytes {
+				return fmt.Errorf("buddy: state.current[%d] elapsed %d bytes exceeds %d", i, len(t.Elapsed), MaxElapsedBytes)
+			}
+		}
+		if m.Attention != nil {
+			switch m.Attention.Kind {
+			case "pending", "failed", "paused":
+			default:
+				return fmt.Errorf("buddy: attention kind %q", m.Attention.Kind)
+			}
+			if strings.TrimSpace(m.Attention.Title) == "" {
+				return errors.New("buddy: attention requires title")
+			}
+			if len(m.Attention.Title) > MaxTitleBytes {
+				return fmt.Errorf("buddy: attention title %d bytes exceeds %d", len(m.Attention.Title), MaxTitleBytes)
+			}
 		}
 	case TypeAmbient:
 		if m.Weather == nil {
@@ -506,6 +599,18 @@ func (m *Message) Validate() error {
 		}
 		if err := m.Sound.Validate(); err != nil {
 			return err
+		}
+	case TypeInput:
+		if m.Input == nil {
+			return errors.New("buddy: input requires input")
+		}
+		switch m.Input.Gesture {
+		case "tap", "hold", "confirm":
+		default:
+			return fmt.Errorf("buddy: input gesture %q", m.Input.Gesture)
+		}
+		if m.Input.Index != nil && (*m.Input.Index < -1 || *m.Input.Index >= MaxCurrent) {
+			return fmt.Errorf("buddy: input index %d", *m.Input.Index)
 		}
 	case TypeAssetChunk:
 		if m.Asset == nil {

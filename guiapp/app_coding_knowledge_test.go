@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/longhorizon"
 )
 
 var codingKnowledgeAppTestOutcomeSequence uint64
@@ -506,6 +507,21 @@ func TestCodingKnowledgeGraduateToSteeringRetiresVerifiedExperienceWithoutOverwr
 	}
 }
 
+func TestComputeCodingKnowledgeCapacityGroupsProjectPathVariants(t *testing.T) {
+	all := []knowledge.CodingExperience{
+		{Title: "a", Scope: knowledge.CodingScopeProject, ProjectPath: "D:/repo", Status: knowledge.CodingStatusActive},
+		{Title: "b", Scope: knowledge.CodingScopeProject, ProjectPath: `D:\repo\`, Status: knowledge.CodingStatusActive},
+		{Title: "c", Scope: knowledge.CodingScopeProject, ProjectPath: "D:/repo/", Status: knowledge.CodingStatusActive},
+	}
+	got := computeCodingKnowledgeCapacity(3, 10, 1, all)
+	if len(got.ProjectsOver) != 1 {
+		t.Fatalf("projects_over=%+v, want one normalized project bucket", got.ProjectsOver)
+	}
+	if got.ProjectsOver[0].Count != 3 || got.ProjectsOver[0].Over != 2 {
+		t.Fatalf("project capacity=%+v, want count=3 over=2", got.ProjectsOver[0])
+	}
+}
+
 func TestCodingKnowledgeCapacityAndEvict(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() { closeCodingKnowledgeStore(t, app) })
@@ -731,6 +747,164 @@ func mustListAllCodingExperiences(t *testing.T, app *App) []knowledge.CodingExpe
 		t.Fatalf("list: %v", err)
 	}
 	return list
+}
+
+func TestCodingKnowledgeRecordRecallOutcomeAcceptsTurnEvidence(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeCodingKnowledgeStore(t, app) })
+	store := app.ensureCodingKnowledgeStore()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	exp, err := store.SaveExperience(ctx, knowledge.CodingExperience{
+		Title: "Turn evidence rule", Category: knowledge.CodingCategoryPattern, Scope: knowledge.CodingScopeUniversal,
+		TriggerCondition: "turn evidence", Content: "Main-agent turn guidance.", Status: knowledge.CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	evidence, err := store.RecordTurnEvidence(ctx, knowledge.CodingTurnEvidence{
+		OwnerID: "owner", ProjectPath: "/repo", Status: knowledge.CodingTurnStatusCompleted,
+		MaterialCount: 2, EvidenceDigest: "sha256:turn-recall",
+	})
+	if err != nil {
+		t.Fatalf("RecordTurnEvidence: %v", err)
+	}
+	outcome := knowledge.RecallOutcome{
+		RuntimeTaskID:    knowledge.CodingTurnEvidenceTaskPrefix + evidence.ID,
+		RuntimeAttemptID: knowledge.CodingTurnEvidenceAttemptPrefix + evidence.ID,
+		EvidenceDigest:   "sha256:turn-recall",
+		TaskSucceeded:    true,
+	}
+	if err := app.CodingKnowledgeRecordRecallOutcome(exp.ID, outcome); err != nil {
+		t.Fatalf("CodingKnowledgeRecordRecallOutcome turn evidence: %v", err)
+	}
+	got, err := store.GetExperience(ctx, exp.ID)
+	if err != nil {
+		t.Fatalf("GetExperience: %v", err)
+	}
+	if got.RecallCount != 1 || got.SuccessCount != 1 {
+		t.Fatalf("turn recall stats = recall %d success %d, want 1/1", got.RecallCount, got.SuccessCount)
+	}
+
+	outcome.EvidenceDigest = "sha256:wrong"
+	if err := app.CodingKnowledgeRecordRecallOutcome(exp.ID, outcome); err == nil {
+		t.Fatal("tampered turn evidence digest must be rejected")
+	}
+}
+
+func TestCodingKnowledgeConfirmMany(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeCodingKnowledgeStore(t, app) })
+
+	store := app.ensureCodingKnowledgeStore()
+	saveCtx, saveCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer saveCancel()
+	first, err := store.SaveExperience(saveCtx, knowledge.CodingExperience{
+		Title: "First candidate", Category: knowledge.CodingCategoryPattern, Scope: knowledge.CodingScopeUniversal,
+		TriggerCondition: "first candidate", Content: "First candidate content.", Status: knowledge.CodingStatusCandidate,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience first: %v", err)
+	}
+	second, err := store.SaveExperience(saveCtx, knowledge.CodingExperience{
+		Title: "Second candidate", Category: knowledge.CodingCategoryPattern, Scope: knowledge.CodingScopeUniversal,
+		TriggerCondition: "second candidate", Content: "Second candidate content.", Status: knowledge.CodingStatusCandidate,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience second: %v", err)
+	}
+
+	result, err := app.CodingKnowledgeConfirmMany([]string{first.ID, second.ID, "missing-id", first.ID})
+	if err != nil {
+		t.Fatalf("CodingKnowledgeConfirmMany: %v", err)
+	}
+	if len(result.Confirmed) != 2 || len(result.Failed) != 1 {
+		t.Fatalf("bulk result = %+v, want 2 confirmed and 1 failed", result)
+	}
+	if result.Failed[0].ID != "missing-id" || result.Failed[0].Error == "" {
+		t.Fatalf("failed entry = %+v", result.Failed[0])
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		got, err := app.CodingKnowledgeGet(id)
+		if err != nil {
+			t.Fatalf("CodingKnowledgeGet(%s): %v", id, err)
+		}
+		if got.Status != knowledge.CodingStatusActive {
+			t.Fatalf("%s status = %q, want active", id, got.Status)
+		}
+	}
+	if _, err := app.CodingKnowledgeConfirmMany(nil); err == nil {
+		t.Fatal("empty ID list should be rejected")
+	}
+}
+
+func TestCodingKnowledgeConfirmHorizonProvenance(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() { closeCodingKnowledgeStore(t, app) })
+
+	state := &longhorizon.TaskState{
+		TaskID: "hz-test",
+		Status: "running",
+		Policy: longhorizon.PolicySnapshot{OwnerID: "owner", ProjectRoot: "/repo", HorizonTaskID: "hz-test"},
+		Rounds: []longhorizon.ManagedRound{{
+			RoundIndex: 1,
+			Audit: &longhorizon.AuditReport{
+				RoundIndex: 1,
+				Status:     "complete",
+				Integrity:  "clean",
+				Alignment:  "aligned",
+				Summary:    "round completed with verification",
+				Digest:     "digest-1",
+			},
+		}},
+	}
+	if err := longhorizon.SaveTaskState(app.getMaclawBaseDir(), state); err != nil {
+		t.Fatalf("SaveTaskState: %v", err)
+	}
+	store := app.ensureCodingKnowledgeStore()
+	ctx := context.Background()
+	saved, err := store.SaveRuntimeExperience(ctx, knowledge.CodingExperience{
+		Title:                  "Horizon verified rule",
+		Category:               knowledge.CodingCategoryPattern,
+		Scope:                  knowledge.CodingScopeProject,
+		ProjectPath:            "/repo",
+		TriggerCondition:       "horizon verified rule",
+		Content:                "Use the verified horizon round guidance.",
+		SourceRuntimeTaskID:    "horizon:hz-test",
+		SourceRuntimeAttemptID: "round-1",
+		EvidenceDigest:         "digest-1",
+	})
+	if err != nil {
+		t.Fatalf("SaveRuntimeExperience: %v", err)
+	}
+	if err := app.CodingKnowledgeConfirm(saved.ID); err != nil {
+		t.Fatalf("CodingKnowledgeConfirm horizon: %v", err)
+	}
+	confirmed, err := store.GetExperience(ctx, saved.ID)
+	if err != nil {
+		t.Fatalf("GetExperience: %v", err)
+	}
+	if confirmed.Status != knowledge.CodingStatusActive {
+		t.Fatalf("confirmed status = %q, want active", confirmed.Status)
+	}
+
+	tampered, err := store.SaveRuntimeExperience(ctx, knowledge.CodingExperience{
+		Title:                  "Horizon tampered rule",
+		Category:               knowledge.CodingCategoryPattern,
+		Scope:                  knowledge.CodingScopeProject,
+		ProjectPath:            "/repo",
+		TriggerCondition:       "horizon tampered rule",
+		Content:                "This digest does not match the durable audit.",
+		SourceRuntimeTaskID:    "horizon:hz-test",
+		SourceRuntimeAttemptID: "round-1",
+		EvidenceDigest:         "digest-tampered",
+	})
+	if err != nil {
+		t.Fatalf("SaveRuntimeExperience tampered: %v", err)
+	}
+	if err := app.CodingKnowledgeConfirm(tampered.ID); err == nil {
+		t.Fatal("tampered horizon digest must not confirm")
+	}
 }
 
 func TestCodingKnowledgeResetFile(t *testing.T) {

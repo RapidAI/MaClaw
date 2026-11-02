@@ -1800,9 +1800,14 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	// so the backend model doesn't use a low internal default that truncates
 	// tool call arguments. This is the authoritative "last chance" enforcement
 	// before the request hits the actual LLM API.
-	if _, hasMax := reqBody["max_tokens"]; !hasMax {
-		if _, hasMaxComp := reqBody["max_completion_tokens"]; !hasMaxComp {
-			reqBody["max_tokens"] = 65536
+	// Devin Cascade already defaults an omitted budget to 128000. Writing 65536
+	// here would cut that budget and disagree with the non-stream path, which
+	// leaves the field unset. A token-bank output cap still applies below.
+	if !devinMatches(provider) {
+		if _, hasMax := reqBody["max_tokens"]; !hasMax {
+			if _, hasMaxComp := reqBody["max_completion_tokens"]; !hasMaxComp {
+				reqBody["max_tokens"] = 65536
+			}
 		}
 	}
 	if err := applyTokenBankRequestCaps(provider, reqBody); err != nil {
@@ -1867,6 +1872,7 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	client, provider, decorateTrae = prepareTraeStream(ctx, client, provider, upstreamModel)
 	var decorateLobsterAI func(*http.Request)
 	client, provider, decorateLobsterAI = prepareLobsterAIStream(ctx, client, provider, upstreamModel)
+	client = prepareDevinStream(client, provider)
 	endpointURL := provider.APIURL
 	if wb, ok := workBuddyMaclawConfig(provider, upstreamModel); ok && strings.TrimSpace(wb.URL) != "" {
 		endpointURL = wb.URL
@@ -1910,6 +1916,11 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	if decorateLobsterAI != nil {
 		decorateLobsterAI(httpReq)
 	}
+	if openCodePlanned && corelib.OpenCodeZenAgentModel(openCodeZenFreeWireModel(data, upstreamModel)) && corellm.OpenCodeFreeDirectTransport(client) {
+		if streamed, ok, err := streamOpenCodeFreeClient(ctx, data, responseModel, upstreamModel, provider.APIKey, body, dst, nil); ok {
+			return streamed, err
+		}
+	}
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -1919,7 +1930,17 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	result := &providerStreamResult{statusCode: resp.StatusCode}
 	if resp.StatusCode >= http.StatusBadRequest {
 		result.errorBody, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if streamed, ok, err := streamOpenCodeFreeClient(ctx, data, responseModel, upstreamModel, provider.APIKey, body, dst, result.errorBody); ok {
+			return streamed, err
+		}
 		return result, nil
+	}
+	if devinMatches(provider) {
+		if msg, failed := devinStreamOpenFailure(resp); failed {
+			result.statusCode = http.StatusBadGateway
+			result.errorBody = msg
+			return result, nil
+		}
 	}
 	if err := proxyProviderSSE(resp.Body, dst, responseModel, result, body); err != nil {
 		return result, err
@@ -2251,6 +2272,9 @@ func proxyStreamProcessData(data []byte, eventType, responseModel string, result
 		return nil, nil
 	}
 	if checkStreamError {
+		if text, ok := markedDevinStreamError(payload); ok {
+			return nil, fmt.Errorf("upstream stream error: %s", text)
+		}
 		if streamErr := proxyStreamErrorFromPayload(eventType, payload); streamErr != nil {
 			return nil, streamErr
 		}
@@ -4230,6 +4254,9 @@ func forwardToProviderAttempts(ctx context.Context, client *http.Client, provide
 		return resp, err
 	}
 	if resp, handled, err := tryForwardOpenCode(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
+		return resp, err
+	}
+	if resp, handled, err := tryForwardDevin(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
 		return resp, err
 	}
 	endpointProvider := corelib.LLMEndpointProvider{

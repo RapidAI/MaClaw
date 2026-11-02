@@ -119,6 +119,38 @@ export const isCurrentOnboardingStep = (
     stepId: OnboardingStepId,
 ): boolean => flow.steps[stepIndex - 1] === stepId;
 
+// Finished setup stays closed. Unfinished setup opens when Hub is not
+// activated, or when Hub is activated and the LLM is still offline.
+export const shouldReopenOnboarding = ({
+    onboardingDone,
+    remoteActivated,
+    llmOnline,
+}: {
+    onboardingDone: boolean;
+    remoteActivated: boolean;
+    llmOnline: boolean;
+}): boolean => !onboardingDone && (!remoteActivated || !llmOnline);
+
+// Cold-start LLM gate. Hub activation is decided separately so this check can
+// run before activation status has loaded, and a transient ping miss keeps its
+// own retry instead of being treated as a missing registration.
+export const shouldReopenOnboardingForOfflineLLM = (onboardingDone: boolean, llmOnline: boolean): boolean => (
+    shouldReopenOnboarding({ onboardingDone, remoteActivated: true, llmOnline })
+);
+
+// Registration gate. LLM health stays out of this decision so a failed ping
+// cannot skip the cold-start retry and open the wizard immediately.
+export const shouldReopenOnboardingForInactiveHub = (onboardingDone: boolean, remoteActivated: boolean): boolean => (
+    shouldReopenOnboarding({ onboardingDone, remoteActivated, llmOnline: true })
+);
+
+// The loading shell can publish `{ projects: [] }` before LoadConfigForUI
+// returns. That object has no onboarding_done. Deciding on it latches the
+// startup gates and opens the wizard for a finished install.
+export const hasLoadedOnboardingFlag = (config: { onboarding_done?: boolean } | null | undefined): boolean => (
+    typeof config?.onboarding_done === 'boolean'
+);
+
 export const isOnboardingComplete = (flow: OnboardingFlow, state: OnboardingStepDoneState): boolean => (
     flow.steps.every((step) => {
         if (step === 'register') return state.regDone;

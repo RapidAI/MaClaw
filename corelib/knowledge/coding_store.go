@@ -2,12 +2,16 @@ package knowledge
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // ---------------------------------------------------------------------------
@@ -56,6 +60,16 @@ const (
 	CodingConfidenceVerifiedThreshold   = 1.5
 	CodingConfidenceDeprecatedThreshold = 0.3
 	CodingMinRecallsForVerified         = 5
+)
+
+// Observation evidence limits. ObservationTaskIDs is bounded audit detail;
+// ObservationCount remains the authoritative count so a long-lived rule can
+// still reach the promotion threshold after older task IDs rotate out.
+const (
+	maxCodingExperienceObservationTaskIDs   = 16
+	maxCodingExperienceObservationFailures  = 8
+	maxCodingExperienceObservationLabels    = 20
+	maxCodingExperienceObservationTextRunes = 300
 )
 
 // CodingExperienceBudget is the project-level retention budget for reviewed
@@ -108,6 +122,12 @@ type CodingExperience struct {
 	SuccessCount int     `json:"success_count"`
 	FailureCount int     `json:"failure_count"`
 
+	// Observation evidence for automatically extracted candidates. One runtime
+	// task is one observation; repeated sightings of the same guidance across
+	// independent tasks are the only path to evidence-based auto-promotion.
+	ObservationCount   int      `json:"observation_count,omitempty"`
+	ObservationTaskIDs []string `json:"observation_task_ids,omitempty"`
+
 	// Lifecycle
 	Status         string    `json:"status"` // candidate/active/verified/deprecated
 	CreatedAt      time.Time `json:"created_at"`
@@ -142,6 +162,8 @@ type CodingExperienceMetadata struct {
 	RecallCount            int                              `json:"recall_count"`
 	SuccessCount           int                              `json:"success_count"`
 	FailureCount           int                              `json:"failure_count"`
+	ObservationCount       int                              `json:"observation_count,omitempty"`
+	ObservationTaskIDs     []string                         `json:"observation_task_ids,omitempty"`
 	Status                 string                           `json:"status"`
 	LastRecalledAt         string                           `json:"last_recalled_at,omitempty"`
 }
@@ -161,6 +183,10 @@ type CodingExperienceLifecycleEvent struct {
 type CodingKnowledgeStore struct {
 	inner            *SQLiteStore
 	lifecycleWriteMu sync.Mutex // serializes read-modify-write lifecycle evidence updates
+	// turnEvidenceErr keeps a schema migration failure from taking down the
+	// whole coding knowledge store; turn evidence is optional and failures are
+	// reported by the evidence APIs only.
+	turnEvidenceErr error
 }
 
 // RuntimeProvenanceVerifier revalidates the opaque Runtime reference carried
@@ -191,7 +217,13 @@ func NewCodingKnowledgeStore(dbPath string) (*CodingKnowledgeStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("coding knowledge store: %w", err)
 	}
-	return WrapCodingKnowledgeStore(store), nil
+	coding := WrapCodingKnowledgeStore(store)
+	if err := coding.ensureTurnEvidenceSchema(context.Background()); err != nil {
+		// Turn evidence is an optional confidence signal. A migration problem
+		// must not make the entire coding knowledge base unavailable.
+		coding.turnEvidenceErr = err
+	}
+	return coding, nil
 }
 
 // WrapCodingKnowledgeStore exposes coding search APIs over an existing store.
@@ -218,6 +250,135 @@ func (s *CodingKnowledgeStore) Inner() *SQLiteStore {
 		return nil
 	}
 	return s.inner
+}
+
+// A turn-level evidence record lets the main agent's direct coding turns feed
+// recall confidence without creating a codingruntime task (which would enter
+// writer admission and the user-visible coding ledger). It is deliberately a
+// separate, minimal table: one row per knowledge-using main-agent turn.
+const (
+	CodingTurnStatusCompleted   = "completed"
+	CodingTurnStatusFailed      = "failed"
+	CodingTurnStatusInterrupted = "interrupted"
+
+	CodingTurnEvidenceTaskPrefix    = "turn:"
+	CodingTurnEvidenceAttemptPrefix = "turn-attempt:"
+)
+
+// CodingTurnEvidence is the durable fact behind one main-agent recall outcome.
+type CodingTurnEvidence struct {
+	ID             string
+	OwnerID        string
+	ProjectPath    string
+	Status         string
+	MaterialCount  int
+	EvidenceDigest string
+	CreatedAt      time.Time
+}
+
+func (s *CodingKnowledgeStore) ensureTurnEvidenceSchema(ctx context.Context) error {
+	if s == nil || s.inner == nil || s.inner.db == nil {
+		return fmt.Errorf("coding knowledge store is unavailable")
+	}
+	if _, err := s.inner.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS coding_turn_evidence (
+		evidence_id TEXT PRIMARY KEY,
+		owner_id TEXT NOT NULL DEFAULT '',
+		project_path TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		material_count INTEGER NOT NULL DEFAULT 0,
+		evidence_digest TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	_, err := s.inner.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_coding_turn_evidence_created ON coding_turn_evidence(created_at)`)
+	return err
+}
+
+// RecordTurnEvidence persists one completed/failed/interrupted main-agent
+// turn. The digest is the only evidence payload; tool args, output and prompts
+// never enter this table.
+func (s *CodingKnowledgeStore) RecordTurnEvidence(ctx context.Context, evidence CodingTurnEvidence) (CodingTurnEvidence, error) {
+	if s == nil || s.inner == nil || s.inner.db == nil {
+		return CodingTurnEvidence{}, fmt.Errorf("coding knowledge store is unavailable")
+	}
+	if s.turnEvidenceErr != nil {
+		return CodingTurnEvidence{}, fmt.Errorf("coding knowledge: turn evidence schema unavailable: %w", s.turnEvidenceErr)
+	}
+	evidence.ID = strings.TrimSpace(evidence.ID)
+	if evidence.ID == "" {
+		evidence.ID = NewID("turn")
+	}
+	switch evidence.Status {
+	case CodingTurnStatusCompleted, CodingTurnStatusFailed, CodingTurnStatusInterrupted:
+	default:
+		return CodingTurnEvidence{}, fmt.Errorf("coding knowledge: invalid turn evidence status %q", evidence.Status)
+	}
+	evidence.EvidenceDigest = strings.TrimSpace(evidence.EvidenceDigest)
+	if evidence.EvidenceDigest == "" {
+		return CodingTurnEvidence{}, fmt.Errorf("coding knowledge: turn evidence digest is required")
+	}
+	evidence.OwnerID = truncateCodingExperienceAuditText(evidence.OwnerID, 200)
+	evidence.ProjectPath = truncateCodingExperienceAuditText(evidence.ProjectPath, 1024)
+	if evidence.MaterialCount < 0 {
+		evidence.MaterialCount = 0
+	}
+	if evidence.CreatedAt.IsZero() {
+		evidence.CreatedAt = time.Now().UTC()
+	}
+	if _, err := s.inner.db.ExecContext(ctx, `INSERT INTO coding_turn_evidence(evidence_id,owner_id,project_path,status,material_count,evidence_digest,created_at) VALUES(?,?,?,?,?,?,?)`,
+		evidence.ID, evidence.OwnerID, evidence.ProjectPath, evidence.Status, evidence.MaterialCount, evidence.EvidenceDigest,
+		evidence.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		return CodingTurnEvidence{}, fmt.Errorf("coding knowledge: record turn evidence: %w", err)
+	}
+	// Bound the audit table without a background job. Keep a long window: a
+	// turn-derived candidate may sit in the review queue for months, and its
+	// confirmation/promotion still needs this row to verify provenance.
+	cutoff := time.Now().UTC().Add(-730 * 24 * time.Hour).Format(time.RFC3339Nano)
+	_, _ = s.inner.db.ExecContext(ctx, `DELETE FROM coding_turn_evidence WHERE created_at < ?`, cutoff)
+	return evidence, nil
+}
+
+// VerifyTurnRecallEvidence revalidates a turn-level recall outcome. Only a
+// durable completed/failed turn with the exact digest is knowledge-eligible;
+// interrupted or cancelled turns never adjust confidence.
+func (s *CodingKnowledgeStore) VerifyTurnRecallEvidence(ctx context.Context, taskID, attemptID, evidenceDigest string) error {
+	if s == nil || s.inner == nil || s.inner.db == nil {
+		return fmt.Errorf("coding knowledge store is unavailable")
+	}
+	if s.turnEvidenceErr != nil {
+		return fmt.Errorf("coding knowledge: turn evidence schema unavailable: %w", s.turnEvidenceErr)
+	}
+	taskID = strings.TrimSpace(taskID)
+	if !strings.HasPrefix(taskID, CodingTurnEvidenceTaskPrefix) {
+		return fmt.Errorf("coding knowledge: not a turn evidence task ID")
+	}
+	evidenceID := strings.TrimSpace(strings.TrimPrefix(taskID, CodingTurnEvidenceTaskPrefix))
+	if evidenceID == "" {
+		return fmt.Errorf("coding knowledge: turn evidence ID is required")
+	}
+	if strings.TrimSpace(attemptID) != CodingTurnEvidenceAttemptPrefix+evidenceID {
+		return fmt.Errorf("coding knowledge: turn evidence attempt does not match")
+	}
+	evidenceDigest = strings.TrimSpace(evidenceDigest)
+	if evidenceDigest == "" {
+		return fmt.Errorf("coding knowledge: turn evidence digest is required")
+	}
+	var status, storedDigest string
+	err := s.inner.db.QueryRowContext(ctx, `SELECT status, evidence_digest FROM coding_turn_evidence WHERE evidence_id=?`, evidenceID).Scan(&status, &storedDigest)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("coding knowledge: turn evidence %s not found", evidenceID)
+	}
+	if err != nil {
+		return fmt.Errorf("coding knowledge: load turn evidence: %w", err)
+	}
+	if status != CodingTurnStatusCompleted && status != CodingTurnStatusFailed {
+		return fmt.Errorf("coding knowledge: turn %s is not knowledge-eligible (status=%s)", evidenceID, status)
+	}
+	if storedDigest != evidenceDigest {
+		return fmt.Errorf("coding knowledge: turn evidence digest does not match")
+	}
+	return nil
 }
 
 // SetCardDistiller configures the LLM distiller for card extraction.
@@ -252,6 +413,11 @@ func (s *CodingKnowledgeStore) SaveExperienceWithBudget(ctx context.Context, exp
 	}
 	if !exp.LastReviewedAt.IsZero() {
 		return CodingExperience{}, fmt.Errorf("coding knowledge: review timestamp is assigned by the store")
+	}
+	// Observation evidence is a runtime fact. A manual authoring or UI payload
+	// must not be able to pre-seed the counter that authorizes auto-promotion.
+	if exp.ObservationCount != 0 || len(exp.ObservationTaskIDs) != 0 {
+		return CodingExperience{}, fmt.Errorf("coding knowledge: observation evidence is managed by runtime saves")
 	}
 	// Verified is evidence-derived, not an author-selected initial state. A
 	// manually authored record may be explicitly saved as active by a reviewer,
@@ -299,6 +465,8 @@ func (s *CodingKnowledgeStore) SaveImportedExperience(ctx context.Context, exp C
 	exp.RecallCount = 0
 	exp.SuccessCount = 0
 	exp.FailureCount = 0
+	exp.ObservationCount = 0
+	exp.ObservationTaskIDs = nil
 	exp.LastRecalledAt = time.Time{}
 	exp.CreatedAt = time.Time{}
 	exp.UpdatedAt = time.Time{}
@@ -327,6 +495,14 @@ func (s *CodingKnowledgeStore) saveExperience(ctx context.Context, exp CodingExp
 		exp.Status = CodingStatusCandidate
 	} else if exp.Status == "" {
 		exp.Status = CodingStatusCandidate
+	}
+	if isRuntimeDerivedExperience(exp) {
+		// A new runtime record starts with exactly one observation. The counter
+		// is advanced only by RecordCandidateObservation, never by a caller or an
+		// extracted payload. Managed lifecycle labels are likewise store-owned.
+		exp.ObservationCount = 1
+		exp.ObservationTaskIDs = []string{strings.TrimSpace(exp.SourceRuntimeTaskID)}
+		exp.Labels = removeManagedCodingExperienceLabels(exp.Labels)
 	}
 	requiredOrigin = strings.TrimSpace(requiredOrigin)
 	if requiredOrigin != "" {
@@ -365,6 +541,13 @@ func (s *CodingKnowledgeStore) saveExperience(ctx context.Context, exp CodingExp
 	if allowParent {
 		// Revision candidates copy the parent body. Force a new source ID so
 		// content-hash dedup cannot collapse the candidate onto the retired parent.
+		forceID = NewID("ksrc")
+	}
+	if isRuntimeDerivedExperience(exp) {
+		// Runtime extraction has its own scoped dedup/merge path. Letting
+		// SaveText remap identical content to an existing source would let a
+		// concurrent or cross-scope save overwrite that source's provenance,
+		// observation evidence and lifecycle state.
 		forceID = NewID("ksrc")
 	}
 	source, err := s.inner.SaveText(ctx, TextSaveRequest{
@@ -481,6 +664,200 @@ func (s *CodingKnowledgeStore) updateConfidence(ctx context.Context, id string, 
 	return nil
 }
 
+// CodingExperienceObservation is one independent runtime-task sighting of an
+// already staged candidate. It carries only durable provenance and bounded
+// extraction additions; prompts, commands and transcripts stay out of the
+// knowledge store.
+type CodingExperienceObservation struct {
+	RuntimeTaskID     string
+	RuntimeAttemptID  string
+	EvidenceDigest    string
+	FailedAttempts    []string
+	Contraindications []string
+	Frameworks        []string
+	Labels            []string
+	SourceTaskTitle   string
+}
+
+// RecordCandidateObservation advances a runtime-derived candidate's evidence
+// when the same guidance is independently observed in another durable task.
+// The observation owns its own provenance verifier, so a caller cannot inflate
+// the promotion counter with invented task IDs.
+func (s *CodingKnowledgeStore) RecordCandidateObservation(ctx context.Context, id string, obs CodingExperienceObservation, verify RuntimeProvenanceVerifier) (CodingExperience, error) {
+	obs.RuntimeTaskID = strings.TrimSpace(obs.RuntimeTaskID)
+	obs.RuntimeAttemptID = strings.TrimSpace(obs.RuntimeAttemptID)
+	obs.EvidenceDigest = strings.TrimSpace(obs.EvidenceDigest)
+	if obs.RuntimeTaskID == "" || obs.RuntimeAttemptID == "" || obs.EvidenceDigest == "" {
+		return CodingExperience{}, fmt.Errorf("coding knowledge: observation requires task, attempt and evidence digest")
+	}
+	if verify == nil {
+		return CodingExperience{}, fmt.Errorf("coding knowledge: observation requires runtime evidence verification")
+	}
+
+	s.lifecycleWriteMu.Lock()
+	defer s.lifecycleWriteMu.Unlock()
+	exp, err := s.GetExperience(ctx, id)
+	if err != nil {
+		return CodingExperience{}, err
+	}
+	if exp.Status != CodingStatusCandidate {
+		return CodingExperience{}, fmt.Errorf("coding knowledge: observation requires a candidate experience %s (status=%s)", id, exp.Status)
+	}
+	if exp.CreatedBy != "runtime" || !isRuntimeDerivedExperience(exp) {
+		return CodingExperience{}, fmt.Errorf("coding knowledge: observation requires a runtime-derived experience %s", id)
+	}
+	if err := verify(ctx, CodingExperience{
+		SourceRuntimeTaskID:    obs.RuntimeTaskID,
+		SourceRuntimeAttemptID: obs.RuntimeAttemptID,
+		EvidenceDigest:         obs.EvidenceDigest,
+	}); err != nil {
+		return CodingExperience{}, fmt.Errorf("coding knowledge: observation provenance verification failed: %w", err)
+	}
+
+	// The original source task and any already recorded observation are the
+	// same evidence unit. Re-extraction from the same task must not inflate
+	// the count.
+	if obs.RuntimeTaskID == strings.TrimSpace(exp.SourceRuntimeTaskID) ||
+		codingObservationContainsTaskID(exp.ObservationTaskIDs, obs.RuntimeTaskID) {
+		return exp, nil
+	}
+
+	if exp.ObservationCount <= 0 {
+		exp.ObservationCount = 1
+	}
+	if len(exp.ObservationTaskIDs) == 0 && strings.TrimSpace(exp.SourceRuntimeTaskID) != "" {
+		exp.ObservationTaskIDs = []string{strings.TrimSpace(exp.SourceRuntimeTaskID)}
+	}
+	exp.ObservationCount++
+	exp.ObservationTaskIDs = appendCodingObservationTaskID(exp.ObservationTaskIDs, obs.RuntimeTaskID)
+	exp.FailedAttempts = mergeCodingObservationTexts(exp.FailedAttempts, obs.FailedAttempts, maxCodingExperienceObservationFailures)
+	exp.Contraindications = mergeCodingObservationTexts(exp.Contraindications, obs.Contraindications, maxCodingExperienceObservationFailures)
+	exp.Frameworks = mergeCodingObservationTexts(exp.Frameworks, obs.Frameworks, maxCodingExperienceObservationLabels)
+	exp.Labels = mergeCodingObservationLabels(exp.Labels, obs.Labels)
+	if strings.TrimSpace(exp.SourceTaskTitle) == "" {
+		exp.SourceTaskTitle = truncateCodingExperienceAuditText(obs.SourceTaskTitle, 200)
+	}
+	exp.LifecycleEvents = appendCodingExperienceLifecycleEvent(exp.LifecycleEvents, "observation_recorded", "independent runtime task", obs.RuntimeTaskID)
+	exp.UpdatedAt = time.Now().UTC()
+	if err := s.updateExperienceMetadata(ctx, exp); err != nil {
+		return CodingExperience{}, err
+	}
+	return exp, nil
+}
+
+// PromoteCandidateFromObservations is the evidence-driven review path for
+// automatic extraction. It never promotes a single observation: at least two
+// independent durable tasks must have produced the same guidance, the current
+// provenance must still verify, and the reviewed-project budget must have room.
+func (s *CodingKnowledgeStore) PromoteCandidateFromObservations(ctx context.Context, id string, minObservations int, budget CodingExperienceBudget, verify RuntimeProvenanceVerifier) (bool, error) {
+	if minObservations < 2 {
+		return false, fmt.Errorf("coding knowledge: evidence-based promotion requires at least 2 observations")
+	}
+	s.lifecycleWriteMu.Lock()
+	defer s.lifecycleWriteMu.Unlock()
+	exp, err := s.GetExperience(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if exp.Status != CodingStatusCandidate {
+		return false, nil
+	}
+	if exp.CreatedBy != "runtime" || !isRuntimeDerivedExperience(exp) {
+		return false, fmt.Errorf("coding knowledge: evidence-based promotion requires a runtime-derived candidate %s", id)
+	}
+	if exp.ObservationCount < minObservations {
+		return false, nil
+	}
+	if verify == nil {
+		return false, fmt.Errorf("coding knowledge: evidence-based promotion requires provenance verification")
+	}
+	if err := verify(ctx, exp); err != nil {
+		return false, fmt.Errorf("coding knowledge: evidence-based promotion provenance verification failed: %w", err)
+	}
+	if err := s.validateExperiencePromotionBudget(ctx, exp, budget); err != nil {
+		return false, err
+	}
+	exp.Status = CodingStatusActive
+	exp.LastReviewedAt = time.Now().UTC()
+	exp.LifecycleEvents = appendCodingExperienceLifecycleEvent(exp.LifecycleEvents, "candidate_auto_promoted", fmt.Sprintf("independent observations=%d", exp.ObservationCount), "")
+	exp.UpdatedAt = time.Now().UTC()
+	if err := s.updateExperienceMetadata(ctx, exp); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func codingObservationContainsTaskID(ids []string, taskID string) bool {
+	taskID = strings.TrimSpace(taskID)
+	for _, id := range ids {
+		if strings.TrimSpace(id) == taskID {
+			return true
+		}
+	}
+	return false
+}
+
+func appendCodingObservationTaskID(ids []string, taskID string) []string {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return ids
+	}
+	out := append([]string(nil), ids...)
+	out = append(out, taskID)
+	if len(out) > maxCodingExperienceObservationTaskIDs {
+		out = out[len(out)-maxCodingExperienceObservationTaskIDs:]
+	}
+	return out
+}
+
+func mergeCodingObservationTexts(existing, incoming []string, maxItems int) []string {
+	out := append([]string(nil), existing...)
+	seen := make(map[string]struct{}, len(out))
+	for _, value := range out {
+		seen[strings.ToLower(strings.TrimSpace(value))] = struct{}{}
+	}
+	for _, value := range incoming {
+		value = truncateCodingExperienceAuditText(value, maxCodingExperienceObservationTextRunes)
+		key := strings.ToLower(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) > maxItems {
+		out = out[:maxItems]
+	}
+	return out
+}
+
+func mergeCodingObservationLabels(existing, incoming []string) []string {
+	out := append([]string(nil), existing...)
+	seen := make(map[string]struct{}, len(out))
+	for _, value := range out {
+		seen[strings.ToLower(strings.TrimSpace(value))] = struct{}{}
+	}
+	for _, value := range incoming {
+		value = truncateCodingExperienceAuditText(value, 80)
+		if value == "" || codingExperienceLabelsContain(managedCodingExperienceLabels, value) {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) > maxCodingExperienceObservationLabels {
+		out = out[:maxCodingExperienceObservationLabels]
+	}
+	return out
+}
+
 // UpdateExperience updates an existing experience (for manual edits).
 // This re-indexes the FTS content if title/content/trigger changed while
 // preserving the experience ID so UI links and recall stats stay stable.
@@ -515,6 +892,9 @@ func (s *CodingKnowledgeStore) UpdateExperienceWithBudget(ctx context.Context, e
 		exp.CreatedAt = existing.CreatedAt
 	}
 	if err := preserveExperienceLifecycleOnUpdate(&exp, existing); err != nil {
+		return err
+	}
+	if err := preserveExperienceObservationEvidenceOnUpdate(&exp, existing); err != nil {
 		return err
 	}
 	if exp.LastRecalledAt.IsZero() {
@@ -706,8 +1086,11 @@ func (s *CodingKnowledgeStore) projectReviewedExperienceUsageWithPageSize(ctx co
 
 	count, tokens := 0, 0
 	for offset := 0; ; offset += pageSize {
+		// The generic store's ProjectPath filter is an exact SQL match. Coding
+		// records can carry the same project with a trailing separator or a
+		// different slash style, so scan the (bounded) coding store and apply the
+		// coding-layer path equality rule in Go.
 		sources, err := s.inner.ListSources(ctx, ListSourcesOptions{
-			ProjectPath:     projectPath,
 			Limit:           pageSize,
 			Offset:          offset,
 			IncludeDisabled: true,
@@ -716,8 +1099,14 @@ func (s *CodingKnowledgeStore) projectReviewedExperienceUsageWithPageSize(ctx co
 			return 0, 0, err
 		}
 		for _, source := range sources {
+			// source.ProjectPath is the storage column that decodeCodingExperience
+			// copies into the experience. Filtering before decoding skips metadata
+			// JSON and node hydration for unrelated projects.
+			if !CodingProjectPathsEqual(source.ProjectPath, projectPath) {
+				continue
+			}
 			exp, err := sourceToExperience(source)
-			if err != nil || exp.ID == excludeID || exp.Scope != CodingScopeProject || exp.ProjectPath != projectPath {
+			if err != nil || exp.ID == excludeID || exp.Scope != CodingScopeProject || !CodingProjectPathsEqual(exp.ProjectPath, projectPath) {
 				continue
 			}
 			if exp.Status != CodingStatusActive && exp.Status != CodingStatusVerified {
@@ -854,6 +1243,8 @@ func (s *CodingKnowledgeStore) CreateRevisionCandidate(ctx context.Context, id, 
 	candidate.RecallCount = 0
 	candidate.SuccessCount = 0
 	candidate.FailureCount = 0
+	candidate.ObservationCount = 0
+	candidate.ObservationTaskIDs = nil
 	candidate.CreatedAt = time.Time{}
 	candidate.UpdatedAt = time.Time{}
 	candidate.LastRecalledAt = time.Time{}
@@ -928,61 +1319,128 @@ func (s *CodingKnowledgeStore) SearchExperiences(ctx context.Context, opts Codin
 	if candidateLimit > 100 {
 		candidateLimit = 100
 	}
-	searchOpts := SearchOptions{
-		Query:  opts.Query,
-		Labels: append([]string{"coding_experience"}, opts.Labels...),
-		Limit:  candidateLimit,
-	}
-
-	results, err := s.inner.Search(ctx, searchOpts)
-	if err != nil {
-		return nil, fmt.Errorf("coding knowledge: search: %w", err)
-	}
-
 	type scoredExperience struct {
 		experience CodingExperience
 		score      float64
 	}
-	candidates := make(map[string]scoredExperience, opts.Limit)
-	for _, r := range results {
-		var (
-			exp CodingExperience
-			err error
-		)
-		if opts.OmitContent {
-			exp, err = sourceToExperienceSummary(r.Source)
-		} else {
-			exp, err = sourceToExperience(r.Source)
+	type collectedCandidates struct {
+		candidates map[string]scoredExperience
+		// truncated records whether the generic search hit its candidate limit.
+		// If it did not, every match was considered and there is no hidden
+		// project record to recover with a second query.
+		truncated bool
+	}
+	collect := func(query, rawFTS, projectFilter string) (collectedCandidates, error) {
+		searchOpts := SearchOptions{
+			Query:       query,
+			rawFTSQuery: rawFTS,
+			ProjectPath: projectFilter,
+			Labels:      append([]string{"coding_experience"}, opts.Labels...),
+			Limit:       candidateLimit,
 		}
+		results, err := s.inner.Search(ctx, searchOpts)
 		if err != nil {
-			continue // Skip entries with bad metadata
+			return collectedCandidates{}, fmt.Errorf("coding knowledge: search: %w", err)
 		}
-		exp.ID = r.Source.ID
+		candidates := make(map[string]scoredExperience, opts.Limit)
+		for _, r := range results {
+			var (
+				exp CodingExperience
+				err error
+			)
+			if opts.OmitContent {
+				exp, err = sourceToExperienceSummary(r.Source)
+			} else {
+				exp, err = sourceToExperience(r.Source)
+			}
+			if err != nil {
+				continue // Skip entries with bad metadata
+			}
+			exp.ID = r.Source.ID
 
-		// Populate Content from search snippet when not hydrated from nodes.
-		// UI listing skips this: it only needs metadata for ranking/display.
-		if exp.Content == "" && !opts.OmitContent {
-			if r.Snippet != "" {
-				exp.Content = r.Snippet
-			} else if r.Claim != "" {
-				exp.Content = r.Claim
-			} else if r.Summary != "" {
-				exp.Content = r.Summary
+			// Populate Content from search snippet when not hydrated from nodes.
+			// UI listing skips this: it only needs metadata for ranking/display.
+			if exp.Content == "" && !opts.OmitContent {
+				if r.Snippet != "" {
+					exp.Content = r.Snippet
+				} else if r.Claim != "" {
+					exp.Content = r.Claim
+				} else if r.Summary != "" {
+					exp.Content = r.Summary
+				}
+			}
+
+			// Post-filter by scope/language/status
+			if !matchesCodingSearchFilter(exp, opts) {
+				continue
+			}
+
+			// Search can return more than one evidence type for the same source.
+			// Keep its best relevance score while making a coding experience appear
+			// only once in the context pack.
+			if existing, ok := candidates[exp.ID]; !ok || r.Score > existing.score {
+				candidates[exp.ID] = scoredExperience{experience: exp, score: r.Score}
 			}
 		}
+		return collectedCandidates{candidates: candidates, truncated: len(results) >= candidateLimit}, nil
+	}
 
-		// Post-filter by scope/language/status
-		if !matchesCodingSearchFilter(exp, opts) {
-			continue
-		}
-
-		// Search can return more than one evidence type for the same source.
-		// Keep its best relevance score while making a coding experience appear
-		// only once in the context pack.
-		if existing, ok := candidates[exp.ID]; !ok || r.Score > existing.score {
-			candidates[exp.ID] = scoredExperience{experience: exp, score: r.Score}
+	mergeCandidates := func(dst, src map[string]scoredExperience) {
+		for id, candidate := range src {
+			if existing, ok := dst[id]; !ok || candidate.score > existing.score {
+				dst[id] = candidate
+			}
 		}
 	}
+	hasProjectMatch := func(candidates map[string]scoredExperience) bool {
+		if strings.TrimSpace(opts.ProjectPath) == "" {
+			return false
+		}
+		for _, candidate := range candidates {
+			if candidate.experience.Scope == CodingScopeProject && CodingProjectPathsEqual(candidate.experience.ProjectPath, opts.ProjectPath) {
+				return true
+			}
+		}
+		return false
+	}
+	// The broad pass ranks every project's records together. A project-scoped
+	// rule can be crowded out of the top candidateLimit by unrelated projects,
+	// so when no current-project record survived, query the project slice
+	// directly and merge it. This keeps the broad pass for universal/language
+	// guidance without letting other projects hide local guidance.
+	collectProjectIfNeeded := func(query, rawFTS string, collected collectedCandidates) collectedCandidates {
+		if strings.TrimSpace(opts.ProjectPath) == "" ||
+			!collected.truncated ||
+			hasProjectMatch(collected.candidates) ||
+			(opts.Scope != "" && opts.Scope != CodingScopeProject) {
+			return collected
+		}
+		scoped, scopedErr := collect(query, rawFTS, opts.ProjectPath)
+		if scopedErr == nil {
+			mergeCandidates(collected.candidates, scoped.candidates)
+		}
+		return collected
+	}
+
+	collected, err := collect(opts.Query, "", "")
+	if err != nil {
+		return nil, err
+	}
+	collected = collectProjectIfNeeded(opts.Query, "", collected)
+	if len(collected.candidates) == 0 {
+		// The generic FTS builder ANDs whitespace-separated terms. A task
+		// description ("fix nil client panic when reusing the pool") therefore
+		// rarely matches a stored rule unless every word is present. Coding
+		// recall is advisory and scope-filtered below, so retry once with an
+		// OR expression over the meaningful terms when the strict pass found
+		// nothing. RawFTSQuery carries the expression past the generic builder.
+		if fallback := buildCodingRecallFallbackQuery(opts.Query); fallback != "" {
+			if got, fallbackErr := collect(opts.Query, fallback, ""); fallbackErr == nil {
+				collected = collectProjectIfNeeded(opts.Query, fallback, got)
+			}
+		}
+	}
+	candidates := collected.candidates
 
 	experiences := make([]scoredExperience, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -1104,6 +1562,7 @@ func (s *CodingKnowledgeStore) Stats(ctx context.Context) (CodingKnowledgeStats,
 		ByCategory: make(map[string]int),
 		ByLanguage: make(map[string]int),
 	}
+	projectDisplay := make(map[string]string)
 
 	var totalConf float64
 	for _, src := range sources {
@@ -1113,6 +1572,9 @@ func (s *CodingKnowledgeStore) Stats(ctx context.Context) (CodingKnowledgeStats,
 		}
 		stats.TotalCount++
 		totalConf += exp.Confidence
+		stats.RecallCount += exp.RecallCount
+		stats.RecallSuccessCount += exp.SuccessCount
+		stats.RecallFailureCount += exp.FailureCount
 
 		switch exp.Status {
 		case CodingStatusActive:
@@ -1126,7 +1588,13 @@ func (s *CodingKnowledgeStore) Stats(ctx context.Context) (CodingKnowledgeStats,
 		}
 
 		if exp.ProjectPath != "" {
-			stats.ByProject[exp.ProjectPath]++
+			key := CodingProjectPathKey(exp.ProjectPath)
+			display, ok := projectDisplay[key]
+			if !ok {
+				projectDisplay[key] = exp.ProjectPath
+				display = exp.ProjectPath
+			}
+			stats.ByProject[display]++
 		}
 		if exp.Category != "" {
 			stats.ByCategory[exp.Category]++
@@ -1161,8 +1629,10 @@ func (s *CodingKnowledgeStore) DeleteExperience(ctx context.Context, id string) 
 
 // EvictExperience deletes only disposable, locally unreviewed knowledge. It
 // deliberately refuses active/verified guidance and every record with a
-// lifecycle audit: those entries are evidence or review history, not cache
-// entries. Explicit user deletion remains available through DeleteExperience.
+// review, conflict or steering audit: those entries explain a lifecycle
+// decision, not a cache entry. Observation-only evidence is capacity
+// accounting and stays evictable. Explicit user deletion remains available
+// through DeleteExperience.
 func (s *CodingKnowledgeStore) EvictExperience(ctx context.Context, id string) error {
 	s.lifecycleWriteMu.Lock()
 	defer s.lifecycleWriteMu.Unlock()
@@ -1170,13 +1640,28 @@ func (s *CodingKnowledgeStore) EvictExperience(ctx context.Context, id string) e
 	if err != nil {
 		return err
 	}
-	if len(exp.LifecycleEvents) > 0 {
+	// Observation evidence alone is disposable capacity accounting, not a
+	// review/conflict decision. Without this exception every candidate that
+	// was seen twice would become permanently un-evictable.
+	if len(exp.LifecycleEvents) > 0 && !codingExperienceObservationOnlyAudit(exp.LifecycleEvents) {
 		return fmt.Errorf("coding knowledge: cannot automatically evict audited experience %s", id)
 	}
 	if exp.Status != CodingStatusCandidate && exp.Status != CodingStatusDeprecated {
 		return fmt.Errorf("coding knowledge: cannot automatically evict reviewed experience %s (status=%s)", id, exp.Status)
 	}
 	return s.inner.DeleteSource(ctx, id)
+}
+
+func codingExperienceObservationOnlyAudit(events []CodingExperienceLifecycleEvent) bool {
+	if len(events) == 0 {
+		return false
+	}
+	for _, event := range events {
+		if strings.TrimSpace(event.Action) != "observation_recorded" {
+			return false
+		}
+	}
+	return true
 }
 
 // SanitizeExperienceForExport converts an experience into a portable content
@@ -1197,6 +1682,8 @@ func SanitizeExperienceForExport(exp CodingExperience) CodingExperience {
 	exp.RecallCount = 0
 	exp.SuccessCount = 0
 	exp.FailureCount = 0
+	exp.ObservationCount = 0
+	exp.ObservationTaskIDs = nil
 	exp.CreatedAt = time.Time{}
 	exp.UpdatedAt = time.Time{}
 	exp.LastRecalledAt = time.Time{}
@@ -1245,6 +1732,9 @@ func (s *CodingKnowledgeStore) Reset(ctx context.Context) error {
 	for _, src := range sources {
 		_ = s.inner.DeleteSource(ctx, src.ID)
 	}
+	if s.inner.db != nil {
+		_, _ = s.inner.db.ExecContext(ctx, `DELETE FROM coding_turn_evidence`)
+	}
 	return nil
 }
 
@@ -1271,11 +1761,12 @@ func (s *CodingKnowledgeStore) ContextPackForTask(ctx context.Context, opts Codi
 		maxTokens = estimateTokens(strings.Repeat("x", maxChars))
 	}
 	experiences, err := s.SearchExperiences(ctx, CodingSearchOptions{
-		Query:       opts.Query,
-		Language:    opts.Language,
-		Frameworks:  opts.Frameworks,
-		ProjectPath: opts.ProjectPath,
-		Labels:      opts.Labels,
+		Query:             opts.Query,
+		Language:          opts.Language,
+		PreferredLanguage: opts.PreferredLanguage,
+		Frameworks:        opts.Frameworks,
+		ProjectPath:       opts.ProjectPath,
+		Labels:            opts.Labels,
 		// Candidate/deprecated experiences must never enter automatic prompt
 		// context. Manual search can still request them explicitly.
 		Status: []string{CodingStatusActive, CodingStatusVerified},
@@ -1296,6 +1787,9 @@ func (s *CodingKnowledgeStore) ContextPackForTask(ctx context.Context, opts Codi
 		if text == "" {
 			continue
 		}
+		if avoid := formatCodingExperienceAvoidLines(exp); avoid != "" {
+			text += "\n" + avoid
+		}
 		remainingChars := maxChars - pack.CharacterCount
 		remainingTokens := maxTokens - pack.TokenCount
 		text, truncatedByChars := truncateContextText(text, remainingChars)
@@ -1313,6 +1807,38 @@ func (s *CodingKnowledgeStore) ContextPackForTask(ctx context.Context, opts Codi
 	}
 	pack.Count = len(pack.Items)
 	return pack, nil
+}
+
+// formatCodingExperienceAvoidLines adds the most actionable negative evidence
+// to an injected experience. It stays inside the same token budget because the
+// caller truncates the combined text afterwards.
+func formatCodingExperienceAvoidLines(exp CodingExperience) string {
+	parts := make([]string, 0, 2)
+	if attempts := codingExperienceBoundedList(exp.FailedAttempts, 2, 120); len(attempts) > 0 {
+		parts = append(parts, "避免: "+strings.Join(attempts, "; "))
+	}
+	if contraindications := codingExperienceBoundedList(exp.Contraindications, 2, 120); len(contraindications) > 0 {
+		parts = append(parts, "不适用: "+strings.Join(contraindications, "; "))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func codingExperienceBoundedList(items []string, maxItems, maxRunes int) []string {
+	if maxItems <= 0 || len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, maxItems)
+	for _, item := range items {
+		item = truncateCodingExperienceAuditText(item, maxRunes)
+		if item == "" {
+			continue
+		}
+		out = append(out, item)
+		if len(out) >= maxItems {
+			break
+		}
+	}
+	return out
 }
 
 // truncateCodingContextTextToTokenBudget applies the store's deterministic
@@ -1350,14 +1876,19 @@ func truncateCodingContextTextToTokenBudget(text string, maxTokens int) (string,
 
 // CodingSearchOptions controls how coding experiences are searched.
 type CodingSearchOptions struct {
-	Query       string   // Full-text search query
-	Scope       string   // Filter by scope (empty = all scopes)
-	Language    string   // Filter by language (used when Scope=language or as affinity)
-	Frameworks  []string // Framework affinity (optional)
-	ProjectPath string   // Filter/boost by project path
-	Labels      []string // Additional label filters
-	Status      []string // Filter by status (empty = active + verified only)
-	Limit       int
+	Query    string // Full-text search query
+	Scope    string // Filter by scope (empty = all scopes)
+	Language string // Filter by language (used when Scope=language or as affinity)
+	// PreferredLanguage boosts language-scoped experiences without filtering.
+	// It is used when the caller knows the project's primary language but a
+	// query (e.g. a main-agent cross-language question) must still see other
+	// languages.
+	PreferredLanguage string
+	Frameworks        []string // Framework affinity (optional)
+	ProjectPath       string   // Filter/boost by project path
+	Labels            []string // Additional label filters
+	Status            []string // Filter by status (empty = active + verified only)
+	Limit             int
 	// OmitContent skips body hydration. Use it for administrative listing where
 	// only titles/metadata are shown; agent recall must leave this false.
 	OmitContent bool
@@ -1378,13 +1909,17 @@ type CodingListFilter struct {
 
 // CodingContextPackOptions controls context pack generation for SubAgent injection.
 type CodingContextPackOptions struct {
-	Query       string
-	Language    string
-	Frameworks  []string
-	ProjectPath string
-	Labels      []string
-	MaxItems    int
-	MaxChars    int
+	Query    string
+	Language string
+	// PreferredLanguage is a ranking hint, never a filter. Callers use it when
+	// the project's primary language is known but the task itself named no
+	// source files.
+	PreferredLanguage string
+	Frameworks        []string
+	ProjectPath       string
+	Labels            []string
+	MaxItems          int
+	MaxChars          int
 	// MaxTokens is a deterministic, CJK-aware hard limit for the injected text.
 	// When omitted, the legacy MaxChars default is converted to the same local
 	// estimate used by the knowledge store.
@@ -1393,15 +1928,20 @@ type CodingContextPackOptions struct {
 
 // CodingKnowledgeStats provides aggregate statistics.
 type CodingKnowledgeStats struct {
-	TotalCount      int            `json:"total_count"`
-	ActiveCount     int            `json:"active_count"`
-	VerifiedCount   int            `json:"verified_count"`
-	CandidateCount  int            `json:"candidate_count"`
-	DeprecatedCount int            `json:"deprecated_count"`
-	ByProject       map[string]int `json:"by_project"`
-	ByCategory      map[string]int `json:"by_category"`
-	ByLanguage      map[string]int `json:"by_language"`
-	AvgConfidence   float64        `json:"avg_confidence"`
+	TotalCount      int `json:"total_count"`
+	ActiveCount     int `json:"active_count"`
+	VerifiedCount   int `json:"verified_count"`
+	CandidateCount  int `json:"candidate_count"`
+	DeprecatedCount int `json:"deprecated_count"`
+	// Recall usage proves the knowledge base is actually consumed, not just
+	// accumulated. Counts aggregate the per-experience outcomes.
+	RecallCount        int            `json:"recall_count"`
+	RecallSuccessCount int            `json:"recall_success_count"`
+	RecallFailureCount int            `json:"recall_failure_count"`
+	ByProject          map[string]int `json:"by_project"`
+	ByCategory         map[string]int `json:"by_category"`
+	ByLanguage         map[string]int `json:"by_language"`
+	AvgConfidence      float64        `json:"avg_confidence"`
 }
 
 // ---------------------------------------------------------------------------
@@ -1506,6 +2046,8 @@ func experienceToMetadata(exp CodingExperience) CodingExperienceMetadata {
 		RecallCount:            exp.RecallCount,
 		SuccessCount:           exp.SuccessCount,
 		FailureCount:           exp.FailureCount,
+		ObservationCount:       exp.ObservationCount,
+		ObservationTaskIDs:     append([]string(nil), exp.ObservationTaskIDs...),
 		Status:                 exp.Status,
 		LastRecalledAt:         lastRecalled,
 	}
@@ -1548,6 +2090,9 @@ type codingExperienceSummaryMetadata struct {
 	LastReviewedAt   string   `json:"last_reviewed_at,omitempty"`
 	Confidence       float64  `json:"confidence"`
 	RecallCount      int      `json:"recall_count"`
+	SuccessCount     int      `json:"success_count"`
+	FailureCount     int      `json:"failure_count"`
+	ObservationCount int      `json:"observation_count,omitempty"`
 	Status           string   `json:"status"`
 	LastRecalledAt   string   `json:"last_recalled_at,omitempty"`
 }
@@ -1591,6 +2136,8 @@ func decodeCodingExperience(src Source, includeBody bool) (CodingExperience, err
 			exp.RecallCount = meta.RecallCount
 			exp.SuccessCount = meta.SuccessCount
 			exp.FailureCount = meta.FailureCount
+			exp.ObservationCount = meta.ObservationCount
+			exp.ObservationTaskIDs = append([]string(nil), meta.ObservationTaskIDs...)
 			exp.Status = meta.Status
 			if meta.LastRecalledAt != "" {
 				if t, err := time.Parse(time.RFC3339, meta.LastRecalledAt); err == nil {
@@ -1611,6 +2158,9 @@ func decodeCodingExperience(src Source, includeBody bool) (CodingExperience, err
 			exp.LastReviewedAt = parseCodingExperienceTimestamp(meta.LastReviewedAt)
 			exp.Confidence = meta.Confidence
 			exp.RecallCount = meta.RecallCount
+			exp.SuccessCount = meta.SuccessCount
+			exp.FailureCount = meta.FailureCount
+			exp.ObservationCount = meta.ObservationCount
 			exp.Status = meta.Status
 			if meta.LastRecalledAt != "" {
 				if t, err := time.Parse(time.RFC3339, meta.LastRecalledAt); err == nil {
@@ -1628,6 +2178,17 @@ func decodeCodingExperience(src Source, includeBody bool) (CodingExperience, err
 	}
 	if strings.TrimSpace(exp.CreatedBy) == "" {
 		exp.CreatedBy = "legacy"
+	}
+	if isRuntimeDerivedExperience(exp) {
+		// Legacy runtime records predate observation accounting. Their source
+		// task is still one observation and must not look like a zero-evidence
+		// candidate that can never be promoted.
+		if exp.ObservationCount <= 0 {
+			exp.ObservationCount = 1
+		}
+		if len(exp.ObservationTaskIDs) == 0 && strings.TrimSpace(exp.SourceRuntimeTaskID) != "" {
+			exp.ObservationTaskIDs = []string{strings.TrimSpace(exp.SourceRuntimeTaskID)}
+		}
 	}
 
 	return exp, nil
@@ -1741,6 +2302,36 @@ func fillOmittedExperienceIdentityOnUpdate(updated *CodingExperience, existing C
 	if strings.TrimSpace(updated.ValidUntil) == "" {
 		updated.ValidUntil = existing.ValidUntil
 	}
+}
+
+// preserveExperienceObservationEvidenceOnUpdate keeps the evidence counter and
+// its audit list store-owned. An editor may change guidance, but must not
+// lower the threshold needed for auto-promotion or erase observations.
+func preserveExperienceObservationEvidenceOnUpdate(updated *CodingExperience, existing CodingExperience) error {
+	if updated == nil {
+		return fmt.Errorf("coding knowledge: update experience is required")
+	}
+	if updated.ObservationCount != 0 && updated.ObservationCount != existing.ObservationCount {
+		return fmt.Errorf("coding knowledge: observation count is managed by runtime evidence")
+	}
+	updated.ObservationCount = existing.ObservationCount
+	if len(updated.ObservationTaskIDs) > 0 && !codingObservationTaskIDsEqual(updated.ObservationTaskIDs, existing.ObservationTaskIDs) {
+		return fmt.Errorf("coding knowledge: observation evidence is managed by runtime evidence")
+	}
+	updated.ObservationTaskIDs = append([]string(nil), existing.ObservationTaskIDs...)
+	return nil
+}
+
+func codingObservationTaskIDsEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if strings.TrimSpace(left[index]) != strings.TrimSpace(right[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 func preserveExperienceLifecycleOnUpdate(updated *CodingExperience, existing CodingExperience) error {
@@ -1952,6 +2543,62 @@ func (s *CodingKnowledgeStore) updateExperienceMetadataWithRecallOutcome(ctx con
 	return s.inner.recordCodingExperienceRecallOutcome(ctx, exp.ID, recallEvidenceID, taskSucceeded, string(metaJSON), buildExperienceLabels(exp))
 }
 
+// buildCodingRecallFallbackQuery turns a natural-language task query into an
+// OR recall expression. It is only used after the strict pass returns no
+// coding experience, so it broadens recall without weakening the default
+// precision of the general knowledge search.
+func buildCodingRecallFallbackQuery(query string) string {
+	terms := strings.Fields(strings.TrimSpace(query))
+	if len(terms) < 2 {
+		return ""
+	}
+	parts := make([]string, 0, 12)
+	seen := make(map[string]struct{}, len(terms))
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" || (len([]rune(term)) < 2 && !containsNoSpaceScriptRunes(term)) {
+			continue
+		}
+		if !strings.ContainsFunc(term, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+			continue
+		}
+		if codingRecallFallbackStopword(term) {
+			continue
+		}
+		expr := buildFTSQuerySegmented(term)
+		if expr == "" {
+			continue
+		}
+		if _, ok := seen[expr]; ok {
+			continue
+		}
+		seen[expr] = struct{}{}
+		parts = append(parts, expr)
+		if len(parts) >= 12 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	// A single meaningful term is still a valid fallback: the strict pass also
+	// ANDed the stopwords, so "use a mutex" would otherwise recall nothing.
+	return strings.Join(parts, " OR ")
+}
+
+func codingRecallFallbackStopword(term string) bool {
+	switch strings.ToLower(strings.TrimSpace(term)) {
+	case "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+		"if", "in", "into", "is", "it", "of", "on", "or", "that", "the",
+		"then", "these", "this", "those", "to", "was", "when", "with",
+		"can", "could", "should", "would", "will", "must",
+		"add", "adds", "added", "fix", "fixed", "fixes", "use", "used", "uses", "using":
+		return true
+	default:
+		return false
+	}
+}
+
 // matchesCodingSearchFilter checks if an experience matches the post-search filter.
 func matchesCodingSearchFilter(exp CodingExperience, opts CodingSearchOptions) bool {
 	// Status filter (default: active + verified only)
@@ -1983,11 +2630,43 @@ func matchesCodingSearchFilter(exp CodingExperience, opts CodingSearchOptions) b
 	// listing/search, which intentionally remains able to inspect every project.
 	// Universal and language-scoped guidance remains reusable and ranks below a
 	// matching project record.
-	if exp.Scope == CodingScopeProject && strings.TrimSpace(opts.ProjectPath) != "" && exp.ProjectPath != strings.TrimSpace(opts.ProjectPath) {
+	if exp.Scope == CodingScopeProject && strings.TrimSpace(opts.ProjectPath) != "" && !CodingProjectPathsEqual(exp.ProjectPath, opts.ProjectPath) {
 		return false
 	}
 
 	return true
+}
+
+// CodingProjectPathsEqual reports whether two project paths identify the same
+// directory. Records can come from the desktop config, a session owner ID, a
+// worktree, or a remote agent, so trailing separators, slash style, and (on
+// Windows) drive-letter/file-name case must not hide project-scoped guidance.
+func CodingProjectPathsEqual(a, b string) bool {
+	return normalizeCodingProjectPathForCompare(a) == normalizeCodingProjectPathForCompare(b)
+}
+
+// CodingProjectPathKey returns the normalized grouping key used by
+// CodingProjectPathsEqual. Callers that group records by project (capacity,
+// eviction) use it so path formatting cannot split one project into several
+// buckets.
+func CodingProjectPathKey(projectPath string) string {
+	return normalizeCodingProjectPathForCompare(projectPath)
+}
+
+func normalizeCodingProjectPathForCompare(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	normalized := strings.ReplaceAll(projectPath, `\`, "/")
+	if len(normalized) >= 2 && normalized[1] == ':' {
+		normalized = strings.ToUpper(normalized[:1]) + normalized[1:]
+	}
+	normalized = path.Clean(normalized)
+	if runtime.GOOS == "windows" {
+		normalized = strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 // weightedScore applies scope-based weighting to the search score.
@@ -1995,27 +2674,45 @@ func weightedScore(exp CodingExperience, baseScore float64, opts CodingSearchOpt
 	weight := 1.0
 	switch exp.Scope {
 	case CodingScopeProject:
-		if opts.ProjectPath != "" && exp.ProjectPath == opts.ProjectPath {
+		if opts.ProjectPath != "" && CodingProjectPathsEqual(exp.ProjectPath, opts.ProjectPath) {
 			weight = 2.5
 		}
 	case CodingScopeLanguage:
-		if opts.Language != "" && exp.Language == opts.Language {
+		switch {
+		case opts.Language != "" && exp.Language == opts.Language:
 			weight = 1.8
-			// Framework bonus
-			if len(opts.Frameworks) > 0 && len(exp.Frameworks) > 0 {
-				for _, of := range opts.Frameworks {
-					for _, ef := range exp.Frameworks {
-						if strings.EqualFold(of, ef) {
-							weight *= 1.2
-							break
-						}
-					}
-				}
-			}
+		case opts.PreferredLanguage != "" && exp.Language == opts.PreferredLanguage:
+			// A softer boost than an explicit task-language match: the query may
+			// still legitimately need another language.
+			weight = 1.4
 		}
 	case CodingScopeUniversal:
 		weight = 1.0
 	}
 
-	return baseScore * weight * exp.Confidence
+	score := baseScore * weight * exp.Confidence
+	// Framework affinity is independent of scope. A main-agent search often
+	// knows the project's dependencies but not its primary language, and a
+	// multi-language repository can contain guides from several languages. One
+	// matching hint is enough; stacking a bonus per manifest dependency would
+	// let large projects dominate the ranking.
+	if codingFrameworksOverlap(opts.Frameworks, exp.Frameworks) {
+		score *= 1.2
+	}
+	return score
+}
+
+func codingFrameworksOverlap(want, have []string) bool {
+	for _, w := range want {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		for _, h := range have {
+			if strings.EqualFold(w, strings.TrimSpace(h)) {
+				return true
+			}
+		}
+	}
+	return false
 }

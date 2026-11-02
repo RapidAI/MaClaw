@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
@@ -54,6 +55,71 @@ func TestBuildUnfinishedSlotHintUsesConfiguredChineseLanguage(t *testing.T) {
 	}
 	if !strings.Contains(got, "检测到未完成任务") || !strings.Contains(got, "继续上次任务") {
 		t.Fatalf("hint not localized to Chinese: %q", got)
+	}
+}
+
+func TestUnfinishedSlotHintStaysWhenWorkingDirDiffers(t *testing.T) {
+	h := &IMMessageHandler{}
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:      "slot-dir",
+		ProjectPath: filepath.Join(t.TempDir(), "chosen"),
+		Status:      agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask:    "把演讲稿做成 PPT",
+	}
+	resp, handled := h.maybeReturnUnfinishedSlotHint(
+		IMUserMessage{UserID: "desktop-user", Text: "继续"},
+		"继续",
+		false,
+		explicitTaskSlotDecision{},
+		slot,
+	)
+	if !handled || resp == nil || resp.UnfinishedTask == nil {
+		t.Fatalf("directory mismatch dropped the recovery choice: handled=%v resp=%#v", handled, resp)
+	}
+}
+
+func TestBindSemanticContinuationKeepsExpertTaskWhenDirDiffers(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	userID := expertSessionUserID("builtin-pptx-maker")
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:      "slot-expert",
+		UserID:      userID,
+		ProjectPath: filepath.Join(t.TempDir(), "recorded-default"),
+		Status:      agent.UnfinishedTaskSlotStatusInterrupted,
+		Source:      agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	memory.UpsertUnfinishedSlot(userID, slot)
+	h := &IMMessageHandler{memory: memory}
+	current := memory.GetUnfinishedSlot(userID)
+	h.bindSemanticContinuationSlot(userID, &current)
+	active := memory.ActiveUnfinishedSlot(userID)
+	if active == nil || active.SlotID != slot.SlotID || active.Status != agent.UnfinishedTaskSlotStatusResumed {
+		t.Fatalf("expert continuation was not bound: active=%#v current=%#v", active, current)
+	}
+
+	otherID := "desktop-user"
+	other := &agent.UnfinishedTaskSlot{
+		SlotID:      "slot-other-dir",
+		UserID:      otherID,
+		ProjectPath: filepath.Join(t.TempDir(), "project-a"),
+		Status:      agent.UnfinishedTaskSlotStatusInterrupted,
+	}
+	memory.UpsertUnfinishedSlot(otherID, other)
+	held := memory.GetUnfinishedSlot(otherID)
+	h.bindSemanticContinuationSlot(otherID, &held)
+	if got := memory.GetUnfinishedSlot(otherID); got == nil || got.Status == agent.UnfinishedTaskSlotStatusResumed {
+		t.Fatalf("a different project was bound on directory mismatch: %#v", got)
+	}
+	if recoveredSlotMatchesSession(userID, &agent.UnfinishedTaskSlot{
+		ProjectPath: filepath.Join(t.TempDir(), "homework"),
+	}, filepath.Join(t.TempDir(), "elsewhere")) {
+		t.Fatal("expert continuation matched two different chosen directories")
+	}
+	if !recoveredSlotMatchesSession(userID, &agent.UnfinishedTaskSlot{
+		ProjectPath: corelib.EffectiveWorkspaceDir(),
+	}, filepath.Join(t.TempDir(), "homework")) {
+		t.Fatal("expert continuation dropped a checkpoint that still names the process default")
 	}
 }
 

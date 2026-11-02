@@ -2528,6 +2528,9 @@ export namespace corelib {
 	    coding_knowledge_save_strategy?: string;
 	    coding_knowledge_max_per_project?: number;
 	    coding_knowledge_max_total?: number;
+	    coding_knowledge_max_reviewed_per_project?: number;
+	    coding_knowledge_max_reviewed_tokens_per_project?: number;
+	    coding_knowledge_auto_promote_observations?: number;
 	    favorite_employees?: string[];
 	    favorite_employee_names?: Record<string, string>;
 	    show_coding_tool_entry?: boolean;
@@ -2826,6 +2829,9 @@ export namespace corelib {
 	        this.coding_knowledge_save_strategy = source["coding_knowledge_save_strategy"];
 	        this.coding_knowledge_max_per_project = source["coding_knowledge_max_per_project"];
 	        this.coding_knowledge_max_total = source["coding_knowledge_max_total"];
+	        this.coding_knowledge_max_reviewed_per_project = source["coding_knowledge_max_reviewed_per_project"];
+	        this.coding_knowledge_max_reviewed_tokens_per_project = source["coding_knowledge_max_reviewed_tokens_per_project"];
+	        this.coding_knowledge_auto_promote_observations = source["coding_knowledge_auto_promote_observations"];
 	        this.favorite_employees = source["favorite_employees"];
 	        this.favorite_employee_names = source["favorite_employee_names"];
 	        this.show_coding_tool_entry = source["show_coding_tool_entry"];
@@ -3868,6 +3874,8 @@ export namespace knowledge {
 	    recall_count: number;
 	    success_count: number;
 	    failure_count: number;
+	    observation_count?: number;
+	    observation_task_ids?: string[];
 	    status: string;
 	    // Go type: time
 	    created_at: any;
@@ -3902,6 +3910,8 @@ export namespace knowledge {
 	        this.recall_count = source["recall_count"];
 	        this.success_count = source["success_count"];
 	        this.failure_count = source["failure_count"];
+	        this.observation_count = source["observation_count"];
+	        this.observation_task_ids = source["observation_task_ids"];
 	        this.status = source["status"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	        this.updated_at = this.convertValues(source["updated_at"], null);
@@ -3932,6 +3942,9 @@ export namespace knowledge {
 	    verified_count: number;
 	    candidate_count: number;
 	    deprecated_count: number;
+	    recall_count: number;
+	    recall_success_count: number;
+	    recall_failure_count: number;
 	    by_project: Record<string, number>;
 	    by_category: Record<string, number>;
 	    by_language: Record<string, number>;
@@ -3948,6 +3961,9 @@ export namespace knowledge {
 	        this.verified_count = source["verified_count"];
 	        this.candidate_count = source["candidate_count"];
 	        this.deprecated_count = source["deprecated_count"];
+	        this.recall_count = source["recall_count"];
+	        this.recall_success_count = source["recall_success_count"];
+	        this.recall_failure_count = source["recall_failure_count"];
 	        this.by_project = source["by_project"];
 	        this.by_category = source["by_category"];
 	        this.by_language = source["by_language"];
@@ -8923,6 +8939,52 @@ export namespace main {
 	        this.count = source["count"];
 	        this.over = source["over"];
 	    }
+	}
+	export class CodingKnowledgeConfirmFailure {
+	    id: string;
+	    error: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CodingKnowledgeConfirmFailure(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.error = source["error"];
+	    }
+	}
+	export class CodingKnowledgeConfirmManyResult {
+	    confirmed: string[];
+	    failed?: CodingKnowledgeConfirmFailure[];
+
+	    static createFrom(source: any = {}) {
+	        return new CodingKnowledgeConfirmManyResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.confirmed = source["confirmed"];
+	        this.failed = this.convertValues(source["failed"], CodingKnowledgeConfirmFailure);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class CodingKnowledgeCapacityStatus {
 	    total_count: number;

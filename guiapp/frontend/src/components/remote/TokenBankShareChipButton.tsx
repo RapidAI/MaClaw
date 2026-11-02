@@ -12,6 +12,7 @@ import {
 } from '../../utils/hubcenterTokenBank';
 import { HUB_SERVICE_PROVIDER_NAME, type LLMProvider } from './LLMConfigPanelShared';
 import { isLobsterAIProvider, isQoderProvider, isTraeProvider } from './providerLogos';
+import { presetProviderDisplayName } from './presetProviderLabel';
 
 /**
  * Names whose credential must not be deposited even when a connection test
@@ -213,9 +214,10 @@ export function TokenBankShareChipButton({
 
     const badge = appearance === 'badge';
     const deposit = appearance === 'deposit';
+    const shownName = presetProviderDisplayName(lang, providerName);
     const label = deposit
         ? t(
-            `Deposit ${providerName} into Token Bank`,
+            `Deposit ${shownName} into Token Bank`,
             `将${providerName}存入银行`,
             `將${providerName}存入銀行`,
         )
@@ -230,7 +232,7 @@ export function TokenBankShareChipButton({
                 className={deposit ? 'btn-primary tbk-provider-pick__deposit' : badge ? 'llm-config-tokenbank-badge' : 'llm-config-tokenbank-btn'}
                 type="button"
                 aria-label={label}
-                title={deposit ? undefined : displayProviderLabel(t('Token Bank', 'Token 银行', 'Token 銀行'), providerName)}
+                title={deposit ? undefined : displayProviderLabel(t('Token Bank', 'Token 银行', 'Token 銀行'), shownName)}
                 disabled={preparing || depositBusy}
                 onClick={(event) => {
                     // The mark sits on the provider chip. A click here shares;
@@ -324,11 +326,12 @@ export function LLMConfigProviderShareHeading({
         (en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans),
         [lang],
     );
+    const providerLabel = presetProviderDisplayName(lang, provider.name);
     const title = provider.import_source
-        ? `${provider.name} ${t('(imported)', '（已导入）')}`
+        ? `${providerLabel} ${t('(imported)', '（已导入）')}`
         : provider.is_custom
             ? t('Custom Provider Configuration', '自定义服务商配置')
-            : `${provider.name} ${t('Configuration', '配置')}`;
+            : `${providerLabel} ${t('Configuration', '配置')}`;
     const shareable = provider.connection_test_passed === true
         && provider.is_hub_service !== true
         && provider.name !== HUB_SERVICE_PROVIDER_NAME

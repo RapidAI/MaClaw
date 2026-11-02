@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
@@ -144,25 +145,78 @@ func (h *IMMessageHandler) recoverInterruptedTaskSlot(userID string, entries []a
 	now := time.Now()
 	slotID := fmt.Sprintf("interrupted-%d", now.UnixMilli())
 	slot := &agent.UnfinishedTaskSlot{
-		SlotID:           slotID,
-		UserID:           userID,
-		ProjectPath:      recovered.ProjectPath,
-		Status:           agent.UnfinishedTaskSlotStatusInterrupted,
-		LastTask:         recovered.Task,
-		Summary:          extractProgressSummary(entries),
-		ResumePrompt:     "A previous task was interrupted after tool-level progress. Resume from the saved context and continue the original task instead of starting over.",
-		Source:           agent.UnfinishedTaskSlotSourceInFlightRecovery,
-		EvidenceScopeKey: recovered.EvidenceScopeKey,
-		LastCheckpointAt: recovered.SetAt,
-		LastToolName:     recovered.LastToolName,
-		SideEffectState:  recovered.SideEffectState,
-		RecoveryMode:     recovered.RecoveryMode,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		SlotID:                   slotID,
+		UserID:                   userID,
+		ProjectPath:              recovered.ProjectPath,
+		Status:                   agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask:                 recovered.Task,
+		Summary:                  extractProgressSummary(entries),
+		ResumePrompt:             "A previous task was interrupted after tool-level progress. Resume from the saved context and continue the original task instead of starting over.",
+		Source:                   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+		EvidenceScopeKey:         recovered.EvidenceScopeKey,
+		LastCheckpointAt:         recovered.SetAt,
+		LastToolName:             recovered.LastToolName,
+		SideEffectState:          recovered.SideEffectState,
+		RecoveryMode:             recovered.RecoveryMode,
+		MailboxResultBaseline:    recovered.MailboxResultBaseline,
+		MailboxResultBaselineSet: recovered.MailboxResultBaselineSet,
+		MailboxUncertainDropped:  recovered.MailboxUncertainDropped,
+		CreatedAt:                now,
+		UpdatedAt:                now,
+	}
+	if !recovered.MailboxUncertainDropped && agent.MailboxLatchSettled(recovered.LastToolName, entries, recovered.MailboxResultBaseline, recovered.MailboxResultBaselineSet) {
+		// The pre-tool latch outlived a host-known non-delivery. Creating a
+		// review slot here would refuse the next message before the model can
+		// send again. The marker is already consumed.
+		log.Printf("[InFlightRecovery] skipped mailbox review slot user=%s tool=%s", userID, recovered.LastToolName)
+		return nil
 	}
 	h.memory.UpsertUnfinishedSlot(userID, slot)
 	log.Printf("[InFlightRecovery] recovered interrupted task for user %s: %q (project=%q)", userID, truncateRunes(recovered.Task, 80), recovered.ProjectPath)
 	return slot
+}
+
+// releaseSettledMailboxReviewSlot drops a mailbox latch whose saved results
+// are already known. History stays. A confirmation card is not a delivery.
+// An uncertain result, a missing result, a dropped transport-uncertain row,
+// and im_message / send_file / send_to_im stay latched. resume_context is
+// released too, so a known mailbox result does not become the generic
+// unfinished card. Completing the current slot promotes the next queued
+// slot. That slot stays on this message when it still needs a decision.
+// Another settled mailbox slot is released in the same pass.
+func (h *IMMessageHandler) releaseSettledMailboxReviewSlot(userID string, slot *agent.UnfinishedTaskSlot, entries []agent.ConversationEntry) *agent.UnfinishedTaskSlot {
+	if h == nil || h.memory == nil {
+		return slot
+	}
+	seen := map[string]struct{}{}
+	for {
+		if slot == nil || slot.Status == agent.UnfinishedTaskSlotStatusCompleted || !mailboxReviewSlotSettled(slot, entries) {
+			return slot
+		}
+		id := strings.TrimSpace(slot.SlotID)
+		if _, dup := seen[id]; dup {
+			return slot
+		}
+		seen[id] = struct{}{}
+		h.memory.CompleteUnfinishedSlot(userID, slot.SlotID)
+		log.Printf("[InFlightRecovery] released settled mailbox review slot user=%s slot=%s tool=%s", userID, slot.SlotID, slot.LastToolName)
+		slot = h.memory.GetUnfinishedSlot(userID)
+	}
+}
+
+func mailboxReviewSlotSettled(slot *agent.UnfinishedTaskSlot, entries []agent.ConversationEntry) bool {
+	if slot == nil || slot.Status == agent.UnfinishedTaskSlotStatusCompleted {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(slot.LastToolName)) {
+	case "mailbox_send", "mailbox_delete":
+	default:
+		return false
+	}
+	if slot.MailboxUncertainDropped {
+		return false
+	}
+	return agent.MailboxLatchSettled(slot.LastToolName, entries, slot.MailboxResultBaseline, slot.MailboxResultBaselineSet)
 }
 
 func (h *IMMessageHandler) handleRecoverableSessionDecision(decision *explicitTaskSlotDecision, lang string) (*IMAgentResponse, bool, bool) {
@@ -298,13 +352,16 @@ func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trim
 		return h.returnExternalDeliveryReview(msg, unfinishedSlot), true
 	}
 
-	// Match against the same working directory used when creating slots
-	// (effectiveWorkingDirForUser), not the Projects-list CurrentProject.
+	// The recorded directory and the directory tools would use can disagree
+	// after a crash: an expert task's chosen folder was replaced by the
+	// process default, and the checkpoint still names one of them. Dropping
+	// the choice here lets the text into the tool loop, and the pending slot
+	// then refuses the next checkpoint. Keep the card. A confident reading of
+	// the text already resumed or dismissed the slot before this point.
 	currentProjectPath := h.effectiveWorkingDirForUser(msg.UserID)
-	if !unfinishedSlotProjectMatchesCurrent(unfinishedSlot, currentProjectPath) {
-		log.Printf("[UnfinishedSlot] suppressed: slot project=%q != current working dir=%q",
+	if !recoveredSlotMatchesSession(msg.UserID, unfinishedSlot, currentProjectPath) {
+		log.Printf("[UnfinishedSlot] working dir differs slot project=%q current=%q; keeping the resume choice",
 			unfinishedSlot.ProjectPath, currentProjectPath)
-		return nil, false
 	}
 
 	hint := buildUnfinishedSlotHintWithLang(unfinishedSlot, msg.Lang)
@@ -469,7 +526,42 @@ func buildUnfinishedSlotHintWithLang(slot *agent.UnfinishedTaskSlot, lang string
 	}
 	title = localizedUnfinishedSlotSummary(title, lang)
 	title = truncateRunes(title, 60)
-	return pickUI(lang, "Detected an unfinished task: ", "\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a", "偵測到未完成任務：") + title + pickUI(lang, ". Choose resume to continue it.", "\u3002\u9009\u62e9\u201c\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1\u201d\u53ef\u7ee7\u7eed\u3002", "。選擇「繼續上次任務」可繼續。")
+	return pickUI(lang, "Detected an unfinished task: ", "\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a", "偵測到未完成任務：") + title + pickUI(lang,
+		". Use the buttons, or type what you want. That message is read as continuing this task or starting a new one.",
+		"。可以点按钮，也可以直接输入。系统会根据这句话判断是继续上次任务，还是开始新任务。",
+		"。可以點按鈕，也可以直接輸入。系統會根據這句話判斷是繼續上次任務，還是開始新任務。")
+}
+
+// recoveredSlotMatchesSession reports whether a pending recovery slot belongs
+// to the conversation that just received a message. An expert session is one
+// conversation, and its checkpoint may still name the process default from
+// before the task directory was attached. Two different chosen directories
+// are different tasks.
+func recoveredSlotMatchesSession(userID string, slot *agent.UnfinishedTaskSlot, currentProjectPath string) bool {
+	if unfinishedSlotProjectMatchesCurrent(slot, currentProjectPath) {
+		return true
+	}
+	if slot == nil || expertIDFromUserID(userID) == "" {
+		return false
+	}
+	return isProcessDefaultWorkspacePath(slot.ProjectPath) || isProcessDefaultWorkspacePath(currentProjectPath)
+}
+
+func isProcessDefaultWorkspacePath(dir string) bool {
+	dir = normalizeProjectSessionPath(dir)
+	if dir == "" {
+		return false
+	}
+	if sameNormalizedPath(dir, corelib.EffectiveWorkspaceDir()) {
+		return true
+	}
+	return sameNormalizedPath(dir, corelib.WorkspaceDir())
+}
+
+func sameNormalizedPath(left, right string) bool {
+	left = normalizeProjectSessionPath(left)
+	right = normalizeProjectSessionPath(right)
+	return left != "" && strings.EqualFold(left, right)
 }
 
 func unfinishedSlotText(lang, en, zhHans, zhHant string) string {

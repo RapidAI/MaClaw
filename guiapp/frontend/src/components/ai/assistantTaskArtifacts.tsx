@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { ExportLatexSourceBundle } from "../../../wailsjs/go/main/App";
+import { ExportLatexSourceBundle, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { TaskResultUploadButton, taskResultUploadSupported } from "./TaskResultUploadButton";
 import { TaskResultExportButton } from "./TaskResultExportButton";
-import { dispatchContinueEditTaskResult, dispatchPreviewTaskResult, localizeTaskResultExportError, taskResultPreviewKindFromPath } from "./taskResultPreview";
+import { dispatchPreviewTaskResult, localizeTaskResultExportError, taskResultPreviewKindFromPath } from "./taskResultPreview";
 import { cloudSafePathLabel } from "./codingTaskMode";
 import { chromeText } from "../../i18n/chromeText";
 
@@ -73,27 +73,36 @@ export function TaskResultArtifacts({
     listed.sort((left, right) => Number(!taskResultPreviewKindFromPath(left)) - Number(!taskResultPreviewKindFromPath(right)));
     if (!listed.length && !offerBundle) return null;
     const visible = showAll ? listed : listed.slice(0, VISIBLE_ARTIFACTS);
-    const primary = listed[0] || "";
-    const primaryName = primary ? artifactLabel(primary, lang).name : "";
     return (
         <div className="mc-task-artifacts" data-testid={`task-result-card-${messageId}`}>
             <div className="mc-task-artifacts__label">{chromeText(lang, "Artifacts", "产出物", "產出物")}</div>
             <div className="mc-task-artifacts__row">
                 {visible.map((filePath, index) => {
                     const file = artifactLabel(filePath, lang);
+                    // The first file keeps the original testids; later files get -N
+                    // so existing single-file tests stay untouched.
+                    const suffix = index > 0 ? `-${index}` : "";
                     return (
                         <div key={`${filePath}-${index}`} className="mc-task-artifact-item">
-                            <a
-                                className="mc-task-artifact"
-                                href="#"
-                                title={file.title}
-                                onClick={(event) => onOpen(event, filePath)}
-                            >
-                                <span className="mc-task-artifact__icon" aria-hidden="true">▤</span>
-                                <span className="mc-task-artifact__name">{file.name}</span>
-                                <span className="mc-task-artifact__open" aria-hidden="true">↗</span>
-                            </a>
-                            {taskResultUploadSupported(filePath) && <TaskResultUploadButton filePath={filePath} lang={lang} />}
+                            <div className="mc-task-artifact-item__head">
+                                <a
+                                    className="mc-task-artifact"
+                                    href="#"
+                                    title={file.title}
+                                    onClick={(event) => onOpen(event, filePath)}
+                                >
+                                    <span className="mc-task-artifact__icon" aria-hidden="true">▤</span>
+                                    <span className="mc-task-artifact__name">{file.name}</span>
+                                    <span className="mc-task-artifact__open" aria-hidden="true">↗</span>
+                                </a>
+                                {taskResultUploadSupported(filePath) && <TaskResultUploadButton filePath={filePath} lang={lang} />}
+                            </div>
+                            <div className="mc-task-result-card__actions mc-task-artifact-item__actions">
+                                <button type="button" data-testid={`task-result-preview-btn${suffix}`} onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(filePath, messageId); }}>{chromeText(lang, "Preview", "预览", "預覽")}</button>
+                                <button type="button" data-testid={`task-result-view-btn${suffix}`} onClick={(event) => onOpen(event, filePath)}>{chromeText(lang, "View document", "查看文档", "查看文件")}</button>
+                                <TaskResultExportButton filePath={filePath} lang={lang} testIdSuffix={suffix} />
+                                <button type="button" data-testid={`task-result-reveal-btn${suffix}`} onClick={(event) => { event.stopPropagation(); void ShowItemInFolder(filePath).catch(() => {}); }}>{chromeText(lang, "Reveal", "定位", "定位")}</button>
+                            </div>
                         </div>
                     );
                 })}
@@ -111,17 +120,11 @@ export function TaskResultArtifacts({
                     <span aria-hidden="true">{showAll ? " ⌃" : " ›"}</span>
                 </button>
             )}
-            <div className="mc-task-result-card__actions">
-                {primary ? (
-                    <>
-                        <button type="button" data-testid="task-result-preview-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(primary, messageId); }}>{chromeText(lang, "Preview", "预览", "預覽")}</button>
-                        <button type="button" data-testid="task-result-view-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => onOpen(event, primary)}>{chromeText(lang, "View document", "查看文档", "查看文件")}</button>
-                        <TaskResultExportButton filePath={primary} lang={lang} />
-                        <button type="button" data-testid="task-result-continue-btn" title={listed.length > 1 ? primaryName : undefined} onClick={(event) => { event.stopPropagation(); dispatchContinueEditTaskResult(primary, messageId); }}>{chromeText(lang, "Continue editing", "继续修改", "繼續修改")}</button>
-                    </>
-                ) : null}
-                {offerBundle ? <LatexSourceBundleButton anchorPath={bundleAnchor} lang={lang} /> : null}
-            </div>
+            {offerBundle ? (
+                <div className="mc-task-result-card__actions">
+                    <LatexSourceBundleButton anchorPath={bundleAnchor} lang={lang} />
+                </div>
+            ) : null}
         </div>
     );
 }

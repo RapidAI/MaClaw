@@ -39,6 +39,12 @@ func (a *App) ensureCodingKnowledgeStore() *knowledge.CodingKnowledgeStore {
 		return nil
 	}
 	a.codingKnowledgeStore = store
+	// Share the active semantic embedder when one is available. SetEmbedder
+	// starts a background vector refresh for existing experiences; recall stays
+	// lexical until that finishes.
+	if emb := a.knowledgeEmbedder(); emb != nil {
+		store.Inner().SetEmbedder(emb)
+	}
 	log.Printf("[coding-knowledge] store opened at %s", dbPath)
 	return a.codingKnowledgeStore
 }
@@ -109,6 +115,59 @@ func (a *App) CodingKnowledgeConfirm(id string) error {
 	return store.ConfirmCandidateWithBudget(ctx, id, codingKnowledgeReviewedProjectBudget(cfg), a.verifyRuntimeCodingExperience)
 }
 
+const maxCodingKnowledgeBulkConfirm = 200
+
+// CodingKnowledgeConfirmFailure is one rejected ID in a bulk review action.
+type CodingKnowledgeConfirmFailure struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+// CodingKnowledgeConfirmManyResult reports per-ID outcomes so a partial bulk
+// review does not hide stale IDs, already-active records or budget failures.
+type CodingKnowledgeConfirmManyResult struct {
+	Confirmed []string                        `json:"confirmed"`
+	Failed    []CodingKnowledgeConfirmFailure `json:"failed,omitempty"`
+}
+
+// CodingKnowledgeConfirmMany promotes selected candidates one by one. Each
+// confirmation keeps the same provenance and reviewed-project budget checks as
+// the single-item action; failures are reported instead of aborting the batch.
+func (a *App) CodingKnowledgeConfirmMany(ids []string) (CodingKnowledgeConfirmManyResult, error) {
+	store := a.ensureCodingKnowledgeStore()
+	if store == nil {
+		return CodingKnowledgeConfirmManyResult{}, fmt.Errorf("coding knowledge store not available")
+	}
+	if len(ids) == 0 {
+		return CodingKnowledgeConfirmManyResult{}, fmt.Errorf("no experience IDs provided")
+	}
+	if len(ids) > maxCodingKnowledgeBulkConfirm {
+		return CodingKnowledgeConfirmManyResult{}, fmt.Errorf("too many experience IDs (max %d)", maxCodingKnowledgeBulkConfirm)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cfg, _ := a.LoadConfig()
+	budget := codingKnowledgeReviewedProjectBudget(cfg)
+	result := CodingKnowledgeConfirmManyResult{Confirmed: make([]string, 0, len(ids))}
+	seen := make(map[string]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if err := store.ConfirmCandidateWithBudget(ctx, id, budget, a.verifyRuntimeCodingExperience); err != nil {
+			result.Failed = append(result.Failed, CodingKnowledgeConfirmFailure{ID: id, Error: err.Error()})
+			continue
+		}
+		result.Confirmed = append(result.Confirmed, id)
+	}
+	return result, nil
+}
+
 // CodingKnowledgeRecordRecallOutcome records a locally verified Runtime task
 // outcome for an already reviewed experience. It is intentionally separate
 // from editing and confirmation: every confidence change must be traceable to
@@ -162,9 +221,23 @@ func (a *App) CodingKnowledgeCreateRevisionCandidate(id, reason string) (knowled
 // Ledger before an automatically extracted candidate becomes active. It is
 // deliberately invoked only at confirmation time: manual knowledge has no
 // Runtime reference and remains eligible for the ordinary review flow.
-func (a *App) verifyRuntimeCodingExperience(_ context.Context, exp knowledge.CodingExperience) error {
+func (a *App) verifyRuntimeCodingExperience(ctx context.Context, exp knowledge.CodingExperience) error {
 	if a == nil {
 		return fmt.Errorf("coding runtime application is unavailable")
+	}
+	taskID := strings.TrimSpace(exp.SourceRuntimeTaskID)
+	if strings.HasPrefix(taskID, horizonExperienceProvenancePrefix) {
+		return a.verifyHorizonCodingExperience(exp)
+	}
+	if strings.HasPrefix(taskID, knowledge.CodingTurnEvidenceTaskPrefix) {
+		store := a.ensureCodingKnowledgeStore()
+		if store == nil {
+			return fmt.Errorf("coding knowledge store is unavailable")
+		}
+		if err := store.VerifyTurnRecallEvidence(ctx, taskID, exp.SourceRuntimeAttemptID, exp.EvidenceDigest); err != nil {
+			return fmt.Errorf("main-agent turn provenance no longer matches the candidate evidence: %w", err)
+		}
+		return nil
 	}
 	if err := codingruntime.VerifyExperienceProvenance(a.ensureCodingRuntimeStore(), exp.SourceRuntimeTaskID, exp.SourceRuntimeAttemptID, exp.EvidenceDigest); err != nil {
 		return fmt.Errorf("runtime provenance no longer matches the candidate evidence: %w", err)
@@ -172,9 +245,19 @@ func (a *App) verifyRuntimeCodingExperience(_ context.Context, exp knowledge.Cod
 	return nil
 }
 
-func (a *App) verifyCodingKnowledgeRecallOutcome(_ context.Context, outcome knowledge.RecallOutcome) error {
+func (a *App) verifyCodingKnowledgeRecallOutcome(ctx context.Context, outcome knowledge.RecallOutcome) error {
 	if a == nil {
 		return fmt.Errorf("coding runtime application is unavailable")
+	}
+	if strings.HasPrefix(strings.TrimSpace(outcome.RuntimeTaskID), knowledge.CodingTurnEvidenceTaskPrefix) {
+		store := a.ensureCodingKnowledgeStore()
+		if store == nil {
+			return fmt.Errorf("coding knowledge store is unavailable")
+		}
+		if err := store.VerifyTurnRecallEvidence(ctx, outcome.RuntimeTaskID, outcome.RuntimeAttemptID, outcome.EvidenceDigest); err != nil {
+			return fmt.Errorf("main-agent turn recall outcome no longer matches durable evidence: %w", err)
+		}
+		return nil
 	}
 	if err := codingruntime.VerifyExperienceProvenance(a.ensureCodingRuntimeStore(), outcome.RuntimeTaskID, outcome.RuntimeAttemptID, outcome.EvidenceDigest); err != nil {
 		return fmt.Errorf("runtime recall outcome no longer matches durable evidence: %w", err)
@@ -301,6 +384,9 @@ func codingExperienceUIList(items []knowledge.CodingExperience) []knowledge.Codi
 		exp.FailedAttempts = nil
 		exp.Contraindications = nil
 		exp.LifecycleEvents = nil
+		// The list only needs the count for the observation progress tag; the
+		// underlying durable task IDs stay in the detail/audit API.
+		exp.ObservationTaskIDs = nil
 		out[i] = exp
 	}
 	return out

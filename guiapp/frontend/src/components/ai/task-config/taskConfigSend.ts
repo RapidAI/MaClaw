@@ -251,6 +251,9 @@ export async function runTaskConfigSend(args: {
             expertMessage = prepared.initialMessage || initialMessage;
             latexDocument = { relativePath: prepared.relativePath };
         }
+        // The directory is applied when this message is sent. Binding it
+        // here is cleared by the fresh-task reset, and a scheduled launch
+        // would point the turn that is still running at the new folder.
         bindings.openExpert({
             id: opts.expertId,
             name: opts.expertName || opts.expertId,

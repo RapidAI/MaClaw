@@ -152,6 +152,23 @@ function clipChars(text: string, limit: number): string {
     return chars.slice(0, limit).join("");
 }
 
+// What a saved annotation body becomes. Trim first, then keep the same
+// character budget oneTranslation stores, so an edit cannot sync a longer
+// string than the card will show after the save.
+export function clipPdfAnnotationBody(text: string): string {
+    return clipChars(text.trim(), MAX_TRANSLATION);
+}
+
+// While the field is open, keep spaces the user is still typing. Only a
+// paste past the budget collapses to the text that would actually be saved.
+// A string whose UTF-16 length is already inside the budget cannot be over
+// the code-point budget, so ordinary keystrokes do not walk the whole text.
+export function capPdfAnnotationDraft(text: string): string {
+    if (text.length <= MAX_TRANSLATION) return text;
+    if (Array.from(text).length <= MAX_TRANSLATION) return text;
+    return clipPdfAnnotationBody(text);
+}
+
 function oneRect(value: unknown): PdfMarkRect | null {
     if (!value || typeof value !== "object") return null;
     const raw = value as { x?: unknown; y?: unknown; w?: unknown; h?: unknown };
@@ -173,7 +190,7 @@ function oneTranslation(value: unknown): PdfTranslation | null {
     const raw = value as { id?: unknown; text?: unknown; translation?: unknown; parts?: unknown; clipped?: unknown; place?: unknown; size?: unknown; kind?: unknown; shared?: unknown };
     const id = String(raw.id || "").trim().slice(0, 80);
     const text = clipChars(String(raw.text || "").replace(/\s+/g, " ").trim(), MAX_SOURCE);
-    const translation = clipChars(String(raw.translation || "").trim(), MAX_TRANSLATION);
+    const translation = clipPdfAnnotationBody(String(raw.translation || ""));
     if (!id || !text || !translation || !Array.isArray(raw.parts)) return null;
     const parts: PdfTranslationPart[] = [];
     for (const item of raw.parts) {

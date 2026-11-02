@@ -1,5 +1,6 @@
 import { colors } from "./styles";
 import { SuggestCombobox } from "../ui/SuggestCombobox";
+import { localizeModelNote } from "../../config/providerCatalog";
 
 type ProviderModelOption = { id: string; name: string };
 
@@ -14,6 +15,7 @@ type Props = {
     onOpenChange: (open: boolean) => void;
     onChange: (value: string) => void;
     onFetch: () => void;
+    lang: string;
     t: (en: string, zhHans: string, zhHant?: string) => string;
 };
 
@@ -28,6 +30,7 @@ export function ProviderModelCombobox({
     onOpenChange,
     onChange,
     onFetch,
+    lang,
     t,
 }: Props) {
     const hasModels = models.length > 0;
@@ -39,7 +42,7 @@ export function ProviderModelCombobox({
                     value={value}
                     options={models.map((model) => ({
                         value: model.id,
-                        description: model.name && model.name !== model.id ? model.name : undefined,
+                        description: model.name && model.name !== model.id ? localizeModelNote(lang, model.name) : undefined,
                     }))}
                     open={open}
                     onOpenChange={onOpenChange}
