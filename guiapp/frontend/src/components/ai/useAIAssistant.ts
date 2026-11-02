@@ -5028,12 +5028,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             userText: displayText,
         } as ActiveRound;
 
-        clearTransientProgress(sessionKey);
+        const sessionRound = requestId.startsWith('session-round-');
+        // The previous round's trail is still this task. Wiping it makes the
+        // handoff look like the work stopped.
+        if (!sessionRound) clearTransientProgress(sessionKey);
         rememberInFlightRound(nextRound);
         forgetOffscreenLiveRound(requestId);
         setRoundState(nextRound);
         emitPetStateForAssistant('thinking', 'ai:event-round-start', 15000);
-        const sessionRound = requestId.startsWith('session-round-');
         const goalRound = requestId.startsWith('goal-cont-');
         setMessages(prev => {
             // An adopted offscreen round already passed its start event. It has

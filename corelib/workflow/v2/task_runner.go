@@ -149,10 +149,12 @@ func (r *TaskRunner) runAllSequential(ctx context.Context, tasks []*TaskItem, on
 			}
 		}
 		// A failed step ends the sequence. Later steps have no license to run
-		// just because they forgot depends_on. An iteration-cap handoff is
-		// still a stop for this round: the host queues the next round.
-		if result.Status == TaskFailed {
-			r.skipUnstartedAfterFailure(tasks)
+		// just because they forgot depends_on. An iteration-cap handoff also
+		// ends this round, but the later steps are still open.
+		if stopTaskSequence(result) {
+			if !iterationBudgetSpent(result.Error) {
+				r.skipUnstartedAfterFailure(tasks)
+			}
 			return r.results
 		}
 	}
@@ -265,8 +267,10 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 					onProgress(line)
 				}
 			}
-			if result.Status == TaskFailed {
-				r.skipUnstartedAfterFailure(tasks)
+			if stopTaskSequence(result) {
+				if !iterationBudgetSpent(result.Error) {
+					r.skipUnstartedAfterFailure(tasks)
+				}
 				return r.results
 			}
 			continue
@@ -327,19 +331,30 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 			}()
 		}
 		wg.Wait()
+		budgetStop := false
 		for _, i := range ready {
-			if r.results[i].Status == TaskFailed {
+			if !stopTaskSequence(r.results[i]) {
+				continue
+			}
+			if !iterationBudgetSpent(r.results[i].Error) {
 				r.skipUnstartedAfterFailure(tasks)
 				return r.results
 			}
+			budgetStop = true
+		}
+		if budgetStop {
+			return r.results
 		}
 	}
 	return r.results
 }
 
+func stopTaskSequence(result TaskRunResult) bool {
+	return result.Status == TaskFailed
+}
+
 // taskRunProgressLine is the one status row for a finished step.
-// An iteration-cap handoff is not a failure the person should see. The next
-// round is already queued, so this row stays quiet.
+// An iteration-cap handoff is not a failure, so it does not emit a row.
 func taskRunProgressLine(task *TaskItem, result TaskRunResult) string {
 	if result.Status == TaskFailed && iterationBudgetSpent(result.Error) {
 		return ""

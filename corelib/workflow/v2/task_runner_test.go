@@ -305,6 +305,35 @@ func TestTaskRunProgressLineDoesNotCallTheIterationCapAFailure(t *testing.T) {
 	}
 }
 
+func TestTaskRunner_IterationCapLeavesLaterStepsOpen(t *testing.T) {
+	calls := 0
+	sub := func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		calls++
+		if task.Index == 1 {
+			return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskFailed, Error: "max iterations reached"}
+		}
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskPassed}
+	}
+	tasks := []*TaskItem{
+		{Index: 1, Title: "继续优化"},
+		{Index: 2, Title: "验证"},
+	}
+	var progress []string
+	runner := NewTaskRunner(TaskRunnerConfig{MaxRetries: 0}, sub)
+	results := runner.RunAll(context.Background(), tasks, nil, func(line string) { progress = append(progress, line) })
+	if calls != 1 {
+		t.Fatalf("subagent calls=%d, want 1", calls)
+	}
+	if results[0].Status != TaskFailed || results[1].Status != "" {
+		t.Fatalf("results=%+v, want the cap to stop this round without skipping T2", results)
+	}
+	for _, line := range progress {
+		if strings.Contains(line, "[ERR]") || strings.Contains(line, "failed") {
+			t.Fatalf("progress %q, want no failure row", line)
+		}
+	}
+}
+
 func TestTaskRunner_FinalReport(t *testing.T) {
 	tasks := []*TaskItem{
 		{Index: 1, Title: "Good"},

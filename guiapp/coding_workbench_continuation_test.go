@@ -162,6 +162,15 @@ func TestIterationLimitIsNotShownAsATaskError(t *testing.T) {
 	if note != "接着做。" || strings.Contains(note, "额度") || strings.Contains(note, "错误") {
 		t.Fatalf("continuation note = %q", note)
 	}
+
+	withNote := formatCodingAgentResultParagraph(v2.TaskRunResult{
+		Status:  v2.TaskFailed,
+		Summary: "MSA 内核还差最后一处对齐。",
+		Error:   "max iterations reached",
+	})
+	if !strings.Contains(withNote, "MSA 内核还差最后一处对齐") || !strings.Contains(withNote, "迭代上限") || strings.Contains(withNote, "任务运行错误") {
+		t.Fatalf("manual stop dropped the progress note: %q", withNote)
+	}
 }
 
 func TestCodingWorkbenchIterationExhaustionArmsSessionRound(t *testing.T) {

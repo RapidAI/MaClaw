@@ -66,10 +66,11 @@ func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 	switch result.Status {
 	case v2.TaskFailed:
 		if codingLoopIterationExhausted(result.Error) {
+			limit := codingIterationLimitParagraph()
 			if summary != "" && !codingAgentSummaryIsIterationFallback(summary) && !codingAgentSummaryLooksSuccessful(summary) {
-				return summary
+				return summary + "\n\n" + limit
 			}
-			return codingIterationLimitParagraph()
+			return limit
 		}
 		if err != "" && codingAgentSummaryLooksSuccessful(summary) {
 			if files != "" {
@@ -166,12 +167,12 @@ func codingIterationLimitParagraph() string {
 // visible answer once the next round is already queued. A real failure in
 // the same turn stays.
 func codingWorkbenchResultsForReport(results []v2.TaskRunResult, continuing bool) []v2.TaskRunResult {
-	if !continuing {
-		return results
-	}
 	kept := make([]v2.TaskRunResult, 0, len(results))
 	for _, result := range results {
-		if result.Status == v2.TaskFailed && codingLoopIterationExhausted(result.Error) {
+		if strings.TrimSpace(string(result.Status)) == "" {
+			continue
+		}
+		if continuing && result.Status == v2.TaskFailed && codingLoopIterationExhausted(result.Error) {
 			continue
 		}
 		kept = append(kept, result)

@@ -3979,7 +3979,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 				} else {
 					summary = gateSum
 				}
-				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, stepSummary)
+				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, summary)
 				_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
 				return &v2.TaskRunResult{
 					TaskIndex:     t.Index,
@@ -4042,7 +4042,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 						summary = gateSum
 					}
 				}
-				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, stepSummary)
+				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, summary)
 			}
 		} else {
 			h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, stepSummary)
