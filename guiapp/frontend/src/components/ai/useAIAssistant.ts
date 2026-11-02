@@ -4131,6 +4131,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const foregroundSendTailsBySessionRef = useRef<Map<string, Promise<boolean>>>(new Map());
     const inFlightRoundsByRequestRef = useRef<Map<string, ActiveRound>>(new Map());
     const quietContinuationHoldTimersRef = useRef<number[]>([]);
+    /** Request ids whose composer hold ends when the next round of that session starts. */
+    const quietHeldRequestIdsRef = useRef<Set<string>>(new Set());
+    /** Hidden sessions kept on the sidebar until the next wave or the hold expires. */
+    const quietOffscreenHoldUntilRef = useRef<Map<string, number>>(new Map());
+    const quietHoldReleaseRef = useRef<(sessionKey: string, exceptRequestId: string) => void>(() => {});
     useEffect(() => () => {
         for (const timer of quietContinuationHoldTimersRef.current) window.clearTimeout(timer);
         quietContinuationHoldTimersRef.current = [];
@@ -4480,6 +4485,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (now - round.lastSeenAt > offscreenLiveRoundTtlMs) continue;
             keys.add(round.sessionKey);
         }
+        for (const [sessionKey, expiresAt] of quietOffscreenHoldUntilRef.current) {
+            if (expiresAt > now) keys.add(sessionKey);
+        }
         return Array.from(keys).sort();
     }, [offscreenLiveRoundVersion, offscreenLiveRoundTtlMs]);
     // Expiry needs a deadline of its own: an idle round emits no event, so a
@@ -4658,6 +4666,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const rememberInFlightRound = useCallback((round: ActiveRound) => {
         if (!round.requestId) return;
         inFlightRoundsByRequestRef.current.set(round.requestId, round);
+        // Record this round before dropping the previous handoff. Idle waiters
+        // must not see a gap between the two.
+        quietHoldReleaseRef.current(round.sessionKey || '', round.requestId);
         setInFlightRoundVersion(version => version + 1);
     }, []);
 
@@ -4685,6 +4696,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             existing.lastSeenAt = Date.now();
             return;
         }
+        // This wave owns the sidebar row. The previous handoff's hold would
+        // otherwise keep the row running after this wave finishes.
+        quietHoldReleaseRef.current(owner, id);
         offscreenLiveRoundsByRequestRef.current.set(id, { sessionKey: owner, lastSeenAt: Date.now() });
         setOffscreenLiveRoundVersion(version => version + 1);
     }, []);
@@ -4708,6 +4722,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const forgetOffscreenLiveRoundsForSession = useCallback((sessionKey: string): boolean => {
         const normalized = normalizeRuntimeSessionKey(sessionKey || 'desktop-user');
         let changed = false;
+        if (quietOffscreenHoldUntilRef.current.delete(normalized)) changed = true;
         for (const [requestId, round] of offscreenLiveRoundsByRequestRef.current) {
             if (normalizeRuntimeSessionKey(round.sessionKey) !== normalized) continue;
             offscreenLiveRoundsByRequestRef.current.delete(requestId);
@@ -4716,6 +4731,47 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (changed) setOffscreenLiveRoundVersion(version => version + 1);
         return changed;
     }, []);
+
+    const releaseQuietOffscreenHold = useCallback((sessionKey: string | undefined) => {
+        const owner = normalizeRuntimeSessionKey(sessionKey || '');
+        if (!owner || !quietOffscreenHoldUntilRef.current.delete(owner)) return;
+        setOffscreenLiveRoundVersion(version => version + 1);
+    }, []);
+
+    const holdQuietOffscreenSession = useCallback((sessionKey: string | undefined) => {
+        const owner = normalizeRuntimeSessionKey(sessionKey || '');
+        if (!owner || owner === 'desktop-user') return;
+        const expiresAt = Date.now() + QUIET_CONTINUATION_HOLD_MS;
+        quietOffscreenHoldUntilRef.current.set(owner, expiresAt);
+        setOffscreenLiveRoundVersion(version => version + 1);
+        const timer = window.setTimeout(() => {
+            if (quietOffscreenHoldUntilRef.current.get(owner) !== expiresAt) return;
+            quietOffscreenHoldUntilRef.current.delete(owner);
+            setOffscreenLiveRoundVersion(version => version + 1);
+        }, QUIET_CONTINUATION_HOLD_MS);
+        quietContinuationHoldTimersRef.current.push(timer);
+    }, []);
+
+    const releaseQuietHeldRequests = useCallback((sessionKey: string | undefined, exceptRequestId?: string) => {
+        const owner = normalizeRuntimeSessionKey(sessionKey || '');
+        if (!owner) return;
+        for (const heldId of Array.from(quietHeldRequestIdsRef.current)) {
+            if (exceptRequestId && heldId === exceptRequestId) continue;
+            const held = inFlightRoundsByRequestRef.current.get(heldId);
+            if (!held) {
+                quietHeldRequestIdsRef.current.delete(heldId);
+                continue;
+            }
+            if (normalizeRuntimeSessionKey(held.sessionKey || 'desktop-user') !== owner) continue;
+            quietHeldRequestIdsRef.current.delete(heldId);
+            forgetInFlightRound(heldId);
+        }
+    }, [forgetInFlightRound]);
+
+    quietHoldReleaseRef.current = (sessionKey, exceptRequestId) => {
+        releaseQuietOffscreenHold(sessionKey);
+        releaseQuietHeldRequests(sessionKey, exceptRequestId);
+    };
 
     const replaceRuntimeRequestId = useCallback((oldRequestId: string, nextRequestId: string) => {
         if (!oldRequestId || !nextRequestId || oldRequestId === nextRequestId) return;
@@ -5899,6 +5955,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // permanently locking the input box.
             const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(normalized) || '';
+            const quietContinuation = responseIsQuietContinuation(normalized);
+            // A hidden handoff has no transcript round. Keep the sidebar row
+            // through the gap, without a request id the tab could adopt.
+            if (quietContinuation) {
+                const hidden = offscreenLiveRoundsByRequestRef.current.get(responseRequestId);
+                if (hidden) holdQuietOffscreenSession(hidden.sessionKey);
+            }
             // The round ended, whichever transcript it was writing. A hidden
             // continuation must stop marking its task as running here.
             forgetOffscreenLiveRound(responseRequestId);
@@ -6062,13 +6125,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             clearPendingTaskForRequest(effectiveRequestId);
             stopResponseTimeout(effectiveRequestId);
             resetStreamTokenBuffer(effectiveRequestId);
-            const quietContinuation = responseIsQuietContinuation(normalized);
             if (quietContinuation && round) {
                 // Stay busy until the next wave owns the session. If it never
                 // starts, drop back to idle without an error.
                 const generation = round.generation;
                 const requestId = effectiveRequestId;
+                if (requestId) quietHeldRequestIdsRef.current.add(requestId);
                 const timer = window.setTimeout(() => {
+                    quietHeldRequestIdsRef.current.delete(requestId);
                     forgetInFlightRound(requestId);
                     const current = activeRoundRef.current;
                     if (current.generation === generation && current.requestId === requestId) {
@@ -6084,7 +6148,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);
         return () => { off(); };
-    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, forgetOffscreenLiveRound, preferences, recoverGoalContinuationRound, resetActiveRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
+    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, forgetOffscreenLiveRound, holdQuietOffscreenSession, preferences, recoverGoalContinuationRound, resetActiveRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
 
     // P0-1 (0b-i) degraded-turn recovery channel. When a degraded write turn
     // self-recovers, the backend re-runs it and streams the result on

@@ -2680,6 +2680,100 @@ describe('useAIAssistant property tests', () => {
         }
     });
 
+    it('drops the busy hold once the next round finishes', async () => {
+        vi.useFakeTimers();
+        try {
+            const session = 'desktop-user:C:/work/tasks/visible';
+            const firstId = 'req-quiet-then-done';
+            const nextId = 'session-round-1700000000200';
+            const { result } = renderAssistantHook({ activeSessionKey: session });
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                    request_id: firstId,
+                    session_key: session,
+                    text: '继续优化',
+                    display_text: '继续优化',
+                });
+            });
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-response', {
+                    request_id: firstId,
+                    session_key: session,
+                    text: '',
+                    error: '',
+                    response_source: 'session_round_continuation',
+                });
+            });
+            expect(result.current.sending).toBe(true);
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                    request_id: nextId,
+                    session_key: session,
+                    text: '[系统续轮] 继续完成同一任务。',
+                    display_text: '接着做',
+                });
+                emitRuntimeEvent('ai-assistant-response', {
+                    request_id: nextId,
+                    session_key: session,
+                    text: '对齐已经补上。',
+                    error: '',
+                });
+            });
+            expect(result.current.sending).toBe(false);
+            expect(assistantMessages(result.current.messages).at(-1)?.content).toBe('对齐已经补上。');
+
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            expect(result.current.sending).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('keeps a hidden task running across a quiet continuation', async () => {
+        vi.useFakeTimers();
+        try {
+            const hiddenSession = 'desktop-user:C:/work/tasks/hidden-handoff';
+            const requestId = 'session-round-1700000000300';
+            const { result, rerender } = renderHook(
+                (props: { activeSessionKey: string }) => useAIAssistant({ activeSessionKey: props.activeSessionKey }),
+                { initialProps: { activeSessionKey: 'desktop-user:C:/work/tasks/visible' } },
+            );
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                    request_id: requestId,
+                    session_key: hiddenSession,
+                    text: '[系统续轮] 继续完成同一任务。',
+                    display_text: '接着做',
+                });
+            });
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-response', {
+                    request_id: requestId,
+                    session_key: hiddenSession,
+                    text: '',
+                    error: '',
+                    response_source: 'session_round_continuation',
+                });
+            });
+            expect(result.current.offscreenLiveSessionKeys).toEqual([hiddenSession]);
+            expect(result.current.sending).toBe(false);
+            expect(result.current.messages).toHaveLength(0);
+
+            rerender({ activeSessionKey: hiddenSession });
+            expect(result.current.messages).toHaveLength(0);
+            expect(result.current.sending).toBe(false);
+            expect(result.current.offscreenLiveSessionKeys).toEqual([hiddenSession]);
+
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000 - 1); });
+            expect(result.current.offscreenLiveSessionKeys).toEqual([hiddenSession]);
+            await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+            expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('adopts a session-round continuation that started while another tab was visible', async () => {
         const session = 'desktop-user:C:/work/tasks/session-round';
         const requestId = 'session-round-1700000000001';
