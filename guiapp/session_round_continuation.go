@@ -21,6 +21,10 @@ const (
 	// already uses the configured iteration budget. The next wave continues
 	// the same task instead of asking the user to send another message.
 	sessionRoundContinuationMaxWaves = 50
+	// sessionRoundContinuationCooldown is only long enough for a newer user
+	// message to cancel the queued wave. The handoff has no status line to
+	// read, so the pause stays short.
+	sessionRoundContinuationCooldown = 200 * time.Millisecond
 	sessionRoundManualContinueText   = "(Maximum reasoning rounds reached. Send another message to continue the task.)"
 )
 
@@ -54,7 +58,7 @@ func (s *sessionRoundState) cooldownOrDefault() time.Duration {
 	if s.cooldown > 0 {
 		return s.cooldown
 	}
-	return 2 * time.Second
+	return sessionRoundContinuationCooldown
 }
 
 // beginSessionRoundContinuation ends this wave and queues the next one when
