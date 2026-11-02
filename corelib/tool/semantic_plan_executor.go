@@ -231,7 +231,7 @@ type SelectionExecutionResult struct {
 	// adapter). Nothing executed, so neither the plan-execution record nor the
 	// host-call journal may settle: a completed record would make a later
 	// re-issue replay the pause as a terminal failure.
-	Paused    bool
+	Paused bool
 	// AwaitingReceipt is the generic execution-plane boundary for an external
 	// operation that has been durably prepared but not observed as accepted or
 	// failed by its trusted transport adapter. It is deliberately distinct from
@@ -242,7 +242,12 @@ type SelectionExecutionResult struct {
 	// operation before its result was lost. It is terminal for this plan
 	// revision: the executor records unknown and never turns a retry into a
 	// fresh call.
-	Unknown    bool
+	Unknown bool
+	// Unexecuted means this result was decided before any effect. The
+	// coordinated caller retracts the admission instead of storing a failure.
+	// A failed record would stop a later real effect, or a corrected call,
+	// from closing the turn.
+	Unexecuted bool
 	ReasonCode string
 }
 
@@ -259,6 +264,40 @@ func PlanExecutionStateFromResult(result SelectionExecutionResult) (PlanExecutio
 		state = PlanExecutionFailed
 	}
 	return state, result
+}
+
+// ArgumentRejectionWithoutEffect reports a refusal decided before the adapter
+// produced an effect. PlanExecutionStateFromResult still classifies it as
+// failed, and a failed execution is an outcome: settlement will not let a
+// later real effect overwrite it, so the turn stays incomplete after the work
+// exists. The caller retracts the unexecuted admission instead of completing
+// it. Unknown, awaiting-receipt, paused, and successful results are excluded
+// because those may already have an effect.
+//
+// The rejection code is the first token. A later quotation of that token
+// inside a write or command failure is not a refusal: retracting it would
+// drop the record of an effect that already happened.
+func ArgumentRejectionWithoutEffect(result SelectionExecutionResult) bool {
+	if result.Succeeded || result.Unknown || result.AwaitingReceipt || result.Paused {
+		return false
+	}
+	if result.Unexecuted {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(result.Result))
+	const marker = "[system rejected]"
+	if !strings.HasPrefix(text, marker) {
+		return false
+	}
+	code := strings.TrimSpace(text[len(marker):])
+	for i, r := range code {
+		if r == ' ' || r == ':' || r == '\n' || r == '\r' || r == '\t' {
+			code = code[:i]
+			break
+		}
+	}
+	code = strings.TrimRight(code, ".,;])")
+	return code == "arguments_rejected" || strings.HasSuffix(code, "_arguments_rejected") || strings.HasSuffix(code, "_arguments_invalid")
 }
 
 // SelectionResultFromExecution reconstructs a provider result from a durable

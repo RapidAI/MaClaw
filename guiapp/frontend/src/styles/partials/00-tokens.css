@@ -37,7 +37,9 @@
     --theme-primary: #2e75cb;
     --theme-primary-strong: #1e6bc5;
     --theme-primary-soft: rgba(47, 120, 208, 0.10);
-    --theme-page-bg: #ffffff;
+    /* Page canvas tints so white cards/panes read as raised surfaces; mirrors
+       the default light scheme (Fluent Azure). --theme-surface stays white. */
+    --theme-page-bg: #f7f9fc;
     --theme-surface: #ffffff;
     --theme-surface-muted: #f1f6fc;
     /* Deep slate-blue ink (2026-10-29 modern-ink pass): titles and body copy
@@ -80,65 +82,32 @@
     --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
     --dur-fast: 140ms;
     --dur-med: 220ms;
-}
-
-/* Spread live task conversations across the available chat column.  The
-   previous 920px centered canvas made short exchanges look trapped in the
-   middle, especially when a file preview was open.  Keep the assistant on
-   the left and pin the complete user cluster (avatar + bubble) to the right.
-   The message cards retain a readable maximum so long prose still wraps. */
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution {
-  padding-inline: clamp(12px, 1.8vw, 28px) !important;
-}
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
-  width: 100% !important;
-  max-width: none !important;
-  margin: 0 !important;
-  padding: 24px clamp(4px, 1.2vw, 18px) 120px !important;
-  box-sizing: border-box !important;
-}
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-user-'],
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-ai-'] {
-  width: 100% !important;
-  max-width: none !important;
-  box-sizing: border-box !important;
-}
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-user-'] {
-  justify-content: flex-end !important;
-  align-items: flex-end !important;
-}
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-user-bubble-'] {
-  flex: 0 1 auto !important;
-  width: fit-content !important;
-  max-width: min(84%, 900px) !important;
-  margin-left: 0 !important;
-}
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-ai-'] {
-  justify-content: flex-start !important;
-  align-items: flex-start !important;
-}
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'] {
-  flex: 0 1 auto !important;
-  max-width: min(92%, 980px) !important;
-  margin-right: 0 !important;
-}
-/* Shrink-wrap is for prose. A diagram bubble takes the column from the
-   :has(.amd-figure) rule instead. Applying shrink-wrap there leaves the
-   diagram's percentage width with no definite containing block. */
-[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:not(:has(.amd-figure)) {
-  width: fit-content !important;
-}
-@media (max-width: 720px) {
-  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution {
-    padding-inline: 8px !important;
-  }
-  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
-    padding-inline: 2px !important;
-  }
-  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-user-bubble-'],
-  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'] {
-    max-width: 100% !important;
-  }
+    /*
+     * Typography ramp. Weights use the standard stops 400/500/600/700 (800/900
+     * only for display type). The former variable-font intermediates (450/550/
+     * 650/680/720/750/760/850) collapsed onto the nearest stop (2026-11 pass);
+     * the CJK fallback (Microsoft YaHei UI) only ships 400/700, so the collapse
+     * is render-neutral there and subtly lighter on Latin text.
+     * Size steps below are the target ramp for new work; legacy px/rem sizes
+     * migrate opportunistically rather than in one blind sweep.
+     */
+    --font-size-2xs: 0.68rem;
+    --font-size-xs: 0.72rem;
+    --font-size-sm: 0.78rem;
+    --font-size-md: 0.82rem;
+    --font-size-lg: 0.88rem;
+    --font-size-xl: 0.95rem;
+    --font-size-display: 1.15rem;
+    /*
+     * Overlay stacking ladder. Pick the lowest rung that works and stay below
+     * the two app-wide anchors: CustomDialog (DIALOG_Z_INDEX = 120000, TSX)
+     * and the expert-market overlay (119000, 40-pets-expert.css). Inline
+     * zIndex values must reference one of these instead of ad-hoc integers.
+     */
+    --z-surface-popover: 1000;  /* dropdowns/tooltips inside a pane */
+    --z-floating-panel: 4000;   /* in-panel floating toolbars, composer popovers */
+    --z-overlay: 9999;          /* full-viewport scrim + feature modal panel */
+    --z-sticky-toast: 10000;    /* toasts/banners that must clear an overlay */
 }
 
 /*

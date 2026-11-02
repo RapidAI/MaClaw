@@ -211,3 +211,23 @@ func TestSemanticParameterRejectionKeepsShapeErrorPath(t *testing.T) {
 		t.Fatalf("closure errors must stay narrowed: %s", generic)
 	}
 }
+
+// A missing slide image is decided before the deck writer runs. Recording it
+// as a failed execution would consume the office grant, and the deck written
+// afterward could not close that need. A writer failure is an outcome.
+func TestOfficeImageMissBeforeWriteStaysRetractable(t *testing.T) {
+	h := &IMMessageHandler{}
+	workspace := t.TempDir()
+	principal := desktopUserID + ":" + workspace
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: principal}
+	missing := tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"deck.pptx","slides":[{"title":"t","images":[{"path":"nope.jpg"}]}]}`)}
+	got := cb.executeTrustedOfficeWrite(tool.PlannedSelection{ID: "office"}, missing, false)
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, "trusted_office_write_image_missing") {
+		t.Fatalf("image miss before write was an outcome: %s", got)
+	}
+	failed := tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"book.xlsx","sheets":[]}`)}
+	got = cb.executeTrustedOfficeWrite(tool.PlannedSelection{ID: "office"}, failed, false)
+	if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, "trusted_office_write_failed") {
+		t.Fatalf("writer failure must stay an outcome: %s", got)
+	}
+}

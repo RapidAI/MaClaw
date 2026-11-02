@@ -245,10 +245,22 @@ type ToolExecutionResult struct {
 	ModelImages []ToolModelImage
 }
 
+// VisualPreviewImagePurpose marks a page or slide render. Those images are
+// not desktop screenshots: they must not update latestShot or the computer-use
+// vision channel.
+const VisualPreviewImagePurpose = "visual_preview"
+
 // ToolModelImage is one image attached to a tool result for a vision model.
 type ToolModelImage struct {
-	MIME   string // e.g. image/png
-	Base64 string
+	MIME    string // e.g. image/png
+	Base64  string
+	Purpose string
+}
+
+// VisualPreviewCloser releases a turn-scoped preview browser when RunLoop
+// returns. Hosts that never opened one implement it as a no-op.
+type VisualPreviewCloser interface {
+	CloseVisualPreview()
 }
 
 type StructuredToolExecutor interface {
@@ -1227,6 +1239,9 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 // content payload. userText remains the plain text used for prompt/context
 // construction, while userContent may be a multimodal content array.
 func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent interface{}, history []ConversationEntry, httpClient *http.Client, hooks ...LoopHooks) LoopResult {
+	if closer, ok := cb.(VisualPreviewCloser); ok {
+		defer closer.CloseVisualPreview()
+	}
 	var h LoopHooks = resolveLoopHooks(hooks)
 
 	cfg := cb.GetLLMConfig()
@@ -3911,15 +3926,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"tool_call_id": tc.ID,
 				"content":      result,
 			})
-			if n := len(execResult.ModelImages); n > 0 {
-				shot := execResult.ModelImages[n-1]
-				latestShot = &shot
-			} else if strings.TrimSpace(tc.Function.Name) == "desktop" {
-				// A later desktop action can change the screen. The picture
-				// from the previous action is not the current one.
-				latestShot = nil
-			}
-			conversation = appendComputerUseVisionImages(conversation, cfg, execResult.ModelImages)
+			desktopImages, previewImages := splitVisualPreviewImages(execResult.ModelImages)
+			latestShot = applyLatestDesktopShot(latestShot, tc.Function.Name, desktopImages, previewImages)
+			conversation = appendComputerUseVisionImages(conversation, cfg, desktopImages)
+			conversation = appendVisualPreviewImages(conversation, cfg, previewImages)
 			historyDelta = append(historyDelta, ConversationEntry{
 				Role:        "tool",
 				Content:     result,

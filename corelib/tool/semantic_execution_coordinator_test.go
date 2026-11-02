@@ -2,6 +2,7 @@ package tool
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -267,6 +268,127 @@ func TestSemanticExecutionCoordinatorDoesNotRematerializeExposedSelection(t *tes
 	var count int
 	if err := coordinator.db.QueryRow(`SELECT COUNT(*) FROM invocation_grants`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("re-materialization left grant count=%d err=%v", count, err)
+	}
+}
+
+func TestSemanticExecutionCoordinatorRetractUnexecutedRestoresTheGrant(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	registry := semanticRegistry(t)
+	provider := semanticProvider("read_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "retract-root", SessionID: "session", TurnID: "turn", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{provider}), Needs: []CapabilityNeed{{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true}}})
+	if err != nil || len(plan.Selections) != 1 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal"}
+	issuer, err := NewInvocationIssuerWithStore([]byte(strings.Repeat("u", 32)), coordinator.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, grants, err := coordinator.PublishSurface(SurfacePublishRequest{Revision: RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, Issuer: issuer, GrantTTL: time.Minute, Now: time.Now().UTC()})
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("publish grants=%#v err=%v", grants, err)
+	}
+	admission := SemanticExecutionAdmission{Identity: HostCallIdentity{Protocol: "test", ConnectionID: "connection", CallID: "retract-1"}, Grant: grants[0], RequestDigest: "request:retract", Scope: scope, Selection: plan.Selections[0], Now: time.Now().UTC()}
+	if _, action, err := coordinator.Admit(admission); err != nil || action != HostCallAcquireAdmit {
+		t.Fatalf("admit action=%q err=%v", action, err)
+	}
+	if err := coordinator.RetractUnexecuted(admission); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Executions.Execution(scope, plan.Selections[0].ID); !errors.Is(err, ErrPlanExecutionNotFound) {
+		t.Fatalf("retracted selection record err=%v", err)
+	}
+	var grantState string
+	if err := coordinator.db.QueryRow(`SELECT state FROM invocation_grants WHERE nonce=?`, grants[0].Nonce).Scan(&grantState); err != nil || grantState != "issued" {
+		t.Fatalf("grant state=%q err=%v", grantState, err)
+	}
+	var hostCalls int
+	if err := coordinator.db.QueryRow(`SELECT COUNT(*) FROM semantic_host_calls`).Scan(&hostCalls); err != nil || hostCalls != 0 {
+		t.Fatalf("host calls=%d err=%v", hostCalls, err)
+	}
+	if _, err := issuer.Validate(grants[0], scope, plan); err != nil {
+		t.Fatalf("retracted grant is not reusable: %v", err)
+	}
+	retry := admission
+	retry.Identity.CallID = "retract-2"
+	if _, action, err := coordinator.Admit(retry); err != nil || action != HostCallAcquireAdmit {
+		t.Fatalf("retry action=%q err=%v", action, err)
+	}
+	if _, err := coordinator.Complete(retry, PlanExecutionFailed, "[system rejected] trusted_office_write_failed: disk full", "selection_execution_failed", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RetractUnexecuted(retry); err == nil || err.Error() != "unexecuted_admission_not_retractable" {
+		t.Fatalf("recorded failure retract err=%v", err)
+	}
+	record, err := coordinator.Executions.Execution(scope, plan.Selections[0].ID)
+	if err != nil || record.State != PlanExecutionFailed {
+		t.Fatalf("recorded failure record=%+v err=%v", record, err)
+	}
+}
+
+func TestSemanticExecutionCoordinatorRetractStopsWhenDeliveryExists(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	registry := semanticRegistry(t)
+	provider := semanticProvider("read_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "retract-effect-root", SessionID: "session", TurnID: "turn", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{provider}), Needs: []CapabilityNeed{{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true}}})
+	if err != nil || len(plan.Selections) != 1 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal"}
+	issuer, err := NewInvocationIssuerWithStore([]byte(strings.Repeat("e", 32)), coordinator.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, grants, err := coordinator.PublishSurface(SurfacePublishRequest{Revision: RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, Issuer: issuer, GrantTTL: time.Minute, Now: time.Now().UTC()})
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("publish grants=%#v err=%v", grants, err)
+	}
+	admission := SemanticExecutionAdmission{Identity: HostCallIdentity{Protocol: "test", ConnectionID: "connection", CallID: "retract-effect"}, Grant: grants[0], RequestDigest: "request:effect", Scope: scope, Selection: plan.Selections[0], Now: time.Now().UTC()}
+	if _, action, err := coordinator.Admit(admission); err != nil || action != HostCallAcquireAdmit {
+		t.Fatalf("admit action=%q err=%v", action, err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := coordinator.db.Exec(`INSERT INTO semantic_delivery_preparations(delivery_key, root_task_id, plan_id, session_id, turn_id, principal_id, selection_id, artifact_id, channel_scope, state, created_at, updated_at) VALUES ('delivery-effect', ?, ?, ?, ?, ?, ?, 'artifact', 'desktop', 'prepared', ?, ?)`, scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID, plan.Selections[0].ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RetractUnexecuted(admission); err == nil || err.Error() != "unexecuted_admission_not_retractable" {
+		t.Fatalf("delivery retract err=%v", err)
+	}
+	if _, err := coordinator.db.Exec(`DELETE FROM semantic_delivery_preparations WHERE delivery_key='delivery-effect'`); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := coordinator.db.Exec(`INSERT INTO semantic_external_effect_operations(operation_key, root_task_id, plan_id, session_id, turn_id, principal_id, tenant_id, user_id, selection_id, selection_digest, binding_id, request_digest, state, fencing_token, created_at, updated_at) VALUES ('op-effect', ?, ?, ?, ?, ?, '', '', ?, 'digest', 'binding', 'request', 'running', 0, ?, ?)`, scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID, plan.Selections[0].ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RetractUnexecuted(admission); err == nil || err.Error() != "unexecuted_admission_not_retractable" {
+		t.Fatalf("external effect retract err=%v", err)
+	}
+	if _, err := coordinator.db.Exec(`DELETE FROM semantic_external_effect_operations WHERE operation_key='op-effect'`); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := coordinator.db.Exec(`INSERT INTO semantic_artifact_access_grants(grant_token, root_task_id, plan_id, session_id, turn_id, principal_id, source_root_task_id, source_plan_id, source_session_id, source_turn_id, source_principal_id, artifact_id, consumer_selection_id, contract_digest, issued_at, expires_at) VALUES ('grant-effect', ?, ?, ?, ?, ?, '', '', '', '', '', 'artifact', ?, 'digest', ?, ?)`, scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID, plan.Selections[0].ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RetractUnexecuted(admission); err == nil || err.Error() != "unexecuted_admission_not_retractable" {
+		t.Fatalf("input grant retract err=%v", err)
+	}
+	record, err := coordinator.Executions.Execution(scope, plan.Selections[0].ID)
+	if err != nil || record.State != PlanExecutionRunning {
+		t.Fatalf("running record=%+v err=%v", record, err)
+	}
+	var grantState string
+	if err := coordinator.db.QueryRow(`SELECT state FROM invocation_grants WHERE nonce=?`, grants[0].Nonce).Scan(&grantState); err != nil || grantState != "consumed" {
+		t.Fatalf("grant state=%q err=%v", grantState, err)
 	}
 }
 

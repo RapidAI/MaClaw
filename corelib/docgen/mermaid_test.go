@@ -77,7 +77,7 @@ func TestExpandMermaidFencesKeepsSourceWhenTheDrawerFails(t *testing.T) {
 		t.Fatalf("failed diagram was rewritten: %q", got)
 	}
 	html := markdownToHTML(got)
-	if !strings.Contains(html, "flowchart") || !strings.Contains(html, "monospace") {
+	if !strings.Contains(html, "flowchart") || !strings.Contains(html, "font-size:8.5pt") {
 		t.Fatalf("source was not kept as code: %s", html)
 	}
 }
@@ -220,7 +220,7 @@ func TestGenerateDrawsMermaidOnceAndOmitsTheSource(t *testing.T) {
 	if !bytes.Contains(pdf, []byte("/Subtype /Image")) && !bytes.Contains(pdf, []byte("/Subtype/Image")) {
 		t.Fatal("the diagram was not embedded")
 	}
-	text, err := gopdf.ExtractTextFromPage(pdf, 0)
+	text, err := gopdf.ExtractTextFromPage(pdf, firstBodyPage)
 	if err != nil {
 		t.Fatal(err)
 	}

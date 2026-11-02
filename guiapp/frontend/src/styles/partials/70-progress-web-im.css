@@ -323,7 +323,7 @@
     background: var(--theme-primary-soft);
     color: var(--theme-primary-strong);
     font-size: .8125rem;
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .web-search-config__controls {
@@ -515,7 +515,7 @@
 .web-search-config__human-assist { grid-column: 1 / -1; padding-top: 12px; border-top: 1px solid var(--theme-border); }
 .web-search-config__footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-height: 40px; }
 .web-search-config__footer span { color: var(--theme-success, var(--theme-primary-strong)); font-size: .8125rem; }
-.web-search-config__save { min-height: 40px; padding: 8px 15px; border-color: var(--theme-primary); background: var(--theme-primary); color: var(--theme-on-primary, #ffffff); font-size: .875rem; font-weight: 650; }
+.web-search-config__save { min-height: 40px; padding: 8px 15px; border-color: var(--theme-primary); background: var(--theme-primary); color: var(--theme-on-primary, #ffffff); font-size: .875rem; font-weight: 600; }
 .web-search-config__save:hover:not(:disabled) { filter: brightness(.96); }
 .web-search-config__error { padding: 10px 12px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--theme-danger) 8%, var(--theme-surface)); color: var(--theme-danger); font-size: .875rem; line-height: 1.45; }
 .web-search-config__load-error { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--theme-danger) 8%, var(--theme-surface)); color: var(--theme-danger); font-size: .875rem; line-height: 1.45; }
@@ -1158,7 +1158,7 @@
 .token-usage-panel__stat-row strong {
     color: var(--theme-text-primary);
     font-variant-numeric: tabular-nums;
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .usage-display__button {
@@ -1641,7 +1641,7 @@
     font-size: 0.78rem;
     font-weight: 700;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .prog-tools__mode-btn[data-active="true"] {
@@ -1866,7 +1866,7 @@
     white-space: nowrap;
     flex-shrink: 0;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
 }
 
 .prog-tools__btn-reset--danger {
@@ -1901,7 +1901,7 @@
     font-size: 0.72rem;
     font-weight: 700;
     cursor: pointer;
-    transition: all 0.12s;
+    transition: background-color 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s;
 }
 
 .prog-tools__kb-tab:hover {
@@ -2072,7 +2072,7 @@
     width: auto;
     min-width: max-content;
     cursor: pointer;
-    transition: all 0.12s;
+    transition: background-color 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s;
 }
 
 .prog-tools__kb-btn--confirm:hover {

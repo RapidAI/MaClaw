@@ -467,7 +467,7 @@ button.knowledge-chip:disabled {
 .knowledge-search-filter > span {
     color: var(--theme-text-muted);
     font-size: 0.7rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: 0.02em;
     text-align: left;
     white-space: nowrap;
@@ -578,7 +578,7 @@ button.knowledge-chip:disabled {
 .knowledge-facet-subgroup-title {
     color: var(--theme-text-muted);
     font-size: 0.68rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: 0.03em;
     text-align: left;
     text-transform: uppercase;
@@ -587,7 +587,7 @@ button.knowledge-chip:disabled {
     flex: 0 0 auto;
     color: var(--theme-text-muted);
     font-size: 0.68rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;
 }
@@ -860,7 +860,7 @@ button.knowledge-chip:disabled {
 .ve-form-subgroup-title {
     margin: 4px 0 2px;
     font-size: 0.8rem;
-    font-weight: 650;
+    font-weight: 600;
     color: var(--theme-text-primary);
 }
 
@@ -1336,7 +1336,7 @@ button.knowledge-chip:disabled {
     background: var(--theme-surface);
     color: var(--theme-text-secondary);
     font-size: 0.78rem;
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
     line-height: 1.2;
 }
@@ -1405,7 +1405,7 @@ button.knowledge-chip:disabled {
     background: color-mix(in srgb, var(--theme-primary) 14%, transparent);
     color: var(--theme-primary-strong);
     font-size: 0.8rem;
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
 }
 
@@ -1540,7 +1540,7 @@ button.knowledge-chip:disabled {
     background: var(--theme-surface);
     color: var(--theme-primary-strong);
     font-size: 0.8rem;
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
 }
 
@@ -1670,7 +1670,7 @@ button.knowledge-chip:disabled {
     background: rgba(196, 61, 52, 0.08);
     color: var(--theme-danger);
     font-size: 0.8rem;
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
 }
 
@@ -1702,7 +1702,7 @@ button.knowledge-chip:disabled {
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.8rem;
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
 }
 
@@ -1906,7 +1906,7 @@ button.knowledge-chip:disabled {
 .pet-status-chip strong {
     color: var(--theme-text-primary);
     font-size: 0.78rem;
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.35;
 }
 
@@ -1960,7 +1960,7 @@ button.knowledge-chip:disabled {
     margin: 0;
     color: var(--theme-text-primary);
     font-size: 0.82rem;
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.35;
 }
 

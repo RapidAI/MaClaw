@@ -396,3 +396,6 @@ hubcenter/web/i18n/_extract_log.txt
 
 # 运行时诊断日志与轨迹（本地排查用，不入库）。
 .diag/
+
+# ZCode 工具会话产物（plans 等），不入库。
+.zcode/

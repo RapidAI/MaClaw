@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react';
+import { Z } from "../ui/zIndex";
 import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
 import { IconMessage } from '../ai/WorkbenchIcons';
 import { MAX_USER_FAVORITES } from '../settings/favoriteEmployees';
@@ -460,7 +461,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         left: contextMenu.x,
                         top: contextMenu.y,
                         minWidth: MENU_WIDTH,
-                        zIndex: 4000,
+                        zIndex: Z.floatingPanel,
                         padding: '4px',
                         borderRadius: 10,
                         border: '1px solid var(--theme-border)',

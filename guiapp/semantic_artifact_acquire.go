@@ -213,15 +213,15 @@ func semanticPlaceholderRemoteURLIntakeReason(name, argsJSON string) string {
 
 func (h *IMMessageHandler) acquireTrustedRemote(principalID, rawURL string, publicNetworkOnly bool) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_artifact_acquire_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_artifact_acquire_principal_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_principal_required"))
 	}
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		return "", fmt.Errorf("trusted_artifact_acquire_url_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_url_required"))
 	}
 	if h.semanticTrustedArtifactAcquire != nil {
 		return h.semanticTrustedArtifactAcquire(principalID, rawURL)
@@ -231,7 +231,7 @@ func (h *IMMessageHandler) acquireTrustedRemote(principalID, rawURL string, publ
 	// to the desktop default, so the receipt's relative name would miss.
 	base := strings.TrimSpace(h.toolDownloadBaseDirForOwner(principalID))
 	if base == "" {
-		return "", fmt.Errorf("trusted_artifact_acquire_workspace_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_workspace_unavailable"))
 	}
 	name := downloadFileNameFromURL(rawURL)
 	opts := &websearch.FetchOptions{
@@ -244,7 +244,7 @@ func (h *IMMessageHandler) acquireTrustedRemote(principalID, rawURL string, publ
 	}
 	if !publicNetworkOnly {
 		if err := websearch.ApplyHubDownload(opts, h.getWebSearchStrategy()); err != nil {
-			return "", err
+			return "", effectNotStarted(err)
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(opts.TimeoutS)*time.Second)

@@ -47,6 +47,28 @@ func recordAudioAssetMiddleware(app *App, next http.Handler) http.Handler {
 						ts = v
 					}
 					noteFrontendInputEvent(ts)
+					// Recent typed input-event timestamps for the click-latency
+					// matcher (frontend_click_latency.go). Only pointer events
+					// are forwarded: keyboard/mouse-move must not inflate click
+					// latency. Bounded: the agent caps the list, and oversized
+					// values are rejected here.
+					if raw := req.URL.Query().Get("evts"); raw != "" {
+						parts := strings.Split(raw, ",")
+						if len(parts) > 16 {
+							parts = parts[:16]
+						}
+						evts := make([]int64, 0, len(parts))
+						for _, p := range parts {
+							kind, millis, ok := strings.Cut(p, ":")
+							if !ok || kind != "p" {
+								continue
+							}
+							if v, err := strconv.ParseInt(millis, 10, 64); err == nil && v > 0 {
+								evts = append(evts, v)
+							}
+						}
+						noteFrontendPageEvents(evts)
+					}
 				} else if stage == "app" {
 					bootLog("react App render ping")
 				} else {

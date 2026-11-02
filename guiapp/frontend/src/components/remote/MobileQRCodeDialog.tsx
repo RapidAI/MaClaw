@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { Z } from "../ui/zIndex";
 import { QRCodeSVG } from "qrcode.react";
 import { colors, radius } from "./styles";
 import type { LLMProvider } from "./LLMConfigPanelShared";
@@ -169,7 +170,7 @@ export function MobileQRCodeDialog({ open, onClose, providers, currentName, lang
              className="llm-qr-dialog-overlay" style={{
             position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
             background: colors.overlay, display: "flex",
-            alignItems: "center", justifyContent: "center", zIndex: 9999,
+            alignItems: "center", justifyContent: "center", zIndex: Z.overlay,
             outline: "none",
         }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
            onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}

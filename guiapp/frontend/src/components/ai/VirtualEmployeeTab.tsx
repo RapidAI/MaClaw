@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Z } from "../ui/zIndex";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { primaryFilledButtonStyle, relativeLuminance, type Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
@@ -745,7 +746,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         border: `1px solid ${theme.divider}`,
                         borderRadius: 10,
                         boxShadow: "0 12px 32px rgba(15, 23, 42, 0.18)",
-                        zIndex: 9999,
+                        zIndex: Z.overlay,
                         minWidth: 172,
                         padding: "4px",
                     }}

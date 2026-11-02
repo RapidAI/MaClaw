@@ -3,7 +3,6 @@ package agentservice
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -222,32 +221,6 @@ func (s *MemoryStore) SaveRunAdmissionWithEvents(message Message, run Run, event
 	return nil
 }
 
-func (s *FileStore) SaveRunAdmission(message Message, run Run) error {
-	return s.SaveRunAdmissionWithEvents(message, run, nil)
-}
-
-func (s *FileStore) SaveRunAdmissionWithEvents(message Message, run Run, events []RunEvent) error {
-	if s == nil || s.inner == nil {
-		return ErrServiceClosed
-	}
-	if err := validateRunEventPayloads(events); err != nil {
-		return err
-	}
-	return s.lifecycleMutation(func() error {
-		if err := s.inner.ensureUniqueClientMessageLocked(message); err != nil {
-			return err
-		}
-		s.inner.messages[message.SessionID] = append(s.inner.messages[message.SessionID], message)
-		s.inner.runs[run.ID] = run
-		for _, event := range events {
-			if _, err := s.inner.appendRunEventLocked(event); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 func (s *MemoryStore) SaveRunCompletion(message Message, run Run) error {
 	return s.SaveRunCompletionWithEvents(message, run, nil)
 }
@@ -278,32 +251,6 @@ func (s *MemoryStore) SaveRunCompletionWithEvents(message Message, run Run, even
 	return nil
 }
 
-func (s *FileStore) SaveRunCompletion(message Message, run Run) error {
-	return s.SaveRunCompletionWithEvents(message, run, nil)
-}
-
-func (s *FileStore) SaveRunCompletionWithEvents(message Message, run Run, events []RunEvent) error {
-	if s == nil || s.inner == nil {
-		return ErrServiceClosed
-	}
-	if err := validateRunEventPayloads(events); err != nil {
-		return err
-	}
-	return s.lifecycleMutation(func() error {
-		if err := s.inner.ensureUniqueClientMessageLocked(message); err != nil {
-			return err
-		}
-		s.inner.messages[message.SessionID] = append(s.inner.messages[message.SessionID], message)
-		s.inner.runs[run.ID] = run
-		for _, event := range events {
-			if _, err := s.inner.appendRunEventLocked(event); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 func (s *MemoryStore) SaveRunTerminalWithEvents(run Run, events []RunEvent) error {
 	if s == nil {
 		return ErrServiceClosed
@@ -323,24 +270,6 @@ func (s *MemoryStore) SaveRunTerminalWithEvents(run Run, events []RunEvent) erro
 		}
 	}
 	return nil
-}
-
-func (s *FileStore) SaveRunTerminalWithEvents(run Run, events []RunEvent) error {
-	if s == nil || s.inner == nil {
-		return ErrServiceClosed
-	}
-	if err := validateRunEventPayloads(events); err != nil {
-		return err
-	}
-	return s.lifecycleMutation(func() error {
-		s.inner.runs[run.ID] = run
-		for _, event := range events {
-			if _, err := s.inner.appendRunEventLocked(event); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }
 
 // CommitRunLifecycle implements the generic transaction seam for the built-in
@@ -363,124 +292,10 @@ func (s *MemoryStore) CommitRunLifecycle(mutation RunLifecycleMutation) error {
 	}
 }
 
-// CommitRunLifecycle keeps the FileStore transaction on its single atomic
-// JSON replacement path. The inner MemoryStore mutation is never exposed to
-// callers, so a custom host cannot accidentally split state and outbox writes.
-func (s *FileStore) CommitRunLifecycle(mutation RunLifecycleMutation) error {
-	if err := validateRunLifecycleMutation(mutation); err != nil {
-		return err
-	}
-	switch mutation.Phase {
-	case RunLifecyclePhaseAdmission:
-		return s.SaveRunAdmissionWithEvents(*mutation.Message, mutation.Run, mutation.Events)
-	case RunLifecyclePhaseCompletion:
-		return s.SaveRunCompletionWithEvents(*mutation.Message, mutation.Run, mutation.Events)
-	case RunLifecyclePhaseTerminal:
-		return s.SaveRunTerminalWithEvents(mutation.Run, mutation.Events)
-	default:
-		return fmt.Errorf("unsupported run lifecycle phase %q", mutation.Phase)
-	}
-}
-
-// lifecycleMutation keeps the file-backed repository atomic from the caller's
-// perspective as well as on disk. A failed payload validation or file replace
-// rolls the in-memory snapshot back, so a subsequent request cannot observe a
-// state that was never durably committed.
-func (s *FileStore) lifecycleMutation(mutate func() error) error {
-	if s == nil || s.inner == nil {
-		return ErrServiceClosed
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	before := s.inner.snapshot()
-	s.inner.mu.Lock()
-	err := mutate()
-	s.inner.mu.Unlock()
-	if err != nil {
-		s.inner.restore(before)
-		return err
-	}
-	if err := s.flushLocked(); err != nil {
-		s.inner.restore(before)
-		return err
-	}
-	return nil
-}
-
-// FileStore also implements RunEventStore so the default service composition
-// can keep lifecycle records and the outbox in one atomic JSON replacement.
-// The methods intentionally use the inner MemoryStore's locked primitives;
-// readers remain lock-free with respect to the file mutex but observe the
-// same in-memory snapshot used by all other Store queries.
-func (s *FileStore) Append(event RunEvent) (RunEvent, error) {
-	if s == nil || s.inner == nil {
-		return RunEvent{}, errors.New("run event store is unavailable")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	before := s.inner.snapshot()
-	s.inner.mu.Lock()
-	canonical, err := s.inner.appendRunEventLocked(event)
-	s.inner.mu.Unlock()
-	if err != nil {
-		return RunEvent{}, err
-	}
-	if err := s.flushLocked(); err != nil {
-		s.inner.restore(before)
-		return RunEvent{}, err
-	}
-	return canonical, nil
-}
-
-func (s *FileStore) SequenceForID(tenantID, userID, runID, eventID string) (uint64, bool, error) {
-	if s == nil || s.inner == nil {
-		return 0, false, errors.New("run event store is unavailable")
-	}
-	s.inner.mu.RLock()
-	defer s.inner.mu.RUnlock()
-	for _, event := range s.inner.runEvents[runEventScope(tenantID, userID, runID)] {
-		if event.ID == eventID {
-			return event.Sequence, true, nil
-		}
-	}
-	return 0, false, nil
-}
-
-func (s *FileStore) ListAfter(tenantID, userID, runID string, after uint64, limit int) ([]RunEvent, error) {
-	if s == nil || s.inner == nil {
-		return nil, errors.New("run event store is unavailable")
-	}
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	s.inner.mu.RLock()
-	defer s.inner.mu.RUnlock()
-	items := s.inner.runEvents[runEventScope(tenantID, userID, runID)]
-	out := make([]RunEvent, 0, minIntRunEventStore(limit, len(items)))
-	for _, event := range items {
-		if event.Sequence <= after {
-			continue
-		}
-		out = append(out, cloneRunEvent(event))
-		if len(out) >= limit {
-			break
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Sequence < out[j].Sequence })
-	return out, nil
-}
-
-func (s *FileStore) Close() error { return nil }
-
 var (
 	_ RunAdmissionEventStore       = (*MemoryStore)(nil)
 	_ RunCompletionEventStore      = (*MemoryStore)(nil)
 	_ RunTerminalEventStore        = (*MemoryStore)(nil)
 	_ RunEventStore                = (*MemoryStore)(nil)
 	_ RunLifecycleTransactionStore = (*MemoryStore)(nil)
-	_ RunAdmissionEventStore       = (*FileStore)(nil)
-	_ RunCompletionEventStore      = (*FileStore)(nil)
-	_ RunTerminalEventStore        = (*FileStore)(nil)
-	_ RunEventStore                = (*FileStore)(nil)
-	_ RunLifecycleTransactionStore = (*FileStore)(nil)
 )

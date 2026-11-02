@@ -221,7 +221,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                 ) : null}
                 <div style={toolbarRightStyle}>
                     {showMemoryUsage && <MemoryUsageRing theme={t} themeMode={themeMode} lang={lang} size={20} />}
-                    <span aria-hidden="true" style={{ fontSize: "11px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
+                    <span aria-hidden="true" style={{ fontSize: "12px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
                         {tailText(lang ?? "", "Enter to send · Ctrl/⌘+Enter for a new line", "Enter \u53d1\u9001 · Ctrl/⌘+Enter \u6362\u884c")}
                     </span>
                     <AssistantInputActionsRight

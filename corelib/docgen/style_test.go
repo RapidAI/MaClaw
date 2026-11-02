@@ -21,28 +21,30 @@ func resetPDFStyles(t *testing.T) {
 	}
 }
 
-func TestBuiltinPDFStylesAreFiveDistinctLayouts(t *testing.T) {
+func TestBuiltinPDFStylesAreSixteenDistinctVoices(t *testing.T) {
 	resetPDFStyles(t)
 	styles := builtinStyles()
-	if len(styles) != 5 {
+	if len(styles) != 16 {
 		t.Fatalf("styles = %d", len(styles))
 	}
 	if ActiveStyle().ID != styles[0].ID || styles[0].ID != "gazette" {
 		t.Fatalf("default = %s", ActiveStyle().ID)
 	}
+	seenID := map[string]bool{}
 	seenMotif := map[string]bool{}
 	seenNavy := map[string]bool{}
 	white := [3]uint8{255, 255, 255}
 	for _, style := range styles {
-		if seenMotif[style.Motif] {
-			t.Fatalf("duplicate motif %s", style.Motif)
+		if seenID[style.ID] {
+			t.Fatalf("duplicate id %s", style.ID)
 		}
+		seenID[style.ID] = true
 		seenMotif[style.Motif] = true
 		if seenNavy[style.Colors.Navy] {
 			t.Fatalf("duplicate navy %s", style.Colors.Navy)
 		}
 		seenNavy[style.Colors.Navy] = true
-		for _, hex := range []string{style.Colors.Ink, style.Colors.Navy, style.Colors.Meta, style.Colors.Quote} {
+		for _, hex := range []string{style.Colors.Ink, style.Colors.Navy, style.Colors.Meta, style.Colors.Quote, style.Colors.Gold} {
 			if contrastRatio(mustRGB(hex), white) < 4.5 {
 				t.Fatalf("%s %s contrast %.2f", style.ID, hex, contrastRatio(mustRGB(hex), white))
 			}
@@ -51,8 +53,11 @@ func TestBuiltinPDFStylesAreFiveDistinctLayouts(t *testing.T) {
 			t.Fatalf("%s accent too pale", style.ID)
 		}
 	}
+	if len(seenMotif) != 7 {
+		t.Fatalf("motifs used = %d, want all 7", len(seenMotif))
+	}
 	infos := ListStyleInfo()
-	if len(infos) != 5 || !infos[0].Active || infos[0].ID != "gazette" {
+	if len(infos) != 16 || !infos[0].Active || infos[0].ID != "gazette" {
 		t.Fatalf("list = %+v", infos[0])
 	}
 }
@@ -61,11 +66,14 @@ func TestStyledDocumentUsesStrongColors(t *testing.T) {
 	resetPDFStyles(t)
 	style := ActiveStyle()
 	html := markdownToHTMLStyled(nil, "# 崇州天气预报\n\n崇州天气预报\n\n---\n\n## 一、今日天气概况\n\n| 项目 | 实况 |\n| --- | --- |\n| 天气 | 多云 |\n\n> 傍晚转阴\n\n![实况](missing-chart.png)\n", false, style)
-	if strings.Contains(html, "#888") || strings.Contains(html, "#666") || strings.Contains(html, "<hr/>") || strings.Contains(html, "<th>") {
+	if strings.Contains(html, "#888") || strings.Contains(html, "#666") || strings.Contains(html, "<hr/>") {
 		t.Fatalf("pale markup remains: %s", html)
 	}
 	if !strings.Contains(html, cssHex(style.Colors.Navy)) || !strings.Contains(html, cssHex(style.Colors.Accent)) || !strings.Contains(html, styleMarkGlyph) {
 		t.Fatalf("gazette chrome missing: %s", html)
+	}
+	if !strings.Contains(html, `<th style="color:`+cssHex(style.Colors.Navy)) {
+		t.Fatalf("table header lost the styled th: %s", html)
 	}
 	if !strings.Contains(html, cssHex(style.Colors.Ink)) || !strings.Contains(html, styleRuleGlyph) {
 		t.Fatalf("body ink or rule glyph missing: %s", html)
@@ -82,7 +90,7 @@ func TestFrameAndLedgerLayoutsDiffer(t *testing.T) {
 	if !strings.Contains(frame, "text-align:center") || strings.Contains(ledger, "text-align:center") {
 		t.Fatalf("frame=%s ledger=%s", frame, ledger)
 	}
-	if !strings.Contains(ledger, "11.5pt") || strings.Contains(frame, "11.5pt") {
+	if !strings.Contains(ledger, "12.5pt") || strings.Contains(frame, "12.5pt") {
 		t.Fatalf("frame=%s ledger=%s", frame, ledger)
 	}
 }

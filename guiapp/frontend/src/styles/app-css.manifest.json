@@ -1,5 +1,6 @@
 [
   "partials/00-tokens.css",
+  "partials/05-conversation-layout.css",
   "partials/10-about-hub.css",
   "partials/20-app-shell.css",
   "partials/30-settings-knowledge.css",

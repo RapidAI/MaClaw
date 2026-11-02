@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
+import { Z } from "../ui/zIndex";
 import type { RefObject } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { isPlainEnter } from "./assistantInputShortcuts";
@@ -91,7 +92,7 @@ export function MentionPopover({
                 bottom: "100%",
                 left: 0,
                 marginBottom: 4,
-                zIndex: 1000,
+                zIndex: Z.surfacePopover,
                 minWidth: 160,
                 maxWidth: 240,
                 maxHeight: 200,

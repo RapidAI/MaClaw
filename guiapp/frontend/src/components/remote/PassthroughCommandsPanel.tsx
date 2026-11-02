@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Z } from "../ui/zIndex";
 import { useDialog } from '../CustomDialog';
 import { DeletePassthroughCommand, ExportPassthroughCommand, GetPassthroughSettings, ListPassthroughAudit, ListPassthroughCommands, PassthroughRegistryPath, PreviewPassthroughCommand, PreviewPassthroughDraftCommand, RunPassthroughCommand, SavePassthroughCommand, SavePassthroughSettings, SetPassthroughCommandEnabled } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
@@ -678,7 +679,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
             </div>
 
             {showForm && <>
-                <div style={{ position: "fixed", inset: 0, background: colors.overlay, zIndex: 1000 }} onClick={closeForm} />
+                <div style={{ position: "fixed", inset: 0, background: colors.overlay, zIndex: Z.surfacePopover }} onClick={closeForm} />
                 <div style={{
                     position: "fixed",
                     top: "50%",

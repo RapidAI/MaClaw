@@ -2,6 +2,7 @@ package pptx
 
 import (
 	"archive/zip"
+	"fmt"
 	"image/png"
 	"io"
 	"os"
@@ -730,4 +731,179 @@ func TestTimelineAndComparisonLayoutsRenderMotifSpecificSlides(t *testing.T) {
 			t.Fatalf("%s slide count = %d, want 10", style.ID, pres.SlideCount)
 		}
 	}
+}
+
+func TestNewCatalogStylesMapAndRender(t *testing.T) {
+	cases := map[string]string{
+		"年度财务年报汇报":      "finance",
+		"深色科技风格产品介绍":    "aurora",
+		"季度营销方案评审":      "marketing",
+		"社区义诊健康宣教":      "medical",
+		"theme=finance": "finance",
+	}
+	for hint, want := range cases {
+		if got, _ := ChooseDeckStyle("auto", hint); got != want {
+			t.Fatalf("hint %q -> %s, want %s", hint, got, want)
+		}
+	}
+	// The new entries must not steal the established mappings.
+	kept := map[string]string{
+		"生日纪念":    "handmade",
+		"开题答辩":    "research",
+		"产品发布会路演": "magazine",
+		"培训课件":    "course",
+		"年会致辞":    "eink",
+		"数据看板":    "dashboard",
+		"战略咨询汇报":  "mckinsey",
+	}
+	for hint, want := range kept {
+		if got, _ := ChooseDeckStyle("auto", hint); got != want {
+			t.Fatalf("hint %q -> %s, want %s", hint, got, want)
+		}
+	}
+	if len(styleCatalog) != 16 {
+		t.Fatalf("catalog = %d", len(styleCatalog))
+	}
+	ids := map[string]bool{}
+	motifs := map[string]bool{}
+	for _, spec := range styleCatalog {
+		if ids[spec.id] {
+			t.Fatalf("duplicate id %s", spec.id)
+		}
+		ids[spec.id] = true
+		motifs[string(spec.motif)] = true
+	}
+	if len(motifs) != 14 {
+		t.Fatalf("motifs used = %d, want 14", len(motifs))
+	}
+}
+
+func TestWriteFileNewMotifsRenderAllLayouts(t *testing.T) {
+	dir := t.TempDir()
+	for _, theme := range []string{"finance", "aurora", "marketing", "medical"} {
+		path := filepath.Join(dir, theme+".pptx")
+		outline := Outline{
+			Title: "新版式", Subtitle: "全版式冒烟", Theme: theme,
+			Slides: []OutlineSlide{
+				{Title: "目录", Layout: "agenda", Bullets: []string{"背景", "方案", "收益"}},
+				{Title: "进展", Bullets: []string{"完成：评审", "进行中：试点"}},
+				{Title: "章节", Layout: "section", Kicker: "01"},
+				{Title: "指标", Layout: "kpi", Bullets: []string{"87% | 达成率", "3.2x | 增速"}},
+				{Title: "阶段", Layout: "timeline", Bullets: []string{"第一阶段：启动", "第二阶段：推广", "第三阶段：沉淀"}},
+				{Title: "结尾", Layout: "closing", Bullets: []string{"谢谢"}},
+			},
+		}
+		if err := WriteFile(path, outline); err != nil {
+			t.Fatalf("%s: %v", theme, err)
+		}
+		files := zipSlideXML(t, path)
+		if len(files) != 7 {
+			t.Fatalf("%s: slides = %d", theme, len(files))
+		}
+	}
+}
+
+func TestCustomStyleWithNewMotifsRenders(t *testing.T) {
+	t.Cleanup(func() { _ = SetCustomStyles(nil) })
+	customs := []CustomStyle{
+		{
+			ID: "custom-fin", Label: "自定义财报", Summary: "自定义的财务蓝金风格。",
+			Keywords: []string{"自定义财报"}, Motif: "finance",
+			Colors: StyleColors{
+				Paper: "FBF9F4", Ink: "22283A", Navy: "14304F", Navy2: "2A5077",
+				Accent: "B08A2A", Gold: "D9BC6A", White: "FFFFFF", Mute: "6C7686",
+				Slate: "3C4658", Card: "F4F0E6", OnDark: "F7F4EC", OnDarkMute: "C3CFDF",
+			},
+		},
+		{
+			ID: "custom-aur", Label: "自定义极光", Summary: "自定义的深空科技风格。",
+			Keywords: []string{"自定义极光"}, Motif: "aurora", CoverDark: true,
+			Colors: StyleColors{
+				Paper: "F4F6FE", Ink: "131C33", Navy: "0C1230", Navy2: "232F55",
+				Accent: "2BD9E8", Gold: "8B6CFF", White: "FFFFFF", Mute: "5D6E8F",
+				Slate: "2A3652", Card: "FFFFFF", OnDark: "EAF5FF", OnDarkMute: "A2B6D9",
+			},
+		},
+	}
+	if err := SetCustomStyles(customs); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for _, id := range []string{"custom-fin", "custom-aur"} {
+		path := filepath.Join(dir, id+".pptx")
+		outline := Outline{
+			Title: "自定义风格", Subtitle: "新 motif 冒烟", Theme: id,
+			Slides: []OutlineSlide{
+				{Title: "要点", Bullets: []string{"完成：评审", "进行中：试点"}},
+				{Title: "章节", Layout: "section", Kicker: "02"},
+				{Title: "结尾", Layout: "closing", Bullets: []string{"谢谢"}},
+			},
+		}
+		if err := WriteFile(path, outline); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	// The custom style joins the auto-selection catalog through its keywords.
+	if got, _ := ChooseDeckStyle("auto", "请用自定义财报主题"); got != "custom-fin" {
+		t.Fatalf("custom finance style not matched: %s", got)
+	}
+}
+
+func TestNewMotifDecksEmbedRecoloredCharts(t *testing.T) {
+	dir := t.TempDir()
+	for _, theme := range []string{"finance", "aurora", "marketing", "medical"} {
+		path := filepath.Join(dir, theme+"-chart.pptx")
+		outline := Outline{
+			Title: "图表冒烟", Theme: theme,
+			Slides: []OutlineSlide{{
+				Title: "对比",
+				Charts: []OutlineChart{{
+					ChartType:  "bar",
+					Categories: []string{"一季度", "二季度"},
+					Series: []OutlineChartSeries{
+						{Name: "营收", Values: []float64{3, 4}},
+						{Name: "利润", Values: []float64{1, 2}},
+					},
+				}},
+			}},
+		}
+		if err := WriteFile(path, outline); err != nil {
+			t.Fatalf("%s: %v", theme, err)
+		}
+		// The deck must embed a chart part whose series colors come from the
+		// style ladder: series 1 paints the style navy, not Office's default
+		// blue.
+		chartXML := chartPartColors(t, path)
+		if chartXML == "" {
+			t.Fatalf("%s: no chart part embedded", theme)
+		}
+		navy := resolveDeckTheme(theme).navy
+		want := fmt.Sprintf("%02X%02X%02X", navy.GetRed(), navy.GetGreen(), navy.GetBlue())
+		if !strings.Contains(chartXML, want) {
+			t.Fatalf("%s: chart series missing style navy %s", theme, want)
+		}
+	}
+}
+
+// chartPartColors concatenates every ppt/charts/*.xml part of a deck.
+func chartPartColors(t *testing.T, path string) string {
+	t.Helper()
+	r, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var b strings.Builder
+	for _, f := range r.File {
+		if !strings.HasPrefix(f.Name, "ppt/charts/") || !strings.HasSuffix(f.Name, ".xml") {
+			continue
+		}
+		data, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(&b, data)
+		_ = data.Close()
+	}
+	return b.String()
 }

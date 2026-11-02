@@ -82,7 +82,7 @@ func builtinPPTXMakerPrompt() string {
   - layout=quote：核心洞察、主张或金句页。
   - layout=bullets：需要展开分析的结构化要点，每条建议写成「核心词：具体说明」，单页 3–6 条，宁可拆页也不要堆满。
 - 内容页标题写「结论句」（Action Title），直接说出这一页的判断，例如「华南区贡献了 46% 的新增营收」，不要写「华南区分析」这类关键词。
-- 贴合所选风格：严格使用用户选定或 theme=<id> 指定的风格 id，并让内容组织方式呼应所选风格（如 mckinsey 强调结论句与结构化拆解、dashboard 多用 kpi 与 charts、sketch/whiteboard 多用 timeline 与 cards 拆解架构与流程、official 庄重规范、course 循序渐进）。
+- 贴合所选风格：严格使用用户选定或 theme=<id> 指定的风格 id，并让内容组织方式呼应所选风格（如 mckinsey 强调结论句与结构化拆解、dashboard 多用 kpi 与 charts、sketch/whiteboard 多用 timeline 与 cards 拆解架构与流程、official 庄重规范、course 循序渐进、finance 年报数据墙、aurora 深色发布会、marketing 活泼分栏、medical 安静青绿）。
 - 有照片时用 images 嵌入本地文件，不要写文字占位符。照片和图表所在页保持默认版式，不要再标 cards/section。
 - 生成后自查：任何一页都不应出现文字溢出、大面积空洞或与相邻页完全雷同的版式。
 

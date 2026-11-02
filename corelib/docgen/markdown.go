@@ -339,10 +339,19 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 }
 
 func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, style Style) string {
+	html, _ := markdownToHTMLStyledH2(scratch, md, colorful, style, 0)
+	return html
+}
+
+// markdownToHTMLStyledH2 is markdownToHTMLStyled with an H2 counter that
+// survives across calls: a multi-page render passes the running count in and
+// gets the new count back, so section numbers continue instead of restarting
+// on every body page. h2Start is the number of H2s already rendered.
+func markdownToHTMLStyledH2(scratch *dataURLScratch, md string, colorful bool, style Style, h2Start int) (string, int) {
 	lines := strings.Split(md, "\n")
 	var sb strings.Builder
 	listType := ""
-	h2 := 0
+	h2 := h2Start
 	sectionBody := ""
 	closeList := func() {
 		switch listType {
@@ -399,7 +408,7 @@ func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, sty
 			mark := ""
 			if styledSize, styledColor, styledAlign := style.headingLook(prefix); styledSize != "" {
 				size, color, align = styledSize, styledColor, styledAlign
-				mark = headingMark(style, prefix)
+				mark = headingMark(style, prefix, h2+1)
 			}
 			body := markdownHeadingBody(trimmed, prefix)
 			if prefix == "## " {
@@ -476,7 +485,9 @@ func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, sty
 			if style.ID != "" {
 				codeColor = cssHex(style.Colors.Ink)
 			}
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:8.5pt; font-family:monospace; background-color:#f3f4f6; color:%s; padding:8px; border-radius:4px">%s</p>`, codeColor, codeHTML.String()))
+			// The panel behind this block is painted by the pager from the
+			// style colors; InsertHTMLBox ignores background/padding CSS.
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:8.5pt; color:%s">%s</p>`, codeColor, codeHTML.String()))
 			continue
 		}
 		if strings.HasPrefix(trimmed, ">") {
@@ -562,7 +573,7 @@ func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, sty
 	if listType != "" {
 		closeList()
 	}
-	return breakInlineTails(sb.String())
+	return breakInlineTails(sb.String()), h2
 }
 
 // inlineTailBreakRun is the spaceless run length that starts cluster wrapping.
@@ -1145,8 +1156,11 @@ func markdownTableToHTML(lines []string, start int, style Style, colorful bool) 
 	var sb strings.Builder
 	sb.WriteString(`<table><thead><tr>`)
 	for _, header := range headers {
+		// The header cells stay <th> even when styled: GoPDF2 fills th with a
+		// light band, centers it, and bolds it, and the inline color keeps the
+		// style navy on top. A <td><b> header would lose the fill.
 		if style.ID != "" {
-			sb.WriteString(fmt.Sprintf(`<td style="color:%s; text-align:center"><b>%s</b></td>`, cssHex(style.Colors.Navy), tableCellHTML(header, colorful)))
+			sb.WriteString(fmt.Sprintf(`<th style="color:%s">%s</th>`, cssHex(style.Colors.Navy), tableCellHTML(header, colorful)))
 			continue
 		}
 		sb.WriteString(fmt.Sprintf(`<th>%s</th>`, tableCellHTML(header, colorful)))

@@ -38,12 +38,13 @@ export const ASSISTANT_LIGHT_SCHEME_STORAGE_KEY = "maclaw.ai.lightScheme";
 export const DEFAULT_ASSISTANT_LIGHT_SCHEME_ID: AssistantLightSchemeId = "fluent";
 
 /**
- * Fluent Azure — white canvas with MaClaw brand light-blue accents.
- * The main chat/preview canvas stays white like the task list; the brand
- * light blue lives on accent layers (#f1f6fc title bars and selections,
- * #1769e8 / #2e75cb buttons and links, #d5e0ef borders) matching the app
- * shell and the #f0f6ff left navigation rail. Ink is a deep slate-blue
- * (#24364e) so titles and body copy read confidently on the white canvas.
+ * Fluent Azure — pale blue-gray canvas with white cards and MaClaw brand
+ * light-blue accents. The page canvas tints (#f7f9fc) so white cards, the
+ * composer and the task pane read as raised surfaces; the brand light blue
+ * lives on accent layers (#f1f6fc title bars and selections, #1769e8 /
+ * #2e75cb buttons and links, #d5e0ef borders) matching the app shell and the
+ * tinted left navigation rail. Ink is a deep slate-blue (#24364e) so titles
+ * and body copy read confidently on both layers.
  */
 export const fluentLightScheme: AssistantLightScheme = {
     id: "fluent",
@@ -54,12 +55,12 @@ export const fluentLightScheme: AssistantLightScheme = {
         zhHant: "晴空藍白",
     },
     description: {
-        en: "White canvas with MaClaw brand light-blue accents, matching the app navigation.",
-        zhHans: "白色画布搭配 MaClaw 品牌淡蓝点缀，与左侧导航风格一致。",
-        zhHant: "白色畫布搭配 MaClaw 品牌淡藍點綴，與左側導覽風格一致。",
+        en: "Pale blue-gray canvas with white cards and MaClaw brand light-blue accents, matching the app navigation.",
+        zhHans: "浅蓝灰画布搭配白色卡片与 MaClaw 品牌淡蓝点缀，与左侧导航风格一致。",
+        zhHant: "淺藍灰畫布搭配白色卡片與 MaClaw 品牌淡藍點綴，與左側導覽風格一致。",
     },
     cssVars: {
-        pageBg: "#ffffff",
+        pageBg: "#f7f9fc",
         surface: "#ffffff",
         surfaceMuted: "#f1f6fc",
         primary: "#2e75cb",
@@ -81,7 +82,7 @@ export const fluentLightScheme: AssistantLightScheme = {
         onPrimary: "#ffffff",
     },
     assistantTheme: {
-        bg: "#ffffff",
+        bg: "#f7f9fc",
         titleBarBg: "#f1f6fc",
         titleBarBorder: "#d5e0ef",
         titleText: "#24364e",

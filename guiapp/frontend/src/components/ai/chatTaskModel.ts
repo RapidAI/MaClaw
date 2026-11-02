@@ -1,4 +1,6 @@
 import type { Theme } from "./aiAssistantPanelTheme";
+import { normalizeLang } from "../../i18n/langSelect";
+import { tailText } from "../../i18n/mnTail";
 
 export type ChatTaskStatus = "queued" | "running" | "needs_input" | "done" | "failed" | "canceled" | "interrupted" | string;
 
@@ -172,9 +174,112 @@ export function chatTaskToneColor(theme: ChatTaskToneTheme, tone: ChatTaskTone):
     }
 }
 
+const HELPER_SLOTS = [/^1[.、]\s*(.*)$/, /^2[.、]\s*(.*)$/, /^3[.、]\s*(.*)$/];
+const HELPER_FILE = /^文件\s*[:：]\s*(.*)$/;
+
+function chatTaskSep(lang: string): string {
+    const normalized = normalizeLang(lang);
+    return normalized === "zh-Hans" || normalized === "zh-Hant" ? "：" : ": ";
+}
+
+function chatTaskNone(lang: string): string {
+    return tailText(lang, "None", "无", "無");
+}
+
+function chatTaskSlot(lang: string, value: string): string {
+    const text = value.trim();
+    if (!text || text === "无" || text === "無" || text.toLowerCase() === "none") return chatTaskNone(lang);
+    return text;
+}
+
+/**
+ * Relabel the stored four-line helper card for the person reading it.
+ * The stored text stays "1. … / 文件：…". A longer reply is left as written.
+ */
+export function localizeHelperReport(text: string, lang: string): string {
+    const raw = String(text || "").trim();
+    const lines = raw.split(/\r?\n/);
+    if (lines.length !== 4) return raw;
+    const slots: string[] = [];
+    for (let i = 0; i < 3; i++) {
+        const match = lines[i].trim().match(HELPER_SLOTS[i]);
+        if (!match) return raw;
+        slots.push(match[1] ?? "");
+    }
+    const file = lines[3].trim().match(HELPER_FILE);
+    if (!file) return raw;
+    const sep = chatTaskSep(lang);
+    const labels = [
+        tailText(lang, "What finished", "已完成", "已完成"),
+        tailText(lang, "What is left", "还剩", "還剩"),
+        tailText(lang, "What is blocked", "卡住", "卡住"),
+    ];
+    return [
+        ...labels.map((label, i) => `${label}${sep}${chatTaskSlot(lang, slots[i])}`),
+        `${tailText(lang, "File path", "文件", "檔案")}${sep}${chatTaskSlot(lang, file[1] ?? "")}`,
+    ].join("\n");
+}
+
+function chatTaskRecordParts(error: string): { line: string; rest: string } {
+    const text = error.trim();
+    const breakAt = text.search(/\r?\n/);
+    if (breakAt < 0) return { line: text, rest: "" };
+    return { line: text.slice(0, breakAt).trim(), rest: text.slice(breakAt).replace(/^\r?\n/, "") };
+}
+
+function helperReportEmptyRecord(error: string): { fileNone: boolean; detail: string } | null {
+    const { line, rest } = chatTaskRecordParts(error);
+    if (line !== "helper_report_empty" && line !== "helper report has no conclusion and no path") return null;
+    let fileNone = false;
+    let detail = "";
+    const lines = rest.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+        const item = lines[i].trim();
+        if (item === "file: none") fileNone = true;
+        if (item === "detail:") {
+            detail = lines.slice(i + 1).join("\n").trim();
+            break;
+        }
+    }
+    return { fileNone, detail };
+}
+
+/**
+ * The sentence under a failed background task. Known records are localized.
+ * A reason the agent already wrote is kept, so it is not translated twice.
+ */
+export function formatChatTaskFailure(error: string | undefined, lang: string): string {
+    const raw = String(error || "").trim();
+    if (!raw) return "";
+    const head = chatTaskRecordParts(raw).line;
+    if (head === "chat_task_no_result" || head === "chat task returned no result") {
+        return tailText(lang, "The task finished without a result.", "任务结束了，但没有返回结果。", "任務結束了，但沒有返回結果。");
+    }
+    const empty = helperReportEmptyRecord(raw);
+    if (!empty) return raw;
+    const lines = [
+        tailText(lang, "The helper report had no conclusion and no file path.", "助手报告没有结论，也没有文件路径。", "助手報告沒有結論，也沒有檔案路徑。"),
+        tailText(lang, "Conclusion lines 1, 2, and 3 are empty.", "结论第 1、2、3 行都是空的。", "結論第 1、2、3 行都是空的。"),
+        empty.fileNone
+            ? tailText(lang, "The file line did not name a path.", "文件一行没有写出路径。", "檔案一行沒有寫出路徑。")
+            : tailText(lang, "No file path was given.", "没有给出文件路径。", "沒有給出檔案路徑。"),
+    ];
+    if (empty.detail) {
+        lines.push(tailText(lang, "What it returned:", "实际返回：", "實際返回："));
+        lines.push(empty.detail);
+    }
+    return lines.join("\n");
+}
+
 export function chatTaskCardSummary(task: ChatTaskView): string {
     if (task.status === "needs_input" && task.question) return task.question;
-    if (task.status === "failed" && task.error) return task.error;
+    if (task.status === "failed" && task.error) {
+        const record = helperReportEmptyRecord(task.error);
+        if (record) return record.detail || task.title || task.error;
+        const head = chatTaskRecordParts(task.error).line;
+        if (head === "chat_task_no_result" || head === "chat task returned no result") return task.title || task.error;
+        return task.error;
+    }
     if (task.status === "interrupted") return task.progress || "Was running when the app stopped. It was not resumed.";
     if (task.progress && !chatTaskTerminal(task.status)) return task.progress;
     if (task.resultText) return task.resultText;

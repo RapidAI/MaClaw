@@ -845,6 +845,100 @@ func (c *SQLiteSemanticExecutionCoordinator) Admit(a SemanticExecutionAdmission)
 	return HostCallRecord{Identity: a.Identity, GrantFingerprint: fingerprint, RequestDigest: a.RequestDigest, State: HostCallAdmitted, CreatedAt: now, UpdatedAt: now}, HostCallAcquireAdmit, nil
 }
 
+// RetractUnexecuted undoes an Admit that never produced an effect. Argument
+// validation that still runs inside the adapter is too late for the pre-Admit
+// gate, but it is still not an outcome. Completing it as failed would freeze
+// the selection: settlement refuses to overwrite a failed record, so a later
+// real effect leaves the turn incomplete. This transaction deletes the running
+// execution and the admitted host call, and returns the one-shot grant to
+// issued, only when every row is still in its pre-effect state. A completed,
+// failed, or unknown execution is left untouched.
+func (c *SQLiteSemanticExecutionCoordinator) RetractUnexecuted(a SemanticExecutionAdmission) error {
+	if c == nil || c.db == nil {
+		return fmt.Errorf("semantic execution coordinator is unavailable")
+	}
+	if err := a.validate(); err != nil {
+		return err
+	}
+	key := hostCallKey(a.Identity)
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := routeRevisionIsCurrent(tx, a.Scope); err != nil {
+		return err
+	}
+	fingerprint, err := coordinatedHostCallFingerprint(tx, key, a.Grant)
+	if err != nil {
+		return err
+	}
+	// A prepared delivery, a stored artifact, an external operation, or a
+	// consumed input grant is an effect, even when the adapter's text looks
+	// like an argument refusal. Leave that admission for the ordinary
+	// completion path.
+	if err := coordinatedAdmissionHasEffect(tx, a); err != nil {
+		return err
+	}
+	host, err := tx.Exec(`DELETE FROM semantic_host_calls WHERE call_key=? AND state='admitted' AND request_digest=? AND grant_fingerprint=?`, key, a.RequestDigest, fingerprint)
+	if err != nil {
+		return err
+	}
+	if n, err := host.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return fmt.Errorf("unexecuted_admission_not_retractable")
+	}
+	execution, err := tx.Exec(`DELETE FROM semantic_plan_executions WHERE execution_key=? AND selection_id=? AND state='running'`, planExecutionKey(a.Scope, a.Selection.ID), a.Selection.ID)
+	if err != nil {
+		return err
+	}
+	if n, err := execution.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return fmt.Errorf("unexecuted_admission_not_retractable")
+	}
+	placeholders, fingerprintArgs := invocationGrantFingerprintSQLArgs(a.Grant)
+	restoreArgs := make([]interface{}, 0, len(fingerprintArgs)+1)
+	restoreArgs = append(restoreArgs, a.Grant.Nonce)
+	restoreArgs = append(restoreArgs, fingerprintArgs...)
+	restored, err := tx.Exec(`UPDATE invocation_grants SET state='issued' WHERE nonce=? AND fingerprint IN (`+placeholders+`) AND state='consumed'`, restoreArgs...)
+	if err != nil {
+		return err
+	}
+	if n, err := restored.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return fmt.Errorf("unexecuted_admission_not_retractable")
+	}
+	return tx.Commit()
+}
+
+// coordinatedAdmissionHasEffect reports a durable effect already bound to this
+// admission. Retract must not delete the running execution or restore the
+// grant once one of these rows exists: a later call could repeat the effect
+// or consume the same input again.
+func coordinatedAdmissionHasEffect(tx *sql.Tx, a SemanticExecutionAdmission) error {
+	scope := []interface{}{a.Scope.RootTaskID, a.Scope.PlanID, a.Scope.SessionID, a.Scope.TurnID, a.Scope.PrincipalID, a.Selection.ID}
+	queries := []string{
+		`SELECT 1 FROM semantic_delivery_preparations WHERE root_task_id=? AND plan_id=? AND session_id=? AND turn_id=? AND principal_id=? AND selection_id=? LIMIT 1`,
+		`SELECT 1 FROM semantic_artifacts WHERE root_task_id=? AND plan_id=? AND session_id=? AND turn_id=? AND principal_id=? AND producer_selection=? LIMIT 1`,
+		`SELECT 1 FROM semantic_external_effect_operations WHERE root_task_id=? AND plan_id=? AND session_id=? AND turn_id=? AND principal_id=? AND selection_id=? LIMIT 1`,
+		`SELECT 1 FROM semantic_artifact_access_grants WHERE root_task_id=? AND plan_id=? AND session_id=? AND turn_id=? AND principal_id=? AND consumer_selection_id=? LIMIT 1`,
+	}
+	for _, query := range queries {
+		var found int
+		err := tx.QueryRow(query, scope...).Scan(&found)
+		if err == nil {
+			return fmt.Errorf("unexecuted_admission_not_retractable")
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
+}
+
 // Reject atomically consumes a valid grant and records a deterministic
 // pre-I/O result such as JSON/schema/canonicalization rejection. It follows
 // the same host-call and grant boundary as Admit, except it creates a failed

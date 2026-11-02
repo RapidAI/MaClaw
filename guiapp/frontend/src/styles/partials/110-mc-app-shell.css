@@ -49,11 +49,14 @@
    tool divider owns that rhythm and the search field hugs it. The pane's
    first rows still sit below the 10px drag strip, so clicks stay usable. */
 #App { --mc-sidebar-drag-strip: max(10px, var(--dwm-top-offset, 0px)); }
-.mc-sidebar-shell { width: 308px !important; height: 100%; min-height: 0; overflow: hidden; background: var(--theme-surface) !important; border-right: 0 !important; }
+/* Pane width: single source of truth is --mc-task-pane-width (set inline on
+   .sidebar by AppSidebarShell, consumed by 120-app-responsive.css at every
+   breakpoint, and mirrored by SidebarAiPane's inline width). The previous
+   fixed 308px/280px declarations here fought the live width on non-AI tabs. */
+.mc-sidebar-shell { height: 100%; min-height: 0; overflow: hidden; background: var(--theme-surface) !important; border-right: 0 !important; }
 .mc-sidebar-shell .mc-task-pane { background: var(--theme-surface) !important; padding: 0 14px 10px !important; min-height: 0; }
 .mc-sidebar-shell [data-testid="sidebar-middle-pane-tasks"] { background: var(--theme-surface); min-height: 0; overflow: hidden; }
 .mc-sidebar-shell .mc-sidebar-middle-tabs { display: none !important; }
-@media (max-width: 1100px) { .mc-sidebar-shell { width: 280px !important; } }
 /* Apply reference hierarchy to the live conversation chrome */
 .mc-tab-bar { min-height: 52px !important; padding: 0 18px !important; background: var(--theme-surface) !important; border-bottom: 1px solid var(--theme-border) !important; }
 .mc-tab-bar button { min-height: 40px; border-radius: var(--radius-md) var(--radius-md) 0 0 !important; }
@@ -68,7 +71,7 @@
   color: var(--theme-text-primary);
 }
 [data-testid="coding-control-popover"] button { border-radius: var(--radius-md); }
-[data-testid="coding-control-popover"] strong { color: var(--theme-text-primary); font-weight: 650; }
+[data-testid="coding-control-popover"] strong { color: var(--theme-text-primary); font-weight: 600; }
 [data-testid="remote-coding-env-banner"],
 [data-testid="coding-env-banner"] {
   border-radius: var(--radius-md);
@@ -112,7 +115,7 @@
 }
 .mc-task-execution-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:0 28px; background:var(--theme-surface); border-bottom:1px solid var(--theme-border); user-select:none; cursor:default; }
 .mc-task-execution-header[data-window-drag] { --wails-draggable: drag; }
-.mc-task-execution-header strong { font-size:18px; font-weight:650; letter-spacing:-0.02em; color:var(--mc-chrome-ink, var(--theme-text-primary)); }
+.mc-task-execution-header strong { font-size:18px; font-weight: 600; letter-spacing:-0.02em; color:var(--mc-chrome-ink, var(--theme-text-primary)); }
 .mc-task-execution-header span:not(:where([data-notification-tree] span)) { color:var(--mc-accent, #2e75cb); font-size:13px; }
 .mc-task-execution-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; --wails-draggable: no-drag; }
 .mc-task-execution-actions button:not(:where([data-notification-tree] button)) { border:1px solid var(--theme-border); background:var(--theme-surface); border-radius: var(--radius-md); padding:8px 14px; color:var(--theme-text-secondary); cursor:pointer; white-space:nowrap; }
@@ -203,7 +206,7 @@
    The kind icon is a sibling, out of flow, in the header's left padding. */
 .mc-task-execution-title-row { position: relative; min-width: 0; max-width: 100%; }
 .mc-task-execution-heading > .mc-task-execution-title,
-.mc-task-execution-title-row > .mc-task-execution-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.35; }
+.mc-task-execution-title-row > .mc-task-execution-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.35; }
 .mc-task-execution-header .mc-task-execution-kind { position: absolute; top: 50%; right: calc(100% + 3px); display: flex; align-items: center; justify-content: center; color: var(--mc-chrome-ink, var(--theme-text-primary)); line-height: 0; transform: translateY(-50%); }
 .mc-task-execution-header .mc-task-execution-kind svg { display: block; width: 15px; height: 15px; }
 .mc-task-execution-subline { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -237,7 +240,7 @@
     padding: 0 !important;
     color: var(--theme-text-primary);
     font-size: 17px;
-    font-weight: 750;
+    font-weight: 700;
     line-height: 1.25;
     letter-spacing: -.015em;
 }
@@ -268,7 +271,7 @@
   flex-shrink: 0;
   color: var(--theme-text-primary);
   font-size: 20px;
-  font-weight: 760;
+  font-weight: 700;
   letter-spacing: -.03em;
   white-space: nowrap;
 }
@@ -395,7 +398,7 @@
     color: var(--theme-primary-strong) !important;
     font: inherit;
     font-size: 13px;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: 0;
     line-height: 1;
     text-align: left;
@@ -408,7 +411,7 @@
     text-overflow: ellipsis;
     color: inherit !important;
     font-size: 13px !important;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: 0 !important;
     white-space: nowrap;
 }
@@ -758,7 +761,6 @@
     outline-offset: -2px;
   }
 }
-.mc-sidebar-shell { width: 308px !important; min-width: 308px !important; }
 .mc-sidebar-drag-strip { width: 428px !important; }
 .top-header {
   height: 72px !important;
@@ -777,7 +779,6 @@
 @media (max-width: 1100px) {
   .mc-nav-rail { padding: 14px 10px !important; }
   .mc-nav-rail .sidebar-item { min-height: 62px; }
-  .mc-sidebar-shell { width: 280px !important; min-width: 280px !important; }
   .top-header { height: 64px !important; min-height: 64px !important; padding-inline: 16px !important; }
 }
 /* The live shell width is derived from its two child panes on desktop. At
@@ -1218,7 +1219,7 @@ button.mc-workbench-status-card__row:focus-visible {
 }
 button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-workbench-status-card__row > span { flex-shrink: 0; white-space: nowrap; }
-.mc-workbench-status-card__row strong { color: var(--theme-text-primary); font-size: 13px; font-weight: 650; text-align: right; }
+.mc-workbench-status-card__row strong { color: var(--theme-text-primary); font-size: 13px; font-weight: 600; text-align: right; }
 .mc-workbench-status-card__mn-stack .mc-workbench-status-card__mn-line > strong {
   flex: 0 0 auto;
   min-width: 0;
@@ -1253,7 +1254,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   min-width: 0;
   overflow: hidden;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.3;
 }
 .mc-workbench-status-card__jobs-main {
@@ -2127,7 +2128,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   overflow: hidden;
   color: var(--theme-text-primary);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2348,8 +2349,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-reference-suggestion-card:hover, .mc-reference-suggestion-card:focus-visible { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); background: var(--theme-primary-soft); box-shadow: 0 5px 14px rgba(24, 63, 112, .08); transform: translateY(-1px); outline: none; }
 .mc-reference-suggestion-card__icon { flex: 0 0 30px; width: 30px; height: 30px; display: inline-grid; place-items: center; border-radius: var(--radius-md); background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb); }
 .mc-reference-suggestion-card__copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 4px; }
-.mc-reference-suggestion-card__copy strong { overflow: hidden; color: var(--theme-text-primary); font-size: 13px; font-weight: 650; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.mc-reference-suggestion-card__copy small { overflow: hidden; color: var(--theme-text-muted); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.mc-reference-suggestion-card__copy strong { overflow: hidden; color: var(--theme-text-primary); font-size: 13px; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.mc-reference-suggestion-card__copy small { overflow: hidden; color: var(--theme-text-muted); font-size: 12px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .mc-reference-suggestion-card__arrow { flex: 0 0 auto; color: var(--theme-text-muted); font-size: 20px; line-height: 1; }
 #App[data-ai-theme='dark'] .mc-reference-suggestion-card { border-color: var(--theme-border); background: var(--theme-surface); color: var(--theme-text-primary); }
 #App[data-ai-theme='dark'] .mc-reference-suggestion-card:hover, #App[data-ai-theme='dark'] .mc-reference-suggestion-card:focus-visible { background: var(--theme-surface-muted); border-color: var(--theme-primary); }
@@ -2676,7 +2677,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   color: var(--theme-text-primary);
   font: inherit;
   font-size: 0.74rem;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.3;
   text-align: left;
   cursor: pointer;
@@ -3246,7 +3247,7 @@ input.stsm-remote-input {
   min-width: 0;
 }
 .mdoc-title {
-  font-weight: 750;
+  font-weight: 700;
   font-size: 1.12rem;
   letter-spacing: -0.01em;
   line-height: 1.3;
@@ -3276,7 +3277,7 @@ input.stsm-remote-input {
   min-height: 34px;
   padding: 0 14px;
   font-size: 0.86rem;
-  font-weight: 650;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -3346,7 +3347,7 @@ input.stsm-remote-input {
 }
 .mdoc-dropzone-title {
   display: block;
-  font-weight: 650;
+  font-weight: 600;
   font-size: 0.92rem;
   line-height: 1.35;
 }
@@ -3684,7 +3685,7 @@ input.mdoc-search:focus-visible {
   background: transparent;
   color: var(--theme-text-primary, #24364e);
   cursor: pointer;
-  font-weight: 650;
+  font-weight: 600;
   font-size: 0.86rem;
   text-align: left;
   font-family: inherit;
@@ -3727,7 +3728,7 @@ input.mdoc-search:focus-visible {
   min-width: 22px;
   text-align: center;
   font-size: 0.7rem;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--theme-text-secondary, #46586f);
   background: color-mix(in srgb, var(--theme-surface-muted, #f1f6fc) 70%, var(--theme-surface, #ffffff));
   border: 1px solid var(--theme-border-subtle, #e2e9f3);
@@ -7181,7 +7182,7 @@ body.companion-pdf-translation-dragging * {
   margin: 0 0 6px;
   color: var(--theme-primary);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .file-companion-annotations-author {
   display: block;
@@ -7293,7 +7294,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-note-status-kicker {
   color: var(--theme-primary);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.04em;
 }
 .file-companion-note-status-time {
@@ -7305,7 +7306,7 @@ body.companion-pdf-translation-dragging * {
   margin: 4px 0 8px;
   color: var(--theme-text-primary);
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.4;
 }
 .file-companion-note-status-track {
@@ -7362,7 +7363,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-note-status-steps li.is-current {
   color: var(--theme-primary);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 /* Per-answer copy/export controls. A flow row above the reply keeps them out

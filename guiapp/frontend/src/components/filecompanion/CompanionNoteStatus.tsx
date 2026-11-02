@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { companionNoteStepLabel, companionNoteTitle, cs, getCompanionUiLang, setCompanionUiLang } from "../../i18n/mnCompanion";
+import { startVisibleInterval } from "../../utils/visibleInterval";
 import { companionNoteStatus, formatNoteElapsed, noteStatusPercent, type NoteMedia } from "./noteStatusModel";
 
 export function CompanionStatus({ text, kind, noteStartedAt, phaseStartedAt, lang }: {
@@ -17,8 +18,8 @@ export function CompanionStatus({ text, kind, noteStartedAt, phaseStartedAt, lan
     useEffect(() => {
         if (!active) return;
         setNow(Date.now());
-        const id = window.setInterval(() => setNow(Date.now()), 1000);
-        return () => window.clearInterval(id);
+        // Elapsed label only: pause while the window is hidden.
+        return startVisibleInterval(() => setNow(Date.now()), 1000);
     }, [active]);
 
     if (!model) {

@@ -235,8 +235,8 @@ func (s *MemoryStore) restoreLocked(state storeState) {
 }
 
 // restore replaces the mutable maps from a previously captured snapshot. It
-// is used by FileStore lifecycle transactions when validation or the atomic
-// file replacement fails after the in-memory mutation has already run.
+// is used by legacy JSON file-store transactions and SQLiteStore legacy
+// fallbacks when a mutation must be undone against the in-memory read model.
 func (s *MemoryStore) restore(state storeState) {
 	if s == nil {
 		return
@@ -731,7 +731,7 @@ func (s *MemoryStore) appendRunEventLocked(event RunEvent) (RunEvent, error) {
 // Append implements RunEventStore for the same in-process repository used by
 // MemoryStore message/run lifecycle operations. Keeping events in this store
 // enables atomic lifecycle tests and makes the in-memory host faithful to the
-// durable FileStore path.
+// durable SQLite-backed path.
 func (s *MemoryStore) Append(event RunEvent) (RunEvent, error) {
 	if s == nil {
 		return RunEvent{}, errors.New("run event store is unavailable")

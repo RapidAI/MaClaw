@@ -10,6 +10,7 @@
  */
 
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Z } from "../ui/zIndex";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { ParticipantSelector, useGroupConfig, virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
@@ -479,7 +480,7 @@ export function GroupParticipantPanel({
                         position: "fixed",
                         left: contextMenu.x,
                         top: contextMenu.y,
-                        zIndex: 9999,
+                        zIndex: Z.overlay,
                         background: theme.fieldBg || "#0f1720",
                         border: `1px solid ${theme.divider || "#263447"}`,
                         borderRadius: 4,

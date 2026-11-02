@@ -29,12 +29,15 @@ export interface NotificationItemProps {
 // Category config — pill color mapping
 // ---------------------------------------------------------------------------
 
+// Status pills route through the --theme-* tokens (see styles/partials/00-tokens.css)
+// so category colors follow the active light/dark scheme instead of a hardcoded
+// Tailwind palette that went theme-blind in dark mode.
 const CATEGORY_COLORS: Record<AdminNotification["category"], { bg: string; text: string; border: string }> = {
-  system_announcement: { bg: "rgba(59, 130, 246, 0.10)", text: "#2563eb", border: "rgba(59, 130, 246, 0.25)" },
-  feature_update: { bg: "rgba(16, 185, 129, 0.10)", text: "#059669", border: "rgba(16, 185, 129, 0.25)" },
-  security_alert: { bg: "rgba(239, 68, 68, 0.10)", text: "#dc2626", border: "rgba(239, 68, 68, 0.25)" },
-  maintenance: { bg: "rgba(245, 158, 11, 0.10)", text: "#d97706", border: "rgba(245, 158, 11, 0.25)" },
-  custom: { bg: "rgba(107, 114, 128, 0.10)", text: "#4b5563", border: "rgba(107, 114, 128, 0.25)" },
+  system_announcement: { bg: "var(--theme-info-bg)", text: "var(--theme-primary)", border: "color-mix(in srgb, var(--theme-primary) 25%, transparent)" },
+  feature_update: { bg: "var(--theme-success-bg)", text: "var(--theme-success)", border: "color-mix(in srgb, var(--theme-success) 25%, transparent)" },
+  security_alert: { bg: "var(--theme-danger-bg)", text: "var(--theme-danger)", border: "color-mix(in srgb, var(--theme-danger) 25%, transparent)" },
+  maintenance: { bg: "var(--theme-warning-bg)", text: "var(--theme-warning)", border: "color-mix(in srgb, var(--theme-warning) 25%, transparent)" },
+  custom: { bg: "var(--theme-surface-muted)", text: "var(--theme-text-secondary)", border: "var(--theme-border-subtle)" },
 };
 
 const CATEGORY_LABELS: Record<AdminNotification["category"], { en: string; zh: string }> = {
@@ -96,8 +99,8 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
     cursor: "pointer",
     borderRadius: "6px",
     transition: "background 150ms ease",
-    background: is_read ? "transparent" : (theme.isDark ? "rgba(59, 130, 246, 0.06)" : "rgba(59, 130, 246, 0.04)"),
-    borderLeft: is_read ? "3px solid transparent" : `3px solid ${theme.linkColor || "#2e75cb"}`,
+    background: is_read ? "transparent" : "var(--theme-info-bg)",
+    borderLeft: is_read ? "3px solid transparent" : `3px solid ${theme.linkColor || "var(--theme-primary)"}`,
   };
 
   // Title style — unread is bold
@@ -138,7 +141,7 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
   // Time style
   const timeStyle: CSSProperties = {
     fontSize: "10px",
-    color: theme.textMuted || "#64748b",
+    color: theme.textMuted || "var(--theme-text-muted)",
     flexShrink: 0,
     whiteSpace: "nowrap",
   };

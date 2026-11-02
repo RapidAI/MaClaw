@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { CSSProperties } from "react";
 import type { ChatTaskView } from "./chatTaskModel";
-import { chatTaskDisplayTitle, chatTaskStatusTone, chatTaskTerminal, chatTaskToneColor } from "./chatTaskModel";
+import { chatTaskDisplayTitle, chatTaskStatusTone, chatTaskTerminal, chatTaskToneColor, formatChatTaskFailure } from "./chatTaskModel";
 import type { ChatTaskTone } from "./chatTaskModel";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { tailText } from "../../i18n/mnTail";
@@ -313,7 +313,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
                 </div>
             )}
             {progress && progress.detail && <div style={styles.progressDetail(theme)} title={progress.detail}>{progress.detail}</div>}
-            {task.error && task.status === "failed" && <div style={styles.errorBlock(theme)}>{task.error}</div>}
+            {task.error && task.status === "failed" && <div style={styles.errorBlock(theme)}>{formatChatTaskFailure(task.error, lang)}</div>}
             {!!task.artifactPaths?.length && (
                 <div style={styles.artifactRow}>
                     {task.artifactPaths.map(path => (

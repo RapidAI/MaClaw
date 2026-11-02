@@ -281,7 +281,9 @@ func TestOpenCodeZenAgentReceiptAcceptsInjectedFreeTierTools(t *testing.T) {
 		name, _ := fn["name"].(string)
 		names[name] = true
 	}
-	if !names["web_search"] || !names["bash"] || !names["read"] {
+	// The free-tier injection exposes the OpenCode "shell" tool (historically
+	// named "bash"); the receipt must accept the injected surface as-is.
+	if !names["web_search"] || !names["shell"] || !names["read"] {
 		t.Fatalf("prepared tools = %#v", prepared)
 	}
 	client, err := NewToolSurfaceReceiptHTTPClientWithInvocationPolicy(

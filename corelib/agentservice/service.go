@@ -402,9 +402,10 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 		records = opened[0].(RecordStore)
 		dynamicOperations = opened[1].(DynamicOperationLedger)
 		dynamicCapabilities = opened[2].(DynamicCapabilityContractRegistry)
-		// FileStore now persists the run outbox in the same atomic document as
-		// messages and runs. Keep a SQLite fallback for custom file-backed
-		// stores supplied by embedders that do not implement RunEventStore.
+		// The built-in file backend (FileStore) keeps the run outbox in the
+		// same SQLite database as messages and runs. Keep a SQLite fallback
+		// for custom file-backed stores supplied by embedders that do not
+		// implement RunEventStore.
 		if storeOwnsEvents {
 			runEvents = store.(RunEventStore)
 		} else {
@@ -417,8 +418,9 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 		dynamicCapabilities = NewDynamicCapabilityRegistry()
 		// A Store that also owns RunEventStore is the preferred composition:
 		// message/run lifecycle and its outbox then share one repository lock
-		// (and, for FileStore, one atomic file replacement). Custom stores that
-		// have not migrated retain the standalone in-memory event store.
+		// (and, for the built-in file backend, one SQLite database). Custom
+		// stores that have not migrated retain the standalone in-memory event
+		// store.
 		if eventStore, ok := store.(RunEventStore); ok {
 			runEvents = eventStore
 			runEventsOwned = ownedStore

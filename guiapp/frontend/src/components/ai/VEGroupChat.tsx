@@ -10,6 +10,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { Z } from "../ui/zIndex";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { MessageContentRenderer } from "./MessageContentRenderer";
@@ -372,7 +373,7 @@ export function ParticipantSelector({
                         padding: "6px 10px",
                         fontSize: 12,
                         whiteSpace: "nowrap",
-                        zIndex: 9999,
+                        zIndex: Z.overlay,
                     }}
                 >
                     {error}
@@ -391,7 +392,7 @@ export function ParticipantSelector({
                         border: `1px solid ${theme.divider}`,
                         borderRadius: 8,
                         boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-                        zIndex: 9999,
+                        zIndex: Z.overlay,
                         minWidth: 200,
                         maxHeight: 240,
                         overflowY: "auto",

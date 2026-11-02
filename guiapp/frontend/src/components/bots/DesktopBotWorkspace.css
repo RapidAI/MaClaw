@@ -432,7 +432,7 @@
     white-space: nowrap;
     font-style: normal;
     font-size: 10px;
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.4;
     letter-spacing: 0.04em;
     padding: 0 4px;
@@ -3338,7 +3338,7 @@
 .bot-llm-dialog__section {
     margin: 0;
     font-size: 0.9375rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: -0.011em;
     line-height: 1.4;
     color: var(--theme-text-primary, #101828);
@@ -3543,7 +3543,7 @@
 .bot-computer__action-title {
     margin: 0;
     font-size: 0.875rem;
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.4;
     color: var(--theme-text-primary, #101828);
 }

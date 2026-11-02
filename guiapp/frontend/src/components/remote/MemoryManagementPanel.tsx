@@ -173,7 +173,7 @@ function ModalOverlay({ onClose, children }: { onClose: () => void; children: Re
 
 const overlayStyle: WailsNoDragStyle = {
     position: "fixed", inset: 0, background: colors.overlay,
-    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
+    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 /* --z-overlay rung, see components/ui/zIndex.ts */,
     WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
 };
 const dialogBaseStyle: WailsNoDragStyle = {

@@ -1144,6 +1144,8 @@ type codingSubAgentCallbacks struct {
 	reqCtx      string
 	designCtx   string
 	prevOutputs []string
+	// visualPreview holds the page or deck written by the current tool call.
+	visualPreview *visualPreviewState
 
 	// workspaceWasEmptyAtStart freezes the project inventory before the model
 	// can create files. Checking it during final audit would turn a genuine
@@ -2810,6 +2812,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				// subagent task completes leaves the source preview blank while the
 				// agent is still running its remaining checks.
 				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), c.previewRouteProjectPath(), p, created, true)
+				c.noteCodingVisualPreview(p)
 			}
 			return result
 		}
@@ -2834,6 +2837,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				c.trackFile(p)
 				c.refreshFileSnapshot(p)
 				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), c.previewRouteProjectPath(), p, false, true)
+				c.noteCodingVisualPreview(p)
 			}
 			return result
 		}
@@ -2858,6 +2862,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				c.trackFile(p)
 				c.refreshFileSnapshot(p)
 				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), c.previewRouteProjectPath(), p, false, true)
+				c.noteCodingVisualPreview(p)
 			}
 			return result
 		}
@@ -18101,6 +18106,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 	now := time.Now()
 	b.WriteString(fmt.Sprintf("\n当前时间: %s\n", now.Format("2006-01-02 15:04")))
+	b.WriteString("\n" + visualPreviewPromptSentence + "\n")
 
 	return b.String()
 }

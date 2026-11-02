@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Z } from "../ui/zIndex";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AITabItem, getAITabDisplayTitle } from "./AITabItem";
@@ -180,7 +181,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                         position: "absolute",
                         top: "100%",
                         right: 0,
-                        zIndex: 9999,
+                        zIndex: Z.overlay,
                         background: theme.titleBarBg,
                         border: `1px solid ${theme.divider}`,
                         borderRadius: 6,
@@ -245,7 +246,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                         border: `1px solid ${theme.divider}`,
                         borderRadius: 6,
                         boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-                        zIndex: 9999,
+                        zIndex: Z.overlay,
                         minWidth: 160,
                         padding: "4px 0",
                     }}

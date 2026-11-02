@@ -224,3 +224,20 @@ func TestSemanticBuildVerifyHookReceivesTaskNotCommand(t *testing.T) {
 		t.Fatalf("hook accepted an unreviewed task: %v", err)
 	}
 }
+
+// An unrecognised directory and a target outside the workspace are decided
+// before any build runs. Recording them as failed would consume the grant.
+// A shell guard is covered separately and must stay an outcome.
+func TestBuildVerifyBeforeRunStaysRetractable(t *testing.T) {
+	workspace := t.TempDir()
+	principal := desktopUserID + ":" + workspace
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, userID: principal}
+	got := cb.executeTrustedBuildVerify(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: []byte(`{"task":"test"}`)})
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, "trusted_build_verify_project_unrecognised") {
+		t.Fatalf("unrecognised project was an outcome: %s", got)
+	}
+	got = cb.executeTrustedBuildVerify(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: []byte(`{"task":"test","target":"../outside"}`)})
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, "trusted_build_verify_target_rejected") {
+		t.Fatalf("escaping target was an outcome: %s", got)
+	}
+}

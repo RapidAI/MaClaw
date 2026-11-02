@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendChatTaskResultMessage, chatTaskDisplayTitle, chatTasksToRestore, isChatTaskResultResponse, parseChatTaskEvent, upsertChatTaskCard, type ChatTaskMessage, type ChatTaskView } from "../chatTaskModel";
+import { appendChatTaskResultMessage, chatTaskDisplayTitle, chatTasksToRestore, formatChatTaskFailure, isChatTaskResultResponse, localizeHelperReport, parseChatTaskEvent, upsertChatTaskCard, type ChatTaskMessage, type ChatTaskView } from "../chatTaskModel";
 
 const task: ChatTaskView = {
     id: "ct-1",
@@ -64,6 +64,44 @@ describe("chat task transcript", () => {
     it("parses the task event stream", () => {
         const parsed = parseChatTaskEvent(JSON.stringify({ id: "ct-2", session_key: "desktop-user", title: "notes", status: "interrupted", recovered: true }));
         expect(parsed).toMatchObject({ id: "ct-2", status: "interrupted", recovered: true });
+    });
+
+    it("localizes a failed helper report and keeps the returned reason", () => {
+        const record = "helper_report_empty\nfile: none\ndetail:\n执行策略阻止了 PowerShell 下载";
+        const zh = formatChatTaskFailure(record, "zh");
+        expect(zh).toContain("助手报告没有结论，也没有文件路径。");
+        expect(zh).toContain("结论第 1、2、3 行都是空的。");
+        expect(zh).toContain("文件一行没有写出路径。");
+        expect(zh).toContain("执行策略阻止了 PowerShell 下载");
+        expect(zh).not.toContain("helper_report_empty");
+        expect(formatChatTaskFailure(record, "zh-Hant")).toContain("助手報告沒有結論，也沒有檔案路徑。");
+        expect(formatChatTaskFailure(record, "en")).toContain("The helper report had no conclusion and no file path.");
+        expect(formatChatTaskFailure(record, "en")).toContain("The file line did not name a path.");
+        expect(formatChatTaskFailure(record, "mn")).toContain("Туслахын тайланд дүгнэлт ч, файлын зам ч алга.");
+        expect(formatChatTaskFailure("helper report has no conclusion and no path", "zh")).toContain("没有给出文件路径。");
+        expect(formatChatTaskFailure("helper_report_empty is not a real record", "zh")).toBe("helper_report_empty is not a real record");
+        expect(formatChatTaskFailure("chat_task_no_result", "zh-Hant")).toBe("任務結束了，但沒有返回結果。");
+        expect(formatChatTaskFailure("chat_task_no_result\nignored", "en")).toBe("The task finished without a result.");
+        const failed = upsertChatTaskCard([] as ChatTaskMessage[], {
+            ...task,
+            status: "failed",
+            error: "helper_report_empty\nfile: none\ndetail:\n执行策略阻止了下载",
+        });
+        expect(failed[0].content).toBe("执行策略阻止了下载");
+        expect(failed[0].content).not.toContain("helper_report_empty");
+        expect(formatChatTaskFailure("下载失败：磁盘已满", "en")).toBe("下载失败：磁盘已满");
+    });
+
+    it("relabels a helper result card in the reader's language", () => {
+        const card = "1. 安装包已下载\n2. 无\n3. 无\n文件：C:\\Users\\ma139\\Downloads\\ryzen.exe";
+        expect(localizeHelperReport(card, "en")).toBe("What finished: 安装包已下载\nWhat is left: None\nWhat is blocked: None\nFile path: C:\\Users\\ma139\\Downloads\\ryzen.exe");
+        expect(localizeHelperReport(card, "zh")).toContain("已完成：安装包已下载");
+        expect(localizeHelperReport(card, "zh")).toContain("还剩：无");
+        expect(localizeHelperReport(card, "zh-Hant")).toContain("檔案：C:\\Users\\ma139\\Downloads\\ryzen.exe");
+        expect(localizeHelperReport(card, "mn")).toContain("Юу дууссан: 安装包已下载");
+        expect(localizeHelperReport("已经改好。", "en")).toBe("已经改好。");
+        const prose = "1. 先打开页面\n2. 再点下载\n3. 然后安装\n文件已经放在桌面";
+        expect(localizeHelperReport(prose, "zh")).toBe(prose);
     });
 
     it("shows the job, not the dispatcher banner, as the card title", () => {

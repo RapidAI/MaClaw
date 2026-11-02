@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { EventsOn } from "../../../wailsjs/runtime";
 import { localizeText } from "../../i18n";
+import { startVisibleInterval } from "../../utils/visibleInterval";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { goalBarView, goalElapsedFrozen, goalElapsedText, type GoalBarSnapshot } from "./goalQuickBarModel";
 import { normalizeAssistantSessionKey } from "./aiAssistantPanelSessionUtils";
@@ -37,8 +38,8 @@ function GoalBarClock({ snap }: { snap: GoalBarSnapshot }) {
     const [, setTick] = useState(0);
     useEffect(() => {
         if (frozen) return;
-        const id = window.setInterval(() => setTick(count => count + 1), 1000);
-        return () => window.clearInterval(id);
+        // Elapsed label only: no need to tick while the window is hidden.
+        return startVisibleInterval(() => setTick(count => count + 1), 1000);
     }, [frozen]);
     const text = goalElapsedText(snap, Date.now());
     if (!text) return null;

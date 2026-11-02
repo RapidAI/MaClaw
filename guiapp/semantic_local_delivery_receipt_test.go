@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -636,5 +637,38 @@ func TestHostAttachedFileKeepsUnsettledWorkVisible(t *testing.T) {
 	}
 	if !sharedLoopTurnSettled(result, resp, paths) {
 		t.Fatal("settled path list left the recovery marker")
+	}
+}
+
+func TestUnexecutedArgumentRejectionIsNotAnExecutionOutcome(t *testing.T) {
+	got := semanticUnexecutedRejection(fmt.Errorf("trusted_shell_command_required"))
+	if !strings.Contains(got, "trusted_shell_command_required") || !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) {
+		t.Fatalf("pre-effect refusal = %q", got)
+	}
+	mentioned := semanticUnexecutedRejection(fmt.Errorf("trusted_shell_command_required: notes mention arguments_rejected"))
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: mentioned}) || !strings.HasPrefix(mentioned, "[system rejected] arguments_rejected:") {
+		t.Fatalf("a detail mention hid the refusal code: %q", mentioned)
+	}
+	if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: "[system rejected] trusted_office_write_failed: disk full"}) {
+		t.Fatal("a write that ran and failed must stay a recorded outcome")
+	}
+	if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Succeeded: true, Result: got}) {
+		t.Fatal("a successful result must not be retracted")
+	}
+	model := semanticUnexecutedModelRejection(got)
+	if !strings.Contains(model, "trusted_shell_command_required") || !strings.Contains(model, "tool remains available") {
+		t.Fatalf("retracted refusal = %q", model)
+	}
+	again := semanticUnexecutedModelRejection(model)
+	if strings.Count(again, "tool remains available") != 1 {
+		t.Fatalf("guidance repeated: %q", again)
+	}
+	incidental := semanticUnexecutedModelRejection("[system rejected] arguments_rejected: the jail said the path was refused before execution")
+	if strings.Count(incidental, "tool remains available") != 1 {
+		t.Fatalf("incidental wording hid availability: %q", incidental)
+	}
+	quoted := "[system rejected] trusted_file_write_failed: arguments_rejected was in the file"
+	if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: quoted}) {
+		t.Fatal("a write failure that quotes the refusal code must stay an outcome")
 	}
 }

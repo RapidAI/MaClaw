@@ -2,6 +2,7 @@ package desktopbot_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,6 +225,169 @@ func TestCollapseHelperReportKeepsSpacesInOnePath(t *testing.T) {
 	}
 	if strings.Count(shown, "演讲稿") != 1 || !strings.Contains(shown, path) {
 		t.Fatalf("spaced path split: %q", shown)
+	}
+}
+
+func TestCollapseHelperReportNamesTheEmptyCard(t *testing.T) {
+	body := "TRACE_SHOULD_NOT_LEAK Bearer sk-live-should-not-show\n文件：无\n执行策略阻止了 PowerShell，安装包没有落盘。"
+	_, err := desktopbot.CollapseHelperReport(body, nil)
+	if err == nil {
+		t.Fatal("empty card succeeded")
+	}
+	got := err.Error()
+	if strings.Contains(got, "TRACE_") || strings.Contains(got, "sk-") || strings.Contains(got, "Bearer") {
+		t.Fatalf("reason leaked a trace or secret: %s", got)
+	}
+	for _, want := range []string{"helper_report_empty", "file: none", "执行策略阻止了 PowerShell"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reason %q missing %q", got, want)
+		}
+	}
+	_, err = desktopbot.CollapseHelperReport("1.\n2.\n3.", nil)
+	if err == nil || !strings.Contains(err.Error(), "file: missing") || strings.Contains(err.Error(), "detail:") {
+		t.Fatalf("blank lines = %v", err)
+	}
+	_, err = desktopbot.CollapseHelperReport("TRACE_SHOULD_NOT_LEAK only", nil)
+	if err == nil || strings.Contains(err.Error(), "TRACE_") || strings.Contains(err.Error(), "detail:") {
+		t.Fatalf("trace body = %v", err)
+	}
+	mixed := "下载失败：策略阻止，密钥 sk-live-should-not-show 不能用。请改用 ask-user。\n文件：无。"
+	_, err = desktopbot.CollapseHelperReport(mixed, nil)
+	if err == nil {
+		t.Fatal("punctuated none succeeded")
+	}
+	got = err.Error()
+	if !strings.Contains(got, "file: none") || !strings.Contains(got, "下载失败：策略阻止") || !strings.Contains(got, "ask-user") || strings.Contains(got, "sk-live") {
+		t.Fatalf("secret ate the reason: %s", got)
+	}
+	if _, err = desktopbot.CollapseHelperReport("文件：無", nil); err == nil || !strings.Contains(err.Error(), "file: none") {
+		t.Fatalf("traditional none = %v", err)
+	}
+	var noise strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&noise, "PS C:\\Users> step %d running\n", i)
+	}
+	noise.WriteString("执行策略阻止了下载。\n文件：无\n")
+	_, err = desktopbot.CollapseHelperReport(noise.String(), nil)
+	if err == nil {
+		t.Fatal("noisy card succeeded")
+	}
+	got = err.Error()
+	if !strings.Contains(got, "执行策略阻止了下载") || strings.Contains(got, "step 0") {
+		t.Fatalf("log head hid the reason: %s", got)
+	}
+	plain := "读取 error log\n安装包没有落到磁盘。\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(plain, nil)
+	if err == nil || !strings.Contains(err.Error(), "安装包没有落到磁盘") {
+		t.Fatalf("keyword hid the closing sentence: %v", err)
+	}
+	var later strings.Builder
+	later.WriteString("执行策略阻止了下载。\n")
+	for _, line := range []string{"然后检查了磁盘。", "页面仍停在下载按钮。", "等待窗口关掉。", "再次确认目录。", "安装包没有落到磁盘。"} {
+		later.WriteString(line)
+		later.WriteByte('\n')
+	}
+	later.WriteString("文件：无\n")
+	_, err = desktopbot.CollapseHelperReport(later.String(), nil)
+	if err == nil || !strings.Contains(err.Error(), "安装包没有落到磁盘") || !strings.Contains(err.Error(), "执行策略阻止了下载") {
+		t.Fatalf("early keyword replaced the close: %v", err)
+	}
+	sameLine := "PS C:\\Users\\ma139> 执行策略阻止了下载。\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(sameLine, nil)
+	if err == nil || !strings.Contains(err.Error(), "执行策略阻止了下载") || strings.Contains(err.Error(), "PS C:") {
+		t.Fatalf("prompt ate the reason: %v", err)
+	}
+	between := "安装包没有落到磁盘。\nstep 3 running\n请改用管理员权限。\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(between, nil)
+	if err == nil || !strings.Contains(err.Error(), "安装包没有落到磁盘") || !strings.Contains(err.Error(), "请改用管理员权限") || strings.Contains(err.Error(), "step 3") {
+		t.Fatalf("status line stayed between sentences: %v", err)
+	}
+	var after strings.Builder
+	after.WriteString("执行策略阻止了下载。\n")
+	for i := 0; i < 6; i++ {
+		fmt.Fprintf(&after, "step %d running\n", i)
+	}
+	after.WriteString("C:\\Users\\ma139> Get-Item\n文件：无\n")
+	_, err = desktopbot.CollapseHelperReport(after.String(), nil)
+	if err == nil || !strings.Contains(err.Error(), "执行策略阻止了下载") || strings.Contains(err.Error(), "step 0") || strings.Contains(err.Error(), "Get-Item") {
+		t.Fatalf("status echo replaced the reason: %v", err)
+	}
+	nested := "PS C:\\Users\\ma139> PS C:\\Users\\ma139> 执行策略阻止了下载。\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(nested, nil)
+	if err == nil || !strings.Contains(err.Error(), "执行策略阻止了下载") || strings.Contains(err.Error(), "PS C:") {
+		t.Fatalf("nested prompt ate the reason: %v", err)
+	}
+	var record strings.Builder
+	record.WriteString("执行策略阻止了下载。\n")
+	for i := 0; i < 5; i++ {
+		record.WriteString("+ FullyQualifiedErrorId : UnauthorizedAccess\n")
+	}
+	record.WriteString("文件：无\n")
+	_, err = desktopbot.CollapseHelperReport(record.String(), nil)
+	if err == nil || !strings.Contains(err.Error(), "执行策略阻止了下载") || strings.Contains(err.Error(), "FullyQualifiedErrorId") {
+		t.Fatalf("diagnostic replaced the sentence: %v", err)
+	}
+	var stack strings.Builder
+	stack.WriteString("执行策略阻止了下载。\n")
+	for _, frame := range []string{
+		"at System.Management.Automation.Runspaces.RunspaceBase.Open()",
+		"at System.Management.Automation.Runspaces.LocalRunspace.OpenHelper()",
+		"at System.Threading.ExecutionContext.Run()",
+		"at System.Management.Automation.CommandProcessor.ProcessRecord()",
+		"https://go.microsoft.com/fwlink/?LinkID=135170.",
+	} {
+		stack.WriteString(frame)
+		stack.WriteByte('\n')
+	}
+	stack.WriteString("文件：无\n")
+	_, err = desktopbot.CollapseHelperReport(stack.String(), nil)
+	if err == nil || !strings.Contains(err.Error(), "执行策略阻止了下载") || strings.Contains(err.Error(), "RunspaceBase") || strings.Contains(err.Error(), "LinkID") {
+		t.Fatalf("stack frame replaced the sentence: %v", err)
+	}
+	var names strings.Builder
+	names.WriteString("执行策略阻止了下载。\n")
+	for _, name := range []string{"演讲稿.docx", "笔记.docx", "图片.png", "备份.zip", "日程.docx"} {
+		names.WriteString(name)
+		names.WriteByte('\n')
+	}
+	names.WriteString("文件：无\n")
+	_, err = desktopbot.CollapseHelperReport(names.String(), nil)
+	if err == nil || !strings.Contains(err.Error(), "执行策略阻止了下载") || strings.Contains(err.Error(), ".docx") {
+		t.Fatalf("file name replaced the sentence: %v", err)
+	}
+	wrote := "无法写入 C:\\Users\\ma139\\Downloads\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(wrote, nil)
+	if err == nil || !strings.Contains(err.Error(), "无法写入") || !strings.Contains(err.Error(), `C:\Users\ma139\Downloads`) {
+		t.Fatalf("path mention ate the reason: %v", err)
+	}
+	comma := "读取 error log\n执行策略阻止了下载，安装包没有落盘\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(comma, nil)
+	if err == nil || !strings.Contains(err.Error(), "安装包没有落盘") {
+		t.Fatalf("comma sentence was dropped: %v", err)
+	}
+	spaced := "执行策略阻止了下载。\nC:\\Users\\马\\演讲稿 完整版.docx\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(spaced, nil)
+	if err == nil || !strings.Contains(err.Error(), "执行策略阻止了下载") || strings.Contains(err.Error(), "完整版") {
+		t.Fatalf("spaced path replaced the sentence: %v", err)
+	}
+	postscript := "PS the execution policy blocked the installer.\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(postscript, nil)
+	if err == nil || !strings.Contains(err.Error(), "execution policy blocked the installer") {
+		t.Fatalf("postscript was read as a prompt: %v", err)
+	}
+	ended := "at the end the download failed (policy).\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(ended, nil)
+	if err == nil || !strings.Contains(err.Error(), "download failed (policy)") {
+		t.Fatalf("sentence was read as a stack frame: %v", err)
+	}
+	_, err = desktopbot.CollapseHelperReport("exit code 1\n文件：无\n", nil)
+	if err == nil || !strings.Contains(err.Error(), "exit code 1") {
+		t.Fatalf("diagnostic-only reason dropped: %v", err)
+	}
+	mixedTrace := "下载失败 TRACE_SHOULD_NOT_LEAK\n文件：无\n"
+	_, err = desktopbot.CollapseHelperReport(mixedTrace, nil)
+	if err == nil || strings.Contains(err.Error(), "TRACE_") || !strings.Contains(err.Error(), "下载失败") {
+		t.Fatalf("trace token ate the sentence: %v", err)
 	}
 }
 

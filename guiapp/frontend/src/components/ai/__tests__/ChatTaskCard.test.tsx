@@ -61,6 +61,20 @@ describe("ChatTaskCard rendering", () => {
         expect(input.value).toBe("");
     });
 
+    it("shows a localized reason when the helper report is empty", () => {
+        const task: ChatTaskView = {
+            id: "ct-fail", sessionKey: "desktop-user", title: "下载 AMD Ryzen AI 安装包",
+            status: "failed",
+            error: "helper_report_empty\nfile: none\ndetail:\n执行策略阻止了 PowerShell 下载",
+        };
+        render(<ChatTaskCard task={task} theme={theme} lang="zh" />);
+        expect(screen.getByText("失败")).toBeTruthy();
+        const reason = screen.getByText(/助手报告没有结论/);
+        expect(reason.textContent).toContain("文件一行没有写出路径。");
+        expect(reason.textContent).toContain("执行策略阻止了 PowerShell 下载");
+        expect(reason.textContent).not.toContain("helper_report_empty");
+    });
+
     it("keeps the steer input on running tasks and cancels from the card", async () => {
         const task: ChatTaskView = {
             id: "ct-4", sessionKey: "desktop-user", title: "生成 PPT",

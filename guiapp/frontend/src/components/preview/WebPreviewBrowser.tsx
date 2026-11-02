@@ -6,6 +6,7 @@ import {
     classifyWebPreviewAddress,
     joinPreviewDisplay,
     localPreviewURL,
+    previewAddressText,
     decodePreviewPath,
     splitPreviewLocation,
     standaloneHTTPURL,
@@ -78,7 +79,7 @@ export function WebPreviewBrowser({
         setHistIndex(index);
         setHistLength(entries.length);
         const current = entries[index];
-        if (current) setAddressIfIdle(current.label);
+        if (current) setAddressIfIdle(previewAddressText(current));
     };
 
     const showEntry = (entry: HistoryEntry) => {
@@ -196,7 +197,7 @@ export function WebPreviewBrowser({
             const reported = decodePreviewPath(String(data.path || ''));
             const current = historyRef.current[indexRef.current];
             if (current?.mode === 'local' && decodePreviewPath(current.rel) === reported) {
-                if (!addressFocused.current) setAddress(current.label);
+                if (!addressFocused.current) setAddress(previewAddressText(current));
                 return;
             }
             const { path, suffix } = splitPreviewLocation(reported);
@@ -214,7 +215,7 @@ export function WebPreviewBrowser({
             indexRef.current = entries.length - 1;
             setHistIndex(indexRef.current);
             setHistLength(entries.length);
-            if (!addressFocused.current) setAddress(entry.label);
+            if (!addressFocused.current) setAddress(previewAddressText(entry));
         };
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);

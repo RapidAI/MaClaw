@@ -1187,11 +1187,14 @@ func TestMarkdownToHTML_BlockquoteNoSpace(t *testing.T) {
 func TestMarkdownToHTML_FencedCodeBlock(t *testing.T) {
 	md := "```\nfunc main() {\n    fmt.Println(\"hello\")\n}\n```"
 	html := markdownToHTML(md)
-	if !strings.Contains(html, "monospace") {
-		t.Error("code block should use monospace font")
+	if !strings.Contains(html, "font-size:8.5pt") {
+		t.Error("code block should use the compact code size")
 	}
-	if !strings.Contains(html, "background-color") {
-		t.Error("code block should have background color")
+	if !strings.Contains(html, "color:#1f2937") {
+		t.Error("code block should use the code ink")
+	}
+	if strings.Contains(html, "background-color") || strings.Contains(html, "border-radius") {
+		t.Error("code block should not carry CSS the HTML box ignores")
 	}
 	if !strings.Contains(html, "fmt.Println") {
 		t.Error("code content missing")
@@ -1207,8 +1210,8 @@ func TestMarkdownToHTML_FencedCodeBlock(t *testing.T) {
 func TestMarkdownToHTML_FencedCodeBlockWithLanguage(t *testing.T) {
 	md := "```python\nprint('hello')\n```"
 	html := markdownToHTML(md)
-	if !strings.Contains(html, "monospace") {
-		t.Error("code block with language hint should render as monospace")
+	if !strings.Contains(html, "font-size:8.5pt") {
+		t.Error("code block with language hint should use the compact code size")
 	}
 	if !strings.Contains(html, "print") {
 		t.Error("code content missing")
@@ -1284,12 +1287,16 @@ func TestGeneratePDF_BoldSurvivesItalic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	texts, err := gopdf.ExtractTextFromPage(data, 0)
+	coverTexts, err := gopdf.ExtractTextFromPage(data, 0)
+	if err != nil {
+		t.Fatalf("extract cover: %v", err)
+	}
+	texts, err := gopdf.ExtractTextFromPage(data, firstBodyPage)
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	boldFont := extractedFont(texts, "甲")
-	regularFont := extractedFont(texts, "乙")
+	boldFont := extractedFont(coverTexts, "甲")
+	regularFont := extractedFont(coverTexts, "乙")
 	innerFont := extractedFont(texts, "丁")
 	if boldFont == "" || regularFont == "" || innerFont == "" {
 		t.Fatalf("missing font names: bold=%q regular=%q inner=%q", boldFont, regularFont, innerFont)

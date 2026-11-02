@@ -206,14 +206,12 @@ export function NotificationToast({
     padding: "12px 14px",
     borderRadius: "8px",
     background: theme.isDark
-      ? "linear-gradient(135deg, rgba(220, 38, 38, 0.14) 0%, rgba(30, 30, 44, 0.97) 100%)"
-      : "linear-gradient(135deg, rgba(220, 38, 38, 0.08) 0%, rgba(255, 255, 255, 0.98) 100%)",
-    border: `1px solid ${
-      theme.isDark ? "rgba(220, 38, 38, 0.35)" : "rgba(220, 38, 38, 0.25)"
-    }`,
+      ? "linear-gradient(135deg, color-mix(in srgb, var(--theme-danger) 14%, transparent) 0%, color-mix(in srgb, var(--theme-surface) 97%, transparent) 100%)"
+      : "linear-gradient(135deg, color-mix(in srgb, var(--theme-danger) 8%, transparent) 0%, color-mix(in srgb, var(--theme-surface) 98%, transparent) 100%)",
+    border: "1px solid color-mix(in srgb, var(--theme-danger) 28%, transparent)",
     boxShadow: theme.isDark
-      ? "0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(220, 38, 38, 0.15)"
-      : "0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(220, 38, 38, 0.08)",
+      ? "0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 8px color-mix(in srgb, var(--theme-danger) 15%, transparent)"
+      : "0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px color-mix(in srgb, var(--theme-danger) 8%, transparent)",
     cursor: "pointer",
     animation: "notification-toast-slide-in 300ms ease-out forwards",
     transition: "opacity 200ms ease, transform 200ms ease",
@@ -228,7 +226,7 @@ export function NotificationToast({
     background: "var(--theme-danger)",
     flexShrink: 0,
     marginTop: "4px",
-    boxShadow: "0 0 6px rgba(220, 38, 38, 0.5)",
+    boxShadow: "0 0 6px color-mix(in srgb, var(--theme-danger) 50%, transparent)",
   };
 
   const bodyStyle: CSSProperties = {

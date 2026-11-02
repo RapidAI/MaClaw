@@ -92,7 +92,7 @@ const styles = {
     keepGoing(theme: Theme): CSSProperties {
         return {
             borderRadius: 999,
-            color: theme.btnColor || "#2563eb",
+            color: theme.btnColor || "var(--theme-primary)",
             padding: "4px 12px",
             fontSize: 12,
             fontWeight: 600,

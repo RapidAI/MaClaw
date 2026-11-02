@@ -85,7 +85,7 @@ func TestPaperImageMovesIntactWhenThePageIsShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	var raw strings.Builder
-	for page := 0; page < 6; page++ {
+	for page := 0; page < 8; page++ {
 		texts, err := gopdf.ExtractTextFromPage(data, page)
 		if err != nil || len(texts) == 0 {
 			break

@@ -124,7 +124,7 @@ func TestGeneratePDF_ColonStaysOnLabelLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	texts, err := gopdf.ExtractTextFromPage(data, 0)
+	texts, err := gopdf.ExtractTextFromPage(data, firstBodyPage)
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -153,14 +153,15 @@ func TestGeneratePDF_ShortColonStaysWhenLabelFillsTheLine(t *testing.T) {
 	if !gen.HasFont() {
 		t.Skip("跳过：系统未找到中文字体")
 	}
-	// 46 ems leaves only a few columns. "：短说明文字" does not fit there,
-	// and used to move to the next line together with the colon.
-	md := "- **" + strings.Repeat("名", 46) + "终**：短说明文字"
+	// 45 ems of label at the 10.5pt body size leaves a couple of columns.
+	// "：短说明文字" does not fit there, and used to move to the next line
+	// together with the colon.
+	md := "- **" + strings.Repeat("名", 44) + "终**：短说明文字"
 	data, err := gen.Generate(Spec{Title: "短尾冒号", Content: md})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	texts, err := gopdf.ExtractTextFromPage(data, 0)
+	texts, err := gopdf.ExtractTextFromPage(data, firstBodyPage)
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}

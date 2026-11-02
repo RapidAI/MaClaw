@@ -154,11 +154,11 @@ func semanticIntArg(raw interface{}) (int, bool) {
 
 func (h *IMMessageHandler) executeTrustedShell(principalID, command string, timeout time.Duration) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_shell_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_shell_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_shell_principal_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_shell_principal_required"))
 	}
 	// These guards keep one capability from carrying another: a local shell
 	// grant must not reach a remote host, the user's whole browser process
@@ -187,7 +187,7 @@ func (h *IMMessageHandler) executeTrustedShell(principalID, command string, time
 	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	if strings.TrimSpace(workspace) == "" {
-		return "", fmt.Errorf("trusted_shell_workspace_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_shell_workspace_unavailable"))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

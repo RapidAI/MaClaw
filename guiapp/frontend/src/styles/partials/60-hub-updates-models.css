@@ -310,7 +310,7 @@
     margin: 0 0 8px;
     color: var(--theme-text-primary);
     font-size: 1.15rem;
-    font-weight: 750;
+    font-weight: 700;
     letter-spacing: 0;
 }
 
@@ -444,7 +444,7 @@
 .tool-repair-dialog__text {
     color: var(--theme-text-secondary);
     font-size: 0.9rem;
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .tool-repair-dialog__text[data-status='success'] { color: var(--theme-success); }
@@ -466,7 +466,7 @@
     color: var(--theme-text-secondary);
     cursor: pointer;
     font-size: 0.85rem;
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .thanks-modal {
@@ -2326,7 +2326,7 @@
     margin: 0;
     color: var(--theme-text-primary);
     font-size: 0.92rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: -0.01em;
     line-height: 1.35;
 }
@@ -2350,7 +2350,7 @@
     margin: 0;
     color: var(--theme-text-primary);
     font-size: 0.92rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: -0.01em;
 }
 

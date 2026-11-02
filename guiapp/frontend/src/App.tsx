@@ -100,6 +100,21 @@ const TASK_LIST_REFRESH_DEBOUNCE_MS = 250;
 // settles; cloud workspace tasks still restore once via the shared restore.
 const TASK_ITEMS_SNAPSHOT_KEY = 'task_items_snapshot_v1';
 const TASK_ITEMS_SNAPSHOT_CAP = 200;
+// Task pane width survives relaunch; the drag handler clamps to this range.
+const TASK_PANE_WIDTH_KEY = 'maclaw:task-pane-width';
+const TASK_PANE_WIDTH_MIN = 180;
+const TASK_PANE_WIDTH_MAX = 460;
+const TASK_PANE_WIDTH_DEFAULT = 308;
+function readSavedTaskPaneWidth(): number {
+    try {
+        const raw = window.localStorage.getItem(TASK_PANE_WIDTH_KEY);
+        const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+        if (!Number.isFinite(parsed)) return TASK_PANE_WIDTH_DEFAULT;
+        return Math.min(TASK_PANE_WIDTH_MAX, Math.max(TASK_PANE_WIDTH_MIN, parsed));
+    } catch {
+        return TASK_PANE_WIDTH_DEFAULT;
+    }
+}
 function isSyntheticAssistantTaskItem(item: { project_path?: unknown; tags?: unknown; name?: unknown } | null | undefined): boolean {
     return isAutoACPAssistantTabTaskItem(item) || isVEAssistantTabTaskItem(item);
 }
@@ -475,7 +490,7 @@ function App() {
     const [refreshKey, setRefreshKey] = useState<number>(0);
     const [activeTool, setActiveTool] = useState<string>("claude");
     const [codexConfigUpdateCount, setCodexConfigUpdateCount] = useState(0);
-    const [taskManagementPaneWidth, setTaskManagementPaneWidth] = useState(308);
+    const [taskManagementPaneWidth, setTaskManagementPaneWidth] = useState(readSavedTaskPaneWidth);
     const [isTaskManagementResizing, setIsTaskManagementResizing] = useState(false);
     const taskManagementResizeStartX = useRef(0);
     const taskManagementResizeStartWidth = useRef(308);
@@ -2181,6 +2196,17 @@ function App() {
             document.body.style.userSelect = '';
         };
     }, [isTaskManagementResizing]);
+
+    // Persist the pane width so the next launch reopens at the same size.
+    // Skipped mid-drag: the effect would otherwise run on every pointermove.
+    useEffect(() => {
+        if (isTaskManagementResizing) return;
+        try {
+            window.localStorage.setItem(TASK_PANE_WIDTH_KEY, String(taskManagementPaneWidth));
+        } catch {
+            // localStorage may be unavailable in embedded/dev contexts.
+        }
+    }, [taskManagementPaneWidth, isTaskManagementResizing]);
 
     const logEndRef = useRef<HTMLTextAreaElement>(null);
 

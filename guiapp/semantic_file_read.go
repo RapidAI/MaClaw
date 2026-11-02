@@ -124,17 +124,17 @@ func trustedFileReadLocated(found agent.SearchToolResult) (string, error) {
 
 func (h *IMMessageHandler) readTrustedFile(principalID, path, query, filePattern string, startLine int) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_file_read_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_read_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_file_read_principal_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_read_principal_required"))
 	}
 	path, query, filePattern = strings.TrimSpace(path), strings.TrimSpace(query), strings.TrimSpace(filePattern)
 	// A line page and a search name two different reads. Rejecting here, before
 	// the hook, keeps a direct call from hiding one of them inside the other.
 	if startLine < 0 || (startLine > 0 && (query != "" || filePattern != "")) {
-		return "", fmt.Errorf("trusted_file_read_conflicting_fields")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_read_conflicting_fields"))
 	}
 	if h.semanticTrustedFileRead != nil {
 		return h.semanticTrustedFileRead(principalID, path, query, filePattern, startLine)
@@ -142,7 +142,7 @@ func (h *IMMessageHandler) readTrustedFile(principalID, path, query, filePattern
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	absPath, err := trustedFileReadResolvePath(workspace, path)
 	if err != nil {
-		return "", err
+		return "", effectNotStarted(err)
 	}
 	return readResolvedTrustedFile(workspace, absPath, path, query, filePattern, startLine)
 }
@@ -168,11 +168,11 @@ func hostProcedureTreeContains(root, path string) bool {
 // this does not open writes into the skill directory.
 func readHostProcedureTree(root, path, query, filePattern string, startLine int) (string, error) {
 	if startLine < 0 || (startLine > 0 && (query != "" || filePattern != "")) {
-		return "", fmt.Errorf("trusted_file_read_conflicting_fields")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_read_conflicting_fields"))
 	}
 	absPath, err := trustedFileReadResolvePath(root, path)
 	if err != nil {
-		return "", err
+		return "", effectNotStarted(err)
 	}
 	return readResolvedTrustedFile(root, absPath, path, query, filePattern, startLine)
 }
@@ -208,7 +208,7 @@ func readResolvedTrustedFile(workspace, absPath, path, query, filePattern string
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return "", fmt.Errorf("trusted_file_read_not_found")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_read_not_found"))
 	}
 	if startLine > 0 {
 		return trustedFileReadFromStartLine(absPath, info, startLine)
@@ -290,7 +290,7 @@ func trustedFileReadList(absPath, display string) (string, error) {
 
 func trustedFileReadFromStartLine(absPath string, info os.FileInfo, startLine int) (string, error) {
 	if info.IsDir() || trustedFileReadUsesDocumentReader(absPath) {
-		return "", fmt.Errorf("trusted_file_read_start_line_unsupported")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_read_start_line_unsupported"))
 	}
 	data, err := os.ReadFile(absPath)
 	if err != nil {

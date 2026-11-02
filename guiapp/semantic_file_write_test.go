@@ -800,3 +800,42 @@ func TestTrustedFileWriteModeVocabulary(t *testing.T) {
 		}
 	}
 }
+
+// A path outside the workspace, or a passage that is not in the file, is
+// decided before any bytes change. Recording it as a failed execution would
+// consume the write grant, and the file written afterward could not close
+// the need. A write that already reached the filesystem stays an outcome.
+func TestFileWriteBeforeEffectStaysRetractable(t *testing.T) {
+	workspace := t.TempDir()
+	principal := desktopUserID + ":" + workspace
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, userID: principal}
+
+	escaped := tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"..\\escape.txt","content":"nope"}`)}
+	got := cb.executeTrustedFileWrite(tool.PlannedSelection{ID: "write"}, escaped)
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, "trusted_file_write_path_rejected") {
+		t.Fatalf("path refusal before write was an outcome: %s", got)
+	}
+
+	source := filepath.Join(workspace, "main.go")
+	if err := os.WriteFile(source, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missed := tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"main.go","old_string":"func Missing()","new_string":"func Found()"}`)}
+	got = cb.executeTrustedFileWrite(tool.PlannedSelection{ID: "write"}, missed)
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, "trusted_file_edit_no_match") {
+		t.Fatalf("unmatched passage was an outcome: %s", got)
+	}
+	body, err := os.ReadFile(source)
+	if err != nil || string(body) != "package main\n" {
+		t.Fatalf("unmatched edit changed the file: %q err=%v", body, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(workspace, "blocker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocked := tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"blocker/child.txt","content":"x"}`)}
+	got = cb.executeTrustedFileWrite(tool.PlannedSelection{ID: "write"}, blocked)
+	if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, "[system rejected]") {
+		t.Fatalf("a write that reached the filesystem must stay an outcome: %s", got)
+	}
+}

@@ -198,6 +198,46 @@ var styleCatalog = []styleSpec{
 		accent: "F59E0B", gold: "FDE68A", white: "FFFFFF", mute: "6B7280",
 		slate: "374151", card: "FFFCF7", onDark: "FFFBF5", onDarkMute: "E5E7EB",
 	},
+	{
+		id: "finance", label: "财务年报", summary: "深蓝竖版标题区，金线数据墙。适合年报和财报。",
+		labelEn: "Financial Report", labelHant: "財務年報",
+		summaryEn: "Navy title panel, gold rules, a data wall.", summaryHant: "深藍豎版標題區，金線數據牆。",
+		aliases: []string{"finance", "financial report", "annual report", "财务", "财务年报", "年报", "财报", "财务汇报"}, motif: motifFinance,
+		keywords: []string{"财务年报", "年报", "财报", "财务报告", "财务分析", "业绩说明", "营收汇报", "annual report", "financial report"},
+		paper:    "FDFCF8", ink: "1A2233", navy: "0B2545", navy2: "14406B",
+		accent: "C9A227", gold: "E3C566", white: "FFFFFF", mute: "64748B",
+		slate: "33415C", card: "F6F3EA", onDark: "F8F5EC", onDarkMute: "C7D2E4",
+	},
+	{
+		id: "aurora", label: "深色科技", summary: "深空辉光封面，浅色内容页青色点缀。适合科技发布。",
+		labelEn: "Aurora Dark", labelHant: "深色科技",
+		summaryEn: "Dark glow cover, light pages with cyan marks.", summaryHant: "深空輝光封面，淺色內容頁青色點綴。",
+		aliases: []string{"aurora", "dark tech", "深色科技", "科技发布会", "科技风", "极客", "未来感"}, motif: motifAurora,
+		keywords: []string{"深色科技", "科技发布会", "数字化转型", "未来感", "极客风格", "dark tech", "aurora", "科技风"},
+		paper:    "F5F7FF", ink: "0F1B33", navy: "0B1026", navy2: "1E2A4A",
+		accent: "22D3EE", gold: "7C5CFF", white: "FFFFFF", mute: "5A6B8C",
+		slate: "26334D", card: "FFFFFF", onDark: "EAF6FF", onDarkMute: "9FB4D8",
+	},
+	{
+		id: "marketing", label: "营销增长", summary: "暖白纸面，珊瑚橙撞色分栏。适合营销和增长方案。",
+		labelEn: "Marketing Growth", labelHant: "營銷增長",
+		summaryEn: "Warm paper, coral split panels.", summaryHant: "暖白紙面，珊瑚橙撞色分欄。",
+		aliases: []string{"marketing", "marketing plan", "growth plan", "营销", "营销增长", "营销方案", "增长方案", "市场推广"}, motif: motifSplit,
+		keywords: []string{"营销方案", "营销计划", "增长方案", "市场推广", "活动策划", "投放计划", "私域运营", "marketing plan", "growth plan", "campaign"},
+		paper:    "FFF8F2", ink: "2B1A12", navy: "7C2D12", navy2: "9A3412",
+		accent: "FF5A36", gold: "F59E0B", white: "FFFFFF", mute: "8A7468",
+		slate: "5A3A28", card: "FFF1E8", onDark: "FFF8F2", onDarkMute: "F5C9B5",
+	},
+	{
+		id: "medical", label: "医疗健康", summary: "冷白纸面，青绿课头带。适合医疗讲座和健康宣教。",
+		labelEn: "Healthcare", labelHant: "醫療健康",
+		summaryEn: "Cool white field, teal masthead band.", summaryHant: "冷白紙面，青綠課頭帶。",
+		aliases: []string{"medical", "healthcare", "医疗", "医疗健康", "健康讲座", "医疗讲座"}, motif: motifLesson,
+		keywords: []string{"医疗健康", "医学讲座", "义诊", "健康宣教", "医院介绍", "康复方案", "健康讲堂", "healthcare", "clinic"},
+		paper:    "F6FBFA", ink: "12332F", navy: "0E7C86", navy2: "148A93",
+		accent: "14B8A6", gold: "7ED0C5", white: "FFFFFF", mute: "5F7E7A",
+		slate: "2E5551", card: "FFFFFF", onDark: "F6FBFA", onDarkMute: "B9DFDB",
+	},
 }
 
 var (
@@ -922,9 +962,9 @@ func rect(slide *ppt.Slide, x, y, w, h int64, fill ppt.Color) {
 	sh.SetHeight(h)
 }
 
-func roundRect(slide *ppt.Slide, x, y, w, h int64, fill ppt.Color) {
+func roundRect(slide *ppt.Slide, x, y, w, h int64, fill ppt.Color) *ppt.AutoShape {
 	if slide == nil || w <= 0 || h <= 0 {
-		return
+		return nil
 	}
 	sh := slide.CreateAutoShape()
 	sh.SetAutoShapeType(ppt.AutoShapeRoundedRect)
@@ -935,6 +975,7 @@ func roundRect(slide *ppt.Slide, x, y, w, h int64, fill ppt.Color) {
 	sh.SetOffsetY(y)
 	sh.SetWidth(w)
 	sh.SetHeight(h)
+	return sh
 }
 
 func paintSolidBackground(slide *ppt.Slide, fill ppt.Color) {
@@ -1377,6 +1418,10 @@ func buildCards(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box conten
 		buildOfficialCards(slide, theme, box, texts)
 	case motifLesson:
 		buildLessonCards(slide, theme, box, texts)
+	case motifFinance:
+		buildFinanceCards(slide, theme, box, texts)
+	case motifAurora:
+		buildAuroraCards(slide, theme, box, texts)
 	default:
 		buildFilledCards(slide, theme, box, texts)
 	}
@@ -1506,12 +1551,12 @@ func buildKPI(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box contentB
 		// Big-number principle: the value is the visual anchor, so it takes
 		// most of the card and the label stays small and quiet. Both sit on
 		// the card's optical centerline.
-		valueSize := 36
+		valueSize := 40
 		switch {
 		case rows > 1:
 			valueSize = 28
 		case cols >= 4:
-			valueSize = 32
+			valueSize = 34
 		}
 		if cardH >= emuIn(2.4) {
 			valueSize += 4
@@ -1528,7 +1573,7 @@ func buildKPI(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box contentB
 		deckText(slide, x+emuIn(0.22), valueY, cardW-emuIn(0.4), emuIn(0.85), value, valueSize, true, valColor, ppt.HorizontalLeft)
 		if label != "" {
 			if cardH >= emuIn(1.7) {
-				rect(slide, x+emuIn(0.22), valueY+emuIn(0.80), emuIn(0.85), emuIn(0.025), blend(accentColor, bg, 0.35))
+				tickRow(slide, x+emuIn(0.22), valueY+emuIn(0.78), emuIn(0.2), emuIn(0.03), emuIn(0.06), 3, 1, accentColor, bg)
 			}
 			deckText(slide, x+emuIn(0.22), valueY+emuIn(0.86), cardW-emuIn(0.4), emuIn(0.55), label, 13, false, textOn(theme.slate, bg, theme), ppt.HorizontalLeft)
 		}
@@ -1569,7 +1614,8 @@ func buildTimeline(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box con
 		if rowCount > 1 {
 			trackX := box.x + cardW/2
 			trackW := int64(rowCount-1) * (cardW + gap)
-			rect(slide, trackX, rowY+nodeD/2-emuIn(0.025), trackW, emuIn(0.05), blend(theme.accent, theme.paper, 0.45))
+			fadeRule(slide, trackX, rowY+nodeD/2-emuIn(0.02), trackW, 4, blend(theme.accent, theme.paper, 0.45), theme.paper)
+			shapeBadge(slide, trackX+trackW+emuIn(0.1), rowY+nodeD/2-emuIn(0.1), emuIn(0.2), ppt.AutoShapeChevron, blend(theme.accent, theme.paper, 0.15))
 		}
 	}
 	for i, text := range texts {

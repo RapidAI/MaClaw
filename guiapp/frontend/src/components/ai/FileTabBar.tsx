@@ -14,6 +14,7 @@
  * measurement so long labels collapse without multi-frame shrink cascades.
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Z } from "../ui/zIndex";
 import {
     codeFileLineDeltaHasChange,
     computeCodeFileLineDelta,
@@ -1408,7 +1409,7 @@ export function FileTabBar({
                             position: 'absolute',
                             top: '100%',
                             right: 0,
-                            zIndex: 9999,
+                            zIndex: Z.overlay,
                             background: theme.bg,
                             border: `1px solid ${theme.border}`,
                             borderRadius: 6,

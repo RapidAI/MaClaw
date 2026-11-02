@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { GetHubConnectionState, ReconnectHub } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { localizeText } from '../../i18n';
+import { startVisibleInterval } from '../../utils/visibleInterval';
 
 export interface HubLinkState {
     state: string;
@@ -50,14 +51,15 @@ export function HubConnectionBadge({ lang }: { lang: string }) {
         const visible = () => { if (document.visibilityState === 'visible') kick('visible'); };
         window.addEventListener('online', online);
         document.addEventListener('visibilitychange', visible);
-        const clock = window.setInterval(() => tick(n => n + 1), 1000);
+        // Badge re-render tick: pause while the document is hidden.
+        const stopClock = startVisibleInterval(() => tick(n => n + 1), 1000);
         return () => {
             alive = false;
             if (timer.current) clearTimeout(timer.current);
             if (typeof off === 'function') off();
             window.removeEventListener('online', online);
             document.removeEventListener('visibilitychange', visible);
-            window.clearInterval(clock);
+            stopClock();
         };
     }, []);
     const label = hubBadgeLabel(st, lang);

@@ -15,6 +15,16 @@ import (
 // this failure because the render heartbeat keeps running; nothing else
 // watches input liveness.
 //
+// Two detectors share the nudge -> reload -> escalate ladder:
+//   - Idle-based (slow path): requires minutes of continuous active-foreground
+//     tenure before the first nudge.
+//   - Click-echo (fast path, frontend_click_echo_windows.go): a WH_MOUSE_LL
+//     hook counts clicks targeted at the main window while the page reports
+//     its own input promptly (throttled reporter in the agent below). Clicks
+//     that reach the HWND but never echo back are direct dead-pipeline
+//     evidence, so recovery fires within seconds and cannot false-positive on
+//     a healthy page (every click echoes back immediately there).
+//
 // Mechanism: WindowExecJS injects a self-installing document-level input
 // tracker (idempotent, survives reloads by re-installing). It reports the
 // timestamp of the most recent user input event through the existing
@@ -57,14 +67,32 @@ const frontendInputAgentJS = `(function(){
   try {
     var w = window;
     if (!w.__MACLAW_INPUT_TRACK) {
-      w.__MACLAW_INPUT_TRACK = { last: Date.now() };
-      var upd = function(){ w.__MACLAW_INPUT_TRACK.last = Date.now(); };
-      document.addEventListener('pointerdown', upd, true);
-      document.addEventListener('keydown', upd, true);
-      document.addEventListener('wheel', upd, true);
-      document.addEventListener('mousemove', upd, true);
+      w.__MACLAW_INPUT_TRACK = { last: Date.now(), reported: 0, evts: [] };
+      var upd = function(kind){
+        var t = w.__MACLAW_INPUT_TRACK;
+        var now = Date.now();
+        t.last = now;
+        // Recent-event FIFO for the click-latency matcher: pairing these
+        // client timestamps against native click timestamps measures how late
+        // input delivery is, not just whether it stopped. Events are typed so
+        // the matcher can compare pointer events (clicks) against native
+        // clicks; mouse movement must not inflate click latency.
+        t.evts.push(kind + ':' + now);
+        if (t.evts.length > 8) t.evts.shift();
+        // Prompt echo for the click-echo watchdog: report within ~1s instead
+        // of waiting for the next 30s tick injection. Throttled so a moving
+        // mouse cannot flood the ping channel.
+        if (now - t.reported > 1000) {
+          t.reported = now;
+          fetch('/maclaw-boot/ping?stage=input&ts=' + now + '&evts=' + t.evts.join(','));
+        }
+      };
+      document.addEventListener('pointerdown', function(){ upd('p'); }, true);
+      document.addEventListener('keydown', function(){ upd('k'); }, true);
+      document.addEventListener('wheel', function(){ upd('w'); }, true);
+      document.addEventListener('mousemove', function(){ upd('m'); }, true);
     }
-    fetch('/maclaw-boot/ping?stage=input&ts=' + w.__MACLAW_INPUT_TRACK.last);
+    fetch('/maclaw-boot/ping?stage=input&ts=' + w.__MACLAW_INPUT_TRACK.last + '&evts=' + w.__MACLAW_INPUT_TRACK.evts.join(','));
   } catch (e) {}
 })();`
 
@@ -132,6 +160,55 @@ func inputWatchDecision(pageIdle, sysIdle, foregroundFor time.Duration, supporte
 	}
 }
 
+// clickEchoWindow is how far back the fast path looks for click evidence;
+// clickEchoMinClicks clicks inside it targeted at the main window with no page
+// echo at all is treated as a dead input pipeline.
+const (
+	clickEchoWindow    = 10 * time.Second
+	clickEchoMinClicks = 3
+	// clickLatencyAlert is matched click-to-page delivery latency that counts
+	// as dead-pipeline evidence on its own (delayed-delivery variant).
+	clickLatencyAlert = 3 * time.Second
+	// clickLatencySampleWindow bounds both the latency evidence and the
+	// periodic elevated-latency log line.
+	clickLatencySampleWindow = 2 * time.Minute
+)
+
+// inputWatchLadder is the shared recovery escalation: first detection nudges,
+// the next fires the single reload once the nudge gap has passed, then
+// escalate (log loudly + nudge) once per inputEscalateGap.
+func inputWatchLadder(actions, reloads int, sinceLastAction time.Duration) (inputWatchAction, int, int) {
+	actions++
+	switch {
+	case actions == 1:
+		return inputWatchNudge, actions, reloads
+	case actions >= 2 && reloads == 0 && sinceLastAction >= inputNudgeGap:
+		return inputWatchReload, actions, reloads + 1
+	default:
+		if actions >= 3 && sinceLastAction >= inputEscalateGap {
+			return inputWatchEscalate, actions, reloads
+		}
+		return inputWatchNone, actions, reloads
+	}
+}
+
+// clickEchoEvidence reports whether the dropped-input signature holds: at
+// least clickEchoMinClicks native clicks on the main window inside the window,
+// and page silence at least as old as the oldest of them. On a healthy page
+// every click echoes back within ~1s, so a small pageIdle clears the detector.
+func clickEchoEvidence(clicks int, oldestClickAge, pageIdle time.Duration) bool {
+	return clicks >= clickEchoMinClicks && oldestClickAge > 0 && pageIdle >= oldestClickAge
+}
+
+// clickEchoDecision is the pure policy core of the fast path, fed either
+// clickEchoEvidence or a latency sample at/above clickLatencyAlert.
+func clickEchoDecision(deadEvidence, supported bool, actions, reloads int, sinceLastAction time.Duration) (inputWatchAction, int, int) {
+	if !supported || !deadEvidence {
+		return inputWatchNone, 0, 0
+	}
+	return inputWatchLadder(actions, reloads, sinceLastAction)
+}
+
 // watchFrontendInput starts the runtime input-liveness watchdog goroutine.
 // Active-foreground tenure is sampled cheaply every inputWatchSample so the
 // dead-input signature can require an uninterrupted foreground+user-active
@@ -143,9 +220,14 @@ func (a *App) watchFrontendInput() {
 	}
 	go func() {
 		bootLog("watchFrontendInput goroutine start ctx_nil=%v", a.ctx == nil)
+		startClickEchoMonitor()
 		offenses := 0
 		reloads := 0
 		var lastAction time.Time
+		fastActions := 0
+		fastReloads := 0
+		var lastFastAction time.Time
+		var lastLatencyLog time.Time
 		lastTick := time.Now()
 		var activeForegroundSince time.Time // zero = not (foreground + user-active) now
 		for {
@@ -155,6 +237,60 @@ func (a *App) watchFrontendInput() {
 			}
 			if a.ctx == nil {
 				continue
+			}
+			// Fast path: native clicks on the main window that never echo back
+			// to the page. Runs at sampler cadence so a dead pipeline is
+			// detected within seconds of the user starting to click.
+			if clickEchoMonitorRunning() && a.frontendHTMLReady.Load() && !computerUseSessionActive() {
+				clickEchoEnsureHWND()
+				clicks := recentWindowClicks(clickEchoWindow)
+				if clicks == 0 {
+					// No click evidence at all: a new dead-input episode starts
+					// from nudge, not from whatever a previous episode reached
+					// (the reload/escalate ladder must not carry across
+					// episodes separated by a working page).
+					fastActions, fastReloads = 0, 0
+				}
+				latency := recentMaxClickLatency(clickLatencySampleWindow)
+				if latency > 500*time.Millisecond && time.Since(lastLatencyLog) > time.Minute {
+					lastLatencyLog = time.Now()
+					log.Printf("[input-watch] click latency elevated max=%s clicks=%d; monitoring", latency.Round(time.Second), clicks)
+					bootLog("input watchdog click latency elevated max=%s clicks=%d", latency.Round(time.Second), clicks)
+				}
+				stored := frontendLastInputAt.Load()
+				deadEvidence := latency >= clickLatencyAlert
+				var oldestAge time.Duration
+				var pageIdle time.Duration
+				if stored != 0 {
+					pageIdle = time.Since(time.UnixMilli(stored))
+					oldestAge = oldestWindowClickAge(clickEchoWindow)
+					deadEvidence = deadEvidence || clickEchoEvidence(clicks, oldestAge, pageIdle)
+				}
+				if deadEvidence && isMaclawWindowForeground() {
+					action, n, r := clickEchoDecision(deadEvidence, true, fastActions, fastReloads, time.Since(lastFastAction))
+					fastActions, fastReloads = n, r
+					switch action {
+					case inputWatchNudge:
+						lastFastAction = time.Now()
+						log.Printf("[input-watch] input pipeline dead (latency=%s clicks=%d pageIdle=%s); nudging window", latency.Round(time.Millisecond), clicks, pageIdle.Round(time.Second))
+						bootLog("input watchdog click-echo nudge latency=%s clicks=%d pageIdle=%s", latency.Round(time.Millisecond), clicks, pageIdle.Round(time.Second))
+						captureMainWindowPNG("input-echo-nudge")
+						nudgeMainWindowInput()
+					case inputWatchReload:
+						lastFastAction = time.Now()
+						log.Printf("[input-watch] input still dead after nudge; reloading frontend")
+						bootLog("input watchdog click-echo reload")
+						captureMainWindowPNG("input-echo-reload")
+						runtime.WindowExecJS(a.ctx, "window.location.reload();")
+						frontendLastInputAt.Store(time.Now().UnixMilli())
+					case inputWatchEscalate:
+						lastFastAction = time.Now()
+						log.Printf("[input-watch] input still dead after nudge+reload (actions=%d); manual GUI restart may be required", fastActions)
+						bootLog("input watchdog click-echo escalate actions=%d", fastActions)
+						captureMainWindowPNG("input-echo-escalate")
+						nudgeMainWindowInput()
+					}
+				}
 			}
 			// Active-foreground tenure: a 1s sample only counts when the main
 			// window is foreground AND the user just produced input system-wide.

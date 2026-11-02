@@ -90,25 +90,25 @@ func semanticBuildVerifyResolveDir(workspace, target string) (string, error) {
 
 func (h *IMMessageHandler) runTrustedBuildVerify(principalID, task, target string) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_build_verify_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_build_verify_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_build_verify_principal_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_build_verify_principal_required"))
 	}
 	if !semanticBuildVerifyTaskAllowed(task) {
-		return "", fmt.Errorf("trusted_build_verify_task_rejected")
+		return "", effectNotStarted(fmt.Errorf("trusted_build_verify_task_rejected"))
 	}
 	if h.semanticTrustedBuildVerify != nil {
 		return h.semanticTrustedBuildVerify(principalID, task, target)
 	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	if strings.TrimSpace(workspace) == "" {
-		return "", fmt.Errorf("trusted_build_verify_workspace_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_build_verify_workspace_unavailable"))
 	}
 	runDir, err := semanticBuildVerifyResolveDir(workspace, target)
 	if err != nil {
-		return "", err
+		return "", effectNotStarted(err)
 	}
 	if h.app != nil {
 		h.app.useOfficialTlmgrUpdater()
@@ -117,9 +117,9 @@ func (h *IMMessageHandler) runTrustedBuildVerify(principalID, task, target strin
 	if err != nil {
 		switch {
 		case errors.Is(err, buildverify.ErrUnrecognised):
-			return "", fmt.Errorf("trusted_build_verify_project_unrecognised")
+			return "", effectNotStarted(fmt.Errorf("trusted_build_verify_project_unrecognised"))
 		case errors.Is(err, buildverify.ErrUnsupported):
-			return "", fmt.Errorf("trusted_build_verify_task_unsupported")
+			return "", effectNotStarted(fmt.Errorf("trusted_build_verify_task_unsupported"))
 		case errors.Is(err, buildverify.ErrTimeout):
 			return "", buildVerifyTimeoutError("trusted_build_verify_timeout", out)
 		default:

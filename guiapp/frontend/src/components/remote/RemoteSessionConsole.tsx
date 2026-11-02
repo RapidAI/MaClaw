@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type Dispatch, type SetStateAction, type ReactNode } from "react";
+import { Z } from "../ui/zIndex";
 import type { RemoteSessionView } from "./types";
 import { SendRemoteSessionInput, SendRemoteSessionRawInput, SendRemoteSessionImage, CaptureRemoteScreenshot, CaptureRemoteWindowScreenshot, GetRemoteSession, InterruptRemoteSession, SetFullscreen } from "../../../wailsjs/go/main/App";
 import { IconBolt, IconCheck, IconChevronRight, IconCross, IconFolder, StatusGlyph } from "../ai/WorkbenchIcons";
@@ -44,7 +45,7 @@ const TERMINAL_STATUSES = new Set([
 const overlayStyle: React.CSSProperties = {
     position: "fixed",
     inset: 0,
-    zIndex: 10000,
+    zIndex: Z.stickyToast,
     display: "flex",
     flexDirection: "column",
     background: "#0c0c0c",

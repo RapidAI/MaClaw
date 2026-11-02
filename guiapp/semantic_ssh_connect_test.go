@@ -676,8 +676,8 @@ func TestSemanticSSHConnectDispatchFailureStaysRejected(t *testing.T) {
 	got := callbacks.executeTrustedSSH(tool.PlannedSelection{}, tool.CanonicalRequest{
 		CanonicalJSON: []byte(`{"host":"127.0.0.1","user":"root","password":"x","port":1}`),
 	})
-	if !strings.HasPrefix(got, "[system rejected]") {
-		t.Fatalf("refused connect must stay a rejection: %q", got)
+	if !strings.HasPrefix(got, "[system rejected]") || !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) {
+		t.Fatalf("refused connect must stay a rejection the grant can survive: %q", got)
 	}
 	if !strings.Contains(got, "SSH 连接失败") {
 		t.Fatalf("rejection must carry the connect failure: %q", got)

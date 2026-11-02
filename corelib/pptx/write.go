@@ -21,7 +21,8 @@ type Outline struct {
 	Title    string `json:"title"`
 	Subtitle string `json:"subtitle,omitempty"`
 	// Theme is a catalog id (clean, magazine, eink, dashboard, retro, sketch,
-	// whiteboard, handmade, research, mckinsey, official, course) or auto.
+	// whiteboard, handmade, research, mckinsey, official, course, finance,
+	// aurora, marketing, medical) or auto.
 	// Empty and auto select from Purpose, title, and subtitle. An explicit id
 	// wins over that text. Older ids such as business or academic still resolve
 	// as aliases of the closest current style.

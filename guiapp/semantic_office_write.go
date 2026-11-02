@@ -51,7 +51,7 @@ func semanticTrustedOfficeWriteDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedOfficeWriteAdapter,
-			"description": "Write a spreadsheet or a presentation deck into a workspace path. Spreadsheet: path + sheets. Presentation (.pptx): path + title + optional subtitle/theme/purpose + slides. theme is clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, a custom style id, or auto (when the user or prompt specifies a style or theme=<id>, pass that exact id in theme). Each slide takes title, optional kicker, optional layout (auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing), bullets, notes, optional images, and optional native editable charts (bar/column/bar_h/line/radar/pie/area — PowerPoint chart objects, not pictures). Mix layouts across slides (agenda, section, cards, timeline, comparison, kpi, charts, quote, closing) so the deck has visual rhythm and follows the chosen style's motif. Pass either sheets or slides, never both; omit the unused key entirely.",
+			"description": "Write a spreadsheet or a presentation deck into a workspace path. Spreadsheet: path + sheets. Presentation (.pptx): path + title + optional subtitle/theme/purpose + slides. theme is clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, finance, aurora, marketing, medical, a custom style id, or auto (when the user or prompt specifies a style or theme=<id>, pass that exact id in theme). Each slide takes title, optional kicker, optional layout (auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing), bullets, notes, optional images, and optional native editable charts (bar/column/bar_h/line/radar/pie/area — PowerPoint chart objects, not pictures). Mix layouts across slides (agenda, section, cards, timeline, comparison, kpi, charts, quote, closing) so the deck has visual rhythm and follows the chosen style's motif. Pass either sheets or slides, never both; omit the unused key entirely.",
 			"parameters":  semanticTrustedOfficeWriteInvocationSchema(),
 		},
 	}
@@ -85,7 +85,7 @@ func semanticTrustedOfficeWriteInvocationSchema() map[string]interface{} {
 			"subtitle": map[string]interface{}{"type": "string"},
 			"theme": map[string]interface{}{
 				"type":        "string",
-				"description": "Style id: clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, any custom style id, or auto. Legacy aliases (business, academic, warm, launch, tech, education, ceremony, minimal, modern, consulting) and Chinese labels also resolve. An explicit id wins; when the user specifies a style or theme=<id>, pass that exact id.",
+				"description": "Style id: clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, finance, aurora, marketing, medical, any custom style id, or auto. Legacy aliases (business, academic, warm, launch, tech, education, ceremony, minimal, modern, consulting) and Chinese labels also resolve. An explicit id wins; when the user specifies a style or theme=<id>, pass that exact id.",
 			},
 			"purpose": map[string]interface{}{
 				"type":        "string",
@@ -455,13 +455,28 @@ func semanticOfficeUnwrapJSONArrayField(obj map[string]interface{}, key string) 
 	return true
 }
 
+// semanticOfficeWriteBeforeEffect is a refusal that returned before any
+// spreadsheet or deck bytes were written. The coordinated caller retracts
+// it. trusted_office_write_failed is not this type: the writer already ran,
+// and a later file must not erase that outcome.
+type semanticOfficeWriteBeforeEffect struct{ error }
+
+func (e semanticOfficeWriteBeforeEffect) Unwrap() error { return e.error }
+
+func officeWriteBeforeEffect(err error) error {
+	if err == nil {
+		return nil
+	}
+	return semanticOfficeWriteBeforeEffect{err}
+}
+
 func (h *IMMessageHandler) writeTrustedOffice(principalID, path string, data map[string]interface{}) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_office_write_unavailable")
+		return "", officeWriteBeforeEffect(fmt.Errorf("trusted_office_write_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_office_write_principal_required")
+		return "", officeWriteBeforeEffect(fmt.Errorf("trusted_office_write_principal_required"))
 	}
 	if h.semanticTrustedOfficeWrite != nil {
 		return h.semanticTrustedOfficeWrite(principalID, path, data)
@@ -469,14 +484,14 @@ func (h *IMMessageHandler) writeTrustedOffice(principalID, path string, data map
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	absPath, err := trustedFileWriteResolvePath(workspace, path)
 	if err != nil {
-		return "", err
+		return "", officeWriteBeforeEffect(err)
 	}
 	if info, statErr := os.Stat(absPath); statErr == nil && info.IsDir() {
-		return "", fmt.Errorf("trusted_office_write_path_is_directory")
+		return "", officeWriteBeforeEffect(fmt.Errorf("trusted_office_write_path_is_directory"))
 	}
 	if _, isPresentation := data["slides"]; isPresentation {
 		if err := resolveOfficeSlideImages(workspace, data); err != nil {
-			return "", err
+			return "", officeWriteBeforeEffect(err)
 		}
 		if _, err := agent.WritePPTXDetailed(map[string]interface{}{"path": absPath, "data": data}); err != nil {
 			return "", fmt.Errorf("trusted_office_write_failed: %w", err)

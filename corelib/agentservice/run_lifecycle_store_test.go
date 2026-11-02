@@ -80,7 +80,14 @@ func TestDescribeLifecyclePersistenceClassifiesRepositoryGuarantees(t *testing.T
 	}{
 		{name: "nil", store: nil, want: LifecyclePersistenceCapabilities{Mode: LifecyclePersistenceModeBestEffort}},
 		{name: "memory", store: NewMemoryStore(), want: LifecyclePersistenceCapabilities{Mode: LifecyclePersistenceModeAtomic, DurableOutbox: true, AdmissionAtomic: true, AdmissionOutboxAtomic: true, CompletionAtomic: true, CompletionOutboxAtomic: true, TerminalOutboxAtomic: true}},
-		{name: "file", store: func() Store { v, _ := NewFileStore(filepath.Join(t.TempDir(), "state.json")); return v }(), want: LifecyclePersistenceCapabilities{Mode: LifecyclePersistenceModeAtomic, DurableOutbox: true, AdmissionAtomic: true, AdmissionOutboxAtomic: true, CompletionAtomic: true, CompletionOutboxAtomic: true, TerminalOutboxAtomic: true}},
+		{name: "file", store: func() Store {
+			v, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = v.Close() })
+			return v
+		}(), want: LifecyclePersistenceCapabilities{Mode: LifecyclePersistenceModeAtomic, DurableOutbox: true, AdmissionAtomic: true, AdmissionOutboxAtomic: true, CompletionAtomic: true, CompletionOutboxAtomic: true, TerminalOutboxAtomic: true}},
 		{name: "sqlite", store: func() Store { v, _ := NewSQLiteStore(filepath.Join(t.TempDir(), "state.db")); return v }(), want: LifecyclePersistenceCapabilities{Mode: LifecyclePersistenceModeAtomic, DurableOutbox: true, AdmissionAtomic: true, AdmissionOutboxAtomic: true, CompletionAtomic: true, CompletionOutboxAtomic: true, TerminalOutboxAtomic: true}},
 		{name: "run_event_only", store: &capabilityRunEventOnlyStore{RunEventStore: NewMemoryRunEventStore()}, want: LifecyclePersistenceCapabilities{Mode: LifecyclePersistenceModeMixed, DurableOutbox: true}},
 		{name: "lifecycle_methods_without_outbox", store: &capabilityAtomicMethodsStore{}, want: LifecyclePersistenceCapabilities{Mode: LifecyclePersistenceModeBestEffort, AdmissionOutboxAtomic: true, CompletionOutboxAtomic: true, TerminalOutboxAtomic: true}},
@@ -177,10 +184,7 @@ func TestNewServiceCanRequireAtomicLifecycleStore(t *testing.T) {
 
 func TestFileStoreSaveRunAdmissionPersistsMessageAndRunTogether(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "service.json")
-	store, err := NewFileStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestFileStore(t, path)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	message := Message{ID: "msg_admission", SessionID: "sess_admission", TenantID: "tenant", UserID: "user", InstanceID: "inst", Role: MessageRoleUser, Content: "hello", CreatedAt: now}
 	run := Run{ID: "run_admission", TenantID: "tenant", UserID: "user", InstanceID: "inst", SessionID: "sess_admission", UserMessageID: message.ID, Status: RunStatusRunning, StartedAt: now}
@@ -193,10 +197,7 @@ func TestFileStoreSaveRunAdmissionPersistsMessageAndRunTogether(t *testing.T) {
 	if err := store.SaveRunCompletion(assistant, run); err != nil {
 		t.Fatalf("SaveRunCompletion: %v", err)
 	}
-	reopened, err := NewFileStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reopened := newTestFileStore(t, path)
 	messages, err := reopened.ListMessages(message.SessionID)
 	if err != nil || len(messages) != 2 || messages[0].ID != message.ID || messages[1].ID != assistant.ID {
 		t.Fatalf("persisted messages = %#v, err=%v", messages, err)
@@ -375,20 +376,14 @@ func TestMemoryStoreRunCompletionAndTerminalRollbackOnEventFailure(t *testing.T)
 
 func TestFileStoreRunLifecycleTransactionPersistsOutboxAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "service.json")
-	store, err := NewFileStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestFileStore(t, path)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	run := Run{ID: "run_file_tx", TenantID: "tenant", UserID: "user", InstanceID: "inst", SessionID: "sess", UserMessageID: "msg_file_tx", Status: RunStatusRunning, StartedAt: now}
 	message := Message{ID: run.UserMessageID, SessionID: run.SessionID, TenantID: run.TenantID, UserID: run.UserID, InstanceID: run.InstanceID, Role: MessageRoleUser, Content: "hello", CreatedAt: now}
 	if err := store.SaveRunAdmissionWithEvents(message, run, []RunEvent{{TenantID: run.TenantID, UserID: run.UserID, RunID: run.ID, Type: "run.started"}}); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewFileStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reopened := newTestFileStore(t, path)
 	events, err := reopened.ListAfter(run.TenantID, run.UserID, run.ID, 0, 10)
 	if err != nil || len(events) != 1 || events[0].Type != "run.started" {
 		t.Fatalf("reopened events=%#v err=%v", events, err)
@@ -396,10 +391,7 @@ func TestFileStoreRunLifecycleTransactionPersistsOutboxAcrossRestart(t *testing.
 }
 
 func TestFileStoreConcurrentMessageAndEventWritesDoNotDeadlock(t *testing.T) {
-	store, err := NewFileStore(filepath.Join(t.TempDir(), "service.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestFileStore(t, filepath.Join(t.TempDir(), "service.json"))
 	const writes = 8
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -425,7 +417,7 @@ func TestFileStoreConcurrentMessageAndEventWritesDoNotDeadlock(t *testing.T) {
 	}
 }
 
-func TestFileStoreMutationRollsBackMemoryOnFlushFailure(t *testing.T) {
+func TestFileStoreMutationAfterCloseFailsWithoutLeaking(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "state.json")
 	store, err := NewFileStore(path)
@@ -436,28 +428,31 @@ func TestFileStoreMutationRollsBackMemoryOnFlushFailure(t *testing.T) {
 	if err := store.SaveMessage(baseline); err != nil {
 		t.Fatal(err)
 	}
-	// Point the durable target at a missing parent without touching the
-	// in-memory repository. AtomicWriteFile must fail, and the failed mutation
-	// must be rolled back from the caller's perspective as well.
-	store.path = filepath.Join(root, "missing-parent", "state.json")
+	// Writes go straight to SQLite: once the database is closed, a mutation
+	// must surface an error instead of silently succeeding, and the durable
+	// state must still be the pre-failure baseline.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
 	deferred := Message{ID: "msg_flush_failed", SessionID: baseline.SessionID, Role: MessageRoleUser, Content: "must rollback"}
 	if err := store.SaveMessage(deferred); err == nil {
-		t.Fatal("expected flush failure")
+		t.Fatal("expected write failure after close")
 	}
-	messages, err := store.ListMessages(baseline.SessionID)
+	if _, err := store.Append(RunEvent{TenantID: "tenant", UserID: "user", RunID: "run_flush_failed", Type: "assistant.delta", Payload: map[string]any{"delta": "must rollback"}}); err == nil {
+		t.Fatal("expected event write failure after close")
+	}
+	reopened := newTestFileStore(t, path)
+	messages, err := reopened.ListMessages(baseline.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(messages) != 1 || messages[0].ID != baseline.ID {
-		t.Fatalf("failed flush leaked in-memory mutation: %#v", messages)
+		t.Fatalf("failed write leaked mutation: %#v", messages)
 	}
-	if _, err := store.Append(RunEvent{TenantID: "tenant", UserID: "user", RunID: "run_flush_failed", Type: "assistant.delta", Payload: map[string]any{"delta": "must rollback"}}); err == nil {
-		t.Fatal("expected event flush failure")
-	}
-	if events, err := store.ListAfter("tenant", "user", "run_flush_failed", 0, 20); err != nil {
+	if events, err := reopened.ListAfter("tenant", "user", "run_flush_failed", 0, 20); err != nil {
 		t.Fatal(err)
 	} else if len(events) != 0 {
-		t.Fatalf("failed event flush leaked in-memory mutation: %#v", events)
+		t.Fatalf("failed event write leaked mutation: %#v", events)
 	}
 }
 

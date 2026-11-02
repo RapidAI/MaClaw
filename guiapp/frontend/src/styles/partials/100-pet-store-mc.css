@@ -43,7 +43,7 @@
 .pet-store-ranking li:not(.pet-store-ranking-empty):hover { background: color-mix(in srgb, var(--theme-primary) 8%, transparent); }
 .pet-store-ranking li > span { color: var(--theme-text-secondary); font-variant-numeric: tabular-nums; }
 .pet-store-ranking li:nth-child(-n+3) > span { color: var(--theme-primary); font-weight: 700; }
-.pet-store-ranking li > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.pet-store-ranking li > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .pet-store-ranking li > em { color: var(--theme-text-secondary); font-style: normal; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pet-store-ranking .pet-store-ranking-empty { display: block; color: var(--theme-text-secondary); }
 .pet-store-toolbar { display: flex; gap: 9px; margin-bottom: 18px; }
@@ -76,7 +76,7 @@
 .pet-store-pack dd { margin: 2px 0 0; color: var(--theme-text-secondary); font-size: .68rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .pet-store-pack footer { display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 9px 11px; border-top: 1px solid var(--theme-border-subtle); }
 .pet-store-pack footer .btn-primary { padding: 5px 9px; font-size: .72rem; }
-.pet-store-price, .pet-store-free { font-size: .72rem; font-weight: 650; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pet-store-price, .pet-store-free { font-size: .72rem; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pet-store-price { color: var(--theme-primary-strong); }.pet-store-free { color: var(--theme-success); }
 .pet-store-skeleton { pointer-events: none; }
 .pet-store-skeleton-art { height: 112px; background: var(--theme-surface-muted); animation: pet-store-shimmer 1.4s ease-in-out infinite; }
@@ -97,7 +97,7 @@
 .pet-store-account-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }.pet-store-account-head > div:first-child { min-width: 0; flex: 1; }.pet-store-account-head strong, .pet-store-account-head span { display: block; }.pet-store-account-head strong { max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }.pet-store-account-head span { margin-top: 3px; color: var(--theme-text-secondary); font-size: .68rem; }.pet-store-account-assets { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }.pet-store-account-head b { color: var(--theme-primary-strong); font-size: .9rem; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }.pet-store-account-head b small { font-size: .68rem; }.pet-store-account-assets button { min-height: 30px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); color: var(--theme-text-primary); padding: 5px 7px; font: inherit; font-size: .68rem; white-space: nowrap; cursor: pointer; transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); }.pet-store-account-assets button:hover { border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border)); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }.pet-store-account-assets button:active { background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface)); }
 .pet-store-report { display: grid; gap: 10px; margin-top: 18px; }
 .pet-store-report-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.pet-store-report-title h3 { margin: 0; font-size: .84rem; }.pet-store-report-title button { border: 0; background: transparent; color: var(--theme-primary-strong); padding: 3px 0; font: inherit; font-size: .68rem; cursor: pointer; }
-.pet-store-report-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: var(--radius-md); background: var(--theme-page-bg); }.pet-store-report-controls button { border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--theme-text-secondary); padding: 5px 2px; font: inherit; font-size: .68rem; cursor: pointer; }.pet-store-report-controls button.active { background: var(--theme-surface); color: var(--theme-primary-strong); font-weight: 650; box-shadow: var(--shadow-sm); }
+.pet-store-report-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: var(--radius-md); background: var(--theme-page-bg); }.pet-store-report-controls button { border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--theme-text-secondary); padding: 5px 2px; font: inherit; font-size: .68rem; cursor: pointer; }.pet-store-report-controls button.active { background: var(--theme-surface); color: var(--theme-primary-strong); font-weight: 600; box-shadow: var(--shadow-sm); }
 .pet-store-report-date { display: flex; align-items: center; justify-content: space-between; color: var(--theme-text-secondary); font-size: .68rem; }.pet-store-report-date time { font-variant-numeric: tabular-nums; }.pet-store-report-date button { width: 24px; height: 24px; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-surface); color: var(--theme-text-secondary); font: inherit; cursor: pointer; }.pet-store-report-date button:disabled { opacity: .4; cursor: not-allowed; }
 .pet-store-report-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }.pet-store-report-summary > div { display: grid; gap: 3px; padding: 9px; background: var(--theme-surface); border-radius: var(--radius-md); }.pet-store-report-summary span, .pet-store-report-summary em { color: var(--theme-text-secondary); font-size: .68rem; font-style: normal; }.pet-store-report-summary strong { color: var(--theme-text-primary); font-size: .82rem; font-variant-numeric: tabular-nums; }.pet-store-report-summary strong small { font-size: .68rem; font-weight: 500; }
 .pet-store-report-skeleton { display: grid; gap: 10px; }.pet-store-report-skeleton-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }.pet-store-report-skeleton-summary span, .pet-store-report-skeleton-list i { display: block; overflow: hidden; border-radius: var(--radius-sm); background: linear-gradient(90deg, color-mix(in srgb, var(--theme-border) 55%, transparent) 25%, color-mix(in srgb, var(--theme-surface) 72%, var(--theme-border)) 42%, color-mix(in srgb, var(--theme-border) 55%, transparent) 58%); background-size: 220% 100%; animation: pet-store-shimmer 1.25s ease-in-out infinite; }.pet-store-report-skeleton-summary span { height: 58px; }.pet-store-report-skeleton-list { display: grid; gap: 6px; }.pet-store-report-skeleton-list > span { width: 44%; height: 12px; }.pet-store-report-skeleton-list i { height: 30px; }.pet-store-report-skeleton-list i:last-child { width: 78%; }
@@ -243,7 +243,7 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: v
   box-shadow: 0 4px 14px rgba(109,93,252,.10);
 }
 .sidebar-task-row .task-title,
-.sidebar-task-row [class*='title'] { font-weight: 650; letter-spacing: -.01em; }
+.sidebar-task-row [class*='title'] { font-weight: 600; letter-spacing: -.01em; }
 .sidebar-task-row [class*='preview'],
 .sidebar-task-row [class*='meta'] { color: var(--office-muted); font-size: 11px; }
 .sidebar-task-row [class*='badge'], .sidebar-task-row [role='status'] { border-radius: var(--radius-pill); font-size: 11px; padding: 2px 7px; }
@@ -362,7 +362,7 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: v
   margin: 0 0 8px;
   color: var(--office-ink);
   font-size: clamp(22px, 2vw, 30px);
-  font-weight: 760;
+  font-weight: 700;
   letter-spacing: -.035em;
 }
 :where(.main-content, .content-panel, .workspace-content) h2 {
@@ -375,7 +375,7 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: v
 :where(.main-content, .content-panel, .workspace-content) h3 {
   color: var(--office-ink);
   font-size: 14px;
-  font-weight: 680;
+  font-weight: 700;
 }
 :where(.main-content, .content-panel, .workspace-content) p,
 :where(.main-content, .content-panel, .workspace-content) small {
@@ -422,7 +422,7 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
   border-radius: var(--radius-pill);
   padding: 2px 9px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.2;
 }
 :where(.status-pill, .state-pill, .task-status, .workflow-status)::before {
@@ -456,7 +456,7 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
   backdrop-filter: blur(14px);
 }
 .global-action-bar h1, .global-action-bar h2,
-.global-action-bar [class*='title'] { letter-spacing: -.025em; font-weight: 720; }
+.global-action-bar [class*='title'] { letter-spacing: -.025em; font-weight: 700; }
 .global-action-bar button { min-width: 32px; min-height: 32px; border-radius: var(--radius-md) !important; }
 .global-action-bar button:hover { background: var(--office-accent-soft) !important; color: var(--office-accent) !important; }
 :where(.status-bar, .global-status-bar, .bottom-status-bar) {
@@ -465,7 +465,7 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
   font-size: 11px;
   letter-spacing: .01em;
 }
-:where(.status-bar, .global-status-bar, .bottom-status-bar) strong { color: var(--office-ink); font-weight: 650; }
+:where(.status-bar, .global-status-bar, .bottom-status-bar) strong { color: var(--office-ink); font-weight: 600; }
 
 /* Loading and recovery states */
 .app-loading-shell {
@@ -584,7 +584,7 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
   .mc-ai-titlebar [data-testid='ai-titlebar-tools-group'] > .ai-titlebar-tool { display: none !important; }
   .mc-ai-titlebar [data-testid='ai-titlebar-tools-group'] [data-notification-anchor] { display: inline-flex !important; }
   .mc-welcome-main-content > * { max-width: 680px !important; }
-  .mc-welcome__title { font-size: 30px !important; }
+  .mc-welcome__title { font-size: 24px !important; }
 }
 @media (max-width: 760px) {
   .task-sidebar, .sidebar-task-pane { width: 210px !important; }
@@ -604,7 +604,7 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
   margin: 16px 10px 7px;
   color: var(--office-muted);
   font-size: 11px;
-  font-weight: 760;
+  font-weight: 700;
   letter-spacing: .08em;
   text-transform: uppercase;
 }
@@ -693,7 +693,7 @@ button[aria-busy='true']::after, [data-loading='true']::after {
 :where(.token-count, .usage-count, .task-count, [class*='count']) {
   color: var(--office-ink);
   font-variant-numeric: tabular-nums;
-  font-weight: 650;
+  font-weight: 600;
 }
 /* Scheme text roles. !important plus --office-muted pinned every muted class
    to the inherited rail gray and beat the component's own secondary or muted color. */
@@ -788,8 +788,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .top-header h2, .top-header__title { color: var(--theme-text-primary) !important; font-weight: 700; }
 
 /* Reference welcome screen */
-.mc-welcome { background: var(--theme-surface) !important; color: var(--theme-text-primary); }
-.mc-welcome__title { margin: 34px 0 10px !important; color: var(--theme-text-primary) !important; font-size: 32px !important; font-weight: 760 !important; letter-spacing: -.04em !important; }
+/* Canvas follows the page tint so the white composer/cards read as raised
+   surfaces (same page/surface layering as the tool pages). */
+.mc-welcome { background: var(--theme-page-bg) !important; color: var(--theme-text-primary); }
+.mc-welcome__title { margin: 28px 0 10px !important; color: var(--theme-text-primary) !important; font-size: 28px !important; font-weight: 700 !important; letter-spacing: -.04em !important; }
 .mc-welcome__composer { max-width: 820px !important; }
 .mc-welcome__composer + * { max-width: 820px !important; }
 .mc-welcome [data-testid='welcome-quick-hints'],
@@ -1353,7 +1355,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   border-radius: var(--radius-pill);
   padding: 3px 9px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .mc-task-execution-status[data-status='running'],
 .mc-execution-step[data-status='running'],
@@ -1403,7 +1405,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 
 /* Reference desktop proportions */
 @media (min-width: 1280px) {
-  .mc-welcome__title { font-size: 36px !important; }
+  .mc-welcome__title { font-size: 30px !important; }
   .mc-welcome__composer, .mc-welcome [data-testid='welcome-quick-hints'], .mc-welcome [data-testid='welcome-quick-access'], .mc-welcome [role='tabpanel'] { max-width: 860px !important; }
   .mc-conversation-body { max-width: 980px; }
 }
@@ -1510,7 +1512,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 /* Reference task row typography */
 .mc-task-pane .sidebar-task-row > span { min-width: 0; }
 .mc-task-pane .sidebar-task-row strong,
-.mc-task-pane .sidebar-task-row [data-task-title] { color: var(--theme-text-primary); font-size: 13px; font-weight: 650; }
+.mc-task-pane .sidebar-task-row [data-task-title] { color: var(--theme-text-primary); font-size: 13px; font-weight: 600; }
 .mc-task-pane .sidebar-task-row small { color: var(--theme-text-muted); font-size: 11px; }
 
 /* Reference task interactions */
@@ -1652,7 +1654,11 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .awv-main { display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0; box-sizing: border-box; padding: 16px 16px 16px; gap: 14px; margin: auto 0; flex-shrink: 0; }
 .awv-toolbar { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; padding-top: 8px; }
 .awv-task-config { padding: 8px 8px 0; }
-.awv-quick-tasks { display: flex; flex-wrap: wrap; gap: 10px; }
+/* Four quick-task fills on an even grid: 4-up on desktop, 2×2 below 1280px
+   (the old flex-wrap left a 3+1 row with one stretched orphan card). */
+.awv-quick-tasks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 1279px) { .awv-quick-tasks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .awv-quick-tasks { grid-template-columns: 1fr; } }
 .awv-hints { width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 8px; }
 .awv-clipboard { width: 100%; display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
 .awv-clipboard-hits { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1699,7 +1705,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .aap-scope-fact-k {
     color: var(--theme-text-muted);
     font-size: 0.75rem;
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.45;
     white-space: nowrap;
 }

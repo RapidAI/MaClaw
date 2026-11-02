@@ -100,8 +100,7 @@ describe('WebPreviewBrowser', () => {
         const frame = () => screen.getByTestId('html-preview-panel');
         await waitFor(() => expect(frame().getAttribute('src')).toBe('http://127.0.0.1:9/web-preview/v1/abc/index.html'));
         expect(frame().getAttribute('sandbox')).not.toContain('allow-top-navigation');
-        expect(screen.getByTestId('web-preview-address').getAttribute('value') || (screen.getByTestId('web-preview-address') as HTMLInputElement).value).toContain('index.html');
-        expect((screen.getByTestId('web-preview-address') as HTMLInputElement).value).not.toContain('/web-preview/');
+        expect((screen.getByTestId('web-preview-address') as HTMLInputElement).value).toBe('http://127.0.0.1:9/web-preview/v1/abc/index.html');
 
         fireEvent.change(screen.getByTestId('web-preview-address'), { target: { value: 'https://example.com/docs' } });
         fireEvent.click(screen.getByTestId('web-preview-go'));
@@ -136,7 +135,7 @@ describe('WebPreviewBrowser', () => {
         });
         Object.defineProperty(moved, 'origin', { value: 'http://127.0.0.1:9' });
         act(() => { window.dispatchEvent(moved); });
-        expect((screen.getByTestId('web-preview-address') as HTMLInputElement).value).toContain('about page.html#top');
+        expect((screen.getByTestId('web-preview-address') as HTMLInputElement).value).toBe('http://127.0.0.1:9/web-preview/v1/abc/about%20page.html#top');
         expect(screen.getByTestId('html-preview-panel').getAttribute('src')).toBe('http://127.0.0.1:9/web-preview/v1/abc/index.html');
 
         fireEvent.click(screen.getByTestId('web-preview-reload'));
@@ -147,7 +146,7 @@ describe('WebPreviewBrowser', () => {
         });
         Object.defineProperty(escaped, 'origin', { value: 'http://127.0.0.1:9' });
         act(() => { window.dispatchEvent(escaped); });
-        expect((screen.getByTestId('web-preview-address') as HTMLInputElement).value).toContain('about page.html#top');
+        expect((screen.getByTestId('web-preview-address') as HTMLInputElement).value).toBe('http://127.0.0.1:9/web-preview/v1/abc/about%20page.html#top');
 
         fireEvent.click(screen.getByTestId('web-preview-back'));
         await waitFor(() => {

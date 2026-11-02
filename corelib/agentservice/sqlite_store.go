@@ -29,8 +29,11 @@ type SQLiteStore struct {
 	mu     sync.RWMutex
 	db     *sql.DB
 	path   string
-	closed bool
-	legacy bool
+	// legacyJSONPath overrides the default {dir}/store.json pre-migration
+	// file consulted once when a fresh database initializes its rows.
+	legacyJSONPath string
+	closed         bool
+	legacy         bool
 }
 
 const sqliteRowsFormatVersion = 2
@@ -145,6 +148,17 @@ var sqliteMapColls = []mapColl{
 }
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
+	return newSQLiteStore(path, "")
+}
+
+// NewSQLiteStoreWithLegacy is NewSQLiteStore with an explicit pre-migration
+// JSON file. A fresh database imports it once (instead of the default
+// {dir}/store.json) while initializing its normalized rows.
+func NewSQLiteStoreWithLegacy(path, legacyJSONPath string) (*SQLiteStore, error) {
+	return newSQLiteStore(path, strings.TrimSpace(legacyJSONPath))
+}
+
+func newSQLiteStore(path, legacyJSONPath string) (*SQLiteStore, error) {
 	if err := secureMkdirAll(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
@@ -154,7 +168,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(4)
-	store := &SQLiteStore{db: db, path: path}
+	store := &SQLiteStore{db: db, path: path, legacyJSONPath: legacyJSONPath}
 	if err := store.open(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -467,7 +481,11 @@ func (s *SQLiteStore) initializeRows(ctx context.Context) error {
 		}
 		hasBlob = true
 	} else {
-		legacy, readErr := os.ReadFile(filepath.Join(filepath.Dir(s.path), "store.json"))
+		legacyPath := s.legacyJSONPath
+		if legacyPath == "" {
+			legacyPath = filepath.Join(filepath.Dir(s.path), "store.json")
+		}
+		legacy, readErr := os.ReadFile(legacyPath)
 		if readErr == nil && len(legacy) > 0 {
 			if source, err = memoryStoreFromJSON(legacy); err != nil {
 				return fmt.Errorf("parse legacy store.json: %w", err)

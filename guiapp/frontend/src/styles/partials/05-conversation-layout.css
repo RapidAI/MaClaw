@@ -1,0 +1,75 @@
+/* Conversation canvas layout — lives here, not in 00-tokens.css: tokens stay
+   pure vocabulary, layout surgery gets its own sheet. Ordering note: this
+   partial sits between 00-tokens and 10-about-hub, matching where these rules
+   previously sat inside 00-tokens.css, so the cascade order is unchanged. */
+
+/* Spread live task conversations across the available chat column.  The
+   previous 920px centered canvas made short exchanges look trapped in the
+   middle, especially when a file preview was open.  Keep the assistant on
+   the left and pin the complete user cluster (avatar + bubble) to the right.
+   The message cards retain a readable maximum so long prose still wraps. */
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution {
+  padding-inline: clamp(12px, 1.8vw, 28px) !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 24px clamp(4px, 1.2vw, 18px) 120px !important;
+  box-sizing: border-box !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-user-'],
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-ai-'] {
+  width: 100% !important;
+  max-width: none !important;
+  box-sizing: border-box !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-user-'] {
+  justify-content: flex-end !important;
+  align-items: flex-end !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-user-bubble-'] {
+  flex: 0 1 auto !important;
+  width: fit-content !important;
+  max-width: min(84%, 900px) !important;
+  margin-left: 0 !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-ai-'] {
+  justify-content: flex-start !important;
+  align-items: flex-start !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'] {
+  flex: 0 1 auto !important;
+  max-width: min(92%, 980px) !important;
+  margin-right: 0 !important;
+}
+/* Shrink-wrap is for prose. A diagram bubble takes the column from the
+   :has(.amd-figure) rule instead. Applying shrink-wrap there leaves the
+   diagram's percentage width with no definite containing block. */
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:not(:has(.amd-figure)) {
+  width: fit-content !important;
+}
+@media (max-width: 720px) {
+  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution {
+    padding-inline: 8px !important;
+  }
+  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
+    padding-inline: 2px !important;
+  }
+  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-user-bubble-'],
+  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'] {
+    max-width: 100% !important;
+  }
+}
+
+/* Long-conversation rendering cost. The transcript is not virtualized (the
+   node cache + incremental markdown keep markdown work near zero), but every
+   row still pays layout/paint during streaming recalcs. content-visibility
+   lets the engine skip offscreen rows without removing them from the DOM.
+   `auto` intrinsic sizing remembers each row's last-rendered height, so
+   scrollbar geometry stays stable after rows have been seen once. */
+.mc-conversation-body > [data-testid^='assistant-chat-user-'],
+.mc-conversation-body > [data-testid^='assistant-chat-ai-'] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}

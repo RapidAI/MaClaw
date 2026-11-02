@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
@@ -250,6 +250,7 @@ func TestTaskOrchestrator2_Persistence(t *testing.T) {
 	planPath := filepath.Join(tmpDir, "plans.json")
 
 	o := NewTaskOrchestrator2WithPersist(nil, nil, nil, planPath)
+	defer o.Close()
 	plan, err := o.CreatePlan("persistent plan", []PlanSubTask{
 		{Description: "task 1", Tool: "claude"},
 		{Description: "task 2", Tool: "codex"},
@@ -258,13 +259,14 @@ func TestTaskOrchestrator2_Persistence(t *testing.T) {
 		t.Fatalf("CreatePlan: %v", err)
 	}
 
-	// Verify file was created.
-	if _, err := os.Stat(planPath); os.IsNotExist(err) {
-		t.Fatal("plan file was not created")
+	// Verify the SQLite plan store was created.
+	if _, err := os.Stat(taskOrchestratorDBPath(planPath)); os.IsNotExist(err) {
+		t.Fatal("plan database was not created")
 	}
 
 	// Create a new orchestrator and verify it loads the plan.
 	o2 := NewTaskOrchestrator2WithPersist(nil, nil, nil, planPath)
+	defer o2.Close()
 	got, err := o2.GetStatus(plan.ID)
 	if err != nil {
 		t.Fatalf("GetStatus after reload: %v", err)

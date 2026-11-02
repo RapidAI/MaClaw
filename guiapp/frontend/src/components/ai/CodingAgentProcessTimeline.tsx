@@ -1,5 +1,6 @@
 import React, { Fragment } from "react";
 import { localizeText } from "../../i18n";
+import { startVisibleInterval } from "../../utils/visibleInterval";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { codingThoughtTextIsBlank } from "./assistantLiveActivity";
 import { CodingAgentThinkingTimelineItem } from "./CodingAgentThinkingTimelineItem";
@@ -114,8 +115,8 @@ function CodingAgentProcessSummaryBar({
     const [nowMs, setNowMs] = React.useState(() => (live ? Date.now() : 0));
     React.useEffect(() => {
         if (!live) return undefined;
-        const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
-        return () => window.clearInterval(timer);
+        // Relative-time tick: no point repainting while the window is hidden.
+        return startVisibleInterval(() => setNowMs(Date.now()), 1000);
     }, [live]);
     const summaryCache = React.useRef<{ items: CodingAgentTimelineItem[]; lang: string; live: boolean; thoughtLive: boolean; second: number; summary: string } | null>(null);
     const second = live ? Math.floor(nowMs / 1000) : 0;

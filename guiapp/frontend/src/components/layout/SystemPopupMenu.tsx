@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Z } from "../ui/zIndex";
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 
 export interface SystemMenuItem {
@@ -107,7 +108,7 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                 position: 'fixed',
                 left: `${railRight ?? SIDEBAR_NAV_RAIL_WIDTH}px`,
                 ...(anchorTop != null ? { top: `${anchorTop}px`, transform: 'translateY(-50%)' } : { bottom: '8px' }),
-                zIndex: 9999,
+                zIndex: Z.overlay,
             }}
         >
             {visibleItems.map((item, index) => {

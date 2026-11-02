@@ -635,3 +635,40 @@ func TestFetchedDocumentReadStartLineKeepsGrant(t *testing.T) {
 		t.Fatalf("retry=%q reads=%v", second, reads)
 	}
 }
+
+// A missing path is decided before any bytes are read, and a directory is
+// refused before anything is unlinked. Recording either as a failed execution
+// would consume the grant. A page past the end has already read the file, so
+// that result stays an outcome.
+func TestFileReadAndDeleteBeforeEffectStayRetractable(t *testing.T) {
+	workspace := t.TempDir()
+	principal := desktopUserID + ":" + workspace
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, userID: principal}
+	if err := os.WriteFile(filepath.Join(workspace, "note.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workspace, "folder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	missing := cb.executeTrustedFileRead(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"missing.txt"}`)})
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: missing}) || !strings.Contains(missing, "trusted_file_read_not_found") {
+		t.Fatalf("missing file was an outcome: %s", missing)
+	}
+	escaped := cb.executeTrustedFileRead(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"../escape.txt"}`)})
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: escaped}) || !strings.Contains(escaped, "trusted_file_read_path_rejected") {
+		t.Fatalf("escaping read was an outcome: %s", escaped)
+	}
+	paged := cb.executeTrustedFileRead(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"note.txt","start_line":5}`)})
+	if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: paged}) || !strings.Contains(paged, "trusted_file_read_start_past_end") {
+		t.Fatalf("a page past the end must stay an outcome: %s", paged)
+	}
+
+	deleted := cb.executeTrustedFileDelete(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: []byte(`{"path":"folder"}`)})
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: deleted}) || !strings.Contains(deleted, "trusted_file_delete_path_is_directory") {
+		t.Fatalf("directory delete was an outcome: %s", deleted)
+	}
+	if info, err := os.Stat(filepath.Join(workspace, "folder")); err != nil || !info.IsDir() {
+		t.Fatalf("directory refusal removed the directory: %v", err)
+	}
+}

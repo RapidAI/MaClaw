@@ -197,6 +197,19 @@ type WailsNoDragStyle = React.CSSProperties & {
     "--wails-draggable"?: "no-drag";
 };
 
+// Shared chrome for the fixed feature dialogs in this panel. One backdrop +
+// one panel style instead of a copy per dialog; zIndex comes from the
+// --z-overlay rung of the ladder in 00-tokens.css.
+const remoteDialogBackdropStyle = {
+    position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: "var(--z-overlay)", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
+} as WailsNoDragStyle;
+
+function remoteDialogPanelStyle(minWidth: number): WailsNoDragStyle {
+    return {
+        background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", textAlign: "left", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
+    };
+}
+
 function getWeekdays(lang: string): readonly string[] {
     const key = normalizeLang(lang);
     if (key === 'zh-Hans' || key === 'zh-Hant' || key === 'mn') return WEEKDAYS[key];
@@ -969,13 +982,13 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
             {/* Delete confirmation */}
             {deleteTarget && (
                 <div
-                    style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                    style={remoteDialogBackdropStyle}
                     {...deleteBackdropProps}
                 >
                     <div
                         role="dialog"
                         aria-modal="true"
-                        style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", textAlign: "left", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                        style={remoteDialogPanelStyle(280)}
                         {...deleteDialogProps}
                     >
                         <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this scheduled task?", "确定删除这个定时任务？")}</p>
@@ -989,13 +1002,13 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
 
             {windowDelete && (
                 <div
-                    style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                    style={remoteDialogBackdropStyle}
                     {...windowDeleteBackdropProps}
                 >
                     <div
                         role="dialog"
                         aria-modal="true"
-                        style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", textAlign: "left", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                        style={remoteDialogPanelStyle(280)}
                         {...windowDeleteDialogProps}
                     >
                         <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this scheduled task? A running one will stop.", "确定删除这个计划任务？正在执行的会停止。")}</p>
@@ -1009,14 +1022,14 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
 
             {windowEdit && (
                 <div
-                    style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                    style={remoteDialogBackdropStyle}
                     {...windowEditBackdropProps}
                 >
                     <div
                         role="dialog"
                         aria-modal="true"
                         aria-label={t("Edit run window", "编辑运行时段")}
-                        style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 320, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", textAlign: "left", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                        style={remoteDialogPanelStyle(320)}
                         {...windowEditDialogProps}
                     >
                         <p style={{ fontSize: "0.86rem", fontWeight: 600, marginBottom: 12 }}>{t("Edit run window", "编辑运行时段")}</p>
@@ -1050,7 +1063,7 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
             {/* Create / Edit dialog */}
             {dlgOpen && (
                 <div
-                    style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                    style={remoteDialogBackdropStyle}
                     {...formBackdropProps}
                 >
                     <div

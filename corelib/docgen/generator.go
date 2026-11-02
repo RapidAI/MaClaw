@@ -233,23 +233,13 @@ func (g *Generator) Generate(spec Spec) ([]byte, error) {
 	pdf.AddPage()
 	spec.boundStyle = styleForSpec(spec)
 	pageStyle := spec.boundStyle
+	// Page 1 is the style's cover; the body starts on page 2 under the page
+	// chrome. The cover carries its own meta rows and no footer.
+	paintStyleCover(&pdf, layout, pageStyle, spec)
+	pdf.AddPage()
 	paintPageChrome(&pdf, layout, pageStyle)
-	titleHTML := buildTitleHTML(spec)
-	endY, err := pdf.InsertHTMLBox(layout.marginX, layout.marginY, layout.contentW, 120, titleHTML, gopdf.HTMLBoxOption{
-		DefaultFontFamily: "regular",
-		DefaultFontSize:   11,
-		BoldFontFamily:    "bold",
-		LineSpacing:       2,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("渲染标题失败: %w", err)
-	}
 
-	endY += 6
-	paintTitleUnderline(&pdf, layout, pageStyle, endY)
-	endY += 12
-
-	if err := g.renderPagedMarkdown(&pdf, layout, endY, spec); err != nil {
+	if err := g.renderPagedMarkdown(&pdf, layout, layout.marginY, spec); err != nil {
 		return nil, fmt.Errorf("渲染正文失败: %w", err)
 	}
 
@@ -435,9 +425,25 @@ func addFooter(pdf *gopdf.GoPdf, layout pdfPageLayout, spec Spec) {
 	footerStyle := styleForSpec(spec)
 	rule := mustRGB(footerStyle.Colors.Rule)
 	meta := mustRGB(footerStyle.Colors.Meta)
+	// The page number sits just above the rule's right end, on its own line:
+	// a cell sharing the footer text's baseline scrambles text extraction of
+	// the cell-drawn glyphs (they all report the cell origin as X).
+	if pageNo := pdf.GetNumberOfPages(); pageNo > 0 {
+		pdf.SetFont("regular", "", 7.5)
+		pdf.SetTextColor(meta[0], meta[1], meta[2])
+		pdf.SetXY(layout.pageW-layout.marginX-64, layout.footerY-11)
+		_ = pdf.CellWithOption(&gopdf.Rect{W: 64, H: 10},
+			fmt.Sprintf("第 %d 页", pageNo), gopdf.CellOption{Align: gopdf.Right})
+	}
 	pdf.SetLineWidth(0.8)
 	pdf.SetStrokeColor(rule[0], rule[1], rule[2])
 	pdf.Line(layout.marginX, layout.footerY, layout.marginX+layout.contentW, layout.footerY)
+	// A heavier accent segment rides the rule's left end; the page number
+	// balances it on the right.
+	accent := mustRGB(footerStyle.Colors.Accent)
+	pdf.SetStrokeColor(accent[0], accent[1], accent[2])
+	pdf.SetLineWidth(2)
+	pdf.Line(layout.marginX, layout.footerY, layout.marginX+40, layout.footerY)
 	if len(footerParts) == 0 {
 		return
 	}
@@ -534,9 +540,9 @@ func (g *Generator) addFonts(pdf *gopdf.GoPdf) error {
 func defaultHTMLBoxOption() gopdf.HTMLBoxOption {
 	return gopdf.HTMLBoxOption{
 		DefaultFontFamily: "regular",
-		DefaultFontSize:   10,
+		DefaultFontSize:   10.5,
 		BoldFontFamily:    "bold",
-		LineSpacing:       3,
+		LineSpacing:       4,
 		DefaultColor:      [3]uint8{40, 40, 40},
 	}
 }
@@ -560,9 +566,17 @@ type measurer struct {
 	// drop the whole directory when the render ends.
 	scratch *dataURLScratch
 	style   Style
+	// decor caches the extra height each decorated block needs in its inset
+	// panel, so the pager's binary search does not re-measure it per step.
+	decor map[string]float64
+	// h2 counts the H2 headings already rendered, so section numbers keep
+	// counting across body pages instead of restarting on every one.
+	h2 int
 }
 
 // markdownToHTML renders this measurer's Markdown through its own scratch.
+// Pure: it never touches the render-path H2 counter, because the pager
+// measures candidates in arbitrary prefix order.
 func (m *measurer) markdownToHTML(markdown string, colorful bool) string {
 	style := Style{}
 	scratch := (*dataURLScratch)(nil)
@@ -571,6 +585,24 @@ func (m *measurer) markdownToHTML(markdown string, colorful bool) string {
 		scratch = m.scratch
 	}
 	return markdownToHTMLStyled(scratch, markdown, colorful, style)
+}
+
+// renderMarkdownHTML is markdownToHTML for the final draw: it continues the
+// running H2 counter so section numbers survive page breaks.
+func (m *measurer) renderMarkdownHTML(markdown string, colorful bool) string {
+	style := Style{}
+	scratch := (*dataURLScratch)(nil)
+	h2Start := 0
+	if m != nil {
+		style = m.style
+		scratch = m.scratch
+		h2Start = m.h2
+	}
+	html, h2 := markdownToHTMLStyledH2(scratch, markdown, colorful, style, h2Start)
+	if m != nil {
+		m.h2 = h2
+	}
+	return html
 }
 
 // newMeasurer builds the measurement document once the page size is known.
@@ -599,12 +631,66 @@ func (m *measurer) measureMarkdownHeight(layout pdfPageLayout, currentY float64,
 	return endY - currentY, nil
 }
 
+// measureBlockHeightAt measures a block laid out at an arbitrary x/width. The
+// decorated-body panels need it: the panel is painted before the text, so its
+// height must come from a measurement made at the same inset width the final
+// insert uses.
+func (m *measurer) measureBlockHeightAt(layout pdfPageLayout, y, x, w float64, markdown string, colorful bool) (float64, error) {
+	endY, err := m.pdf.InsertHTMLBox(x, y, w, markdownMeasureBoxH, m.markdownToHTML(markdown, colorful), defaultHTMLBoxOption())
+	if err != nil {
+		return 0, err
+	}
+	return endY - y, nil
+}
+
 func (m *measurer) markdownFits(layout pdfPageLayout, currentY float64, markdown string, remainH float64, colorful bool) (bool, error) {
 	height, err := m.measureMarkdownHeight(layout, currentY, markdown, colorful)
 	if err != nil {
 		return false, err
 	}
 	return height <= remainH, nil
+}
+
+// decorExtra returns the extra height a decorated block needs when it renders
+// inside its inset panel instead of the full flow width the fit measures. The
+// fit reserves this difference so a panel never slides under the footer rule.
+func (m *measurer) decorExtra(layout pdfPageLayout, block string, colorful bool) (float64, error) {
+	if decoratedBlockKindOf(block) == "" {
+		return 0, nil
+	}
+	if m.decor == nil {
+		m.decor = map[string]float64{}
+	}
+	if extra, ok := m.decor[block]; ok {
+		return extra, nil
+	}
+	full, err := m.measureBlockHeightAt(layout, 0, layout.marginX, layout.contentW, block, colorful)
+	if err != nil {
+		return 0, err
+	}
+	inset, err := m.measureBlockHeightAt(layout, 0, layout.marginX+panelPadX, layout.contentW-panelPadX-panelPadR, block, colorful)
+	if err != nil {
+		return 0, err
+	}
+	extra := inset - full
+	if extra < 0 {
+		extra = 0
+	}
+	m.decor[block] = extra
+	return extra, nil
+}
+
+// decorExtraPrefix sums the panel allowance over a run of blocks.
+func (m *measurer) decorExtraPrefix(layout pdfPageLayout, blocks []string, colorful bool) (float64, error) {
+	extra := 0.0
+	for _, block := range blocks {
+		add, err := m.decorExtra(layout, block, colorful)
+		if err != nil {
+			return 0, err
+		}
+		extra += add
+	}
+	return extra, nil
 }
 
 // fitBlockPrefix binary-searches how many leading blocks fit above the footer.
@@ -621,7 +707,11 @@ func (m *measurer) fitBlockPrefix(layout pdfPageLayout, currentY float64, blocks
 	for low <= high {
 		mid := (low + high) / 2
 		candidate := strings.Join(blocks[:mid], "\n\n")
-		fits, err := m.markdownFits(layout, currentY, candidate, remainH, colorful)
+		panelExtra, err := m.decorExtraPrefix(layout, blocks[:mid], colorful)
+		if err != nil {
+			return 0, err
+		}
+		fits, err := m.markdownFits(layout, currentY, candidate, remainH-panelExtra, colorful)
 		if err != nil {
 			return 0, err
 		}
@@ -647,10 +737,19 @@ func (m *measurer) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, ba
 	best := 0
 	for low <= high {
 		mid := (low + high) / 2
+		filling := joinFillingParts(parts[:mid])
 		candidateParts := append([]string{}, baseBlocks...)
-		candidateParts = append(candidateParts, joinFillingParts(parts[:mid]))
+		candidateParts = append(candidateParts, filling)
 		candidate := strings.Join(candidateParts, "\n\n")
-		fits, err := m.markdownFits(layout, currentY, candidate, remainH, colorful)
+		panelExtra, err := m.decorExtraPrefix(layout, baseBlocks, colorful)
+		if err != nil {
+			return 0, err
+		}
+		fillingExtra, err := m.decorExtra(layout, filling, colorful)
+		if err != nil {
+			return 0, err
+		}
+		fits, err := m.markdownFits(layout, currentY, candidate, remainH-panelExtra-fillingExtra, colorful)
 		if err != nil {
 			return 0, err
 		}
@@ -715,9 +814,9 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 			}
 		}
 		if len(pageBlocks) == 0 {
-			// The title page starts below the header. An image that does not
-			// fit there still fits at the top of the next page. Splitting it
-			// would cut the path on the dots in the file name.
+			// A body page starts at the margin. An image that does not fit
+			// there still fits at the top of the next page. Splitting it would
+			// cut the path on the dots in the file name.
 			if currentY > layout.marginY+1 {
 				addFooter(pdf, layout, spec)
 				pdf.AddPage()
@@ -743,8 +842,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 				remainingBlocks = append([]string{remaining}, remainingBlocks...)
 			}
 		}
-		pageMarkdown := strings.Join(pageBlocks, "\n\n")
-		if _, err := pdf.InsertHTMLBox(layout.marginX, currentY, layout.contentW, layout.pageH, m.markdownToHTML(pageMarkdown, spec.Colorful), defaultHTMLBoxOption()); err != nil {
+		if err := g.renderPageBlocks(pdf, m, layout, currentY, pageBlocks, spec.Colorful); err != nil {
 			return err
 		}
 		addFooter(pdf, layout, spec)
@@ -757,6 +855,71 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 		currentY = layout.marginY
 	}
 	return nil
+}
+
+// renderPageBlocks draws one page's blocks. Plain blocks join into a single
+// HTML box as before. Decorated blocks (code fences, blockquotes) leave the
+// flow: the pager has already fitted the page, the panel is painted at the
+// measured height, and the text goes in inset from the panel's marker bar.
+// The measured and rendered heights match because both use the same inset
+// width, fonts, and options.
+func (g *Generator) renderPageBlocks(pdf *gopdf.GoPdf, m *measurer, layout pdfPageLayout, top float64, blocks []string, colorful bool) error {
+	y := top
+	var run []string
+	flush := func() error {
+		if len(run) == 0 {
+			return nil
+		}
+		endY, err := pdf.InsertHTMLBox(layout.marginX, y, layout.contentW, layout.pageH,
+			m.renderMarkdownHTML(strings.Join(run, "\n\n"), colorful), defaultHTMLBoxOption())
+		if err != nil {
+			return err
+		}
+		y = endY
+		run = run[:0]
+		return nil
+	}
+	for _, block := range blocks {
+		kind := decoratedBlockKindOf(block)
+		if kind == "" {
+			run = append(run, block)
+			continue
+		}
+		if err := flush(); err != nil {
+			return err
+		}
+		nextY, err := g.renderDecoratedBlock(pdf, m, layout, y, block, kind, colorful)
+		if err != nil {
+			return err
+		}
+		y = nextY
+	}
+	return flush()
+}
+
+// renderDecoratedBlock paints the panel for one decorated block and its text,
+// returning the y where the flow continues.
+func (g *Generator) renderDecoratedBlock(pdf *gopdf.GoPdf, m *measurer, layout pdfPageLayout, y float64, block string, kind decoratedBlockKind, colorful bool) (float64, error) {
+	textW := layout.contentW - panelPadX - panelPadR
+	h, err := m.measureBlockHeightAt(layout, y, layout.marginX+panelPadX, textW, block, colorful)
+	if err != nil {
+		return y, err
+	}
+	if h <= 0 {
+		h = 12
+	}
+	textX := paintBlockPanel(pdf, m.style, kind, layout.marginX, y, layout.contentW, h+4)
+	endY, err := pdf.InsertHTMLBox(layout.marginX+textX, y, textW, layout.pageH,
+		m.markdownToHTML(block, colorful), defaultHTMLBoxOption())
+	if err != nil {
+		return y, err
+	}
+	// The flow continues below the panel's bottom pad, so the next block never
+	// starts inside the tinted field.
+	if panelBottom := y + h + 4; endY < panelBottom {
+		endY = panelBottom
+	}
+	return endY, nil
 }
 
 func splitOversizedMarkdownBlock(block string) []string {

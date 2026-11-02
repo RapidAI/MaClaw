@@ -1767,6 +1767,9 @@ type sharedAgentLoopCallbacks struct {
 	loopCtx  *LoopContext
 	userID   string
 	userText string
+	// visualPreview holds the page or deck written by the current tool call.
+	// The next tool return reads it; the loop closes the browser when the turn ends.
+	visualPreview *visualPreviewState
 	// routeAttachments is the list the turn was first routed with, including
 	// images staged from the desktop picker. A retry that follows a saved-model
 	// change uses this same list, so an image is not reclassified as plain text.
@@ -1925,7 +1928,7 @@ type sharedAgentLoopCallbacks struct {
 	// loop. A later refill must not be stopped by the same value.
 	appliedTurnCeiling int
 	httpClient         *http.Client
-	escalated         bool
+	escalated          bool
 	// surfaceRefreshPending is set when the tool-driven route escalation changes
 	// the endpoint, credentials, or context budget the prompt was built for.
 	// A Hub hint-only upgrade does not set it. The core loop consumes the flag
@@ -4823,7 +4826,8 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 			result = c.ExecuteToolStructured(name, argsJSON)
 		}
 	}
-	return attachPendingComputerUseModelImage(result)
+	result = attachPendingComputerUseModelImage(result)
+	return c.finishVisualPreview(name, argsJSON, result)
 }
 
 // BeginToolSurfaceEpoch is invoked by the shared core loop immediately before
@@ -5906,17 +5910,45 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		return c.executeBoundSemanticSelectionCanonicalWithContext(agentservice.WithDynamicSemanticAdmission(ctx, admission), selection, canonical, true)
 	})
 	if err != nil {
+		// ExecuteAdmitted reports only preconditions. The adapter has not run,
+		// so a running admission here would become an unknown outcome and a
+		// later real effect could not close it.
+		if retractErr := c.semanticSurface.coordinator.RetractUnexecuted(admission); retractErr != nil {
+			log.Printf("[semantic-routing] executor error for %s left the admission: %v", selection.ID, retractErr)
+		}
 		return "[system rejected] " + err.Error()
 	}
 	if result.Paused {
-		// Backstop for a pause that still reached an admitted call. The MCP
-		// write question is asked before Admit, so this return is not how that
-		// question keeps its grant. Completing a pause here — even as failed —
-		// would burn the one-shot admission on a question. The ask marker text
-		// alone is not the signal: a confirmation that already executed an
-		// effect (a frozen mailbox draft) settles through the ordinary outcome
-		// path.
+		// Backstop for a pause that still reached an admitted call. Admit has
+		// already consumed the grant and left a running execution. Completing
+		// the pause, or leaving that row in place, burns the admission: the
+		// question cannot be re-issued. Retract restores the grant. A prepared
+		// delivery, a stored artifact, or a dynamic coordinator that already
+		// owns the row stays on the ordinary path. The ask marker text alone
+		// is not the signal: a confirmation that already executed an effect
+		// (a frozen mailbox draft) settles through the ordinary outcome path.
+		if !c.usesUnifiedDynamicEffectCoordinator(selected) && c.semanticPreparedDelivery == nil && len(c.semanticSurface.pendingArtifacts[selected.ID]) == 0 {
+			if retractErr := c.semanticSurface.coordinator.RetractUnexecuted(admission); retractErr != nil {
+				log.Printf("[semantic-routing] paused admission for %s stayed admitted: %v", selected.ID, retractErr)
+			}
+		}
 		return result.Result
+	}
+	// An argument refusal that the adapter still evaluates after Admit never
+	// produced an effect. Completing it as failed would make the selection an
+	// outcome, and settlement will not overwrite a failed record with the file
+	// or command that later does the work. Retract leaves the need unstarted
+	// and the grant live. A recorded effect, a prepared delivery, or a dynamic
+	// coordinator that already owns the row stays on the ordinary completion
+	// path. If the retract cannot prove the admission is still unexecuted, the
+	// failure is recorded as before.
+	if !c.usesUnifiedDynamicEffectCoordinator(selected) && c.semanticPreparedDelivery == nil && len(c.semanticSurface.pendingArtifacts[selected.ID]) == 0 && tool.ArgumentRejectionWithoutEffect(result) {
+		if err := c.semanticSurface.coordinator.RetractUnexecuted(admission); err != nil {
+			log.Printf("[semantic-routing] unexecuted argument rejection for %s stayed admitted: %v", selected.ID, err)
+		} else {
+			delete(c.semanticSurface.pendingArtifacts, selected.ID)
+			return semanticUnexecutedModelRejection(result.Result)
+		}
 	}
 	if c.usesUnifiedDynamicEffectCoordinator(selected) && (result.AwaitingReceipt || result.Unknown || result.Succeeded || result.ReasonCode == "dynamic_binding_stale" || result.ReasonCode == "mcp_tool_error" || strings.HasSuffix(result.ReasonCode, "_binding_stale") || strings.HasSuffix(result.ReasonCode, "_bound_execution_unavailable")) {
 		// The dynamic external-effect coordinator committed the host call and
@@ -6497,6 +6529,80 @@ func semanticSelectionFailed(result string) bool {
 	return agentruntime.SelectionFailed(result)
 }
 
+// semanticUnexecutedRejection marks a refusal that returned before the adapter
+// ran. Recording that call as a failed execution would freeze the selection:
+// settlement will not overwrite a failed record, so the turn stays incomplete
+// after the work is produced another way. The marker keeps the original
+// reason and is what the coordinated caller retracts instead of completing.
+func semanticUnexecutedRejection(err error) string {
+	text := "arguments_rejected"
+	if err != nil {
+		text = strings.TrimSpace(err.Error())
+	}
+	text = strings.TrimSpace(strings.TrimPrefix(text, "[system rejected]"))
+	if text == "" {
+		text = "arguments_rejected"
+	}
+	// The refusal code has to be the first token. A detail that merely
+	// mentions arguments_rejected must not hide a code the retract path
+	// would otherwise fail to recognize, or the admission is stored as failed.
+	wrapped := "[system rejected] " + text
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: wrapped}) {
+		wrapped = "[system rejected] arguments_rejected: " + text
+	}
+	return wrapped
+}
+
+// semanticEffectNotStarted marks a handler error decided before any effect.
+// The adapter retracts it, so a later real effect can still close the
+// selection. A write, command, fetch, build, or push that already started is
+// not this type, and a shell guard is not either: that denial stays recorded
+// so the forbidden command is not offered again as a fresh call.
+type semanticEffectNotStarted struct{ error }
+
+func (e semanticEffectNotStarted) Unwrap() error { return e.error }
+
+func effectNotStarted(err error) error {
+	if err == nil {
+		return nil
+	}
+	return semanticEffectNotStarted{err}
+}
+
+// semanticHandlerRejection turns a handler error into the model-facing text.
+// A not-started error retracts. Anything else keeps the recorded-outcome
+// wording, including a guard line that already carries the rejection prefix.
+func semanticHandlerRejection(err error) string {
+	if err == nil {
+		return semanticUnexecutedRejection(nil)
+	}
+	var idle semanticEffectNotStarted
+	var office semanticOfficeWriteBeforeEffect
+	var file semanticFileWriteBeforeEffect
+	if errors.As(err, &idle) || errors.As(err, &office) || errors.As(err, &file) {
+		return semanticUnexecutedRejection(err)
+	}
+	return withSystemRejectedPrefix(err.Error())
+}
+
+// semanticUnexecutedModelRejection is the model-facing form of a refusal that
+// was retracted. The grant is live again. Without that sentence the model
+// treats the rejection as a spent tool and leaves the need open.
+func semanticUnexecutedModelRejection(result string) string {
+	result = strings.TrimSpace(result)
+	// Match the guidance itself. A detail that only says "refused before
+	// execution" (a path, a jail message) must not hide the fact that the
+	// tool can be called again.
+	const available = "so the tool remains available"
+	if !strings.Contains(result, available) {
+		if !strings.HasSuffix(result, ".") {
+			result += "."
+		}
+		result += " The call was refused before execution, so the tool remains available."
+	}
+	return semanticModelParameterRejection(result)
+}
+
 // semanticSelectionOutcomeUnknown recognises the marker a trusted host adapter
 // emits when its effect may or may not have landed: an SSH session that
 // vanished after the command was written, a browser or desktop host that
@@ -6776,7 +6882,10 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 	// capability, not by the breadth of its own schema. This refuses before the
 	// adapter runs, so an out-of-bound action never becomes an effect.
 	if reason, refused := semanticManagedInvocationRefusal(selection, canonicalArgs); refused {
-		return tool.SelectionExecutionResult{Result: semanticManagedMISRefusalText(selection.AdapterName, reason), Succeeded: false, ReasonCode: reason}
+		// The multiplexer has not run. Recording the refusal as a failed
+		// execution would burn the one-shot grant, so the model could not
+		// call an allowed action and the need would stay incomplete.
+		return tool.SelectionExecutionResult{Result: semanticManagedMISRefusalText(selection.AdapterName, reason), Succeeded: false, ReasonCode: reason, Unexecuted: true}
 	}
 	// Trusted adapters (web_search, web_fetch, clock, shell, …) never reach
 	// the legacy executor that already publishes a tool card. Publish the
@@ -6890,7 +6999,7 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 		}
 		text, err := semanticTrustedMessageSendArgsAllowed(args)
 		if err != nil {
-			return "[system rejected] " + err.Error()
+			return semanticUnexecutedRejection(err)
 		}
 		record, err := c.semanticSurface.artifacts.prepareTrustedMessageSend(selection, target.ChannelScope, target.DestinationID, text)
 		if err != nil {
@@ -7322,6 +7431,13 @@ func (c *sharedAgentLoopCallbacks) executeTrustedDocumentRead(selection tool.Pla
 	if c == nil || c.semanticSurface == nil || c.semanticSurface.artifacts == nil {
 		return "[system rejected] semantic tool surface is unavailable"
 	}
+	// Validate arguments before consuming the input. A canonical rejection
+	// retracts the admission; doing that after consumeTrustedInput would
+	// release an input that was already taken and allow the read to run again.
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_document_arguments_invalid"
+	}
 	contract := firstRequiredArtifactContract(selection.Consumes)
 	payload, err := c.semanticSurface.artifacts.consumeTrustedInput(selection, contract)
 	if err != nil {
@@ -7332,10 +7448,6 @@ func (c *sharedAgentLoopCallbacks) executeTrustedDocumentRead(selection tool.Pla
 		return "[system rejected] " + err.Error()
 	}
 	defer cleanup()
-	var args map[string]interface{}
-	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
-		return "[system rejected] canonical_document_arguments_invalid"
-	}
 	args["file_path"] = path
 	// ToolReadDocument includes its resolved source path in the legacy result
 	// envelope. That private temp path must not become model context, so the
@@ -7365,7 +7477,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedAudioTranscribe(selection tool.
 		return "[system rejected] canonical_audio_arguments_invalid"
 	}
 	if err := semanticTrustedAudioArgsAllowed(args); err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	contract := firstRequiredArtifactContract(selection.Consumes)
 	payload, err := c.semanticSurface.artifacts.consumeTrustedInput(selection, contract)
@@ -7412,7 +7524,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedAuditRead(_ tool.PlannedSelecti
 	}
 	query, err := semanticTrustedAuditArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	principalID := c.semanticPrincipalID()
 	text, err := c.handler.readTrustedAudit(principalID, query)
@@ -7439,7 +7551,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedKnowledgeAdmin(_ tool.PlannedSe
 	}
 	id, status, refresh, hasRefresh, err := semanticTrustedKnowledgeAdminArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	principalID := c.semanticPrincipalID()
 	text, err := c.handler.administerTrustedKnowledge(principalID, id, status, refresh, hasRefresh)
@@ -7466,7 +7578,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedKnowledgeIngest(_ tool.PlannedS
 	}
 	text, url, path, err := semanticTrustedKnowledgeIngestArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	// P0-4 credential gate: the semantic ingest adapter bypasses the registry
 	// tool executor, so the fence is applied here (identical card/timeout/
@@ -7498,7 +7610,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedKnowledgeRead(_ tool.PlannedSel
 	}
 	query, err := semanticTrustedKnowledgeReadArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.readTrustedKnowledge(c.semanticPrincipalID(), query)
 	if err != nil {
@@ -7524,7 +7636,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileWrite(_ tool.PlannedSelecti
 	}
 	req, err := semanticTrustedFileWriteArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	var result string
 	if req.edit {
@@ -7533,12 +7645,17 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileWrite(_ tool.PlannedSelecti
 		result, err = c.handler.writeTrustedFile(c.semanticPrincipalID(), req.path, req.content, req.mode)
 	}
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		// A path the writer will not accept, or a passage that does not match,
+		// is decided before any bytes change. Completing that as failed
+		// consumes the grant, and the file written on the next attempt cannot
+		// close the need. A write that already ran stays a recorded outcome.
+		return semanticHandlerRejection(err)
 	}
 	out, err := semanticTrustedFileWriteResultProjection(result)
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
+	c.noteTrustedVisualPreview(req.path)
 	return out
 }
 
@@ -7555,11 +7672,11 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileDelete(_ tool.PlannedSelect
 	}
 	path, err := semanticTrustedFileDeleteArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	result, err := c.handler.deleteTrustedFile(c.semanticPrincipalID(), path)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticHandlerRejection(err)
 	}
 	return result
 }
@@ -7577,7 +7694,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileRead(_ tool.PlannedSelectio
 	}
 	path, query, filePattern, startLine, err := semanticTrustedFileReadArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	// The procedure file is named by an absolute path outside the task
 	// workspace. The workspace jail still applies to every other path.
@@ -7588,7 +7705,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileRead(_ tool.PlannedSelectio
 		result, err = c.handler.readTrustedFile(c.semanticPrincipalID(), path, query, filePattern, startLine)
 	}
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticHandlerRejection(err)
 	}
 	out, err := semanticTrustedFileReadResultProjection(result)
 	if err != nil {
@@ -7609,7 +7726,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedRepoInspect(_ tool.PlannedSelec
 		return "[system rejected] canonical_repo_inspect_arguments_invalid"
 	}
 	if err := semanticTrustedRepoInspectArgsAllowed(args); err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	result, err := c.handler.inspectTrustedRepo(c.semanticPrincipalID())
 	if err != nil {
@@ -7635,7 +7752,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedWebFetch(_ tool.PlannedSelectio
 	}
 	rawURL, err := semanticTrustedWebFetchArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	publicNetworkOnly := c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil
 	result, err := c.handler.fetchTrustedWeb(c.semanticPrincipalID(), rawURL, publicNetworkOnly)
@@ -7662,7 +7779,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedWebSearch(_ tool.PlannedSelecti
 	}
 	query, err := semanticTrustedWebSearchArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	publicNetworkOnly := c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil
 	result, err := c.handler.searchTrustedWeb(c.semanticPrincipalID(), query, publicNetworkOnly)
@@ -7685,7 +7802,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedClock(_ tool.PlannedSelection, 
 		return "[system rejected] canonical_clock_arguments_invalid"
 	}
 	if err := semanticTrustedClockArgsAllowed(args); err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	result, err := c.handler.readTrustedClock(c.semanticPrincipalID())
 	if err != nil {
@@ -7711,7 +7828,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedConfig(_ tool.PlannedSelection,
 	}
 	maxIterations, hasMax, thinkingMode, hasThinking, err := semanticTrustedConfigArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	principalID := c.semanticPrincipalID()
 	text, err := c.handler.administerTrustedConfig(principalID, maxIterations, hasMax, thinkingMode, hasThinking)
@@ -7738,7 +7855,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedMemory(_ tool.PlannedSelection,
 	}
 	content, query, id, err := semanticTrustedMemoryArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.administerTrustedMemory(c.semanticPrincipalID(), content, query, id)
 	if err != nil {
@@ -7794,7 +7911,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedTask(_ tool.PlannedSelection, c
 	}
 	title, description, id, status, note, err := semanticTrustedTaskArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.administerTrustedTask(c.semanticPrincipalID(), title, description, id, status, note)
 	if err != nil {
@@ -7820,7 +7937,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedGoal(_ tool.PlannedSelection, c
 	}
 	objective, status, note, err := semanticTrustedGoalArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.administerTrustedGoal(c.semanticPrincipalID(), objective, status, note)
 	if err != nil {
@@ -7846,7 +7963,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedTemplate(_ tool.PlannedSelectio
 	}
 	name, codingTool, err := semanticTrustedTemplateArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.administerTrustedTemplate(c.semanticPrincipalID(), name, codingTool)
 	if err != nil {
@@ -7872,7 +7989,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSession(_ tool.PlannedSelection
 	}
 	id, err := semanticTrustedSessionArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.inspectTrustedSessions(c.semanticPrincipalID(), id)
 	if err != nil {
@@ -7901,7 +8018,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSchedule(_ tool.PlannedSelectio
 	}
 	parsed, err := semanticTrustedScheduleArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	op, _ := semanticTrustedScheduleDispatch(parsed)
 	text, err := c.handler.administerTrustedSchedule(c.semanticPrincipalID(), parsed)
@@ -7934,11 +8051,14 @@ func (c *sharedAgentLoopCallbacks) executeTrustedOfficeWrite(selection tool.Plan
 	// or mixed form does not become a failed plan execution.
 	path, data, err := semanticTrustedOfficeWriteArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.writeTrustedOffice(c.semanticPrincipalID(), path, data)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		// A missing image or a path the writer will not accept happens before
+		// any bytes are written. Completing that as failed consumes the grant,
+		// and the document produced on the next attempt cannot close the need.
+		return semanticHandlerRejection(err)
 	}
 	out, err := semanticTrustedOfficeWriteResultProjection(text)
 	if err != nil {
@@ -7956,6 +8076,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedOfficeWrite(selection tool.Plan
 			if _, statErr := os.Stat(resolved); statErr == nil {
 				absPath = resolved
 				c.deliveredPaths = appendUniqueStrings(c.deliveredPaths, absPath)
+				c.noteVisualPreview(absPath)
 			}
 		}
 	}
@@ -8025,12 +8146,12 @@ func (c *sharedAgentLoopCallbacks) executeTrustedAcquireRemote(_ tool.PlannedSel
 	}
 	rawURL, err := semanticTrustedAcquireRemoteArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	publicNetworkOnly := c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil
 	text, err := c.handler.acquireTrustedRemote(c.semanticPrincipalID(), rawURL, publicNetworkOnly)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticHandlerRejection(err)
 	}
 	out, err := semanticTrustedAcquireRemoteResultProjection(text)
 	if err != nil {
@@ -8052,7 +8173,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedShell(_ tool.PlannedSelection, 
 	}
 	command, timeout, err := semanticTrustedShellArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	// This adapter runs the command itself. It does not call toolBash, and on
 	// Windows the process is cmd.exe, not the PowerShell toolBash starts.
@@ -8062,7 +8183,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedShell(_ tool.PlannedSelection, 
 	}
 	text, err := c.handler.executeTrustedShell(c.semanticPrincipalID(), command, timeout)
 	if err != nil {
-		return withSystemRejectedPrefix(err.Error())
+		return semanticHandlerRejection(err)
 	}
 	out, err := semanticTrustedShellResultProjection(text)
 	if err != nil {
@@ -8095,11 +8216,11 @@ func (c *sharedAgentLoopCallbacks) executeTrustedBuildVerify(_ tool.PlannedSelec
 	}
 	task, target, err := semanticTrustedBuildVerifyArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.runTrustedBuildVerify(c.semanticPrincipalID(), task, target)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticHandlerRejection(err)
 	}
 	out, err := semanticTrustedBuildVerifyResultProjection(text)
 	if err != nil {
@@ -8121,7 +8242,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedDelegate(_ tool.PlannedSelectio
 	}
 	task, err := semanticTrustedDelegateArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.runTrustedDelegate(c.semanticPrincipalID(), task)
 	if err != nil {
@@ -8158,7 +8279,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 	if _, isConnect := args["host"]; isConnect {
 		connectArgs, err := semanticTrustedSSHConnectArgsAllowed(args)
 		if err != nil {
-			return semanticPrefixedRejection(err)
+			return semanticUnexecutedRejection(err)
 		}
 		principalID := c.semanticPrincipalID()
 		connectArgs[registeredToolPolicyOwnerIDField] = principalID
@@ -8172,7 +8293,14 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 						sessionID = session.ID
 					}
 				}
-				return semanticSSHConnectDownloadResult(result, c.trustedSSHDownload(sessionID, remotePath, localPath))
+				download := c.trustedSSHDownload(sessionID, remotePath, localPath)
+				if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: download}) {
+					// The dial already opened a session. A path check that
+					// refused the copy has to stay a recorded failure, or the
+					// admission is retracted after that session exists.
+					download = recordedSSHRefusalAfterEffect(download)
+				}
+				return semanticSSHConnectDownloadResult(result, download)
 			}
 			if command, _ := args["command"].(string); strings.TrimSpace(command) != "" {
 				out, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, semanticTrustedSSHCommandTimeout)
@@ -8192,34 +8320,42 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 			}
 			return result
 		}
-		return "[system rejected] " + result
+		// The dial did not leave a session. Completing the rejection would
+		// consume the grant, so a corrected host or password could not connect.
+		return semanticUnexecutedRejection(fmt.Errorf("%s", strings.TrimSpace(result)))
 	}
 	command, timeout, remotePath, localPath, err := semanticTrustedSSHArgsAllowed(args)
 	if err != nil {
-		return semanticPrefixedRejection(err)
+		return semanticUnexecutedRejection(err)
 	}
 	if remotePath != "" || localPath != "" {
 		session := trustedSSHSingleBoundSession(c.handler, c.semanticPrincipalID())
 		if session == nil {
-			return "[system rejected] trusted_ssh_session_unavailable"
+			return semanticUnexecutedRejection(fmt.Errorf("trusted_ssh_session_unavailable"))
 		}
 		return c.trustedSSHDownload(session.ID, remotePath, localPath)
 	}
 	text, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, timeout)
 	if err != nil {
+		// No session, or a session that was already gone, means the command
+		// was not written. Recording that as unknown freezes the selection
+		// as if the command might have run.
+		var idle semanticEffectNotStarted
+		if errors.As(err, &idle) {
+			return semanticUnexecutedRejection(err)
+		}
 		// A timeout means the host stopped waiting and interrupted the
-		// command. The session is still there, so the attempt is a settled
-		// failure and the next remote command in this turn stays available.
-		// A dropped session or an unobserved outcome stays unknown: the
-		// command may already have run, and another call would not be a
-		// continuation of the same task.
+		// command. The command was already written, so the attempt is a
+		// settled failure. A dropped session or an unobserved outcome after
+		// that write stays unknown: another call would not be a continuation
+		// of the same task.
 		if strings.Contains(err.Error(), "trusted_ssh_timeout") {
-			return "[system rejected] " + err.Error() + remoteSSHTimeoutHint(timeout)
+			return semanticPrefixedRejection(err) + remoteSSHTimeoutHint(timeout)
 		}
 		if strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "disconnect") || strings.Contains(err.Error(), "outcome_unobserved") {
 			return "[system unknown] " + err.Error()
 		}
-		return "[system rejected] " + err.Error()
+		return semanticPrefixedRejection(err)
 	}
 	out, err := semanticTrustedSSHResultProjection(text)
 	if err != nil {
@@ -8234,14 +8370,14 @@ func (c *sharedAgentLoopCallbacks) trustedSSHDownload(sessionID, remotePath, loc
 	}
 	remotePath, err := semanticSSHRemotePath(remotePath)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	localPath, err = c.handler.resolveTrustedSSHLocalPath(c.userID, localPath)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	if strings.TrimSpace(sessionID) == "" {
-		return "[system rejected] trusted_ssh_session_unavailable"
+		return semanticUnexecutedRejection(fmt.Errorf("trusted_ssh_session_unavailable"))
 	}
 	// The local name is chosen after "~" expands, inside the download.
 	return c.handler.downloadTrustedSSH(sessionID, remotePath, localPath)
@@ -8260,7 +8396,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedBrowser(_ tool.PlannedSelection
 	}
 	action, url, err := semanticTrustedBrowserArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.controlTrustedBrowser(c.semanticPrincipalID(), action, url)
 	if err != nil {
@@ -8329,7 +8465,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedComputerUse(_ tool.PlannedSelec
 	}
 	action, err := semanticTrustedComputerUseArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.controlTrustedDesktop(c.semanticPrincipalID(), action)
 	if err != nil {
@@ -8358,10 +8494,14 @@ func (c *sharedAgentLoopCallbacks) executeTrustedRepoMutate(_ tool.PlannedSelect
 	}
 	action, message, err := semanticTrustedRepoMutateArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticUnexecutedRejection(err)
 	}
 	text, err := c.handler.mutateTrustedRepo(c.semanticPrincipalID(), action, message)
 	if err != nil {
+		var idle semanticEffectNotStarted
+		if errors.As(err, &idle) {
+			return semanticUnexecutedRejection(err)
+		}
 		if strings.Contains(err.Error(), "unknown") || strings.Contains(err.Error(), "receipt") {
 			return "[system unknown] " + err.Error()
 		}
@@ -8458,8 +8598,12 @@ func (c *sharedAgentLoopCallbacks) semanticCanonicalArguments(selection tool.Pla
 			return tool.CanonicalRequest{}, err
 		}
 		if c.handler != nil {
-			if workspace := trustedPrincipalBoundWorkspace(c.handler, c.userID); workspace != "" {
-				if err := semanticOfficeSlideImageCheck(workspace, argsJSON); err != nil {
+			// The writer resolves images in the scope principal's workspace,
+			// against the canonical payload. Checking c.userID or the pre-wash
+			// JSON looks at a different directory than the one the write uses,
+			// skips the refusal, and the adapter then records a failure.
+			if workspace := trustedPrincipalBoundWorkspace(c.handler, c.semanticPrincipalID()); workspace != "" {
+				if err := semanticOfficeSlideImageCheck(workspace, string(canonical.CanonicalJSON)); err != nil {
 					return tool.CanonicalRequest{}, err
 				}
 			}
@@ -9674,6 +9818,7 @@ func (c *sharedAgentLoopCallbacks) systemPromptWithTaskAnchor(systemPrompt strin
 	if c.loopCtx != nil && strings.TrimSpace(c.loopCtx.capabilityExtensionReason) != "" {
 		systemPrompt += "\n\n" + capabilityExtensionPrompt(c.loopCtx.capabilityExtensionReason, c.loopCtx.capabilityExtensionPaths, capabilityExtensionToolDefs(c.handler))
 	}
+	systemPrompt += "\n\n" + visualPreviewPromptSentence
 	return appendTaskIdentityAnchorPrompt(systemPrompt, c.taskAnchor)
 }
 

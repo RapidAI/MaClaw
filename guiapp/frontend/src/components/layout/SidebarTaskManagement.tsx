@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Z } from "../ui/zIndex";
 import { createPortal } from 'react-dom';
 import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, MoveTaskConversation, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
@@ -3494,8 +3495,8 @@ export const SidebarTaskManagement = ({
     // App root attribute when the caller does not pass themeMode explicitly.
     const headerThemeMode: 'light' | 'dark' = getPortalThemeMode(themeMode) === 'dark' ? 'dark' : 'light';
     const themeToggleLabel = headerThemeMode === 'dark'
-        ? textForLang(lang, 'Switch to light mode', '切换到普通模式', '切換到普通模式')
-        : textForLang(lang, 'Switch to dark mode', '切换到暗黑模式', '切換到暗黑模式');
+        ? textForLang(lang, 'Switch to light mode', '切换到浅色模式', '切換到淺色模式')
+        : textForLang(lang, 'Switch to dark mode', '切换到深色模式', '切換到深色模式');
     const taskFilterChips = useMemo(() => {
         const chips: { key: TaskStatusFilter; label: string; count: number }[] = [
             { key: 'all', label: textForLang(lang, 'All', '全部', '全部'), count: visibleTasks.length },
@@ -6853,7 +6854,7 @@ export const SidebarTaskManagement = ({
                 data-testid="task-context-menu"
                 role="menu"
                 onContextMenu={event => event.preventDefault()}
-                style={{ position: 'fixed', ...contextMenuPosition(menu.x, menu.y, items.length), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
+                style={{ position: 'fixed', ...contextMenuPosition(menu.x, menu.y, items.length), zIndex: Z.overlay, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
             >
                 {items.map(item => (
                     <div
@@ -6927,7 +6928,7 @@ export const SidebarTaskManagement = ({
                 data-testid="task-workdir-context-menu"
                 role="menu"
                 onContextMenu={event => event.preventDefault()}
-                style={{ position: 'fixed', ...contextMenuPosition(menu.x, menu.y, items.length), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
+                style={{ position: 'fixed', ...contextMenuPosition(menu.x, menu.y, items.length), zIndex: Z.overlay, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
             >
                 {items.map(item => (
                     <div

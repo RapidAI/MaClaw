@@ -1,6 +1,8 @@
 package guiapp
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +49,17 @@ func TestTrustedShellAppliesEveryLocalShellGuard(t *testing.T) {
 			}
 			if executed != 0 {
 				t.Fatal("command reached the executor before the guard rejected it")
+			}
+			// The command never ran, but the denial is a policy outcome. Retracting
+			// it would offer the same forbidden command again as a fresh call.
+			body, err := json.Marshal(map[string]string{"command": tc.command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cb := &sharedAgentLoopCallbacks{handler: h, userID: "user-1"}
+			got := cb.executeTrustedShell(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: body})
+			if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, strings.TrimPrefix(want, "[system rejected] ")) {
+				t.Fatalf("guard was treated as an argument slip: %s", got)
 			}
 		})
 	}

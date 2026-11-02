@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Z } from "../ui/zIndex";
 import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, type CodeFile } from "./useCodePreviewState";
 import { formatCodeLanguageLabel } from "./codePreviewFindHelpers";
 import { extractFileName, getOpTypeIndicator, type CodePreviewTheme } from "./FileTabBar";
@@ -159,7 +160,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                             top: "100%",
                             left: 0,
                             marginTop: 4,
-                            zIndex: 9999,
+                            zIndex: Z.overlay,
                             width: 280,
                             maxHeight: "60vh",
                             display: "flex",

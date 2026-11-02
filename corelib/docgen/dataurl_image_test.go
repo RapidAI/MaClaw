@@ -56,7 +56,7 @@ func TestGenerateEmbedsADataURLImage(t *testing.T) {
 	if bytes.Count(data, []byte("DCTDecode")) != 1 {
 		t.Fatalf("data URL image was dropped: DCTDecode occurrences = %d, want 1", bytes.Count(data, []byte("DCTDecode")))
 	}
-	text, err := gopdf.ExtractTextFromPage(data, 0)
+	text, err := gopdf.ExtractTextFromPage(data, firstBodyPage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestGenerateReportsAnUndecodableDataURL(t *testing.T) {
 	if bytes.Contains(data, []byte("DCTDecode")) {
 		t.Fatal("undecodable data URL was embedded anyway")
 	}
-	text, err := gopdf.ExtractTextFromPage(data, 0)
+	text, err := gopdf.ExtractTextFromPage(data, firstBodyPage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestGenerateEmbedsAPNGDataURL(t *testing.T) {
 	if !strings.Contains(string(pdf), "FlateDecode") {
 		t.Fatal("the PNG was not embedded")
 	}
-	text, err := gopdf.ExtractTextFromPage(pdf, 0)
+	text, err := gopdf.ExtractTextFromPage(pdf, firstBodyPage)
 	if err != nil {
 		t.Fatal(err)
 	}

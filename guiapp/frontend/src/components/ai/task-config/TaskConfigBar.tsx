@@ -217,7 +217,7 @@ export function TaskConfigBar({
         display: "inline-flex",
         alignItems: "center",
         gap: bare ? 5 : 6,
-        height: bare ? 26 : CHIP_HEIGHT,
+        height: bare ? 28 : CHIP_HEIGHT,
         padding: bare ? "0 6px" : "0 12px",
         borderRadius: bare ? 8 : CHIP_RADIUS,
         border: bare ? "none" : `1px solid ${t.fieldBorder}`,

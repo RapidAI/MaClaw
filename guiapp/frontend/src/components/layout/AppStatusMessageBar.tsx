@@ -132,7 +132,7 @@ export const AppStatusMessageBar = ({
             {hasSide ? <div style={sideStyle}>
                 {showWarning && (
                     <span
-                        style={{
+                        style={inline ? {
                             fontSize: '0.72rem',
                             color: noticeTone,
                             cursor: 'pointer',
@@ -144,6 +144,25 @@ export const AppStatusMessageBar = ({
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
                             flexShrink: 1,
+                        } : {
+                            // Row variant: an informational state, not an error —
+                            // read as a quiet status chip instead of a bare red
+                            // line floating at the window's bottom edge.
+                            fontSize: '0.72rem',
+                            color: 'var(--theme-text-secondary, #46586f)',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            minWidth: 0,
+                            maxWidth: '100%',
+                            overflow: 'hidden',
+                            whiteSpace: 'nowrap',
+                            flexShrink: 1,
+                            padding: '2px 10px',
+                            borderRadius: 'var(--radius-pill, 999px)',
+                            border: '1px solid var(--theme-border-subtle, #e2e9f3)',
+                            background: 'var(--theme-surface-muted, #f1f6fc)',
                         }}
                         onClick={() => { if (isImIssue) { onOpenIMSettings(); } else { onOpenLLMSettings(); } }}
                         title={tailText(lang ?? "", 'Click to configure', '点击配置')}

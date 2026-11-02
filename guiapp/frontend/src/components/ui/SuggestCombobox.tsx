@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes, type KeyboardEvent } from "react";
+import { Z } from "./zIndex";
 import { createPortal } from "react-dom";
 import { filterSuggestOptions, normalizeSuggestOption, shouldIgnoreSuggestInput, type SuggestOption } from "./suggestOptions";
 
@@ -337,7 +338,7 @@ export function SuggestCombobox({
                         top: listBox.top,
                         bottom: listBox.bottom,
                         maxHeight: listBox.maxHeight,
-                        zIndex: 10000,
+                        zIndex: Z.stickyToast,
                         overflow: "auto",
                         ...(listClassName ? {} : {
                             padding: 4,

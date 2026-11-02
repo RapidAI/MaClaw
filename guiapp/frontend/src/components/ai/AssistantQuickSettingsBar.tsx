@@ -218,7 +218,7 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
                 {ttsPlaying && <span aria-hidden="true" className="aqs-tts-bars"><TTSLevelBars accentColor={t.headingColor} /></span>}
                 {tr("Voice", "语音", "語音")}
             </button>
-            <button type="button" data-testid="qs-theme-toggle" onClick={onToggleTheme} style={chipStyle(themeMode === "dark")} title={themeMode === "dark" ? tr("Switch to light mode", "切换到普通模式", "切換到普通模式") : tr("Switch to dark mode", "切换到暗黑模式", "切換到暗黑模式")} aria-label={themeMode === "dark" ? tr("Switch to light mode", "切换到普通模式", "切換到普通模式") : tr("Switch to dark mode", "切换到暗黑模式", "切換到暗黑模式")}>
+            <button type="button" data-testid="qs-theme-toggle" onClick={onToggleTheme} style={chipStyle(themeMode === "dark")} title={themeMode === "dark" ? tr("Switch to light mode", "切换到浅色模式", "切換到淺色模式") : tr("Switch to dark mode", "切换到深色模式", "切換到深色模式")} aria-label={themeMode === "dark" ? tr("Switch to light mode", "切换到浅色模式", "切換到淺色模式") : tr("Switch to dark mode", "切换到深色模式", "切換到深色模式")}>
                 <span aria-hidden="true" className="aqs-icon">
                     <TitleBarToolIcon name={themeMode === "dark" ? "moon" : "sun"} />
                 </span>

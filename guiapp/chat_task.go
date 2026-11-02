@@ -734,7 +734,7 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 // file was produced, emits empty "1. 2. 3." slots plus a 文件： line.
 func chatTaskResultFromAgentResponse(resp *IMAgentResponse, loop *LoopContext) chatTaskRunResult {
 	if resp == nil {
-		return chatTaskRunResult{Err: fmt.Errorf("chat task returned no result")}
+		return chatTaskRunResult{Err: fmt.Errorf("chat_task_no_result")}
 	}
 	text := strings.TrimSpace(resp.Text)
 	artifacts := chatTaskArtifacts(resp, loop)
@@ -751,7 +751,7 @@ func chatTaskResultFromAgentResponse(resp *IMAgentResponse, loop *LoopContext) c
 		return chatTaskRunResult{Text: shown, Artifacts: artifacts}
 	}
 	if text == "" && len(artifacts) == 0 {
-		return chatTaskRunResult{Err: fmt.Errorf("chat task returned no result")}
+		return chatTaskRunResult{Err: fmt.Errorf("chat_task_no_result")}
 	}
 	return chatTaskRunResult{Text: text, Artifacts: artifacts}
 }
@@ -2424,6 +2424,166 @@ func chatTaskTextWithArtifacts(text string, artifacts []string, maxRunes int) st
 	return text + "\n" + extra
 }
 
+// chatTaskUI picks the sentence for a task report. A Chinese turn stays
+// Simplified unless the app language is Traditional. Mongolian uses the
+// English sentence as the catalog key.
+func chatTaskUI(lang string, chinese bool, en, hans, hant string) string {
+	if chinese && normalizeAppLanguageKind(lang) != appLanguageZhHant {
+		return hans
+	}
+	if hant == "" {
+		hant = hans
+	}
+	return pickUI(lang, en, hans, hant)
+}
+
+func chatTaskNoneLabel(lang string, chinese bool) string {
+	return chatTaskUI(lang, chinese, "None", "无", "無")
+}
+
+func chatTaskSlotText(lang string, chinese bool, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "无" || value == "無" || strings.EqualFold(value, "none") {
+		return chatTaskNoneLabel(lang, chinese)
+	}
+	return value
+}
+
+// localizeHelperReportText relabels the four-line helper card for the reader.
+// The stored card stays "1. … / 文件：…". Only the sentence shown to the person changes.
+func localizeHelperReportText(lang string, chinese bool, text string) string {
+	raw := strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	lines := strings.Split(raw, "\n")
+	if len(lines) != 4 {
+		return strings.TrimSpace(text)
+	}
+	slots := [3]string{}
+	for i := 0; i < 3; i++ {
+		line := strings.TrimSpace(lines[i])
+		prefix := fmt.Sprintf("%d.", i+1)
+		alt := fmt.Sprintf("%d、", i+1)
+		switch {
+		case strings.HasPrefix(line, prefix):
+			slots[i] = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		case strings.HasPrefix(line, alt):
+			slots[i] = strings.TrimSpace(strings.TrimPrefix(line, alt))
+		default:
+			return strings.TrimSpace(text)
+		}
+	}
+	fileValue, ok := helperDisplayFileValue(lines[3])
+	if !ok {
+		return strings.TrimSpace(text)
+	}
+	sep := ": "
+	if chinese || normalizeAppLanguageKind(lang).IsChinese() {
+		sep = "："
+	}
+	labels := []string{
+		chatTaskUI(lang, chinese, "What finished", "已完成", "已完成"),
+		chatTaskUI(lang, chinese, "What is left", "还剩", "還剩"),
+		chatTaskUI(lang, chinese, "What is blocked", "卡住", "卡住"),
+	}
+	var b strings.Builder
+	for i := 0; i < 3; i++ {
+		fmt.Fprintf(&b, "%s%s%s\n", labels[i], sep, chatTaskSlotText(lang, chinese, slots[i]))
+	}
+	fmt.Fprintf(&b, "%s%s%s", chatTaskUI(lang, chinese, "File path", "文件", "檔案"), sep, chatTaskSlotText(lang, chinese, fileValue))
+	return b.String()
+}
+
+// helperDisplayFileValue reads the card's last line. The line is the label
+// only when 文件 is followed by a colon, so a sentence that starts with 文件 stays a sentence.
+func helperDisplayFileValue(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "文件") {
+		return "", false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "文件"))
+	switch {
+	case strings.HasPrefix(rest, "："):
+		rest = strings.TrimPrefix(rest, "：")
+	case strings.HasPrefix(rest, ":"):
+		rest = strings.TrimPrefix(rest, ":")
+	default:
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
+}
+
+// presentChatTaskFailure turns a stored failure record into the sentence
+// the person reads. An agent sentence that is already a reason is kept.
+// The record is recognized by its first line, so a reason that mentions the
+// record name is left as the agent wrote it.
+func presentChatTaskFailure(lang string, chinese bool, errText string) string {
+	errText = strings.TrimSpace(strings.ReplaceAll(errText, "\r\n", "\n"))
+	if errText == "" {
+		return ""
+	}
+	line, rest, _ := strings.Cut(errText, "\n")
+	switch strings.TrimSpace(line) {
+	case "chat_task_no_result", "chat task returned no result":
+		return chatTaskUI(lang, chinese,
+			"The task finished without a result.",
+			"任务结束了，但没有返回结果。",
+			"任務結束了，但沒有返回結果。")
+	case "helper report has no conclusion and no path", "helper_report_empty":
+		return presentHelperReportEmpty(lang, chinese, rest)
+	default:
+		return errText
+	}
+}
+
+func presentHelperReportEmpty(lang string, chinese bool, rest string) string {
+	fileNone := false
+	detail := ""
+	if rest != "" {
+		lines := strings.Split(rest, "\n")
+		for i, line := range lines {
+			switch strings.TrimSpace(line) {
+			case "file: none":
+				fileNone = true
+			case "detail:":
+				detail = strings.TrimSpace(strings.Join(lines[i+1:], "\n"))
+				return helperReportEmptyText(lang, chinese, fileNone, detail)
+			}
+		}
+	}
+	return helperReportEmptyText(lang, chinese, fileNone, detail)
+}
+
+func helperReportEmptyText(lang string, chinese bool, fileNone bool, detail string) string {
+	var b strings.Builder
+	b.WriteString(chatTaskUI(lang, chinese,
+		"The helper report had no conclusion and no file path.",
+		"助手报告没有结论，也没有文件路径。",
+		"助手報告沒有結論，也沒有檔案路徑。"))
+	b.WriteByte('\n')
+	b.WriteString(chatTaskUI(lang, chinese,
+		"Conclusion lines 1, 2, and 3 are empty.",
+		"结论第 1、2、3 行都是空的。",
+		"結論第 1、2、3 行都是空的。"))
+	b.WriteByte('\n')
+	if fileNone {
+		b.WriteString(chatTaskUI(lang, chinese,
+			"The file line did not name a path.",
+			"文件一行没有写出路径。",
+			"檔案一行沒有寫出路徑。"))
+	} else {
+		b.WriteString(chatTaskUI(lang, chinese,
+			"No file path was given.",
+			"没有给出文件路径。",
+			"沒有給出檔案路徑。"))
+	}
+	if detail != "" {
+		b.WriteByte('\n')
+		b.WriteString(chatTaskUI(lang, chinese, "What it returned:", "实际返回：", "實際返回："))
+		b.WriteByte('\n')
+		b.WriteString(detail)
+	}
+	return b.String()
+}
+
 func formatChatTaskStatus(tasks []AIAssistantChatTask, lang string, chinese bool) string {
 	var b strings.Builder
 	for _, task := range tasks {
@@ -2447,14 +2607,19 @@ func formatChatTaskStatus(tasks []AIAssistantChatTask, lang string, chinese bool
 			} else {
 				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s is done.", "%s已经做好。"), title)
 			}
-			if detail := chatTaskTextWithArtifacts(task.ResultText, task.ArtifactPaths, 160); detail != "" {
+			shown := localizeHelperReportText(lang, chinese, task.ResultText)
+			limit := 160
+			if shown != strings.TrimSpace(task.ResultText) {
+				limit = 320
+			}
+			if detail := chatTaskTextWithArtifacts(shown, task.ArtifactPaths, limit); detail != "" {
 				fmt.Fprintf(&b, " %s", detail)
 			}
 			b.WriteByte('\n')
 		case chatTaskFailed:
-			detail := task.Error
+			detail := presentChatTaskFailure(lang, chinese, task.Error)
 			if detail == "" {
-				detail = task.ResultText
+				detail = localizeHelperReportText(lang, chinese, task.ResultText)
 			}
 			if chinese {
 				fmt.Fprintf(&b, "%s没做成。", title)
@@ -2462,7 +2627,7 @@ func formatChatTaskStatus(tasks []AIAssistantChatTask, lang string, chinese bool
 				fmt.Fprintf(&b, desktopChatCopy(lang, false, "%s failed.", "%s没做成。"), title)
 			}
 			if detail != "" {
-				fmt.Fprintf(&b, " %s", truncateChatTaskText(detail, 160))
+				fmt.Fprintf(&b, " %s", truncateChatTaskText(detail, 480))
 			}
 			b.WriteByte('\n')
 		case chatTaskCanceled:

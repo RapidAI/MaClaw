@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Z } from "../ui/zIndex";
 import { GroupDiscussionListLocalHidden, GroupDiscussionListMinePage, GroupDiscussionSetLocalHidden } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { localizeText } from '../../i18n';
@@ -240,7 +241,7 @@ export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion 
         {!showHidden && hasMore && <button type="button" className="shs-load-more" disabled={loadingMore} onClick={() => void loadItems(true)} style={menuItemStyle}>
             {loadingMore ? textForLang(lang, 'Loading...', '\u52a0\u8f7d\u4e2d...', '\u8f09\u5165\u4e2d...') : textForLang(lang, 'Load more', '\u52a0\u8f7d\u66f4\u591a', '\u8f09\u5165\u66f4\u591a')}
         </button>}
-        {contextMenu && <div role="menu" style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 9999, minWidth: 132, padding: '4px 0', border: '1px solid var(--theme-border)', borderRadius: 6, background: 'var(--theme-surface)', boxShadow: '0 6px 18px rgba(0,0,0,0.16)' }}>
+        {contextMenu && <div role="menu" style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: Z.overlay, minWidth: 132, padding: '4px 0', border: '1px solid var(--theme-border)', borderRadius: 6, background: 'var(--theme-surface)', boxShadow: '0 6px 18px rgba(0,0,0,0.16)' }}>
             <button type="button" role="menuitem" onClick={() => { onOpenDiscussion?.(contextMenu.item); setContextMenu(null); }} style={menuItemStyle}>{textForLang(lang, 'Open session', '\u6253\u5f00\u4f1a\u8bdd', '\u6253\u958b\u6703\u8a71')}</button>
             <button type="button" role="menuitem" onClick={() => void setHidden(contextMenu.item, !showHidden)} style={menuItemStyle}>{showHidden ? textForLang(lang, 'Restore', '\u6062\u590d\u663e\u793a', '\u6062\u5fa9\u986f\u793a') : textForLang(lang, 'Hide locally', '\u672c\u5730\u9690\u85cf', '\u672c\u5730\u96b1\u85cf')}</button>
         </div>}

@@ -71,6 +71,41 @@ func TestSSHTimeoutIsSettledFailure(t *testing.T) {
 	}
 }
 
+// No bound session means the command was never written. Classifying that as
+// unknown froze the selection as if the command might have run, so a later
+// connect could not close it.
+func TestSSHMissingSessionBeforeWriteStaysRetractable(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	callbacks := &sharedAgentLoopCallbacks{handler: h, userID: "user-1"}
+	got := callbacks.executeTrustedSSH(tool.PlannedSelection{}, tool.CanonicalRequest{
+		CanonicalJSON: []byte(`{"command":"echo hi"}`),
+	})
+	if !tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || strings.HasPrefix(got, "[system unknown]") || !strings.Contains(got, "trusted_ssh_session_unavailable") {
+		t.Fatalf("missing session before write = %q", got)
+	}
+}
+
+// A raw ssh line is a policy denial. It must stay a recorded rejection, once,
+// so the same bypass is not offered again as a fresh call.
+func TestSSHRawCommandStaysRecordedRejection(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	callbacks := &sharedAgentLoopCallbacks{handler: h, userID: "user-1"}
+	got := callbacks.executeTrustedSSH(tool.PlannedSelection{}, tool.CanonicalRequest{
+		CanonicalJSON: []byte(`{"command":"ssh user@host uptime"}`),
+	})
+	want, tripped := tool.RejectRawSSHCommand("ssh user@host uptime")
+	if !tripped || got != want || tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) {
+		t.Fatalf("raw ssh = %q", got)
+	}
+}
+
+func TestRecordedSSHRefusalAfterEffectDropsTheUnexecutedMarker(t *testing.T) {
+	got := recordedSSHRefusalAfterEffect("[system rejected] arguments_rejected: trusted_ssh_remote_path_required")
+	if tool.ArgumentRejectionWithoutEffect(tool.SelectionExecutionResult{Result: got}) || !strings.Contains(got, "trusted_ssh_remote_path_required") {
+		t.Fatalf("post-effect refusal = %q", got)
+	}
+}
+
 func TestSSHLostSessionNamesAllStillReportUnknown(t *testing.T) {
 	for _, name := range []string{
 		"trusted_ssh_session_disconnected",

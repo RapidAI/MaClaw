@@ -462,7 +462,7 @@ func (c *codingSubAgentCallbacks) ExecuteToolCallWithContext(name, argsJSON, cal
 	// executor. Do not route back through ExecuteToolStructured: that public
 	// compatibility entry intentionally has no request epoch for host-owned
 	// maintenance and tests.
-	return c.executeToolStructuredCanonical(name, argsJSON)
+	return c.finishCodingVisualPreview(c.executeToolStructuredCanonical(name, argsJSON))
 }
 
 func codingDynamicAgentOutcome(outcome codingToolOutcome) agent.ToolExecutionOutcome {

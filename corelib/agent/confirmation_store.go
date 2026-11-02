@@ -5,12 +5,12 @@ package agent
 // This is a pure data structure with no GUI dependencies. It manages
 // pending confirmations that gate agent execution until the user approves.
 //
-// Migrated from gui/im_confirmation_store.go as part of the agent-unification plan.
+// Migrated from gui/im_confirmation_store.go as part of the agent-unification
+// plan. Persistence lives in confirmation_store_sqlite.go: state is kept in
+// {name}.db (one row per confirmation, list fields in a side table), and the
+// pre-migration {name}.json is imported once and removed.
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -141,7 +141,7 @@ func (s *ConfirmationStore) saveToDisk() error {
 		return nil
 	}
 	s.mu.RLock()
-	snapshot := confirmationSnapshot{Items: make(map[string]*PendingConfirmation, len(s.items))}
+	items := make(map[string]*PendingConfirmation, len(s.items))
 	for userID, item := range s.items {
 		if item == nil {
 			continue
@@ -152,41 +152,23 @@ func (s *ConfirmationStore) saveToDisk() error {
 		clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 		clone.RiskFlags = append([]string(nil), item.RiskFlags...)
 		clone.RevisionHints = append([]string(nil), item.RevisionHints...)
-		snapshot.Items[userID] = &clone
+		items[userID] = &clone
 	}
 	s.mu.RUnlock()
-	if err := os.MkdirAll(filepath.Dir(s.storePath), 0o755); err != nil {
-		return err
-	}
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		return err
-	}
-	tmp := s.storePath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.storePath)
+	return saveConfirmations(s.storePath, items)
 }
 
 func (s *ConfirmationStore) loadFromDisk() error {
 	if s == nil || s.storePath == "" {
 		return nil
 	}
-	data, err := os.ReadFile(s.storePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	var snapshot confirmationSnapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
+	items, err := loadConfirmations(s.storePath)
+	if err != nil || len(items) == 0 {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for userID, item := range snapshot.Items {
+	for userID, item := range items {
 		if item == nil {
 			continue
 		}

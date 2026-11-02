@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Z } from "../ui/zIndex";
 import { createPortal } from 'react-dom';
 import { colors, radius } from './styles';
 import { QRCodeSVG } from 'qrcode.react';
@@ -2623,7 +2624,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                 <div style={{
                     position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
                     background: colors.overlay, display: "flex",
-                    alignItems: "center", justifyContent: "center", zIndex: 10000,
+                    alignItems: "center", justifyContent: "center", zIndex: Z.stickyToast,
                 }} onClick={() => { if (!regBusy) setShowConfirm(false); }}>
                     <div style={{
                         background: colors.surface, borderRadius: 14, padding: "22px 26px",

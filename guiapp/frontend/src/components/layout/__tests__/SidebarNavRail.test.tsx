@@ -1247,7 +1247,9 @@ describe('SidebarNavRail flyout highlight', () => {
     it('paints flyout items with the rail primary wash instead of the office violet highlight', () => {
         const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
         const start = css.indexOf('Rail flyout menus');
-        const end = css.indexOf('.mc-sidebar-shell { width: 308px', start);
+        // Block ends where the flyout section ends; the old 308px shell-width
+        // anchor was removed with the sidebar-width dead-rule cleanup.
+        const end = css.indexOf('.mc-sidebar-drag-strip { width: 428px', start);
         expect(start).toBeGreaterThan(-1);
         const block = css.slice(start, end);
         expect(block).toContain('.spm-menu > .spm-item:hover');

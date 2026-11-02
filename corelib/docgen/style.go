@@ -8,14 +8,16 @@ import (
 	"unicode/utf8"
 )
 
-// Motifs are the five built-in page layouts. A custom style picks one of
-// these layouts and supplies its own colors. Colors never invent a sixth layout.
+// Motifs are the built-in page layouts. A custom style picks one of
+// these layouts and supplies its own colors. Colors never invent a new layout.
 const (
 	MotifMasthead = "masthead"
 	MotifRail     = "rail"
 	MotifFrame    = "frame"
 	MotifBand     = "band"
 	MotifLedger   = "ledger"
+	MotifSidebar  = "sidebar"
+	MotifPlate    = "plate"
 )
 
 // Style is one PDF visual system: a layout motif plus the colors that system paints.
@@ -126,6 +128,105 @@ func builtinStyles() []Style {
 			Keywords:    []string{"表格", "清册", "清单", "台账"},
 			Motif:       MotifLedger, Builtin: true,
 			Colors: StyleColors{Ink: "1C1917", Navy: "14532D", Accent: "166534", Gold: "A16207", Meta: "3F3F46", Rule: "14532D", Quote: "14532D", Link: "166534", OnDark: "F0FDF4"},
+		},
+		{
+			ID: "official", Label: "红头公文", LabelEn: "Official Red", LabelHant: "紅頭公文",
+			Summary:     "红头横幅与庄重正文，适合公文、通知与函件。",
+			SummaryEn:   "A red masthead and formal body for official letters.",
+			SummaryHant: "紅頭橫幅與莊重正文，適合公文、通知與函件。",
+			Keywords:    []string{"公文", "红头文件", "通知", "函件", "政务公文"},
+			Motif:       MotifMasthead, Builtin: true,
+			Colors: StyleColors{Ink: "1F1F1F", Navy: "8C1F28", Accent: "B42B2B", Gold: "8C6B1F", Meta: "555555", Rule: "8C1F28", Quote: "7A1E24", Link: "8C1F28", OnDark: "FFF4E6"},
+		},
+		{
+			ID: "academic", Label: "学术论文", LabelEn: "Academic", LabelHant: "學術論文",
+			Summary:     "蓝灰题头与克制正文，适合论文与研究报告。",
+			SummaryEn:   "A slate-blue head and restrained body for papers.",
+			SummaryHant: "藍灰題頭與克制正文，適合論文與研究報告。",
+			Keywords:    []string{"论文", "学术", "研究报告", "期刊", "开题"},
+			Motif:       MotifMasthead, Builtin: true,
+			Colors: StyleColors{Ink: "111827", Navy: "1E3A5F", Accent: "3E5F8A", Gold: "715D2A", Meta: "4B5563", Rule: "1E3A5F", Quote: "374151", Link: "1D4ED8", OnDark: "F1F5F9"},
+		},
+		{
+			ID: "weekly", Label: "周报月报", LabelEn: "Weekly Report", LabelHant: "週報月報",
+			Summary:     "绿色立柱与清爽标题，适合周报月报。",
+			SummaryEn:   "A green rail and fresh titles for weekly and monthly reports.",
+			SummaryHant: "綠色立柱與清爽標題，適合週報月報。",
+			Keywords:    []string{"周报", "月报", "周度总结", "月度汇报", "日报"},
+			Motif:       MotifRail, Builtin: true,
+			Colors: StyleColors{Ink: "1C1917", Navy: "1A5C3A", Accent: "15803D", Gold: "9A6A0B", Meta: "3F3F46", Rule: "1A5C3A", Quote: "166534", Link: "15803D", OnDark: "F0FDF4"},
+		},
+		{
+			ID: "medical", Label: "医疗健康", LabelEn: "Healthcare", LabelHant: "醫療健康",
+			Summary:     "青蓝立柱与冷静正文，适合医疗与健康内容。",
+			SummaryEn:   "A teal rail and calm body for healthcare notes.",
+			SummaryHant: "青藍立柱與冷靜正文，適合醫療與健康內容。",
+			Keywords:    []string{"医疗", "健康", "体检", "义诊", "病例"},
+			Motif:       MotifRail, Builtin: true,
+			Colors: StyleColors{Ink: "1C1917", Navy: "155E75", Accent: "0E7490", Gold: "A16207", Meta: "44403C", Rule: "0E7490", Quote: "155E75", Link: "0E7490", OnDark: "F0FDFA"},
+		},
+		{
+			ID: "legal", Label: "法律合同", LabelEn: "Legal", LabelHant: "法律合同",
+			Summary:     "酒红细框与疏朗正文，适合合同与法律意见。",
+			SummaryEn:   "A burgundy frame and airy body for contracts and legal opinions.",
+			SummaryHant: "酒紅細框與疏朗正文，適合合同與法律意見。",
+			Keywords:    []string{"合同", "法律", "协议", "合规", "律师"},
+			Motif:       MotifFrame, Builtin: true,
+			Colors: StyleColors{Ink: "292524", Navy: "404040", Accent: "991B1B", Gold: "8A6A1C", Meta: "57534E", Rule: "991B1B", Quote: "7F1D1D", Link: "991B1B", OnDark: "FFF7ED"},
+		},
+		{
+			ID: "tech", Label: "技术文档", LabelEn: "Technical", LabelHant: "技術文檔",
+			Summary:     "天蓝顶带与紧凑正文，适合技术文档与接口说明。",
+			SummaryEn:   "A sky band and compact body for technical docs.",
+			SummaryHant: "天藍頂帶與緊湊正文，適合技術文檔與接口說明。",
+			Keywords:    []string{"技术文档", "API", "接口文档", "技术方案", "研发"},
+			Motif:       MotifBand, Builtin: true,
+			Colors: StyleColors{Ink: "1E293B", Navy: "334155", Accent: "0369A1", Gold: "B45309", Meta: "475569", Rule: "0369A1", Quote: "334155", Link: "0369A1", OnDark: "F0F9FF"},
+		},
+		{
+			ID: "course", Label: "培训讲义", LabelEn: "Training Notes", LabelHant: "培訓講義",
+			Summary:     "琥珀标记与友好标题，适合培训讲义与学习资料。",
+			SummaryEn:   "Amber markers and friendly titles for training handouts.",
+			SummaryHant: "琥珀標記與友好標題，適合培訓講義與學習資料。",
+			Keywords:    []string{"讲义", "培训", "课程", "教案", "学习资料"},
+			Motif:       MotifBand, Builtin: true,
+			Colors: StyleColors{Ink: "1F2937", Navy: "274C77", Accent: "B45309", Gold: "92400E", Meta: "4B5563", Rule: "B45309", Quote: "92400E", Link: "1D4ED8", OnDark: "FFFBEB"},
+		},
+		{
+			ID: "finance", Label: "财务报表", LabelEn: "Financial", LabelHant: "財務報表",
+			Summary:     "藏蓝粗线与表格优先，适合财报、审计与预算。",
+			SummaryEn:   "A navy rule and table-first layout for finance and budgets.",
+			SummaryHant: "藏藍粗線與表格優先，適合財報、審計與預算。",
+			Keywords:    []string{"财务", "财报", "报表", "审计", "预算"},
+			Motif:       MotifLedger, Builtin: true,
+			Colors: StyleColors{Ink: "1C1917", Navy: "0B2545", Accent: "8C6D1F", Gold: "8A6614", Meta: "3F3F46", Rule: "0B2545", Quote: "0B2545", Link: "0B2545", OnDark: "FFF8E7"},
+		},
+		{
+			ID: "plan", Label: "项目方案", LabelEn: "Proposal", LabelHant: "項目方案",
+			Summary:     "靛蓝侧栏与分节清晰，适合方案书与立项报告。",
+			SummaryEn:   "An indigo sidebar and clear sections for proposals.",
+			SummaryHant: "靛藍側欄與分節清晰，適合方案書與立項報告。",
+			Keywords:    []string{"方案", "立项", "项目方案", "可行性", "规划书"},
+			Motif:       MotifSidebar, Builtin: true,
+			Colors: StyleColors{Ink: "1C1917", Navy: "312E81", Accent: "4338CA", Gold: "A16207", Meta: "4B5563", Rule: "312E81", Quote: "3730A3", Link: "4338CA", OnDark: "EEF2FF"},
+		},
+		{
+			ID: "minutes", Label: "会议纪要", LabelEn: "Minutes", LabelHant: "會議紀要",
+			Summary:     "蓝灰侧栏与条目排版，适合会议纪要与决议。",
+			SummaryEn:   "A blue-gray sidebar and itemized body for minutes.",
+			SummaryHant: "藍灰側欄與條目排版，適合會議紀要與決議。",
+			Keywords:    []string{"纪要", "会议纪要", "决议", "例会", "议题"},
+			Motif:       MotifSidebar, Builtin: true,
+			Colors: StyleColors{Ink: "1C1917", Navy: "41546B", Accent: "9A5423", Gold: "8A6B33", Meta: "57534E", Rule: "41546B", Quote: "41546B", Link: "41546B", OnDark: "F4F7FA"},
+		},
+		{
+			ID: "manual", Label: "产品手册", LabelEn: "Product Manual", LabelHant: "產品手冊",
+			Summary:     "石墨铭牌与步骤友好，适合手册与使用指南。",
+			SummaryEn:   "A graphite plate and step-friendly layout for manuals.",
+			SummaryHant: "石墨銘牌與步驟友好，適合手冊與使用指南。",
+			Keywords:    []string{"手册", "说明书", "操作手册", "指南", "使用说明"},
+			Motif:       MotifPlate, Builtin: true,
+			Colors: StyleColors{Ink: "1C1917", Navy: "292524", Accent: "C2410C", Gold: "A16207", Meta: "57534E", Rule: "C2410C", Quote: "431407", Link: "C2410C", OnDark: "FFF7ED"},
 		},
 	}
 }
@@ -368,6 +469,10 @@ func normalizeMotif(raw string) (string, error) {
 		return MotifBand, nil
 	case MotifLedger, "粗线", "清册":
 		return MotifLedger, nil
+	case MotifSidebar, "侧栏", "方案":
+		return MotifSidebar, nil
+	case MotifPlate, "铭牌", "手册":
+		return MotifPlate, nil
 	default:
 		return "", fmt.Errorf("pdf_style_motif_invalid")
 	}
@@ -518,11 +623,11 @@ func (s Style) headingLook(prefix string) (size, color, align string) {
 		case "#### ":
 			return "9.5pt", accent, ""
 		case "### ":
-			return "10.5pt", navy, ""
+			return "11pt", navy, ""
 		case "## ":
-			return "11.5pt", navy, ""
+			return "12.5pt", navy, ""
 		default:
-			return "13pt", navy, ""
+			return "14.5pt", navy, ""
 		}
 	case MotifFrame:
 		switch prefix {
@@ -531,11 +636,11 @@ func (s Style) headingLook(prefix string) (size, color, align string) {
 		case "#### ":
 			return "9.5pt", accent, "center"
 		case "### ":
-			return "11pt", navy, ""
+			return "11.5pt", navy, ""
 		case "## ":
-			return "13pt", accent, "center"
+			return "14pt", accent, "center"
 		default:
-			return "16pt", accent, "center"
+			return "17pt", accent, "center"
 		}
 	case MotifRail:
 		switch prefix {
@@ -544,11 +649,11 @@ func (s Style) headingLook(prefix string) (size, color, align string) {
 		case "#### ":
 			return "9.5pt", navy, ""
 		case "### ":
-			return "11pt", navy, ""
+			return "11.5pt", navy, ""
 		case "## ":
-			return "13pt", accent, ""
+			return "14.5pt", accent, ""
 		default:
-			return "16pt", ink, ""
+			return "17.5pt", ink, ""
 		}
 	case MotifBand:
 		switch prefix {
@@ -557,11 +662,37 @@ func (s Style) headingLook(prefix string) (size, color, align string) {
 		case "#### ":
 			return "9.5pt", gold, ""
 		case "### ":
-			return "11pt", accent, ""
+			return "11.5pt", accent, ""
 		case "## ":
-			return "13.5pt", accent, ""
+			return "14.5pt", accent, ""
 		default:
-			return "16pt", navy, ""
+			return "17.5pt", navy, ""
+		}
+	case MotifSidebar:
+		switch prefix {
+		case "##### ":
+			return "8.5pt", gold, ""
+		case "#### ":
+			return "9.5pt", navy, ""
+		case "### ":
+			return "11.5pt", navy, ""
+		case "## ":
+			return "15pt", accent, ""
+		default:
+			return "18pt", navy, ""
+		}
+	case MotifPlate:
+		switch prefix {
+		case "##### ":
+			return "8.5pt", gold, ""
+		case "#### ":
+			return "9.5pt", accent, ""
+		case "### ":
+			return "11.5pt", navy, ""
+		case "## ":
+			return "15pt", navy, ""
+		default:
+			return "18pt", ink, ""
 		}
 	default:
 		switch prefix {
@@ -570,11 +701,11 @@ func (s Style) headingLook(prefix string) (size, color, align string) {
 		case "#### ":
 			return "9.5pt", accent, ""
 		case "### ":
-			return "11pt", accent, ""
+			return "11.5pt", accent, ""
 		case "## ":
-			return "13.5pt", navy, ""
+			return "15pt", navy, ""
 		default:
-			return "16pt", navy, ""
+			return "18pt", navy, ""
 		}
 	}
 }

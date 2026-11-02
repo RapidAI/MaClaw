@@ -16,7 +16,7 @@ const (
 
 // storeDirty records what one write transaction changed in a MemoryStore.
 // It is only non-nil while SQLiteStore (rows format) runs a write closure, so
-// plain MemoryStore/FileStore users pay a nil check per mutation.
+// plain MemoryStore users pay a nil check per mutation.
 type storeDirty struct {
 	all          bool
 	keys         map[string]map[string]struct{} // map collections: upsert or delete by presence

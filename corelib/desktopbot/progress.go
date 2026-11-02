@@ -244,6 +244,11 @@ var (
 	helperConclusion = regexp.MustCompile(`^\s*([123])[\.、]\s*(.*)$`)
 	helperFileLine   = regexp.MustCompile(`^\s*文件\s*[:：]\s*(.*)$`)
 	helperHomePath   = regexp.MustCompile(`/home/desktop/\S+`)
+	// Hyphens stay in the token. ScrubSecrets stops at the first one, so
+	// sk-live-should-not-show would otherwise remain and the whole reason would be dropped.
+	// The boundary keeps "ask-user" intact.
+	helperDetailSecret = regexp.MustCompile(`(?i)\bsk-[A-Za-z0-9_-]{4,}|\bbearer\s+\S+`)
+	helperTraceToken   = regexp.MustCompile(`TRACE_[A-Za-z0-9_-]+`)
 )
 
 // HelperReport reports whether body is the helper card.
@@ -272,15 +277,39 @@ func HelperReport(body string) bool {
 	return n >= 2
 }
 
+// HelperReportError is a helper card that named nothing the person can use.
+// Error() is a stable record the UI localizes. It names which parts were
+// empty and, when the helper wrote one, the scrubbed reason. A tool trace
+// and a secret stay out of that text.
+type HelperReportError struct {
+	FileMarkedNone bool
+	Detail         string
+}
+
+func (e *HelperReportError) Error() string {
+	file := "missing"
+	if e != nil && e.FileMarkedNone {
+		file = "none"
+	}
+	out := "helper_report_empty\nfile: " + file
+	if e != nil {
+		if detail := strings.TrimSpace(e.Detail); detail != "" {
+			out += "\ndetail:\n" + detail
+		}
+	}
+	return out
+}
+
 // CollapseHelperReport keeps three conclusion lines and the named paths.
 // Tool traces stay out of the text. An empty conclusion and no path is a failure.
 func CollapseHelperReport(body string, extraPaths []string) (string, error) {
 	var lines [3]string
 	var paths []string
+	fileMarkedNone := false
 	seen := map[string]struct{}{}
 	add := func(path string) {
-		path = strings.Trim(strings.TrimSpace(cleanProgressText(path)), "，。,;；")
-		if path == "" || path == ProgressOpenNone {
+		path = normalizeHelperPath(path)
+		if helperPathIsNone(path) {
 			return
 		}
 		if _, ok := seen[path]; ok {
@@ -289,6 +318,7 @@ func CollapseHelperReport(body string, extraPaths []string) (string, error) {
 		seen[path] = struct{}{}
 		paths = append(paths, path)
 	}
+	var leftovers []string
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(raw)
 		if m := helperConclusion.FindStringSubmatch(line); m != nil {
@@ -297,18 +327,26 @@ func CollapseHelperReport(body string, extraPaths []string) (string, error) {
 		}
 		if m := helperFileLine.FindStringSubmatch(line); m != nil {
 			// One path. Fields would split "演讲稿 完整版.docx" into two names.
-			add(strings.Trim(strings.TrimSpace(m[1]), `"'`))
+			path := normalizeHelperPath(m[1])
+			if helperPathIsNone(path) {
+				fileMarkedNone = true
+				continue
+			}
+			add(path)
 			continue
 		}
 		for _, path := range helperHomePath.FindAllString(line, -1) {
 			add(path)
+		}
+		if line != "" {
+			leftovers = append(leftovers, line)
 		}
 	}
 	for _, path := range extraPaths {
 		add(path)
 	}
 	if strings.TrimSpace(lines[0]+lines[1]+lines[2]) == "" && len(paths) == 0 {
-		return "", fmt.Errorf("helper report has no conclusion and no path")
+		return "", &HelperReportError{FileMarkedNone: fileMarkedNone, Detail: helperReportDetails(leftovers)}
 	}
 	file := ProgressOpenNone
 	if len(paths) > 0 {
@@ -316,6 +354,267 @@ func CollapseHelperReport(body string, extraPaths []string) (string, error) {
 	}
 	shown := fmt.Sprintf("1. %s\n2. %s\n3. %s\n文件：%s", lines[0], lines[1], lines[2], file)
 	return cleanProgressText(shown), nil
+}
+
+// normalizeHelperPath is the path a file line contributes. Punctuation wrapped
+// around 无 still counts as no path. A quote around the whole name is not part of it.
+func normalizeHelperPath(path string) string {
+	return strings.Trim(strings.TrimSpace(cleanProgressText(path)), "，。,;；\"'`")
+}
+
+func helperPathIsNone(path string) bool {
+	switch strings.ToLower(strings.TrimSpace(path)) {
+	case "", ProgressOpenNone, "無", "none":
+		return true
+	default:
+		return false
+	}
+}
+
+// helperReportDetails is the reason text for a failed card. It runs only
+// after the card has already failed. A long log is read from the end.
+// Prompt echoes keep the text after the prompt. Status lines are dropped.
+// The helper's own sentences are the report. A shell diagnostic such as
+// FullyQualifiedErrorId is shown only when those sentences never say what failed.
+// A sentence that also mentioned a secret keeps the rest.
+func helperReportDetails(lines []string) string {
+	const window = 40
+	if len(lines) > window {
+		lines = lines[len(lines)-window:]
+	}
+	var sentences, diagnostics []string
+	for _, line := range lines {
+		line = helperReportStripPrompt(line)
+		if line == "" {
+			continue
+		}
+		text := helperReportDetailLine(line)
+		if text == "" || helperReportStack(text) || helperReportChatter(text) {
+			continue
+		}
+		if helperReportProse(text) {
+			sentences = append(sentences, text)
+			continue
+		}
+		diagnostics = append(diagnostics, text)
+	}
+	if len(sentences) == 0 {
+		if len(diagnostics) > 4 {
+			diagnostics = diagnostics[len(diagnostics)-4:]
+		}
+		return joinHelperReportDetail(diagnostics)
+	}
+	var earlier string
+	if len(sentences) > 4 {
+		for _, line := range sentences[:len(sentences)-4] {
+			if helperReportFailureLine(line) {
+				earlier = line
+			}
+		}
+		sentences = sentences[len(sentences)-4:]
+	}
+	if earlier == "" && !helperReportHasFailure(sentences) && len(diagnostics) > 0 {
+		earlier = diagnostics[len(diagnostics)-1]
+	}
+	if earlier != "" && !helperReportHasFailure(sentences) {
+		sentences = append([]string{earlier}, sentences...)
+		if len(sentences) > 4 {
+			sentences = append([]string{sentences[0]}, sentences[len(sentences)-3:]...)
+		}
+	}
+	return joinHelperReportDetail(sentences)
+}
+
+func helperReportHasFailure(lines []string) bool {
+	for _, line := range lines {
+		if helperReportFailureLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// helperReportStripPrompt keeps what a person typed or what the shell printed
+// after a prompt. A second prompt on the same line is removed too.
+// The prompt itself is not the reason.
+func helperReportStripPrompt(s string) string {
+	s = strings.TrimSpace(s)
+	for {
+		next := helperReportStripPromptOnce(s)
+		if next == s {
+			return s
+		}
+		s = strings.TrimSpace(next)
+		if s == "" {
+			return ""
+		}
+	}
+}
+
+func helperReportStripPromptOnce(s string) string {
+	switch {
+	case strings.HasPrefix(s, "PS>"), strings.HasPrefix(s, "PS ") && strings.Contains(s, ">"):
+		// "PS the policy blocked it." is a sentence. Only a prompt has ">".
+		if i := strings.IndexByte(s, '>'); i >= 0 {
+			return strings.TrimSpace(s[i+1:])
+		}
+		return s
+	case strings.HasPrefix(s, ">>>"):
+		return strings.TrimSpace(strings.TrimPrefix(s, ">>>"))
+	case strings.HasPrefix(s, "$ "):
+		return strings.TrimSpace(strings.TrimPrefix(s, "$ "))
+	case helperReportCmdPrompt(s):
+		i := strings.IndexByte(s, '>')
+		return strings.TrimSpace(s[i+1:])
+	default:
+		return s
+	}
+}
+
+// helperReportCmdPrompt is a cmd.exe echo such as "C:\Users\ma>". A path with
+// no ">" is a file name and stays.
+func helperReportCmdPrompt(s string) bool {
+	if len(s) < 4 || s[1] != ':' || (s[2] != '\\' && s[2] != '/') {
+		return false
+	}
+	c := s[0]
+	if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+		return false
+	}
+	return strings.IndexByte(s, '>') > 2
+}
+
+func helperReportFailureLine(text string) bool {
+	lower := strings.ToLower(text)
+	for _, needle := range []string{"失败", "错误", "无法", "阻止", "异常", "退出码", "error", "failed", "failure", "exception", "denied", "exit code"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// helperReportProse is a sentence the helper wrote, as opposed to a status echo.
+// A dotted identifier such as System.Foo.Bar() is not a sentence, and neither
+// is a file name. 演讲稿.docx has no sentence punctuation and is not the reason.
+func helperReportProse(text string) bool {
+	if helperReportStack(text) || helperReportPathLine(text) {
+		return false
+	}
+	han := false
+	for _, r := range text {
+		if r > 127 {
+			han = true
+			break
+		}
+	}
+	// 下载失败：策略阻止 and 执行策略阻止了下载，安装包没有落盘 are sentences.
+	// A file name has none of these marks and no space.
+	if han {
+		return strings.ContainsAny(text, "。！？!?，、：:") || strings.Contains(text, " ")
+	}
+	if !strings.ContainsAny(text, ".!?") {
+		return false
+	}
+	return len(strings.Fields(text)) >= 2
+}
+
+// helperReportPathLine is a line that is only a path. A sentence that mentions
+// a path, such as 无法写入 C:\Users\ma139\Downloads, stays a sentence.
+func helperReportPathLine(text string) bool {
+	s := strings.Trim(strings.TrimSpace(text), "\"'`")
+	// ASCII ":" is the drive separator in C:\... Fullwidth ： is a sentence.
+	if s == "" || strings.ContainsAny(s, "。！？!?，、：") {
+		return false
+	}
+	if strings.HasPrefix(s, "/home/") || strings.HasPrefix(s, `\\`) {
+		return true
+	}
+	if len(s) >= 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') {
+		c := s[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return false
+}
+
+// helperReportStack is a call frame or a PowerShell location line.
+// The dots in the type name are not sentence punctuation.
+func helperReportStack(text string) bool {
+	s := strings.TrimSpace(text)
+	lower := strings.ToLower(s)
+	if strings.HasPrefix(lower, "at line:") {
+		return true
+	}
+	// at System.Foo.Bar() has a dot in the token before "(".
+	// "at the end the download failed (policy)." does not.
+	if !strings.HasPrefix(lower, "at ") || !strings.Contains(s, "(") {
+		return false
+	}
+	rest := strings.TrimSpace(s[len("at "):])
+	paren := strings.IndexByte(rest, '(')
+	return paren > 0 && strings.Contains(rest[:paren], ".")
+}
+
+func helperReportChatter(text string) bool {
+	return !helperReportFailureLine(text) && !helperReportProse(text)
+}
+
+// helperReportDetailLine keeps one human sentence from a failed card.
+// A trace marker stays out. A secret is removed and the rest of the sentence stays.
+func helperReportDetailLine(raw string) string {
+	traced := strings.Contains(raw, "TRACE_")
+	if traced {
+		raw = helperTraceToken.ReplaceAllString(raw, " ")
+	}
+	cleaned := cleanProgressText(raw)
+	cleaned = strings.ReplaceAll(cleaned, "sk-<redacted>", "")
+	cleaned = strings.ReplaceAll(cleaned, "Bearer <redacted>", "")
+	cleaned = strings.ReplaceAll(cleaned, "<redacted>", "")
+	cleaned = helperDetailSecret.ReplaceAllString(cleaned, "")
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	if !helperReportKeepDetail(cleaned, traced) {
+		return ""
+	}
+	if path := strings.TrimSpace(helperHomePath.FindString(cleaned)); path != "" && path == cleaned {
+		return ""
+	}
+	return cleaned
+}
+
+func helperReportKeepDetail(cleaned string, traced bool) bool {
+	if cleaned == "" || helperPathIsNone(cleaned) || (traced && helperReportTooThin(cleaned)) {
+		return false
+	}
+	if strings.Contains(cleaned, "TRACE_") {
+		return false
+	}
+	// "ask-user" contains the letters sk-. Match the token, not that substring.
+	if helperDetailSecret.MatchString(cleaned) {
+		return false
+	}
+	return true
+}
+
+// helperReportTooThin drops a leftover that is only a short English word,
+// such as the "only" left after a trace token is removed.
+func helperReportTooThin(text string) bool {
+	for _, r := range text {
+		if r > 127 {
+			return false
+		}
+	}
+	return len(strings.Fields(text)) == 1 && len(text) <= 4
+}
+
+func joinHelperReportDetail(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	text := strings.TrimSpace(strings.Join(lines, "\n"))
+	if utf8.RuneCountInString(text) > 240 {
+		text = strings.TrimSpace(string([]rune(text)[:240])) + "…"
+	}
+	return text
 }
 
 // HelperStartEntries is the helper window at the start of a workflow.

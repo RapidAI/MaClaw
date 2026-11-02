@@ -88,15 +88,15 @@ func semanticTrustedFileDeleteArgsAllowed(args map[string]interface{}) (string, 
 
 func (h *IMMessageHandler) deleteTrustedFile(principalID, path string) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_file_delete_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_delete_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_file_delete_principal_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_delete_principal_required"))
 	}
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", fmt.Errorf("trusted_file_delete_path_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_file_delete_path_required"))
 	}
 	if h.semanticTrustedFileDelete != nil {
 		return h.semanticTrustedFileDelete(principalID, path)
@@ -111,7 +111,7 @@ func (h *IMMessageHandler) deleteTrustedFile(principalID, path string) (string, 
 func deleteTrustedWorkspaceFile(workspace, path string) (string, error) {
 	absPath, err := fileDeleteTargetReady(workspace, path)
 	if err != nil {
-		return "", err
+		return "", effectNotStarted(err)
 	}
 	if err := os.Remove(absPath); err != nil {
 		return "", err

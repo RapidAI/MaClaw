@@ -1105,7 +1105,7 @@
     width: 100%;
     margin: 0 0 14px;
     color: var(--theme-text-primary, #24364e);
-    font-weight: 760;
+    font-weight: 700;
     font-size: clamp(2rem, 4vw, 3rem);
     letter-spacing: -0.045em;
     line-height: 1.15;
@@ -1715,7 +1715,7 @@
   gap: 5px;
   box-sizing: border-box;
   font-size: 11px !important;
-  font-weight: 650 !important;
+  font-weight: 600 !important;
   line-height: 1.2 !important;
 }
 .mc-input-stack button.mc-composer-model-chip:hover,

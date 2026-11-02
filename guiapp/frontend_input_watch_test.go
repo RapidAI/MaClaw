@@ -69,6 +69,66 @@ func TestInputWatchDeadEscalates(t *testing.T) {
 	}
 }
 
+func TestClickEchoDecisionScene(t *testing.T) {
+	cases := []struct {
+		name string
+		// zero value means "not applicable / disabled"
+		clicks         int
+		oldestClickAge time.Duration
+		pageIdle       time.Duration
+		supported      bool
+	}{
+		{"unsupported platform", 5, time.Second, time.Hour, false},
+		{"too few clicks", 2, time.Second, time.Hour, true},
+		{"no click in window", 5, 0, time.Hour, true},
+		{"page echoing input", 5, 8 * time.Second, time.Second, true},
+	}
+	for _, c := range cases {
+		act, n, r := clickEchoDecision(clickEchoEvidence(c.clicks, c.oldestClickAge, c.pageIdle), c.supported, 2, 1, time.Minute)
+		if act != inputWatchNone || n != 0 || r != 0 {
+			t.Fatalf("%s: got action=%d actions=%d reloads=%d, want none/0/0", c.name, act, n, r)
+		}
+	}
+}
+
+func TestClickEchoDeadEscalates(t *testing.T) {
+	clicks := 5
+	deadPage := time.Hour
+	oldestAge := 8 * time.Second
+
+	// 1st detection: nudge.
+	dead := clickEchoEvidence(clicks, oldestAge, deadPage)
+	act, n, r := clickEchoDecision(dead, true, 0, 0, time.Hour)
+	if act != inputWatchNudge || n != 1 || r != 0 {
+		t.Fatalf("first: got action=%d actions=%d reloads=%d, want nudge/1/0", act, n, r)
+	}
+	// 2nd detection inside the nudge gap: hold.
+	act, n, r = clickEchoDecision(dead, true, 1, 0, 30*time.Second)
+	if act != inputWatchNone || n != 2 || r != 0 {
+		t.Fatalf("hold: got action=%d actions=%d reloads=%d, want none/2/0", act, n, r)
+	}
+	// Gap cleared: reload fires exactly once.
+	act, n, r = clickEchoDecision(dead, true, 2, 0, 2*time.Minute)
+	if act != inputWatchReload || n != 3 || r != 1 {
+		t.Fatalf("reload: got action=%d actions=%d reloads=%d, want reload/3/1", act, n, r)
+	}
+	// Reload must not repeat.
+	act, n, r = clickEchoDecision(dead, true, 3, 1, 2*time.Minute)
+	if act != inputWatchNone || n != 4 || r != 1 {
+		t.Fatalf("no-repeat: got action=%d actions=%d reloads=%d, want none/4/1", act, n, r)
+	}
+	// Before escalate gap: hold.
+	act, n, r = clickEchoDecision(dead, true, 4, 1, time.Minute)
+	if act != inputWatchNone || n != 5 || r != 1 {
+		t.Fatalf("hold-3: got action=%d actions=%d reloads=%d, want none/5/1", act, n, r)
+	}
+	// After escalate gap: escalate.
+	act, n, r = clickEchoDecision(dead, true, 5, 1, 11*time.Minute)
+	if act != inputWatchEscalate || n != 6 || r != 1 {
+		t.Fatalf("escalate: got action=%d actions=%d reloads=%d, want escalate/6/1", act, n, r)
+	}
+}
+
 func TestNoteFrontendInputEventMonotonicAndClamped(t *testing.T) {
 	t.Cleanup(func() { frontendLastInputAt.Store(0) })
 	frontendLastInputAt.Store(0)

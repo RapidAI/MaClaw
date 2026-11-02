@@ -9,12 +9,21 @@ import (
 	"time"
 )
 
-func TestFileStorePersistsControlPlaneState(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "store.json")
+// newTestFileStore opens a FileStore and registers Close so Windows releases
+// the SQLite file lock before t.TempDir cleanup runs.
+func newTestFileStore(t *testing.T, path string) *FileStore {
+	t.Helper()
 	store, err := NewFileStore(path)
 	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
+		t.Fatalf("NewFileStore(%s): %v", path, err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func TestFileStorePersistsControlPlaneState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "store.json")
+	store := newTestFileStore(t, path)
 
 	now := time.Now().UTC()
 	tenant := Tenant{ID: "tenant_1", Name: "Tenant", Status: TenantStatusActive, CreatedAt: now, UpdatedAt: now}
@@ -41,18 +50,12 @@ func TestFileStorePersistsControlPlaneState(t *testing.T) {
 		}
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
+	data := readFileStoreArtifact(t, path)
 	if strings.Contains(string(data), `"api_key":"key"`) {
-		t.Fatalf("store.json should not persist plaintext api_key: %s", string(data))
+		t.Fatalf("store.db should not persist plaintext api_key: %s", string(data))
 	}
 
-	reopened, err := NewFileStore(path)
-	if err != nil {
-		t.Fatalf("reopen NewFileStore: %v", err)
-	}
+	reopened := newTestFileStore(t, path)
 	if _, err := reopened.GetTenant(tenant.ID); err != nil {
 		t.Fatalf("GetTenant after reopen: %v", err)
 	}
@@ -140,10 +143,7 @@ func TestFileStoreMigratesLegacyPlaintextAPIKeys(t *testing.T) {
 	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	store, err := NewFileStore(path)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	store := newTestFileStore(t, path)
 	cred, err := store.GetCredentialByAPIKey("legacy-key")
 	if err != nil {
 		t.Fatalf("GetCredentialByAPIKey: %v", err)
@@ -154,20 +154,20 @@ func TestFileStoreMigratesLegacyPlaintextAPIKeys(t *testing.T) {
 	if err := store.SaveCredential(cred); err != nil {
 		t.Fatalf("SaveCredential: %v", err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+	// The legacy JSON is the pre-migration file: a fresh database imports it
+	// once and then removes it, so the plaintext key leaves disk entirely.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("legacy store.json should be removed after import, stat err=%v", err)
 	}
-	if strings.Contains(string(data), `"api_key":"legacy-key"`) {
-		t.Fatalf("legacy plaintext api_key should be removed after rewrite: %s", string(data))
+	data := readFileStoreArtifact(t, path)
+	if strings.Contains(string(data), "legacy-key") {
+		t.Fatalf("legacy plaintext api_key should be gone from store.db: %s", string(data))
 	}
 }
 
 func TestNewFileStoreCreatesPrivateStateDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "store.json")
-	if _, err := NewFileStore(path); err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	newTestFileStore(t, path)
 	if runtime.GOOS == "windows" {
 		return
 	}
@@ -182,10 +182,7 @@ func TestNewFileStoreCreatesPrivateStateDir(t *testing.T) {
 
 func TestFileStoreNewCredentialNeverPersistsPlaintextAPIKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "store.json")
-	store, err := NewFileStore(path)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	store := newTestFileStore(t, path)
 	now := time.Now().UTC()
 	cred := Credential{
 		ID:           "cred_plain",
@@ -202,12 +199,24 @@ func TestFileStoreNewCredentialNeverPersistsPlaintextAPIKey(t *testing.T) {
 	if err := store.SaveCredential(cred); err != nil {
 		t.Fatalf("SaveCredential: %v", err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
+	data := readFileStoreArtifact(t, path)
 	text := string(data)
 	if strings.Contains(text, "plain-key-123") || strings.Contains(text, "\"api_key\"") {
-		t.Fatalf("store.json should not persist plaintext api_key fields: %s", text)
+		t.Fatalf("store.db should not persist plaintext api_key fields: %s", text)
 	}
+}
+
+// readFileStoreArtifact reads the SQLite database file together with its WAL
+// sidecar so assertions observe every byte the store wrote.
+func readFileStoreArtifact(t *testing.T, jsonPath string) []byte {
+	t.Helper()
+	dbPath := strings.TrimSuffix(jsonPath, filepath.Ext(jsonPath)) + ".db"
+	data, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", dbPath, err)
+	}
+	if wal, err := os.ReadFile(dbPath + "-wal"); err == nil {
+		data = append(data, wal...)
+	}
+	return data
 }

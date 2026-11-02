@@ -291,6 +291,50 @@ func TestPlanExecutionStateFromResultClearsSuccessOnNonSuccess(t *testing.T) {
 	}
 }
 
+func TestArgumentRejectionWithoutEffectLeavesRealOutcomesAlone(t *testing.T) {
+	if !ArgumentRejectionWithoutEffect(SelectionExecutionResult{Result: "[system rejected] trusted_shell_arguments_rejected: command is empty"}) {
+		t.Fatal("an argument refusal before any effect must stay retractable")
+	}
+	if !ArgumentRejectionWithoutEffect(SelectionExecutionResult{Result: "[system rejected] canonical_file_write_arguments_invalid"}) {
+		t.Fatal("a canonical argument refusal must stay retractable")
+	}
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{Result: "[system rejected] trusted_office_write_failed: disk full"}) {
+		t.Fatal("a write that failed after it started is an outcome")
+	}
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{Succeeded: true, Result: "arguments_rejected was only mentioned"}) {
+		t.Fatal("a successful result is not an unexecuted refusal")
+	}
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{Unknown: true, Result: "[system rejected] canonical_shell_arguments_invalid"}) {
+		t.Fatal("an unknown outcome may already have an effect")
+	}
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{AwaitingReceipt: true, Result: "[system rejected] canonical_message_send_arguments_invalid"}) {
+		t.Fatal("a prepared delivery is not an unexecuted refusal")
+	}
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{Paused: true, Result: "[system rejected] trusted_shell_arguments_rejected"}) {
+		t.Fatal("a pause is not an argument refusal")
+	}
+	long := "[system rejected] trusted_file_write_failed: " + strings.Repeat("x", 300) + " arguments_rejected"
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{Result: long}) {
+		t.Fatal("a mention after the failure body is not an unexecuted refusal")
+	}
+	quoted := "[system rejected] trusted_file_write_failed: arguments_rejected was in the file"
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{Result: quoted}) {
+		t.Fatal("quoting the refusal code inside a write failure must stay an outcome")
+	}
+	if !ArgumentRejectionWithoutEffect(SelectionExecutionResult{Result: "[system rejected] trusted_shell_arguments_rejected."}) {
+		t.Fatal("a period glued to the refusal code must stay retractable")
+	}
+	if !ArgumentRejectionWithoutEffect(SelectionExecutionResult{Result: "[system rejected] mis_action_outside_managed_surface", Unexecuted: true}) {
+		t.Fatal("a refusal flagged before any effect must stay retractable")
+	}
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{Succeeded: true, Unexecuted: true, Result: "[system rejected] mis_action_outside_managed_surface"}) {
+		t.Fatal("a successful result must not be retracted")
+	}
+	if ArgumentRejectionWithoutEffect(SelectionExecutionResult{Result: "[system rejected] trusted_file_write_failed."}) {
+		t.Fatal("punctuation on a write failure must stay an outcome")
+	}
+}
+
 func TestReplayedSelectionResultPrefersExecutionRowOverText(t *testing.T) {
 	store := NewMemoryPlanExecutionStore()
 	scope := InvocationScope{RootTaskID: "root", PlanID: "plan", SessionID: "session", TurnID: "turn", PrincipalID: "principal"}

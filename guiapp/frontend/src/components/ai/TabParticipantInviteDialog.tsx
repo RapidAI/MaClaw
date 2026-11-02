@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Z } from "../ui/zIndex";
 import type { CSSProperties } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -84,7 +85,7 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
             data-testid="tab-participant-invite-dialog"
             role="dialog"
             aria-modal="true"
-            style={{ position: "absolute", inset: 0, zIndex: 10000, background: "var(--theme-overlay-soft, rgba(15, 23, 42, 0.08))", display: "flex", alignItems: "flex-start", justifyContent: "flex-end", padding: "44px 16px", boxSizing: "border-box", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+            style={{ position: "absolute", inset: 0, zIndex: Z.stickyToast, background: "var(--theme-overlay-soft, rgba(15, 23, 42, 0.08))", display: "flex", alignItems: "flex-start", justifyContent: "flex-end", padding: "44px 16px", boxSizing: "border-box", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
             {...backdropProps}
         >
             <div

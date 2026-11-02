@@ -98,7 +98,7 @@ export function PreviewProgressBar({ label, ratio }: { label: string; ratio: num
                     height: 6,
                     overflow: "hidden",
                     borderRadius: 999,
-                    background: "var(--office-accent-soft, rgba(37, 99, 235, 0.16))",
+                    background: "var(--theme-primary-soft)",
                 }}
             >
                 <div
@@ -107,7 +107,7 @@ export function PreviewProgressBar({ label, ratio }: { label: string; ratio: num
                         height: "100%",
                         width: determinate ? `${pct}%` : "36%",
                         borderRadius: 999,
-                        background: "var(--office-accent, #2563eb)",
+                        background: "var(--theme-primary)",
                     }}
                 />
             </div>

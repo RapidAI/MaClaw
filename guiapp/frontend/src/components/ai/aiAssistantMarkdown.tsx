@@ -24,6 +24,7 @@ import { AssistantToolCallRow, renderAssistantBodyWithToolCalls } from "./assist
 import { AssistantToolFlipTicker } from "./AssistantToolFlipTicker";
 import { TaskResultArtifacts } from "./assistantTaskArtifacts";
 import { ChatTaskCard } from "./ChatTaskCard";
+import { localizeHelperReport } from "./chatTaskModel";
 import {
     liveStatusProgress,
     prepareChatBodyForDisplay,
@@ -1636,6 +1637,10 @@ export function renderMessage(
                 </div>
             );
         case "assistant": {
+            if (msg.kind === "chatTask" && !msg.chatTask) {
+                const shown = localizeHelperReport(msg.content || "", lang);
+                if (shown !== (msg.content || "")) msg = { ...msg, content: shown };
+            }
             const savedPaths = msg.localFilePaths && msg.localFilePaths.length > 0
                 ? msg.localFilePaths
                 : (msg.localFilePath ? [msg.localFilePath] : []);

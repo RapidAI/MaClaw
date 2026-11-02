@@ -51,6 +51,15 @@ export function classifyWebPreviewAddress(raw: string): WebPreviewAddress {
     return { kind: 'relative', path: rel.replace(/\\/g, '/') };
 }
 
+/** Address bar text for a history entry. Local and remote pages show the URL. */
+export function previewAddressText(entry: { url?: string; label?: string; mode?: string }): string {
+    const url = String(entry.url || '').trim();
+    if ((entry.mode === 'local' || entry.mode === 'remote') && /^https?:\/\//i.test(url)) {
+        return url;
+    }
+    return String(entry.label || url);
+}
+
 export function localPreviewURL(origin: string, token: string, relPath: string): string {
     const base = String(origin || '').replace(/\/+$/, '');
     const parts = String(relPath || '')

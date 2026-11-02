@@ -48,7 +48,7 @@ func semanticTrustedRepoMutateInvocationSchema() map[string]interface{} {
 			// how the browser adapter started refusing "open" (2026-10-10). The
 			// canonicalizer does not read enum, so the check in ArgsAllowed
 			// stays the boundary and this is documentation for the model.
-			"action": map[string]interface{}{"type": "string", "enum": tool.RepoMutateActions()},
+			"action":  map[string]interface{}{"type": "string", "enum": tool.RepoMutateActions()},
 			"message": map[string]interface{}{"type": "string"},
 		},
 		"required":             []string{"action"},
@@ -94,18 +94,18 @@ func semanticTrustedRepoMutateArgsAllowed(args map[string]interface{}) (action, 
 
 func (h *IMMessageHandler) mutateTrustedRepo(principalID, action, message string) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_repo_mutate_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_repo_mutate_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_repo_mutate_principal_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_repo_mutate_principal_required"))
 	}
 	if h.semanticTrustedRepoMutate != nil {
 		return h.semanticTrustedRepoMutate(principalID, action, message)
 	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	if strings.TrimSpace(workspace) == "" {
-		return "", fmt.Errorf("trusted_repo_mutate_workspace_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_repo_mutate_workspace_unavailable"))
 	}
 	ctx := context.Background()
 	switch action {
@@ -116,7 +116,7 @@ func (h *IMMessageHandler) mutateTrustedRepo(principalID, action, message string
 	default:
 		// Unreachable while ArgsAllowed gates the same set, but if the two
 		// ever drift the message must still tell the model the real names.
-		return "", fmt.Errorf("trusted_repo_mutate_action_rejected (%s)", tool.RepoMutateActionHint())
+		return "", effectNotStarted(fmt.Errorf("trusted_repo_mutate_action_rejected (%s)", tool.RepoMutateActionHint()))
 	}
 }
 
@@ -173,25 +173,25 @@ func commitTrustedRepo(ctx context.Context, workspace, message string) (string, 
 // replayed.
 func pushTrustedRepo(ctx context.Context, workspace string) (string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
-		return "", fmt.Errorf("trusted_repo_mutate_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_repo_mutate_unavailable"))
 	}
 	branch, err := runTrustedRepoGit(ctx, workspace, "rev-parse", "--abbrev-ref", "HEAD")
 	branch = strings.TrimSpace(branch)
 	if err != nil || branch == "" || branch == "HEAD" {
-		return "", fmt.Errorf("trusted_repo_mutate_branch_unresolved")
+		return "", effectNotStarted(fmt.Errorf("trusted_repo_mutate_branch_unresolved"))
 	}
 	local, err := runTrustedRepoGit(ctx, workspace, "rev-parse", "HEAD")
 	local = strings.TrimSpace(local)
 	if err != nil || local == "" {
-		return "", fmt.Errorf("trusted_repo_mutate_head_unobserved")
+		return "", effectNotStarted(fmt.Errorf("trusted_repo_mutate_head_unobserved"))
 	}
 	upstream, upstreamErr := runTrustedRepoGit(ctx, workspace, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	remote, remoteBranch, ok := splitTrustedRepoUpstream(upstream)
 	if upstreamErr != nil || !ok {
 		// Creating an upstream decides where this repository publishes. That is
 		// an operator decision about remote state, and a receipt can only
-		// observe such a decision, never make it.
-		return "", fmt.Errorf("trusted_repo_mutate_upstream_unset")
+		// observe such a decision, never make it. The push itself has not run.
+		return "", effectNotStarted(fmt.Errorf("trusted_repo_mutate_upstream_unset"))
 	}
 
 	_, pushErr := runTrustedRepoGitWithin(ctx, workspace, semanticTrustedRepoPushTimeout, trustedRepoGitRemoteEnv(), "push")

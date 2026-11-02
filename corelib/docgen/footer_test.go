@@ -58,7 +58,7 @@ func TestLongFooterWrapsInsideMargins(t *testing.T) {
 
 func assertFooterInside(t *testing.T, data []byte, layout pdfPageLayout, marker string) {
 	t.Helper()
-	texts, err := gopdf.ExtractTextFromPage(data, 0)
+	texts, err := gopdf.ExtractTextFromPage(data, firstBodyPage)
 	if err != nil {
 		t.Fatal(err)
 	}

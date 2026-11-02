@@ -583,6 +583,62 @@ func TestChatTaskResultNoteKeepsReplyAndNamesFiles(t *testing.T) {
 	}
 }
 
+func TestChatTaskFailureReportIsLocalized(t *testing.T) {
+	record := "helper_report_empty\nfile: none\ndetail:\n执行策略阻止了 PowerShell 下载"
+	zh := formatChatTaskStatus([]AIAssistantChatTask{{
+		Title: "安装包", Status: string(chatTaskFailed), Error: record,
+	}}, "zh-Hans", true)
+	if strings.Contains(zh, "helper_report_empty") || !strings.Contains(zh, "助手报告没有结论") || !strings.Contains(zh, "执行策略阻止了 PowerShell") {
+		t.Fatalf("zh status = %q", zh)
+	}
+	en := formatChatTaskStatus([]AIAssistantChatTask{{
+		Title: "installer", Status: string(chatTaskFailed), Error: record,
+	}}, "en", false)
+	if !strings.Contains(en, "The helper report had no conclusion") || !strings.Contains(en, "The file line did not name a path.") {
+		t.Fatalf("en status = %q", en)
+	}
+	hant := formatChatTaskStatus([]AIAssistantChatTask{{
+		Title: "安裝包", Status: string(chatTaskFailed), Error: "chat_task_no_result",
+	}}, "zh-Hant", true)
+	if !strings.Contains(hant, "任務結束了，但沒有返回結果。") {
+		t.Fatalf("hant status = %q", hant)
+	}
+	mn := formatChatTaskStatus([]AIAssistantChatTask{{
+		Title: "installer", Status: string(chatTaskFailed), Error: "helper report has no conclusion and no path",
+	}}, "mn", false)
+	if !strings.Contains(mn, "Туслахын тайланд") || strings.Contains(mn, "没有给出") {
+		t.Fatalf("mn status = %q", mn)
+	}
+	done := formatChatTaskStatus([]AIAssistantChatTask{{
+		Title: "installer", Status: string(chatTaskDone),
+		ResultText: "1. package downloaded\n2. 无\n3. 无\n文件：C:\\Users\\ma139\\Downloads\\ryzen.exe",
+	}}, "en", false)
+	if !strings.Contains(done, "What finished: package downloaded") || !strings.Contains(done, "File path: C:\\Users\\ma139\\Downloads\\ryzen.exe") || strings.Contains(done, "文件：") {
+		t.Fatalf("done = %q", done)
+	}
+	prose := "1. 先打开页面\n2. 再点下载\n3. 然后安装\n文件已经放在桌面"
+	kept := formatChatTaskStatus([]AIAssistantChatTask{{
+		Title: "安装包", Status: string(chatTaskDone), ResultText: prose,
+	}}, "zh-Hans", true)
+	if !strings.Contains(kept, "文件已经放在桌面") || strings.Contains(kept, "已完成") {
+		t.Fatalf("prose was relabeled: %q", kept)
+	}
+	named := presentChatTaskFailure("en", false, "helper_report_empty is the log line")
+	if named != "helper_report_empty is the log line" {
+		t.Fatalf("prose failure = %q", named)
+	}
+	result := chatTaskResultFromAgentResponse(&IMAgentResponse{
+		Text: "文件：无\n执行策略阻止了 PowerShell 下载",
+	}, &LoopContext{ComputerHelper: true})
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "file: none") || !strings.Contains(result.Err.Error(), "执行策略阻止了 PowerShell") {
+		t.Fatalf("helper failure = %+v", result)
+	}
+	empty := chatTaskResultFromAgentResponse(&IMAgentResponse{}, nil)
+	if empty.Err == nil || empty.Err.Error() != "chat_task_no_result" {
+		t.Fatalf("empty = %+v", empty)
+	}
+}
+
 func TestChatTaskFollowUpSteersTheSameTask(t *testing.T) {
 	h, _ := testChatTaskHandler(t)
 	reg := h.ensureChatTasks()

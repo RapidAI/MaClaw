@@ -536,7 +536,7 @@
 .asset-ledger-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
 .asset-kind-tabs { display: flex; padding: 3px; gap: 2px; border: 1px solid var(--theme-border-subtle); border-radius: var(--radius-md); background: var(--theme-surface-muted); }
 .asset-kind-tabs button { border: 0; background: transparent; color: var(--theme-text-secondary); border-radius: var(--radius-sm); padding: 6px 10px; cursor: pointer; font-size: .76rem; }
-.asset-kind-tabs button[aria-selected="true"] { color: var(--theme-primary-strong); background: var(--theme-surface); font-weight: 650; }
+.asset-kind-tabs button[aria-selected="true"] { color: var(--theme-primary-strong); background: var(--theme-surface); font-weight: 600; }
 .asset-ledger-list { border-top: 1px solid var(--theme-border-subtle); }
 /* Loading / empty note row inside the ledger. */
 .asset-ledger-list .hint { display: grid; place-items: center; min-height: 72px; color: var(--theme-text-secondary); font-size: .76rem; text-align: center; }
@@ -699,7 +699,7 @@
 
 .tool-cache-maintenance-section__stats strong {
     color: var(--theme-text-primary);
-    font-weight: 850;
+    font-weight: 800;
 }
 
 .tool-cache-maintenance-section__stats span:last-child {
@@ -1279,7 +1279,7 @@
 .lansenger-bots__draft-tab > span {
     color: var(--theme-text-primary);
     font-size: .78rem;
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .lansenger-bots__instance-id,
@@ -1389,7 +1389,7 @@
     color: var(--theme-warning);
     background: var(--theme-surface-muted);
     font-size: .68rem;
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .lansenger-bots__editor-state[data-state="enabled"] {
@@ -2190,12 +2190,12 @@
     margin: 0;
     color: var(--theme-primary-strong);
     font-size: 0.8rem;
-    font-weight: 750;
+    font-weight: 700;
 }
 
 .email-settings-editing--new {
     color: var(--theme-text-muted);
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .email-settings-avatar {
@@ -2252,7 +2252,7 @@
     background: var(--theme-info-bg);
     color: var(--theme-primary-strong);
     font-size: 0.7rem;
-    font-weight: 750;
+    font-weight: 700;
 }
 
 .email-settings-badge--muted {
@@ -2660,7 +2660,7 @@
     margin: 0;
     color: var(--theme-text-primary);
     font-size: 0.95rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: -0.01em;
 }
 
@@ -2968,7 +2968,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--theme-text-primary);
-    font-weight: 650;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -2994,7 +2994,7 @@
 
 .mailbox-manage__message--unread .mailbox-manage__from,
 .mailbox-manage__message--unread .mailbox-manage__subject {
-    font-weight: 750;
+    font-weight: 700;
     color: var(--theme-text-primary);
 }
 
@@ -3098,7 +3098,7 @@
 .mailbox-manage__seg__btn--on {
     background: var(--theme-primary-soft);
     color: var(--theme-primary);
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .mailbox-manage__view__meta {
@@ -3397,7 +3397,7 @@
 
 .mailbox-md th {
     background: var(--theme-surface);
-    font-weight: 650;
+    font-weight: 600;
 }
 
 .mailbox-md hr {

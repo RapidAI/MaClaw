@@ -7023,7 +7023,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     title={localizeText(lang, "Checkpoint sidecar disk usage", "检查点侧车磁盘用量", "檢查點側車磁碟用量")}
                                                     style={{
                                                         fontSize: 11,
-                                                        color: (Number(codingSidecarStats.usage_ratio) >= 0.85) ? "#dc2626" : codingBannerChrome.muted,
+                                                        color: (Number(codingSidecarStats.usage_ratio) >= 0.85) ? "var(--theme-danger)" : codingBannerChrome.muted,
                                                         fontWeight: (Number(codingSidecarStats.usage_ratio) >= 0.85) ? 600 : 400,
                                                     }}
                                                 >
@@ -7041,7 +7041,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     ].filter(Boolean).join(" · ")}
                                                     style={{
                                                         fontSize: 11,
-                                                        color: codingHooksInfo.failOnError ? "#dc2626" : codingBannerChrome.accentStrong,
+                                                        color: codingHooksInfo.failOnError ? "var(--theme-danger)" : codingBannerChrome.accentStrong,
                                                         fontWeight: codingHooksInfo.failOnError ? 600 : 400,
                                                     }}
                                                 >
@@ -7180,7 +7180,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 </div></div>)}
                 {wizardScreen ? newTaskWelcome : null}
                 {activeProjectPreparing && <ProjectPreparingBanner prepareMode={activeProjectPrepareMode} isRemoteCodingDev={isRemoteCodingDevEnvironment} isRemoteMaintenance={isRemoteMaintenanceEnvironment} isCodingDev={isCodingDevEnvironment} lang={lang} theme={t} />}
-                {!showWelcomeView && skillRecordingCard && <InlineChatCard card={skillRecordingCard} onResolve={(cardId, action, values) => { const resolvedCardId = cardId; setSkillRecordingCard((prev: any) => prev ? { ...prev, resolved: true, resolvedAction: action, resolvedValues: values } : null); handleResolveSkillRecordingCard(action, values); setTimeout(() => setSkillRecordingCard((prev: any) => prev && prev.id === resolvedCardId ? null : prev), 2000); }} theme={{ cardBg: t.fieldBg, cardBorder: t.titleBarBorder, textColor: t.text, mutedColor: t.promptColor, accentColor: "#4f7f6f", inputBg: t.fieldBg, inputBorder: t.titleBarBorder, buttonBg: "#4f7f6f", buttonText: "#fff", dangerColor: "#dc2626" }} lang={lang} />}
+                {!showWelcomeView && skillRecordingCard && <InlineChatCard card={skillRecordingCard} onResolve={(cardId, action, values) => { const resolvedCardId = cardId; setSkillRecordingCard((prev: any) => prev ? { ...prev, resolved: true, resolvedAction: action, resolvedValues: values } : null); handleResolveSkillRecordingCard(action, values); setTimeout(() => setSkillRecordingCard((prev: any) => prev && prev.id === resolvedCardId ? null : prev), 2000); }} theme={{ cardBg: t.fieldBg, cardBorder: t.titleBarBorder, textColor: t.text, mutedColor: t.promptColor, accentColor: "#4f7f6f", inputBg: t.fieldBg, inputBorder: t.titleBarBorder, buttonBg: "#4f7f6f", buttonText: "#fff", dangerColor: "var(--theme-danger)" }} lang={lang} />}
                 {!showWelcomeView && codingPreviewAllowed && (workflowAwaitingForm || workflowFormGeneratingDocument) && (
                     <WorkflowFormInlinePrompt
                         formActive={workflowFormActive}

@@ -51,7 +51,7 @@ func TestGeneratePDF_OrderedListMultiDigit(t *testing.T) {
 		t.Fatalf("PDF too small: %d bytes", len(data))
 	}
 
-	texts, err := gopdf.ExtractTextFromPage(data, 0)
+	texts, err := gopdf.ExtractTextFromPage(data, firstBodyPage)
 	if err != nil {
 		t.Fatalf("ExtractTextFromPage: %v", err)
 	}

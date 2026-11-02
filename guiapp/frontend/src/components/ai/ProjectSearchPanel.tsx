@@ -234,7 +234,18 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
             <div data-testid="project-search-results" className="psp-results" aria-busy={search.loading || undefined}>
                 {search.loading && <div style={{ padding: hasAnyResults ? "6px 10px" : "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{searchingLabel}</div>}
                 <div style={search.loading && hasAnyResults ? { opacity: 0.45 } : undefined}>
-                {!search.loading && !hasAnyResults && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query.trim() ? localizeText(lang, "No results found", "未找到结果", "未找到結果") : localizeText(lang, "No tasks", "暂无任务", "暫無任務")}</div>}
+                {!search.loading && !hasAnyResults && (
+                    <div style={{ padding: "22px 16px 18px", textAlign: "center" }}>
+                        {/* Quiet empty state: one label plus a pointer to the
+                            adjacent 新建任务 control — no new interactive target. */}
+                        <div style={{ fontSize: "12.5px", color: t.text, opacity: 0.55 }}>{search.query.trim() ? localizeText(lang, "No results found", "未找到结果", "未找到結果") : localizeText(lang, "No tasks", "暂无任务", "暫無任務")}</div>
+                        {!search.query.trim() && (
+                            <div style={{ marginTop: 6, fontSize: "12px", color: t.textMuted, opacity: 0.9 }}>
+                                {localizeText(lang, "Create one with “New task” above", "点击上方“新建任务”开始", "點擊上方「新建任務」開始")}
+                            </div>
+                        )}
+                    </div>
+                )}
                 {showSectionLabels && visibleResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Tasks" zh="任务" zhHant="任務" />}
                 {visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} formatTime={search.formatTime} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
                 {cloudResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Cloud workspace" zh="云端工作区" zhHant="雲端工作區" testId="search-cloud-section" />}

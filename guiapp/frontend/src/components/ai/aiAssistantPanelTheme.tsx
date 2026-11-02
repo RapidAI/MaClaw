@@ -1,6 +1,7 @@
 import React from "react";
 import { fluentLightScheme } from "./assistantLightSchemes";
 import { onyxDarkScheme } from "./assistantDarkSchemes";
+import { Z } from "../ui/zIndex";
 
 /* Theme definitions */
 
@@ -85,7 +86,7 @@ const fixedContainingBlockFill: React.CSSProperties = {
 
 export const overlayStyle: React.CSSProperties = {
     ...fixedContainingBlockFill,
-    zIndex: 10000,
+    zIndex: Z.stickyToast,
     background: overlayTheme.bg,
     boxShadow: "0 8px 28px -6px rgba(30, 58, 95, 0.18)",
 };
@@ -601,7 +602,7 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
     .chat-task-primary:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 45%, transparent); outline-offset: 1px; }
     .chat-task-primary:disabled { opacity: 0.45; cursor: default; }
     .chat-task-chip-x { background: transparent; opacity: 0.72; }
-    .chat-task-chip-x:hover { background: rgba(239, 68, 68, 0.14); color: #dc2626; opacity: 1; }
+    .chat-task-chip-x:hover { background: color-mix(in srgb, var(--theme-danger) 14%, transparent); color: var(--theme-danger); opacity: 1; }
     @media (prefers-reduced-motion: reduce) {
         .chat-task-spin, .chat-task-dot-live { animation: none; }
     }

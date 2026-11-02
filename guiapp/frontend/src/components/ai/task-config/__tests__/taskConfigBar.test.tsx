@@ -1082,7 +1082,7 @@ describe('TaskConfigBar variant', () => {
             const chip = screen.getByTestId(testId);
             expect(chip.style.borderStyle).toBe('none');
             expect(chip.style.background).toBe('transparent');
-            expect(chip.style.height).toBe('26px');
+            expect(chip.style.height).toBe('28px');
         }
     });
 

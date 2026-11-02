@@ -1010,7 +1010,15 @@ func (f *Frontend) validBindingOrigin(source string) bool {
 }
 
 func (f *Frontend) dispatchMessage(message string) {
+	start := time.Now()
 	result, err := f.dispatcher.ProcessMessage(message, f)
+	if dur := time.Since(start); dur > 5*time.Second {
+		// A binding call that blocks for minutes wedges every click that
+		// awaits a backend response. Binding calls run one goroutine per
+		// message, so log (never interrupt) and only above a threshold that
+		// excludes ordinary slow I/O.
+		log.Printf("[perf] slow-binding err=none name=%s dur_ms=%d msg_len=%d", slowBindingName(message), dur.Milliseconds(), len(message))
+	}
 	if err != nil {
 		f.logger.Error(err.Error())
 		f.Callback(result)
@@ -1027,6 +1035,28 @@ func (f *Frontend) dispatchMessage(message string) {
 	default:
 		f.logger.Info("Unknown message returned from dispatcher: %+v", result)
 	}
+}
+
+// slowBindingName extracts the method name from a "C"-prefixed binding call
+// message (`{"name":"main.App.Method",...}`) for the slow-binding log. Never
+// fails: unknown shapes log as "unknown" so the diagnostics cannot break the
+// dispatch path.
+func slowBindingName(message string) string {
+	const key = `"name":"`
+	i := strings.Index(message, key)
+	if i < 0 {
+		return "unknown"
+	}
+	rest := message[i+len(key):]
+	j := strings.IndexByte(rest, '"')
+	if j <= 0 || j > 128 {
+		return "unknown"
+	}
+	name := rest[:j]
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 && dot+1 < len(name) {
+		return name[dot+1:]
+	}
+	return name
 }
 
 func (f *Frontend) Callback(message string) {

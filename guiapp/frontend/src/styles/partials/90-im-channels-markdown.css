@@ -1286,7 +1286,7 @@
     padding: 0 10px 7px;
     color: var(--theme-text-muted);
     font-size: 0.68rem;
-    font-weight: 750;
+    font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
 }
@@ -1348,7 +1348,7 @@
 
 #App[data-nav-tab='settings'] .settings-panel-title {
     font-size: 1.12rem;
-    font-weight: 750;
+    font-weight: 700;
     letter-spacing: -0.02em;
 }
 
@@ -1954,7 +1954,7 @@
     color: var(--theme-link-color);
     text-decoration: none;
     border-bottom: 1px solid transparent;
-    transition: all var(--transition-fast);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .markdown-content a:hover {
@@ -3026,7 +3026,7 @@
     font-size: 0.8rem;
     font-weight: 500;
     cursor: pointer;
-    transition: all var(--transition-fast);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .btn-secondary:hover {
@@ -3127,7 +3127,7 @@
     min-width: 0;
     color: var(--theme-text-primary);
     font-size: 1rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: -0.011em;
     line-height: 1.35;
 }
@@ -3174,7 +3174,7 @@
     margin: 0;
     color: var(--theme-text-secondary);
     font-size: 0.875rem;
-    font-weight: 450;
+    font-weight: 400;
     line-height: 1.65;
     word-break: break-word;
     white-space: pre-wrap;
@@ -3197,7 +3197,7 @@
     border-radius: var(--radius-xs);
     background: var(--theme-surface-muted);
     color: var(--theme-text-primary);
-    font-weight: 650;
+    font-weight: 600;
     -webkit-box-decoration-break: clone;
     box-decoration-break: clone;
 }
@@ -3215,7 +3215,7 @@
     margin-bottom: 4px;
     color: var(--theme-text-muted);
     font-size: 0.72rem;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: 0.04em;
     line-height: 1.3;
 }
@@ -3578,7 +3578,7 @@
   margin: 0 0 10px;
   color: var(--theme-text-primary);
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.4;
   overflow-wrap: anywhere;
@@ -3591,14 +3591,14 @@
   background: color-mix(in srgb, var(--notif-cat) 10%, transparent);
   color: var(--notif-cat);
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 1.5;
 }
 .ndet-priority {
   padding: 2px 8px;
   border-radius: var(--radius-pill);
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 1.5;
 }
 .ndet-priority--urgent {
@@ -3711,8 +3711,8 @@
   font-size: 12px;
 }
 .ndet-h1 { margin: 12px 0 6px; color: var(--theme-text-primary); font-size: 16px; font-weight: 700; }
-.ndet-h2 { margin: 10px 0 5px; color: var(--theme-text-primary); font-size: 15px; font-weight: 650; }
-.ndet-h3 { margin: 8px 0 4px; color: var(--theme-text-primary); font-size: 14px; font-weight: 650; }
+.ndet-h2 { margin: 10px 0 5px; color: var(--theme-text-primary); font-size: 15px; font-weight: 600; }
+.ndet-h3 { margin: 8px 0 4px; color: var(--theme-text-primary); font-size: 14px; font-weight: 600; }
 .ndet-hr { margin: 12px 0; border: none; border-top: 1px solid var(--theme-border-subtle); }
 .ndet-table-scroll { overflow-x: auto; margin: 8px 0; }
 .ndet-table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -3722,7 +3722,7 @@
   background: var(--theme-surface-muted);
   color: var(--theme-text-primary);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   text-align: left;
 }
 .ndet-td { padding: 5px 8px; border: 1px solid var(--theme-border-subtle); font-size: 12px; }
@@ -3816,7 +3816,7 @@
 .capc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 
 /* CodingAgentProgressStatus.tsx */
-.caps-file-head { font-weight: 650; flex: 1; min-width: 0; }
+.caps-file-head { font-weight: 600; flex: 1; min-width: 0; }
 .caps-expand-btn { padding: 0; border: none; background: none; color: var(--theme-primary, #3b82f6); font-size: 11px; font-weight: 600; cursor: pointer; }
 .caps-file-rows { display: flex; flex-direction: column; gap: 1px; }
 .caps-file-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
@@ -3939,7 +3939,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
   box-shadow: var(--shadow-lg);
 }
 .notification-toast__head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.notification-toast__label { display: inline-flex; align-items: center; gap: 5px; color: var(--theme-danger); font-size: 11px; font-weight: 650; }
+.notification-toast__label { display: inline-flex; align-items: center; gap: 5px; color: var(--theme-danger); font-size: 11px; font-weight: 600; }
 .notification-toast__glyph { color: var(--theme-danger); }
 .notification-toast__close {
   display: inline-flex;
@@ -3984,9 +3984,9 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 
 /* AssistantReasoningPanel.tsx */
 .arp-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.arp-object { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 450; opacity: 0.78; }
+.arp-object { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; opacity: 0.78; }
 .arp-step { font-size: 10px; font-weight: 600; opacity: .72; flex: 0 0 auto; white-space: nowrap; }
-.arp-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 450; opacity: .72; }
+.arp-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; opacity: .72; }
 .arp-toggle-state { margin-left: auto; font-size: 10px; font-weight: 500; opacity: .65; }
 
 /* AssistantQuickSettingsBar.tsx */
@@ -4001,7 +4001,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .acb-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 18px; }
 .acb-brand { display: flex; align-items: baseline; gap: 7px; animation: maclaw-brand-breathe 2.4s ease-in-out infinite; }
 .acb-brand-version { font-size: 30px; }
-.acb-brand-gen { font-size: 21px; font-weight: 650; color: #7a2330; letter-spacing: 0.04em; }
+.acb-brand-gen { font-size: 21px; font-weight: 600; color: #7a2330; letter-spacing: 0.04em; }
 
 /* Warm-up splash: staged stepper + live status line. All colors come from
    theme tokens so light/dark schemes restyle it for free. */
@@ -4325,7 +4325,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
   padding: 12px 14px 10px;
   border-bottom: 1px solid var(--theme-border-subtle);
 }
-.notification-panel__title { color: var(--theme-text-primary); font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
+.notification-panel__title { color: var(--theme-text-primary); font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
 .notification-panel__close {
   display: inline-flex;
   align-items: center;
@@ -4401,7 +4401,7 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
   background: color-mix(in srgb, var(--notif-cat) 10%, transparent);
   color: var(--notif-cat);
   font-size: 10px;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 1.5;
 }
 .notification-priority { flex-shrink: 0; font-size: 10px; font-weight: 600; }

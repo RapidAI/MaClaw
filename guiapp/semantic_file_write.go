@@ -176,24 +176,39 @@ func semanticTrustedFileWriteArgsAllowed(args map[string]interface{}) (trustedFi
 	return req, nil
 }
 
+// semanticFileWriteBeforeEffect is a refusal that returned before any file
+// bytes changed. The coordinated caller retracts it. An error from
+// WriteTextFile or from the rewrite after it has decided to write is not
+// this type: that attempt already ran, and a later file must not erase it.
+type semanticFileWriteBeforeEffect struct{ error }
+
+func (e semanticFileWriteBeforeEffect) Unwrap() error { return e.error }
+
+func fileWriteBeforeEffect(err error) error {
+	if err == nil {
+		return nil
+	}
+	return semanticFileWriteBeforeEffect{err}
+}
+
 func (h *IMMessageHandler) writeTrustedFile(principalID, path, content, mode string) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_file_write_unavailable")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_file_write_principal_required")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_principal_required"))
 	}
 	path, mode = strings.TrimSpace(path), strings.TrimSpace(mode)
 	if path == "" {
-		return "", fmt.Errorf("trusted_file_write_path_required")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_path_required"))
 	}
 	resolvedMode, err := tool.NormalizeWriteModeKind(mode)
 	if err != nil {
-		return "", fmt.Errorf("trusted_file_write_mode_rejected (%s)", tool.WriteModeHint())
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_mode_rejected (%s)", tool.WriteModeHint()))
 	}
 	if len(content) > writeFileMaxSize {
-		return "", fmt.Errorf("trusted_file_write_content_too_large")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_content_too_large"))
 	}
 	if h.semanticTrustedFileWrite != nil {
 		return h.semanticTrustedFileWrite(principalID, path, content, mode)
@@ -201,12 +216,12 @@ func (h *IMMessageHandler) writeTrustedFile(principalID, path, content, mode str
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	absPath, err := trustedFileWriteResolvePath(workspace, path)
 	if err != nil {
-		return "", err
+		return "", fileWriteBeforeEffect(err)
 	}
 	existed := false
 	if info, statErr := os.Stat(absPath); statErr == nil {
 		if info.IsDir() {
-			return "", fmt.Errorf("trusted_file_write_path_is_directory")
+			return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_path_is_directory"))
 		}
 		existed = true
 	}
@@ -241,21 +256,21 @@ func (h *IMMessageHandler) writeTrustedFile(principalID, path, content, mode str
 // in the wrong place. The model is told to be more specific instead.
 func (h *IMMessageHandler) editTrustedFile(principalID, path, oldString, newString string) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_file_write_unavailable")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_file_write_principal_required")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_principal_required"))
 	}
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", fmt.Errorf("trusted_file_write_path_required")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_path_required"))
 	}
 	if oldString == "" {
-		return "", fmt.Errorf("trusted_file_edit_old_string_required")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_edit_old_string_required"))
 	}
 	if len(newString) > writeFileMaxSize {
-		return "", fmt.Errorf("trusted_file_write_content_too_large")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_content_too_large"))
 	}
 	if h.semanticTrustedFileEdit != nil {
 		return h.semanticTrustedFileEdit(principalID, path, oldString, newString)
@@ -263,42 +278,46 @@ func (h *IMMessageHandler) editTrustedFile(principalID, path, oldString, newStri
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	absPath, err := trustedFileWriteResolvePath(workspace, path)
 	if err != nil {
-		return "", err
+		return "", fileWriteBeforeEffect(err)
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return "", fmt.Errorf("trusted_file_edit_not_found")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_edit_not_found"))
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("trusted_file_write_path_is_directory")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_path_is_directory"))
 	}
 	if info.Size() > int64(writeFileMaxSize) {
-		return "", fmt.Errorf("trusted_file_edit_content_too_large")
+		return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_edit_content_too_large"))
 	}
 	var original string
 	size, err := tool.RewriteTextFile(absPath, func(current string) (string, bool, error) {
 		if len(current) > writeFileMaxSize {
-			return "", false, fmt.Errorf("trusted_file_edit_content_too_large")
+			return "", false, fileWriteBeforeEffect(fmt.Errorf("trusted_file_edit_content_too_large"))
 		}
 		original = current
 		replaced, err := tool.ReplaceTextPassage(current, oldString, newString, false)
 		if err != nil {
 			if errors.Is(err, tool.ErrTextPassageNotFound) {
-				return "", false, fmt.Errorf("trusted_file_edit_no_match")
+				return "", false, fileWriteBeforeEffect(fmt.Errorf("trusted_file_edit_no_match"))
 			}
-			return "", false, err
+			return "", false, fileWriteBeforeEffect(err)
 		}
 		if replaced.Matches != 1 {
-			return "", false, fmt.Errorf("trusted_file_edit_ambiguous_match")
+			return "", false, fileWriteBeforeEffect(fmt.Errorf("trusted_file_edit_ambiguous_match"))
 		}
 		if len(replaced.Text) > writeFileMaxSize {
-			return "", false, fmt.Errorf("trusted_file_write_content_too_large")
+			return "", false, fileWriteBeforeEffect(fmt.Errorf("trusted_file_write_content_too_large"))
 		}
 		return replaced.Text, true, nil
 	})
 	if err != nil {
+		var before semanticFileWriteBeforeEffect
+		if errors.As(err, &before) {
+			return "", err
+		}
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("trusted_file_edit_not_found")
+			return "", fileWriteBeforeEffect(fmt.Errorf("trusted_file_edit_not_found"))
 		}
 		return "", err
 	}

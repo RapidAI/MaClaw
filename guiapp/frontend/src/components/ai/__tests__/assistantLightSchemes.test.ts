@@ -88,9 +88,11 @@ describe("assistant light schemes", () => {
 
     it("exposes the Fluent Azure palette tokens", () => {
         const scheme = getAssistantLightScheme("fluent");
-        expect(scheme.cssVars.pageBg).toBe("#ffffff");
+        // Canvas tints so white cards read as raised surfaces (surface stays white).
+        expect(scheme.cssVars.pageBg).toBe("#f7f9fc");
         expect(scheme.cssVars.primary).toBe("#2e75cb");
         expect(scheme.cssVars.surface).toBe("#ffffff");
+        expect(scheme.assistantTheme.bg).toBe("#f7f9fc");
         expect(scheme.assistantTheme.sendBtnBg).toBe("#1769e8");
     });
 

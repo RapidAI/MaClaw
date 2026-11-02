@@ -560,6 +560,18 @@ func semanticTrustedSSHArgsAllowed(args map[string]interface{}) (command string,
 	return command, timeout, "", "", nil
 }
 
+// recordedSSHRefusalAfterEffect keeps the refusal text and drops the
+// unexecuted marker. The caller has already produced an effect, so the
+// admission must be completed as a failure rather than retracted.
+func recordedSSHRefusalAfterEffect(result string) string {
+	text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(result), "[system rejected]"))
+	text = strings.TrimSpace(strings.TrimPrefix(text, "arguments_rejected:"))
+	if text == "" {
+		text = "trusted_ssh_download_rejected"
+	}
+	return "[system rejected] " + text
+}
+
 func semanticPrefixedRejection(err error) string {
 	if err == nil {
 		return "[system rejected]"
@@ -595,31 +607,33 @@ func remoteSSHTimeoutHint(waited time.Duration) string {
 
 func (h *IMMessageHandler) executeTrustedSSH(principalID, command string, timeout time.Duration) (string, error) {
 	if h == nil {
-		return "", fmt.Errorf("trusted_ssh_session_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", fmt.Errorf("trusted_ssh_principal_required")
+		return "", effectNotStarted(fmt.Errorf("trusted_ssh_principal_required"))
 	}
 	if h.semanticTrustedSSH != nil {
 		return h.semanticTrustedSSH(principalID, command)
 	}
+	// A raw ssh/scp line is a policy denial. It stays a recorded rejection so
+	// the same bypass is not offered again as a fresh call.
 	if rejection, rejected := tool.RejectRawSSHCommand(command); rejected {
 		return "", fmt.Errorf("%s", rejection)
 	}
 	session := trustedSSHSingleBoundSession(h, principalID)
 	if session == nil {
-		return "", fmt.Errorf("trusted_ssh_session_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_unavailable"))
 	}
 	return executeTrustedBoundSSH(h.sshMgr, session, command, timeout)
 }
 
 func executeTrustedBoundSSH(mgr *remote.SSHSessionManager, session *remote.SSHManagedSession, command string, timeout time.Duration) (string, error) {
 	if mgr == nil || session == nil {
-		return "", fmt.Errorf("trusted_ssh_session_unavailable")
+		return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_unavailable"))
 	}
 	if !guiRuntimeSSHSessionAlive(session) {
-		return "", fmt.Errorf("trusted_ssh_session_disconnected")
+		return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_disconnected"))
 	}
 	if timeout <= 0 {
 		timeout = semanticTrustedSSHCommandTimeout
