@@ -93,6 +93,35 @@ type LoopCallbacks interface {
 	ShouldStop() bool
 }
 
+// IterationBudgetExtender keeps the same conversation when the iteration
+// counter runs out. The returned count is added to this loop. A new user
+// message is a different turn and drops the tool transcript.
+type IterationBudgetExtender interface {
+	ExtendIterationBudget(usedIterations, toolCalls int) int
+}
+
+// extendSameConversationBudget asks the host for more iterations of this
+// loop. A stop, a turn that never called a tool, and a grant above the
+// per-wave ceiling are refused.
+func extendSameConversationBudget(cb LoopCallbacks, used, toolCalls int) int {
+	if cb == nil || cb.ShouldStop() || toolCalls <= 0 {
+		return 0
+	}
+	ext, ok := cb.(IterationBudgetExtender)
+	if !ok {
+		return 0
+	}
+	extra := ext.ExtendIterationBudget(used, toolCalls)
+	if extra <= 0 {
+		return 0
+	}
+	if extra > config.MaxAgentIterationsCap {
+		extra = config.MaxAgentIterationsCap
+	}
+	log.Printf("[agent-loop] same conversation continues with %d more iterations (used %d, tools %d)", extra, used, toolCalls)
+	return extra
+}
+
 // LLMAuthRefresh is an optional host hook. When a token-validation 401/403 is
 // retried, the loop can pick up a rotated OAuth access token. The bool is true
 // only when the access token actually changed.
@@ -1475,7 +1504,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	// worker's own report does not stand in for it.
 	var latestShot *ToolModelImage
 
-	for iteration := 0; iteration < maxIter; iteration++ {
+	for iteration := 0; ; iteration++ {
+		if iteration >= maxIter {
+			extra := extendSameConversationBudget(cb, iteration, totalToolCalls)
+			if extra <= 0 {
+				break
+			}
+			maxIter += extra
+		}
 		iterationStreamed.Reset()
 		if cb.ShouldStop() {
 			return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})

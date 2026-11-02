@@ -173,7 +173,35 @@ func TestIterationLimitIsNotShownAsATaskError(t *testing.T) {
 	}
 }
 
-func TestCodingWorkbenchIterationExhaustionArmsSessionRound(t *testing.T) {
+func TestCodingLoopRefillsIterationsInTheSameConversation(t *testing.T) {
+	root := &codingSubAgentCallbacks{subagent: &CodingSubAgent{}}
+	if got := root.ExtendIterationBudget(80, 0); got != 0 {
+		t.Fatalf("a turn with no tool calls was refilled by %d", got)
+	}
+	if got := root.ExtendIterationBudget(80, 12); got != codingSubAgentPerTaskMaxIterations {
+		t.Fatalf("refill = %d, want another %d iterations of the same task", got, codingSubAgentPerTaskMaxIterations)
+	}
+	root.iterationExtensions = sessionRoundContinuationMaxWaves
+	if got := root.ExtendIterationBudget(80, 12); got != 0 {
+		t.Fatalf("the refill cap was ignored: %d", got)
+	}
+
+	nested := &codingSubAgentCallbacks{subagent: &CodingSubAgent{nestDepth: 1}}
+	if got := nested.ExtendIterationBudget(10, 4); got != 0 {
+		t.Fatalf("a nested worker was refilled by %d", got)
+	}
+
+	remote := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
+	if got := remote.ExtendIterationBudget(300, 20); got != config.MaxAgentIterationsCap {
+		t.Fatalf("remote refill = %d, want the root budget", got)
+	}
+	remote.agent.nestDepth = 1
+	if got := remote.ExtendIterationBudget(300, 20); got != 0 {
+		t.Fatalf("a nested remote worker was refilled by %d", got)
+	}
+}
+
+func TestCodingWorkbenchIterationExhaustionDoesNotStartANewTask(t *testing.T) {
 	h := newCodingWorkbenchContinuationHandler(t)
 	userID := "desktop-user:coding-continuation"
 	t.Cleanup(func() { h.cancelSessionRoundContinuation(userID) })
@@ -184,27 +212,15 @@ func TestCodingWorkbenchIterationExhaustionArmsSessionRound(t *testing.T) {
 	}
 
 	note, ok := h.continueCodingWorkbenchAfterIterationBudget(ctx, userID, "做一个偷金子游戏", results, 320)
-	if !ok || strings.TrimSpace(note) == "" {
-		t.Fatalf("continuation = %q, ok=%v, want a queued session round", note, ok)
+	if ok || strings.TrimSpace(note) != "" {
+		t.Fatalf("continuation = %q, ok=%v, want the same loop to keep the task", note, ok)
 	}
 	h.sessionRounds.mu.Lock()
 	armed := h.sessionRounds.timers[userID] != nil
 	waves := h.sessionRounds.waves[userID]
 	h.sessionRounds.mu.Unlock()
-	if !armed || waves != 1 {
-		t.Fatalf("armed=%v waves=%d, want the next round queued", armed, waves)
-	}
-
-	// A pure-coding session carries WorkflowAgentLoop because its pending
-	// template makes the workflow router report an agent loop. That marker
-	// alone must not suppress the continuation; only a real phase does.
-	workerID := "desktop-user:coding-workflow-marker"
-	t.Cleanup(func() { h.cancelSessionRoundContinuation(workerID) })
-	markerCtx := NewLoopContext("coding-workbench-marker", config.MaxAgentIterationsCap, nil)
-	markerCtx.UserID = workerID
-	markerCtx.WorkflowAgentLoop = true
-	if _, ok := h.continueCodingWorkbenchAfterIterationBudget(markerCtx, workerID, "做一个偷金子游戏", results, 320); !ok {
-		t.Fatal("pure-coding WorkflowAgentLoop without a phase did not continue")
+	if armed || waves != 0 {
+		t.Fatalf("armed=%v waves=%d, want no new task", armed, waves)
 	}
 }
 
@@ -221,8 +237,8 @@ func TestCodingWorkbenchContinuationUsesTheTurnEpoch(t *testing.T) {
 	ctx := NewLoopContext("coding-workbench", config.MaxAgentIterationsCap, nil)
 	ctx.UserID = userID
 	ctx.sessionRoundEpochAtStart = h.sessionRoundEpoch(userID)
-	if _, ok := h.continueCodingWorkbenchAfterIterationBudget(ctx, userID, "做一个偷金子游戏", results, 80); !ok {
-		t.Fatal("matching turn epoch did not arm the session round")
+	if _, ok := h.continueCodingWorkbenchAfterIterationBudget(ctx, userID, "做一个偷金子游戏", results, 80); ok {
+		t.Fatal("a coding turn started a new task after the iteration cap")
 	}
 
 	// A newer user turn bumps it again while this one runs.

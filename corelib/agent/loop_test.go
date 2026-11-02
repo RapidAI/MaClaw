@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/mailbox"
@@ -8352,6 +8353,91 @@ func TestRunLoop_MaxIterations_ReturnsError(t *testing.T) {
 	}
 	if result.ToolCalls != 3 {
 		t.Fatalf("expected 3 tool calls, got %d", result.ToolCalls)
+	}
+}
+
+type grantBudgetCallbacks struct {
+	mockCallbacks
+	extra int
+	used  int
+}
+
+func (m *grantBudgetCallbacks) ExtendIterationBudget(usedIterations, toolCalls int) int {
+	if m.extra == 0 {
+		return 0
+	}
+	m.used = usedIterations
+	grant := m.extra
+	m.extra = 0
+	return grant
+}
+
+func TestRunLoop_ExtendsTheSameConversationWhenTheBudgetRunsOut(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{
+							{
+								"id":   fmt.Sprintf("call_%d", callCounter.Add(1)),
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "bash",
+									"arguments": `{"command":"echo loop"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &grantBudgetCallbacks{
+		mockCallbacks: mockCallbacks{
+			config: corelib.MaclawLLMConfig{
+				URL:   server.URL,
+				Model: "test",
+				Key:   "test-key",
+			},
+			maxIter:    2,
+			sysPrompt:  "test",
+			toolResult: "ok",
+		},
+		extra: 2,
+	}
+
+	result := RunLoop(cb, "keep going", nil, nil)
+	if !strings.Contains(result.Error, "max iterations") {
+		t.Fatalf("expected the extended budget to end on the cap, got %q", result.Error)
+	}
+	if result.Iterations != 4 || result.ToolCalls != 4 {
+		t.Fatalf("iterations=%d tools=%d, want the original budget plus one refill", result.Iterations, result.ToolCalls)
+	}
+	if cb.used != 2 {
+		t.Fatalf("grant saw %d used iterations, want the original budget", cb.used)
+	}
+}
+
+func TestExtendSameConversationBudgetRefusesAFreshOrOversizedGrant(t *testing.T) {
+	cb := &grantBudgetCallbacks{mockCallbacks: mockCallbacks{maxIter: 3}, extra: 1000}
+	if got := extendSameConversationBudget(cb, 3, 0); got != 0 {
+		t.Fatalf("a turn with no tool calls was extended by %d", got)
+	}
+	if got := extendSameConversationBudget(cb, 3, 4); got != config.MaxAgentIterationsCap {
+		t.Fatalf("grant = %d, want the per-wave ceiling", got)
+	}
+	cb.stopped = true
+	cb.extra = 5
+	if got := extendSameConversationBudget(cb, 3, 4); got != 0 {
+		t.Fatalf("a stopped turn was extended by %d", got)
 	}
 }
 

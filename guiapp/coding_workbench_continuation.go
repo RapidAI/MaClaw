@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"log"
 	"strings"
 
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -64,29 +63,11 @@ func (h *IMMessageHandler) codingWorkbenchContinuationTask(userID, userText stri
 	return current
 }
 
-// continueCodingWorkbenchAfterIterationBudget arms the same session-round
-// continuation the chat loop uses when a coding step spent its iteration
-// budget. The workbench still returns its report, and the next round resumes
-// the open plan step instead of waiting for the user to send another message.
+// continueCodingWorkbenchAfterIterationBudget used to queue a new session
+// message after the coding loop stopped. That message started the task
+// again and the model repeated work it had already done. The coding loop
+// now refills its own iteration counter and keeps the same conversation, so
+// this turn does not start another task.
 func (h *IMMessageHandler) continueCodingWorkbenchAfterIterationBudget(ctx *LoopContext, userID, userText string, results []v2.TaskRunResult, toolCalls int) (string, bool) {
-	if h == nil || ctx == nil || isGoalSystemContinuation(userText) || !codingWorkbenchIterationExhausted(results) {
-		return "", false
-	}
-	// A workflow document phase owns its own retry and resume. A session
-	// wave there would bypass the workflow router and leave the phase waiting.
-	// WorkflowAgentLoop alone is not that signal: an armed pure-coding
-	// session also carries it while the workbench, not a phase, runs.
-	if ctx.WorkflowDocPhase {
-		return "", false
-	}
-	task := h.codingWorkbenchContinuationTask(userID, userText)
-	// The coding workbench keeps its own plan and sticky memory, so the
-	// max-rounds recovery slot the chat loop writes is not needed here. The
-	// resolved task below is the wave's text.
-	resp, continued := h.beginSessionRoundContinuation(ctx, userID, task, nil, toolCalls)
-	if !continued || resp == nil {
-		return "", false
-	}
-	log.Printf("[coding-workbench] iteration budget spent; the next session round resumes the open work user=%s tools=%d task=%q", userID, toolCalls, truncateRunes(task, 80))
-	return resp.Text, true
+	return "", false
 }

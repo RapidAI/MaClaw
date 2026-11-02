@@ -2149,6 +2149,8 @@ type remoteCodingCallbacks struct {
 	// qualityGateEnabled is resolved once for this turn. Nil means the caller
 	// did not resolve it, so the outcome reads the current setting.
 	qualityGateEnabled *bool
+	// iterationExtensions counts in-place budget refills for this task.
+	iterationExtensions int
 
 	eventSeq       uint64
 	firstReadSeq   uint64
@@ -2317,6 +2319,30 @@ func (c *remoteCodingCallbacks) GetMaxIterations() int {
 	// bootstrap error paths. Keep the fallback consistent with the global agent
 	// setting's default rather than reintroducing a hidden remote-only cap.
 	return config.EffectiveMaxIterations(0)
+}
+
+// ExtendIterationBudget keeps the remote coding conversation and adds another
+// iteration wave. A nested worker keeps its own smaller budget.
+func (c *remoteCodingCallbacks) ExtendIterationBudget(used, toolCalls int) int {
+	if c == nil || c.agent == nil || toolCalls <= 0 {
+		return 0
+	}
+	if c.agent.nestDepth > 0 {
+		return 0
+	}
+	if c.agent.loopCtx != nil && c.agent.loopCtx.IsCancelled() {
+		return 0
+	}
+	if c.iterationExtensions >= sessionRoundContinuationMaxWaves {
+		return 0
+	}
+	extra := c.GetMaxIterations()
+	if extra <= 0 {
+		return 0
+	}
+	c.iterationExtensions++
+	log.Printf("[remote-coding] iteration budget spent after %d iterations; same task continues with %d more", used, extra)
+	return extra
 }
 
 func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {

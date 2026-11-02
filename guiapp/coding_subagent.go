@@ -1159,6 +1159,10 @@ type codingSubAgentCallbacks struct {
 	// audit read the current setting; a set pointer keeps them in agreement.
 	qualityGateEnabled *bool
 
+	// iterationExtensions counts in-place budget refills for this task.
+	// The conversation stays; a new session message is not started.
+	iterationExtensions int
+
 	// cachedSystemPrompt is built once per task to avoid repeated knowledge and
 	// dynamic-tool prompt assembly on every LLM turn.
 	cachedSystemPrompt string
@@ -1619,6 +1623,32 @@ func (c *codingSubAgentCallbacks) GetMaxIterations() int {
 	// (e.g. repeatedly editing a script with different content then running
 	// it — each iteration has unique args so drift detection won't trigger).
 	return codingSubAgentPerTaskMaxIterations
+}
+
+// ExtendIterationBudget gives this same coding conversation another wave of
+// iterations. Nested workers keep their small budget. A cancelled turn and a
+// turn that never called a tool stop. The refill count matches the session
+// wave cap so a stuck task still ends.
+func (c *codingSubAgentCallbacks) ExtendIterationBudget(used, toolCalls int) int {
+	if c == nil || c.subagent == nil || toolCalls <= 0 {
+		return 0
+	}
+	if c.subagent.horizonPosture || c.subagent.nestDepth > 0 {
+		return 0
+	}
+	if c.subagent.loopCtx != nil && c.subagent.loopCtx.IsCancelled() {
+		return 0
+	}
+	if c.iterationExtensions >= sessionRoundContinuationMaxWaves {
+		return 0
+	}
+	extra := c.GetMaxIterations()
+	if extra <= 0 {
+		return 0
+	}
+	c.iterationExtensions++
+	log.Printf("[coding-subagent] iteration budget spent after %d iterations; same task continues with %d more", used, extra)
+	return extra
 }
 
 func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
