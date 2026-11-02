@@ -3683,7 +3683,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 
 	// Resume already announced the remaining steps. A second "继续第 N 轮"
 	// line reads like a new turn and the plan was replaced.
-	if onProgress != nil && !resumeIncompletePlan {
+	if onProgress != nil && !resumeIncompletePlan && !isSessionRoundContinuation(userText) {
 		if inquiry {
 			onProgress("仓库分析：正在只读检查")
 		} else if planned {
@@ -3959,9 +3959,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		stepSummary := summary
 		if status == v2.TaskFailed && codingLoopIterationExhausted(v1Result.Error) {
 			// The step is still open. Recording it failed paints a failure
-			// the person did not hit.
+			// the person did not hit. A stock error summary is not progress.
 			stepStatus = codingStepRunning
-			stepSummary = ""
+			stepSummary = stickyCodingCarrySummary(summary, v1Result.Error)
 		}
 		// Step verification gate after successful implement/verify-style steps.
 		// Always verify on the main project path (post-merge).
@@ -4694,7 +4694,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			}
 			if stepStatus == codingStepFailed && codingLoopIterationExhausted(stepResult.Error) {
 				stepStatus = codingStepRunning
-				sum = ""
+				sum = stickyCodingCarrySummary(stepResult.Summary, stepResult.Error)
 			}
 			// Remote step verification gate (parity with local pure-coding).
 			if stepResult.Status == "success" && planned &&
