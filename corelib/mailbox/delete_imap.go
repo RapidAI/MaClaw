@@ -8,11 +8,46 @@ import (
 	"github.com/emersion/go-imap"
 	imapclient "github.com/emersion/go-imap/client"
 	"github.com/emersion/go-imap/commands"
+	"github.com/emersion/go-imap/responses"
 )
+
+// expungeConn is the IMAP command surface the expunge helpers use. A real
+// *imapclient.Client implements it; tests replace the server behind it.
+type expungeConn interface {
+	Support(capability string) (bool, error)
+	UidStore(seqset *imap.SeqSet, item imap.StoreItem, value interface{}, ch chan *imap.Message) error
+	UidFetch(seqset *imap.SeqSet, items []imap.FetchItem, ch chan *imap.Message) error
+	Expunge(ch chan uint32) error
+	Execute(cmdr imap.Commander, h responses.Handler) (*imap.StatusResp, error)
+}
+
+// fetchUIDRows runs a UID FETCH of UIDs and collects its rows.
+func fetchUIDRows(c expungeConn, seq *imap.SeqSet) ([]*imap.Message, error) {
+	return collectFetch(func(ch chan *imap.Message) error {
+		return c.UidFetch(seq, []imap.FetchItem{imap.FetchUid}, ch)
+	})
+}
+
+// deleteSessionContext gives one delete session a larger budget than the
+// shared read timeout. Deleting a batch can need one command per message and
+// an account purge can move a whole mailbox; a 30s cut-off in the middle of
+// that would report a finished delete as uncertain. A caller that already set
+// a deadline keeps it.
+func deleteSessionContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, DeleteSessionTimeout)
+}
 
 // PreviewDelete logs in, counts the messages the call would change, and
 // returns the frozen plan. It selects folders read-only.
 func (d *NetDialer) PreviewDelete(ctx context.Context, account Account, secret string, req DeleteRequest) (DeletePreview, error) {
+	ctx, cancel := deleteSessionContext(ctx)
+	defer cancel()
 	if account.Inbound == nil {
 		return DeletePreview{}, classErr("no_inbound", MsgNoInbound(account.Name))
 	}
@@ -40,6 +75,8 @@ func (d *NetDialer) PreviewDelete(ctx context.Context, account Account, secret s
 // ApplyDelete performs the frozen plan. A later folder failure, after an
 // earlier folder changed, is uncertain and must not be retried blindly.
 func (d *NetDialer) ApplyDelete(ctx context.Context, account Account, secret string, plan DeletePlan) (DeleteResult, error) {
+	ctx, cancel := deleteSessionContext(ctx)
+	defer cancel()
 	if account.Inbound == nil {
 		return DeleteResult{}, classErr("no_inbound", MsgNoInbound(account.Name))
 	}
@@ -59,6 +96,8 @@ func (d *NetDialer) ApplyDelete(ctx context.Context, account Account, secret str
 // the messages are already gone, and the caller must not report the delete
 // as failed.
 func (d *NetDialer) DeleteFolderPage(ctx context.Context, account Account, secret, box string, uids []uint32, limit int) (FolderDeletePage, error) {
+	ctx, cancel := deleteSessionContext(ctx)
+	defer cancel()
 	if account.Inbound == nil {
 		return FolderDeletePage{}, classErr("no_inbound", MsgNoInbound(account.Name))
 	}
@@ -126,22 +165,19 @@ func applyDeleteClient(ctx context.Context, c *imapclient.Client, plan DeletePla
 			return result, classErr("uid_validity", MsgDeleteUIDChanged)
 		}
 		permanent := folder.Permanent || strings.TrimSpace(plan.TrashBox) == "" || folder.Name == plan.TrashBox
+		var removed []uint32
 		var opErr error
 		if permanent {
-			opErr = expungeUIDs(c, uids)
+			removed, opErr = expungeUIDs(c, uids)
 		} else {
-			opErr = moveUIDs(c, uids, plan.TrashBox)
+			removed, opErr = moveUIDs(c, uids, plan.TrashBox)
 		}
+		result.countRemoved(permanent, uids, removed, opErr == nil)
 		if opErr != nil {
-			if progressed || opErr == ErrUncertain {
+			if progressed || opErr == ErrUncertain || len(removed) > 0 {
 				return result, ErrUncertain
 			}
 			return result, mapIMAP(opErr, "store")
-		}
-		if permanent {
-			result.Purged += len(uids)
-		} else {
-			result.Moved += len(uids)
 		}
 		progressed = true
 	}
@@ -149,11 +185,13 @@ func applyDeleteClient(ctx context.Context, c *imapclient.Client, plan DeletePla
 		if err := deleteContextStop(ctx, progressed); err != nil {
 			return result, err
 		}
-		purged, err := purgeMailbox(c, box)
+		purged, left, err := purgeMailbox(c, box)
 		if err != nil {
 			return result, deleteProgressError(progressed, err)
 		}
 		result.Purged += purged
+		// A purge that leaves mail behind must be reported, not counted.
+		result.NotRemoved = append(result.NotRemoved, left...)
 		progressed = purgeMarksProgress(progressed, purged)
 	}
 	return result, nil
@@ -325,12 +363,12 @@ func summariesFromMessages(msgs []*imap.Message) []MessageSummary {
 
 // presentUIDs is the subset of removed that a UID FETCH still finds.
 // Missing uids produce no FETCH row; that is an empty set, not an error.
-func presentUIDs(c *imapclient.Client, removed []uint32) (map[uint32]struct{}, error) {
+func presentUIDs(c expungeConn, removed []uint32) (map[uint32]struct{}, error) {
 	seq := uidSeq(removed)
 	if seq.Empty() {
 		return map[uint32]struct{}{}, nil
 	}
-	msgs, err := uidFetch(c, seq, []imap.FetchItem{imap.FetchUid})
+	msgs, err := fetchUIDRows(c, seq)
 	if err != nil {
 		return nil, mapIMAP(err, "read")
 	}
@@ -604,24 +642,35 @@ func previewAccountDelete(ctx context.Context, c *imapclient.Client, folders []F
 	}, nil
 }
 
-func purgeMailbox(c *imapclient.Client, box string) (int, error) {
+// purgeMailbox empties one trash folder and reports what really left plus
+// what the server kept.
+func purgeMailbox(c *imapclient.Client, box string) (int, []uint32, error) {
 	if _, err := c.Select(box, false); err != nil {
-		return 0, mapIMAP(err, "select")
+		return 0, nil, mapIMAP(err, "select")
 	}
 	uids, err := searchAllUIDs(c)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if len(uids) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
-	// expungeUIDs returns ErrUncertain only after a store succeeded.
-	// A rejected first store must stay that error, or an untouched trash
-	// folder would latch the mailbox.
-	if err := expungeUIDs(c, uids); err != nil {
-		return 0, err
+	// The whole folder is the target, so one plain EXPUNGE is the right
+	// command. A UID EXPUNGE over this many UIDs is not portable: some
+	// servers apply only part of the set and still answer OK. The count comes
+	// from reading the folder back, not from the request.
+	if err := storeDeletedUIDs(c, uids); err != nil {
+		return 0, nil, err
 	}
-	return len(uids), nil
+	if err := c.Expunge(nil); err != nil {
+		// The store landed. A retry cannot tell what it would delete.
+		return 0, nil, ErrUncertain
+	}
+	live, err := presentUIDs(c, uids)
+	if err != nil {
+		return 0, nil, ErrUncertain
+	}
+	return len(absentRemoved(uids, live)), liveUIDs(uids, live), nil
 }
 
 func searchAllUIDs(c *imapclient.Client) ([]uint32, error) {
@@ -742,71 +791,212 @@ func subjectsFromRows(rows []envelopeRow) []string {
 	return out
 }
 
-func moveUIDs(c *imapclient.Client, uids []uint32, dest string) error {
+// moveUIDs moves the messages and reports the UIDs the source folder no
+// longer lists, in uids' order.
+func moveUIDs(c *imapclient.Client, uids []uint32, dest string) ([]uint32, error) {
 	moved := false
+	var confirmed []uint32
 	for _, chunk := range chunkUIDs(uids, deleteUIDBatch) {
 		seq := uidSeq(chunk)
 		if seq.Empty() {
 			continue
 		}
-		if err := moveUIDChunk(c, seq, dest); err != nil {
-			if moved || err == ErrUncertain {
-				return ErrUncertain
+		gone, err := moveUIDChunk(c, seq, chunk, dest)
+		confirmed = append(confirmed, gone...)
+		if err != nil {
+			if moved || err == ErrUncertain || len(gone) > 0 {
+				return confirmed, ErrUncertain
 			}
-			return err
+			return confirmed, err
 		}
 		moved = true
 	}
-	return nil
+	return confirmed, nil
 }
 
-func moveUIDChunk(c *imapclient.Client, seq *imap.SeqSet, dest string) error {
+func moveUIDChunk(c *imapclient.Client, seq *imap.SeqSet, uids []uint32, dest string) ([]uint32, error) {
 	ok, err := c.Support("MOVE")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if ok {
-		return c.UidMove(seq, dest)
+		if err := c.UidMove(seq, dest); err != nil {
+			return nil, err
+		}
+		return confirmedGone(c, uids)
 	}
 	if err := c.UidCopy(seq, dest); err != nil {
-		return err
+		return nil, err
 	}
-	item := imap.FormatFlagsOp(imap.AddFlags, true)
-	if err := c.UidStore(seq, item, []interface{}{imap.DeletedFlag}, nil); err != nil {
-		return ErrUncertain
+	// The copy is already in the destination, so a source that only received
+	// part of the expunge stays a duplicate rather than lost mail. Finish the
+	// source and read it back.
+	if err := storeDeletedUIDs(c, uids); err != nil {
+		return nil, ErrUncertain
 	}
-	if err := uidExpunge(c, seq); err != nil {
-		return ErrUncertain
-	}
-	return nil
+	return expungeMarked(c, uids)
 }
 
-func expungeUIDs(c *imapclient.Client, uids []uint32) error {
-	mutated := false
+// expungeUIDs marks the messages deleted and removes them. It reports the
+// UIDs the server no longer lists, in uids' order; the caller counts those,
+// not the request.
+//
+// One UID EXPUNGE over the whole set is the fast path, but it is not
+// trustworthy on every server. Tencent Exmail applies only part of a
+// multi-UID set and still answers OK, which used to leave most of a batch in
+// the folder while the caller reported it deleted. Smaller sets are not a safe
+// middle ground: sets of 2 to 10 also left survivors when measured, while a
+// one-UID command always removed its message. Survivors are therefore
+// expunged one UID at a time and the folder is read back. The server never
+// removed a message outside the set when tested, so the per-UID finish only
+// ever tightens the requested set.
+func expungeUIDs(c expungeConn, uids []uint32) ([]uint32, error) {
+	want := copyUIDs(uids)
+	if len(want) == 0 {
+		return nil, nil
+	}
+	if err := storeDeletedUIDs(c, want); err != nil {
+		return nil, err
+	}
+	return expungeMarked(c, want)
+}
+
+// expungeMarked removes messages that already carry \Deleted and reports the
+// UIDs confirmed gone.
+func expungeMarked(c expungeConn, want []uint32) ([]uint32, error) {
+	want = copyUIDs(want)
+	if len(want) == 0 {
+		return nil, nil
+	}
+	hasUIDPLUS, err := c.Support("UIDPLUS")
+	if err != nil {
+		return nil, ErrUncertain
+	}
+	if hasUIDPLUS {
+		for _, chunk := range chunkUIDs(want, deleteUIDBatch) {
+			seq := uidSeq(chunk)
+			if seq.Empty() {
+				continue
+			}
+			if err := uidExpunge(c, seq); err != nil {
+				return nil, ErrUncertain
+			}
+		}
+	} else if err := c.Expunge(nil); err != nil {
+		return nil, ErrUncertain
+	}
+	live, err := presentUIDs(c, want)
+	if err != nil {
+		return nil, ErrUncertain
+	}
+	survivors := liveUIDs(want, live)
+	if len(survivors) == 0 {
+		return want, nil
+	}
+	// The set command answered OK but left mail behind. A UID EXPUNGE of one
+	// UID is honored where a multi-UID set is not.
+	if hasUIDPLUS {
+		for _, uid := range survivors {
+			if err := uidExpunge(c, uidSeq([]uint32{uid})); err != nil {
+				return nil, ErrUncertain
+			}
+		}
+	} else {
+		// Without UIDPLUS there is no per-message expunge: re-flag and run
+		// the mailbox-wide one again.
+		if err := storeDeletedUIDs(c, survivors); err != nil {
+			return nil, ErrUncertain
+		}
+		if err := c.Expunge(nil); err != nil {
+			return nil, ErrUncertain
+		}
+	}
+	live, err = presentUIDs(c, want)
+	if err != nil {
+		return nil, ErrUncertain
+	}
+	return absentRemoved(want, live), nil
+}
+
+// confirmedGone reads the folder and returns the UIDs it no longer lists.
+func confirmedGone(c expungeConn, uids []uint32) ([]uint32, error) {
+	live, err := presentUIDs(c, uids)
+	if err != nil {
+		return nil, ErrUncertain
+	}
+	return absentRemoved(uids, live), nil
+}
+
+// storeDeletedUIDs flags the messages \Deleted in command-sized chunks. A
+// failure after the first landed chunk is uncertain: part of the set is now
+// flagged and a blind retry would remove more than the caller planned.
+func storeDeletedUIDs(c expungeConn, uids []uint32) error {
+	item := imap.FormatFlagsOp(imap.AddFlags, true)
+	stored := false
 	for _, chunk := range chunkUIDs(uids, deleteUIDBatch) {
 		seq := uidSeq(chunk)
 		if seq.Empty() {
 			continue
 		}
-		item := imap.FormatFlagsOp(imap.AddFlags, true)
 		if err := c.UidStore(seq, item, []interface{}{imap.DeletedFlag}, nil); err != nil {
-			if mutated {
+			if stored {
 				return ErrUncertain
 			}
 			return err
 		}
-		mutated = true
-		if err := uidExpunge(c, seq); err != nil {
-			return ErrUncertain
-		}
+		stored = true
 	}
 	return nil
+}
+
+// liveUIDs keeps the entries of want that the server still lists.
+func liveUIDs(want []uint32, live map[uint32]struct{}) []uint32 {
+	out := make([]uint32, 0, len(want))
+	for _, id := range want {
+		if _, ok := live[id]; ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// notInUIDs returns the entries of all that are not in minus, in all's order.
+func notInUIDs(all, minus []uint32) []uint32 {
+	if len(all) == 0 {
+		return nil
+	}
+	skip := make(map[uint32]struct{}, len(minus))
+	for _, id := range minus {
+		skip[id] = struct{}{}
+	}
+	out := make([]uint32, 0, len(all))
+	for _, id := range all {
+		if _, ok := skip[id]; ok {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// countRemoved credits only the messages the server confirmed gone. Messages
+// still listed are recorded as kept only when the command finished; after an
+// error their state is unknown, not "still there".
+func (r *DeleteResult) countRemoved(permanent bool, want, removed []uint32, complete bool) {
+	if permanent {
+		r.Purged += len(removed)
+	} else {
+		r.Moved += len(removed)
+	}
+	if complete {
+		r.NotRemoved = append(r.NotRemoved, notInUIDs(want, removed)...)
+	}
 }
 
 // uidExpunge removes the selected UIDs. UIDPLUS limits the expunge to that
 // set. Without it, Expunge clears every \Deleted message in the mailbox.
 // An empty set removes nothing: it must not fall through to that Expunge.
-func uidExpunge(c *imapclient.Client, seq *imap.SeqSet) error {
+func uidExpunge(c expungeConn, seq *imap.SeqSet) error {
 	ok, err := c.Support("UIDPLUS")
 	if err != nil {
 		return err

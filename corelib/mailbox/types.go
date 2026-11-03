@@ -32,6 +32,11 @@ const (
 	SettingsProbeTimeout = 15 * time.Second
 	ToolConnectTimeout   = 20 * time.Second
 	ToolReadTimeout      = 30 * time.Second
+	// DeleteSessionTimeout is the budget for one delete session. Deleting a
+	// batch is one command per message on servers that only honor a single-UID
+	// expunge, and an account purge moves every folder. The 30s read budget
+	// would cut those off mid-way and turn a finished delete into "uncertain".
+	DeleteSessionTimeout = 2 * time.Minute
 
 	MsgNotConfigured        = "尚未配置邮箱。请在左侧「接入 → 邮箱」中添加帐号。"
 	MsgNoDefault            = "没有可用的默认邮箱。请启用一个邮箱，或在「接入 → 邮箱」里指定默认"
@@ -67,6 +72,7 @@ const (
 	MsgDeleteBudget         = "本轮已经处理过一次邮件删除"
 	MsgDeleteMoved          = "邮件已移到已删除"
 	MsgDeletePurged         = "邮件已永久删除"
+	MsgDeleteNone           = "邮件没有删除成功"
 	MsgDeleteMovedAndPurged = "邮件已移到已删除，并已永久删除"
 	MsgDeleteExternalReview = "上一次删除邮件的结果还不能确定。这一轮不会再次删除，也不会重放那次删除。"
 	MsgDeleteUIDChanged     = "文件夹已变化，原先的邮件编号已经失效。请重新发起删除。"

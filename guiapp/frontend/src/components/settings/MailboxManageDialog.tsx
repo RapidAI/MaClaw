@@ -43,12 +43,26 @@ function seenKey(folder: string, uid: number) {
 // A browse delete may carry the next page from the same IMAP login.
 // No `messages` field means this call listed nothing, so the caller refills.
 // An empty array is a real empty folder. `list_error` means the delete
-// finished and only the page read failed.
-function pageFromDelete(result: unknown): { messages?: MessageRow[]; listError?: string } | undefined {
+// finished and only the page read failed. `not_deleted` is the number of
+// requested messages the server still had after the delete was verified, and
+// `not_deleted_uids` names them; absent means the backend did not verify.
+function pageFromDelete(result: unknown): {
+    messages?: MessageRow[];
+    listError?: string;
+    notDeleted?: number;
+    notDeletedUIDs?: number[];
+} | undefined {
     if (!result || typeof result !== 'object') return undefined;
-    const row = result as { messages?: unknown; list_error?: unknown };
-    if (Array.isArray(row.messages)) return { messages: row.messages as MessageRow[] };
-    if (typeof row.list_error === 'string' && row.list_error.trim()) return { listError: row.list_error };
+    const row = result as { messages?: unknown; list_error?: unknown; not_deleted?: unknown; not_deleted_uids?: unknown };
+    const notDeleted = typeof row.not_deleted === 'number' && Number.isFinite(row.not_deleted)
+        ? Math.max(0, Math.trunc(row.not_deleted))
+        : undefined;
+    const notDeletedUIDs = Array.isArray(row.not_deleted_uids)
+        ? (row.not_deleted_uids as unknown[]).filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+        : undefined;
+    if (Array.isArray(row.messages)) return { messages: row.messages as MessageRow[], notDeleted, notDeletedUIDs };
+    if (typeof row.list_error === 'string' && row.list_error.trim()) return { listError: row.list_error, notDeleted, notDeletedUIDs };
+    if (notDeleted !== undefined) return { notDeleted, notDeletedUIDs };
     return undefined;
 }
 
@@ -63,6 +77,14 @@ type MessageRow = {
     has_attachment?: boolean;
 };
 type MessageView = MessageRow & { body?: string; html?: string; truncated?: boolean; attachments?: string[] };
+// What one browse delete verified: the page it read, how many requested
+// messages the server still has (0 = all gone), and which uids those are.
+// A missing count means the backend did not verify the outcome.
+type DeleteOutcome = {
+    page?: { messages?: MessageRow[]; listError?: string; notDeleted?: number; notDeletedUIDs?: number[] };
+    unremoved?: number;
+    kept?: number[];
+};
 type StartPage = {
     folders?: FolderRow[];
     box?: string;
@@ -303,6 +325,10 @@ export function MailboxManageDialog({
     // Selected message uids of the current folder. Cleared when the folder or
     // the account changes; intersected with the fresh list on refresh.
     const [selection, setSelection] = useState<Set<number>>(new Set());
+    // How many messages the last batch delete really removed. The folder list
+    // is a window that refills right away, so without this number a delete
+    // that worked looks like nothing happened.
+    const [lastDeleteCount, setLastDeleteCount] = useState(0);
     // Rendering controls. `plainView` flips the reading pane between the
     // sanitized HTML and the plain text; `showRemote` re-renders with remote
     // pictures after the user asks for them.
@@ -342,6 +368,7 @@ export function MailboxManageDialog({
         setMessages([]);
         setUnseen({});
         setSelection(new Set());
+        setLastDeleteCount(0);
         pageFullRef.current = false;
         removedKeysRef.current = new Set();
         seenFlipRef.current = new Map();
@@ -438,6 +465,7 @@ export function MailboxManageDialog({
         setPlainView(false);
         setShowRemote(false);
         setSelection(new Set());
+        setLastDeleteCount(0);
         setMessages([]);
         pageFullRef.current = false;
         void MailboxBrowseMessages(account.id, name, MESSAGE_PAGE).then(list => {
@@ -530,6 +558,7 @@ export function MailboxManageDialog({
 
     const toggleSelect = (uid: number) => {
         if (busyRef.current) return;
+        setLastDeleteCount(0);
         setSelection(prev => {
             const next = new Set(prev);
             if (next.has(uid)) next.delete(uid);
@@ -542,6 +571,7 @@ export function MailboxManageDialog({
 
     const toggleSelectAll = () => {
         if (busyRef.current) return;
+        setLastDeleteCount(0);
         setSelection(allSelected ? new Set() : new Set(messages.map(m => m.uid)));
     };
 
@@ -577,7 +607,7 @@ export function MailboxManageDialog({
         generation: number,
         foldersSnap: number,
         removed: number[],
-        attached?: { messages?: MessageRow[]; listError?: string },
+        outcome?: DeleteOutcome,
     ) => {
         if (removed.length === 0) return;
         if (messageGen.current !== generation || folderGen.current !== foldersSnap) return;
@@ -585,18 +615,32 @@ export function MailboxManageDialog({
         // Captured before an optimistic hide. The hide re-renders and would
         // otherwise make the badge loop see an empty list.
         const listedNow = messagesRef.current;
+        const attached = outcome?.page;
+        const unremoved = outcome?.unremoved;
+        // The server confirmed every requested message is gone. A page that
+        // still lists one is then a stale view, not mail: it must not bring
+        // the row back or keep it selected.
+        const verifiedGone = attached !== undefined && unremoved === 0;
+        // UIDs the backend verified as still on the server. They stay on the
+        // list even when the page read that followed the delete failed. A
+        // verified-gone result wins over any stale uid list.
+        const kept = new Set(verifiedGone ? [] : [...(outcome?.kept ?? []), ...(attached?.notDeletedUIDs ?? [])]);
+        // An older backend does not report `not_deleted`. Keep the previous
+        // heuristic for that case: a full page that repeats the selection is
+        // a stale window, so relist it once.
+        const unverified = attached !== undefined && unremoved === undefined;
         // A same-login page can still list a uid we just asked to delete.
         // That row is not gone: keep its in-flight mark and the open pane.
         let pageRows = attached?.messages;
-        // Selecting the whole window and deleting it often gets that same
-        // window back: the list was read before the move was visible. Do not
-        // count those rows as deleted until a new login says they are gone.
-        // A short page is the whole folder, so a uid that is still there was
-        // not removed. A failed reread leaves the list and the badge alone.
-        const staleFull = !!pageRows
-            && pageRows.length >= MESSAGE_PAGE
-            && pageRows.some(row => gone.has(row.uid));
-        if (staleFull) {
+        // Selecting a whole page and deleting it often gets that same page
+        // back: the list was read before the expunge was visible. When the
+        // backend verified the removal, relist instead of painting those
+        // ghosts. A server that really kept some messages reports them in
+        // `not_deleted`, and then the page is the truth and is kept.
+        const stalePage = !!pageRows
+            && pageRows.some(row => gone.has(row.uid))
+            && (verifiedGone || (unverified && pageRows.length >= MESSAGE_PAGE));
+        if (stalePage) {
             const snapshot = listedNow;
             const remain = snapshot.reduce((count, row) => count + (gone.has(row.uid) ? 0 : 1), 0);
             const showLoading = remain === 0;
@@ -624,7 +668,7 @@ export function MailboxManageDialog({
         if (pageRows) {
             for (const row of pageRows) serverSeen.set(row.uid, Boolean(row.seen));
         }
-        const stillListed = (uid: number) => pageUids?.has(uid) ?? false;
+        const stillListed = (uid: number) => kept.has(uid) || (!verifiedGone && (pageUids?.has(uid) ?? false));
         let delta = 0;
         let remain = 0;
         for (const row of listedNow) {
@@ -635,6 +679,9 @@ export function MailboxManageDialog({
             const flipped = seenFlipRef.current.get(seenKey(folder, row.uid));
             const localSeen = flipped !== undefined ? flipped : Boolean(row.seen);
             if (stillListed(row.uid)) {
+                // A kept message the page did not list has no server seen
+                // state to compare; leave the badge alone.
+                if (!serverSeen.has(row.uid)) continue;
                 const shownSeen = flipped !== undefined ? flipped : serverSeen.get(row.uid) === true;
                 if (localSeen !== shownSeen) delta += shownSeen ? -1 : 1;
                 continue;
@@ -667,10 +714,19 @@ export function MailboxManageDialog({
             setLoading(current => (current === 'read' ? '' : current));
         }
         // The delete call already read the next page on the same login.
-        // A full page that still listed the deleted uids was replaced above
-        // by a new login. Paint that page. A uid it still lists stays.
+        // A page that still listed the deleted uids was relisted above. When
+        // the backend verified every uid gone, drop any such row the server
+        // still shows: that is a stale read, not a message.
         if (pageRows) {
-            acceptServerPage(folder, pageRows);
+            const painted = verifiedGone ? pageRows.filter(row => !gone.has(row.uid)) : pageRows;
+            // A message the server verified as kept stays on screen even when
+            // the new page window has moved past it. It was on the previous
+            // window, so it is newer than every row of the new page.
+            const onPage = new Set(painted.map(row => row.uid));
+            const survivors = !verifiedGone && kept.size > 0
+                ? listedNow.filter(row => kept.has(row.uid) && !onPage.has(row.uid))
+                : [];
+            acceptServerPage(folder, survivors.length > 0 ? [...survivors, ...painted] : painted);
             return;
         }
         // The delete landed and only the page read failed. Keep pageFullRef
@@ -745,12 +801,19 @@ export function MailboxManageDialog({
             // Only the last successful call's page is the folder after every
             // chunk that landed. A later call with no page drops it so the
             // refill below sees the server, not a page from an earlier chunk.
-            let attached: { messages?: MessageRow[]; listError?: string } | undefined;
+            let attached: DeleteOutcome['page'];
+            // Verified count and uids of requested messages the server kept.
+            // undefined once any chunk did not verify the outcome.
+            let unremoved: number | undefined = 0;
+            const kept: number[] = [];
             for (const part of chunkUIDs(rows.map(m => m.uid), DELETE_CHUNK)) {
                 try {
                     const result = await MailboxBrowseDelete(account.id, folder, part);
                     done.push(...part);
                     attached = pageFromDelete(result);
+                    if (attached?.notDeleted === undefined || unremoved === undefined) unremoved = undefined;
+                    else unremoved += attached.notDeleted;
+                    if (attached?.notDeletedUIDs) kept.push(...attached.notDeletedUIDs);
                 } catch (err: unknown) {
                     failure = err;
                     break;
@@ -758,16 +821,29 @@ export function MailboxManageDialog({
             }
             let refillError: unknown = null;
             try {
-                await finishDelete(folder, generation, foldersSnap, done, attached);
+                await finishDelete(folder, generation, foldersSnap, done, { page: attached, unremoved, kept });
             } catch (err: unknown) {
                 refillError = err;
             }
+            // The list refills from the server, so report the verified number
+            // that really left the folder. An older backend cannot verify;
+            // for it, keep the previous "all requested" meaning.
+            const removedCount = unremoved === undefined
+                ? done.length
+                : Math.max(0, done.length - unremoved);
+            setLastDeleteCount(removedCount);
             if (failure) {
                 setError(errText(lang, failure) + (done.length > 0
                     ? t(' Some messages were deleted.', '（前面的邮件已删除，后面的没有执行。）', '（前面的郵件已刪除，後面的沒有執行。）')
                     : ''));
             } else if (refillError) {
                 setError(errText(lang, refillError));
+            } else if (unremoved !== undefined && unremoved > 0) {
+                setError(t(
+                    `${unremoved} of the selected messages could not be deleted and stay in the list.`,
+                    `选中的邮件里有 ${unremoved} 封未能删除，仍保留在列表里。`,
+                    `選中的郵件裡有 ${unremoved} 封未能刪除，仍保留在列表裡。`,
+                ));
             }
         } finally {
             busyRef.current = false;
@@ -822,9 +898,22 @@ export function MailboxManageDialog({
         busyRef.current = true;
         setActionUid(message.uid);
         setError('');
+        setLastDeleteCount(0);
         try {
             const result = await MailboxBrowseDelete(account.id, folder, [message.uid]);
-            await finishDelete(folder, generation, foldersSnap, [message.uid], pageFromDelete(result));
+            const attached = pageFromDelete(result);
+            await finishDelete(folder, generation, foldersSnap, [message.uid], {
+                page: attached,
+                unremoved: attached?.notDeleted,
+                kept: attached?.notDeletedUIDs,
+            });
+            if (attached?.notDeleted) {
+                setError(t(
+                    'The server kept this message. It is still in the folder.',
+                    '服务器没有删除这封邮件，它仍在文件夹里。',
+                    '伺服器沒有刪除這封郵件，它仍在資料夾裡。',
+                ));
+            }
         } catch (err: unknown) {
             setError(errText(lang, err));
         } finally {
@@ -840,6 +929,7 @@ export function MailboxManageDialog({
         const mine = ++folderGen.current;
         setLoading('messages');
         setError('');
+        setLastDeleteCount(0);
         void MailboxBrowseStart(account.id).then(async page => {
             if (mine !== folderGen.current) return;
             const start = (page || {}) as StartPage;
@@ -986,7 +1076,9 @@ export function MailboxManageDialog({
                             <span className="mailbox-manage__batchbar__label">
                                 {selection.size > 0
                                     ? t('{{count}} selected', `已选 ${selection.size} 封`, `已選 ${selection.size} 封`).replace('{{count}}', String(selection.size))
-                                    : t('Select all', '全选', '全選')}
+                                    : lastDeleteCount > 0
+                                        ? t('{{count}} deleted', `已删除 ${lastDeleteCount} 封`, `已刪除 ${lastDeleteCount} 封`).replace('{{count}}', String(lastDeleteCount))
+                                        : t('Select all', '全选', '全選')}
                             </span>
                             {selection.size > 0 && (
                                 <div className="mailbox-manage__batchbar__actions">

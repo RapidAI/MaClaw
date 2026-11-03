@@ -621,6 +621,7 @@ type mailboxPageDeleterFake struct {
 	pageMessages []mailbox.MessageSummary
 	pageListErr  error
 	failDelete   error
+	notRemoved   []uint32
 }
 
 func (f *mailboxPageDeleterFake) PreviewDelete(ctx context.Context, account mailbox.Account, secret string, req mailbox.DeleteRequest) (mailbox.DeletePreview, error) {
@@ -637,7 +638,10 @@ func (f *mailboxPageDeleterFake) DeleteFolderPage(_ context.Context, _ mailbox.A
 		return mailbox.FolderDeletePage{}, f.failDelete
 	}
 	return mailbox.FolderDeletePage{
-		Result:   mailbox.DeleteResult{Moved: len(uids)},
+		Result: mailbox.DeleteResult{
+			Moved:      len(uids) - len(f.notRemoved),
+			NotRemoved: append([]uint32(nil), f.notRemoved...),
+		},
 		Messages: f.pageMessages,
 		ListErr:  f.pageListErr,
 	}, nil
@@ -695,6 +699,19 @@ func TestMailboxBrowseDeleteReturnsSameLoginPage(t *testing.T) {
 	}
 
 	fake.pageListErr = nil
+	fake.notRemoved = []uint32{7}
+	got, err = app.MailboxBrowseDelete(id, "INBOX", []uint32{7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["moved"] != 0 || got["not_deleted"] != 1 {
+		t.Fatalf("kept message must be reported: %v", got)
+	}
+	if kept, _ := got["not_deleted_uids"].([]uint32); len(kept) != 1 || kept[0] != 7 {
+		t.Fatalf("kept uids=%v", got["not_deleted_uids"])
+	}
+	fake.notRemoved = nil
+
 	fake.failDelete = errors.New("nope")
 	if _, err := app.MailboxBrowseDelete(id, "INBOX", []uint32{9}); err == nil {
 		t.Fatal("delete failure must stay an error")

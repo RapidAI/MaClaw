@@ -193,7 +193,10 @@ func (a *App) MailboxBrowseRead(accountID, box string, uid int) (map[string]inte
 	}, nil
 }
 
-func pageRepeatCount(messages []mailbox.MessageSummary, uids []uint32) int {
+// pageKeptCount is how many of the requested UIDs the returned page still
+// lists. The delete verifies what the server kept, so these are survivors,
+// not a stale window.
+func pageKeptCount(messages []mailbox.MessageSummary, uids []uint32) int {
 	if len(messages) == 0 || len(uids) == 0 {
 		return 0
 	}
@@ -276,9 +279,17 @@ func (a *App) MailboxBrowseDelete(accountID, box string, uids []uint32) (map[str
 			log.Printf("[mailbox] account_id=%s side=inbound action=browse_delete result_class=error uids=%d", account.ID, len(uids))
 			return nil, mailbox.ClientError(err)
 		}
-		log.Printf("[mailbox] account_id=%s side=inbound action=browse_delete result_class=ok uids=%d moved=%d purged=%d page=%d repeated=%d list_err=%t",
-			account.ID, len(uids), page.Result.Moved, page.Result.Purged, len(page.Messages), pageRepeatCount(page.Messages, uids), page.ListErr != nil)
-		out := map[string]interface{}{"moved": page.Result.Moved, "purged": page.Result.Purged}
+		log.Printf("[mailbox] account_id=%s side=inbound action=browse_delete result_class=ok uids=%d moved=%d purged=%d not_removed=%d page=%d kept_on_page=%d list_err=%t",
+			account.ID, len(uids), page.Result.Moved, page.Result.Purged, len(page.Result.NotRemoved), len(page.Messages), pageKeptCount(page.Messages, uids), page.ListErr != nil)
+		out := map[string]interface{}{
+			"moved": page.Result.Moved, "purged": page.Result.Purged,
+			"not_deleted": len(page.Result.NotRemoved),
+		}
+		// The exact uids let the dialog keep a message the server refused
+		// even when the following page read failed.
+		if len(page.Result.NotRemoved) > 0 {
+			out["not_deleted_uids"] = page.Result.NotRemoved
+		}
 		if page.ListErr != nil {
 			out["list_error"] = mailbox.ClientError(page.ListErr).Error()
 		} else {
@@ -305,5 +316,12 @@ func (a *App) MailboxBrowseDelete(accountID, box string, uids []uint32) (map[str
 	if err != nil {
 		return nil, mailbox.ClientError(err)
 	}
-	return map[string]interface{}{"moved": result.Moved, "purged": result.Purged}, nil
+	out := map[string]interface{}{
+		"moved": result.Moved, "purged": result.Purged,
+		"not_deleted": len(result.NotRemoved),
+	}
+	if len(result.NotRemoved) > 0 {
+		out["not_deleted_uids"] = result.NotRemoved
+	}
+	return out, nil
 }

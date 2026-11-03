@@ -103,9 +103,13 @@ type DeletePreview struct {
 }
 
 // DeleteResult counts messages moved into trash and messages expunged.
+// NotRemoved lists frozen UIDs the server still listed after the delete
+// finished. A server that applies only part of an expunge set leaves them,
+// and the caller must not report those messages as deleted.
 type DeleteResult struct {
-	Moved  int
-	Purged int
+	Moved      int
+	Purged     int
+	NotRemoved []uint32
 }
 
 // Delete freezes a confirmation. It does not move or expunge mail.
@@ -272,15 +276,25 @@ func deletedAuditCount(plan DeletePlan, result DeleteResult) int {
 	return result.Moved + result.Purged
 }
 
+// deleteDoneText reports what the server confirmed, never what was requested.
+// A message the server still lists is called out instead of being folded into
+// a success sentence.
 func deleteDoneText(result DeleteResult) string {
+	var text string
 	switch {
 	case result.Moved > 0 && result.Purged > 0:
-		return MsgDeleteMovedAndPurged
+		text = MsgDeleteMovedAndPurged
 	case result.Purged > 0:
-		return MsgDeletePurged
+		text = MsgDeletePurged
+	case result.Moved > 0:
+		text = MsgDeleteMoved
 	default:
-		return MsgDeleteMoved
+		text = MsgDeleteNone
 	}
+	if n := len(result.NotRemoved); n > 0 {
+		text = fmt.Sprintf("%s。有 %d 封未能删除，服务器仍保留。", text, n)
+	}
+	return text
 }
 
 func deleteConfirmationCard(account Account, preview DeletePreview) string {

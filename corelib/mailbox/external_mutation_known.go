@@ -108,6 +108,7 @@ var externalMutationKnownFragments = []string{
 	"邮件已发送",
 	MsgDeleteMoved,
 	MsgDeletePurged,
+	MsgDeleteNone,
 	MsgDeleteAborted,
 	MsgDeleteUIDChanged,
 	"不能在参数里提供",

@@ -207,10 +207,11 @@ func organizeOn(c *imapclient.Client, account Account, req OrganizeRequest) (int
 		return 0, mapIMAP(err, "select")
 	}
 	if req.Action == "move" {
-		if err := moveUIDs(c, req.UIDs, req.Dest); err != nil {
-			return 0, err
+		moved, err := moveUIDs(c, req.UIDs, req.Dest)
+		if err != nil {
+			return len(moved), err
 		}
-		return len(req.UIDs), nil
+		return len(moved), nil
 	}
 	item, vals := organizeStore(account, req)
 	seq := uidSeq(req.UIDs)

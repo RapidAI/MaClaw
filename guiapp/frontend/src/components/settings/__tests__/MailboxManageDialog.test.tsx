@@ -687,6 +687,7 @@ describe('MailboxManageDialog', () => {
         expect(screen.queryByRole('button', { name: /第三封/ })).toBeNull();
         expect(screen.getByText('这个文件夹里没有邮件。')).toBeTruthy();
         expect(screen.getByTestId('mailbox-manage-batchbar').textContent).not.toContain('已选');
+        expect(screen.getByTestId('mailbox-manage-batchbar').textContent).toContain('已删除 3 封');
     });
 
     it('replaces a deleted full page with the next server page', async () => {
@@ -787,6 +788,134 @@ describe('MailboxManageDialog', () => {
         expect(screen.getByRole('button', { name: /第一封/ })).toBeTruthy();
         expect(document.querySelector('.mailbox-manage__badge')?.textContent).toBe('1');
         expect(screen.queryByText('这个文件夹里没有邮件。')).toBeNull();
+    });
+
+    it('drops a stale short page the server repeated after a verified delete', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const shortPage = [
+            { uid: 1, from: 'a@ex.com', subject: '第一封', seen: true },
+            { uid: 2, from: 'b@ex.com', subject: '第二封', seen: true },
+        ];
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'Deleted Messages', special: 'trash' }],
+            box: 'Deleted Messages',
+            trash_box: 'Deleted Messages',
+            messages: shortPage,
+        } as never);
+        // The backend verified both messages are gone, yet the same-login
+        // page (and the relist) still shows them. They must not come back.
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            purged: 2,
+            not_deleted: 0,
+            messages: shortPage,
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue(shortPage as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        await waitFor(() => expect(MailboxBrowseMessages).toHaveBeenCalledTimes(1));
+        await flushMicrotasks();
+        expect(screen.queryByRole('button', { name: /第一封/ })).toBeNull();
+        expect(screen.queryByRole('button', { name: /第二封/ })).toBeNull();
+        expect(screen.getByText('这个文件夹里没有邮件。')).toBeTruthy();
+        expect(screen.getByTestId('mailbox-manage-batchbar').textContent).not.toContain('已选');
+    });
+
+    it('keeps the message the server refused to delete and reports it', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const page = [
+            { uid: 1, from: 'a@ex.com', subject: '第一封', seen: true },
+            { uid: 2, from: 'b@ex.com', subject: '第二封', seen: true },
+        ];
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'Deleted Messages', special: 'trash' }],
+            box: 'Deleted Messages',
+            trash_box: 'Deleted Messages',
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            purged: 1,
+            not_deleted: 1,
+            not_deleted_uids: [2],
+            messages: [page[1]],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        expect((await screen.findByRole('alert')).textContent).toContain('1 封未能删除');
+        expect(screen.queryByRole('button', { name: /第一封/ })).toBeNull();
+        expect(screen.getByRole('button', { name: /第二封/ })).toBeTruthy();
+        expect(MailboxBrowseMessages).not.toHaveBeenCalled();
+    });
+
+    it('keeps a refused message the returned page window no longer lists', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const page = [
+            { uid: 1, from: 'a@ex.com', subject: '第一封', seen: true },
+            { uid: 2, from: 'b@ex.com', subject: '第二封', seen: true },
+            { uid: 3, from: 'c@ex.com', subject: '第三封', seen: true },
+        ];
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'Deleted Messages', special: 'trash' }],
+            box: 'Deleted Messages',
+            trash_box: 'Deleted Messages',
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            purged: 2,
+            not_deleted: 1,
+            not_deleted_uids: [2],
+            // The page read after the delete is the next window and no longer
+            // contains the message the server kept.
+            messages: [
+                { uid: 5, from: 'e@ex.com', subject: '下一页一', seen: true },
+                { uid: 4, from: 'd@ex.com', subject: '下一页二', seen: true },
+            ],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        expect((await screen.findByRole('alert')).textContent).toContain('1 封未能删除');
+        expect(screen.queryByRole('button', { name: /第一封/ })).toBeNull();
+        expect(screen.getByRole('button', { name: /第二封/ })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /第三封/ })).toBeNull();
+        expect(screen.getByRole('button', { name: /下一页一/ })).toBeTruthy();
+        // The kept message stays selected so the user can retry it.
+        expect(screen.getByTestId('mailbox-manage-batchbar').textContent).toContain('已选 1 封');
+    });
+
+    it('keeps a refused message even when the following page read fails', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const page = [
+            { uid: 1, from: 'a@ex.com', subject: '第一封', seen: true },
+            { uid: 2, from: 'b@ex.com', subject: '第二封', seen: true },
+        ];
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'Deleted Messages', special: 'trash' }],
+            box: 'Deleted Messages',
+            trash_box: 'Deleted Messages',
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            purged: 1,
+            not_deleted: 1,
+            not_deleted_uids: [2],
+            list_error: '列表刷新失败',
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        expect((await screen.findByRole('alert')).textContent).toContain('列表刷新失败');
+        expect(screen.queryByRole('button', { name: /第一封/ })).toBeNull();
+        expect(screen.getByRole('button', { name: /第二封/ })).toBeTruthy();
     });
 
     it('marks the selected messages read in one batch call', async () => {
