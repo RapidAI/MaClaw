@@ -94,6 +94,12 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if spec.Title == "" && spec.Body == "" {
 		return "", fmt.Errorf("publish needs title and/or body")
 	}
+	// A placeholder is not content: "…" or 正文 posted as the article went
+	// out as an empty post (run_6fa834e0, CSDN). Refuse before anything is
+	// filled.
+	if desktopPlaceholderText(spec.Title) || desktopPlaceholderText(spec.Body) {
+		return "", fmt.Errorf("publish refused: title or body is a placeholder (%q / %q); pass the full finished title and body text (nothing was filled or posted)", desktopRuneHead(spec.Title, 20), desktopRuneHead(spec.Body, 20))
+	}
 	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() {
 		return desktopPublishRecordText(r), nil
 	}
@@ -152,4 +158,33 @@ func desktopArgBool(args map[string]any, key string) bool {
 		return v == "true" || v == "1"
 	}
 	return false
+}
+
+var desktopPlaceholderWords = map[string]bool{
+	"正文": true, "内容": true, "标题": true, "文章": true, "文章内容": true, "正文内容": true,
+	"待补充": true, "待填写": true, "占位": true, "略": true, "同上": true, "见上": true, "此处填写正文": true,
+	"body": true, "title": true, "content": true, "todo": true, "tbd": true, "placeholder": true, "text": true, "xxx": true,
+}
+
+// desktopPlaceholderText: a non-empty value that is only dots, ellipses,
+// brackets, or a stand-in word. Empty is not a placeholder (title or body
+// alone is allowed).
+func desktopPlaceholderText(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	core := strings.Trim(s, " \t\r\n.。…·-_*#<>[]()（）【】{}\"'“”‘’《》")
+	if core == "" {
+		return true
+	}
+	return desktopPlaceholderWords[strings.ToLower(core)]
+}
+
+func desktopRuneHead(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return string(r)
 }
