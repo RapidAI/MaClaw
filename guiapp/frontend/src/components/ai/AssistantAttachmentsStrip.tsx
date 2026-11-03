@@ -21,10 +21,17 @@ interface AssistantAttachmentsStripProps {
 
 const fileTypeIconPromises = new Map<string, Promise<string>>();
 const resolvedFileTypeIcons = new Map<string, string>();
+const FILE_TYPE_ICON_CACHE_MAX = 96;
 
 export function resetAttachmentFileTypeIconCacheForTests(): void {
     fileTypeIconPromises.clear();
     resolvedFileTypeIcons.clear();
+}
+
+function cacheFileTypeIcon(key: string, url: string): void {
+    resolvedFileTypeIcons.delete(key);
+    resolvedFileTypeIcons.set(key, url);
+    if (resolvedFileTypeIcons.size > FILE_TYPE_ICON_CACHE_MAX) resolvedFileTypeIcons.delete(resolvedFileTypeIcons.keys().next().value!);
 }
 
 // Own-icon extensions match fileTypeIconUsesOwnIcon in guiapp/file_type_icon.go.
@@ -59,7 +66,10 @@ function attachmentFileName(filePath: string): string {
 function loadFileTypeIcon(filePath: string): Promise<string> {
     const key = fileTypeIconCacheKey(filePath);
     const ready = resolvedFileTypeIcons.get(key);
-    if (ready) return Promise.resolve(ready);
+    if (ready) {
+        cacheFileTypeIcon(key, ready);
+        return Promise.resolve(ready);
+    }
     const cached = fileTypeIconPromises.get(key);
     if (cached) return cached;
     const pending = (async () => {
@@ -73,7 +83,7 @@ function loadFileTypeIcon(filePath: string): Promise<string> {
     void pending.then(url => {
         // A newer lookup, or a test reset, may have replaced this entry.
         if (fileTypeIconPromises.get(key) !== pending) return;
-        if (url) resolvedFileTypeIcons.set(key, url);
+        if (url) cacheFileTypeIcon(key, url);
         fileTypeIconPromises.delete(key);
     });
     return pending;

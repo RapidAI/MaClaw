@@ -3001,3 +3001,22 @@ func TestSemanticTrustedAdapterNetworkToolName(t *testing.T) {
 		}
 	}
 }
+
+func TestNilConversationMemoryDoesNotPanicSharedCheckpoint(t *testing.T) {
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}}
+	delta := []agent.ConversationEntry{{Role: "tool", Content: "ok"}}
+	if err := cb.OnToolBatchStarting(delta, agent.ToolBatchMetadata{Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if cb.checkpointCommitted {
+		t.Fatal("a missing memory store must not count as a committed checkpoint")
+	}
+	if err := cb.OnToolBatchCommitted(delta, agent.ToolBatchMetadata{Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if cb.checkpointCommitted {
+		t.Fatal("committing a batch without memory must not mark the checkpoint")
+	}
+	cb.checkpointCommitted = true
+	completeSharedInFlightIfSettled(cb.handler, cb, "desktop-user", "run-1", agent.LoopResult{}, &IMAgentResponse{}, nil, nil)
+}

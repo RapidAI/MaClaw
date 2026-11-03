@@ -58,6 +58,26 @@ describe('ExpertMarketDialog', () => {
         trigger.remove();
     });
 
+    it('hands the installed expert to the local list as soon as installation returns', async () => {
+        const onInstalled = vi.fn();
+        const installedListener = vi.fn();
+        window.addEventListener('maclaw:expert-installed', installedListener);
+        vi.mocked(AppAPI.InstallExpertMarketListing).mockResolvedValue({
+            expert: { id: 'pkgexp-owned', name: 'Reviewed analyst', description: 'Turns source data into reviewable analysis.', icon: 'A' },
+        } as any);
+        render(<DialogProvider><ExpertMarketDialog lang="en" onClose={vi.fn()} onInstalled={onInstalled} /></DialogProvider>);
+        const install = await screen.findByRole('button', { name: 'Install' });
+        await act(async () => { fireEvent.click(install); });
+        await waitFor(() => expect(onInstalled).toHaveBeenCalledWith(expect.objectContaining({
+            id: 'pkgexp-owned',
+            name: 'Reviewed analyst',
+            description: 'Turns source data into reviewable analysis.',
+        })));
+        expect(installedListener).toHaveBeenCalledTimes(1);
+        expect((installedListener.mock.calls[0][0] as CustomEvent).detail.expert).toMatchObject({ id: 'pkgexp-owned', name: 'Reviewed analyst' });
+        window.removeEventListener('maclaw:expert-installed', installedListener);
+    });
+
     it('uses the catalogue entitlement flag to offer install without another purchase', async () => {
         render(<DialogProvider><ExpertMarketDialog lang="en" onClose={vi.fn()} /></DialogProvider>);
         const install = await screen.findByRole('button', { name: 'Install' });

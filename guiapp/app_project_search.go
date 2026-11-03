@@ -3674,9 +3674,7 @@ func (a *App) RejectCodingWorkbenchPlan(projectPath string) error {
 	if err != nil {
 		return err
 	}
-	handler.clearStickyPendingCodingPlan(userID)
-	handler.clearStickyCodingExecutionPlan(userID)
-	handler.clearStickyCodingStepStatuses(userID)
+	handler.exitCodingPlanDialogue(userID, true)
 	return nil
 }
 

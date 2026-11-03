@@ -395,6 +395,23 @@ describe('countRunningTaskRows', () => {
         expect(countRunningTaskRows([expertRow], { busyTaskRuns: { projectPaths: [], expertIds: ['paper-review'] } })).toBe(1);
     });
 
+    it('counts only the open task when several tasks share an expert', () => {
+        const mongolian = { ...baseProject, id: 'm', project_path: 'D:/tasks/mongolian', name: '西里尔', tags: ['task_management', 'source:expert:book-writer'], active_workflow: { status: 'pending' } };
+        const quantum = { ...baseProject, id: 'q', project_path: 'D:/tasks/quantum', name: '算子', tags: ['task_management', 'source:expert:book-writer'], active_workflow: { status: 'pending' } };
+        const literacy = { ...baseProject, id: 'l', project_path: 'D:/tasks/literacy', name: '识字', tags: ['task_management', 'source:expert:book-writer'], active_workflow: { status: 'pending' } };
+        const active = { expertId: 'book-writer', projectPath: 'D:/tasks/quantum' };
+        expect(isActiveTaskRow(quantum, active)).toBe(true);
+        expect(isActiveTaskRow(mongolian, active)).toBe(false);
+        expect(isActiveTaskRow(literacy, active)).toBe(false);
+        expect(countRunningTaskRows([mongolian, quantum, literacy], {
+            activeAssistantTaskRunning: true,
+            activeAssistantTask: active,
+        })).toBe(1);
+        expect(countRunningTaskRows([mongolian, quantum, literacy], {
+            busyTaskRuns: { projectPaths: ['D:/tasks/quantum'], expertIds: [] },
+        })).toBe(1);
+    });
+
     it("counts the visible assistant tab's run via the live signal", () => {
         const row = { ...baseProject, id: 'v1', project_path: 'D:/work/tasks/visible', active_workflow: { status: 'pending' } };
         expect(countRunningTaskRows([row], {

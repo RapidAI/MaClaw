@@ -553,7 +553,7 @@ describe('useAITabManager', () => {
         coverHeld = false;
         visibleId = 'other-expert';
         act(() => { setNewTaskCoverHeld(false); });
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper', 'D:/tasks/scheduled-paper'));
         expect(beforeUser).not.toHaveBeenCalled();
         expect(resetExpert).toHaveBeenCalledWith('builtin-latex-paper', '', expect.any(Function));
         expect(createExpertTab).toHaveBeenCalledWith(
@@ -599,7 +599,7 @@ describe('useAITabManager', () => {
         rerender({ pending: null });
         coverHeld = false;
         act(() => { setNewTaskCoverHeld(false); });
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper', 'D:/tasks/scheduled-paper'));
         expect(beforeUser).toHaveBeenCalledWith('builtin-latex-paper');
         expect(createExpertTab).toHaveBeenCalledWith(
             expect.objectContaining({ id: 'builtin-latex-paper' }),
@@ -651,13 +651,13 @@ describe('useAITabManager', () => {
         await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('hello', 'exp-other'));
         expect(beforeUser).toHaveBeenCalledTimes(1);
         expect(beforeUser).toHaveBeenCalledWith('exp-other');
-        expect(sendExpertMessage).not.toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper');
+        expect(sendExpertMessage).not.toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper', 'D:/tasks/scheduled-paper');
 
         rerender({ pending: null });
         coverHeld = false;
         visibleId = 'exp-other';
         act(() => { setNewTaskCoverHeld(false); });
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper', 'D:/tasks/scheduled-paper'));
         expect(beforeUser).toHaveBeenCalledTimes(1);
         expect(createExpertTab).toHaveBeenCalledWith(
             expect.objectContaining({ id: 'builtin-latex-paper' }),
@@ -801,15 +801,15 @@ describe('useAITabManager', () => {
         coverHeld = false;
         visibleId = 'other-expert';
         act(() => { setNewTaskCoverHeld(false); });
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper', 'D:/tasks/paper-1'));
         expect(resetExpert).toHaveBeenCalledTimes(1);
-        expect(sendExpertMessage).not.toHaveBeenCalledWith('second paper', 'builtin-latex-paper');
+        expect(sendExpertMessage).not.toHaveBeenCalledWith('second paper', 'builtin-latex-paper', 'D:/tasks/paper-2');
         await act(async () => { releaseSend(); });
         expect(sendExpertMessage).toHaveBeenCalledTimes(1);
         expect(resetExpert).toHaveBeenCalledTimes(1);
         expect(whenExpertSessionIdle).toHaveBeenCalledWith('builtin-latex-paper');
         await act(async () => { releaseIdle(); });
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper', 'D:/tasks/paper-2'));
         expect(resetExpert).toHaveBeenCalledTimes(2);
         expect(createExpertTab).toHaveBeenCalledTimes(2);
         expect(createExpertTab.mock.calls[1]?.[2]).toEqual({ focus: false });
@@ -847,7 +847,7 @@ describe('useAITabManager', () => {
         );
         const expert = makeExpert('builtin-latex-paper', 'LaTeX');
         rerender({ pending: { expert, initialMessage: 'first paper', backgroundLaunch: true, projectPath: 'D:/tasks/paper-1' } });
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper', 'D:/tasks/paper-1'));
         expect(resetExpert).toHaveBeenCalledTimes(1);
         await act(async () => { await Promise.resolve(); });
         rerender({ pending: null });
@@ -857,7 +857,7 @@ describe('useAITabManager', () => {
         expect(resetExpert).toHaveBeenCalledTimes(1);
         rerender({ pending: null });
         await act(async () => { releaseIdle(); });
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper', 'D:/tasks/paper-2'));
         expect(resetExpert).toHaveBeenCalledTimes(2);
         expect(createExpertTab.mock.calls[1]?.[2]).toEqual({ focus: false });
     });
@@ -897,8 +897,8 @@ describe('useAITabManager', () => {
         expect(ensure).toHaveBeenCalledTimes(1);
         expect(sendExpertMessage).not.toHaveBeenCalled();
         await act(async () => { resolveEnsure({ projectPath: 'D:/tasks/paper-1' }); });
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper'));
-        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper', 'D:/tasks/paper-1'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper', 'D:/tasks/paper-2'));
         expect(sendExpertMessage.mock.calls.map(call => call[0])).toEqual(['first paper', 'second paper']);
         expect(ensure).toHaveBeenCalledTimes(2);
     });

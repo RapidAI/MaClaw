@@ -352,6 +352,7 @@ func (h *IMMessageHandler) replaceStickyPendingCodingPlanMarkdown(userID, markdo
 	if createdAt <= 0 {
 		createdAt = time.Now().Unix()
 	}
+	h.supersedeCodingPlanReview(userID)
 	h.storeStickyPendingCodingPlanAt(userID, pending.UserText, md, tasks, createdAt)
 	updated, ok := h.loadStickyPendingCodingPlan(userID)
 	if !ok {
@@ -393,6 +394,9 @@ func (h *IMMessageHandler) promotePendingToApprovedCodingPlan(userID string) (co
 	if !ok {
 		return codingWorkbenchPendingPlan{}, false
 	}
+	// Accept this snapshot. A review still writing must not publish another
+	// plan after the user has started this one.
+	h.supersedeCodingPlanReview(userID)
 	raw, err := json.Marshal(pending)
 	if err != nil {
 		return codingWorkbenchPendingPlan{}, false
@@ -404,6 +408,7 @@ func (h *IMMessageHandler) promotePendingToApprovedCodingPlan(userID string) (co
 		mem.PendingPlanUserText = ""
 		mem.PlanDialogue = false
 		mem.PlanDialogueBrief = ""
+		mem.PlanDialogueNotes = ""
 	})
 	return pending, true
 }

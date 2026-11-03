@@ -81,6 +81,10 @@ type stickyCodingWorkbenchMemory struct {
 	// PlanDialogueBrief is the original request being planned. Follow-up
 	// messages revise the plan; they do not replace this goal.
 	PlanDialogueBrief string `json:"plan_dialogue_brief,omitempty"`
+	// PlanDialogueNotes are follow-ups that changed the pending plan. Direct
+	// execute skips the step list, so these sentences have to travel with the
+	// goal or the additions disappear.
+	PlanDialogueNotes string `json:"plan_dialogue_notes,omitempty"`
 	// Pending plan awaiting user approve (JSON of codingWorkbenchPendingPlan).
 	PendingPlanJSON     string `json:"pending_plan_json,omitempty"`
 	PendingPlanMarkdown string `json:"pending_plan_markdown,omitempty"`
@@ -89,6 +93,14 @@ type stickyCodingWorkbenchMemory struct {
 	ApprovedPlanJSON string `json:"approved_plan_json,omitempty"`
 	// SkipNextPlan forces the next resolve to single-task (from /plan skip).
 	SkipNextPlan bool `json:"skip_next_plan,omitempty"`
+	// SkipPlanText is the one request that skip is replaying. A later, different
+	// message is a new turn and may enter planning again.
+	SkipPlanText string `json:"skip_plan_text,omitempty"`
+	// PlanReviewSeq invalidates an in-flight background review when the user
+	// cancels, confirms, or sends a newer review.
+	PlanReviewSeq int64 `json:"plan_review_seq,omitempty"`
+	// PlanReviewRunning is true while a background review has not published.
+	PlanReviewRunning bool `json:"plan_review_running,omitempty"`
 	// StepStatuses is live Todo status for the active multi-step plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
 	// StepsEmitSeq orders checklist snapshots. Unix seconds collide when a

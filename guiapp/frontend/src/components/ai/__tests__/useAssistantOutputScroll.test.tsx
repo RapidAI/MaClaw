@@ -410,6 +410,32 @@ describe('useAssistantOutputScroll', () => {
         expect(box.scrollTop).toBe(400);
     });
 
+    it('does not rescan the transcript for token-only updates', () => {
+        let roleReads = 0;
+        const messages = Array.from({ length: 120 }, (_, index) => {
+            const role = index === 119 ? 'assistant' : (index % 2 === 0 ? 'user' : 'assistant');
+            const message = makeMsg({ id: `m${index}`, role, content: index === 119 ? 'answer' : `message ${index}` });
+            Object.defineProperty(message, 'role', {
+                configurable: true,
+                get: () => {
+                    roleReads += 1;
+                    return role;
+                },
+            });
+            return message;
+        });
+        const { rerender } = render(<ScrollHarness messages={messages} />);
+        const readsAfterMount = roleReads;
+        const tail = messages[messages.length - 1];
+
+        rerender(<ScrollHarness messages={[
+            ...messages.slice(0, -1),
+            makeMsg({ id: tail.id, role: 'assistant', content: 'answer grows' }),
+        ]} />);
+
+        expect(roleReads).toBe(readsAfterMount);
+    });
+
     it('follows content growth reported by ResizeObserver while pinned', () => {
         const callbacks: Array<() => void> = [];
         class MockResizeObserver {

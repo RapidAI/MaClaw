@@ -53,7 +53,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, applyIncomingStreamDelta, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { useAIAssistant, applyBufferedStreamParts, applyIncomingStreamDelta, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, SendBtwQuery, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
@@ -95,6 +95,32 @@ describe('desktop file path formatting', () => {
 function messageContents(messages: Array<{ content: string }>) {
     return messages.map(message => message.content);
 }
+
+describe('buffered stream updates', () => {
+    it('copies the transcript once while preserving token order and settled row identity', () => {
+        const messages = Array.from({ length: 80 }, (_, index) => ({
+            id: index === 79 ? 'live' : `m${index}`,
+            role: index === 79 ? 'assistant' as const : 'user' as const,
+            content: index === 79 ? 'prefix' : `message ${index}`,
+            timestamp: 1,
+        }));
+        const iterate = messages[Symbol.iterator];
+        let copies = 0;
+        Object.defineProperty(messages, Symbol.iterator, {
+            value: () => {
+                copies += 1;
+                return iterate.call(messages);
+            },
+        });
+
+        const next = applyBufferedStreamParts(messages, 'live', [' one', ' two', ' three'], []);
+
+        expect(copies).toBe(1);
+        expect(next.at(-1)?.content).toBe('prefix one two three');
+        expect(next[0]).toBe(messages[0]);
+        expect(next).not.toBe(messages);
+    });
+});
 
 function emitRuntimeEvent(event: string, payload: unknown = '') {
     const handler = runtimeHandlers.get(event);
@@ -3172,6 +3198,42 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.map(message => message.content)).toContain('未能分解任务');
         expect(result.current.messages.find(message => message.content === '未能分解任务')?.role).toBe('error');
         expect(result.current.sending).toBe(false);
+    });
+
+    it('does not repeat a goal failure notice that the turn already stored', async () => {
+        const { result } = renderAssistantHook();
+        const panicText = 'Shared agent loop panicked: runtime error: invalid memory address or nil pointer dereference';
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: 'goal-cont-panic',
+                session_key: 'desktop-user',
+                text: '目标清单\n正在继续当前步骤',
+                display_text: '目标清单\n正在继续当前步骤',
+            });
+        });
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: 'goal-cont-panic',
+                session_key: 'desktop-user',
+                text: '',
+                error: panicText,
+                fields: null,
+                actions: null,
+            });
+        });
+        await act(async () => {
+            emitRuntimeEvent('ai-continuation', {
+                request_id: 'goal-notice-panic',
+                session_key: 'desktop-user',
+                kind: 'notice',
+                text: panicText,
+                as_error: true,
+            });
+        });
+
+        const errors = result.current.messages.filter(message => message.role === 'error' && message.content === panicText);
+        expect(errors).toHaveLength(1);
     });
 
     it('persists the buffered continuation tail when unmounting before the coalescer timer', async () => {

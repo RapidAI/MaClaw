@@ -400,6 +400,17 @@ func (h *IMMessageHandler) executeSharedTurn(
 			result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
 			log.Printf("[agent-loop] shared panic owner=%q request_id=%q loop=%q panic=%v\n%s", userID, requestID, loopID, r, debug.Stack())
 		}
+		// Cleanup runs after the turn panic is already on result. A second nil
+		// deref here used to escape this recover and replace that error, or
+		// drop the turn with no response at all.
+		defer func() {
+			if r := recover(); r != nil {
+				if result == nil {
+					result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
+				}
+				log.Printf("[agent-loop] shared cleanup panicked owner=%q request_id=%q loop=%q panic=%v\n%s", userID, requestID, loopID, r, debug.Stack())
+			}
+		}()
 		status, outcomeErr := classifyIMAgentResponseOutcome(result)
 		// Direct main-agent coding turns can contribute verified recall
 		// outcomes without entering the codingruntime writer ledger. A nil
@@ -846,11 +857,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 	if len(outHistory) > len(history) {
 		turnDelta = outHistory[len(history):]
 	}
-	if cb.checkpointCommitted && (sharedLoopTurnSettled(loopResult, resp, cb) || sharedLoopMayCompleteMailboxMarker(loopResult, turnDelta, outHistory)) {
-		if err := h.memory.CompleteInFlightCheckpointForRun(userID, recoveryRunID); err != nil {
-			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
-		}
-	}
+	completeSharedInFlightIfSettled(h, cb, userID, recoveryRunID, loopResult, resp, turnDelta, outHistory)
 	if loopResult.AskUser != nil {
 		resp.Text = sharedLoopUserFacingText(loopResult.Text)
 		// Mark interactive pause for UI/telemetry (parity with record_audio + legacy ask_user).
@@ -8946,6 +8953,22 @@ func sharedLoopCheckpointIsFinishedWork(result agent.LoopResult) bool {
 	return result.Error == "" || result.Error == agent.ErrNoProgress || result.Error == agent.ErrDeliverableUnassigned
 }
 
+// completeSharedInFlightIfSettled retires this turn's recovery marker after
+// the host has settled the work. Conversation memory is optional on a
+// handler; persistRecoveryCheckpoint treats a missing store as success, so
+// the committed bit must be ignored unless the store is actually there.
+func completeSharedInFlightIfSettled(h *IMMessageHandler, cb *sharedAgentLoopCallbacks, userID, runID string, loopResult agent.LoopResult, resp *IMAgentResponse, turnDelta, history []agent.ConversationEntry) {
+	if h == nil || h.memory == nil || cb == nil || !cb.checkpointCommitted {
+		return
+	}
+	if !(sharedLoopTurnSettled(loopResult, resp, cb) || sharedLoopMayCompleteMailboxMarker(loopResult, turnDelta, history)) {
+		return
+	}
+	if err := h.memory.CompleteInFlightCheckpointForRun(userID, runID); err != nil {
+		log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, runID, err)
+	}
+}
+
 // sharedLoopTurnSettled decides whether this turn's durable recovery marker may
 // be retired. It is evaluated after the response projection so that a loop stop
 // the host itself resolved is not left behind as unfinished work.
@@ -9486,7 +9509,12 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchStarting(delta []agent.Conversatio
 		log.Printf("[InFlightTask] shared pre-tool checkpoint failed user=%q run=%q seq=%d err=%v", c.userID, c.checkpointRunID, meta.Sequence, err)
 		return err
 	}
-	c.checkpointCommitted = true
+	// persistRecoveryCheckpoint returns nil when memory is missing. That is
+	// not a commit: marking it committed made the turn-end flush call a nil
+	// ConversationMemory and panic the shared loop.
+	if c.handler.memory != nil {
+		c.checkpointCommitted = true
+	}
 	c.hasPendingToolBatch = true
 	c.ensureInFlightLeaseRefresh()
 	return nil
@@ -9531,7 +9559,11 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchCommitted(delta []agent.Conversati
 		log.Printf("[InFlightTask] shared checkpoint failed user=%q run=%q seq=%d err=%v", c.userID, c.checkpointRunID, meta.Sequence, err)
 		return err
 	}
-	c.checkpointCommitted = true
+	// A nil memory store reports success without writing. Do not retire a
+	// marker that was never stored; the flush below would nil-deref.
+	if c.handler.memory != nil {
+		c.checkpointCommitted = true
+	}
 	c.hasPendingToolBatch = false
 	c.ensureInFlightLeaseRefresh()
 	// A dependant becomes model-visible only after the complete paired batch is

@@ -116,6 +116,24 @@ describe("AssistantAttachmentsStrip", () => {
         expect(fileTypeIconMock).toHaveBeenCalledTimes(2);
     });
 
+    it("bounds per-file icon data and reloads an evicted icon on demand", async () => {
+        fileTypeIconMock.mockImplementation(async (...args: any[]) => `data:image/png;base64,${String(args[0])}`);
+        const attachments = Array.from({ length: 97 }, (_, index) => pendingAttachment(`D:\\bin\\tool-${index}.exe`));
+        const many = render(<PendingAttachmentsHarness attachments={attachments} />);
+        await waitFor(() => expect(many.getAllByTestId("attachment-file-type-icon")).toHaveLength(97));
+        expect(fileTypeIconMock).toHaveBeenCalledTimes(97);
+        many.unmount();
+
+        const evicted = render(<PendingAttachmentsHarness attachments={[attachments[0]]} />);
+        expect(await evicted.findByTestId("attachment-file-type-icon")).toBeTruthy();
+        expect(fileTypeIconMock).toHaveBeenCalledTimes(98);
+        evicted.unmount();
+
+        const retained = render(<PendingAttachmentsHarness attachments={[attachments[96]]} />);
+        expect(await retained.findByTestId("attachment-file-type-icon")).toBeTruthy();
+        expect(fileTypeIconMock).toHaveBeenCalledTimes(98);
+    });
+
     it("uses the operating-system file icon beside the filename", async () => {
         fileTypeIconMock.mockResolvedValue("data:image/png;base64,TYPEICON");
         const path = "D:\\cases\\contracts\\supplier-agreement.pdf";

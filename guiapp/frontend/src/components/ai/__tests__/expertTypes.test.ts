@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { parseInstalledManagedIndustryExpertsJSON, parseExpertListJSON } from '../expertTypes';
+import { expertDefinitionFromInstallResult, expertPageForIndex, overlayInstalledItems, parseInstalledManagedIndustryExpertsJSON, parseExpertListJSON, withInstalledExpert } from '../expertTypes';
 
 describe('parseInstalledManagedIndustryExpertsJSON', () => {
     it('maps installed entries to definitions keyed by their local expert id', () => {
@@ -43,5 +43,49 @@ describe('parseExpertListJSON', () => {
         const out = parseExpertListJSON(raw);
         expect(out).toHaveLength(1);
         expect(out[0].id).toBe('builtin-x');
+    });
+});
+
+describe('installed expert list helpers', () => {
+    const installed = expertDefinitionFromInstallResult({
+        id: 'pkgexp-new',
+        name: '新装专家',
+        description: '刚安装',
+        icon: '✨',
+    });
+
+    it('normalizes a market install result into a usable expert card', () => {
+        expect(installed).toMatchObject({ id: 'pkgexp-new', name: '新装专家', builtin: false, tools: [], skills: [] });
+        expect(expertDefinitionFromInstallResult({ name: 'missing id' })).toBeNull();
+        expect(expertDefinitionFromInstallResult(null)).toBeNull();
+    });
+
+    it('appends a just-installed expert until the snapshot already contains it', () => {
+        const current = [{ id: 'builtin-x', name: 'X', description: '', icon: '', system_prompt: '', tools: [], skills: [], builtin: true, created_at: '', updated_at: '' }];
+        const added = withInstalledExpert(current, installed);
+        expect(added.map(expert => expert.id)).toEqual(['builtin-x', 'pkgexp-new']);
+        expect(withInstalledExpert(added, installed)).toBe(added);
+    });
+
+    it('points at the page that contains the new card', () => {
+        expect(expertPageForIndex(0, 16)).toBe(1);
+        expect(expertPageForIndex(16, 16)).toBe(2);
+        expect(expertPageForIndex(-1, 16)).toBe(1);
+    });
+
+    it('keeps an install on the in-flight list read and drops it once a newer read is authoritative', () => {
+        const card = { id: 'pkgexp-new', name: '新装专家' };
+        const pending = [{ item: card, stamp: 2 }];
+        const early = overlayInstalledItems([{ id: 'builtin-x', name: 'X' }], pending, 2);
+        expect(early.list.map(item => item.id)).toEqual(['builtin-x', 'pkgexp-new']);
+        expect(early.pending).toEqual(pending);
+
+        const seen = overlayInstalledItems([{ id: 'pkgexp-new', name: '新装专家' }], pending, 2);
+        expect(seen.list.map(item => item.id)).toEqual(['pkgexp-new']);
+        expect(seen.pending).toEqual([]);
+
+        const later = overlayInstalledItems([{ id: 'builtin-x', name: 'X' }], pending, 3);
+        expect(later.list.map(item => item.id)).toEqual(['builtin-x']);
+        expect(later.pending).toEqual([]);
     });
 });

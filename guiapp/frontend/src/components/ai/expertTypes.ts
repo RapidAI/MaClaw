@@ -137,6 +137,63 @@ export function expertWelcomeMessageText(expert: Pick<ExpertDefinition, "name" |
         : `你好，我是${name}。有什么可以帮你？`;
 }
 
+/** Normalize an Expert Market install result into a card the installed list can render. */
+export function expertDefinitionFromInstallResult(raw: unknown): ExpertDefinition | null {
+    if (!raw || typeof raw !== "object") return null;
+    const item = raw as Partial<ExpertDefinition>;
+    const id = String(item.id || "").trim();
+    if (!id) return null;
+    return {
+        id,
+        name: String(item.name || "").trim() || id,
+        description: String(item.description || ""),
+        icon: String(item.icon || ""),
+        system_prompt: String(item.system_prompt || ""),
+        tools: Array.isArray(item.tools) ? item.tools.map(String) : [],
+        skills: Array.isArray(item.skills) ? item.skills.map(String) : [],
+        builtin: false,
+        optimized_from_id: String(item.optimized_from_id || ""),
+        about: String(item.about || ""),
+        created_at: String(item.created_at || ""),
+        updated_at: String(item.updated_at || ""),
+    };
+}
+
+/** Keep a just-installed expert on the list until a later snapshot includes it. */
+export function withInstalledExpert(list: ExpertDefinition[], installed: ExpertDefinition | null | undefined): ExpertDefinition[] {
+    if (!installed?.id) return list;
+    if (list.some(expert => expert.id === installed.id)) return list;
+    return [...list, installed];
+}
+
+/**
+ * A list read stamped at or before the install may have started too early to
+ * see it. Keep the card on that read only. A newer read is authoritative, so
+ * an uninstall is not put back by the install that just happened.
+ */
+export function overlayInstalledItems<T extends { id: string }>(
+    listed: T[],
+    pending: Array<{ item: T; stamp: number }>,
+    responseStamp: number,
+): { list: T[]; pending: Array<{ item: T; stamp: number }> } {
+    if (pending.length === 0) return { list: listed, pending };
+    const kept: Array<{ item: T; stamp: number }> = [];
+    const extra: T[] = [];
+    for (const entry of pending) {
+        const id = entry?.item?.id;
+        if (!id || listed.some(item => item.id === id) || responseStamp > entry.stamp) continue;
+        kept.push(entry);
+        extra.push(entry.item);
+    }
+    return { list: extra.length === 0 ? listed : [...listed, ...extra], pending: kept };
+}
+
+/** 1-based page that contains `index` when each page holds `pageSize` cards. */
+export function expertPageForIndex(index: number, pageSize: number): number {
+    if (index < 0) return 1;
+    return Math.floor(index / Math.max(1, pageSize)) + 1;
+}
+
 /** Parse a JSON payload from ListExperts into expert definitions (defensive). */
 export function parseExpertListJSON(raw: string | null | undefined): ExpertDefinition[] {
     if (!raw) return [];

@@ -66,6 +66,7 @@ export type AssistantOutputScrollMessage = Pick<ChatMessage, "id" | "role"> & { 
 
 interface AssistantOutputScrollOptions {
     activityKey?: string;
+    conversationKey?: string;
     hasConversation: boolean;
     messages: AssistantOutputScrollMessage[];
     ready: boolean;
@@ -74,13 +75,14 @@ interface AssistantOutputScrollOptions {
     suspendedRef?: { readonly current: boolean };
 }
 
-export function useAssistantOutputScroll({ activityKey, hasConversation, messages, ready, scrollToTopSeq, suspendedRef }: AssistantOutputScrollOptions) {
+export function useAssistantOutputScroll({ activityKey, conversationKey = "", hasConversation, messages, ready, scrollToTopSeq, suspendedRef }: AssistantOutputScrollOptions) {
     const outputEndRef = useRef<HTMLDivElement | null>(null);
     const outputContainerRef = useRef<HTMLDivElement | null>(null);
     const userScrolledUpRef = useRef(false);
     const userIntentRef = useRef(false);
     const prevMsgCountRef = useRef(0);
     const prevLastUserMsgIdRef = useRef<string | undefined>(undefined);
+    const prevConversationShapeRef = useRef<{ key: string; firstId?: string; tailId?: string }>({ key: conversationKey });
     const prevActivityKeyRef = useRef(activityKey);
     const scrollRafRef = useRef<number | null>(null);
     const prevReadyRef = useRef(ready);
@@ -220,14 +222,15 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
         // role: the send paths append the user message together with the
         // assistant placeholder, so the last message is usually an assistant
         // one even right after sending.
-        let lastUserMsgId: string | undefined;
-        for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i]?.role === "user") {
-                lastUserMsgId = messages[i].id;
-                break;
-            }
-        }
+        const firstMessageId = messages[0]?.id;
+        const tailMessageId = tailMessage?.id;
+        const previousShape = prevConversationShapeRef.current;
+        const conversationChanged = conversationKey !== previousShape.key || messages.length !== prevMsgCountRef.current
+            || firstMessageId !== previousShape.firstId || tailMessageId !== previousShape.tailId;
+        let lastUserMsgId = prevLastUserMsgIdRef.current;
+        if (conversationChanged) lastUserMsgId = messages.findLast(message => message.role === "user")?.id;
         const appendedUserMessage = lastUserMsgId !== undefined && lastUserMsgId !== prevLastUserMsgIdRef.current;
+        prevConversationShapeRef.current = { key: conversationKey, firstId: firstMessageId, tailId: tailMessageId };
         prevLastUserMsgIdRef.current = lastUserMsgId;
         if (suspendedRef?.current || outputHostHidden(container)) {
             prevActivityKeyRef.current = activityKey;
@@ -277,7 +280,7 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
                 latch: userScrolledUpRef.current ? 1 : 0,
             }, 1000);
         }
-    }, [activityKey, messages, scrollToBottom, containerMetrics, suspendedRef]);
+    }, [activityKey, conversationKey, messages, scrollToBottom, containerMetrics, suspendedRef]);
 
     const handleUserScrollIntent = useCallback((event?: AssistantScrollIntentEvent) => {
         if (!shouldIgnoreUserScrollIntent(event)) userIntentRef.current = true;

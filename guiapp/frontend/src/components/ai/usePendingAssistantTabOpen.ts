@@ -189,8 +189,13 @@ interface PendingAssistantTabOpenOptions {
     onPendingProjectTabOpenHandled?: (result: PendingProjectTabOpenResult) => void;
     pendingExpertOpen?: PendingExpertOpen | null;
     onPendingExpertOpenHandled?: () => void;
-    /** Send the wizard's first message through the freshly opened expert tab. */
-    sendExpertMessage?: (text: string, expertId: string) => void | Promise<unknown>;
+    /**
+     * Send the wizard's first message on the task this launch created.
+     * projectPath is that task. The shared expert tab may still name the
+     * previous task until its binding is visible, and the message must not
+     * follow that previous task.
+     */
+    sendExpertMessage?: (text: string, expertId: string, projectPath?: string) => void | Promise<unknown>;
     /** Persist the expert in task management before its tab is opened. */
     onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string; projectPath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
     /** Persist a non-main assistant tab before it is opened. */
@@ -888,7 +893,9 @@ export function usePendingAssistantTabOpen({
                 if (!initialMessage) return;
                 // Acceptance is not the end of the turn. The next parked paper
                 // waits until this expert session is idle before it resets.
-                return Promise.resolve(sendExpertMessageRef.current?.(initialMessage, expertId))
+                const taskPath = String(projectPath || "").trim();
+                const send = sendExpertMessageRef.current;
+                return Promise.resolve(taskPath ? send?.(initialMessage, expertId, taskPath) : send?.(initialMessage, expertId))
                     .then(() => undefined)
                     .catch((error) => {
                         console.warn("[task_management] expert initial message send failed:", error);

@@ -140,6 +140,33 @@ describe('UtilitiesPage AI expert section', () => {
         expect(screen.getByText('New expert')).toBeTruthy();
     });
 
+    it('shows a market-installed expert on the installed list before the next catalogue reload finishes', async () => {
+        const many = Array.from({ length: 20 }, (_, index) => ({
+            ...userExpert,
+            id: `user-exp-${index}`,
+            name: `专家${index}`,
+        }));
+        const spies = installAppSpies(many);
+        (window as any).go.main.App.ListExpertMarketListings = vi.fn().mockResolvedValue({
+            experts: [{ id: 'listing-new', name: '新装专家', description: '刚从市场安装', icon: '✨', version: '1.0.0', price: 0, owned: true }],
+            total_pages: 1,
+        });
+        (window as any).go.main.App.InstallExpertMarketListing = vi.fn().mockResolvedValue({
+            expert: { id: 'pkgexp-new', name: '新装专家', description: '刚从市场安装', icon: '✨', system_prompt: '', tools: [], skills: [], builtin: false, created_at: '', updated_at: '' },
+        });
+
+        render(<DialogProvider><UtilitiesPage lang="zh-Hans" mode="experts" active /></DialogProvider>);
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-user-exp-0')).toBeTruthy());
+        fireEvent.click(screen.getByTestId('utilities-expert-market'));
+        fireEvent.click(await screen.findByRole('button', { name: '安装' }));
+
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-pkgexp-new')).toBeTruthy());
+        expect(screen.getByTestId('utilities-expert-card-pkgexp-new').textContent).toContain('新装专家');
+        // The card is the install result. Opening the market does not start
+        // another ListExperts; experts:changed is what reconciles later.
+        expect(spies.ListExperts).toHaveBeenCalledTimes(1);
+    });
+
     it('places the expert market entry beside the AI expert title with an icon', async () => {
         render(<UtilitiesPage lang="en" />);
         const title = screen.getByText('AI Experts');

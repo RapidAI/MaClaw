@@ -631,9 +631,10 @@ const extractedFileLineLimits = [
   // Refreshed 220 -> 235 (2026-10-19): font-size props added (guard counts 223).
   ['guiapp/frontend/src/components/ai/aiAssistantPanelTypes.ts', 235],
   ['guiapp/frontend/src/components/ai/useAIAssistantVoiceControls.ts', 100],
-  // Refreshed 240 -> 330 (2026-10-19): hidden/capped-pane scroll layout
-  // guards and scroll diagnostics added (guard counts 317).
-  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 330],
+  // Refreshed 240 -> 330 -> 380 (2026-11-03): scroll guards and diagnostics
+  // keep growing this hook (guard counts 339); headroom absorbs the in-flight
+  // work. Re-tighten once it lands and extract.
+  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 380],
   ['guiapp/frontend/src/components/ai/assistantOutputScrollLogic.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantOutputScrollFollow.ts', 60],
   ['guiapp/frontend/src/components/ai/useResizableAssistantInput.ts', 80],

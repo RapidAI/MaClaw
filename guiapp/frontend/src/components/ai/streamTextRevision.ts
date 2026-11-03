@@ -1,4 +1,5 @@
 const revisionsByMessageId = new Map<string, number>();
+const STREAM_TEXT_REVISION_CACHE_MAX = 1024;
 
 export function streamTextRevision(messageId: string): number {
     return revisionsByMessageId.get(messageId) ?? 0;
@@ -6,7 +7,12 @@ export function streamTextRevision(messageId: string): number {
 
 export function markStreamTextReplacement(messageId: string | undefined): void {
     if (!messageId) return;
-    revisionsByMessageId.set(messageId, streamTextRevision(messageId) + 1);
+    const revision = streamTextRevision(messageId) + 1;
+    revisionsByMessageId.delete(messageId);
+    revisionsByMessageId.set(messageId, revision);
+    if (revisionsByMessageId.size <= STREAM_TEXT_REVISION_CACHE_MAX) return;
+    const oldest = revisionsByMessageId.keys().next().value;
+    if (oldest !== undefined) revisionsByMessageId.delete(oldest);
 }
 
 type StreamTextFields = {

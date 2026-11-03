@@ -76,6 +76,13 @@ export const EVENT_EXPERT_TASK_RETIRED = "expert-task:retired";
  */
 export const EVENT_EXPERTS_CHANGED = "experts:changed";
 
+/**
+ * Window event fired after an Expert Market install returns a local expert.
+ * Detail is `{ expert }` (an ExpertDefinition). Open expert lists insert it
+ * immediately; `experts:changed` remains the signal to reconcile with ListExperts.
+ */
+export const EVENT_EXPERT_INSTALLED = "maclaw:expert-installed";
+
 /** Emitted when the background update checker (startup delay + periodic re-check) finds a newer application release. */
 export const EVENT_APP_UPDATE_AVAILABLE = "app-update-available";
 

@@ -1466,6 +1466,38 @@ function updateMessageById(messages: ChatMessage[], messageId: string | null, up
     return next;
 }
 
+export function applyBufferedStreamParts(
+    messages: ChatMessage[],
+    assistantMessageId: string,
+    parts: string[],
+    sequences: Array<number | undefined>,
+): ChatMessage[] {
+    if (!assistantMessageId || parts.length === 0 || messages.length === 0) return messages;
+    const lastIndex = messages.length - 1;
+    const index = messages[lastIndex].id === assistantMessageId
+        ? lastIndex
+        : findLastIndex(messages, message => message.id === assistantMessageId);
+    if (index < 0) return messages;
+    const original = messages[index];
+    let updated = original;
+    for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        const sequence = sequences[i];
+        const reasoning = part.startsWith("\x01");
+        const current = updated;
+        updated = appendTokenToMessage(
+            current,
+            part,
+            reasoning ? sequence : undefined,
+            reasoning && !!sequence && messageOwnsCodingSequence(current, sequence),
+        );
+    }
+    if (updated === original) return messages;
+    const next = [...messages];
+    next[index] = updated;
+    return next;
+}
+
 // One round has one id. When the backend replaces the id, every row already
 // stamped with the old one moves with it, including a steer that landed first.
 function reassignRoundRequestId(messages: ChatMessage[], oldRequestId: string, nextRequestId: string): ChatMessage[] {
@@ -5300,24 +5332,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // Persist and unmount read the ref. A setState started while the
         // subscription effect is cleaning up does not commit, so the ref has
         // to carry the same pieces or the tail is saved as the painted prefix.
-        const applyBuffered = (messages: ChatMessage[]): ChatMessage[] => {
-            let next = messages;
-            for (let i = 0; i < parts.length; i++) {
-                const part = parts[i];
-                const sequence = sequences[i];
-                const reasoning = part.startsWith("\x01");
-                const apply = (message: ChatMessage) => appendTokenToMessage(
-                    message,
-                    part,
-                    reasoning ? sequence : undefined,
-                    reasoning && !!sequence && messageOwnsCodingSequence(message, sequence),
-                );
-                next = updateTailMessage(next, assistantMessageId, apply)
-                    ?? updateMessageById(next, assistantMessageId, apply)
-                    ?? next;
-            }
-            return next;
-        };
+        const applyBuffered = (messages: ChatMessage[]): ChatMessage[] => (
+            applyBufferedStreamParts(messages, assistantMessageId, parts, sequences)
+        );
         if (parts.length === 1 && !parts[0].startsWith("\x01")) {
             const apply = (message: ChatMessage) => appendTokenToMessage(message, parts[0]);
             latestMessagesRef.current = updateTailMessage(latestMessagesRef.current, assistantMessageId, apply)
@@ -5327,8 +5344,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             noteAIScrollStreamFlush(parts[0].length);
             return;
         }
-        latestMessagesRef.current = applyBuffered(latestMessagesRef.current);
-        setMessages(prev => applyBuffered(prev));
+        const previous = latestMessagesRef.current;
+        const next = applyBuffered(previous);
+        latestMessagesRef.current = next;
+        setMessages(prev => prev === previous ? next : applyBuffered(prev));
         noteAIScrollStreamFlush(parts.reduce((sum, part) => sum + part.length, 0));
     }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer]);
 
@@ -6228,13 +6247,24 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 emitPetStateForAssistant('alert', 'ai:continuation-notice', 1500);
                 // as_error is a host failure (goal stop, missed plan). It stays
                 // an error row. A notice must not open a user bubble.
-                setMessages(prev => [...prev, {
-                    id: nextId(),
-                    role: (event.as_error ? 'error' : 'assistant') as 'error' | 'assistant',
-                    content: text,
-                    sessionKey,
-                    timestamp: Date.now(),
-                }]);
+                // A failed goal turn already stored this sentence on the round.
+                // The host notice repeats it; appending again drew two identical
+                // error rows for one panic.
+                setMessages(prev => {
+                    if (event.as_error) {
+                        const last = prev[prev.length - 1];
+                        if (last && last.role === 'error' && (last.content || '').trim() === text) {
+                            return prev;
+                        }
+                    }
+                    return [...prev, {
+                        id: nextId(),
+                        role: (event.as_error ? 'error' : 'assistant') as 'error' | 'assistant',
+                        content: text,
+                        sessionKey,
+                        timestamp: Date.now(),
+                    }];
+                });
                 return;
             }
             // P0-4 credential gate: a mid-loop confirmation card (sensitive

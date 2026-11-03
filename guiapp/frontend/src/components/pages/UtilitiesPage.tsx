@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './UtilitiesPage.css';
 import { EventsOn, BrowserOpenURL } from '../../../wailsjs/runtime';
-import { EVENT_SURVEY_UPDATED } from '../../constants/events';
+import { EVENT_EXPERTS_CHANGED, EVENT_SURVEY_UPDATED } from '../../constants/events';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { useDialog } from '../CustomDialog';
 import {
@@ -48,7 +48,7 @@ import { ExpertMarketDialog } from '../ExpertMarketDialog';
 import { ExpertShareDialog } from '../ExpertShareDialog';
 import type { ExpertDefinition } from '../ai/expertTypes';
 import type { CodingTaskLaunch } from '../ai/codingTaskLaunch';
-import { DEFAULT_EXPERT_ICON, parseExpertListJSON } from '../ai/expertTypes';
+import { DEFAULT_EXPERT_ICON, expertDefinitionFromInstallResult, expertPageForIndex, overlayInstalledItems, parseExpertListJSON, withInstalledExpert } from '../ai/expertTypes';
 import { VirtualRepositoryWorkspace } from './VirtualRepositoryWorkspace';
 import { tailText } from '../../i18n/mnTail'
 
@@ -460,6 +460,10 @@ export const UtilitiesPage = ({
     const mountedRef = useRef(true);
     const activeRef = useRef(active);
     const expertsRequestRef = useRef(0);
+    // Protects only the list read already running when the install returned.
+    // A later read is the installed set, including after uninstall.
+    const pendingInstalledExpertRef = useRef<{ item: ExpertDefinition; stamp: number } | null>(null);
+    const [revealInstalledExpertId, setRevealInstalledExpertId] = useState('');
     const expertMarketUploadsRequestRef = useRef(0);
     // A mutation response is newer than an account read that was already in
     // flight. Keep its state until the account endpoint confirms that same
@@ -535,9 +539,13 @@ export const UtilitiesPage = ({
             if (!mod?.ListExperts) return;
             const raw = await mod.ListExperts();
             if (!mountedRef.current || !activeRef.current || requestID !== expertsRequestRef.current) return;
-			setExperts(parseExpertListJSON(raw));
+            const parsed = parseExpertListJSON(raw);
+            const overlaid = overlayInstalledItems(parsed, pendingInstalledExpertRef.current ? [pendingInstalledExpertRef.current] : [], requestID);
+            pendingInstalledExpertRef.current = overlaid.pending[0] ?? null;
+			setExperts(overlaid.list);
 			if (mod?.ListManagedIndustryExperts) {
 				const managedRaw = await mod.ListManagedIndustryExperts();
+				if (!mountedRef.current || !activeRef.current || requestID !== expertsRequestRef.current) return;
 				const parsed = JSON.parse(managedRaw || '[]');
 				const items: ExpertDefinition[] = Array.isArray(parsed) ? parsed.map((item: any) => ({
 					id: String(item?.installed && item?.local_expert_id || `industry-${String(item?.asset_id || '')}`),
@@ -556,6 +564,18 @@ export const UtilitiesPage = ({
         }
     }, []);
 
+    const adoptInstalledExpert = useCallback((raw: unknown) => {
+        const expert = expertDefinitionFromInstallResult(raw);
+        if (!expert) return;
+        pendingInstalledExpertRef.current = { item: expert, stamp: expertsRequestRef.current };
+        // A search or source filter that was active before the install would
+        // hide the new card. Clear both so the installed list can show it.
+        setExpertSearch('');
+        setExpertFilter('all');
+        setExperts(current => withInstalledExpert(current, expert));
+        setRevealInstalledExpertId(expert.id);
+    }, []);
+
 	const handlePurchaseAndInstallManagedIndustryExpert = useCallback(async (expert: ExpertDefinition) => {
 		if (!expert.industry_asset_id || !expert.industry_listing_id || expertActionBusy) return;
 		setExpertActionBusy(true);
@@ -571,6 +591,15 @@ export const UtilitiesPage = ({
     useEffect(() => {
         if (!active || view !== 'home' || !showExpertSurface) return;
         void loadExperts();
+    }, [active, view, loadExperts, showExpertSurface]);
+
+    // Market install/uninstall and local save/delete emit this after the store
+    // write. Reload while this page is showing so the card list does not stay
+    // on the snapshot from when the page was opened.
+    useEffect(() => {
+        if (!active || view !== 'home' || !showExpertSurface) return;
+        const off = EventsOn(EVENT_EXPERTS_CHANGED, () => { void loadExperts(); });
+        return () => { if (typeof off === 'function') off(); };
     }, [active, view, loadExperts, showExpertSurface]);
 
 	// Installation is started by the backend so the initial directory load is
@@ -621,7 +650,11 @@ export const UtilitiesPage = ({
     const expertPageSize = Math.max(1, expertColumns) * 4;
     const expertLibraryCount = visibleExperts.industry.length + visibleExperts.local.length;
     const expertPageCount = Math.max(1, Math.ceil(expertLibraryCount / expertPageSize));
-    const expertPageIndex = Math.min(expertPage, expertPageCount);
+    const revealIndex = revealInstalledExpertId
+        ? [...visibleExperts.industry, ...visibleExperts.local].findIndex(expert => expert.id === revealInstalledExpertId)
+        : -1;
+    const revealPage = revealIndex >= 0 ? Math.min(expertPageCount, expertPageForIndex(revealIndex, expertPageSize)) : 0;
+    const expertPageIndex = revealPage || Math.min(expertPage, expertPageCount);
     const expertPageStart = (expertPageIndex - 1) * expertPageSize;
     // Column count follows the window. Keep the expert at the top of the
     // current page in view, instead of staying on the same page number and
@@ -643,12 +676,21 @@ export const UtilitiesPage = ({
         }
         if (expertQueryChanged) {
             setTrackedExpertQuery({ search: expertSearch, filter: expertFilter });
-            expertPageAnchorRef.current = 0;
-            setExpertPage(1);
+            // A just-installed card chooses its own page below. Resetting to
+            // page 1 here would hide it again.
+            if (!revealPage) {
+                expertPageAnchorRef.current = 0;
+                setExpertPage(1);
+            }
         }
     } else {
         const stored = expertPageAnchorRef.current;
         expertPageAnchorRef.current = stored >= expertPageStart && stored < expertPageStart + expertPageSize ? stored : expertPageStart;
+    }
+    if (revealPage) {
+        expertPageAnchorRef.current = revealIndex;
+        if (expertPage !== revealPage) setExpertPage(revealPage);
+        setRevealInstalledExpertId('');
     }
     const pageIndustry = visibleExperts.industry.slice(expertPageStart, expertPageStart + expertPageSize);
     const pageLocalSkip = Math.max(0, expertPageStart - visibleExperts.industry.length);
@@ -2298,11 +2340,13 @@ export const UtilitiesPage = ({
                         }}
                     />
                 ) : null}
-                {expertMarketOpen ? <ExpertMarketDialog lang={lang || 'zh-Hans'} initialTab={expertMarketIntent} onClose={() => { setExpertMarketOpen(false); void loadExpertMarketUploads(); }} onInstalled={() => { void loadExperts(); }} onUninstalled={(expertID) => {
+                {expertMarketOpen ? <ExpertMarketDialog lang={lang || 'zh-Hans'} initialTab={expertMarketIntent} onClose={() => { setExpertMarketOpen(false); void loadExpertMarketUploads(); }} onInstalled={(expert) => { adoptInstalledExpert(expert); }} onUninstalled={(expertID) => {
                     // Invalidate a prior ListExperts request before applying the
                     // optimistic removal; otherwise a slow pre-uninstall read
                     // can put the just-removed card back on this screen.
                     expertsRequestRef.current += 1;
+                    if (pendingInstalledExpertRef.current?.item.id === expertID) pendingInstalledExpertRef.current = null;
+                    setRevealInstalledExpertId(current => current === expertID ? '' : current);
                     setExperts(current => current.filter(expert => expert.id !== expertID));
                     window.dispatchEvent(new CustomEvent('maclaw:expert-deleted', { detail: { expertId: expertID } }));
                 }} onMarketChanged={() => { void loadExpertMarketUploads(); }} /> : null}

@@ -320,6 +320,10 @@ type IMMessageHandler struct {
 	// Local background task manager for long-running local processes.
 	// Mirrors the SSH BackgroundTaskManager pattern: Submit/Check/Wait/Kill.
 	localBgTaskMgr *tool.LocalBackgroundTaskManager
+	// planReviewLive is the in-process planning review. The sticky flag is
+	// persisted, but the goroutine is not, so a restarted app must not keep
+	// treating that flag as a live review.
+	planReviewLive sync.Map // userID -> review seq int64
 
 	// imFileSender is an optional callback that forwards a file to the user's
 	// IM channels (Feishu/WeChat/etc.) via the Hub WebSocket. Set by the

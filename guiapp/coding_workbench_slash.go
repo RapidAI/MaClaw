@@ -234,11 +234,15 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 	} else {
 		orig = strings.TrimSpace(mem.PendingPlanUserText)
 	}
+	orig = codingPlanJoinGoalAndNotes(orig, h.getStickyCodingWorkbenchMemory(userID).PlanDialogueNotes)
 	if strings.TrimSpace(orig) == "" {
 		// No pending — set skip flag for next free-form message.
-		m := h.getStickyCodingWorkbenchMemory(userID)
-		m.SkipNextPlan = true
-		h.storeStickyCodingWorkbenchMemory(userID, m)
+		// Update the flag in place. Replacing the whole snapshot would put a
+		// review that already finished back into the running state.
+		h.supersedeCodingPlanReview(userID)
+		h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+			m.SkipNextPlan = true
+		})
 		return &IMAgentResponse{Text: "已设置跳过多步规划。请重新发送任务以单步直接执行。"}
 	}
 	// As with approval, do not discard a recoverable plan before checking the
@@ -247,13 +251,15 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 	if targetErr != "" {
 		return &IMAgentResponse{Text: "无法直接执行；当前计划已保留。\n\n" + targetErr}
 	}
+	h.supersedeCodingPlanReview(userID)
 	h.clearStickyPendingCodingPlan(userID)
 	h.clearCodingPlanDialogue(userID)
 	// Force single-task for this original request.
-	m := h.getStickyCodingWorkbenchMemory(userID)
-	m.SkipNextPlan = true
-	m.ApprovedPlanJSON = ""
-	h.storeStickyCodingWorkbenchMemory(userID, m)
+	h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+		m.SkipNextPlan = true
+		m.SkipPlanText = orig
+		m.ApprovedPlanJSON = ""
+	})
 
 	loopCtx := newCodingPlanExecutionLoopContext("coding-plan-skip", h.getMaclawAgentMaxIterations(), h.client, userID, msg)
 	if loopCtx != nil {
@@ -404,17 +410,22 @@ func (h *IMMessageHandler) handleCodingPlanSlash(userID, projectPath, trimmed st
 
 	case lower == "skip":
 		// Fallback when not routed through IM execute path.
+		// Supersede first, then set the flag in place. Replacing the whole
+		// record would put a cancelled review back.
+		h.supersedeCodingPlanReview(userID)
 		pending, ok := h.loadStickyPendingCodingPlan(userID)
 		if !ok {
-			mem := h.getStickyCodingWorkbenchMemory(userID)
-			mem.SkipNextPlan = true
-			h.storeStickyCodingWorkbenchMemory(userID, mem)
+			h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+				m.SkipNextPlan = true
+			})
 			return &IMAgentResponse{Text: "已设置跳过多步规划。请重新发送任务以单步直接执行。"}
 		}
-		mem := h.getStickyCodingWorkbenchMemory(userID)
-		mem.SkipNextPlan = true
-		mem.PendingPlanUserText = pending.UserText
-		h.storeStickyCodingWorkbenchMemory(userID, mem)
+		h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+			m.SkipNextPlan = true
+			if strings.TrimSpace(m.PendingPlanUserText) == "" {
+				m.PendingPlanUserText = pending.UserText
+			}
+		})
 		return &IMAgentResponse{
 			Text: "已标记跳过规划。请再发 `/plan skip`（工作台内会直接单步执行原请求）或重新发送任务。\n\n原请求：\n" + truncateRunesForSubAgent(pending.UserText, 400),
 		}

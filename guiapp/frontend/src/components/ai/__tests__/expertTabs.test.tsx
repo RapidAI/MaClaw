@@ -176,6 +176,33 @@ describe("useAITabManager.createExpertTab", () => {
         expect(result.current.tabState.tabs.filter(t => t.type === "expert").length).toBe(2);
     });
 
+    it("publishes the new task path before the following render", () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createExpertTab(expertA, { projectPath: "D:/tasks/old" });
+        });
+        let seen = "";
+        act(() => {
+            result.current.createExpertTab(expertA, { projectPath: "D:/tasks/new" });
+            seen = result.current.getTabs().find(tab => tab.expertId === expertA.id)?.projectPath || "";
+        });
+        expect(seen).toBe("D:/tasks/new");
+    });
+
+    it("keeps a same-turn conversation reset when the tab is bound to a new task", () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createExpertTab(expertA, { projectPath: "D:/tasks/old" });
+        });
+        act(() => {
+            result.current.clearTabConversation(expertTabId(expertA.id));
+            result.current.createExpertTab(expertA, { projectPath: "D:/tasks/new" });
+        });
+        const tab = result.current.tabState.tabs.find(item => item.expertId === expertA.id);
+        expect(tab?.projectPath).toBe("D:/tasks/new");
+        expect(tab?.conversationResetSeq).toBe(1);
+    });
+
     it("rejects an expert without id", () => {
         const { result } = renderHook(() => useAITabManager());
         let tab: ReturnType<typeof result.current.createExpertTab> = null;
@@ -765,7 +792,7 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
             });
         });
         await waitFor(() => {
-            expect(sendExpertMessage).toHaveBeenCalledWith("生成一份演示用学术论文", LATEX_EXPERT_ID);
+            expect(sendExpertMessage).toHaveBeenCalledWith("生成一份演示用学术论文", LATEX_EXPERT_ID, "D:/tasks/new-paper");
         });
         expect(order).toEqual(["reset", "D:/tasks/old-paper", "send"]);
         expect(result.current.manager.getTabState(expertTabId(LATEX_EXPERT_ID))?.history).toEqual([]);
@@ -824,7 +851,7 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
             });
         });
         await waitFor(() => {
-            expect(sendExpertMessage).toHaveBeenCalledWith("make a new deck", expertA.id);
+            expect(sendExpertMessage).toHaveBeenCalledWith("make a new deck", expertA.id, "D:/tasks/new-deck");
         });
         expect(order).toEqual(["reset", "D:/tasks/old-deck", "send"]);
         expect(result.current.manager.getTabState(expertTabId(expertA.id))?.history).toEqual([]);

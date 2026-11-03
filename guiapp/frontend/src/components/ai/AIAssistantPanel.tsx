@@ -4090,9 +4090,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         },
         // Wizard expert handoff: deliver the composer's first message through
         // the freshly opened expert tab (backend expert branch triggers on it).
-        sendExpertMessage: (text, expertId) => {
+        sendExpertMessage: (text, expertId, projectPath) => {
             const tab = getTabs().find(item => item.type === "expert" && item.expertId === expertId);
-            return sendMessageForTab(text, { queue_session_key: expertTaskSessionKey(expertId, tab?.projectPath), ...userTurnDisplayOptions(text) });
+            // The launch names the task that owns this turn. The tab is one
+            // view for every task of the expert, and reading it instead would
+            // deliver the command into whichever task that view still shows.
+            const taskPath = String(projectPath || "").trim() || String(tab?.projectPath || "").trim();
+            return sendMessageForTab(text, { queue_session_key: expertTaskSessionKey(expertId, taskPath), ...userTurnDisplayOptions(text) });
         },
         onEnsureExpertTask: props.onEnsureExpertTask,
         onEnsureAssistantTabTask: props.onEnsureAssistantTabTask,
@@ -5313,7 +5317,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const lastRenderedProgressMessage = compactProgressMessages.at(-1);
     const progressActivityKey = lastRenderedProgressMessage?.id || "";
     const wizardScrollSuspendRef = useRef(false);
-    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, hasConversation, messages: displayMessages, ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
+    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: activeTab.id, hasConversation, messages: displayMessages, ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
     useEffect(() => {
         if (activeTab.type !== "project") return;
         latestProjectCloseSnapshotRef.current = {

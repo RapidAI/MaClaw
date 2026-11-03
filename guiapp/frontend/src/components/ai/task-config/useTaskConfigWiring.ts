@@ -18,6 +18,7 @@ import {
     SetTabWorkingDir,
 } from "../../../../wailsjs/go/main/App";
 import {
+    EVENT_EXPERT_INSTALLED,
     EVENT_EXPERTS_CHANGED,
     EVENT_NEW_TASK_WIZARD_BLOCKED,
     EVENT_OPEN_NEW_TASK_WIZARD,
@@ -27,7 +28,7 @@ import {
 import { openExpertConversation } from "../../../utils/expertConversationNavigation";
 import type { WelcomePromptSubmitMeta } from "../AssistantWelcomeView";
 import { isCloudWorkspacePath } from "../codingTaskMode";
-import { builtinExpertIcon, expertTabId, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON } from "../expertTypes";
+import { builtinExpertIcon, expertDefinitionFromInstallResult, expertTabId, overlayInstalledItems, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON } from "../expertTypes";
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, goalCreateCommand, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
@@ -201,6 +202,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const [taskConfigExperts, setTaskConfigExperts] = useState<ExpertOption[]>([]);
     const taskConfigExpertsRef = useRef(taskConfigExperts);
     taskConfigExpertsRef.current = taskConfigExperts;
+    const taskConfigExpertsLoadGenRef = useRef(0);
+    // Only the read already in flight when the install returned may omit the
+    // new expert. Later reads replace this, so uninstall does not bring it back.
+    const freshlyInstalledExpertsRef = useRef<Array<{ item: ExpertOption; stamp: number }>>([]);
     const [taskConfigWorkflows, setTaskConfigWorkflows] = useState<WorkflowOption[]>([]);
     const [taskConfigLatexTemplates, setTaskConfigLatexTemplates] = useState<LatexTemplate[]>([]);
     const latexListGenRef = useRef(0);
@@ -219,24 +224,53 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     // Experts + workflows load once per panel mount; failures degrade to empty
     // lists (the bar itself tolerates missing sources). Experts re-load when
     // the backend broadcasts experts:changed (market install/uninstall,
-    // local save/delete, managed industry install).
+    // local save/delete, managed industry install). A market install also
+    // posts the new expert immediately so the picker can use it before that
+    // reload finishes.
+    const rememberInstalledExpert = useCallback((raw: unknown) => {
+        const expert = expertDefinitionFromInstallResult(raw);
+        if (!expert) return;
+        const option: ExpertOption = {
+            id: expert.id,
+            name: expert.name || expert.id,
+            description: expert.description || "",
+            icon: expert.icon || "",
+        };
+        freshlyInstalledExpertsRef.current = [
+            ...freshlyInstalledExpertsRef.current.filter(item => item.item.id !== option.id),
+            { item: option, stamp: taskConfigExpertsLoadGenRef.current },
+        ];
+        setTaskConfigExperts(current => current.some(item => item.id === option.id) ? current : [...current, option]);
+    }, []);
+
     const loadTaskConfigExperts = useCallback(async () => {
+        const gen = ++taskConfigExpertsLoadGenRef.current;
         try {
-            const [personalRaw, managedRaw] = await Promise.all([
-                Promise.resolve().then(() => ListExperts()).catch(() => ""),
-                Promise.resolve().then(() => ListManagedIndustryExperts()).catch(() => ""),
+            const [personalResult, managedResult] = await Promise.all([
+                Promise.resolve().then(() => ListExperts()).then(value => ({ ok: true, value })).catch(() => ({ ok: false, value: "" })),
+                Promise.resolve().then(() => ListManagedIndustryExperts()).then(value => ({ ok: true, value })).catch(() => ({ ok: false, value: "" })),
             ]);
+            if (gen !== taskConfigExpertsLoadGenRef.current) return;
+            // A failed personal read must not replace the picker with an empty
+            // catalog. The install result is already on screen.
+            if (!personalResult.ok) return;
+            const personalRaw = personalResult.value;
+            const managedRaw = managedResult.ok ? managedResult.value : "";
             const personal = parseExpertListJSON(personalRaw);
             const seen = new Set(personal.map(e => e.id));
             const managed = parseInstalledManagedIndustryExpertsJSON(managedRaw).filter(e => !seen.has(e.id));
-            setTaskConfigExperts([...personal, ...managed].map(e => ({
+            const listed = [...personal, ...managed].map(e => ({
                 id: e.id,
                 name: e.name || e.id,
                 description: e.description || "",
                 icon: e.icon || "",
-            })));
+            }));
+            const overlaid = overlayInstalledItems(listed, freshlyInstalledExpertsRef.current, gen);
+            freshlyInstalledExpertsRef.current = overlaid.pending;
+            setTaskConfigExperts(overlaid.list);
         } catch {
-            setTaskConfigExperts([]);
+            // Keep the experts already on screen. A failed reload must not
+            // clear the card that was just inserted from the install result.
         }
     }, []);
 
@@ -248,6 +282,24 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         const off = EventsOn(EVENT_EXPERTS_CHANGED, () => { void loadTaskConfigExperts(); });
         return () => { if (typeof off === "function") off(); };
     }, [loadTaskConfigExperts]);
+
+    useEffect(() => {
+        const onInstalled = (event: Event) => {
+            rememberInstalledExpert((event as CustomEvent<{ expert?: unknown }>).detail?.expert);
+        };
+        const onDeleted = (event: Event) => {
+            const id = String((event as CustomEvent<{ expertId?: string }>).detail?.expertId || "");
+            if (!id) return;
+            freshlyInstalledExpertsRef.current = freshlyInstalledExpertsRef.current.filter(item => item.item.id !== id);
+            setTaskConfigExperts(current => current.some(item => item.id === id) ? current.filter(item => item.id !== id) : current);
+        };
+        window.addEventListener(EVENT_EXPERT_INSTALLED, onInstalled);
+        window.addEventListener("maclaw:expert-deleted", onDeleted);
+        return () => {
+            window.removeEventListener(EVENT_EXPERT_INSTALLED, onInstalled);
+            window.removeEventListener("maclaw:expert-deleted", onDeleted);
+        };
+    }, [rememberInstalledExpert]);
 
     // Cloud workspaces load once per panel mount and re-load after the bar's
     // 「新建云端工作区…」 entry creates one (the entitlement response doubles

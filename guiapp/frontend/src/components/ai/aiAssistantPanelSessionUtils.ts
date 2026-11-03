@@ -8,8 +8,6 @@ import { mergeProjectRoundHistory } from "./aiAssistantProjectTabState";
 export { normalizeProjectSessionPath };
 
 /** Keep in sync with LATEX_EXPERT_ID. Local so this module does not import the template catalogue. */
-const LATEX_PAPER_EXPERT_ID = "builtin-latex-paper";
-
 const MAX_PROJECT_CONTEXT_MESSAGES_TO_SEND = 12;
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
 const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
@@ -730,13 +728,12 @@ export function coerceActiveAssistantTask(
     if (!identity) return null;
     const expertId = String(identity.expertId || "").trim();
     if (expertId) {
-        // Each LaTeX paper is its own sidebar row. Keep the path so the
-        // highlight lands on the paper that is actually open.
-        if (expertId === LATEX_PAPER_EXPERT_ID) {
-            const projectPath = normalizeProjectSessionPath(identity.projectPath);
-            return projectPath ? { expertId, projectPath } : { expertId };
-        }
-        return { expertId };
+        // Each launch of an expert is its own task. The path is what separates
+        // those rows: dropping it makes every book of this expert the open
+        // one, so one running turn lights them all and a stop looks shared.
+        // A tab that has not been bound to a task yet still matches by expert.
+        const projectPath = normalizeProjectSessionPath(identity.projectPath);
+        return projectPath ? { expertId, projectPath } : { expertId };
     }
     const projectPath = normalizeProjectSessionPath(identity.projectPath);
     if (!projectPath) return null;

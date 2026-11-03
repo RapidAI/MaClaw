@@ -1456,34 +1456,27 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         const existing = prev.tabs.find(t => t.id === tabId)
             || prev.tabs.find(t => t.type === "expert" && t.expertId === expertId);
         if (existing) {
-            const updated: AITab = {
-                ...existing,
-                title,
-                expertId,
-                expertIcon: icon || existing.expertIcon,
-                expertDescription: description || existing.expertDescription,
-                projectPath: projectPath || existing.projectPath,
-                latexRelativePath: latexRelativePath || existing.latexRelativePath,
-            };
             const saved = tabStatesRef.current.get(existing.id);
             if (saved) {
                 saved.lastActiveAt = Date.now();
             } else {
                 tabStatesRef.current.set(existing.id, { history: [], scrollTop: 0, inputText: "", lastActiveAt: Date.now() });
             }
-            updateTabState(() => ({
-                ...prev,
-                tabs: prev.tabs.map(t => t.id === existing.id ? updated : t),
-                activeTabId: focusedTabId(prev.activeTabId, existing.id, options?.focus),
-            }));
-            return updated;
-        }
-
-        // Expert tabs count toward the same cap as project tabs (maxVETabs).
-        const expertTabCount = prev.tabs.filter(t => t.type === "expert").length;
-        if (expertTabCount >= prev.maxVETabs) {
-            setTabLimitError(`Expert tab limit reached (max ${prev.maxVETabs})`);
-            return null;
+        } else {
+            // Expert tabs count toward the same cap as project tabs (maxVETabs).
+            const expertTabCount = prev.tabs.filter(t => t.type === "expert").length;
+            if (expertTabCount >= prev.maxVETabs) {
+                setTabLimitError(`Expert tab limit reached (max ${prev.maxVETabs})`);
+                return null;
+            }
+            const cachedState = tabStatesRef.current.get(tabId);
+            tabStatesRef.current.set(tabId, {
+                history: [],
+                scrollTop: 0,
+                inputText: "",
+                ...cachedState,
+                lastActiveAt: Date.now(),
+            });
         }
 
         const newTab: AITab = {
@@ -1498,22 +1491,44 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             executionProfile: "assistant",
             closable: true,
         };
-        const cachedState = tabStatesRef.current.get(tabId);
-        tabStatesRef.current.set(tabId, {
-            history: [],
-            scrollTop: 0,
-            inputText: "",
-            ...cachedState,
-            lastActiveAt: Date.now(),
+
+        // Patch whatever state is current. A snapshot taken at the start of
+        // this call drops a clear that was queued in the same turn (the
+        // previous book's reset), and the first message then still sees that
+        // book. The ref is written immediately because that message is sent
+        // before React renders.
+        const applyExpertTab = (state: AIAssistantPanelTabState): AIAssistantPanelTabState => {
+            const current = state.tabs.find(t => t.id === tabId)
+                || state.tabs.find(t => t.type === "expert" && t.expertId === expertId);
+            const boundPath = projectPath || current?.projectPath;
+            const boundLatex = latexRelativePath || current?.latexRelativePath;
+            const nextTab: AITab = current
+                ? {
+                    ...current,
+                    title,
+                    expertId,
+                    expertIcon: icon || current.expertIcon,
+                    expertDescription: description || current.expertDescription,
+                    projectPath: boundPath,
+                    latexRelativePath: boundLatex,
+                }
+                : { ...newTab, projectPath: boundPath, latexRelativePath: boundLatex };
+            const tabs = current
+                ? state.tabs.map(t => t.id === current.id ? nextTab : t)
+                : [...state.tabs, nextTab];
+            return {
+                ...state,
+                tabs,
+                activeTabId: focusedTabId(state.activeTabId, nextTab.id, options?.focus),
+            };
+        };
+        tabStateRef.current = applyExpertTab(tabStateRef.current);
+        updateTabState(current => {
+            const merged = applyExpertTab(current);
+            tabStateRef.current = merged;
+            return merged;
         });
-
-        updateTabState(() => ({
-            ...prev,
-            tabs: [...prev.tabs, newTab],
-            activeTabId: focusedTabId(prev.activeTabId, newTab.id, options?.focus),
-        }));
-
-        return newTab;
+        return tabStateRef.current.tabs.find(t => t.id === tabId) || newTab;
     }, [updateTabState]);
 
     const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

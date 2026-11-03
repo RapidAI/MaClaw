@@ -11,6 +11,8 @@ import {
     WithdrawExpertMarketListing,
 } from '../../wailsjs/go/main/App';
 import { useDialog } from './CustomDialog';
+import { expertDefinitionFromInstallResult, type ExpertDefinition } from './ai/expertTypes';
+import { EVENT_EXPERT_INSTALLED } from '../constants/events';
 import { openSettingsTab } from '../utils/settingsNavigation';
 import { tailText } from '../i18n/mnTail'
 
@@ -88,7 +90,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     lang: Lang;
     initialTab?: 'market' | 'library';
     onClose: () => void;
-    onInstalled?: () => void;
+    onInstalled?: (expert: ExpertDefinition) => void;
     /** Remove the local card immediately after its market installation is removed. */
     onUninstalled?: (localExpertID: string) => void;
     /** Notify the local expert cards as soon as a listing is submitted or withdrawn. */
@@ -398,10 +400,15 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         if (!purchaseInProgress) setBusyID(id);
         try {
             const result = await InstallExpertMarketListing(id);
-            const localExpertID = String(result?.expert?.id || '').trim();
-            if (!localExpertID) throw new Error(t(lang, '安装未返回本地专家标识，请重试。', 'Installation did not return a local expert ID. Please try again.'));
-            setListingInstallState(id, localExpertID);
-            onInstalled?.();
+            const installedExpert = expertDefinitionFromInstallResult(result?.expert);
+            if (!installedExpert) throw new Error(t(lang, '安装未返回本地专家标识，请重试。', 'Installation did not return a local expert ID. Please try again.'));
+            setListingInstallState(id, installedExpert.id);
+            // The installed-expert list and the new-task picker insert this
+            // card now. Waiting for the next ListExperts round trip (it also
+            // pulls Hub) left the expert missing until the dialog was closed
+            // and the page was reopened.
+            window.dispatchEvent(new CustomEvent(EVENT_EXPERT_INSTALLED, { detail: { expert: installedExpert } }));
+            onInstalled?.(installedExpert);
             // Do not present a successful native install as failed merely
             // because the follow-up account refresh is temporarily offline.
             void refreshAccount();

@@ -466,12 +466,24 @@ describe("aiAssistantPanelSessionUtils", () => {
         });
         expect(activeAssistantTaskIdentity({
             type: "expert",
+            expertId: "paper-review",
+            projectPath: "d:/tasks/book-a",
+        })).toEqual({
+            expertId: "paper-review",
+            projectPath: "D:/tasks/book-a",
+        });
+        expect(activeAssistantTaskIdentity({
+            type: "expert",
             expertId: "builtin-latex-paper",
             projectPath: "d:/tasks/latex-paper",
         })).toEqual({
             expertId: "builtin-latex-paper",
             projectPath: "D:/tasks/latex-paper",
         });
+        expect(sameActiveAssistantTask(
+            { expertId: "paper-review", projectPath: "D:/tasks/book-a" },
+            { expertId: "paper-review", projectPath: "D:/tasks/book-b" },
+        )).toBe(false);
         expect(activeAssistantTaskIdentity({ type: "expert" })).toBeNull();
         expect(coerceActiveAssistantTask({})).toBeNull();
         expect(coerceActiveAssistantTask({ projectPath: "  " })).toBeNull();

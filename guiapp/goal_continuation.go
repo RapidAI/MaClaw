@@ -2454,6 +2454,12 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		log.Printf("[goal-continuation] skipping: run window paused user=%s", userID)
 		return
 	}
+	// An unconfirmed coding plan is the user's next step. Another host turn
+	// would clear that plan and start writing files.
+	if h.codingPlanAwaitingUser(userID) {
+		log.Printf("[goal-continuation] waiting until the coding plan is confirmed user=%s", userID)
+		return
+	}
 
 	// A failed goal-continuation turn closes the goal only when this phase's
 	// contract is still open. A plan or step already stored is the host
