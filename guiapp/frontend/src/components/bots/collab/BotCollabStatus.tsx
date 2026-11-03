@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { isChineseLang } from '../../../i18n/langSelect';
 import { tailText } from '../../../i18n/mnTail';
-import { humanPrompt, needsHuman, shorten, stateLabel, statusRowText, botName, type Assignment, type BotRef } from './botCollab';
+import { humanPrompt, needsHuman, shorten, stateLabel, statusRowText, botName, type Assignment, type BotBusy, type BotRef } from './botCollab';
 
 /** One-line "who is working on what", the prompts that need the person, and the assignment list. */
-export function BotCollabStatus({ assignments, bots, lang = 'zh-Hans' }: { assignments: Assignment[]; bots: BotRef[]; lang?: string }) {
+export function BotCollabStatus({ assignments, bots, lang = 'zh-Hans', busy = [] }: { assignments: Assignment[]; bots: BotRef[]; lang?: string; busy?: BotBusy[] }) {
     const [open, setOpen] = useState(false);
-    const line = statusRowText(assignments, bots, 3, lang);
+    const line = statusRowText(assignments, bots, 3, lang, busy);
     const waiting = assignments.filter(needsHuman);
     const zh = isChineseLang(lang);
     if (!line && !waiting.length && !assignments.length) return null;

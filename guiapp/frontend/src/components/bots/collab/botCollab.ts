@@ -89,7 +89,12 @@ const ACTIVE = new Set(['queued', 'running', 'progress']);
  * The one-line status: who is working and on what stage, at most three
  * bots, then "等 N 个". Empty when nobody is busy.
  */
-export function statusRowText(assignments: Assignment[], bots: BotRef[], max = 3, lang = 'zh-Hans'): string {
+// BotBusy is a bot's own run (a job the person gave it directly), which is
+// not an assignment. The row has to count it too, or it says no bot is busy
+// while that bot shows 工作中 (2026-11-03 21:08).
+export interface BotBusy { bot: string; phase: 'execute' | 'plan'; task?: string }
+
+export function statusRowText(assignments: Assignment[], bots: BotRef[], max = 3, lang = 'zh-Hans', busy: BotBusy[] = []): string {
     const seen = new Set<string>();
     const parts: string[] = [];
     const zh = isChineseLang(lang);
@@ -102,6 +107,16 @@ export function statusRowText(assignments: Assignment[], bots: BotRef[], max = 3
         const verbZh = a.state === 'queued' ? '排队中' : a.last_report ? '正在做' : '在想';
         const verbEn = a.state === 'queued' ? 'is queued' : a.last_report ? 'is working' : 'is thinking';
         parts.push(tailText(lang, `${name} ${verbEn}: ${stage}`, `${name} ${verbZh}：${stage}`));
+    }
+    for (const b of busy) {
+        if (!b || !b.bot || seen.has(b.bot)) continue;
+        seen.add(b.bot);
+        if (parts.length >= max) continue;
+        const name = botName(bots, b.bot, lang);
+        const stage = shorten(b.task || '', 18);
+        const verbZh = b.phase === 'plan' ? '在安排' : '正在做';
+        const verbEn = b.phase === 'plan' ? 'is planning' : 'is working';
+        parts.push(stage ? tailText(lang, `${name} ${verbEn}: ${stage}`, `${name} ${verbZh}：${stage}`) : tailText(lang, `${name} ${verbEn}`, `${name} ${verbZh}`));
     }
     if (!parts.length) return '';
     const more = seen.size - parts.length;

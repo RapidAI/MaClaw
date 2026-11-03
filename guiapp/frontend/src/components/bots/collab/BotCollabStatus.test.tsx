@@ -17,6 +17,13 @@ describe('BotCollabStatus', () => {
         fireEvent.click(screen.getByTestId('bot-collab-row'));
         expect(screen.getByTestId('bot-collab-review-3').textContent).toBe('已退回：标题太长');
     });
+    it('counts a bot busy on its own run, not only assignments', () => {
+        render(<BotCollabStatus bots={bots} assignments={[
+            { id: '3', owner_bot: 'm', target_bot: 'a', task: '改稿', state: 'completed', created_at: '' },
+        ]} busy={[{ bot: 'm', phase: 'execute' }]} />);
+        expect(screen.getByTestId('bot-collab-row').textContent).toContain('主管 正在做');
+        expect(screen.getByTestId('bot-collab-row').textContent).not.toContain('没有机器人在忙');
+    });
     it('renders nothing with no assignments', () => {
         const { container } = render(<BotCollabStatus bots={bots} assignments={[]} />);
         expect(container.innerHTML).toBe('');
