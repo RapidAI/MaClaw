@@ -248,6 +248,12 @@ func (s *BrowserAgentSession) lastSnapshotFlags() (BrowserPageFlags, bool) {
 	return snap.PageFlags, true
 }
 
+// PeekPageFlags is the exported read-only page-flag peek used by speculative
+// login/captcha/payment prechecks. It never clicks or types.
+func (s *BrowserAgentSession) PeekPageFlags() (BrowserPageFlags, error) {
+	return s.peekPageFlags()
+}
+
 func (s *BrowserAgentSession) peekPageFlags() (BrowserPageFlags, error) {
 	if s != nil && s.peekFlags != nil {
 		return s.peekFlags()

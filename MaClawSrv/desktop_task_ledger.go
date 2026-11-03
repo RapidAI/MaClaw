@@ -27,12 +27,13 @@ import (
 // refilled a post the person had already published and asked to publish
 // again). Every publish path reads this ledger first.
 type desktopLedgerEntry struct {
-	Kind    string    `json:"kind"` // posted | publish_takeover | handback | checked | run_end
+	Kind    string    `json:"kind"` // posted | publish_takeover | handback | checked | run_end | page_state | draft | login_state
 	Host    string    `json:"host,omitempty"`
 	Title   string    `json:"title,omitempty"`
 	URL     string    `json:"url,omitempty"`
 	Run     string    `json:"run,omitempty"`
 	Detail  string    `json:"detail,omitempty"`
+	Body    string    `json:"body,omitempty"` // draft / form text kept outside the container
 	Found   bool      `json:"found,omitempty"`
 	At      time.Time `json:"at"`
 }
@@ -46,7 +47,13 @@ const (
 	desktopLedgerMax     = 300
 	desktopRepostWindow  = 24 * time.Hour
 	desktopPendingWindow = 6 * time.Hour
+	desktopPageStateWindow = 6 * time.Hour
+	desktopDraftBodyMax    = 2000
 )
+
+// desktopLedgerNow is overridable in tests.
+var desktopLedgerNow = time.Now
+
 
 var desktopLedgerMu sync.Mutex
 
@@ -80,7 +87,7 @@ func desktopLedgerAdd(key string, e desktopLedgerEntry) {
 		return
 	}
 	if e.At.IsZero() {
-		e.At = time.Now()
+		e.At = desktopLedgerNow()
 	}
 	desktopLedgerMu.Lock()
 	defer desktopLedgerMu.Unlock()
@@ -190,7 +197,7 @@ func desktopLedgerPromptText(scope agentruntime.Scope) string {
 	if len(entries) == 0 {
 		return ""
 	}
-	now := time.Now()
+	now := desktopLedgerNow()
 	var lines []string
 	for _, e := range entries {
 		if e.Kind == "posted" && now.Sub(e.At) <= desktopRepostWindow {
@@ -214,7 +221,125 @@ func desktopLedgerPromptText(scope agentruntime.Scope) string {
 	if p, ok := desktopLedgerPendingCheck(entries, "", now); ok {
 		out += "TASK LEDGER: at " + p.At.Format("15:04") + " the person was handed the filled editor on " + p.Host + " to publish, and it is not known whether they did. Before any publish step call action=publish with check_posted=true and the same title: it reads the account's post list and writes nothing. "
 	}
+	out += desktopLedgerProgressPrompt(entries, now)
 	return out
+}
+
+// desktopLedgerProgressPrompt surfaces the latest page/draft/login state that
+// outlives a container restart or hand-back, so a resume does not start blind.
+func desktopLedgerProgressPrompt(entries []desktopLedgerEntry, now time.Time) string {
+	var draft, page, login desktopLedgerEntry
+	var haveDraft, havePage, haveLogin bool
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if now.Sub(e.At) > desktopPageStateWindow {
+			break
+		}
+		switch e.Kind {
+		case "draft":
+			if !haveDraft {
+				draft, haveDraft = e, true
+			}
+		case "page_state":
+			if !havePage {
+				page, havePage = e, true
+			}
+		case "login_state":
+			if !haveLogin {
+				login, haveLogin = e, true
+			}
+		}
+		if haveDraft && havePage && haveLogin {
+			break
+		}
+	}
+	var parts []string
+	if havePage {
+		l := "PAGE STATE (kept outside the desktop, survives restart/hand-back): last URL " + page.URL
+		if page.Title != "" {
+			l += " title 「" + page.Title + "」"
+		}
+		if page.Body != "" {
+			l += " form/editor text starts 「" + desktopLedgerBodyPreview(page.Body) + "」"
+		}
+		l += ". Resume from this page; do not clear a filled editor."
+		parts = append(parts, l)
+	}
+	if haveDraft {
+		l := "DRAFT (kept outside the desktop)"
+		if draft.Host != "" {
+			l += " for " + draft.Host
+		}
+		if draft.Title != "" {
+			l += " title 「" + draft.Title + "」"
+		}
+		if draft.Body != "" {
+			l += " body starts 「" + desktopLedgerBodyPreview(draft.Body) + "」"
+		}
+		l += ". Prefer this text over inventing a new draft; nothing was published from it alone."
+		parts = append(parts, l)
+	}
+	if haveLogin && login.Detail != "" && login.Detail != "ok" {
+		parts = append(parts, "LOGIN STATE (kept outside the desktop): " + login.Detail + " on " + login.Host + ". Do not fill until signed in.")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " ") + " "
+}
+
+func desktopLedgerBodyPreview(body string) string {
+	body = strings.Join(strings.Fields(body), " ")
+	runes := []rune(body)
+	if len(runes) > 120 {
+		return string(runes[:120]) + "…"
+	}
+	return body
+}
+
+func desktopLedgerCapBody(body string) string {
+	body = strings.TrimSpace(body)
+	runes := []rune(body)
+	if len(runes) > desktopDraftBodyMax {
+		return string(runes[:desktopDraftBodyMax])
+	}
+	return body
+}
+
+// desktopLedgerRememberProgress writes page/draft state under dataRoot so a
+// hand-back, offline stretch, or container restart does not wipe progress.
+// kind is "page_state" or "draft" (empty defaults from which fields are set).
+func desktopLedgerRememberProgress(scope agentruntime.Scope, url, title, body, kind string) {
+	key := desktopLedgerKey(scope)
+	if key == "" {
+		return
+	}
+	url = strings.TrimSpace(url)
+	title = strings.TrimSpace(title)
+	body = desktopLedgerCapBody(body)
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		if body != "" || title != "" {
+			kind = "draft"
+		} else if url != "" {
+			kind = "page_state"
+		} else {
+			return
+		}
+	}
+	if url == "" && title == "" && body == "" {
+		return
+	}
+	host := desktopLedgerHost(firstNonEmptyStr(url, desktopTaskSpecFor(scope.RunID).EditorURL))
+	desktopLedgerAdd(key, desktopLedgerEntry{
+		Kind:   kind,
+		Host:   host,
+		Title:  title,
+		URL:    url,
+		Body:   body,
+		Run:    scope.RunID,
+		Detail: kind,
+	})
 }
 
 // desktopPublishLedgerGuard runs before any publish fills a form. A post of
@@ -227,7 +352,7 @@ func desktopPublishLedgerGuard(scope agentruntime.Scope, session *browser.Browse
 	key := desktopLedgerKey(scope)
 	entries := desktopLedgerEntries(key)
 	host := desktopLedgerHost(firstNonEmptyStr(spec.EditorURL, session.CurrentURL()))
-	now := time.Now()
+	now := desktopLedgerNow()
 	if !desktopArgBool(args, "republish") {
 		if e, ok := desktopLedgerRecentPost(entries, host, spec.Title, now); ok {
 			out := "publish skipped: this desktop already posted 「" + e.Title + "」 on " + e.Host + " at " + e.At.Format("01-02 15:04") + " (task ledger)"
@@ -272,7 +397,7 @@ func desktopPublishLedgerGuard(scope agentruntime.Scope, session *browser.Browse
 // first is unsettled or the post already went out.
 func desktopLedgerTakeoverRefusal(scope agentruntime.Scope) string {
 	entries := desktopLedgerEntries(desktopLedgerKey(scope))
-	now := time.Now()
+	now := desktopLedgerNow()
 	host := desktopLedgerHost(desktopTaskSpecFor(scope.RunID).EditorURL)
 	if e, ok := desktopLedgerPendingCheck(entries, host, now); ok && e.Kind == "publish_takeover" && e.Run != scope.RunID {
 		return "request_takeover refused: the person was already asked to publish at " + e.At.Format("01-02 15:04") + " and it is not known whether they did. Check the post list first (publish with check_posted=true); never ask them to publish twice."

@@ -133,6 +133,11 @@ func desktopNoteAutoHandback(scope agentruntime.Scope, out map[string]any) {
 	}
 	trig, _ := out["auto_handback_trigger"].(string)
 	desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "handback", Run: scope.RunID, Detail: trig})
+	// Persist where we left the page so a restart/offline stretch does not
+	// wipe progress: compute stays in the container; state lives in the ledger.
+	if ed := desktopTaskSpecFor(scope.RunID).EditorURL; ed != "" {
+		desktopLedgerRememberProgress(scope, ed, "", "", "page_state")
+	}
 	if trig == "published" {
 		desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "posted", Host: desktopLedgerHost(desktopTaskSpecFor(scope.RunID).EditorURL), Run: scope.RunID, Detail: "seen_after_takeover"})
 	}

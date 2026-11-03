@@ -41,9 +41,9 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode"}
 
-var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode"}
+var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode"}
 
 func desktopActionAllowed(action string) bool {
 	for _, allowed := range desktopExecuteActions {
@@ -124,7 +124,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":          map[string]any{"type": "string", "description": "probe, script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash under /tmp, open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
+				"action":          map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash under /tmp, open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
 				"kind":            map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
 				"message":         map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":          map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id. A partial name or number works (\"5\" or \"5号\" finds \"Bot 5\", \"写作\" finds \"写作助手\"); if several bots fit, or none, the error lists the names: ask the person which one."},
@@ -162,6 +162,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"title_selector":  map[string]any{"type": "string", "description": "publish: CSS selector of the title field if not auto-found"},
 				"body_selector":   map[string]any{"type": "string", "description": "publish: CSS selector of the body editor if not auto-found"},
 				"upload_selector": map[string]any{"type": "string", "description": "publish: CSS selector of the file input"},
+				"check":           map[string]any{"type": "string", "description": "speculate: check_login, check_posted, prepare_draft, or snapshot_page. Safe prechecks only; never publish, pay, or delete. Empty/useless results stay quiet.", "enum": []string{"check_login", "check_posted", "prepare_draft", "snapshot_page"}},
 				"check_posted":    map[string]any{"type": "boolean", "description": "publish: first look (read-only) in the post list at verify_url for this title; if it is already there nothing is filled or posted. Use it after the person was handed the editor to publish"},
 				"republish":       map[string]any{"type": "boolean", "description": "publish: only when the person explicitly asked to post the same article again; otherwise a post already on record is never repeated"},
 				"explore":         map[string]any{"type": "boolean", "description": "publish: read-only probe of the editor (fields, frames, file inputs, publish buttons, notices); types, uploads and clicks nothing. Use it on a new site before the real publish"},
@@ -632,6 +633,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if action == "request_takeover" {
 		return requestDesktopTakeover(ctx, scope, desktopArg(args, "reason"))
 	}
+	if action == "speculate" {
+		return operateDesktopSpeculate(ctx, scope, args)
+	}
 	if err := desktopBlockedByPerson(scope); err != nil {
 		return "", err
 	}
@@ -926,6 +930,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if err != nil {
 		return "", err
 	}
+	specNote := desktopSpeculateAutoOnce(scope, session)
 	defer func() {
 		// Registered first so it runs after the disarm below, which waits briefly for a late chooser.
 		if session != nil && session.FileChooserBlocked() > 0 {
@@ -989,6 +994,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		result, callErr := session.Type(desktopArg(args, "snapshot_id"), desktopArg(args, "ref"), "", desktopArg(args, "text"))
 		text, err = desktopActionText(result, callErr)
 		text, err = desktopVerifyBrowserType(session, desktopArg(args, "text"), text, err)
+		desktopNoteAppliedProgress(scope, session, desktopArg(args, "text"), text, err)
 	case "press":
 		defer beginDesktopActivity(scope.RunID, desktopKeyPhrase(desktopArg(args, "key")))()
 		result, callErr := session.Press(desktopArg(args, "key"))
@@ -998,6 +1004,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		result, callErr := browser.RunPageScriptBatch(session, desktopArg(args, "script"), desktopArg(args, "name"), userKey, desktopBrowserSkillRoot)
 		text, err = desktopActionText(result, callErr)
 		text, err = desktopVerifyBrowserScript(session, desktopArg(args, "script"), text, err)
+		desktopNoteAppliedProgress(scope, session, browser.ScriptWrittenText(desktopArg(args, "script")), text, err)
 		text, err = desktopVerifyRichBody(desktopOwner(scope), session, action, args, text, err)
 		if err != nil && desktopScriptErrIsNavigation(err) {
 			// The page navigated (e.g. after a submit) while the script ran.
@@ -1043,6 +1050,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	phase := "execute"
 	if value, keyed := desktopPhase(ctx); keyed {
 		phase = value
+	}
+	if specNote != "" && err == nil {
+		text = strings.TrimRight(specNote, "\n") + "\n" + strings.TrimLeft(text, "\n")
 	}
 	return finishDesktopActionPhase(scope, text, err, phase)
 }
