@@ -150,7 +150,8 @@ func desktopSpeculatePosted(scope agentruntime.Scope, session *browser.BrowserAg
 	key := desktopLedgerKey(scope)
 	entries := desktopLedgerEntries(key)
 	now := desktopLedgerNow()
-	if e, ok := desktopLedgerRecentPost(entries, host, title, now); ok {
+	// An unconfirmed submit is not proof: the live list look below decides.
+	if e, ok := desktopLedgerRecentPost(entries, host, title, now); ok && e.Detail != string(browser.PublishSubmitted) {
 		out := "speculate: already posted 「" + e.Title + "」 on " + e.Host + " at " + e.At.Format("01-02 15:04")
 		if e.URL != "" {
 			out += " link " + e.URL

@@ -354,6 +354,27 @@ func desktopPublishLedgerGuard(scope agentruntime.Scope, session *browser.Browse
 	host := desktopLedgerHost(firstNonEmptyStr(spec.EditorURL, session.CurrentURL()))
 	now := desktopLedgerNow()
 	if !desktopArgBool(args, "republish") {
+		// A submit that was never confirmed is not proof the post is up
+		// (run_6fa834e0: CSDN refused the near-empty post, the ledger said
+		// submitted_unconfirmed and would have blocked the real one): the
+		// account's post list decides.
+		if e, ok := desktopLedgerRecentPost(entries, host, spec.Title, now); ok && e.Detail == string(browser.PublishSubmitted) && (spec.VerifyURL != "" || spec.VerifyAPI != "") {
+			rep, err := browser.FindPosted(session.PublishDriver(), spec)
+			if err != nil {
+				return "", true, fmt.Errorf("publish refused: an earlier submit of 「%s」 was not confirmed and the post list could not be read to rule out a duplicate (%v); nothing was filled or posted", spec.Title, err)
+			}
+			found := rep != nil && rep.State == browser.PublishLive
+			link := ""
+			if rep != nil {
+				link = rep.ResultURL
+			}
+			desktopLedgerAdd(key, desktopLedgerEntry{Kind: "checked", Host: host, Title: spec.Title, URL: link, Run: scope.RunID, Found: found, Detail: "unconfirmed_recheck"})
+			if found {
+				desktopLedgerAdd(key, desktopLedgerEntry{Kind: "posted", Host: host, Title: spec.Title, URL: link, Run: scope.RunID, Detail: "found_in_list"})
+				return "publish skipped: 「" + spec.Title + "」 is already in the account's post list, link " + link + ". Nothing was filled or posted. Report that it is live.", true, nil
+			}
+			return "", false, nil
+		}
 		if e, ok := desktopLedgerRecentPost(entries, host, spec.Title, now); ok {
 			out := "publish skipped: this desktop already posted 「" + e.Title + "」 on " + e.Host + " at " + e.At.Format("01-02 15:04") + " (task ledger)"
 			if e.URL != "" {
