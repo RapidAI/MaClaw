@@ -29,6 +29,13 @@ const WORD_KIND: Record<string, BotFeedKind> = {
     交代: '交代任务', 进展: '进展', 说: '消息', 回复: '消息',
 };
 
+// Internal bot↔bot briefs (peer review, accept/return) keep their full text
+ // for the receiving bot, but the person only sees a short human label.
+const REVIEW_ASK = /请审核|please\s*review|action\s*=\s*accept_result|assignment\s*=/i;
+const REVIEW_OK = /审核\s*\/?\s*review\s+(accepted|通过)|review\s+accepted/i;
+const REVIEW_BACK = /审核\s*\/?\s*review\s+(returned|退回)|return_result|review\s+returned/i;
+const INTERNAL_BRIEF = /任务\s*\/?\s*task\s*:|结果\s*\/?\s*result\s*:|action\s*=\s*(accept_result|return_result|delegate)/i;
+
 const KIND_ICON: Record<BotFeedKind, string> = {
     交代任务: '📋', 开始执行: '▶', 交来文件: '📎', 完成: '✓', 求助: '✋', 出错: '⚠', 进展: '…', 消息: '💬',
 };
@@ -41,13 +48,28 @@ function cjk(text: string): boolean {
 
 // One short line: first non-empty line, run ids out, at most ~60 chars.
 // A long prompt with no Chinese in it is a raw order: it stays behind the click.
+// Peer-review / accept_result briefs never leak assignment ids or bilingual
+ // machine instructions into the summary the person sees.
 export function botFeedSummary(text: string): string {
     const clean = (text || '').replace(RUN_ID, '').trim();
+    if (!clean) return '';
+    if (REVIEW_OK.test(clean)) return '审核通过';
+    if (REVIEW_BACK.test(clean)) return '退回修改';
+    if (REVIEW_ASK.test(clean)) return '请审核';
+    if (INTERNAL_BRIEF.test(clean)) return '内部协作说明';
     const first = (clean.split(/\r?\n/).find(line => line.trim() !== '') || '').replace(/\s+/g, ' ').trim();
     if (!first) return '';
-    if (!cjk(first) && first.length > SUMMARY_MAX) return '一段英文指令（点开看原文）';
-    const chars = [...first];
-    return chars.length > SUMMARY_MAX ? chars.slice(0, SUMMARY_MAX - 1).join('') + '…' : first;
+    // Drop trailing machine crumbs that still ride on an otherwise human line.
+    const human = first
+        .replace(/\s*assignment\s*=\S+/ig, '')
+        .replace(/\s*action\s*=\S+/ig, '')
+        .replace(/\s*\/?\s*please\s*review\b/ig, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const line = human || first;
+    if (!cjk(line) && line.length > SUMMARY_MAX) return '一段英文指令（点开看原文）';
+    const chars = [...line];
+    return chars.length > SUMMARY_MAX ? chars.slice(0, SUMMARY_MAX - 1).join('') + '…' : line;
 }
 
 function splitFiles(body: string): { text: string; files: string[] } {
@@ -68,8 +90,11 @@ export function botFeedLineOf(content: string, self: string, opts: { feed?: BotF
     const me = (self || '').trim() || '我';
     const extra = opts.fileNames || [];
     const done = (from: string, to: string, kind: BotFeedKind, body: string, files: string[] = []): BotFeedLineData => {
-        const k: BotFeedKind = opts.failed ? '出错' : kind;
-        return { from, to, kind: k, summary: botFeedSummary(body) || k, full: raw, files: [...files, ...extra], alert: k === '求助' || k === '出错' };
+        let k: BotFeedKind = opts.failed ? '出错' : kind;
+        const summary = botFeedSummary(body) || k;
+        if (!opts.failed && (summary === '请审核' || summary === '退回修改')) k = '求助';
+        if (!opts.failed && summary === '审核通过') k = '完成';
+        return { from, to, kind: k, summary, full: raw, files: [...files, ...extra], alert: k === '求助' || k === '出错' };
     };
     if (opts.feed?.from) {
         const word = opts.feed.word || '说';

@@ -19,7 +19,9 @@ import (
 //     turn of that bot, so it reads and answers the mail now instead of on
 //     its next run. The main bot's mail is left to its GUI while a GUI is
 //     polling it; with no GUI the main bot's server-side twin is woken.
-//   - The desktop allows one run per user. A busy desktop retries later and
+//   - One run per shared desktop (isolated bots have their own). The account
+//     primary/router is never blocked by a worker's run, so new jobs can be
+//     routed while a publish continues. A busy desktop retries later and
 //     every run end kicks the dispatcher again.
 //
 // Nothing here needs a GUI, so a cross-bot task completes with it closed.

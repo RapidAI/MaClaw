@@ -5589,11 +5589,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 return;
             }
         }
-        // Subscription passthrough: a follow-up to the task a teammate owns
-        // goes straight to that teammate's run (Hub decides by rules; what
-        // they cannot settle comes back and is read here as usual). The
-        // teammate answers in its own voice, so no ack is added here.
-        if (!literal && !preset && !verbatim && !desktopWorkActive(botId)) {
+        // Subscription passthrough: changes to a live task go straight to the
+        // worker that owns it (Hub decides by rules). New unrelated jobs fall
+        // through so the router can dispatch another worker. Tried even while
+        // this bot looks busy, so an old task's update never waits on the router.
+        if (!literal && !preset && !verbatim) {
             const route = await withinBudget(RouteDesktopBotFollowUp(botId, content), 4000).catch(() => undefined);
             if (userIdRef.current !== userId) return;
             if (route && route.routed) {

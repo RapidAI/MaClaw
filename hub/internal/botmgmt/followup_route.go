@@ -11,9 +11,10 @@ import (
 // Subscription passthrough (after the Super-agent prototype's Ticket
 // Subscriptions): a delegate note the main bot handed to a teammate, with a
 // run id and no closing report, is that teammate's subscription to the
-// person's conversation with the main bot. A follow-up the person writes to
-// the main bot while it is live goes straight to the teammate's run as a
-// supplement; the main bot does not re-route it with its own judgement.
+// person's conversation with the main bot. A change to that live task goes
+// straight to the owning worker as a supplement (the router is not asked
+// again). A brand-new job returns new_job so the router can notify/dispatch
+// another worker.
 //
 // The decision is two-level: cheap rules first, and only what the rules
 // cannot settle is left to the model (the GUI's supplement reader). The
@@ -35,7 +36,7 @@ var (
 	// A message that opens another job.
 	followUpNewJobRe = regexp.MustCompile(`^(另外|还有一件|还有个事|再帮我|帮我再|帮我|新任务|换个任务|顺便帮我|你去|去)|(?i)^(also|another task|new task|please also)`)
 	// A message that only refines the job already underway.
-	followUpRefineRe = regexp.MustCompile(`^(要|需要|加上|加个|加点|配上|配图|带上|改成|改为|换成|别|不要|不用|别用|标题|正文|图片|封面|用|再加|多加|多写|少写|字数|语气|风格|记得|注意|最好|尽量|只要|只发|发在|发到|定时|分段|图文)|图文并茂|(?i)^(make it|use |add |no |don't|do not|shorter|longer|with )`)
+	followUpRefineRe = regexp.MustCompile(`^(要|需要|加上|加个|加点|配上|配图|带上|改成|改为|换成|改一下|改下|更新|补充|调整|修正|删掉|去掉|别|不要|不用|别用|标题|正文|图片|封面|用|再加|多加|多写|少写|字数|语气|风格|记得|注意|最好|尽量|只要|只发|发在|发到|定时|分段|图文)|图文并茂|(?i)^(make it|use |add |update |change |fix |remove |no |don't|do not|shorter|longer|with )`)
 	followUpStopRe   = regexp.MustCompile(`^(停|停下|别做了|不做了|取消|算了)|(?i)^(stop|cancel)\b`)
 )
 

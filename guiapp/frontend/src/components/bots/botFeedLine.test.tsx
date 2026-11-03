@@ -38,6 +38,21 @@ describe('bot feed line', () => {
         expect(err).toMatchObject({ kind: '出错', alert: true, summary: 'boom' });
         expect(botFeedLineOf(desktopBotServerRunText('wake', 'run_1', '处理好了', '', 'succeeded'), 'mybod')).toMatchObject({ kind: '完成', summary: '处理好了' });
     });
+
+    it('collapses peer-review and accept_result briefs to a short human label', () => {
+        const brief = '请审核 / please review assignment=note_abc\n任务 / task: 写一篇\n结果 / result: 写好了\n核对产物后用 action=accept_result';
+        const help = desktopBotReportFeedText({ from: 'b2', target: 'b1', topic: 'question', text: brief }, bots);
+        const got = botFeedLineOf(help.received, 'Bot 1', { feed: help.feed })!;
+        expect(got).toMatchObject({ kind: '求助', alert: true, summary: '请审核' });
+        expect(got.summary).not.toContain('assignment');
+        expect(got.summary).not.toContain('accept_result');
+        expect(got.full).toContain('assignment=note_abc');
+        const sent = botFeedLineOf(help.sent, 'mybod')!;
+        expect(sent.summary).toBe('请审核');
+        const accepted = desktopBotReportFeedText({ from: 'b1', target: 'b2', topic: 'info', text: '审核 / review accepted note_abc: ok' }, bots);
+        expect(botFeedLineOf(accepted.received, 'mybod', { feed: accepted.feed })!.summary).toBe('审核通过');
+    });
+
     it('caps the summary at about 60 characters', () => {
         expect([...botFeedSummary('很'.repeat(200))].length).toBeLessThanOrEqual(60);
     });

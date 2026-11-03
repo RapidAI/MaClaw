@@ -1568,7 +1568,7 @@ export function desktopBotReportFeedText(note: Record<string, unknown>, bots: Ar
     return {
         received: `${name(from)} ${word}：${text}${fileLine}${woken}`,
         sent: `发给 ${name(target)}（${word}）：${text}${fileLine}`,
-        feed: { from: name(from), word },
+        feed: { from: name(from), to: name(target), word },
     };
 }
 

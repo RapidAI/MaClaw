@@ -234,6 +234,10 @@ type Service struct {
 	dispatchAdmit func(ctx context.Context, tenantID, userID, botID, content, phase, key string) (BotAdmission, error)
 	// runPauses records runs this Hub paused on MaClawSrv (desktop_pause.go).
 	runPauses sync.Map
+
+	patrolOnce  sync.Once
+	patrolMu    sync.Mutex
+	patrolSight map[string]*patrolSight
 }
 
 // asyncPreferKey marks one MaClawSrv call as Prefer: respond-async.
